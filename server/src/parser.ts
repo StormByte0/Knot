@@ -242,10 +242,14 @@ class Parser {
 
     // Reconstruct inner text from tokens, find separator
     const innerText = innerTokens.map(t => t.value).join('');
-    const sepIdx = innerText.indexOf('|') !== -1 ? innerText.indexOf('|')
-      : innerText.indexOf('->') !== -1 ? innerText.indexOf('->')
-      : innerText.indexOf('<-') !== -1 ? innerText.indexOf('<-')
-      : -1;
+    const pipeIdx  = innerText.indexOf('|');
+    const fwdIdx   = innerText.indexOf('->');
+    const backIdx  = innerText.indexOf('<-');
+    const sepIdx   = pipeIdx !== -1 && (fwdIdx === -1 || pipeIdx <= fwdIdx) && (backIdx === -1 || pipeIdx <= backIdx)
+      ? pipeIdx
+      : fwdIdx !== -1 && (backIdx === -1 || fwdIdx <= backIdx)
+        ? fwdIdx
+        : backIdx;
 
     let target = innerText.trim();
     let display: string | null = null;
@@ -352,8 +356,22 @@ function parseMarkupBody(
 ): MarkupNode[] {
   // Lex relative to body, then shift ranges to absolute offsets
   const rawTokens = lex(bodySource);
+
+  // Emit diagnostics for lexer errors (unterminated comments, unclosed
+  // macros, etc.) before filtering — these are structural problems the
+  // parser cannot recover from.
+  for (const t of rawTokens) {
+    if (t.type === TokenType.Error) {
+      diagnostics.push({
+        message: `Lexer error: ${t.value}`,
+        range: { start: t.range.start + baseOffset, end: t.range.end + baseOffset },
+        severity: 'error',
+      });
+    }
+  }
+
   const tokens = rawTokens
-    .filter(t => t.type !== TokenType.EOF)
+    .filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Error)
     .map(t => ({
       ...t,
       range: { start: t.range.start + baseOffset, end: t.range.end + baseOffset },

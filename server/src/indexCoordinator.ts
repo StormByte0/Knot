@@ -99,11 +99,18 @@ export class IndexCoordinator {
   private async run(): Promise<void> {
     this.timer = null;
     if (this.running) {
+      // Already running — re-schedule so we pick up any new dirtiness after
+      // the current run finishes.  This prevents concurrent mutation of the
+      // workspace index (e.g. upsert during reanalyzeAll) which can cause
+      // stale or missing entries.
       this.timer = setTimeout(() => this.run(), this.debounceMs);
       return;
     }
     this.running = true;
 
+    // Snapshot the dirty set and clear it ATOMICALLY so that any new
+    // mutations arriving during the run go into a fresh dirty set and are
+    // picked up by the next scheduled run, not interleaved into this one.
     const toProcess = [...this.dirty];
     this.dirty.clear();
 

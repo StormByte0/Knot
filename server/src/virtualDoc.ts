@@ -105,8 +105,6 @@ export class VirtualDocGenerator {
         return `[${expr.elements.map(el => this.emitExpression(el)).join(', ')}]`;
       case 'objectLiteral':
         return `{ ${expr.properties.map(p => `${JSON.stringify(p.key)}: ${this.emitExpression(p.value)}`).join(', ')} }`;
-      case 'conditional':
-        return `(${this.emitExpression(expr.condition)} ? ${this.emitExpression(expr.consequent)} : ${this.emitExpression(expr.alternate)})`;
       default:
         return 'undefined';
     }
