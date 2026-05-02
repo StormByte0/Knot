@@ -1,0 +1,195 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Twee / SugarCube 2",
+  "scopeName": "source.twee",
+  "fileTypes": ["tw", "twee"],
+  "patterns": [
+    { "include": "#passage-header" },
+    { "include": "#html-comment" },
+    { "include": "#block-comment" },
+    { "include": "#macro-close" },
+    { "include": "#macro-open" },
+    { "include": "#link" },
+    { "include": "#story-var" },
+    { "include": "#temp-var" },
+    { "include": "#html-void-tag" },
+    { "include": "#html-close-tag" },
+    { "include": "#html-open-tag" }
+  ],
+  "repository": {
+    "passage-header": {
+      "name": "meta.passage.header.twee",
+      "match": "^(::)[ \\t]*(.+?)[ \\t]*(\\[[^\\]]*\\])?[ \\t]*(\\{[^}]*\\})?[ \\t]*$",
+      "captures": {
+        "1": { "name": "keyword.control.passage.marker.twee" },
+        "2": { "name": "entity.name.section.passage.twee" },
+        "3": {
+          "name": "meta.passage.tags.twee",
+          "patterns": [
+            { "match": "\\b(script|stylesheet|widget|nobr|init|bookmark|startup|debug)\\b",
+              "name": "storage.type.tag.twee" },
+            { "match": "\\b[\\w-]+\\b",
+              "name": "entity.other.attribute-name.tag.twee" }
+          ]
+        },
+        "4": { "name": "comment.block.metadata.twee" }
+      }
+    },
+    "html-comment": {
+      "name": "comment.block.html.twee",
+      "begin": "<!--",
+      "end": "-->",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.twee" } }
+    },
+    "block-comment": {
+      "name": "comment.block.twee",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.twee" } }
+    },
+    "macro-open": {
+      "name": "meta.macro.twee",
+      "applyEndPatternLast": 1,
+      "begin": "(<<)([=\\-]|[A-Za-z_][A-Za-z0-9_-]*)?",
+      "end": ">>",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.macro.begin.twee" },
+        "2": { "name": "entity.name.function.macro.twee" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.macro.end.twee" }
+      },
+      "patterns": [{ "include": "#macro-args" }]
+    },
+    "macro-close": {
+      "name": "meta.macro.close.twee",
+      "match": "(<</)(([A-Za-z_][A-Za-z0-9_-]*))(>>)",
+      "captures": {
+        "1": { "name": "punctuation.definition.macro.begin.twee" },
+        "2": { "name": "entity.name.function.macro.twee" },
+        "4": { "name": "punctuation.definition.macro.end.twee" }
+      }
+    },
+    "macro-args": {
+      "patterns": [
+        { "include": "#string-double" },
+        { "include": "#string-single" },
+        { "include": "#string-backtick" },
+        { "include": "#story-var" },
+        { "include": "#temp-var" },
+        { "include": "#sugar-operator" },
+        { "include": "#number" },
+        { "include": "#js-boolean-null" },
+        { "include": "#line-comment" },
+        { "include": "#block-comment" }
+      ]
+    },
+    "sugar-operator": {
+      "name": "keyword.operator.sugarcube.twee",
+      "match": "(?<![\\w$])(to|eq|neq|gt|gte|lt|lte|and|or|not|is|isnot)(?![\\w$])"
+    },
+    "js-boolean-null": {
+      "name": "constant.language.twee",
+      "match": "\\b(true|false|null|undefined)\\b"
+    },
+    "number": {
+      "name": "constant.numeric.twee",
+      "match": "-?\\b\\d+(\\.\\d+)?\\b"
+    },
+    "story-var": {
+      "name": "variable.other.story.twee",
+      "match": "\\$[A-Za-z_][A-Za-z0-9_.]*"
+    },
+    "temp-var": {
+      "name": "variable.other.temporary.twee",
+      "match": "_[A-Za-z][A-Za-z0-9_]*"
+    },
+    "link": {
+      "name": "meta.link.twee",
+      "begin": "\\[\\[",
+      "end": "\\]\\]",
+      "beginCaptures": { "0": { "name": "punctuation.definition.link.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.link.end.twee" } },
+      "patterns": [
+        { "match": "(\\||->|<-)", "name": "punctuation.separator.link.twee" },
+        { "match": "[^\\[\\]|<>-]+", "name": "string.unquoted.link.passage.twee" }
+      ]
+    },
+    "html-void-tag": {
+      "name": "meta.tag.html.twee",
+      "match": "(?<!<)<(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)(\\b[^>]*/?>)",
+      "captures": {
+        "1": { "name": "entity.name.tag.html.twee" },
+        "2": { "name": "meta.tag.attributes.twee" }
+      }
+    },
+    "html-close-tag": {
+      "name": "meta.tag.html.twee",
+      "match": "(?<!<)</([A-Za-z][A-Za-z0-9-]*)>",
+      "captures": {
+        "1": { "name": "entity.name.tag.html.twee" }
+      }
+    },
+    "html-open-tag": {
+      "name": "meta.tag.html.twee",
+      "match": "(?<!<)<([A-Za-z][A-Za-z0-9-]*)([^>]*)(?<!/)>",
+      "captures": {
+        "1": { "name": "entity.name.tag.html.twee" },
+        "2": {
+          "name": "meta.tag.attributes.twee",
+          "patterns": [{ "include": "#html-attribute" }]
+        }
+      }
+    },
+    "html-attribute": {
+      "patterns": [
+        {
+          "match": "([A-Za-z_:][A-Za-z0-9_.:-]*)\\s*(=)\\s*(\"[^\"]*\"|'[^']*')",
+          "captures": {
+            "1": { "name": "entity.other.attribute-name.html.twee" },
+            "2": { "name": "punctuation.separator.key-value.twee" },
+            "3": { "name": "string.quoted.twee" }
+          }
+        },
+        {
+          "match": "[A-Za-z_:][A-Za-z0-9_.:-]*",
+          "name": "entity.other.attribute-name.html.twee"
+        }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.twee",
+      "begin": "\"",
+      "end": "\"",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.twee" } },
+      "patterns": [{ "include": "#string-escape" }]
+    },
+    "string-single": {
+      "name": "string.quoted.single.twee",
+      "begin": "'",
+      "end": "'",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.twee" } },
+      "patterns": [{ "include": "#string-escape" }]
+    },
+    "string-backtick": {
+      "name": "string.template.twee",
+      "begin": "`",
+      "end": "`",
+      "beginCaptures": { "0": { "name": "punctuation.definition.string.begin.twee" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.twee" } },
+      "patterns": [{ "include": "#string-escape" }]
+    },
+    "string-escape": {
+      "name": "constant.character.escape.twee",
+      "match": "\\\\."
+    },
+    "line-comment": {
+      "name": "comment.line.double-slash.twee",
+      "match": "//[^>].*$"
+    }
+  }
+}
