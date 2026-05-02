@@ -60,7 +60,7 @@ export function registerLspCommands(
     vscode.commands.registerCommand('knot.openSettings', () => {
       vscode.commands.executeCommand(
         'workbench.action.openSettings',
-        '@ext:stormbyte0.knot',
+        '@ext:Stormbyte.knot',
       );
     }),
   );

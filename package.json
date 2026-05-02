@@ -3,7 +3,7 @@
   "displayName": "Knot Language Server",
   "description": "Twine/SugarCube language tooling for .tw and .twee files.",
   "version": "0.1.0",
-  "publisher": "stormbyte0",
+  "publisher": "Stormbyte",
   "repository": {
     "type": "git",
     "url": "https://github.com/stormbyte0/knot"
