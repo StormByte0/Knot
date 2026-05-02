@@ -6,7 +6,6 @@ import {
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
-import { parseDocument } from '../parser';
 import {
   wordAt,
   findWordStart,
@@ -32,7 +31,11 @@ export function registerHoverHandler(
 
     const offset  = doc.offsetAt(params.position);
     const text    = doc.getText();
-    const { ast } = parseDocument(text);
+    // Use cached AST from workspace index instead of re-parsing
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return null;
     const adapter = FormatRegistry.resolve(workspace.getActiveFormatId());
     const ctx     = { formatId: adapter.id, passageNames: workspace.getPassageNames() };
 

@@ -47,7 +47,6 @@ export function createStatusBar(context: vscode.ExtensionContext): void {
 export function setLspStarting(): void             { state.lsp = 'starting'; sync(); }
 export function setLspState(s: LspState): void     { state.lsp = s;          sync(); }
 export function setBuildState(s: BuildState): void { state.build = s;        sync(); }
-export function getLspState(): LspState            { return state.lsp; }
 
 export function setStoryData(data: {
   format: string | null;
@@ -104,7 +103,7 @@ function sync(): void {
   switch (state.build) {
     case 'idle':
       buildItem.text            = '$(play)';
-      buildItem.tooltip         = 'knot: Build (Ctrl+Shift+B)';
+      buildItem.tooltip         = 'knot: Build (Ctrl+Alt+B)';
       buildItem.backgroundColor = undefined;
       buildItem.command         = 'knot.build';
       break;

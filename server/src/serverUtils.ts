@@ -62,33 +62,33 @@ export function offsetToPosition(text: string, offset: number): { line: number; 
   return { line: lines.length - 1, character: lines[lines.length - 1]!.length };
 }
 
-export function getFileText(uri: string, documents: { get(uri: string): TextDocument | undefined }): string | null {
+export function getFileText(uri: string, documents: { get(uri: string): TextDocument | undefined }, fileStore?: { getText(uri: string): string | undefined }): string | null {
   const openDoc = documents.get(uri);
   if (openDoc) return openDoc.getText();
+  // Check file store before falling back to disk
+  if (fileStore) {
+    const cached = fileStore.getText(uri);
+    if (cached !== undefined) return cached;
+  }
   try { return fs.readFileSync(uriToPath(uri), 'utf-8'); }
   catch { return null; }
 }
 
-export function readFileSafe(filePath: string): string | null {
-  try { return fs.readFileSync(filePath, 'utf-8'); }
-  catch { return null; }
-}
-
-export function defToLocation(def: { uri: string; range: SourceRange }, documents: { get(uri: string): TextDocument | undefined }): Location {
+export function defToLocation(def: { uri: string; range: SourceRange }, documents: { get(uri: string): TextDocument | undefined }, fileStore?: { getText(uri: string): string | undefined }): Location {
   const openDoc = documents.get(def.uri);
   if (openDoc) {
     return Location.create(def.uri, Range.create(openDoc.positionAt(def.range.start), openDoc.positionAt(def.range.end)));
   }
-  try {
-    const ft = fs.readFileSync(uriToPath(def.uri), 'utf-8');
-    return Location.create(def.uri, Range.create(offsetToPosition(ft, def.range.start), offsetToPosition(ft, def.range.end)));
-  } catch {
-    return Location.create(def.uri, Range.create(0, 0, 0, 0));
+  // Try file store before disk I/O
+  const text = fileStore?.getText(def.uri) ?? (() => { try { return fs.readFileSync(uriToPath(def.uri), 'utf-8'); } catch { return null; } })();
+  if (text) {
+    return Location.create(def.uri, Range.create(offsetToPosition(text, def.range.start), offsetToPosition(text, def.range.end)));
   }
+  return Location.create(def.uri, Range.create(0, 0, 0, 0));
 }
 
-export function refToLocation(ref: { uri: string; range: SourceRange }, documents: { get(uri: string): TextDocument | undefined }): Location {
-  return defToLocation(ref, documents);
+export function refToLocation(ref: { uri: string; range: SourceRange }, documents: { get(uri: string): TextDocument | undefined }, fileStore?: { getText(uri: string): string | undefined }): Location {
+  return defToLocation(ref, documents, fileStore);
 }
 
 export function inferredTypeToString(t: InferredType): string {
@@ -124,73 +124,11 @@ export function buildTypeSection(t: InferredType): string {
   return `\n\n**Type:** \`${inferredTypeToString(t)}\``;
 }
 
-// ---------------------------------------------------------------------------
-// Twee file discovery with exclude support
-// ---------------------------------------------------------------------------
-
-const HARD_SKIP_DIRS = new Set([
-  'node_modules', '.git', '.hg', '.svn', 'out', 'build',
-]);
-
-function matchesGlob(filePath: string, pattern: string): boolean {
-  const p = filePath.replace(/\\/g, '/');
-  const g = pattern.replace(/\\/g, '/');
-  const re = new RegExp(
-    '^' +
-    g.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '\u0000')
-      .replace(/\*/g, '[^/]*')
-      .replace(/\u0000/g, '.*') +
-    '(/.*)?$',
-    'i',
-  );
-  return re.test(p);
-}
-
-export interface FindTweeOptions {
-  exclude?: string[];
-  outputFile?: string;
-}
-
-export function findTweeFiles(dir: string, opts: FindTweeOptions = {}): string[] {
-  const results: string[] = [];
-  const excludePatterns = opts.exclude ?? [];
-  const outputFile = opts.outputFile ? path.resolve(dir, opts.outputFile) : null;
-
-  function walk(current: string): void {
-    let entries: fs.Dirent[];
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); }
-    catch { return; }
-
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-
-      if (entry.isDirectory()) {
-        if (HARD_SKIP_DIRS.has(entry.name)) continue;
-        const rel = path.relative(dir, full).replace(/\\/g, '/');
-        if (excludePatterns.some(p => matchesGlob(rel, p) || matchesGlob(entry.name, p))) continue;
-        walk(full);
-      } else if (entry.isFile()) {
-        if (outputFile && path.resolve(full) === outputFile) continue;
-        if (!/\.(tw|twee)$/i.test(entry.name)) continue;
-        const rel = path.relative(dir, full).replace(/\\/g, '/');
-        if (excludePatterns.some(p => matchesGlob(rel, p) || matchesGlob(entry.name, p))) continue;
-        results.push(full);
-      }
-    }
-  }
-
-  walk(dir);
-  return results;
-}
-
 export function wordAt(text: string, offset: number): string {
-  const wordRe = /[$A-Za-z_][A-Za-z0-9_]*/g;
-  let m: RegExpExecArray | null;
-  while ((m = wordRe.exec(text)) !== null) {
-    if (m.index <= offset && offset <= m.index + m[0].length) return m[0];
-  }
-  return '';
+  // Search locally around the offset instead of scanning from position 0
+  const start = Math.max(0, text.lastIndexOf(' ', offset) + 1);
+  const m = text.slice(start).match(/^([$A-Za-z_][A-Za-z0-9_]*)/);
+  return m && start + m[0].length >= offset ? m[0] : '';
 }
 
 export function findWordStart(text: string, offset: number, word: string): number {

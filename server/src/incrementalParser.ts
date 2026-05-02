@@ -24,14 +24,15 @@ export class IncrementalParser {
     const seenKeys = new Set<string>();
 
     for (const span of spans) {
-      const key = `${uri}:${span.name}`;
+      const key = `${uri}:${span.name}:${span.bodyStart}`;
       seenKeys.add(key);
 
       const bodyText = text.slice(span.bodyStart, span.bodyEnd);
       const tagsKey = span.tags.join('|');
       const cached = this.cache.get(key);
 
-      if (cached && cached.bodyText === bodyText && cached.tagsKey === tagsKey) {
+      if (cached && cached.bodyText === bodyText && cached.tagsKey === tagsKey
+          && cached.node.range.start === span.nameStart) {
         // Reuse parse tree, shift positions if the passage moved in the file
         passages.push(this.shiftIfNeeded(cached.node, span));
         continue;
@@ -61,8 +62,9 @@ export class IncrementalParser {
   private shiftIfNeeded(node: PassageNode, span: PassageSpan): PassageNode {
     const delta = span.nameStart - node.nameRange.start;
     if (delta === 0) return node;
-    // Deep clone and shift all ranges
-    const clone = JSON.parse(JSON.stringify(node)) as PassageNode;
+    // Deep clone and shift all ranges — use structured clone instead of
+    // JSON round-trip for better performance on large ASTs.
+    const clone = structuredClone(node) as PassageNode;
     shiftRanges(clone as unknown as Record<string, unknown>, delta);
     return clone;
   }

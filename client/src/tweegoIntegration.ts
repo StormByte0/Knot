@@ -51,7 +51,7 @@ export function readTweegoConfig(): TweegoConfig {
   const project = vscode.workspace.getConfiguration('knot.project');
   return {
     execPath:              tweego.get<string>('path',               'tweego'),
-    outputFile:            tweego.get<string>('outputFile',         'build/index.html'),
+    outputFile:            tweego.get<string>('outputFile',         'dist/index.html'),
     storyFormatsDirectory: project.get<string>('storyFormatsDirectory', '.storyformats'),
     formatOverride:        tweego.get<string>('formatOverride',     ''),
     modulePaths:           tweego.get<string[]>('modulePaths',       []),
@@ -83,7 +83,11 @@ function buildArgs(config: TweegoConfig, workspaceRoot: string, storyFilesDir: s
   if (config.noTrim)   args.push('--no-trim');
   if (config.logFiles) args.push('--log-files');
   if (testMode)        args.push('-t');
-  if (config.extraArgs.trim()) args.push(...config.extraArgs.trim().split(/\s+/));
+  // Parse extraArgs with shell-aware quoting to handle quoted arguments like --title "My Story"
+  if (config.extraArgs.trim()) {
+    const parsed = config.extraArgs.trim().match(/(?:[^\s"]+|"[^"]*")+/g);
+    if (parsed) args.push(...parsed.map(a => a.replace(/^"|"$/g, '')));
+  }
   // Point tweego at the story files directory, not the entire workspace root
   args.push(resolveWorkspacePath(storyFilesDir || '.', workspaceRoot));
   return args;
@@ -184,8 +188,9 @@ export class TweegoIntegration {
     this.diagnosticCollection = vscode.languages.createDiagnosticCollection('knot-tweego');
   }
 
-  get buildState(): BuildState { return this._buildState; }
-  get isWatching(): boolean    { return this.watchProcess !== null; }
+  /** Build state is propagated via the onBuildStateChange event. */
+  // Direct state access is intentionally omitted — all consumers should
+  // subscribe to the event emitter for reactive updates.
 
   private setState(s: BuildState): void {
     this._buildState = s;
@@ -276,8 +281,8 @@ export class TweegoIntegration {
       if (errors.length > 0) {
         this.publishDiagnostics(errors);
         this.setState('failed');
-        vscode.window.showErrorMessage(`knot: Watch build failed — ${errors[0]!.message}`, 'Show Output')
-          .then(p => { if (p === 'Show Output') this.outputChannel.show(); });
+        // Use status bar + output channel instead of modal notification during watch
+        this.outputChannel.appendLine(`[watch] Build failed: ${errors[0]!.message}`);
       } else if (this._buildState === 'building') {
         this.diagnosticCollection.clear();
         this.setState('watching');
@@ -285,8 +290,11 @@ export class TweegoIntegration {
     });
     proc.on('close', (code) => {
       this.outputChannel.appendLine(`\n[watch] Process exited (code ${code ?? 'unknown'})`);
-      this.watchProcess = null;
-      this.setState('idle');
+      // Only update state if this is still the active watch process
+      if (this.watchProcess === proc) {
+        this.watchProcess = null;
+        this.setState('idle');
+      }
     });
     proc.on('error', (err) => {
       this.outputChannel.appendLine(`\n[watch] Spawn error: ${(err as Error).message}`);

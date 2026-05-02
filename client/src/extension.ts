@@ -50,11 +50,11 @@ export function activate(context: vscode.ExtensionContext): void {
   tweego = new TweegoIntegration(channel);
   context.subscriptions.push({ dispose: () => tweego?.dispose() });
 
-  tweego.onBuildStateChange.event(s => {
+  context.subscriptions.push(tweego.onBuildStateChange.event(s => {
     setBuildState(s);
     vscode.commands.executeCommand('setContext', 'knot.building', s === 'building');
     vscode.commands.executeCommand('setContext', 'knot.watching', s === 'watching');
-  });
+  }));
 
   registerLspCommands(context, channel, () => client, restartClient);
   registerBuildCommands(context, () => tweego);
@@ -89,8 +89,7 @@ function startClient(): void {
 
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
-      { language: 'twee'  },
-      { language: 'twee2' },
+      { language: 'twine' },
       { pattern:  '**/*.{tw,twee}' },
     ],
     outputChannel: channel,
@@ -148,16 +147,15 @@ function startClient(): void {
 }
 
 async function populateWorkspace(lspClient: LanguageClient): Promise<void> {
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const TIMEOUT_MS = 30_000;
-      const started    = Date.now();
-      const check = setInterval(() => {
-        if (lspClient.state === 2 /* Running */) { clearInterval(check); resolve(); return; }
-        if (lspClient.state === 1 /* Stopped  */) { clearInterval(check); reject(new Error('stopped')); return; }
-        if (Date.now() - started > TIMEOUT_MS)    { clearInterval(check); reject(new Error('timeout')); }
-      }, 50);
+  const statePromise = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('timeout')), 30_000);
+    const disposable = lspClient.onDidChangeState(ev => {
+      if (ev.newState === State.Running) { clearTimeout(timeout); disposable.dispose(); resolve(); }
+      if (ev.newState === State.Stopped) { clearTimeout(timeout); disposable.dispose(); reject(new Error('stopped')); }
     });
+  });
+  try {
+    await statePromise;
   } catch {
     return;
   }

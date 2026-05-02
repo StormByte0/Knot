@@ -24,7 +24,7 @@ export function registerLspCommands(
       const picked = await vscode.window.showQuickPick([
         { label: '$(symbol-module) Go to passage',           description: 'Ctrl+Alt+P',   cmd: 'knot.goToPassage' },
         { label: '$(refresh) Refresh workspace index',       description: '',              cmd: 'knot.refreshDocuments' },
-        { label: '$(play) Build',                            description: 'Ctrl+Shift+B', cmd: 'knot.build' },
+        { label: '$(play) Build',                            description: 'Ctrl+Alt+B', cmd: 'knot.build' },
         { label: '$(beaker) Build (test mode)',              description: '',              cmd: 'knot.buildTest' },
         { label: '$(eye) Start watch mode',                  description: '',              cmd: 'knot.startWatch' },
         { label: '$(eye-closed) Stop watch mode',            description: '',              cmd: 'knot.stopWatch' },
@@ -134,13 +134,18 @@ export function registerLspCommands(
       const doc    = await vscode.workspace.openTextDocument(vscode.Uri.parse(picked.entry.uri));
       const editor = await vscode.window.showTextDocument(doc);
       const lines  = doc.getText().split('\n');
-      let   target = 0;
+      let target = -1;
 
       for (let i = 0; i < lines.length; i++) {
-        if (/^::[ \t]/.test(lines[i]!)) {
-          const m = lines[i]!.match(/^::[ \t]+([^\[{]+?)[ \t]*(?:[\[{]|$)/);
+        if (/^::/.test(lines[i]!)) {
+          const m = lines[i]!.match(/^::\s*([^\[{]+?)\s*(?:[\[{]|$)/);
           if (m && m[1]!.trim() === picked.entry.name) { target = i; break; }
         }
+      }
+
+      if (target === -1) {
+        vscode.window.showWarningMessage(`knot: Could not locate passage "${picked.entry.name}" in the file. It may have been moved.`);
+        return;
       }
 
       const pos = new vscode.Position(target, 0);

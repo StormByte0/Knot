@@ -31,5 +31,21 @@
     ["[", "]"],
     ["(", ")"]
   ],
-  "wordPattern": "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\-\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)"
+  "wordPattern": "(-?\\d*\\.\\d\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)",
+  "indentationRules": {
+    "increaseIndentPattern": "<<(?:if|elseif|else|for|switch|case|widget|link|button|script|capture|nobr|silently)\\b.*>>",
+    "decreaseIndentPattern": "<</(?:if|for|switch|case|widget|link|button|script|capture|nobr|silently)>>"
+  },
+  "folding": {
+    "markers": {
+      "start": "^::",
+      "end": "^::"
+    }
+  },
+  "onEnterRules": [
+    {
+      "beforeText": "<<(if|elseif|else|for|switch|widget|link|button|capture|silently|nobr|script).*>>\\s*$",
+      "action": { "indent": "indent" }
+    }
+  ]
 }

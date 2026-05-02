@@ -4,6 +4,8 @@
   "description": "Twine/SugarCube language tooling for .tw and .twee files.",
   "version": "0.1.0",
   "publisher": "Stormbyte",
+  "preview": true,
+  "keywords": ["twine", "twee", "sugarcube", "interactive fiction", "visual novel"],
   "repository": {
     "type": "git",
     "url": "https://github.com/stormbyte0/knot"
@@ -81,8 +83,8 @@
       },
       {
         "command": "knot.build",
-        "key": "ctrl+shift+b",
-        "mac": "cmd+shift+b",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
         "when": "editorLangId == twine || resourceExtname == .tw || resourceExtname == .twee"
       }
     ],
@@ -100,8 +102,6 @@
         ],
         "filenames": [],
         "filenamePatterns": [
-          "*.tw",
-          "*.twee",
           "_*.twee",
           "_*.tw"
         ],
@@ -200,6 +200,11 @@
           "default": "",
           "markdownDescription": "Extra arguments appended verbatim to every tweego invocation (e.g. `--twee2-compat`)."
         },
+        "knot.project.storyFilesDirectory": {
+          "type": "string",
+          "default": "src",
+          "markdownDescription": "Directory containing `.tw`/`.twee` source files, relative to the workspace root. Passed to tweego as the input directory."
+        },
         "knot.project.storyFormatsDirectory": {
           "type": "string",
           "default": ".storyformats",
@@ -238,9 +243,7 @@
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",
     "concurrently": "^9.1.2",
-    "esbuild": "^0.25.0"
-  },
-  "dependencies": {
+    "esbuild": "^0.25.0",
     "mocha": "^11.7.5"
   }
 }
