@@ -88,7 +88,7 @@ export function registerBuildCommands(
 
 function getOutputFile(): string {
   return vscode.workspace.getConfiguration('knot.tweego')
-    .get<string>('outputFile', 'build/index.html');
+    .get<string>('outputFile', 'dist/index.html');
 }
 
 function getOutputUri(wsFolderUri: vscode.Uri, outFile: string): vscode.Uri {

@@ -10,7 +10,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
 import { parseDocument } from '../parser';
 import { parseStoryData, validateStoryData } from '../storyData';
-import { uriToPath, getFileText } from '../serverUtils';
+import { uriToPath, getFileText, normalizeUri } from '../serverUtils';
 
 // ---------------------------------------------------------------------------
 // Notification / request IDs (exported so lspServer.ts can use them)
@@ -136,7 +136,9 @@ function buildStoryDataResponse(
     const text = getFileText(uri, documents);
     if (!text) continue;
 
-    const { ast } = parseDocument(text);
+    // Use cached AST from workspace index instead of re-parsing
+    const cached = workspace.getParsedFile(uri);
+    const ast = cached?.ast ?? parseDocument(text).ast;
     const data    = parseStoryData(ast);
 
     if (data.ifid === null && data.format === null && data.start === null) continue;

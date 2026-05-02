@@ -9,27 +9,9 @@ import {
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
-import { parseDocument } from '../parser';
-import { offsetToPosition, getFileText } from '../serverUtils';
+import { offsetToPosition, getFileText, normalizeUri } from '../serverUtils';
+import { PASSAGE_ARG_MACROS, passageArgIndex } from '../passageArgs';
 import type { ExpressionNode, MarkupNode } from '../ast';
-
-// ---------------------------------------------------------------------------
-// Macros whose arguments contain a passage name target.
-// Must stay in sync with the same set in workspaceIndex.ts / symbols.ts.
-// ---------------------------------------------------------------------------
-
-const PASSAGE_ARG_MACROS = new Set([
-  'link', 'button', 'linkappend', 'linkprepend', 'linkreplace',
-  'include', 'display', 'goto', 'actions', 'click',
-]);
-
-const LABEL_THEN_PASSAGE = new Set([
-  'link', 'button', 'click', 'linkappend', 'linkprepend', 'linkreplace',
-]);
-
-function passageArgIndex(macroName: string, argCount: number): number {
-  return (LABEL_THEN_PASSAGE.has(macroName) && argCount >= 2) ? 1 : 0;
-}
 
 // ---------------------------------------------------------------------------
 
@@ -42,7 +24,11 @@ export function registerRenameHandlers(
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const offset = doc.offsetAt(params.position);
-    const { ast } = parseDocument(doc.getText());
+    // Use cached AST from workspace index
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return null;
 
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
@@ -64,7 +50,11 @@ export function registerRenameHandlers(
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return null;
     const offset  = doc.offsetAt(params.position);
-    const { ast } = parseDocument(doc.getText());
+    // Use cached AST from workspace index
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return null;
 
     let passageName: string | null = null;
 
@@ -90,7 +80,7 @@ export function registerRenameHandlers(
     addPassageDeclarationEdits(passageName, params.newName, changes, workspace, documents);
 
     for (const uri of workspace.getCachedUris()) {
-      addPassageReferenceEdits(uri, passageName, params.newName, changes, documents);
+      addPassageReferenceEdits(uri, passageName, params.newName, changes, documents, workspace);
     }
 
     return { changes };
@@ -112,7 +102,10 @@ function addPassageDeclarationEdits(
   if (!def) return;
   const fileText = getFileText(def.uri, documents);
   if (!fileText) return;
-  const { ast } = parseDocument(fileText);
+  // Use cached AST from workspace index
+  const cached = workspace.getParsedFile(def.uri);
+  const ast = cached?.ast;
+  if (!ast) return;
   const edits: TextEdit[] = changes[def.uri] ?? [];
   for (const p of ast.passages) {
     if (p.name === oldName) {
@@ -140,10 +133,14 @@ function addPassageReferenceEdits(
   newName: string,
   changes: Record<string, TextEdit[]>,
   documents: TextDocuments<TextDocument>,
+  workspace: WorkspaceIndex,
 ): void {
   const fileText = getFileText(uri, documents);
   if (!fileText) return;
-  const { ast } = parseDocument(fileText);
+  // Use cached AST from workspace index
+  const cached = workspace.getParsedFile(uri);
+  const ast = cached?.ast;
+  if (!ast) return;
   const edits: TextEdit[] = changes[uri] ?? [];
 
   for (const p of ast.passages) {

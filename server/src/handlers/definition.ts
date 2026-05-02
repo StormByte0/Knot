@@ -6,7 +6,6 @@ import {
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
-import { parseDocument } from '../parser';
 import { wordAt, defToLocation, refToLocation, offsetToPosition, getFileText, normalizeUri } from '../serverUtils';
 import type { MarkupNode, ExpressionNode } from '../ast';
 import type { SourceRange } from '../tokenTypes';
@@ -23,7 +22,11 @@ export function registerDefinitionHandlers(
     if (!doc) return null;
     const offset  = doc.offsetAt(params.position);
     const text    = doc.getText();
-    const { ast } = parseDocument(text);
+    // Use cached AST from workspace index
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return null;
 
     // Passage header
     for (const passage of ast.passages) {
@@ -66,7 +69,11 @@ export function registerDefinitionHandlers(
     if (!doc) return [];
     const offset  = doc.offsetAt(params.position);
     const text    = doc.getText();
-    const { ast } = parseDocument(text);
+    // Use cached AST from workspace index
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return [];
 
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
@@ -224,7 +231,7 @@ function refsForPassage(
   documents: TextDocuments<TextDocument>,
 ): Location[] {
   return workspace.getReferencingFiles(passageName).flatMap(uri =>
-    collectPassageRefRanges(uri, passageName, documents).map(r => Location.create(uri, r)),
+    collectPassageRefRanges(uri, passageName, documents, workspace).map(r => Location.create(uri, r)),
   );
 }
 
@@ -252,10 +259,14 @@ function collectPassageRefRanges(
   uri: string,
   passageName: string,
   documents: TextDocuments<TextDocument>,
+  workspace: WorkspaceIndex,
 ): Range[] {
   const fileText = getFileText(uri, documents);
   if (!fileText) return [];
-  const { ast } = parseDocument(fileText);
+  // Use cached AST from workspace index instead of re-parsing
+  const cached = workspace.getParsedFile(uri);
+  const ast = cached?.ast;
+  if (!ast) return [];
   const ranges: Range[] = [];
 
   const walk = (nodes: MarkupNode[]): void => {

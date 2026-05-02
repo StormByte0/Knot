@@ -4,6 +4,7 @@ import { IncrementalParser } from './incrementalParser';
 import { SymbolKind, UserSymbol, buildSymbolTable } from './symbols';
 import { TypeInference, InferredType } from './typeInference';
 import { SourceRange } from './tokenTypes';
+import { PASSAGE_ARG_MACROS, passageArgIndex, passageNameFromExpr } from './passageArgs';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,26 +58,7 @@ export interface IncomingLink {
   count:         number;
 }
 
-// ---------------------------------------------------------------------------
-// Passage-referencing macros (shared with symbols.ts)
-// ---------------------------------------------------------------------------
-
-const PASSAGE_ARG_MACROS = new Set([
-  'link', 'button', 'linkappend', 'linkprepend', 'linkreplace',
-  'include', 'display', 'goto', 'actions', 'click',
-]);
-
-const LABEL_THEN_PASSAGE = new Set([
-  'link', 'button', 'click', 'linkappend', 'linkprepend', 'linkreplace',
-]);
-
-function passageArgIndex(macro: string, argc: number): number {
-  return (LABEL_THEN_PASSAGE.has(macro) && argc >= 2) ? 1 : 0;
-}
-
-function passageNameFromArg(expr: ExpressionNode): string | null {
-  return (expr.type === 'literal' && expr.kind === 'string') ? String(expr.value) : null;
-}
+// Passage-arg macros imported from passageArgs.ts — single source of truth
 
 // ---------------------------------------------------------------------------
 // WorkspaceIndex
@@ -124,6 +106,11 @@ export class WorkspaceIndex {
     return this.parseCache.has(uri);
   }
 
+  /** Get the parsed AST for a file — avoids re-parsing in LSP handlers. */
+  getParsedFile(uri: string): ParsedFile | undefined {
+    return this.parseCache.get(uri);
+  }
+
   // ---- Full reanalysis -----------------------------------------------------
 
   reanalyzeAll(): void {
@@ -154,7 +141,8 @@ export class WorkspaceIndex {
 
     // Pass 3: analyze (all defs + refs now complete)
     for (const uri of uris) {
-      const parsed = this.parseCache.get(uri)!;
+      const parsed = this.parseCache.get(uri);
+      if (!parsed) continue;
       const analysis = this.analyzer.analyze(parsed.ast, uri, this);
 
       // Inject duplicate-passage diagnostics into the analysis result
@@ -349,7 +337,7 @@ export class WorkspaceIndex {
           } else if (node.type === 'macro') {
             if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
               const arg    = node.args[passageArgIndex(node.name, node.args.length)];
-              const target = arg ? passageNameFromArg(arg) : null;
+              const target = arg ? passageNameFromExpr(arg) : null;
               if (target && arg) links.push({ target, range: arg.range, sourcePassage: src });
             }
             if (node.body) walk(node.body);
@@ -461,54 +449,5 @@ export class WorkspaceIndex {
   removeDocument(uri: string): void {
     this.removeFile(uri);
     this.reanalyzeAll();
-  }
-
-  getAnalysisOrder(): string[] {
-    const uris  = this.getKnownUris();
-    const special: string[] = [];
-    const rest:    string[] = [];
-
-    for (const uri of uris) {
-      const parsed = this.parseCache.get(uri);
-      const hasSpecial = parsed?.ast.passages.some(
-        p => p.kind === 'script' || p.name === 'StoryInit' || p.name === 'StoryData',
-      ) ?? false;
-      (hasSpecial ? special : rest).push(uri);
-    }
-
-    const linksTo = new Map<string, Set<string>>();
-    for (const uri of rest) {
-      const deps = new Set<string>();
-      for (const link of this.fileLinkRefs.get(uri) ?? []) {
-        const def = this.passageDefinitions.get(link.target);
-        if (def && def.uri !== uri) deps.add(def.uri);
-      }
-      linksTo.set(uri, deps);
-    }
-
-    const inDegree = new Map<string, number>();
-    for (const uri of rest) inDegree.set(uri, 0);
-    for (const [uri, deps] of linksTo) {
-      inDegree.set(uri, deps.size);
-    }
-    const queue = rest.filter(u => (inDegree.get(u) ?? 0) === 0).sort();
-    const sorted: string[] = [];
-    while (queue.length > 0) {
-      const u = queue.shift()!;
-      sorted.push(u);
-      for (const [v, deps] of linksTo) {
-        if (deps.has(u)) {
-          const deg = (inDegree.get(v) ?? 1) - 1;
-          inDegree.set(v, deg);
-          if (deg === 0) {
-            const idx = queue.findIndex(x => x > v);
-            idx === -1 ? queue.push(v) : queue.splice(idx, 0, v);
-          }
-        }
-      }
-    }
-    for (const u of rest) { if (!sorted.includes(u)) sorted.push(u); }
-
-    return [...special.sort(), ...sorted];
   }
 }

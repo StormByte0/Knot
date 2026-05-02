@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   type Connection,
@@ -13,8 +12,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
-import { parseDocument } from '../parser';
-import { uriToPath, offsetToPosition } from '../serverUtils';
+import { uriToPath, offsetToPosition, normalizeUri, getFileText } from '../serverUtils';
 import type { ExpressionNode, StoryVarNode, MarkupNode } from '../ast';
 
 export function registerSymbolHandlers(
@@ -27,8 +25,11 @@ export function registerSymbolHandlers(
   connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return [];
-    const { ast } = parseDocument(doc.getText());
-    if (!ast.passages.length) return [];
+    // Use cached AST from workspace index
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast || !ast.passages.length) return [];
 
     const results: DocumentSymbol[] = [];
     for (const passage of ast.passages) {
@@ -97,10 +98,11 @@ export function registerSymbolHandlers(
         if (openDoc) {
           symRange = Range.create(openDoc.positionAt(sym.range.start), openDoc.positionAt(sym.range.end));
         } else {
-          try {
-            const ft = fs.readFileSync(uriToPath(sym.uri), 'utf-8');
+          // Use getFileText which checks workspace cache before disk
+          const ft = getFileText(sym.uri, documents);
+          if (ft) {
             symRange = Range.create(offsetToPosition(ft, sym.range.start), offsetToPosition(ft, sym.range.end));
-          } catch { /* use (0,0) */ }
+          }
         }
 
         results.push({

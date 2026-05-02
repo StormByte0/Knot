@@ -10,7 +10,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { FileStore }        from './fileStore';
 import { IndexCoordinator } from './indexCoordinator';
 import { WorkspaceIndex }   from './workspaceIndex';
-import { uriToPath, pathToUri } from './serverUtils';
+import { uriToPath, pathToUri, normalizeUri } from './serverUtils';
 import { registerSymbolHandlers }     from './handlers/symbols';
 import { registerRenameHandlers }     from './handlers/rename';
 import { registerDefinitionHandlers } from './handlers/definition';
@@ -89,7 +89,7 @@ function scanRoot(rootPath: string, excludePatterns: string[]): void {
           const stat = fs.statSync(fullPath);
           if (stat.size > MAX_FILE_BYTES) {
             log(`[scan] Skipping oversized file (${stat.size} bytes): ${fullPath}`);
-            return;
+            continue;
           }
           const text = fs.readFileSync(fullPath, 'utf-8');
           coordinator.onDiskContent(uri, text);
@@ -239,7 +239,8 @@ connection.onDidChangeWatchedFiles(params => {
     }
 
     // Created or Changed — skip if currently open (onDidChangeContent owns it)
-    if (documents.get(change.uri)) continue;
+    // Normalise URI to handle casing differences (especially on Windows)
+    if (documents.get(normalizeUri(change.uri)) || documents.get(change.uri)) continue;
 
     const filePath = uriToPath(change.uri);
     try {

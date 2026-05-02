@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Twee / SugarCube 2",
   "scopeName": "source.twee",
+  "firstLineMatch": "^::",
   "fileTypes": ["tw", "twee"],
   "patterns": [
     { "include": "#passage-header" },

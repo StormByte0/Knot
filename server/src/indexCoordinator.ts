@@ -3,7 +3,7 @@ import { WorkspaceIndex } from './workspaceIndex';
 import { Connection, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { broadcastStoryData, buildStoryDataResponseExported } from './handlers/queries';
+import { buildStoryDataResponseExported } from './handlers/queries';
 import { normalizeUri } from './serverUtils';
 
 // ---------------------------------------------------------------------------
@@ -125,9 +125,12 @@ export class IndexCoordinator {
 
       this.workspace.reanalyzeAll();
       this.flushAllDiagnostics();
-      broadcastStoryData(this.connection, this.documents, this.workspace);
+      // Build StoryData response once — use for both broadcast and format ID extraction
       const sd = buildStoryDataResponseExported(this.connection, this.documents, this.workspace);
-      if (sd?.format) this.workspace.setActiveFormatId(sd.format);
+      if (sd) {
+        this.connection.sendNotification('knot/storyDataUpdated', sd);
+        if (sd.format) this.workspace.setActiveFormatId(sd.format);
+      }
 
       this.log(`[index] Reanalysis complete — ${this.workspace.getKnownUris().length} file(s) indexed`);
 
