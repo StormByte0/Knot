@@ -72,6 +72,14 @@ export class WorkspaceIndex {
   // Ground truth
   private parseCache = new Map<string, ParsedFile>();
 
+  // Maximum number of files to keep in the parse cache. When exceeded,
+  // the least-recently-analyzed files are evicted to prevent unbounded
+  // memory growth on very large workspaces.
+  private static readonly MAX_CACHED_FILES = 500;
+
+  // Track access order for LRU eviction
+  private accessOrder: string[] = [];
+
   // Derived — rebuilt entirely by reanalyzeAll()
   private analysisCache       = new Map<string, AnalysisResult>();
   private passageDefinitions  = new Map<string, PassageDef>();
@@ -92,10 +100,41 @@ export class WorkspaceIndex {
   upsertFile(uri: string, text: string): void {
     const parsed = this.parser.parse(uri, text);
     this.parseCache.set(uri, parsed);
+    // Update access order for LRU
+    const idx = this.accessOrder.indexOf(uri);
+    if (idx !== -1) this.accessOrder.splice(idx, 1);
+    this.accessOrder.push(uri);
+    this.evictIfNeeded();
   }
 
   removeFile(uri: string): void {
     this.parseCache.delete(uri);
+    this.analysisCache.delete(uri);
+    // Remove from access order
+    const idx = this.accessOrder.indexOf(uri);
+    if (idx !== -1) this.accessOrder.splice(idx, 1);
+  }
+
+  /**
+   * Evict oldest entries when the parse cache exceeds the limit.
+   * Only evicts files not currently in the derived analysis — those are
+   * likely to be needed again soon.
+   */
+  private evictIfNeeded(): void {
+    while (this.parseCache.size > WorkspaceIndex.MAX_CACHED_FILES && this.accessOrder.length > 0) {
+      const oldest = this.accessOrder[0]!;
+      // Don't evict files that have active analysis results
+      if (this.analysisCache.has(oldest)) {
+        // Skip to next — move to end so we try other candidates
+        this.accessOrder.shift();
+        this.accessOrder.push(oldest);
+        // Safety: if all files have analysis, stop evicting
+        if (this.accessOrder.every(u => this.analysisCache.has(u))) break;
+        continue;
+      }
+      this.parseCache.delete(oldest);
+      this.accessOrder.shift();
+    }
   }
 
   getKnownUris(): string[] {
@@ -125,6 +164,9 @@ export class WorkspaceIndex {
     this.variableReferences.clear();
     this.macroCallSites.clear();
     this.fileLinkRefs.clear();
+    // Clear the incremental parser's passage cache on full reanalysis
+    // to prevent stale entries from accumulating across many sessions.
+    this.parser.clearCache();
 
     const uris = this.getKnownUris();
 
@@ -162,19 +204,29 @@ export class WorkspaceIndex {
   /**
    * Returns error diagnostics for any passage in this file whose name is
    * also defined in another file (or multiple times within this file).
+   * Uses single-pass reduce instead of repeated .filter() calls — O(n) vs O(n²).
    */
   private _buildDuplicateDiagnosticsForUri(uri: string, ast: DocumentNode): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
     for (const passage of ast.passages) {
       const allDefs = this.allPassageDefinitions.get(passage.name);
       if (!allDefs || allDefs.length < 2) continue;
-      // Count how many definitions belong to other URIs (or this URI more than once)
-      const othersCount = allDefs.filter(d => d.uri !== uri).length;
-      const selfCount   = allDefs.filter(d => d.uri === uri).length;
+      // Single-pass: count self vs other
+      let othersCount = 0;
+      let selfCount = 0;
+      const otherFiles = new Set<string>();
+      for (const d of allDefs) {
+        if (d.uri !== uri) {
+          othersCount++;
+          otherFiles.add(d.uri);
+        } else {
+          selfCount++;
+        }
+      }
       if (othersCount > 0 || selfCount > 1) {
-        const otherFiles = [...new Set(allDefs.filter(d => d.uri !== uri).map(d => d.uri))];
-        const detail = otherFiles.length > 0
-          ? `also defined in: ${otherFiles.map(u => u.split('/').pop()).join(', ')}`
+        const otherFileNames = [...otherFiles].map(u => u.split('/').pop());
+        const detail = otherFileNames.length > 0
+          ? `also defined in: ${otherFileNames.join(', ')}`
           : 'defined multiple times in this file';
         diags.push({
           message: `Duplicate passage name "${passage.name}" — ${detail}`,

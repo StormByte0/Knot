@@ -144,7 +144,7 @@ describe('SugarCube Adapter', () => {
       assert.ok(snippet !== null);
       assert.ok(snippet!.includes('if'));
       assert.ok(snippet!.includes('<</if'));
-      assert.ok(snippet!.includes('$1'));
+      assert.ok(snippet!.includes('${1'));
     });
 
     it('should build snippet for inline macro', () => {

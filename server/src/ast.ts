@@ -71,8 +71,7 @@ export type ExpressionNode =
   | IndexAccessNode
   | CallNode
   | ArrayLiteralNode
-  | ObjectLiteralNode
-  | ConditionalNode;
+  | ObjectLiteralNode;
 
 export interface LiteralNode extends BaseNode {
   type: 'literal';
@@ -142,13 +141,6 @@ export interface ObjectLiteralNode extends BaseNode {
 export interface ObjectProperty extends BaseNode {
   key: string;
   value: ExpressionNode;
-}
-
-export interface ConditionalNode extends BaseNode {
-  type: 'conditional';
-  condition: ExpressionNode;
-  consequent: ExpressionNode;
-  alternate: ExpressionNode;
 }
 
 export interface ParseDiagnostic {

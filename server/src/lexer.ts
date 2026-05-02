@@ -62,25 +62,31 @@ class Lexer {
   // Top-level dispatcher
   // -------------------------------------------------------------------------
   private scanNext(): void {
+    const ch = this.src.charCodeAt(this.pos);
+
     // ---- Comments are checked FIRST in ALL contexts -----------------------
     // Both <!-- --> and /* */ are consumed atomically before any macro or link
     // scanning. This ensures that <<macroName>> and >> inside comment spans
     // are never tokenized as structural tokens.
-    if (this.src.startsWith('<!--', this.pos)) { this.scanHtmlComment();   return; }
-    if (this.src.startsWith('/*',   this.pos)) { this.scanBlockComment();  return; }
+    if (ch === 60 /* < */ && this.src.startsWith('<!--', this.pos)) { this.scanHtmlComment();   return; }
+    if (ch === 47 /* / */ && this.src.charCodeAt(this.pos + 1) === 42 /* * */) { this.scanBlockComment();  return; }
 
     // ---- Context-specific scanning ----------------------------------------
     if (this.inMacro()) {
       // Line comments are only meaningful inside macro args
-      if (this.src.startsWith('//', this.pos)) { this.scanLineComment(); return; }
+      if (ch === 47 /* / */ && this.src.charCodeAt(this.pos + 1) === 47 /* / */) { this.scanLineComment(); return; }
       this.scanExprToken();
       return;
     }
 
     // ---- Markup context (not inside any macro) ----------------------------
-    if (this.src.startsWith('<</', this.pos)) { this.scanMacroCloseOpen(); return; }
-    if (this.src.startsWith('<<',  this.pos)) { this.scanMacroOpen();      return; }
-    if (this.src.startsWith('[[',  this.pos)) { this.scanLink();            return; }
+    if (ch === 60 /* < */) {
+      if (this.src.charCodeAt(this.pos + 1) === 60 /* < */) {
+        if (this.src.charCodeAt(this.pos + 2) === 47 /* / */) { this.scanMacroCloseOpen(); return; }
+        this.scanMacroOpen(); return;
+      }
+    }
+    if (ch === 91 /* [ */ && this.src.charCodeAt(this.pos + 1) === 91 /* [ */) { this.scanLink(); return; }
     this.scanText();
   }
 
@@ -95,7 +101,8 @@ class Lexer {
 
     this.skipWhitespaceInExpr();
 
-    const nameMatch = this.src.slice(this.pos).match(MACRO_NAME_RE);
+    // Inline regex execution — slice only the small prefix we need
+    const nameMatch = MACRO_NAME_RE.exec(this.src.slice(this.pos, this.pos + 64));
     if (nameMatch) {
       const name = nameMatch[0]!;
       this.push(TokenType.MacroName, name, this.pos, this.pos + name.length);
@@ -123,7 +130,7 @@ class Lexer {
 
     this.skipWhitespaceInExpr();
 
-    const nameMatch = this.src.slice(this.pos).match(MACRO_NAME_RE);
+    const nameMatch = MACRO_NAME_RE.exec(this.src.slice(this.pos, this.pos + 64));
     if (nameMatch) {
       const name = nameMatch[0]!;
       this.push(TokenType.MacroName, name, this.pos, this.pos + name.length);
@@ -164,21 +171,24 @@ class Lexer {
     this.skipWhitespaceInExpr();
     if (this.pos >= this.src.length) return;
 
-    const ch = this.src[this.pos]!;
+    const ch = this.src.charCodeAt(this.pos);
 
     // Comments inside macro args — checked before the '/' operator case
-    if (this.src.startsWith('//', this.pos)) { this.scanLineComment();  return; }
-    if (this.src.startsWith('/*', this.pos)) { this.scanBlockComment(); return; }
-
-    if (ch === '"' || ch === "'" || ch === '`') { this.scanString(ch); return; }
-
-    if (ch === '$') { this.scanVar(TokenType.StoryVar); return; }
-    if (ch === '_') {
-      const next = this.src[this.pos + 1];
-      if (next && /[A-Za-z_]/.test(next)) { this.scanVar(TokenType.TempVar); return; }
+    if (ch === 47 /* / */) {
+      const next = this.src.charCodeAt(this.pos + 1);
+      if (next === 47) { this.scanLineComment();  return; }
+      if (next === 42) { this.scanBlockComment(); return; }
     }
 
-    const numMatch = this.src.slice(this.pos).match(NUMBER_RE);
+    if (ch === 34 /* " */ || ch === 39 /* ' */ || ch === 96 /* ` */) { this.scanString(String.fromCharCode(ch)); return; }
+
+    if (ch === 36 /* $ */) { this.scanVar(TokenType.StoryVar); return; }
+    if (ch === 95 /* _ */) {
+      const next = this.src.charCodeAt(this.pos + 1);
+      if (next >= 65 && next <= 90 || next >= 97 && next <= 122 || next === 95) { this.scanVar(TokenType.TempVar); return; }
+    }
+
+    const numMatch = NUMBER_RE.exec(this.src.slice(this.pos, this.pos + 32));
     if (numMatch) {
       const v = numMatch[0]!;
       this.push(TokenType.Number, v, this.pos, this.pos + v.length);
@@ -186,7 +196,7 @@ class Lexer {
       return;
     }
 
-    const idMatch = this.src.slice(this.pos).match(IDENTIFIER_RE);
+    const idMatch = IDENTIFIER_RE.exec(this.src.slice(this.pos, this.pos + 64));
     if (idMatch) {
       const v = idMatch[0]!;
       const type = SUGAR_OPS.has(v) ? TokenType.SugarOperator : TokenType.Identifier;
@@ -195,38 +205,58 @@ class Lexer {
       return;
     }
 
-    if (ch === ',') { this.push(TokenType.Comma,   ch, this.pos, this.pos + 1); this.pos++; return; }
-    if (ch === ':') { this.push(TokenType.Colon,   ch, this.pos, this.pos + 1); this.pos++; return; }
-    if (ch === '.') {
-      const next = this.src[this.pos + 1];
-      if (next && /[A-Za-z_]/.test(next)) {
-        this.push(TokenType.PropertyAccess, ch, this.pos, this.pos + 1); this.pos++; return;
+    if (ch === 44 /* , */) { this.push(TokenType.Comma,   String.fromCharCode(ch), this.pos, this.pos + 1); this.pos++; return; }
+    if (ch === 58 /* : */) { this.push(TokenType.Colon,   String.fromCharCode(ch), this.pos, this.pos + 1); this.pos++; return; }
+    if (ch === 46 /* . */) {
+      const next = this.src.charCodeAt(this.pos + 1);
+      if (next >= 65 && next <= 90 || next >= 97 && next <= 122 || next === 95) {
+        this.push(TokenType.PropertyAccess, '.', this.pos, this.pos + 1); this.pos++; return;
       }
     }
-    if (ch === '(') { this.push(TokenType.ParenOpen,    ch, this.pos, this.pos + 1); this.stack.push(Enc.Paren);   this.pos++; return; }
-    if (ch === ')') { this.push(TokenType.ParenClose,   ch, this.pos, this.pos + 1); this.popEncIf(Enc.Paren);     this.pos++; return; }
-    if (ch === '[') { this.push(TokenType.BracketOpen,  ch, this.pos, this.pos + 1); this.stack.push(Enc.Bracket); this.pos++; return; }
-    if (ch === ']') { this.push(TokenType.BracketClose, ch, this.pos, this.pos + 1); this.popEncIf(Enc.Bracket);   this.pos++; return; }
-    if (ch === '{') { this.push(TokenType.BraceOpen,    ch, this.pos, this.pos + 1); this.stack.push(Enc.Brace);   this.pos++; return; }
-    if (ch === '}') { this.push(TokenType.BraceClose,   ch, this.pos, this.pos + 1); this.popEncIf(Enc.Brace);     this.pos++; return; }
+    if (ch === 40) { this.push(TokenType.ParenOpen,    '(', this.pos, this.pos + 1); this.stack.push(Enc.Paren);   this.pos++; return; }
+    if (ch === 41) { this.push(TokenType.ParenClose,   ')', this.pos, this.pos + 1); this.popEncIf(Enc.Paren);     this.pos++; return; }
+    if (ch === 91) { this.push(TokenType.BracketOpen,  '[', this.pos, this.pos + 1); this.stack.push(Enc.Bracket); this.pos++; return; }
+    if (ch === 93) { this.push(TokenType.BracketClose, ']', this.pos, this.pos + 1); this.popEncIf(Enc.Bracket);   this.pos++; return; }
+    if (ch === 123) { this.push(TokenType.BraceOpen,    '{', this.pos, this.pos + 1); this.stack.push(Enc.Brace);   this.pos++; return; }
+    if (ch === 125) { this.push(TokenType.BraceClose,   '}', this.pos, this.pos + 1); this.popEncIf(Enc.Brace);     this.pos++; return; }
 
-    const three = this.src.slice(this.pos, this.pos + 3);
-    const two   = this.src.slice(this.pos, this.pos + 2);
-    if (['===', '!=='].includes(three)) { this.push(TokenType.Operator, three, this.pos, this.pos + 3); this.pos += 3; return; }
-    if (['==', '!=', '<=', '>=', '&&', '||', '->', '<-'].includes(two)) {
-      this.push(TokenType.Operator, two, this.pos, this.pos + 2); this.pos += 2; return;
+    // Three-char operators
+    if (ch === 61 /* = */ || ch === 33 /* ! */) {
+      const c1 = this.src.charCodeAt(this.pos + 1);
+      const c2 = this.src.charCodeAt(this.pos + 2);
+      if (c1 === 61 && c2 === 61) {
+        const op = ch === 61 ? '===' : '!=='  ;
+        this.push(TokenType.Operator, op, this.pos, this.pos + 3); this.pos += 3; return;
+      }
     }
-    if ('+-*/%=!<>?'.includes(ch)) { this.push(TokenType.Operator, ch, this.pos, this.pos + 1); this.pos++; return; }
+    // Two-char operators
+    const ch1 = this.src.charCodeAt(this.pos + 1);
+    if (ch === 61 && ch1 === 61) { this.push(TokenType.Operator, '==', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 33 && ch1 === 61) { this.push(TokenType.Operator, '!=', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 60 && ch1 === 61) { this.push(TokenType.Operator, '<=', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 62 && ch1 === 61) { this.push(TokenType.Operator, '>=', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 38 && ch1 === 38) { this.push(TokenType.Operator, '&&', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 124 && ch1 === 124) { this.push(TokenType.Operator, '||', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 45 && ch1 === 62) { this.push(TokenType.Operator, '->', this.pos, this.pos + 2); this.pos += 2; return; }
+    if (ch === 60 && ch1 === 45) { this.push(TokenType.Operator, '<-', this.pos, this.pos + 2); this.pos += 2; return; }
+    // Single-char operators
+    if (ch === 43 || ch === 45 || ch === 42 || ch === 47 || ch === 37 || ch === 61 || ch === 33 || ch === 60 || ch === 62 || ch === 63) {
+      this.push(TokenType.Operator, String.fromCharCode(ch), this.pos, this.pos + 1); this.pos++; return;
+    }
 
-    if (ch === '\n') { this.push(TokenType.Newline, ch, this.pos, this.pos + 1); this.pos++; return; }
-    if (/\s/.test(ch)) {
+    if (ch === 10 /* \n */) { this.push(TokenType.Newline, '\n', this.pos, this.pos + 1); this.pos++; return; }
+    if (ch === 9 || ch === 11 || ch === 12 || ch === 13 || ch === 32 || ch === 160) {
       const start = this.pos;
-      while (this.pos < this.src.length && /[^\S\n]/.test(this.src[this.pos]!)) this.pos++;
+      while (this.pos < this.src.length) {
+        const c = this.src.charCodeAt(this.pos);
+        if (c !== 9 && c !== 11 && c !== 12 && c !== 13 && c !== 32 && c !== 160) break;
+        this.pos++;
+      }
       this.push(TokenType.Whitespace, this.src.slice(start, this.pos), start, this.pos);
       return;
     }
 
-    this.push(TokenType.Error, ch, this.pos, this.pos + 1);
+    this.push(TokenType.Error, String.fromCharCode(ch), this.pos, this.pos + 1);
     this.pos++;
   }
 
@@ -284,11 +314,16 @@ class Lexer {
   private scanText(): void {
     const start = this.pos;
     while (this.pos < this.src.length) {
-      if (this.src.startsWith('<!--', this.pos)) break;
-      if (this.src.startsWith('/*',   this.pos)) break;  // block comment in markup
-      if (this.src.startsWith('<</',  this.pos)) break;
-      if (this.src.startsWith('<<',   this.pos)) break;
-      if (this.src.startsWith('[[',   this.pos)) break;
+      const ch = this.src.charCodeAt(this.pos);
+      // Check for structural tokens using indexOf for faster bulk skipping
+      if (ch === 60 /* < */) {
+        // Check <<, <</, <!--
+        const next = this.src.charCodeAt(this.pos + 1);
+        if (next === 60 /* < */) break; // << or <</
+        if (next === 33 /* ! */ && this.src.startsWith('<!--', this.pos)) break;
+      }
+      if (ch === 47 /* / */ && this.src.charCodeAt(this.pos + 1) === 42 /* * */) break; // block comment
+      if (ch === 91 /* [ */ && this.src.charCodeAt(this.pos + 1) === 91 /* [ */) break; // [[
       this.pos++;
     }
     if (this.pos > start) {
@@ -302,13 +337,19 @@ class Lexer {
   private scanHtmlComment(): void {
     const start = this.pos;
     const end = this.src.indexOf('-->', this.pos + 4);
-    this.pos = end === -1 ? this.src.length : end + 3;
+    if (end === -1) {
+      // Unterminated HTML comment — consume rest of file and emit error
+      this.pos = this.src.length;
+      this.push(TokenType.Error, 'unterminated HTML comment', start, this.pos);
+      return;
+    }
+    this.pos = end + 3;
     this.push(TokenType.HtmlComment, this.src.slice(start, this.pos), start, this.pos);
   }
 
   private scanLineComment(): void {
     const start = this.pos;
-    while (this.pos < this.src.length && this.src[this.pos] !== '\n') this.pos++;
+    while (this.pos < this.src.length && this.src.charCodeAt(this.pos) !== 10 /* \n */) this.pos++;
     this.push(TokenType.LineComment, this.src.slice(start, this.pos), start, this.pos);
   }
 
@@ -317,11 +358,20 @@ class Lexer {
    * Called from BOTH markup context (scanNext) and macro-args context (scanExprToken).
    * Emits a single BlockComment token — callers must not attempt to re-lex the content.
    * Any << >> [[ inside are consumed silently inside this scan.
+   *
+   * If the comment is unterminated, emits an Error token and the diagnostic
+   * will be generated by the caller that collects lexer errors.
    */
   private scanBlockComment(): void {
     const start = this.pos;
     const end = this.src.indexOf('*/', this.pos + 2);
-    this.pos = end === -1 ? this.src.length : end + 2;
+    if (end === -1) {
+      // Unterminated block comment — consume rest of file and emit error
+      this.pos = this.src.length;
+      this.push(TokenType.Error, 'unterminated block comment', start, this.pos);
+      return;
+    }
+    this.pos = end + 2;
     this.push(TokenType.BlockComment, this.src.slice(start, this.pos), start, this.pos);
   }
 
@@ -330,11 +380,12 @@ class Lexer {
   // -------------------------------------------------------------------------
   private scanString(quote: string): void {
     const start = this.pos;
+    const quoteCode = quote.charCodeAt(0);
     this.pos++;
     while (this.pos < this.src.length) {
-      const ch = this.src[this.pos]!;
-      if (ch === '\\') { this.pos += 2; continue; }
-      if (ch === quote) { this.pos++; break; }
+      const ch = this.src.charCodeAt(this.pos);
+      if (ch === 92 /* \ */) { this.pos += 2; continue; }
+      if (ch === quoteCode) { this.pos++; break; }
       this.pos++;
     }
     this.push(TokenType.String, this.src.slice(start, this.pos), start, this.pos);
@@ -346,7 +397,7 @@ class Lexer {
   private scanVar(type: TokenType.StoryVar | TokenType.TempVar): void {
     const start = this.pos;
     this.pos++;
-    const idMatch = this.src.slice(this.pos).match(IDENTIFIER_RE);
+    const idMatch = IDENTIFIER_RE.exec(this.src.slice(this.pos, this.pos + 64));
     if (idMatch) this.pos += idMatch[0]!.length;
     this.push(type, this.src.slice(start, this.pos), start, this.pos);
   }
@@ -362,7 +413,11 @@ class Lexer {
   }
 
   private skipWhitespaceInExpr(): void {
-    while (this.pos < this.src.length && /\s/.test(this.src[this.pos]!)) this.pos++;
+    while (this.pos < this.src.length) {
+      const c = this.src.charCodeAt(this.pos);
+      if (c !== 9 && c !== 10 && c !== 11 && c !== 12 && c !== 13 && c !== 32 && c !== 160) break;
+      this.pos++;
+    }
   }
 
   private popEncIf(enc: Enc): void {

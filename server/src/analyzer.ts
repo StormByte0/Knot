@@ -93,8 +93,12 @@ export class SyntaxAnalyzer {
   ): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
 
+    // Cache builtin names in a Set for O(1) lookup instead of repeated
+    // calls to symbols.isBuiltin() which does Map lookups each time.
+    const builtinNames = new Set(symbols.getBuiltins().map(b => b.name));
+
     const isMacroKnown = (name: string): boolean =>
-      Boolean(symbols.resolve(name) || workspace?.getMacroDefinition(name) || symbols.isBuiltin(name));
+      builtinNames.has(name) || Boolean(symbols.resolve(name) || workspace?.getMacroDefinition(name));
 
     const walkNodes = (nodes: MarkupNode[]): void => {
       for (const node of nodes) {

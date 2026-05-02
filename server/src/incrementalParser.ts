@@ -68,6 +68,21 @@ export class IncrementalParser {
     shiftRanges(clone as unknown as Record<string, unknown>, delta);
     return clone;
   }
+
+  /**
+   * Clear the passage-granularity cache. Called when the WorkspaceIndex
+   * needs to reclaim memory — e.g. after files are removed from the index.
+   */
+  clearCache(): void {
+    this.cache.clear();
+  }
+
+  /**
+   * Get the number of cached passages (useful for monitoring memory usage).
+   */
+  get cacheSize(): number {
+    return this.cache.size;
+  }
 }
 
 function shiftRanges(obj: Record<string, unknown>, delta: number): void {
