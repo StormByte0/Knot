@@ -1,0 +1,246 @@
+{
+  "name": "knot",
+  "displayName": "Knot Language Server",
+  "description": "Twine/SugarCube language tooling for .tw and .twee files.",
+  "version": "0.1.0",
+  "publisher": "stormbyte0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stormbyte0/knot"
+  },
+  "icon": "assets/icon.png",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./client/out/extension.js",
+  "activationEvents": [
+    "workspaceContains:**/*.tw",
+    "workspaceContains:**/*.twee"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "knot.showOutput",
+        "title": "knot: Show Language Server Output"
+      },
+      {
+        "command": "knot.restart",
+        "title": "knot: Restart Language Server"
+      },
+      {
+        "command": "knot.refreshDocuments",
+        "title": "knot: Refresh All Documents"
+      },
+      {
+        "command": "knot.goToPassage",
+        "title": "knot: Go to Passage"
+      },
+      {
+        "command": "knot.openSettings",
+        "title": "knot: Open Settings"
+      },
+      {
+        "command": "knot.verifyTweego",
+        "title": "knot: Verify Tweego Installation"
+      },
+      {
+        "command": "knot.listFormats",
+        "title": "knot: List Available Story Formats"
+      },
+      {
+        "command": "knot.build",
+        "title": "knot: Build"
+      },
+      {
+        "command": "knot.buildTest",
+        "title": "knot: Build (Test Mode)"
+      },
+      {
+        "command": "knot.startWatch",
+        "title": "knot: Start Watch Mode"
+      },
+      {
+        "command": "knot.stopWatch",
+        "title": "knot: Stop Watch Mode"
+      },
+      {
+        "command": "knot.mainMenu",
+        "title": "knot: Open Menu"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "knot.goToPassage",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorLangId == twine || resourceExtname == .tw || resourceExtname == .twee"
+      },
+      {
+        "command": "knot.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == twine || resourceExtname == .tw || resourceExtname == .twee"
+      }
+    ],
+    "languages": [
+      {
+        "id": "twine",
+        "aliases": [
+          "Twine",
+          "Twee",
+          "SugarCube 2"
+        ],
+        "extensions": [
+          ".tw",
+          ".twee"
+        ],
+        "filenames": [],
+        "filenamePatterns": [
+          "*.tw",
+          "*.twee",
+          "_*.twee",
+          "_*.tw"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "twine",
+        "scopeName": "source.twee",
+        "path": "./syntaxes/twee.tmLanguage.json"
+      },
+      {
+        "scopeName": "source.twee.embedded",
+        "path": "./syntaxes/twee-script.tmLanguage.json",
+        "injectTo": [
+          "source.twee"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.javascript": "javascript",
+          "meta.embedded.block.css": "css"
+        }
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "twine",
+        "scopes": {
+          "function": [
+            "entity.name.function.macro.twee"
+          ],
+          "class": [
+            "entity.name.section.passage.twee"
+          ],
+          "variable": [
+            "variable.other.story.twee"
+          ],
+          "operator": [
+            "keyword.operator.sugarcube.twee"
+          ],
+          "string": [
+            "string.quoted.double.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ]
+        }
+      }
+    ],
+    "configuration": {
+      "title": "knot Language Server",
+      "properties": {
+        "knot.tweego.path": {
+          "type": "string",
+          "default": "tweego",
+          "markdownDescription": "Path to the Tweego executable. Use `tweego` if it is on your PATH, or provide an absolute path. Run **knot: Verify Tweego Installation** from the command palette to test it."
+        },
+        "knot.tweego.outputFile": {
+          "type": "string",
+          "default": "dist/index.html",
+          "markdownDescription": "Output file path for the compiled HTML, relative to the workspace root."
+        },
+        "knot.tweego.formatOverride": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Story format ID to use, overriding the format declared in `StoryData`. Leave empty to use `StoryData`."
+        },
+        "knot.tweego.modulePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Module directories (`-m`): CSS, JS, and font files bundled into the compiled HTML `<head>`."
+        },
+        "knot.tweego.headFile": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "File whose contents are appended verbatim to the `<head>` of the compiled HTML (`--head`)."
+        },
+        "knot.tweego.noTrim": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Disable whitespace trimming around passage content (`--no-trim`)."
+        },
+        "knot.tweego.logFiles": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Log all processed input files to the knot output channel (`--log-files`)."
+        },
+        "knot.tweego.extraArgs": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra arguments appended verbatim to every tweego invocation (e.g. `--twee2-compat`)."
+        },
+        "knot.project.storyFormatsDirectory": {
+          "type": "string",
+          "default": ".storyformats",
+          "markdownDescription": "Folder containing story format packages. Added to `TWEEGO_PATH` automatically so tweego can find them."
+        },
+        "knot.project.include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Directories to include in indexing. Leave empty to include all `.tw`/`.twee` files in the workspace."
+        },
+        "knot.project.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Glob patterns for files and folders to exclude from indexing and compilation (e.g. `vendor/**`)."
+        }
+      }
+    }
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "build": "node client/build.js && node server/build.js",
+    "test": "npm --prefix server test",
+    "package:vsix": "node client/build.js && node server/build.js && npx @vscode/vsce package",
+    "watch:client": "node -e \"require('esbuild').context({entryPoints:['client/src/extension.ts'],bundle:true,outfile:'client/out/extension.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\"",
+    "watch:server": "node -e \"require('esbuild').context({entryPoints:['server/src/lspServer.ts'],bundle:true,outfile:'server/out/src/lspServer.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\""
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.2.2",
+    "concurrently": "^9.1.2",
+    "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "mocha": "^11.7.5"
+  }
+}

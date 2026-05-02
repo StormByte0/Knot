@@ -1,0 +1,16 @@
+{
+  "name": "twine-ls-client",
+  "version": "0.1.0",
+  "main": "out/extension.js",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.24",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.8.2"
+  }
+}

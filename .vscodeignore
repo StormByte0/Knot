@@ -1,0 +1,34 @@
+# Source TypeScript
+client/src/**
+server/src/**
+server/test/**
+
+# node_modules — everything is bundled into the output JS files
+**/node_modules/**
+
+# TypeScript config and build cache
+**/tsconfig.json
+**/*.tsbuildinfo
+
+# Type declarations (bundled, not needed at runtime)
+**/*.ts
+**/*.d.ts
+
+# Build scripts (not needed in vsix)
+client/build.js
+server/build.js
+
+# Dev tooling and docs
+.vscode/**
+.gitignore
+ARCHITECTURE*.md
+AUTHORING.md
+CHANGELIST.md
+CODING_CONVENTIONS.md
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+
+# Source maps (comment out if you want them for debugging in prod)
+**/*.js.map
