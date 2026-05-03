@@ -11,7 +11,6 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
 import { resolveTypePath, inferredTypeToString } from '../serverUtils';
 import { FormatRegistry } from '../formats/registry';
-import { PASSAGE_ARG_MACROS, LABEL_THEN_PASSAGE } from '../passageArgs';
 
 export function registerCompletionHandler(
   connection: Connection,
@@ -30,8 +29,9 @@ export function registerCompletionHandler(
       return CompletionList.create([], false);
     }
 
-    const adapter = FormatRegistry.resolve(workspace.getActiveFormatId());
+    const adapter = workspace.getActiveAdapter();
     const ctx     = { formatId: adapter.id, passageNames: workspace.getPassageNames() };
+    const passageArgMacros = adapter.getPassageArgMacros();
 
     // ── 1. Property access: $var.prop… ───────────────────────────────────────
     const propCtx = extractPropertyAccessContext(text, offset);
@@ -61,7 +61,7 @@ export function registerCompletionHandler(
 
     // ── 2. Passage name inside macro string arg ───────────────────────────────
     // e.g. <<goto "|>> or <<link "label" "|>>
-    const macroPassageCtx = extractMacroPassageArgContext(text, offset);
+    const macroPassageCtx = extractMacroPassageArgContext(text, offset, adapter);
     if (macroPassageCtx !== null) {
       return workspace.getPassageNames().map(name => ({
         label:      name,
@@ -178,7 +178,11 @@ function isOnPassageHeaderLine(text: string, offset: number): boolean {
  * passage-referencing macro, e.g. <<goto "| or <<link "label" "|
  * Returns the partial passage name typed so far, or null if not in this context.
  */
-function extractMacroPassageArgContext(text: string, offset: number): string | null {
+function extractMacroPassageArgContext(
+  text: string,
+  offset: number,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+): string | null {
   const before = text.slice(0, offset);
 
   // Build pattern: <<(macroName) ... "partial
@@ -188,7 +192,8 @@ function extractMacroPassageArgContext(text: string, offset: number): string | n
   if (!macroStartMatch) return null;
 
   const macroName = macroStartMatch[1]!;
-  if (!PASSAGE_ARG_MACROS.has(macroName)) return null;
+  const passageArgMacros = adapter.getPassageArgMacros();
+  if (!passageArgMacros.has(macroName)) return null;
 
   const afterMacroName = macroStartMatch[2]!;
 
@@ -206,13 +211,12 @@ function extractMacroPassageArgContext(text: string, offset: number): string | n
   if (!openQuoteMatch) return null;
 
   // We're in arg index = argsSoFar (0-based)
-  // For label-then-passage macros with 2+ args, passage is arg 1
+  // For label+passage macros with 2+ args, passage is arg 1
   // For single-arg macros, passage is arg 0
-  const isPassageArg = LABEL_THEN_PASSAGE.has(macroName)
-    ? argsSoFar >= 1   // second or later arg
-    : argsSoFar === 0; // first arg
+  // Use adapter to determine the passage arg index
+  const passageArgIdx = adapter.getPassageArgIndex(macroName, argsSoFar + 1);
 
-  if (!isPassageArg) return null;
+  if (argsSoFar !== passageArgIdx) return null;
 
   return openQuoteMatch[1] ?? openQuoteMatch[2] ?? '';
 }

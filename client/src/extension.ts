@@ -33,6 +33,18 @@ function readProjectConfig() {
   };
 }
 
+function readLintConfig() {
+  const cfg = vscode.workspace.getConfiguration('knot.lint');
+  return {
+    unknownPassage:     cfg.get<string>('unknownPassage', 'warning'),
+    unknownMacro:       cfg.get<string>('unknownMacro', 'warning'),
+    duplicatePassage:   cfg.get<string>('duplicatePassage', 'error'),
+    typeMismatch:       cfg.get<string>('typeMismatch', 'error'),
+    unreachablePassage: cfg.get<string>('unreachablePassage', 'warning'),
+    containerStructure: cfg.get<string>('containerStructure', 'error'),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Activate
 // ---------------------------------------------------------------------------
@@ -96,6 +108,7 @@ function startClient(): void {
     synchronize: { fileEvents: fileWatcher },
     initializationOptions: {
       exclude: readProjectConfig().exclude,
+      lint: readLintConfig(),
     },
     initializationFailedHandler: err => {
       channel?.appendLine(`[init-failed] ${String(err)}`);
@@ -206,7 +219,8 @@ function registerConfigWatcher(): void {
   configChangeDisposable = vscode.workspace.onDidChangeConfiguration(async e => {
     if (
       e.affectsConfiguration('knot.project.include') ||
-      e.affectsConfiguration('knot.project.exclude')
+      e.affectsConfiguration('knot.project.exclude') ||
+      e.affectsConfiguration('knot.lint')
     ) {
       const choice = await vscode.window.showInformationMessage(
         'knot Language Server: include/exclude settings changed. Restart to apply?',

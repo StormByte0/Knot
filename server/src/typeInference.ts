@@ -2,6 +2,7 @@ import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import { DocumentNode, ExpressionNode } from './ast';
 import { SourceRange } from './tokenTypes';
+import type { StoryFormatAdapter } from './formats/types';
 
 export interface InferredType {
   kind: 'unknown' | 'number' | 'string' | 'boolean' | 'null' | 'object' | 'array';
@@ -17,18 +18,22 @@ export interface InferenceResult {
 }
 
 export class TypeInference {
-  inferDocument(ast: DocumentNode): InferenceResult {
+  inferDocument(ast: DocumentNode, adapter?: StoryFormatAdapter): InferenceResult {
     const assignments = new Map<string, InferredType>();
     const jsGlobals   = new Map<string, { inferredType: InferredType; range: SourceRange }>();
 
-    // Analyse StoryInit first, then everything else
-    const sorted = [...ast.passages].sort((a, b) => priority(a.name) - priority(b.name));
+    // Analyse by priority — use adapter if available, else fallback
+    const sorted = [...ast.passages].sort((a, b) => {
+      const pa = adapter ? adapter.getAnalysisPriority(a.name) : priorityFallback(a.name);
+      const pb = adapter ? adapter.getAnalysisPriority(b.name) : priorityFallback(b.name);
+      return pa - pb;
+    });
 
     for (const passage of sorted) {
       // Markup passages: collect <<set>> assignments and inline <<script>> bodies
       if (Array.isArray(passage.body)) {
-        this.collectSetAssignments(passage.body, assignments);
-        this.collectInlineScriptGlobals(passage.body, jsGlobals);
+        this.collectSetAssignments(passage.body, assignments, adapter);
+        this.collectInlineScriptGlobals(passage.body, jsGlobals, adapter);
       }
 
       // Script passages (Story JavaScript or [script] tag): collect JS globals
@@ -43,19 +48,24 @@ export class TypeInference {
   private collectSetAssignments(
     nodes: import('./ast').MarkupNode[],
     assignments: Map<string, InferredType>,
+    adapter?: StoryFormatAdapter,
   ): void {
+    const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
     for (const node of nodes) {
-      if (node.type === 'macro' && node.name === 'set') {
-        const arg = node.args[0];
-        if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
-          const varName = extractVarName(arg.left);
-          if (varName && !assignments.has(varName)) {
-            assignments.set(varName, this.infer(arg.right));
+      if (node.type === 'macro') {
+        const isAssignmentMacro = varAssignmentMacros?.has(node.name) ?? node.name === 'set';
+        if (isAssignmentMacro) {
+          const arg = node.args[0];
+          if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
+            const varName = extractVarName(arg.left);
+            if (varName && !assignments.has(varName)) {
+              assignments.set(varName, this.infer(arg.right));
+            }
           }
         }
       }
       if (node.type === 'macro' && node.body) {
-        this.collectSetAssignments(node.body, assignments);
+        this.collectSetAssignments(node.body, assignments, adapter);
       }
     }
   }
@@ -64,10 +74,13 @@ export class TypeInference {
   private collectInlineScriptGlobals(
     nodes: import('./ast').MarkupNode[],
     jsGlobals: Map<string, { inferredType: InferredType; range: SourceRange }>,
+    adapter?: StoryFormatAdapter,
   ): void {
+    const inlineScriptMacros = adapter?.getInlineScriptMacros();
     for (const node of nodes) {
       if (node.type !== 'macro') continue;
-      if (node.name === 'script' && node.body) {
+      const isInlineScript = inlineScriptMacros?.has(node.name) ?? node.name === 'script';
+      if (isInlineScript && node.body) {
         // The body is MarkupNode[] containing text nodes — reconstruct source
         const src = node.body
           .filter(n => n.type === 'text')
@@ -76,7 +89,7 @@ export class TypeInference {
         const baseOff = node.body.length > 0 ? node.body[0]!.range.start : 0;
         if (src.trim()) collectJsGlobals(src, baseOff, jsGlobals);
       } else if (node.body) {
-        this.collectInlineScriptGlobals(node.body, jsGlobals);
+        this.collectInlineScriptGlobals(node.body, jsGlobals, adapter);
       }
     }
   }
@@ -177,7 +190,8 @@ function extractVarName(expr: ExpressionNode): string | null {
   return null;
 }
 
-function priority(name: string): number {
+/** Fallback priority when no adapter is available. */
+function priorityFallback(name: string): number {
   if (name === 'StoryInit')        return 0;
   if (name === 'Story JavaScript') return 1;
   return 2;

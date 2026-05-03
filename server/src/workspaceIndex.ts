@@ -4,7 +4,10 @@ import { IncrementalParser } from './incrementalParser';
 import { SymbolKind, UserSymbol, buildSymbolTable } from './symbols';
 import { TypeInference, InferredType } from './typeInference';
 import { SourceRange } from './tokenTypes';
-import { PASSAGE_ARG_MACROS, passageArgIndex, passageNameFromExpr } from './passageArgs';
+import { passageNameFromExpr } from './passageArgs';
+import { FormatRegistry } from './formats/registry';
+import type { StoryFormatAdapter } from './formats/types';
+import { DiagnosticSeverity } from 'vscode-languageserver/node';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,7 +61,27 @@ export interface IncomingLink {
   count:         number;
 }
 
-// Passage-arg macros imported from passageArgs.ts — single source of truth
+// ---------------------------------------------------------------------------
+// LintConfig — severity settings for diagnostics
+// ---------------------------------------------------------------------------
+
+export interface LintConfig {
+  unknownPassage:      DiagnosticSeverity;
+  unknownMacro:        DiagnosticSeverity;
+  duplicatePassage:    DiagnosticSeverity;
+  typeMismatch:        DiagnosticSeverity;
+  unreachablePassage:  DiagnosticSeverity;
+  containerStructure:  DiagnosticSeverity;
+}
+
+const DEFAULT_LINT_CONFIG: LintConfig = {
+  unknownPassage:     DiagnosticSeverity.Warning,
+  unknownMacro:       DiagnosticSeverity.Warning,
+  duplicatePassage:   DiagnosticSeverity.Error,
+  typeMismatch:       DiagnosticSeverity.Error,
+  unreachablePassage: DiagnosticSeverity.Warning,
+  containerStructure: DiagnosticSeverity.Error,
+};
 
 // ---------------------------------------------------------------------------
 // WorkspaceIndex
@@ -94,6 +117,7 @@ export class WorkspaceIndex {
   private fileLinkRefs        = new Map<string, LinkRef[]>();
 
   private _activeFormatId = '';
+  private _lintConfig: LintConfig = { ...DEFAULT_LINT_CONFIG };
 
   // ---- File management -----------------------------------------------------
 
@@ -170,16 +194,17 @@ export class WorkspaceIndex {
     this.parser.clearCache();
 
     const uris = this.getKnownUris();
+    const adapter = this.getActiveAdapter();
 
     // Pass 1: register definitions
     const ordered = this._scriptFirstOrder(uris);
     for (const uri of ordered) {
-      this._registerDefinitions(uri);
+      this._registerDefinitions(uri, adapter);
     }
 
     // Pass 2: extract all passage links
     for (const uri of uris) {
-      this._extractAndIndexLinks(uri);
+      this._extractAndIndexLinks(uri, adapter);
     }
 
     // Pass 3: analyze (all defs + refs now complete)
@@ -192,6 +217,12 @@ export class WorkspaceIndex {
       const dupDiags = this._buildDuplicateDiagnosticsForUri(uri, parsed.ast);
       if (dupDiags.length > 0) {
         (analysis.diagnostics as ParseDiagnostic[]).push(...dupDiags);
+      }
+
+      // Add unreachable passage diagnostics
+      const unreachableDiags = this._buildUnreachableDiagnostics(uri, parsed.ast, adapter);
+      if (unreachableDiags.length > 0) {
+        (analysis.diagnostics as ParseDiagnostic[]).push(...unreachableDiags);
       }
 
       this.analysisCache.set(uri, analysis);
@@ -209,6 +240,10 @@ export class WorkspaceIndex {
    */
   private _buildDuplicateDiagnosticsForUri(uri: string, ast: DocumentNode): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
+    const severity = this._lintConfig.duplicatePassage === DiagnosticSeverity.Error ? 'error' as const
+      : this._lintConfig.duplicatePassage === DiagnosticSeverity.Warning ? 'warning' as const
+      : 'warning' as const;
+
     for (const passage of ast.passages) {
       const allDefs = this.allPassageDefinitions.get(passage.name);
       if (!allDefs || allDefs.length < 2) continue;
@@ -232,11 +267,159 @@ export class WorkspaceIndex {
         diags.push({
           message: `Duplicate passage name "${passage.name}" — ${detail}`,
           range:   passage.nameRange,
-          severity: 'error',
+          severity,
         });
       }
     }
     return diags;
+  }
+
+  // ---- Unreachable passage diagnostics --------------------------------------
+
+  /**
+   * Return passage names that are unreachable from the start passage.
+   * Uses BFS from the start passage and marks special passages as always reachable.
+   */
+  getUnreachablePassages(): string[] {
+    const adapter = this.getActiveAdapter();
+    const startPassage = this._getStartPassageName();
+    const specialNames = adapter.getSpecialPassageNames();
+    const allNames = new Set(this.passageDefinitions.keys());
+
+    if (allNames.size === 0) return [];
+
+    // Build adjacency list from passageReferences
+    const visited = new Set<string>();
+
+    // Always mark special passages as reachable
+    for (const name of specialNames) {
+      if (allNames.has(name)) visited.add(name);
+    }
+
+    // BFS from start passage
+    if (startPassage && allNames.has(startPassage)) {
+      const queue: string[] = [startPassage];
+      visited.add(startPassage);
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        // Find all passages that current links to
+        const refs = this.passageReferences.get(current);
+        if (!refs) continue;
+
+        // Get unique targets from this passage
+        const targets = new Set<string>();
+        for (const ref of refs) {
+          // We need the target passage name - use fileLinkRefs to find it
+          // Actually, passageReferences maps target -> sources. We need source -> targets.
+          // Let's use fileLinkRefs instead
+        }
+      }
+    }
+
+    // Build forward adjacency from fileLinkRefs
+    const forwardAdj = new Map<string, Set<string>>();
+    for (const [uri, links] of this.fileLinkRefs) {
+      for (const link of links) {
+        let targets = forwardAdj.get(link.sourcePassage);
+        if (!targets) {
+          targets = new Set();
+          forwardAdj.set(link.sourcePassage, targets);
+        }
+        targets.add(link.target);
+      }
+    }
+
+    // BFS from start passage using forward adjacency
+    visited.clear();
+    // Always mark special passages as reachable
+    for (const name of specialNames) {
+      if (allNames.has(name)) visited.add(name);
+    }
+
+    if (startPassage && allNames.has(startPassage)) {
+      const queue: string[] = [startPassage];
+      visited.add(startPassage);
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        const targets = forwardAdj.get(current);
+        if (!targets) continue;
+        for (const target of targets) {
+          if (!visited.has(target) && allNames.has(target)) {
+            visited.add(target);
+            queue.push(target);
+          }
+        }
+      }
+    }
+
+    // Also add system passages that are always reachable (from adapter)
+    const systemNames = adapter.getSystemPassageNames();
+    for (const name of allNames) {
+      if (systemNames.has(name)) {
+        visited.add(name);
+      }
+    }
+
+    const unreachable: string[] = [];
+    for (const name of allNames) {
+      if (!visited.has(name)) unreachable.push(name);
+    }
+    return unreachable;
+  }
+
+  private _buildUnreachableDiagnostics(uri: string, ast: DocumentNode, adapter: StoryFormatAdapter): ParseDiagnostic[] {
+    const diags: ParseDiagnostic[] = [];
+    const unreachable = new Set(this.getUnreachablePassages());
+    if (unreachable.size === 0) return diags;
+
+    const severity = this._lintConfig.unreachablePassage === DiagnosticSeverity.Error ? 'error' as const
+      : this._lintConfig.unreachablePassage === DiagnosticSeverity.Warning ? 'warning' as const
+      : 'warning' as const;
+
+    for (const passage of ast.passages) {
+      if (unreachable.has(passage.name)) {
+        diags.push({
+          message: `Passage "${passage.name}" is unreachable — no links or macros navigate to it`,
+          range:   passage.nameRange,
+          severity,
+        });
+      }
+    }
+    return diags;
+  }
+
+  /** Get the start passage name from StoryData. */
+  private _getStartPassageName(): string | null {
+    // Look through all parsed files for StoryData
+    for (const [, parsed] of this.parseCache) {
+      const storyDataPassage = parsed.ast.passages.find(p => p.name === 'StoryData');
+      if (!storyDataPassage) continue;
+
+      // Parse the body to find "start" field
+      let source = '';
+      if (!Array.isArray(storyDataPassage.body)) {
+        source = 'source' in storyDataPassage.body ? storyDataPassage.body.source : '';
+      } else {
+        for (const node of storyDataPassage.body) {
+          if (node.type === 'text') source += node.value;
+        }
+      }
+
+      source = source.trim();
+      if (!source) continue;
+
+      try {
+        const parsed = JSON.parse(source);
+        if (parsed && typeof parsed === 'object' && typeof parsed.start === 'string') {
+          return parsed.start;
+        }
+      } catch {
+        // Ignore malformed JSON
+      }
+    }
+    return null;
   }
 
   // ---- Accessors -----------------------------------------------------------
@@ -312,14 +495,28 @@ export class WorkspaceIndex {
   setActiveFormatId(id: string): void { this._activeFormatId = id; }
   getActiveFormatId(): string         { return this._activeFormatId; }
 
+  getActiveAdapter(): StoryFormatAdapter {
+    // Default to sugarcube-2 when no format is explicitly set.
+    // This ensures SugarCube features work before StoryData is parsed.
+    return FormatRegistry.resolve(this._activeFormatId || 'sugarcube-2');
+  }
+
+  setLintConfig(config: Partial<LintConfig>): void {
+    this._lintConfig = { ...this._lintConfig, ...config };
+  }
+
+  getLintConfig(): LintConfig {
+    return this._lintConfig;
+  }
+
   // ---- Private: Pass 1 — definition registration --------------------------
 
-  private _registerDefinitions(uri: string): void {
+  private _registerDefinitions(uri: string, adapter: StoryFormatAdapter): void {
     const parsed = this.parseCache.get(uri);
     if (!parsed) return;
 
-    const symbols    = buildSymbolTable(parsed.ast, uri);
-    const typeResult = this.typer.inferDocument(parsed.ast);
+    const symbols    = buildSymbolTable(parsed.ast, uri, adapter);
+    const typeResult = this.typer.inferDocument(parsed.ast, adapter);
 
     // Passages — track ALL definitions for duplicate detection
     for (const sym of symbols.table.getUserSymbols()) {
@@ -373,11 +570,12 @@ export class WorkspaceIndex {
 
   // ---- Private: Pass 2 — link extraction ----------------------------------
 
-  private _extractAndIndexLinks(uri: string): void {
+  private _extractAndIndexLinks(uri: string, adapter: StoryFormatAdapter): void {
     const parsed = this.parseCache.get(uri);
     if (!parsed) return;
 
     const links: LinkRef[] = [];
+    const passageArgMacros = adapter.getPassageArgMacros();
 
     for (const passage of parsed.ast.passages) {
       if (!Array.isArray(passage.body)) continue;
@@ -388,8 +586,9 @@ export class WorkspaceIndex {
           if (node.type === 'link') {
             links.push({ target: node.target, range: node.range, sourcePassage: src });
           } else if (node.type === 'macro') {
-            if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-              const arg    = node.args[passageArgIndex(node.name, node.args.length)];
+            if (passageArgMacros.has(node.name) && node.args.length > 0) {
+              const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
+              const arg    = node.args[idx];
               const target = arg ? passageNameFromExpr(arg) : null;
               if (target && arg) links.push({ target, range: arg.range, sourcePassage: src });
             }
@@ -479,11 +678,14 @@ export class WorkspaceIndex {
   }
 
   private _scriptFirstOrder(uris: string[]): string[] {
+    const adapter = this.getActiveAdapter();
     return [...uris].sort((a, b) => {
-      const aS = this.parseCache.get(a)?.ast.passages.some(p => p.kind === 'script') ?? false;
-      const bS = this.parseCache.get(b)?.ast.passages.some(p => p.kind === 'script') ?? false;
-      if (aS && !bS) return -1;
-      if (!aS && bS) return  1;
+      const aAst = this.parseCache.get(a)?.ast;
+      const bAst = this.parseCache.get(b)?.ast;
+      // Sort by analysis priority of first passage
+      const aPriority = aAst ? Math.min(...aAst.passages.map(p => adapter.getAnalysisPriority(p.name))) : 100;
+      const bPriority = bAst ? Math.min(...bAst.passages.map(p => adapter.getAnalysisPriority(p.name))) : 100;
+      if (aPriority !== bPriority) return aPriority - bPriority;
       return a.localeCompare(b);
     });
   }

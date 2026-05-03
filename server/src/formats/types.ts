@@ -111,4 +111,52 @@ export interface StoryFormatAdapter {
    * Return empty string if format has no virtual runtime.
    */
   getVirtualRuntimePrelude(): string;
+
+  // ── Passage-arg macros ─────────────────────────────────────────────────────
+
+  /** Names of macros whose arguments include a passage-name reference. */
+  getPassageArgMacros(): ReadonlySet<string>;
+
+  /** Given a macro name and argument count, return the index of the passage-name arg. */
+  getPassageArgIndex(macroName: string, argCount: number): number;
+
+  // ── Builtins ───────────────────────────────────────────────────────────────
+
+  /** Builtin macro definitions for this format. */
+  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }>;
+
+  /** Builtin global definitions for this format. */
+  getBuiltinGlobals(): ReadonlyArray<{ name: string; description: string }>;
+
+  // ── Special passages ───────────────────────────────────────────────────────
+
+  /** Names of special/lifecycle passages. */
+  getSpecialPassageNames(): ReadonlySet<string>;
+
+  /** Whether a passage name indicates a special passage (lifecycle, system). */
+  isSpecialPassage(name: string): boolean;
+
+  /** Names of system passages that are always reachable (e.g. StoryData, Story JavaScript). */
+  getSystemPassageNames(): ReadonlySet<string>;
+
+  // ── Macro categories ───────────────────────────────────────────────────────
+
+  /** Names of macros that assign story variables (e.g. 'set' in SugarCube). */
+  getVariableAssignmentMacros(): ReadonlySet<string>;
+
+  /** Names of macros that define reusable custom macros (e.g. 'widget' in SugarCube). */
+  getMacroDefinitionMacros(): ReadonlySet<string>;
+
+  /** Names of macros that contain inline script bodies (e.g. 'script' in SugarCube). */
+  getInlineScriptMacros(): ReadonlySet<string>;
+
+  // ── Analysis ordering ──────────────────────────────────────────────────────
+
+  /** Priority for analysis ordering — lower runs first. Return 0 for highest priority. */
+  getAnalysisPriority(passageName: string): number;
+
+  // ── Structural constraints ─────────────────────────────────────────────────
+
+  /** Map from macro name to the valid parent macro names it requires. */
+  getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>>;
 }

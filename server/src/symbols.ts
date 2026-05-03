@@ -2,8 +2,7 @@ import * as acorn from 'acorn';
 import * as walk from 'acorn-walk';
 import { DocumentNode, ExpressionNode, MacroNode, MarkupNode } from './ast';
 import { SourceRange } from './tokenTypes'; 
-import { BUILTINS as knot_BUILTINS, BUILTIN_GLOBALS as knot_GLOBALS } from './formats/sugarcube/macros';
-
+import type { StoryFormatAdapter } from './formats/types';
 
 export enum SymbolKind {
   Passage = 'Passage',
@@ -44,22 +43,6 @@ export interface SymbolBuildResult {
   unresolvedPassageLinks: Array<{ target: string; uri: string; range: SourceRange }>;
 }
 
-// Macros whose arguments include a passage name target
-const PASSAGE_ARG_MACROS = new Set([
-  'link', 'button', 'linkappend', 'linkprepend', 'linkreplace',
-  'include', 'display', 'goto', 'actions', 'click',
-]);
-
-// For these macros: 1 arg => arg[0] is passage; 2 args => arg[0] label, arg[1] passage
-const LABEL_THEN_PASSAGE = new Set([
-  'link', 'button', 'click', 'linkappend', 'linkprepend', 'linkreplace',
-]);
-
-function passageArgIndex(macroName: string, argCount: number): number {
-  if (LABEL_THEN_PASSAGE.has(macroName)) return argCount >= 2 ? 1 : 0;
-  return 0;
-}
-
 function extractPassageNameArg(expr: ExpressionNode): string | null {
   if (expr.type === 'literal' && expr.kind === 'string') return String(expr.value);
   return null;
@@ -70,7 +53,7 @@ export class SymbolTable {
   private userByKey  = new Map<string, UserSymbol>();
   private userByName = new Map<string, UserSymbol[]>();
 
-  constructor() { this.seedBuiltins(); }
+  constructor(adapter?: StoryFormatAdapter) { this.seedBuiltins(adapter); }
 
   resolve(name: string): AnySymbol | undefined {
     return this.userByName.get(name)?.[0] ?? this.builtins.get(name);
@@ -112,15 +95,16 @@ export class SymbolTable {
   getBuiltins(): BuiltinSymbol[] { return [...this.builtins.values()]; }
   getUserSymbols(): UserSymbol[] { return [...this.userByKey.values()]; }
 
-  private seedBuiltins(): void {
-    // Single canonical source: formats/sugarcube/macros.ts
-    for (const m of knot_BUILTINS) {
+  private seedBuiltins(adapter?: StoryFormatAdapter): void {
+    if (!adapter) return;
+    // Seed from adapter — no direct import from formats/sugarcube/macros
+    for (const m of adapter.getBuiltinMacros()) {
       this.builtins.set(m.name, {
         tier: 'builtin', kind: SymbolKind.Macro,
         name: m.name, description: m.description, hasBody: m.hasBody ?? false,
       });
     }
-    for (const g of knot_GLOBALS) {
+    for (const g of adapter.getBuiltinGlobals()) {
       this.builtins.set(g.name, {
         tier: 'builtin', kind: SymbolKind.RuntimeGlobal,
         name: g.name, description: g.description,
@@ -129,8 +113,8 @@ export class SymbolTable {
   }
 }
 
-export function buildSymbolTable(ast: DocumentNode, uri: string): SymbolBuildResult {
-  const table = new SymbolTable();
+export function buildSymbolTable(ast: DocumentNode, uri: string, adapter?: StoryFormatAdapter): SymbolBuildResult {
+  const table = new SymbolTable(adapter);
   const unresolvedPassageLinks: Array<{ target: string; uri: string; range: SourceRange }> = [];
 
   for (const passage of ast.passages) {
@@ -139,7 +123,7 @@ export function buildSymbolTable(ast: DocumentNode, uri: string): SymbolBuildRes
 
   for (const passage of ast.passages) {
     if (Array.isArray(passage.body)) {
-      collectMarkupSymbols(passage.body, uri, table, unresolvedPassageLinks);
+      collectMarkupSymbols(passage.body, uri, table, unresolvedPassageLinks, adapter);
       collectInlineScriptSymbols(passage.body, uri, table);
     } else if (passage.body.type === 'scriptBody') {
       collectScriptSymbols(passage.body.source, passage.body.range.start, uri, table);
@@ -154,6 +138,7 @@ function collectMarkupSymbols(
   uri: string,
   table: SymbolTable,
   unresolved: Array<{ target: string; uri: string; range: SourceRange }>,
+  adapter?: StoryFormatAdapter,
 ): void {
   for (const node of nodes) {
     if (node.type === 'link') {
@@ -167,8 +152,8 @@ function collectMarkupSymbols(
     }
 
     if (node.type === 'macro') {
-      collectMacroSymbols(node, uri, table, unresolved);
-      if (node.body) collectMarkupSymbols(node.body, uri, table, unresolved);
+      collectMacroSymbols(node, uri, table, unresolved, adapter);
+      if (node.body) collectMarkupSymbols(node.body, uri, table, unresolved, adapter);
     }
   }
 }
@@ -178,10 +163,13 @@ function collectMacroSymbols(
   uri: string,
   table: SymbolTable,
   unresolved: Array<{ target: string; uri: string; range: SourceRange }>,
+  adapter?: StoryFormatAdapter,
 ): void {
   table.addReference(SymbolKind.Macro, node.name, { uri, range: node.nameRange });
 
-  if (node.name === 'set') {
+  // Use adapter for variable assignment macros
+  const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
+  if (varAssignmentMacros?.has(node.name)) {
     const arg = node.args[0];
     if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
       const varName = extractStoryVarName(arg.left);
@@ -189,7 +177,9 @@ function collectMacroSymbols(
     }
   }
 
-  if (node.name === 'widget') {
+  // Use adapter for macro definition macros
+  const macroDefMacros = adapter?.getMacroDefinitionMacros();
+  if (macroDefMacros?.has(node.name)) {
     const arg = node.args[0];
     if (arg?.type === 'literal' && arg.kind === 'string') {
       table.addUserSymbol(SymbolKind.Widget, String(arg.value), uri, arg.range);
@@ -198,9 +188,10 @@ function collectMacroSymbols(
     }
   }
 
-  // Track passage references from link/include/goto/etc. macro args
-  if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-    const idx = passageArgIndex(node.name, node.args.length);
+  // Track passage references from link/include/goto/etc. macro args — use adapter
+  const passageArgMacros = adapter?.getPassageArgMacros();
+  if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+    const idx = adapter?.getPassageArgIndex(node.name, node.args.length) ?? 0;
     const arg = node.args[idx];
     if (arg) {
       const passageName = extractPassageNameArg(arg);
@@ -237,6 +228,8 @@ function collectScriptSymbols(source: string, baseOffset: number, uri: string, t
 }
 
 function collectInlineScriptSymbols(nodes: MarkupNode[], uri: string, table: SymbolTable): void {
+  // Get inline script macro names from the adapter - but we don't have it here
+  // Fall back to checking 'script' which is the only one in SugarCube
   for (const node of nodes) {
     if (node.type === 'macro' && node.name === 'script' && node.body) {
       const src = node.body.filter(n => n.type === 'text').map(n => (n as any).value).join('');

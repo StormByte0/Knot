@@ -10,7 +10,7 @@ import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
 import { offsetToPosition, getFileText, normalizeUri } from '../serverUtils';
-import { PASSAGE_ARG_MACROS, passageArgIndex } from '../passageArgs';
+import { passageNameFromExpr } from '../passageArgs';
 import type { ExpressionNode, MarkupNode } from '../ast';
 
 // ---------------------------------------------------------------------------
@@ -30,6 +30,11 @@ export function registerRenameHandlers(
     const ast     = cached?.ast;
     if (!ast) return null;
 
+    const adapter = workspace.getActiveAdapter();
+    const passageArgMacros = adapter.getPassageArgMacros();
+    const macroDefMacros = adapter.getMacroDefinitionMacros();
+
+    // ── Passage name in header ──────────────────────────────────────────────
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
         return Range.create(
@@ -38,11 +43,30 @@ export function registerRenameHandlers(
         );
       }
     }
+
+    // ── Walk body nodes ────────────────────────────────────────────────────
     for (const passage of ast.passages) {
       if (!Array.isArray(passage.body)) continue;
-      const found = findRenameRangeInNodes(passage.body, offset, doc);
+      const found = findRenameTargetInNodes(passage.body, offset, doc, adapter, passageArgMacros, macroDefMacros, workspace);
       if (found) return found;
     }
+
+    // ── Variable rename ($varName) ─────────────────────────────────────────
+    const text = doc.getText();
+    const word = text.slice(Math.max(0, offset - 100), offset).match(/\$([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (word) {
+      const varName = word[1]!;
+      const varDef = workspace.getVariableDefinition(varName);
+      if (varDef) {
+        // Find the exact range of the variable at cursor
+        const varStart = offset - varName.length;
+        return Range.create(
+          doc.positionAt(varStart),
+          doc.positionAt(offset),
+        );
+      }
+    }
+
     return null;
   });
 
@@ -56,40 +80,73 @@ export function registerRenameHandlers(
     const ast     = cached?.ast;
     if (!ast) return null;
 
-    let passageName: string | null = null;
+    const adapter = workspace.getActiveAdapter();
+    const passageArgMacros = adapter.getPassageArgMacros();
+    const macroDefMacros = adapter.getMacroDefinitionMacros();
 
+    // ── Determine rename kind ──────────────────────────────────────────────
+
+    // 1. Passage name in header
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
-        passageName = passage.name;
-        break;
+        return buildPassageRename(passage.name, params.newName, workspace, documents, adapter, passageArgMacros);
       }
     }
 
-    if (!passageName) {
-      for (const passage of ast.passages) {
-        if (!Array.isArray(passage.body)) continue;
-        passageName = findPassageNameAtOffset(passage.body, offset);
-        if (passageName) break;
+    // 2. Walk body for passage link/macro arg, variable, or widget
+    for (const passage of ast.passages) {
+      if (!Array.isArray(passage.body)) continue;
+
+      // Check for passage link/macro arg
+      const passageName = findPassageNameAtOffset(passage.body, offset, adapter, passageArgMacros);
+      if (passageName) {
+        return buildPassageRename(passageName, params.newName, workspace, documents, adapter, passageArgMacros);
+      }
+
+      // Check for widget name
+      const widgetInfo = findWidgetNameAtOffset(passage.body, offset, macroDefMacros);
+      if (widgetInfo) {
+        return buildWidgetRename(widgetInfo.name, params.newName, workspace, documents);
       }
     }
 
-    if (!passageName) return null;
-
-    const changes: Record<string, TextEdit[]> = {};
-
-    addPassageDeclarationEdits(passageName, params.newName, changes, workspace, documents);
-
-    for (const uri of workspace.getCachedUris()) {
-      addPassageReferenceEdits(uri, passageName, params.newName, changes, documents, workspace);
+    // 3. Variable rename
+    const text = doc.getText();
+    const word = text.slice(Math.max(0, offset - 100), offset).match(/\$([A-Za-z_][A-Za-z0-9_]*)$/);
+    if (word) {
+      const varName = word[1]!;
+      const varDef = workspace.getVariableDefinition(varName);
+      if (varDef) {
+        return buildVariableRename(varName, params.newName, workspace, documents);
+      }
     }
 
-    return { changes };
+    return null;
   });
 }
 
 // ---------------------------------------------------------------------------
-// Rename the :: PassageName header
+// Passage rename
 // ---------------------------------------------------------------------------
+
+function buildPassageRename(
+  oldName: string,
+  newName: string,
+  workspace: WorkspaceIndex,
+  documents: TextDocuments<TextDocument>,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
+): WorkspaceEdit {
+  const changes: Record<string, TextEdit[]> = {};
+
+  addPassageDeclarationEdits(oldName, newName, changes, workspace, documents);
+
+  for (const uri of workspace.getCachedUris()) {
+    addPassageReferenceEdits(uri, oldName, newName, changes, documents, workspace, adapter, passageArgMacros);
+  }
+
+  return { changes };
+}
 
 function addPassageDeclarationEdits(
   oldName: string,
@@ -121,12 +178,6 @@ function addPassageDeclarationEdits(
   if (edits.length) changes[def.uri] = edits;
 }
 
-// ---------------------------------------------------------------------------
-// Rename all passage references in one file:
-//   [[OldName]], [[label|OldName]], [[OldName->label]]
-//   <<link "label" "OldName">>, <<goto "OldName">>, <<include "OldName">>, …
-// ---------------------------------------------------------------------------
-
 function addPassageReferenceEdits(
   uri: string,
   oldName: string,
@@ -134,6 +185,8 @@ function addPassageReferenceEdits(
   changes: Record<string, TextEdit[]>,
   documents: TextDocuments<TextDocument>,
   workspace: WorkspaceIndex,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
 ): void {
   const fileText = getFileText(uri, documents);
   if (!fileText) return;
@@ -145,7 +198,7 @@ function addPassageReferenceEdits(
 
   for (const p of ast.passages) {
     if (!Array.isArray(p.body)) continue;
-    collectRenameEdits(p.body, oldName, newName, fileText, edits);
+    collectRenameEdits(p.body, oldName, newName, fileText, edits, adapter, passageArgMacros);
   }
 
   if (edits.length) changes[uri] = edits;
@@ -157,6 +210,8 @@ function collectRenameEdits(
   newName: string,
   fileText: string,
   edits: TextEdit[],
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
 ): void {
   for (const node of nodes) {
     // [[OldName]] and variants
@@ -172,8 +227,8 @@ function collectRenameEdits(
 
     if (node.type === 'macro') {
       // <<goto "OldName">>, <<link "label" "OldName">>, etc.
-      if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-        const idx = passageArgIndex(node.name, node.args.length);
+      if (passageArgMacros.has(node.name) && node.args.length > 0) {
+        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && isPassageLiteral(arg, oldName)) {
           // arg.range spans the whole quoted string including the quote chars,
@@ -190,11 +245,111 @@ function collectRenameEdits(
 
       // Recurse into body for nested constructs
       if (node.body) {
-        collectRenameEdits(node.body, oldName, newName, fileText, edits);
+        collectRenameEdits(node.body, oldName, newName, fileText, edits, adapter, passageArgMacros);
       }
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Variable rename
+// ---------------------------------------------------------------------------
+
+function buildVariableRename(
+  oldName: string,
+  newName: string,
+  workspace: WorkspaceIndex,
+  documents: TextDocuments<TextDocument>,
+): WorkspaceEdit {
+  const changes: Record<string, TextEdit[]> = {};
+
+  // Rename the definition site
+  const varDef = workspace.getVariableDefinition(oldName);
+  if (varDef) {
+    const fileText = getFileText(varDef.uri, documents);
+    if (fileText) {
+      const edits: TextEdit[] = changes[varDef.uri] ?? [];
+      edits.push(TextEdit.replace(
+        Range.create(
+          offsetToPosition(fileText, varDef.range.start),
+          offsetToPosition(fileText, varDef.range.end),
+        ),
+        newName,
+      ));
+      if (edits.length) changes[varDef.uri] = edits;
+    }
+  }
+
+  // Rename all references
+  const refs = workspace.getVariableReferences(oldName);
+  for (const ref of refs) {
+    const fileText = getFileText(ref.uri, documents);
+    if (!fileText) continue;
+    const edits: TextEdit[] = changes[ref.uri] ?? [];
+    edits.push(TextEdit.replace(
+      Range.create(
+        offsetToPosition(fileText, ref.range.start),
+        offsetToPosition(fileText, ref.range.end),
+      ),
+      newName,
+    ));
+    if (edits.length) changes[ref.uri] = edits;
+  }
+
+  return { changes };
+}
+
+// ---------------------------------------------------------------------------
+// Widget rename
+// ---------------------------------------------------------------------------
+
+function buildWidgetRename(
+  oldName: string,
+  newName: string,
+  workspace: WorkspaceIndex,
+  documents: TextDocuments<TextDocument>,
+): WorkspaceEdit {
+  const changes: Record<string, TextEdit[]> = {};
+
+  // Rename the definition site
+  const macroDef = workspace.getMacroDefinition(oldName);
+  if (macroDef) {
+    const fileText = getFileText(macroDef.uri, documents);
+    if (fileText) {
+      const edits: TextEdit[] = changes[macroDef.uri] ?? [];
+      edits.push(TextEdit.replace(
+        Range.create(
+          offsetToPosition(fileText, macroDef.range.start),
+          offsetToPosition(fileText, macroDef.range.end),
+        ),
+        newName,
+      ));
+      if (edits.length) changes[macroDef.uri] = edits;
+    }
+  }
+
+  // Rename all call sites
+  const callSites = workspace.getMacroCallSites(oldName);
+  for (const site of callSites) {
+    const fileText = getFileText(site.uri, documents);
+    if (!fileText) continue;
+    const edits: TextEdit[] = changes[site.uri] ?? [];
+    edits.push(TextEdit.replace(
+      Range.create(
+        offsetToPosition(fileText, site.range.start),
+        offsetToPosition(fileText, site.range.end),
+      ),
+      newName,
+    ));
+    if (edits.length) changes[site.uri] = edits;
+  }
+
+  return { changes };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function isPassageLiteral(expr: ExpressionNode, name: string): boolean {
   return expr.type === 'literal' && expr.kind === 'string' && expr.value === name;
@@ -204,12 +359,19 @@ function isPassageLiteral(expr: ExpressionNode, name: string): boolean {
 // Prepare-rename: find the renameable range at cursor
 // ---------------------------------------------------------------------------
 
-function findRenameRangeInNodes(
+type RenameTarget = { kind: 'passage'; range: Range } | { kind: 'variable'; range: Range } | { kind: 'widget'; range: Range };
+
+function findRenameTargetInNodes(
   nodes: MarkupNode[],
   offset: number,
   doc: TextDocument,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
+  macroDefMacros: ReadonlySet<string>,
+  workspace: WorkspaceIndex,
 ): Range | null {
   for (const node of nodes) {
+    // [[Target]]
     if (node.type === 'link' && offset >= node.range.start && offset <= node.range.end) {
       return Range.create(
         doc.positionAt(node.targetRange.start),
@@ -218,8 +380,9 @@ function findRenameRangeInNodes(
     }
 
     if (node.type === 'macro') {
-      if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-        const idx = passageArgIndex(node.name, node.args.length);
+      // Passage arg in macro
+      if (passageArgMacros.has(node.name) && node.args.length > 0) {
+        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           // Highlight inside the quotes only
@@ -230,8 +393,33 @@ function findRenameRangeInNodes(
         }
       }
 
+      // Widget name in definition macro (<<widget "name">>)
+      if (macroDefMacros.has(node.name) && node.args.length > 0) {
+        const arg = node.args[0];
+        if (arg && offset >= arg.range.start && offset <= arg.range.end) {
+          if (arg.type === 'literal' && arg.kind === 'string') {
+            // Inside the string literal
+            return Range.create(
+              doc.positionAt(arg.range.start + 1),
+              doc.positionAt(arg.range.end - 1),
+            );
+          }
+        }
+      }
+
+      // Widget/macro call site name
+      if (offset >= node.nameRange.start && offset <= node.nameRange.end) {
+        const macroDef = workspace.getMacroDefinition(node.name);
+        if (macroDef) {
+          return Range.create(
+            doc.positionAt(node.nameRange.start),
+            doc.positionAt(node.nameRange.end),
+          );
+        }
+      }
+
       if (node.body) {
-        const found = findRenameRangeInNodes(node.body, offset, doc);
+        const found = findRenameTargetInNodes(node.body, offset, doc, adapter, passageArgMacros, macroDefMacros, workspace);
         if (found) return found;
       }
     }
@@ -243,15 +431,20 @@ function findRenameRangeInNodes(
 // Rename request: extract the passage name at cursor
 // ---------------------------------------------------------------------------
 
-function findPassageNameAtOffset(nodes: MarkupNode[], offset: number): string | null {
+function findPassageNameAtOffset(
+  nodes: MarkupNode[],
+  offset: number,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
+): string | null {
   for (const node of nodes) {
     if (node.type === 'link' && offset >= node.range.start && offset <= node.range.end) {
       return node.target;
     }
 
     if (node.type === 'macro') {
-      if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-        const idx = passageArgIndex(node.name, node.args.length);
+      if (passageArgMacros.has(node.name) && node.args.length > 0) {
+        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           if (arg.type === 'literal' && arg.kind === 'string') {
@@ -261,9 +454,32 @@ function findPassageNameAtOffset(nodes: MarkupNode[], offset: number): string | 
       }
 
       if (node.body) {
-        const found = findPassageNameAtOffset(node.body, offset);
+        const found = findPassageNameAtOffset(node.body, offset, adapter, passageArgMacros);
         if (found) return found;
       }
+    }
+  }
+  return null;
+}
+
+function findWidgetNameAtOffset(
+  nodes: MarkupNode[],
+  offset: number,
+  macroDefMacros: ReadonlySet<string>,
+): { name: string } | null {
+  for (const node of nodes) {
+    if (node.type === 'macro' && macroDefMacros.has(node.name) && node.args.length > 0) {
+      const arg = node.args[0];
+      if (arg && offset >= arg.range.start && offset <= arg.range.end) {
+        if (arg.type === 'literal' && arg.kind === 'string') {
+          return { name: String(arg.value) };
+        }
+      }
+    }
+
+    if (node.type === 'macro' && node.body) {
+      const found = findWidgetNameAtOffset(node.body, offset, macroDefMacros);
+      if (found) return found;
     }
   }
   return null;
