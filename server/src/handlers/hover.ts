@@ -17,6 +17,7 @@ import {
 import type { DocumentNode, ExpressionNode, MarkupNode } from '../ast';
 import type { SourceRange } from '../tokenTypes';
 import { FormatRegistry } from '../formats/registry';
+import { walkMarkup, walkExpression } from '../visitors';
 
 export function registerHoverHandler(
   connection: Connection,
@@ -123,9 +124,10 @@ function buildHoverContent(
   if (tokenType === 'variable') {
     const sigil     = rawName[0] ?? '';
     const sigilDesc = adapter.describeVariableSigil(sigil);
+    const sigilInfo = adapter.getVariableSigils().find(s => s.sigil === sigil);
 
-    if (sigil === '$') {
-      const varName = rawName.slice(1);
+    if (sigilInfo?.variableType === 'story') {
+      const varName = rawName.slice(sigil.length);
       const def = workspace.getVariableDefinition(varName);
       if (def) {
         const passage   = def.passageName ? `\`${def.passageName}\`` : `\`${path.basename(def.uri)}\``;
@@ -135,14 +137,14 @@ function buildHoverContent(
           ? `\n\n*Referenced ${refs.length} time${refs.length === 1 ? '' : 's'} across ${fileCount} file${fileCount === 1 ? '' : 's'}*`
           : '';
         const sigilNote = sigilDesc ? `\n\n*${sigilDesc}*` : '';
-        return `**StoryVar** \`$${varName}\`${sigilNote}\n\n*Defined in* ${passage}${refLine}` +
+        return `**StoryVar** \`${sigil}${varName}\`${sigilNote}\n\n*Defined in* ${passage}${refLine}` +
           (def.inferredType ? buildTypeSection(def.inferredType) : '');
       }
       const sigilNote = sigilDesc ? `\n\n*${sigilDesc}*` : '';
-      return `**StoryVar** \`$${varName}\`${sigilNote}`;
+      return `**StoryVar** \`${sigil}${varName}\`${sigilNote}`;
     }
 
-    if (sigil === '_') {
+    if (sigilInfo?.variableType === 'temporary') {
       const tempDesc = sigilDesc ?? 'Temporary variable (passage-scoped)';
       return `**TempVar** \`${rawName}\`\n\n*${tempDesc}*`;
     }
@@ -210,18 +212,21 @@ function searchNodesForPath(
   offset: number,
   workspace: WorkspaceIndex,
 ): { content: string; start: number; end: number } | null {
-  for (const node of nodes) {
-    if (node.type !== 'macro') continue;
-    for (const arg of node.args) {
-      const r = searchExprForPath(arg, offset, workspace);
-      if (r) return r;
-    }
-    if (node.body) {
-      const r = searchNodesForPath(node.body, offset, workspace);
-      if (r) return r;
-    }
-  }
-  return null;
+  let result: { content: string; start: number; end: number } | null = null;
+
+  walkMarkup(nodes, {
+    onMacro(node) {
+      for (const arg of node.args) {
+        const r = searchExprForPath(arg, offset, workspace);
+        if (r) {
+          result = r;
+          return false; // early termination
+        }
+      }
+    },
+  });
+
+  return result;
 }
 
 type PropertyChain = { root: string; path: Array<{ key: string; range: SourceRange }> };

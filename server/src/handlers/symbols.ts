@@ -14,6 +14,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
 import { uriToPath, offsetToPosition, normalizeUri, getFileText } from '../serverUtils';
 import type { ExpressionNode, StoryVarNode, MarkupNode } from '../ast';
+import { walkMarkup } from '../visitors';
 
 export function registerSymbolHandlers(
   connection: Connection,
@@ -31,13 +32,19 @@ export function registerSymbolHandlers(
     const ast     = cached?.ast;
     if (!ast || !ast.passages.length) return [];
 
+    const adapter = workspace.getActiveAdapter();
+    const varAssignmentMacros = adapter.getVariableAssignmentMacros();
+    const macroDefMacros = adapter.getMacroDefinitionMacros();
+
     const results: DocumentSymbol[] = [];
     for (const passage of ast.passages) {
       // Guard: passage name must be non-empty for VS Code to accept the symbol
       if (!passage.name) continue;
 
       const children: DocumentSymbol[] = [];
-      if (Array.isArray(passage.body)) collectDocSymbols(passage.body, doc, children);
+      if (Array.isArray(passage.body)) {
+        collectDocSymbols(passage.body, doc, children, varAssignmentMacros, macroDefMacros, adapter);
+      }
 
       results.push({
         name: passage.name,
@@ -121,44 +128,49 @@ export function registerSymbolHandlers(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function collectDocSymbols(nodes: MarkupNode[], doc: TextDocument, out: DocumentSymbol[]): void {
-  for (const node of nodes) {
-    if (node.type !== 'macro') continue;
+function collectDocSymbols(
+  nodes: MarkupNode[],
+  doc: TextDocument,
+  out: DocumentSymbol[],
+  varAssignmentMacros: ReadonlySet<string>,
+  macroDefMacros: ReadonlySet<string>,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+): void {
+  walkMarkup(nodes, {
+    onMacro(node) {
+      if (varAssignmentMacros.has(node.name)) {
+        const arg = node.args[0];
+        if (arg?.type === 'binaryOp' && adapter.getAssignmentOperators().includes(arg.operator)) {
+          const varNode = extractLeafStoryVar(arg.left);
+          // Guard: variable name must be non-empty
+          if (varNode && varNode.name) {
+            out.push({
+              name: `$${varNode.name}`,
+              kind: LspSymbolKind.Variable,
+              range: Range.create(doc.positionAt(node.range.start), doc.positionAt(node.range.end)),
+              selectionRange: Range.create(doc.positionAt(varNode.range.start), doc.positionAt(varNode.range.end)),
+            });
+          }
+        }
+      }
 
-    if (node.name === 'set') {
-      const arg = node.args[0];
-      if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
-        const varNode = extractLeafStoryVar(arg.left);
-        // Guard: variable name must be non-empty
-        if (varNode && varNode.name) {
+      if (macroDefMacros.has(node.name)) {
+        const arg = node.args[0];
+        const widgetName =
+          arg?.type === 'literal' && arg.kind === 'string' ? String(arg.value)
+          : arg?.type === 'identifier' ? arg.name : null;
+        // Guard: widget name must be non-empty
+        if (widgetName && widgetName.trim() && arg) {
           out.push({
-            name: `$${varNode.name}`,
-            kind: LspSymbolKind.Variable,
+            name: `<<${widgetName}>>`,
+            kind: LspSymbolKind.Function,
             range: Range.create(doc.positionAt(node.range.start), doc.positionAt(node.range.end)),
-            selectionRange: Range.create(doc.positionAt(varNode.range.start), doc.positionAt(varNode.range.end)),
+            selectionRange: Range.create(doc.positionAt(arg.range.start), doc.positionAt(arg.range.end)),
           });
         }
       }
-    }
-
-    if (node.name === 'widget') {
-      const arg = node.args[0];
-      const widgetName =
-        arg?.type === 'literal' && arg.kind === 'string' ? String(arg.value)
-        : arg?.type === 'identifier' ? arg.name : null;
-      // Guard: widget name must be non-empty
-      if (widgetName && widgetName.trim() && arg) {
-        out.push({
-          name: `<<${widgetName}>>`,
-          kind: LspSymbolKind.Function,
-          range: Range.create(doc.positionAt(node.range.start), doc.positionAt(node.range.end)),
-          selectionRange: Range.create(doc.positionAt(arg.range.start), doc.positionAt(arg.range.end)),
-        });
-      }
-    }
-
-    if (node.body) collectDocSymbols(node.body, doc, out);
-  }
+    },
+  });
 }
 
 function extractLeafStoryVar(expr: ExpressionNode): StoryVarNode | null {

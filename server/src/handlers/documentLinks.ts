@@ -9,6 +9,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { normalizeUri, getFileText, offsetToPosition } from '../serverUtils';
 import { passageNameFromExpr } from '../passageArgs';
 import type { MarkupNode } from '../ast';
+import { walkMarkup } from '../visitors';
 
 export function registerDocumentLinkHandler(
   connection: Connection,
@@ -48,9 +49,9 @@ function collectLinks(
   passageArgMacros: ReadonlySet<string>,
   fileText: string,
 ): void {
-  for (const node of nodes) {
-    // [[Target]] links
-    if (node.type === 'link') {
+  walkMarkup(nodes, {
+    onLink(node) {
+      // [[Target]] links
       const def = workspace.getPassageDefinition(node.target);
       if (def) {
         links.push(DocumentLink.create(
@@ -61,10 +62,8 @@ function collectLinks(
           def.uri,
         ));
       }
-      continue;
-    }
-
-    if (node.type === 'macro') {
+    },
+    onMacro(node) {
       // Passage arg macros like <<goto "Target">>, <<link "label" "Target">>
       if (passageArgMacros.has(node.name) && node.args.length > 0) {
         const idx = adapter.getPassageArgIndex(node.name, node.args.length);
@@ -86,11 +85,6 @@ function collectLinks(
           }
         }
       }
-
-      // Recurse into body
-      if (node.body) {
-        collectLinks(node.body, doc, workspace, links, adapter, passageArgMacros, fileText);
-      }
-    }
-  }
+    },
+  });
 }

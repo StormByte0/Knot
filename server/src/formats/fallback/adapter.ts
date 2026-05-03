@@ -5,6 +5,7 @@ import type {
   AdapterCompletionRequest,
   AdapterHoverRequest,
   AdapterDiagnosticRequest,
+  BuiltinMacroInfo,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ export class FallbackAdapter implements StoryFormatAdapter {
     return -1;
   }
 
-  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }> {
+  getBuiltinMacros(): ReadonlyArray<BuiltinMacroInfo> {
     return [];
   }
 
@@ -97,5 +98,49 @@ export class FallbackAdapter implements StoryFormatAdapter {
 
   getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>> {
     return EMPTY_MAP;
+  }
+
+  // ── Virtual doc generation ────────────────────────────────────────────────
+
+  storyVarToJs(name: string): string { return name; }
+  tempVarToJs(name: string): string { return name; }
+  getOperatorNormalization(): Readonly<Record<string, string>> { return {}; }
+
+  // ── Format hints (parser / lexer) ─────────────────────────────────────────
+
+  getVariableSigils(): ReadonlyArray<{ sigil: string; variableType: 'story' | 'temporary' }> {
+    return [];
+  }
+
+  resolveVariableSigil(_sigil: string): 'story' | 'temporary' | null {
+    return null;
+  }
+
+  getOperatorPrecedence(): Readonly<Record<string, number>> {
+    return {};
+  }
+
+  getScriptTags(): ReadonlyArray<string> {
+    return [];
+  }
+
+  getStylesheetTags(): ReadonlyArray<string> {
+    return [];
+  }
+
+  getTempVarPrefix(): string {
+    return '';
+  }
+
+  getAssignmentOperators(): ReadonlyArray<string> {
+    return [];
+  }
+
+  getComparisonOperators(): ReadonlyArray<string> {
+    return [];
+  }
+
+  getStoryDataPassageName(): string | null {
+    return null;
   }
 }

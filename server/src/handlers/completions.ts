@@ -34,7 +34,8 @@ export function registerCompletionHandler(
     const passageArgMacros = adapter.getPassageArgMacros();
 
     // ── 1. Property access: $var.prop… ───────────────────────────────────────
-    const propCtx = extractPropertyAccessContext(text, offset);
+    const storySigil = adapter.getVariableSigils().find(s => s.variableType === 'story');
+    const propCtx = extractPropertyAccessContext(text, offset, storySigil?.sigil ?? '$');
     if (propCtx) {
       const varDef = workspace.getVariableDefinition(propCtx.root);
       if (varDef?.inferredType) {
@@ -224,9 +225,11 @@ function extractMacroPassageArgContext(
 function extractPropertyAccessContext(
   text: string,
   offset: number,
+  storyVarSigil: string = '$',
 ): { root: string; path: string[]; partial: string } | null {
+  const escaped = storyVarSigil.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const m = text.slice(0, offset).match(
-    /\$([A-Za-z_][A-Za-z0-9_]*)((?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/,
+    new RegExp(`${escaped}([A-Za-z_][A-Za-z0-9_]*)((?:\\.[A-Za-z_][A-Za-z0-9_]*)*)\\.([A-Za-z_][A-Za-z0-9_]*)?$`),
   );
   if (!m) return null;
   return { root: m[1]!, path: m[2] ? m[2].slice(1).split('.') : [], partial: m[3] ?? '' };

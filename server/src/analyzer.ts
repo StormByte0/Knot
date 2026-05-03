@@ -4,6 +4,9 @@ import { SourceRange } from './tokenTypes';
 import { WorkspaceIndex } from './workspaceIndex';
 import { passageNameFromExpr } from './passageArgs';
 import type { StoryFormatAdapter } from './formats/types';
+import { walkDocument, walkMarkup, walkExpression } from './visitors';
+import type { DiagnosticEngine } from './diagnosticEngine';
+import { DiagnosticRule, type RuleDiagnostic } from './diagnosticEngine';
 
 export interface SemanticToken {
   range: SourceRange;
@@ -20,17 +23,29 @@ export interface AnalysisResult {
 export class SyntaxAnalyzer {
   analyze(ast: DocumentNode, uri: string, workspace?: WorkspaceIndex): AnalysisResult {
     const adapter = workspace?.getActiveAdapter();
+    const engine  = workspace?.getDiagnosticEngine();
     const { table: symbols } = buildSymbolTable(ast, uri, adapter);
     const resolvedLinks = this.resolveLinks(ast, symbols, workspace);
-    const diagnostics: ParseDiagnostic[] = [
-      ...this.validateLinks(resolvedLinks),
-      ...this.validateMacros(ast, symbols, workspace),
+
+    // Collect rule-tagged diagnostics internally, then convert at the end
+    const ruleDiags: RuleDiagnostic[] = [
+      ...this.validateLinks(resolvedLinks, engine),
+      ...this.validateMacros(ast, symbols, workspace, engine),
     ];
 
     // Add structural validation if adapter is available
     if (adapter) {
-      diagnostics.push(...this.validateStructure(ast, adapter));
+      ruleDiags.push(...this.validateStructure(ast, adapter, engine));
     }
+
+    // Convert all RuleDiagnostics to ParseDiagnostics via the engine
+    const diagnostics = engine
+      ? engine.toParseDiagnostics(ruleDiags)
+      : ruleDiags.map(d => ({
+          message:  d.message,
+          range:    d.range,
+          severity: defaultSeverityForRule(d.rule),
+        }));
 
     const semanticTokens = this.generateTokens(ast, adapter);
     return { symbols, diagnostics, semanticTokens, resolvedLinks };
@@ -49,61 +64,63 @@ export class SyntaxAnalyzer {
     const links: Array<{ target: string; range: SourceRange; resolved: boolean }> = [];
     const adapter = workspace?.getActiveAdapter();
     const passageArgMacros = adapter?.getPassageArgMacros();
+    const isKnown = (name: string) => this.isPassageKnown(name, symbols, workspace);
 
-    const walkNodes = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        // [[Target]] syntax
-        if (node.type === 'link') {
-          links.push({
-            target:   node.target,
-            range:    node.range,
-            resolved: this.isPassageKnown(node.target, symbols, workspace),
-          });
-        }
-
-        if (node.type === 'macro') {
-          // <<goto "Target">>, <<link "label" "Target">>, <<include "Target">>, etc.
-          if (passageArgMacros?.has(node.name) && node.args.length > 0) {
-            const idx  = adapter!.getPassageArgIndex(node.name, node.args.length);
-            const arg  = node.args[idx];
-            const name = arg ? passageNameFromExpr(arg) : null;
-            if (name && arg) {
-              links.push({
-                target:   name,
-                range:    arg.range,
-                resolved: this.isPassageKnown(name, symbols, workspace),
-              });
-            }
+    walkDocument(ast, {
+      onLink(node) {
+        links.push({
+          target:   node.target,
+          range:    node.range,
+          resolved: isKnown(node.target),
+        });
+      },
+      onMacro(node) {
+        // <<goto "Target">>, <<link "label" "Target">>, <<include "Target">>, etc.
+        if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+          const idx  = adapter!.getPassageArgIndex(node.name, node.args.length);
+          const arg  = node.args[idx];
+          const name = arg ? passageNameFromExpr(arg) : null;
+          if (name && arg) {
+            links.push({
+              target:   name,
+              range:    arg.range,
+              resolved: isKnown(name),
+            });
           }
-          if (node.body) walkNodes(node.body);
         }
-      }
-    };
+      },
+    });
 
-    for (const p of ast.passages) {
-      if (Array.isArray(p.body)) walkNodes(p.body);
-    }
     return links;
   }
 
   private validateLinks(
     links: Array<{ target: string; range: SourceRange; resolved: boolean }>,
-  ): ParseDiagnostic[] {
-    return links
-      .filter(l => !l.resolved)
-      .map(l => ({
-        message:  `Unknown passage target: ${l.target}`,
-        range:    l.range,
-        severity: 'warning' as const,
-      }));
+    engine?: DiagnosticEngine,
+  ): RuleDiagnostic[] {
+    const diags: RuleDiagnostic[] = [];
+    for (const l of links) {
+      if (l.resolved) continue;
+      if (engine && !engine.isEnabled(DiagnosticRule.UnknownPassage)) continue;
+      const diag: RuleDiagnostic = {
+        rule:    DiagnosticRule.UnknownPassage,
+        message: `Unknown passage target: ${l.target}`,
+        range:   l.range,
+      };
+      diags.push(diag);
+    }
+    return diags;
   }
 
   private validateMacros(
     ast: DocumentNode, symbols: SymbolTable, workspace?: WorkspaceIndex,
-  ): ParseDiagnostic[] {
-    const diags: ParseDiagnostic[] = [];
+    engine?: DiagnosticEngine,
+  ): RuleDiagnostic[] {
+    const diags: RuleDiagnostic[] = [];
     const adapter = workspace?.getActiveAdapter();
     const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
+    const assignmentOps = adapter?.getAssignmentOperators() ?? ['to'];
+    const comparisonOps = adapter?.getComparisonOperators() ?? ['gt', 'gte', 'lt', 'lte'];
 
     // Cache builtin names in a Set for O(1) lookup instead of repeated
     // calls to symbols.isBuiltin() which does Map lookups each time.
@@ -112,122 +129,109 @@ export class SyntaxAnalyzer {
     const isMacroKnown = (name: string): boolean =>
       builtinNames.has(name) || Boolean(symbols.resolve(name) || workspace?.getMacroDefinition(name));
 
-    const walkNodes = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        if (node.type !== 'macro') continue;
+    // Build a map of builtin macro defs for deprecation & arg validation lookups
+    const builtinDefs = new Map<string, { deprecated?: boolean; deprecationMessage?: string; args?: ReadonlyArray<{ position: number; label: string; isRequired?: boolean }> }>();
+    if (adapter) {
+      for (const m of adapter.getBuiltinMacros()) {
+        builtinDefs.set(m.name, m);
+      }
+    }
 
+    walkDocument(ast, {
+      onMacro(node) {
         if (!isMacroKnown(node.name)) {
-          diags.push({
-            message:  `Unknown macro: <<${node.name}>>`,
-            range:    node.nameRange,
-            severity: 'warning',
-          });
+          if (!engine || engine.isEnabled(DiagnosticRule.UnknownMacro)) {
+            diags.push({
+              rule:    DiagnosticRule.UnknownMacro,
+              message: `Unknown macro: <<${node.name}>>`,
+              range:   node.nameRange,
+            });
+          }
+        }
+
+        // Check for deprecated macros
+        const builtinDef = builtinDefs.get(node.name);
+        if (builtinDef && builtinDef.deprecated) {
+          if (!engine || engine.isEnabled(DiagnosticRule.DeprecatedMacro)) {
+            diags.push({
+              rule:    DiagnosticRule.DeprecatedMacro,
+              message: `<<${node.name}>> is deprecated${builtinDef.deprecationMessage ? ': ' + builtinDef.deprecationMessage : ''}`,
+              range:   node.nameRange,
+            });
+          }
+        }
+
+        // Validate required arguments
+        if (builtinDef?.args) {
+          for (const argDef of builtinDef.args) {
+            if (argDef.isRequired && node.args.length <= argDef.position) {
+              if (!engine || engine.isEnabled(DiagnosticRule.MissingRequiredArg)) {
+                diags.push({
+                  rule:    DiagnosticRule.MissingRequiredArg,
+                  message: `<<${node.name}>> requires argument '${argDef.label}' at position ${argDef.position}`,
+                  range:   node.nameRange,
+                });
+              }
+            }
+          }
         }
 
         for (const arg of node.args) {
-          this.walkExpr(arg, expr => {
+          walkExpression(arg, expr => {
             if (expr.type !== 'binaryOp') return;
             // Use adapter for variable assignment check, but fall back to 'set' for compatibility
             const isAssignmentMacro = varAssignmentMacros?.has(node.name) ?? node.name === 'set';
-            if (isAssignmentMacro && expr.operator === 'to') {
+            if (isAssignmentMacro && assignmentOps.includes(expr.operator)) {
               if (expr.left.type !== 'storyVar' && expr.left.type !== 'tempVar' &&
                   expr.left.type !== 'propertyAccess' && expr.left.type !== 'indexAccess') {
-                diags.push({
-                  message:  `Operator 'to' requires a variable on the left-hand side`,
-                  range:    expr.range,
-                  severity: 'error',
-                });
+                if (!engine || engine.isEnabled(DiagnosticRule.AssignmentTarget)) {
+                  diags.push({
+                    rule:    DiagnosticRule.AssignmentTarget,
+                    message: `Operator 'to' requires a variable on the left-hand side`,
+                    range:   expr.range,
+                  });
+                }
               }
             }
-            if (['gt', 'gte', 'lt', 'lte'].includes(expr.operator)) {
+            if (comparisonOps.includes(expr.operator)) {
               const lk = inferSimpleKind(expr.left);
               const rk = inferSimpleKind(expr.right);
               if ((lk === 'string' && rk === 'number') || (lk === 'number' && rk === 'string')) {
-                diags.push({
-                  message:  `Type mismatch for operator '${expr.operator}': ${lk} vs ${rk}`,
-                  range:    expr.range,
-                  severity: 'error',
-                });
+                if (!engine || engine.isEnabled(DiagnosticRule.TypeMismatch)) {
+                  diags.push({
+                    rule:    DiagnosticRule.TypeMismatch,
+                    message: `Type mismatch for operator '${expr.operator}': ${lk} vs ${rk}`,
+                    range:   expr.range,
+                  });
+                }
               }
             }
           });
         }
+      },
+    });
 
-        if (node.body) walkNodes(node.body);
-      }
-    };
-
-    for (const p of ast.passages) {
-      if (Array.isArray(p.body)) walkNodes(p.body);
-    }
     return diags;
   }
 
   /**
    * Validate structural constraints on macros — e.g. <<elseif>> must be
    * inside an <<if>> chain, <<break>> must be inside <<for>>, etc.
+   *
+   * Structural validation requires a name stack that tracks the current
+   * macro nesting. Since walkMarkup's onMacro callback fires pre-order and
+   * there's no post-visit hook to pop the stack, we use walkMarkup directly
+   * with a manually managed name stack via the parentStack parameter.
    */
-  validateStructure(ast: DocumentNode, adapter: StoryFormatAdapter): ParseDiagnostic[] {
-    const diags: ParseDiagnostic[] = [];
+  validateStructure(ast: DocumentNode, adapter: StoryFormatAdapter, engine?: DiagnosticEngine): RuleDiagnostic[] {
+    const diags: RuleDiagnostic[] = [];
     const constraints = adapter.getMacroParentConstraints();
     if (constraints.size === 0) return diags;
 
-    // Stack of open macro names as we walk the tree
-    const parentStack: string[] = [];
-
-    const walkNodes = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        if (node.type !== 'macro') continue;
-
-        // Check if this macro has parent constraints
-        const validParents = constraints.get(node.name);
-        if (validParents) {
-          // Find the nearest constrained parent in the stack
-          let foundValidParent = false;
-          let foundElse = false;
-
-          for (let i = parentStack.length - 1; i >= 0; i--) {
-            const parent = parentStack[i]!;
-            if (validParents.has(parent)) {
-              foundValidParent = true;
-
-              // Special case: <<else>> followed by <<elseif>> is an error
-              if (node.name === 'elseif' && parent === 'else') {
-                foundElse = true;
-              }
-              break;
-            }
-            // If we hit 'else' while looking for if/elseif parents, mark it
-            if (node.name === 'elseif' && parent === 'else') {
-              foundElse = true;
-            }
-          }
-
-          if (!foundValidParent) {
-            const parentNames = [...validParents].map(n => `<<${n}>>`).join(' or ');
-            diags.push({
-              message:  `<<${node.name}>> outside of ${parentNames} chain`,
-              range:    node.nameRange,
-              severity: 'error',
-            });
-          } else if (foundElse && node.name === 'elseif') {
-            diags.push({
-              message:  `<<elseif>> after <<else>> in the same <<if>> chain`,
-              range:    node.nameRange,
-              severity: 'error',
-            });
-          }
-        }
-
-        // Push this macro onto the parent stack and recurse
-        parentStack.push(node.name);
-        if (node.body) walkNodes(node.body);
-        parentStack.pop();
+    for (const passage of ast.passages) {
+      if (Array.isArray(passage.body)) {
+        walkMarkupStructure(passage.body, [], constraints, diags, engine);
       }
-    };
-
-    for (const p of ast.passages) {
-      if (Array.isArray(p.body)) walkNodes(p.body);
     }
     return diags;
   }
@@ -263,73 +267,108 @@ export class SyntaxAnalyzer {
       }
     };
 
-    const walkNodes = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        if (node.type === 'macro') {
-          tokens.push({ range: node.nameRange, tokenType: 'macro' });
-          if (node.closeNameRange) {
-            tokens.push({ range: node.closeNameRange, tokenType: 'macro' });
-          }
+    walkDocument(ast, {
+      onMacro(node) {
+        tokens.push({ range: node.nameRange, tokenType: 'macro' });
+        if (node.closeNameRange) {
+          tokens.push({ range: node.closeNameRange, tokenType: 'macro' });
+        }
 
-          // Emit passage token for passage-arg macros so hover/highlight works
-          if (passageArgMacros?.has(node.name) && node.args.length > 0) {
-            const idx = adapter!.getPassageArgIndex(node.name, node.args.length);
-            const arg = node.args[idx];
-            if (arg && arg.type === 'literal' && arg.kind === 'string') {
-              // Emit the inside of the string (without quotes) as a passage token
-              tokens.push({
-                range:     { start: arg.range.start + 1, end: arg.range.end - 1 },
-                tokenType: 'passage',
-              });
-              // Don't also emit it as a string token — skip remaining emitExpr for this arg
-              // Emit remaining args normally
-              node.args.forEach((a, i) => { if (i !== idx) emitExpr(a); });
-            } else {
-              node.args.forEach(emitExpr);
-            }
+        // Emit passage token for passage-arg macros so hover/highlight works
+        if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+          const idx = adapter!.getPassageArgIndex(node.name, node.args.length);
+          const arg = node.args[idx];
+          if (arg && arg.type === 'literal' && arg.kind === 'string') {
+            // Emit the inside of the string (without quotes) as a passage token
+            tokens.push({
+              range:     { start: arg.range.start + 1, end: arg.range.end - 1 },
+              tokenType: 'passage',
+            });
+            // Don't also emit it as a string token — skip remaining emitExpr for this arg
+            // Emit remaining args normally
+            node.args.forEach((a, i) => { if (i !== idx) emitExpr(a); });
           } else {
             node.args.forEach(emitExpr);
           }
+        } else {
+          node.args.forEach(emitExpr);
+        }
+      },
+      onLink(node) {
+        tokens.push({ range: node.targetRange, tokenType: 'passage' });
+      },
+      onComment(node) {
+        tokens.push({ range: node.range, tokenType: 'comment' });
+      },
+    });
 
-          if (node.body) walkNodes(node.body);
-        }
-        if (node.type === 'link') {
-          tokens.push({ range: node.targetRange, tokenType: 'passage' });
-        }
-        if (node.type === 'comment') {
-          tokens.push({ range: node.range, tokenType: 'comment' });
-        }
-      }
-    };
-
+    // Emit passage name tokens
     for (const p of ast.passages) {
       tokens.push({ range: p.nameRange, tokenType: 'passage' });
-      if (Array.isArray(p.body)) walkNodes(p.body);
     }
 
     return tokens;
   }
+}
 
-  private walkExpr(expr: ExpressionNode, visitor: (e: ExpressionNode) => void): void {
-    visitor(expr);
-    switch (expr.type) {
-      case 'binaryOp':
-        this.walkExpr(expr.left, visitor); this.walkExpr(expr.right, visitor); return;
-      case 'unaryOp':
-        this.walkExpr(expr.operand, visitor); return;
-      case 'propertyAccess':
-        this.walkExpr(expr.object, visitor); return;
-      case 'indexAccess':
-        this.walkExpr(expr.object, visitor); this.walkExpr(expr.index, visitor); return;
-      case 'call':
-        this.walkExpr(expr.callee, visitor);
-        expr.args.forEach(a => this.walkExpr(a, visitor)); return;
-      case 'arrayLiteral':
-        expr.elements.forEach(el => this.walkExpr(el, visitor)); return;
-      case 'objectLiteral':
-        expr.properties.forEach(p => this.walkExpr(p.value, visitor)); return;
-      default: return;
+/**
+ * Structural validation requires pushing/popping a name stack as we enter/exit
+ * macro bodies. Since walkMarkup's onMacro callback fires pre-order without a
+ * post-visit hook, we use this dedicated walker for the structural case.
+ */
+function walkMarkupStructure(
+  nodes: MarkupNode[],
+  nameStack: string[],
+  constraints: ReadonlyMap<string, ReadonlySet<string>>,
+  diags: RuleDiagnostic[],
+  engine?: DiagnosticEngine,
+): void {
+  for (const node of nodes) {
+    if (node.type !== 'macro') continue;
+
+    // Check if this macro has parent constraints
+    const validParents = constraints.get(node.name);
+    if (validParents) {
+      // Skip if the rule is suppressed
+      if (!engine || engine.isEnabled(DiagnosticRule.ContainerStructure)) {
+        let foundValidParent = false;
+        let foundElse = false;
+
+        for (let i = nameStack.length - 1; i >= 0; i--) {
+          const parent = nameStack[i]!;
+          if (validParents.has(parent)) {
+            foundValidParent = true;
+            if (node.name === 'elseif' && parent === 'else') {
+              foundElse = true;
+            }
+            break;
+          }
+          if (node.name === 'elseif' && parent === 'else') {
+            foundElse = true;
+          }
+        }
+
+        if (!foundValidParent) {
+          const parentNames = [...validParents].map(n => `<<${n}>>`).join(' or ');
+          diags.push({
+            rule:    DiagnosticRule.ContainerStructure,
+            message: `<<${node.name}>> outside of ${parentNames} chain`,
+            range:   node.nameRange,
+          });
+        } else if (foundElse && node.name === 'elseif') {
+          diags.push({
+            rule:    DiagnosticRule.ContainerStructure,
+            message: `<<elseif>> after <<else>> in the same <<if>> chain`,
+            range:   node.nameRange,
+          });
+        }
+      }
     }
+
+    // Push this macro onto the name stack and recurse into body
+    nameStack.push(node.name);
+    if (node.body) walkMarkupStructure(node.body, nameStack, constraints, diags, engine);
+    nameStack.pop();
   }
 }
 
@@ -339,4 +378,18 @@ function inferSimpleKind(expr: ExpressionNode): 'string' | 'number' | 'unknown' 
     if (expr.kind === 'number') return 'number';
   }
   return 'unknown';
+}
+
+/** Fallback severity when no DiagnosticEngine is available. */
+function defaultSeverityForRule(rule: DiagnosticRule): 'error' | 'warning' {
+  switch (rule) {
+    case DiagnosticRule.DuplicatePassage:
+    case DiagnosticRule.TypeMismatch:
+    case DiagnosticRule.ContainerStructure:
+    case DiagnosticRule.MissingRequiredArg:
+    case DiagnosticRule.AssignmentTarget:
+      return 'error';
+    default:
+      return 'warning';
+  }
 }

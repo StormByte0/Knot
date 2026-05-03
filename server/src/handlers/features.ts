@@ -13,10 +13,10 @@ import {
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
-import { parseDocument } from '../parser';
 import { parseStoryData } from '../storyData';
 import { normalizeUri } from '../serverUtils';
 import type { MarkupNode } from '../ast';
+import { walkMarkup } from '../visitors';
 
 const TOKEN_TYPES = ['function', 'class', 'variable', 'operator', 'string', 'number', 'comment'];
 
@@ -39,7 +39,10 @@ export function registerFeatureHandlers(
     const doc = documents.get(params.textDocument.uri);
     if (!doc) return [];
 
-    const { ast } = parseDocument(doc.getText());
+    const normUri = normalizeUri(doc.uri);
+    const cached  = workspace.getParsedFile(normUri);
+    const ast     = cached?.ast;
+    if (!ast) return [];
     const ranges: FoldingRange[] = [];
 
     for (const passage of ast.passages) {
@@ -88,8 +91,13 @@ export function registerFeatureHandlers(
     }
 
     // ── 2. IFID generation for StoryData passage ──────────────────────────────
-    const { ast } = parseDocument(text);
-    const storyDataPassage = ast.passages.find(p => p.name === 'StoryData');
+    const normUri2 = normalizeUri(doc.uri);
+    const cached2  = workspace.getParsedFile(normUri2);
+    const ast      = cached2?.ast;
+    if (!ast) return actions;
+    const adapter = workspace.getActiveAdapter();
+    const sdName  = adapter.getStoryDataPassageName();
+    const storyDataPassage = sdName ? ast.passages.find(p => p.name === sdName) : undefined;
 
     if (storyDataPassage) {
       const passageStart  = storyDataPassage.range.start;
@@ -97,7 +105,7 @@ export function registerFeatureHandlers(
 
       // Only show when cursor is inside the StoryData passage
       if (cursorOffset >= passageStart && cursorOffset <= passageEnd) {
-        const data = parseStoryData(ast);
+        const data = parseStoryData(ast, adapter);
 
         if (!data.ifid) {
           // No IFID at all — insert one into the JSON
@@ -246,21 +254,26 @@ function buildIfidEdit(
 // ---------------------------------------------------------------------------
 
 function collectNodeFolds(nodes: MarkupNode[], doc: TextDocument, out: FoldingRange[]): void {
-  for (const node of nodes) {
-    if (node.type === 'comment' && (node.style === 'block' || node.style === 'html')) {
-      const startLine = doc.positionAt(node.range.start).line;
-      const endLine   = doc.positionAt(node.range.end).line;
-      if (endLine > startLine) {
-        out.push(FoldingRange.create(startLine, endLine, undefined, undefined, FoldingRangeKind.Comment));
+  walkMarkup(nodes, {
+    onComment(node) {
+      if (node.style === 'block' || node.style === 'html') {
+        const startLine = doc.positionAt(node.range.start).line;
+        const endLine   = doc.positionAt(node.range.end).line;
+        if (endLine > startLine) {
+          out.push(FoldingRange.create(startLine, endLine, undefined, undefined, FoldingRangeKind.Comment));
+        }
       }
-    }
-    if (node.type === 'macro' && node.hasBody && node.body) {
-      const openLine  = doc.positionAt(node.range.start).line;
-      const closeLine = doc.positionAt(node.range.end).line;
-      if (closeLine > openLine) {
-        out.push(FoldingRange.create(openLine, closeLine, undefined, undefined, FoldingRangeKind.Region));
+    },
+    onMacro(node) {
+      if (node.hasBody && node.body) {
+        const openLine  = doc.positionAt(node.range.start).line;
+        const closeLine = doc.positionAt(node.range.end).line;
+        if (closeLine > openLine) {
+          out.push(FoldingRange.create(openLine, closeLine, undefined, undefined, FoldingRangeKind.Region));
+        }
+        // Note: walkMarkup will recurse into node.body automatically,
+        // so nested macros will also be found.
       }
-      collectNodeFolds(node.body, doc, out);
-    }
-  }
+    },
+  });
 }

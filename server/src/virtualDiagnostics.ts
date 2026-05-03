@@ -1,14 +1,15 @@
 import * as acorn from 'acorn';
 import { DocumentNode, ParseDiagnostic } from './ast';
 import { VirtualDocGenerator } from './virtualDoc';
+import type { StoryFormatAdapter } from './formats/types';
 
 export interface VirtualDiagnosticResult {
   diagnostics: ParseDiagnostic[];
   virtualContent: string;
 }
 
-export function runVirtualDiagnostics(ast: DocumentNode, uri: string): VirtualDiagnosticResult {
-  const generator = new VirtualDocGenerator();
+export function runVirtualDiagnostics(ast: DocumentNode, uri: string, adapter: StoryFormatAdapter): VirtualDiagnosticResult {
+  const generator = new VirtualDocGenerator(adapter);
   const virtual = generator.generate(ast, uri);
   const diagnostics: ParseDiagnostic[] = [];
 

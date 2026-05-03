@@ -8,7 +8,6 @@ import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
-import { parseDocument } from '../parser';
 import { parseStoryData, validateStoryData } from '../storyData';
 import { uriToPath, getFileText, normalizeUri } from '../serverUtils';
 
@@ -131,22 +130,25 @@ function buildStoryDataResponse(
 ): StoryDataResponse | null {
   const allPassageNames = new Set(workspace.getPassageNames());
   const totalPassages = workspace.getPassageNames().length;
+  const adapter = workspace.getActiveAdapter();
   // Search every indexed file for a StoryData passage
   for (const uri of workspace.getCachedUris()) {
     const text = getFileText(uri, documents);
     if (!text) continue;
 
-    // Use cached AST from workspace index instead of re-parsing
+    // Use cached AST from workspace index (no re-parse fallback)
     const cached = workspace.getParsedFile(uri);
-    const ast = cached?.ast ?? parseDocument(text).ast;
-    const data    = parseStoryData(ast);
+    const ast = cached?.ast;
+    if (!ast) continue;
+    const data    = parseStoryData(ast, adapter);
 
     if (data.ifid === null && data.format === null && data.start === null) continue;
 
     // Validate and push diagnostics if needed
     const diags = validateStoryData(data, allPassageNames);
     if (diags.length > 0) {
-      const storyDataPassage = ast.passages.find(p => p.name === 'StoryData');
+      const sdName = adapter.getStoryDataPassageName();
+      const storyDataPassage = sdName ? ast.passages.find(p => p.name === sdName) : undefined;
       const openDoc          = documents.get(uri);
       if (storyDataPassage && openDoc) {
         const existing    = workspace.getAnalysis(uri);
@@ -197,5 +199,5 @@ function isUnderRoot(filePath: string, rootPath: string): boolean {
 
 function isSpecialPassage(name: string, workspace: WorkspaceIndex): boolean {
   const adapter = workspace.getActiveAdapter();
-  return adapter.isSpecialPassage(name) || name.startsWith('Story');
+  return adapter.isSpecialPassage(name) || adapter.getSystemPassageNames().has(name);
 }
