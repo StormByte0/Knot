@@ -59,6 +59,18 @@ export const FIXTURES = {
 
   /** Script-tagged passage */
   scriptTagged: ':: Setup [script]\nvar setupVar = true;',
+
+  /** Passage with data-passage HTML attribute */
+  dataPassageAttr: ':: StoryInterface\n<div data-passage="UI Outfit Label">content</div>',
+
+  /** Passage with Engine.play() JS call */
+  enginePlayCall: ':: Start\n<<run Engine.play("Secret Room")>>',
+
+  /** Passage with Story.get() JS call */
+  storyGetCall: ':: Start\n<<run Story.get("Lore Entry")>>',
+
+  /** StoryInterface with multiple data-passage references */
+  storyInterface: ':: StoryInterface\n<div data-passage="UI Outfit Label"></div>\n<div data-passage="UI Date"></div>',
 } as const;
 
 // ── Helper: parse a fixture ──────────────────────────────────────────────

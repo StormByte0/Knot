@@ -1,4 +1,4 @@
-import { DocumentNode, ExpressionNode, MacroNode, MarkupNode, ParseDiagnostic } from './ast';
+import { DocumentNode, ExpressionNode, MacroNode, MarkupNode, ParseDiagnostic, ScriptBodyNode } from './ast';
 import { SymbolKind, SymbolTable, buildSymbolTable } from './symbols';
 import { SourceRange } from './tokenTypes';
 import { WorkspaceIndex } from './workspaceIndex';
@@ -64,32 +64,111 @@ export class SyntaxAnalyzer {
     const links: Array<{ target: string; range: SourceRange; resolved: boolean }> = [];
     const adapter = workspace?.getActiveAdapter();
     const passageArgMacros = adapter?.getPassageArgMacros();
+    const implicitPatterns = adapter?.getImplicitPassagePatterns() ?? [];
+    const passageRefApis = adapter?.getPassageRefApiCalls() ?? [];
     const isKnown = (name: string) => this.isPassageKnown(name, symbols, workspace);
 
-    walkDocument(ast, {
-      onLink(node) {
-        links.push({
-          target:   node.target,
-          range:    node.range,
-          resolved: isKnown(node.target),
-        });
-      },
-      onMacro(node) {
-        // <<goto "Target">>, <<link "label" "Target">>, <<include "Target">>, etc.
-        if (passageArgMacros?.has(node.name) && node.args.length > 0) {
-          const idx  = adapter!.getPassageArgIndex(node.name, node.args.length);
-          const arg  = node.args[idx];
-          const name = arg ? passageNameFromExpr(arg) : null;
-          if (name && arg) {
+    // Build a quick lookup for API calls: "ObjectName.method" → true
+    const apiCallSet = new Set<string>();
+    for (const api of passageRefApis) {
+      for (const method of api.methods) {
+        apiCallSet.add(`${api.objectName}.${method}`);
+      }
+    }
+
+    for (const passage of ast.passages) {
+      const src = passage.name;
+
+      // ── Standard links: [[Target]] and passage-arg macros ────────────────
+      if (Array.isArray(passage.body)) {
+        walkMarkup(passage.body, {
+          onLink(node) {
             links.push({
-              target:   name,
-              range:    arg.range,
-              resolved: isKnown(name),
+              target:   node.target,
+              range:    node.range,
+              resolved: isKnown(node.target),
             });
+          },
+          onMacro(node) {
+            // <<goto "Target">>, <<link "label" "Target">>, <<include "Target">>, etc.
+            if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+              const idx  = adapter!.getPassageArgIndex(node.name, node.args.length);
+              const arg  = node.args[idx];
+              const name = arg ? passageNameFromExpr(arg) : null;
+              if (name && arg) {
+                links.push({
+                  target:   name,
+                  range:    arg.range,
+                  resolved: isKnown(name),
+                });
+              }
+            }
+
+            // ── Implicit passage refs in macro expression args ───────────
+            if (apiCallSet.size > 0) {
+              for (const arg of node.args) {
+                walkExpression(arg, expr => {
+                  if (expr.type !== 'call') return;
+                  const callee = expr.callee;
+                  if (callee.type !== 'propertyAccess') return;
+                  if (callee.object.type !== 'identifier') return;
+                  const key = `${callee.object.name}.${callee.property}`;
+                  if (!apiCallSet.has(key)) return;
+                  if (expr.args.length === 0) return;
+                  const firstArg = expr.args[0]!;
+                  if (firstArg.type === 'literal' && firstArg.kind === 'string' && typeof firstArg.value === 'string') {
+                    links.push({
+                      target:   firstArg.value,
+                      range:    firstArg.range,
+                      resolved: isKnown(firstArg.value),
+                    });
+                  }
+                });
+              }
+            }
+          },
+          // ── Implicit passage refs in text nodes ──────────────────────────
+          onText(node) {
+            if (implicitPatterns.length === 0) return;
+            for (const ip of implicitPatterns) {
+              ip.pattern.lastIndex = 0;
+              let m: RegExpExecArray | null;
+              while ((m = ip.pattern.exec(node.value)) !== null) {
+                const name = m[1];
+                if (!name) continue;
+                const matchOffset = node.range.start + m.index;
+                links.push({
+                  target:   name,
+                  range:    { start: matchOffset, end: matchOffset + m[0].length },
+                  resolved: isKnown(name),
+                });
+              }
+            }
+          },
+        });
+      }
+
+      // ── Script passages: scan for implicit passage refs ──────────────────
+      if (passage.body && typeof passage.body === 'object' && (passage.body as ScriptBodyNode).type === 'scriptBody') {
+        const scriptBody = passage.body as ScriptBodyNode;
+        if (implicitPatterns.length > 0) {
+          for (const ip of implicitPatterns) {
+            ip.pattern.lastIndex = 0;
+            let m: RegExpExecArray | null;
+            while ((m = ip.pattern.exec(scriptBody.source)) !== null) {
+              const name = m[1];
+              if (!name) continue;
+              const matchOffset = scriptBody.range.start + m.index;
+              links.push({
+                target:   name,
+                range:    { start: matchOffset, end: matchOffset + m[0].length },
+                resolved: isKnown(name),
+              });
+            }
           }
         }
-      },
-    });
+      }
+    }
 
     return links;
   }

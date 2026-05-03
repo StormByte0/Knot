@@ -228,4 +228,51 @@ export interface StoryFormatAdapter {
 
   /** Name of the special passage containing story metadata (JSON), or null if the format doesn't use one. SugarCube: 'StoryData' */
   getStoryDataPassageName(): string | null;
+
+  // ── Implicit passage references ────────────────────────────────────────────
+
+  /**
+   * Return patterns that detect passage references in raw text (HTML attributes,
+   * JavaScript API calls, etc.) that are not represented as Twine links or
+   * macro passage-args.
+   *
+   * Each pattern MUST have exactly one capture group that extracts the passage
+   * name. The `description` is used in diagnostics/hover to explain how the
+   * reference was found.
+   *
+   * SugarCube examples:
+   *   - data-passage="PassageName"  (HTML attribute)
+   *   - Engine.play("PassageName") (JS API)
+   *   - Engine.goto("PassageName") (JS API)
+   *   - Story.get("PassageName")   (JS API)
+   */
+  getImplicitPassagePatterns(): ReadonlyArray<ImplicitPassageRefPattern>;
+
+  /**
+   * Return API call patterns that reference passages in expression trees.
+   * Used to extract passage refs from parsed expressions like Engine.play("Name").
+   *
+   * Each entry describes an object+method pair where the first string argument
+   * is a passage name reference.
+   */
+  getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall>;
+}
+
+// ---------------------------------------------------------------------------
+// Implicit passage reference pattern
+// ---------------------------------------------------------------------------
+
+export interface ImplicitPassageRefPattern {
+  /** RegExp with exactly one capture group for the passage name. */
+  pattern: RegExp;
+  /** Human-readable description of what this pattern detects. */
+  description: string;
+}
+
+/** Describes a JS API call pattern that references a passage by name. */
+export interface PassageRefApiCall {
+  /** The object name (e.g. 'Engine', 'Story'). */
+  objectName: string;
+  /** Method names on that object whose first string argument is a passage name. */
+  methods: ReadonlyArray<string>;
 }

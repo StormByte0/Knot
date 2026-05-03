@@ -7,6 +7,8 @@ import type {
   AdapterHoverRequest,
   AdapterDiagnosticRequest,
   BuiltinMacroInfo,
+  ImplicitPassageRefPattern,
+  PassageRefApiCall,
 } from '../types';
 import { BUILTINS, BUILTIN_MAP, BLOCK_MACRO_NAMES, BUILTIN_GLOBALS } from './macros';
 
@@ -111,6 +113,7 @@ const LABEL_THEN_PASSAGE_MACROS: ReadonlySet<string> = new Set(
 const SPECIAL_PASSAGE_NAMES: ReadonlySet<string> = new Set([
   'StoryInit', 'StoryCaption', 'StoryBanner', 'StorySubtitle',
   'StoryAuthor', 'StoryMenu', 'StoryDisplayTitle', 'StoryShare',
+  'StoryInterface',
   'PassageDone', 'PassageHeader', 'PassageFooter', 'PassageReady',
 ]);
 
@@ -141,6 +144,24 @@ const MACRO_PARENT_CONSTRAINTS: ReadonlyMap<string, ReadonlySet<string>> = (() =
   }
   return map as ReadonlyMap<string, ReadonlySet<string>>;
 })();
+
+/** Patterns that detect passage references in raw text / HTML / JS. */
+const IMPLICIT_PASSAGE_PATTERNS: ReadonlyArray<ImplicitPassageRefPattern> = [
+  // HTML data-passage attribute — SugarCube renders <a data-passage="..."> as navigation links
+  { pattern: /data-passage\s*=\s*["']([^"']+)["']/g,  description: 'data-passage attribute' },
+  // SugarCube JS APIs — Engine.play(), Engine.goto()
+  { pattern: /Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']/g,   description: 'Engine.play() call' },
+  { pattern: /Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']/g,   description: 'Engine.goto() call' },
+  // SugarCube JS APIs — Story.get(), Story.passage()
+  { pattern: /Story\s*\.\s*get\s*\(\s*["']([^"']+)["']/g,     description: 'Story.get() call' },
+  { pattern: /Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']/g,  description: 'Story.passage() call' },
+];
+
+/** API call patterns that reference passages in parsed expression trees. */
+const PASSAGE_REF_API_CALLS: ReadonlyArray<PassageRefApiCall> = [
+  { objectName: 'Engine', methods: ['play', 'goto'] },
+  { objectName: 'Story',  methods: ['get', 'passage'] },
+];
 
 export class SugarCubeAdapter implements StoryFormatAdapter {
   readonly id          = 'sugarcube-2';
@@ -391,6 +412,16 @@ declare const $args:    unknown[];
 
   getStoryDataPassageName(): string | null {
     return 'StoryData';
+  }
+
+  // ── Implicit passage references ────────────────────────────────────────────
+
+  getImplicitPassagePatterns(): ReadonlyArray<ImplicitPassageRefPattern> {
+    return IMPLICIT_PASSAGE_PATTERNS;
+  }
+
+  getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall> {
+    return PASSAGE_REF_API_CALLS;
   }
 
   // ── Private ────────────────────────────────────────────────────────────────
