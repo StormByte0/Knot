@@ -2,10 +2,35 @@
 // SugarCube 2 — builtin macro catalog
 // ---------------------------------------------------------------------------
 
+export interface MacroArgDef {
+  /** Position (0-based) in the macro's argument list. */
+  position: number;
+  /** Display label for signature help. */
+  label: string;
+  /** Whether this argument accepts a passage name reference. */
+  isPassageRef?: boolean;
+  /** Whether this argument accepts a CSS selector. */
+  isSelector?: boolean;
+  /** Whether this argument accepts a variable name ($var or _var). */
+  isVariable?: boolean;
+  /** Whether this argument is required. */
+  isRequired?: boolean;
+  /** SugarCube expression (parsed) vs discrete (literal string) argument. */
+  kind: 'expression' | 'string' | 'selector' | 'variable';
+}
+
 export interface MacroDef {
-  name:        string;
+  name: string;
   description: string;
-  hasBody:     boolean;
+  hasBody: boolean;
+  /** Argument signature definitions. If absent, the macro takes arbitrary args. */
+  args?: MacroArgDef[];
+  /** Whether this macro is deprecated. */
+  deprecated?: boolean;
+  /** Deprecation message if deprecated. */
+  deprecationMessage?: string;
+  /** Category for filtering (e.g. 'control', 'variables', 'links'). */
+  category?: string;
 }
 
 export interface GlobalDef {
@@ -25,72 +50,107 @@ const PASSAGE_HINT = ' — *Ctrl+Space inside quotes for passage name completion
 
 export const BUILTINS: MacroDef[] = [
   // Control
-  { name: 'if',       hasBody: true,  description: 'Conditional block. `<<if $condition>>…<</if>>`' },
-  { name: 'elseif',   hasBody: false, description: 'Else-if branch within `<<if>>`.' },
-  { name: 'else',     hasBody: false, description: 'Else branch within `<<if>>`.' },
-  { name: 'for',      hasBody: true,  description: 'Iteration. `<<for _i, $arr>>…<</for>>`' },
-  { name: 'break',    hasBody: false, description: 'Break out of the nearest enclosing `<<for>>` loop.' },
-  { name: 'continue', hasBody: false, description: 'Skip to the next iteration of the nearest `<<for>>` loop.' },
-  { name: 'switch',   hasBody: true,  description: 'Switch on an expression. `<<switch $v>><<case 1>>…<</switch>>`' },
-  { name: 'case',     hasBody: false, description: 'Case arm within `<<switch>>`.' },
-  { name: 'default',  hasBody: false, description: 'Default arm within `<<switch>>`.' },
+  { name: 'if',       hasBody: true,  description: 'Conditional block. `<<if $condition>>…<</if>>`', category: 'control' },
+  { name: 'elseif',   hasBody: false, description: 'Else-if branch within `<<if>>`.', category: 'control' },
+  { name: 'else',     hasBody: false, description: 'Else branch within `<<if>>`.', category: 'control' },
+  { name: 'for',      hasBody: true,  description: 'Iteration. `<<for _i, $arr>>…<</for>>`', category: 'control' },
+  { name: 'break',    hasBody: false, description: 'Break out of the nearest enclosing `<<for>>` loop.', category: 'control' },
+  { name: 'continue', hasBody: false, description: 'Skip to the next iteration of the nearest `<<for>>` loop.', category: 'control' },
+  { name: 'switch',   hasBody: true,  description: 'Switch on an expression. `<<switch $v>><<case 1>>…<</switch>>`', category: 'control',
+    args: [{ position: 0, label: 'expression', isRequired: true, kind: 'expression' }] },
+  { name: 'case',     hasBody: false, description: 'Case arm within `<<switch>>`.', category: 'control' },
+  { name: 'default',  hasBody: false, description: 'Default arm within `<<switch>>`.', category: 'control' },
 
   // Variables
-  { name: 'set',      hasBody: false, description: 'Assign a value: `<<set $var to expression>>`' },
-  { name: 'unset',    hasBody: false, description: 'Remove a story variable: `<<unset $var>>`' },
-  { name: 'capture',  hasBody: true,  description: 'Capture variables for use in closures.' },
-  { name: 'run',      hasBody: false, description: 'Execute an expression without producing output: `<<run $arr.push("item")>>`' },
+  { name: 'set',      hasBody: false, description: 'Assign a value: `<<set $var to expression>>`', category: 'variables',
+    args: [{ position: 0, label: 'expression', kind: 'expression' }] },
+  { name: 'unset',    hasBody: false, description: 'Remove a story variable: `<<unset $var>>`', category: 'variables',
+    args: [{ position: 0, label: 'variable', isVariable: true, isRequired: true, kind: 'variable' }] },
+  { name: 'capture',  hasBody: true,  description: 'Capture variables for use in closures.', category: 'variables',
+    args: [{ position: 0, label: 'variable', isVariable: true, isRequired: true, kind: 'variable' }] },
+  { name: 'run',      hasBody: false, description: 'Execute an expression without producing output: `<<run $arr.push("item")>>`', category: 'variables',
+    args: [{ position: 0, label: 'expression', kind: 'expression' }] },
 
   // Output
-  { name: 'print',    hasBody: false, description: 'Print the result of an expression.' },
-  { name: '=',        hasBody: false, description: 'Short alias for `<<print>>`.' },
-  { name: '-',        hasBody: false, description: 'Print without leading/trailing whitespace.' },
-  { name: 'type',     hasBody: true,  description: 'Typewriter effect: displays text character by character.' },
-  { name: 'nobr',     hasBody: true,  description: 'Remove line breaks from enclosed content.' },
-  { name: 'silently', hasBody: true,  description: 'Execute enclosed code without producing output.' },
+  { name: 'print',    hasBody: false, description: 'Print the result of an expression.', category: 'output',
+    args: [{ position: 0, label: 'expression', isRequired: true, kind: 'expression' }] },
+  { name: '=',        hasBody: false, description: 'Short alias for `<<print>>`.', category: 'output',
+    args: [{ position: 0, label: 'expression', isRequired: true, kind: 'expression' }] },
+  { name: '-',        hasBody: false, description: 'Print without leading/trailing whitespace.', category: 'output',
+    args: [{ position: 0, label: 'expression', isRequired: true, kind: 'expression' }] },
+  { name: 'type',     hasBody: true,  description: 'Typewriter effect: displays text character by character.', category: 'output',
+    args: [{ position: 0, label: 'speed', isRequired: true, kind: 'string' }] },
+  { name: 'nobr',     hasBody: true,  description: 'Remove line breaks from enclosed content.', category: 'output' },
+  { name: 'silently', hasBody: true,  description: 'Execute enclosed code without producing output.', category: 'output' },
 
   // DOM / Display
-  { name: 'append',      hasBody: true,  description: 'Append content to a selector: `<<append "#id">>…<</append>>`' },
-  { name: 'prepend',     hasBody: true,  description: 'Prepend content to a selector.' },
-  { name: 'replace',     hasBody: true,  description: 'Replace element content.' },
-  { name: 'remove',      hasBody: false, description: 'Remove matching element(s) from the DOM.' },
-  { name: 'copy',        hasBody: true,  description: 'Copy existing element content into another.' },
-  { name: 'addclass',    hasBody: false, description: 'Add CSS class(es) to element(s).' },
-  { name: 'removeclass', hasBody: false, description: 'Remove CSS class(es) from element(s).' },
-  { name: 'toggleclass', hasBody: false, description: 'Toggle CSS class(es) on element(s).' },
-  { name: 'css',         hasBody: true,  description: 'Inject inline CSS into the page.' },
-  { name: 'script',      hasBody: true,  description: 'Execute JavaScript: `<<script>>…<</script>>`' },
+  { name: 'append',      hasBody: true,  description: 'Append content to a selector: `<<append "#id">>…<</append>>`', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }] },
+  { name: 'prepend',     hasBody: true,  description: 'Prepend content to a selector.', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }] },
+  { name: 'replace',     hasBody: true,  description: 'Replace element content.', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }] },
+  { name: 'remove',      hasBody: false, description: 'Remove matching element(s) from the DOM.', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }] },
+  { name: 'copy',        hasBody: true,  description: 'Copy existing element content into another.', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }] },
+  { name: 'addclass',    hasBody: false, description: 'Add CSS class(es) to element(s).', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }, { position: 1, label: 'class', isRequired: true, kind: 'string' }] },
+  { name: 'removeclass', hasBody: false, description: 'Remove CSS class(es) from element(s).', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }, { position: 1, label: 'class', isRequired: true, kind: 'string' }] },
+  { name: 'toggleclass', hasBody: false, description: 'Toggle CSS class(es) on element(s).', category: 'dom',
+    args: [{ position: 0, label: 'selector', isSelector: true, isRequired: true, kind: 'selector' }, { position: 1, label: 'class', isRequired: true, kind: 'string' }] },
+  { name: 'css',         hasBody: true,  description: 'Inject inline CSS into the page.', category: 'dom' },
+  { name: 'script',      hasBody: true,  description: 'Execute JavaScript: `<<script>>…<</script>>`', category: 'dom' },
 
   // Links / Interaction
-  { name: 'link',        hasBody: true,  description: `Inline link with click handler: \`<<link "label" "passage">>…<</link>>\`` + PASSAGE_HINT },
-  { name: 'button',      hasBody: true,  description: `Button with click handler: \`<<button "label" "passage">>…<</button>>\`` + PASSAGE_HINT },
-  { name: 'linkappend',  hasBody: true,  description: 'Link that appends content when clicked: `<<linkappend "label">>…<</linkappend>>`' },
-  { name: 'linkprepend', hasBody: true,  description: 'Link that prepends content when clicked: `<<linkprepend "label">>…<</linkprepend>>`' },
-  { name: 'linkreplace', hasBody: true,  description: 'Link that replaces itself with content when clicked: `<<linkreplace "label">>…<</linkreplace>>`' },
-  { name: 'actions',     hasBody: true,  description: 'Shorthand for a group of one-shot passage links.' + PASSAGE_HINT },
-  { name: 'click',       hasBody: true,  description: 'Alias for `<<link>>` (deprecated; prefer `<<link>>`).' + PASSAGE_HINT },
-  { name: 'checkbox',    hasBody: false, description: 'Bind a checkbox to a story variable.' },
-  { name: 'radiobutton', hasBody: false, description: 'Bind a radio button to a story variable.' },
-  { name: 'textarea',    hasBody: false, description: 'Bind a `<textarea>` to a story variable.' },
-  { name: 'textbox',     hasBody: false, description: 'Bind a text input to a story variable.' },
-  { name: 'numberbox',   hasBody: false, description: 'Bind a numeric input to a story variable.' },
+  { name: 'link',        hasBody: true,  description: `Inline link with click handler: \`<<link "label" "passage">>…<</link>>\`` + PASSAGE_HINT, category: 'links',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'button',      hasBody: true,  description: `Button with click handler: \`<<button "label" "passage">>…<</button>>\`` + PASSAGE_HINT, category: 'links',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'linkappend',  hasBody: true,  description: 'Link that appends content when clicked: `<<linkappend "label">>…<</linkappend>>`', category: 'links',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'linkprepend', hasBody: true,  description: 'Link that prepends content when clicked: `<<linkprepend "label">>…<</linkprepend>>`', category: 'links',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'linkreplace', hasBody: true,  description: 'Link that replaces itself with content when clicked: `<<linkreplace "label">>…<</linkreplace>>`', category: 'links',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'actions',     hasBody: true,  description: 'Shorthand for a group of one-shot passage links.' + PASSAGE_HINT, category: 'links',
+    args: [{ position: 0, label: 'passage', isPassageRef: true, isRequired: true, kind: 'string' }] },
+  { name: 'click',       hasBody: true,  description: 'Alias for `<<link>>` (deprecated; prefer `<<link>>`).' + PASSAGE_HINT, category: 'links', deprecated: true, deprecationMessage: '<<click>> is deprecated. Use <<link>> instead.',
+    args: [{ position: 0, label: 'label', isRequired: true, kind: 'string' }, { position: 1, label: 'passage', isPassageRef: true, isRequired: false, kind: 'string' }] },
+  { name: 'checkbox',    hasBody: false, description: 'Bind a checkbox to a story variable.', category: 'forms',
+    args: [{ position: 0, label: 'label', kind: 'string' }, { position: 1, label: 'variable', isVariable: true, kind: 'variable' }, { position: 2, label: 'checked', kind: 'string' }, { position: 3, label: 'unchecked', kind: 'string' }] },
+  { name: 'radiobutton', hasBody: false, description: 'Bind a radio button to a story variable.', category: 'forms',
+    args: [{ position: 0, label: 'label', kind: 'string' }, { position: 1, label: 'variable', isVariable: true, kind: 'variable' }, { position: 2, label: 'value', kind: 'string' }] },
+  { name: 'textarea',    hasBody: false, description: 'Bind a `<textarea>` to a story variable.', category: 'forms',
+    args: [{ position: 0, label: 'variable', isVariable: true, isRequired: true, kind: 'variable' }, { position: 1, label: 'placeholder', kind: 'string' }] },
+  { name: 'textbox',     hasBody: false, description: 'Bind a text input to a story variable.', category: 'forms',
+    args: [{ position: 0, label: 'variable', isVariable: true, isRequired: true, kind: 'variable' }, { position: 1, label: 'placeholder', kind: 'string' }] },
+  { name: 'numberbox',   hasBody: false, description: 'Bind a numeric input to a story variable.', category: 'forms',
+    args: [{ position: 0, label: 'variable', isVariable: true, isRequired: true, kind: 'variable' }, { position: 1, label: 'default', kind: 'expression' }] },
 
   // Navigation / Audio / UI
-  { name: 'goto',          hasBody: false, description: `Navigate to a passage: \`<<goto "passage">>\`` + PASSAGE_HINT },
-  { name: 'back',          hasBody: false, description: 'Return to the previous passage.' },
-  { name: 'return',        hasBody: false, description: 'Navigate using browser history.' },
-  { name: 'include',       hasBody: false, description: `Include and render another passage inline: \`<<include "passage">>\`` + PASSAGE_HINT },
-  { name: 'timed',         hasBody: true,  description: 'Display content after a delay: `<<timed 2s>>…<</timed>>`' },
-  { name: 'repeat',        hasBody: true,  description: 'Repeat content on an interval.' },
-  { name: 'stop',          hasBody: false, description: 'Stop the nearest `<<timed>>` or `<<repeat>>`.' },
-  { name: 'widget',        hasBody: true,  description: 'Define a reusable custom macro.' },
-  { name: 'done',          hasBody: true,  description: 'Execute code after the passage is fully rendered.' },
-  { name: 'audio',         hasBody: false, description: 'Control audio: `<<audio "id" play>>`' },
-  { name: 'playlist',      hasBody: false, description: 'Control an audio playlist.' },
-  { name: 'masteraudio',   hasBody: false, description: 'Control the master audio.' },
-  { name: 'createplaylist',hasBody: true,  description: 'Define a new audio playlist.' },
-  { name: 'cacheaudio',    hasBody: false, description: 'Cache an audio track.' },
-  { name: 'waitforaudio',  hasBody: false, description: 'Pause rendering until cached audio is ready.' },
+  { name: 'goto',          hasBody: false, description: `Navigate to a passage: \`<<goto "passage">>\`` + PASSAGE_HINT, category: 'navigation',
+    args: [{ position: 0, label: 'passage', isPassageRef: true, isRequired: true, kind: 'string' }] },
+  { name: 'back',          hasBody: false, description: 'Return to the previous passage.', category: 'navigation' },
+  { name: 'return',        hasBody: false, description: 'Navigate using browser history.', category: 'navigation' },
+  { name: 'include',       hasBody: false, description: `Include and render another passage inline: \`<<include "passage">>\`` + PASSAGE_HINT, category: 'navigation',
+    args: [{ position: 0, label: 'passage', isPassageRef: true, isRequired: true, kind: 'string' }] },
+  { name: 'timed',         hasBody: true,  description: 'Display content after a delay: `<<timed 2s>>…<</timed>>`', category: 'timing',
+    args: [{ position: 0, label: 'delay', isRequired: true, kind: 'string' }] },
+  { name: 'repeat',        hasBody: true,  description: 'Repeat content on an interval.', category: 'timing',
+    args: [{ position: 0, label: 'interval', isRequired: true, kind: 'string' }] },
+  { name: 'stop',          hasBody: false, description: 'Stop the nearest `<<timed>>` or `<<repeat>>`.', category: 'timing' },
+  { name: 'widget',        hasBody: true,  description: 'Define a reusable custom macro.', category: 'widgets',
+    args: [{ position: 0, label: 'name', isRequired: true, kind: 'string' }] },
+  { name: 'done',          hasBody: true,  description: 'Execute code after the passage is fully rendered.', category: 'output' },
+  { name: 'audio',         hasBody: false, description: 'Control audio: `<<audio "id" play>>`', category: 'audio',
+    args: [{ position: 0, label: 'id', isRequired: true, kind: 'string' }] },
+  { name: 'playlist',      hasBody: false, description: 'Control an audio playlist.', category: 'audio' },
+  { name: 'masteraudio',   hasBody: false, description: 'Control the master audio.', category: 'audio' },
+  { name: 'createplaylist',hasBody: true,  description: 'Define a new audio playlist.', category: 'audio' },
+  { name: 'cacheaudio',    hasBody: false, description: 'Cache an audio track.', category: 'audio' },
+  { name: 'waitforaudio',  hasBody: false, description: 'Pause rendering until cached audio is ready.', category: 'audio' },
 ];
 
 export const BUILTIN_MAP: ReadonlyMap<string, MacroDef> = new Map(

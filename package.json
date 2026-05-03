@@ -244,6 +244,42 @@
           },
           "default": [],
           "markdownDescription": "Glob patterns for files and folders to exclude from indexing and compilation (e.g. `vendor/**`)."
+        },
+        "knot.lint.unknownPassage": {
+          "type": "string",
+          "default": "warning",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for unknown passage link targets."
+        },
+        "knot.lint.unknownMacro": {
+          "type": "string",
+          "default": "warning",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for unknown macro names."
+        },
+        "knot.lint.duplicatePassage": {
+          "type": "string",
+          "default": "error",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for duplicate passage names."
+        },
+        "knot.lint.typeMismatch": {
+          "type": "string",
+          "default": "error",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for type mismatch in comparisons."
+        },
+        "knot.lint.unreachablePassage": {
+          "type": "string",
+          "default": "warning",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for passages unreachable from start."
+        },
+        "knot.lint.containerStructure": {
+          "type": "string",
+          "default": "error",
+          "enum": ["error", "warning", "info", "off"],
+          "description": "Severity for structural errors (elseif outside if, etc.)."
         }
       }
     }

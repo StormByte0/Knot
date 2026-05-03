@@ -16,6 +16,9 @@ import type {
 // user variables) but no format-specific completions or hover docs.
 // ---------------------------------------------------------------------------
 
+const EMPTY_SET: ReadonlySet<string> = new Set();
+const EMPTY_MAP: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+
 export class FallbackAdapter implements StoryFormatAdapter {
   readonly id          = 'fallback';
   readonly displayName = 'Unknown Format';
@@ -29,7 +32,7 @@ export class FallbackAdapter implements StoryFormatAdapter {
   }
 
   getBlockMacroNames(): ReadonlySet<string> {
-    return new Set();
+    return EMPTY_SET;
   }
 
   provideBuiltinHover(_req: AdapterHoverRequest, _ctx: FormatContext): string | null {
@@ -46,5 +49,53 @@ export class FallbackAdapter implements StoryFormatAdapter {
 
   getVirtualRuntimePrelude(): string {
     return '';
+  }
+
+  getPassageArgMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  getPassageArgIndex(_macroName: string, _argCount: number): number {
+    return -1;
+  }
+
+  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }> {
+    return [];
+  }
+
+  getBuiltinGlobals(): ReadonlyArray<{ name: string; description: string }> {
+    return [];
+  }
+
+  getSpecialPassageNames(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  isSpecialPassage(_name: string): boolean {
+    return false;
+  }
+
+  getSystemPassageNames(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  getVariableAssignmentMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  getMacroDefinitionMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  getInlineScriptMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
+
+  getAnalysisPriority(_passageName: string): number {
+    return 10;
+  }
+
+  getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>> {
+    return EMPTY_MAP;
   }
 }

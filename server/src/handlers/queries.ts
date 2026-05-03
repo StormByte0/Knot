@@ -81,8 +81,8 @@ export function registerQueryHandlers(
     }
 
     return results.sort((a, b) => {
-      const aSpec = isSpecialPassage(a.name);
-      const bSpec = isSpecialPassage(b.name);
+      const aSpec = isSpecialPassage(a.name, workspace);
+      const bSpec = isSpecialPassage(b.name, workspace);
       if (aSpec && !bSpec) return -1;
       if (!aSpec && bSpec) return  1;
       return a.name.localeCompare(b.name);
@@ -195,6 +195,7 @@ function isUnderRoot(filePath: string, rootPath: string): boolean {
     normalFile.startsWith(normalRootFwd + '\\');
 }
 
-function isSpecialPassage(name: string): boolean {
-  return name.startsWith('Story') || name.startsWith('_') || name === 'StoryInit';
+function isSpecialPassage(name: string, workspace: WorkspaceIndex): boolean {
+  const adapter = workspace.getActiveAdapter();
+  return adapter.isSpecialPassage(name) || name.startsWith('Story');
 }

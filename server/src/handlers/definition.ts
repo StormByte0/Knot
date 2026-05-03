@@ -9,7 +9,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { wordAt, defToLocation, refToLocation, offsetToPosition, getFileText, normalizeUri } from '../serverUtils';
 import type { MarkupNode, ExpressionNode } from '../ast';
 import type { SourceRange } from '../tokenTypes';
-import { PASSAGE_ARG_MACROS, passageArgIndex, passageNameFromExpr } from '../passageArgs';
+import { passageNameFromExpr } from '../passageArgs';
 
 export function registerDefinitionHandlers(
   connection: Connection,
@@ -28,6 +28,9 @@ export function registerDefinitionHandlers(
     const ast     = cached?.ast;
     if (!ast) return null;
 
+    const adapter = workspace.getActiveAdapter();
+    const passageArgMacros = adapter.getPassageArgMacros();
+
     // Passage header
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
@@ -38,7 +41,7 @@ export function registerDefinitionHandlers(
     // Links and macro args
     for (const passage of ast.passages) {
       if (!Array.isArray(passage.body)) continue;
-      const result = findDefinitionInNodes(passage.body, offset, workspace, documents);
+      const result = findDefinitionInNodes(passage.body, offset, workspace, documents, adapter, passageArgMacros);
       if (result) return result;
     }
 
@@ -75,6 +78,9 @@ export function registerDefinitionHandlers(
     const ast     = cached?.ast;
     if (!ast) return [];
 
+    const adapter = workspace.getActiveAdapter();
+    const passageArgMacros = adapter.getPassageArgMacros();
+
     for (const passage of ast.passages) {
       if (offset >= passage.nameRange.start && offset <= passage.nameRange.end) {
         return refsForPassage(passage.name, workspace, documents);
@@ -83,7 +89,7 @@ export function registerDefinitionHandlers(
 
     for (const passage of ast.passages) {
       if (!Array.isArray(passage.body)) continue;
-      const hit = resolveRefSymbolInNodes(passage.body, offset, workspace);
+      const hit = resolveRefSymbolInNodes(passage.body, offset, workspace, adapter, passageArgMacros);
       if (!hit) continue;
       if (hit.kind === 'passage')  return refsForPassage(hit.name, workspace, documents);
       if (hit.kind === 'storyVar') return refsForStoryVar(hit.name, workspace, documents);
@@ -112,6 +118,8 @@ function findDefinitionInNodes(
   offset: number,
   workspace: WorkspaceIndex,
   documents: TextDocuments<TextDocument>,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
 ): Location | null {
   for (const node of nodes) {
     // [[Target]]
@@ -127,8 +135,8 @@ function findDefinitionInNodes(
       }
 
       // Passage arg → go to passage definition
-      if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-        const idx = passageArgIndex(node.name, node.args.length);
+      if (passageArgMacros.has(node.name) && node.args.length > 0) {
+        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           const name = passageNameFromExpr(arg);
@@ -137,7 +145,7 @@ function findDefinitionInNodes(
       }
 
       if (node.body) {
-        const result = findDefinitionInNodes(node.body, offset, workspace, documents);
+        const result = findDefinitionInNodes(node.body, offset, workspace, documents, adapter, passageArgMacros);
         if (result) return result;
       }
     }
@@ -158,6 +166,8 @@ function resolveRefSymbolInNodes(
   nodes: MarkupNode[],
   offset: number,
   workspace: WorkspaceIndex,
+  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
+  passageArgMacros: ReadonlySet<string>,
 ): RefSymbol | null {
   for (const node of nodes) {
     // [[link]] target
@@ -176,8 +186,8 @@ function resolveRefSymbolInNodes(
       }
 
       // Passage arg in macro
-      if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-        const idx = passageArgIndex(node.name, node.args.length);
+      if (passageArgMacros.has(node.name) && node.args.length > 0) {
+        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           const name = passageNameFromExpr(arg);
@@ -192,7 +202,7 @@ function resolveRefSymbolInNodes(
       }
 
       if (node.body) {
-        const bodyHit = resolveRefSymbolInNodes(node.body, offset, workspace);
+        const bodyHit = resolveRefSymbolInNodes(node.body, offset, workspace, adapter, passageArgMacros);
         if (bodyHit) return bodyHit;
       }
     }
@@ -269,6 +279,9 @@ function collectPassageRefRanges(
   if (!ast) return [];
   const ranges: Range[] = [];
 
+  const adapter = workspace.getActiveAdapter();
+  const passageArgMacros = adapter.getPassageArgMacros();
+
   const walk = (nodes: MarkupNode[]): void => {
     for (const node of nodes) {
       // [[Target]]
@@ -281,8 +294,8 @@ function collectPassageRefRanges(
 
       if (node.type === 'macro') {
         // <<goto "Target">>, <<link "label" "Target">>, etc.
-        if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-          const idx  = passageArgIndex(node.name, node.args.length);
+        if (passageArgMacros.has(node.name) && node.args.length > 0) {
+          const idx  = adapter.getPassageArgIndex(node.name, node.args.length);
           const arg  = node.args[idx];
           const name = arg ? passageNameFromExpr(arg) : null;
           if (name === passageName && arg) {

@@ -7,7 +7,7 @@ import type {
   AdapterHoverRequest,
   AdapterDiagnosticRequest,
 } from '../types';
-import { BUILTINS, BUILTIN_MAP, BLOCK_MACRO_NAMES } from './macros';
+import { BUILTINS, BUILTIN_MAP, BLOCK_MACRO_NAMES, BUILTIN_GLOBALS } from './macros';
 
 // ---------------------------------------------------------------------------
 // Per-macro snippet overrides
@@ -84,6 +84,60 @@ const MACRO_SNIPPETS: Record<string, string> = {
   'numberbox':   'numberbox ${1:\\$var} ${2:0}',
 };
 
+// ---------------------------------------------------------------------------
+// Derived data — computed once from BUILTINS schema
+// ---------------------------------------------------------------------------
+
+/** Macros whose arguments include a passage-name reference. Derived from schema. */
+const PASSAGE_ARG_MACRO_NAMES: ReadonlySet<string> = new Set(
+  BUILTINS
+    .filter(m => m.args?.some(a => a.isPassageRef))
+    .map(m => m.name),
+);
+
+/** For label+passage macros: when argCount >= 2, passage is at position 1; else 0. */
+const LABEL_THEN_PASSAGE_MACROS: ReadonlySet<string> = new Set(
+  BUILTINS
+    .filter(m => {
+      if (!m.args) return false;
+      const passageArg = m.args.find(a => a.isPassageRef);
+      return passageArg && passageArg.position > 0;
+    })
+    .map(m => m.name),
+);
+
+/** Special/lifecycle passage names. */
+const SPECIAL_PASSAGE_NAMES: ReadonlySet<string> = new Set([
+  'StoryInit', 'StoryCaption', 'StoryBanner', 'StorySubtitle',
+  'StoryAuthor', 'StoryMenu', 'StoryDisplayTitle', 'StoryShare',
+  'PassageDone', 'PassageHeader', 'PassageFooter', 'PassageReady',
+]);
+
+/** System passages that are always reachable regardless of link structure. */
+const SYSTEM_PASSAGE_NAMES: ReadonlySet<string> = new Set([
+  'StoryData', 'Story JavaScript', 'Story Stylesheet',
+]);
+
+/** Macros that assign story variables. */
+const VARIABLE_ASSIGNMENT_MACROS: ReadonlySet<string> = new Set(['set', 'capture']);
+
+/** Macros that define reusable custom macros. */
+const MACRO_DEFINITION_MACROS: ReadonlySet<string> = new Set(['widget']);
+
+/** Macros that contain inline script bodies. */
+const INLINE_SCRIPT_MACROS: ReadonlySet<string> = new Set(['script']);
+
+/** Parent constraints for structural validation. */
+const MACRO_PARENT_CONSTRAINTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['elseif', new Set(['if', 'elseif'])],
+  ['else', new Set(['if', 'elseif'])],
+  ['case', new Set(['switch'])],
+  ['default', new Set(['switch'])],
+  ['break', new Set(['for'])],
+  ['continue', new Set(['for'])],
+  ['stop', new Set(['timed', 'repeat'])],
+]);
+
 export class SugarCubeAdapter implements StoryFormatAdapter {
   readonly id          = 'sugarcube-2';
   readonly displayName = 'SugarCube 2';
@@ -139,7 +193,13 @@ export class SugarCubeAdapter implements StoryFormatAdapter {
     const { tokenType, rawName } = req;
     if (tokenType === 'macro') {
       const m = BUILTIN_MAP.get(rawName);
-      if (m) return `**Macro** \`<<${m.name}>>\`\n\n${m.description}`;
+      if (m) {
+        let hover = `**Macro** \`<<${m.name}>>\`\n\n${m.description}`;
+        if (m.deprecated) {
+          hover += `\n\n⚠ **Deprecated**: ${m.deprecationMessage ?? ''}`;
+        }
+        return hover;
+      }
     }
     if (tokenType === 'variable' || tokenType === 'function') {
       return this.hoverForGlobal(rawName);
@@ -201,6 +261,72 @@ declare const turns:    number;
 declare const time:     number;
 declare const $args:    unknown[];
 `;
+  }
+
+  // ── Passage-arg macros ─────────────────────────────────────────────────────
+
+  getPassageArgMacros(): ReadonlySet<string> {
+    return PASSAGE_ARG_MACRO_NAMES;
+  }
+
+  getPassageArgIndex(macroName: string, argCount: number): number {
+    if (!PASSAGE_ARG_MACRO_NAMES.has(macroName)) return -1;
+    // For label+passage macros: if 2+ args, passage is at position 1; else 0
+    if (LABEL_THEN_PASSAGE_MACROS.has(macroName) && argCount >= 2) return 1;
+    return 0;
+  }
+
+  // ── Builtins ───────────────────────────────────────────────────────────────
+
+  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }> {
+    return BUILTINS;
+  }
+
+  getBuiltinGlobals(): ReadonlyArray<{ name: string; description: string }> {
+    return BUILTIN_GLOBALS;
+  }
+
+  // ── Special passages ───────────────────────────────────────────────────────
+
+  getSpecialPassageNames(): ReadonlySet<string> {
+    return SPECIAL_PASSAGE_NAMES;
+  }
+
+  isSpecialPassage(name: string): boolean {
+    return SPECIAL_PASSAGE_NAMES.has(name) || name.startsWith('_');
+  }
+
+  getSystemPassageNames(): ReadonlySet<string> {
+    return SYSTEM_PASSAGE_NAMES;
+  }
+
+  // ── Macro categories ───────────────────────────────────────────────────────
+
+  getVariableAssignmentMacros(): ReadonlySet<string> {
+    return VARIABLE_ASSIGNMENT_MACROS;
+  }
+
+  getMacroDefinitionMacros(): ReadonlySet<string> {
+    return MACRO_DEFINITION_MACROS;
+  }
+
+  getInlineScriptMacros(): ReadonlySet<string> {
+    return INLINE_SCRIPT_MACROS;
+  }
+
+  // ── Analysis ordering ──────────────────────────────────────────────────────
+
+  getAnalysisPriority(passageName: string): number {
+    if (passageName === 'StoryInit')        return 0;
+    if (passageName === 'Story JavaScript') return 1;
+    if (SPECIAL_PASSAGE_NAMES.has(passageName)) return 2;
+    return 3;
+  }
+
+  // ── Structural constraints ─────────────────────────────────────────────────
+
+  getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>> {
+    return MACRO_PARENT_CONSTRAINTS;
   }
 
   // ── Private ────────────────────────────────────────────────────────────────

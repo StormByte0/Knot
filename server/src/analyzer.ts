@@ -1,8 +1,9 @@
-import { DocumentNode, ExpressionNode, MarkupNode, ParseDiagnostic } from './ast';
+import { DocumentNode, ExpressionNode, MacroNode, MarkupNode, ParseDiagnostic } from './ast';
 import { SymbolKind, SymbolTable, buildSymbolTable } from './symbols';
 import { SourceRange } from './tokenTypes';
 import { WorkspaceIndex } from './workspaceIndex';
-import { PASSAGE_ARG_MACROS, passageArgIndex, passageNameFromExpr } from './passageArgs';
+import { passageNameFromExpr } from './passageArgs';
+import type { StoryFormatAdapter } from './formats/types';
 
 export interface SemanticToken {
   range: SourceRange;
@@ -18,13 +19,20 @@ export interface AnalysisResult {
 
 export class SyntaxAnalyzer {
   analyze(ast: DocumentNode, uri: string, workspace?: WorkspaceIndex): AnalysisResult {
-    const { table: symbols } = buildSymbolTable(ast, uri);
+    const adapter = workspace?.getActiveAdapter();
+    const { table: symbols } = buildSymbolTable(ast, uri, adapter);
     const resolvedLinks = this.resolveLinks(ast, symbols, workspace);
     const diagnostics: ParseDiagnostic[] = [
       ...this.validateLinks(resolvedLinks),
       ...this.validateMacros(ast, symbols, workspace),
     ];
-    const semanticTokens = this.generateTokens(ast);
+
+    // Add structural validation if adapter is available
+    if (adapter) {
+      diagnostics.push(...this.validateStructure(ast, adapter));
+    }
+
+    const semanticTokens = this.generateTokens(ast, adapter);
     return { symbols, diagnostics, semanticTokens, resolvedLinks };
   }
 
@@ -39,6 +47,8 @@ export class SyntaxAnalyzer {
     ast: DocumentNode, symbols: SymbolTable, workspace?: WorkspaceIndex,
   ): Array<{ target: string; range: SourceRange; resolved: boolean }> {
     const links: Array<{ target: string; range: SourceRange; resolved: boolean }> = [];
+    const adapter = workspace?.getActiveAdapter();
+    const passageArgMacros = adapter?.getPassageArgMacros();
 
     const walkNodes = (nodes: MarkupNode[]): void => {
       for (const node of nodes) {
@@ -53,8 +63,8 @@ export class SyntaxAnalyzer {
 
         if (node.type === 'macro') {
           // <<goto "Target">>, <<link "label" "Target">>, <<include "Target">>, etc.
-          if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-            const idx  = passageArgIndex(node.name, node.args.length);
+          if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+            const idx  = adapter!.getPassageArgIndex(node.name, node.args.length);
             const arg  = node.args[idx];
             const name = arg ? passageNameFromExpr(arg) : null;
             if (name && arg) {
@@ -92,6 +102,8 @@ export class SyntaxAnalyzer {
     ast: DocumentNode, symbols: SymbolTable, workspace?: WorkspaceIndex,
   ): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
+    const adapter = workspace?.getActiveAdapter();
+    const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
 
     // Cache builtin names in a Set for O(1) lookup instead of repeated
     // calls to symbols.isBuiltin() which does Map lookups each time.
@@ -115,7 +127,9 @@ export class SyntaxAnalyzer {
         for (const arg of node.args) {
           this.walkExpr(arg, expr => {
             if (expr.type !== 'binaryOp') return;
-            if (node.name === 'set' && expr.operator === 'to') {
+            // Use adapter for variable assignment check, but fall back to 'set' for compatibility
+            const isAssignmentMacro = varAssignmentMacros?.has(node.name) ?? node.name === 'set';
+            if (isAssignmentMacro && expr.operator === 'to') {
               if (expr.left.type !== 'storyVar' && expr.left.type !== 'tempVar' &&
                   expr.left.type !== 'propertyAccess' && expr.left.type !== 'indexAccess') {
                 diags.push({
@@ -149,8 +163,78 @@ export class SyntaxAnalyzer {
     return diags;
   }
 
-  private generateTokens(ast: DocumentNode): SemanticToken[] {
+  /**
+   * Validate structural constraints on macros — e.g. <<elseif>> must be
+   * inside an <<if>> chain, <<break>> must be inside <<for>>, etc.
+   */
+  validateStructure(ast: DocumentNode, adapter: StoryFormatAdapter): ParseDiagnostic[] {
+    const diags: ParseDiagnostic[] = [];
+    const constraints = adapter.getMacroParentConstraints();
+    if (constraints.size === 0) return diags;
+
+    // Stack of open macro names as we walk the tree
+    const parentStack: string[] = [];
+
+    const walkNodes = (nodes: MarkupNode[]): void => {
+      for (const node of nodes) {
+        if (node.type !== 'macro') continue;
+
+        // Check if this macro has parent constraints
+        const validParents = constraints.get(node.name);
+        if (validParents) {
+          // Find the nearest constrained parent in the stack
+          let foundValidParent = false;
+          let foundElse = false;
+
+          for (let i = parentStack.length - 1; i >= 0; i--) {
+            const parent = parentStack[i]!;
+            if (validParents.has(parent)) {
+              foundValidParent = true;
+
+              // Special case: <<else>> followed by <<elseif>> is an error
+              if (node.name === 'elseif' && parent === 'else') {
+                foundElse = true;
+              }
+              break;
+            }
+            // If we hit 'else' while looking for if/elseif parents, mark it
+            if (node.name === 'elseif' && parent === 'else') {
+              foundElse = true;
+            }
+          }
+
+          if (!foundValidParent) {
+            const parentNames = [...validParents].map(n => `<<${n}>>`).join(' or ');
+            diags.push({
+              message:  `<<${node.name}>> outside of ${parentNames} chain`,
+              range:    node.nameRange,
+              severity: 'error',
+            });
+          } else if (foundElse && node.name === 'elseif') {
+            diags.push({
+              message:  `<<elseif>> after <<else>> in the same <<if>> chain`,
+              range:    node.nameRange,
+              severity: 'error',
+            });
+          }
+        }
+
+        // Push this macro onto the parent stack and recurse
+        parentStack.push(node.name);
+        if (node.body) walkNodes(node.body);
+        parentStack.pop();
+      }
+    };
+
+    for (const p of ast.passages) {
+      if (Array.isArray(p.body)) walkNodes(p.body);
+    }
+    return diags;
+  }
+
+  private generateTokens(ast: DocumentNode, adapter?: StoryFormatAdapter): SemanticToken[] {
     const tokens: SemanticToken[] = [];
+    const passageArgMacros = adapter?.getPassageArgMacros();
 
     const emitExpr = (expr: ExpressionNode): void => {
       switch (expr.type) {
@@ -188,8 +272,8 @@ export class SyntaxAnalyzer {
           }
 
           // Emit passage token for passage-arg macros so hover/highlight works
-          if (PASSAGE_ARG_MACROS.has(node.name) && node.args.length > 0) {
-            const idx = passageArgIndex(node.name, node.args.length);
+          if (passageArgMacros?.has(node.name) && node.args.length > 0) {
+            const idx = adapter!.getPassageArgIndex(node.name, node.args.length);
             const arg = node.args[idx];
             if (arg && arg.type === 'literal' && arg.kind === 'string') {
               // Emit the inside of the string (without quotes) as a passage token

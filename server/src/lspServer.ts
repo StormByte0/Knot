@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import {
   createConnection, ProposedFeatures, TextDocuments, TextDocumentSyncKind,
   type InitializeParams, type InitializeResult,
-  SemanticTokensLegend, FileChangeType,
+  SemanticTokensLegend, FileChangeType, DiagnosticSeverity,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
@@ -18,6 +18,7 @@ import { registerHoverHandler }       from './handlers/hover';
 import { registerCompletionHandler }  from './handlers/completions';
 import { registerFeatureHandlers }    from './handlers/features';
 import { registerQueryHandlers }      from './handlers/queries';
+import { registerDocumentLinkHandler } from './handlers/documentLinks';
 
 // ---------------------------------------------------------------------------
 // Singletons — created once, wired together, never recreated
@@ -105,6 +106,20 @@ function scanRoot(rootPath: string, excludePatterns: string[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Lint severity helper
+// ---------------------------------------------------------------------------
+
+function parseSeverity(val: string | undefined, defaultSeverity: DiagnosticSeverity): DiagnosticSeverity {
+  switch (val) {
+    case 'error':   return DiagnosticSeverity.Error;
+    case 'warning': return DiagnosticSeverity.Warning;
+    case 'info':    return DiagnosticSeverity.Information;
+    case 'off':     return DiagnosticSeverity.Hint; // Hint is used as "off" since it's least visible
+    default:        return defaultSeverity;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Initialize
 // ---------------------------------------------------------------------------
 
@@ -117,15 +132,37 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
     workspaceRoots = [uriToPath(params.rootUri)];
   }
 
-  const opts = params.initializationOptions as { exclude?: string[] } | undefined;
+  const opts = params.initializationOptions as {
+    exclude?: string[];
+    lint?: {
+      unknownPassage?: string;
+      unknownMacro?: string;
+      duplicatePassage?: string;
+      typeMismatch?: string;
+      unreachablePassage?: string;
+      containerStructure?: string;
+    };
+  } | undefined;
   excludePatterns = opts?.exclude ?? [];
+
+  // Thread lint config from initialization options
+  if (opts?.lint) {
+    workspace.setLintConfig({
+      unknownPassage:     parseSeverity(opts.lint.unknownPassage, DiagnosticSeverity.Warning),
+      unknownMacro:       parseSeverity(opts.lint.unknownMacro, DiagnosticSeverity.Warning),
+      duplicatePassage:   parseSeverity(opts.lint.duplicatePassage, DiagnosticSeverity.Error),
+      typeMismatch:       parseSeverity(opts.lint.typeMismatch, DiagnosticSeverity.Error),
+      unreachablePassage: parseSeverity(opts.lint.unreachablePassage, DiagnosticSeverity.Warning),
+      containerStructure: parseSeverity(opts.lint.containerStructure, DiagnosticSeverity.Error),
+    });
+  }
 
   return {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       completionProvider: {
         resolveProvider: false,
-        triggerCharacters: ['<', '[', '$', '_', '.', '/','"'],
+        triggerCharacters: ['<', '[', '$', '_', '.','"'],
       },
       definitionProvider:      true,
       referencesProvider:      true,
@@ -135,6 +172,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       foldingRangeProvider:    true,
       codeActionProvider:      true,
       renameProvider:          { prepareProvider: true },
+      documentLinkProvider:    {},
       semanticTokensProvider: {
         legend: {
           tokenTypes:     ['function','class','variable','operator','string','number','comment'],
@@ -185,6 +223,7 @@ registerHoverHandler(connection, documents, workspace);
 registerCompletionHandler(connection, documents, workspace);
 registerFeatureHandlers(connection, documents, workspace);
 registerQueryHandlers(connection, documents, workspace, () => workspaceRoots[0]);
+registerDocumentLinkHandler(connection, documents, workspace);
 
 // ---------------------------------------------------------------------------
 // Document sync — LSP-managed open documents
