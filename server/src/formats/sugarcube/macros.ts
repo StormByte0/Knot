@@ -31,6 +31,10 @@ export interface MacroDef {
   deprecationMessage?: string;
   /** Category for filtering (e.g. 'control', 'variables', 'links'). */
   category?: string;
+  /** If this macro must be inside a parent macro, name the parent. For multi-parent, use containerAnyOf. */
+  container?: string;
+  /** If this macro must be inside one of several parent macros. */
+  containerAnyOf?: string[];
 }
 
 export interface GlobalDef {
@@ -51,15 +55,15 @@ const PASSAGE_HINT = ' — *Ctrl+Space inside quotes for passage name completion
 export const BUILTINS: MacroDef[] = [
   // Control
   { name: 'if',       hasBody: true,  description: 'Conditional block. `<<if $condition>>…<</if>>`', category: 'control' },
-  { name: 'elseif',   hasBody: false, description: 'Else-if branch within `<<if>>`.', category: 'control' },
-  { name: 'else',     hasBody: false, description: 'Else branch within `<<if>>`.', category: 'control' },
+  { name: 'elseif',   hasBody: false, description: 'Else-if branch within `<<if>>`.', category: 'control', containerAnyOf: ['if', 'elseif'] },
+  { name: 'else',     hasBody: false, description: 'Else branch within `<<if>>`.', category: 'control', container: 'if' },
   { name: 'for',      hasBody: true,  description: 'Iteration. `<<for _i, $arr>>…<</for>>`', category: 'control' },
-  { name: 'break',    hasBody: false, description: 'Break out of the nearest enclosing `<<for>>` loop.', category: 'control' },
-  { name: 'continue', hasBody: false, description: 'Skip to the next iteration of the nearest `<<for>>` loop.', category: 'control' },
+  { name: 'break',    hasBody: false, description: 'Break out of the nearest enclosing `<<for>>` loop.', category: 'control', container: 'for' },
+  { name: 'continue', hasBody: false, description: 'Skip to the next iteration of the nearest `<<for>>` loop.', category: 'control', container: 'for' },
   { name: 'switch',   hasBody: true,  description: 'Switch on an expression. `<<switch $v>><<case 1>>…<</switch>>`', category: 'control',
     args: [{ position: 0, label: 'expression', isRequired: true, kind: 'expression' }] },
-  { name: 'case',     hasBody: false, description: 'Case arm within `<<switch>>`.', category: 'control' },
-  { name: 'default',  hasBody: false, description: 'Default arm within `<<switch>>`.', category: 'control' },
+  { name: 'case',     hasBody: false, description: 'Case arm within `<<switch>>`.', category: 'control', container: 'switch' },
+  { name: 'default',  hasBody: false, description: 'Default arm within `<<switch>>`.', category: 'control', container: 'switch' },
 
   // Variables
   { name: 'set',      hasBody: false, description: 'Assign a value: `<<set $var to expression>>`', category: 'variables',
@@ -140,7 +144,7 @@ export const BUILTINS: MacroDef[] = [
     args: [{ position: 0, label: 'delay', isRequired: true, kind: 'string' }] },
   { name: 'repeat',        hasBody: true,  description: 'Repeat content on an interval.', category: 'timing',
     args: [{ position: 0, label: 'interval', isRequired: true, kind: 'string' }] },
-  { name: 'stop',          hasBody: false, description: 'Stop the nearest `<<timed>>` or `<<repeat>>`.', category: 'timing' },
+  { name: 'stop',          hasBody: false, description: 'Stop the nearest `<<timed>>` or `<<repeat>>`.', category: 'timing', containerAnyOf: ['timed', 'repeat'] },
   { name: 'widget',        hasBody: true,  description: 'Define a reusable custom macro.', category: 'widgets',
     args: [{ position: 0, label: 'name', isRequired: true, kind: 'string' }] },
   { name: 'done',          hasBody: true,  description: 'Execute code after the passage is fully rendered.', category: 'output' },

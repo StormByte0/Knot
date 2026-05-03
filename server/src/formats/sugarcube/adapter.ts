@@ -6,6 +6,7 @@ import type {
   AdapterCompletionRequest,
   AdapterHoverRequest,
   AdapterDiagnosticRequest,
+  BuiltinMacroInfo,
 } from '../types';
 import { BUILTINS, BUILTIN_MAP, BLOCK_MACRO_NAMES, BUILTIN_GLOBALS } from './macros';
 
@@ -127,16 +128,19 @@ const MACRO_DEFINITION_MACROS: ReadonlySet<string> = new Set(['widget']);
 /** Macros that contain inline script bodies. */
 const INLINE_SCRIPT_MACROS: ReadonlySet<string> = new Set(['script']);
 
-/** Parent constraints for structural validation. */
-const MACRO_PARENT_CONSTRAINTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
-  ['elseif', new Set(['if', 'elseif'])],
-  ['else', new Set(['if', 'elseif'])],
-  ['case', new Set(['switch'])],
-  ['default', new Set(['switch'])],
-  ['break', new Set(['for'])],
-  ['continue', new Set(['for'])],
-  ['stop', new Set(['timed', 'repeat'])],
-]);
+/** Parent constraints for structural validation — derived from BUILTINS schema. */
+const MACRO_PARENT_CONSTRAINTS: ReadonlyMap<string, ReadonlySet<string>> = (() => {
+  const map = new Map<string, Set<string>>();
+  for (const m of BUILTINS) {
+    const parents: string[] = [];
+    if (m.container) parents.push(m.container);
+    if (m.containerAnyOf) parents.push(...m.containerAnyOf);
+    if (parents.length > 0) {
+      map.set(m.name, new Set(parents));
+    }
+  }
+  return map as ReadonlyMap<string, ReadonlySet<string>>;
+})();
 
 export class SugarCubeAdapter implements StoryFormatAdapter {
   readonly id          = 'sugarcube-2';
@@ -278,7 +282,7 @@ declare const $args:    unknown[];
 
   // ── Builtins ───────────────────────────────────────────────────────────────
 
-  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }> {
+  getBuiltinMacros(): ReadonlyArray<BuiltinMacroInfo> {
     return BUILTINS;
   }
 
@@ -327,6 +331,66 @@ declare const $args:    unknown[];
 
   getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>> {
     return MACRO_PARENT_CONSTRAINTS;
+  }
+
+  // ── Virtual doc generation ────────────────────────────────────────────────
+
+  storyVarToJs(name: string): string { return `State.variables.${name}`; }
+  tempVarToJs(name: string): string { return `temporary.${name}`; }
+  getOperatorNormalization(): Readonly<Record<string, string>> {
+    return {
+      to: '=', eq: '===', neq: '!==', is: '===', isnot: '!==',
+      gt: '>', gte: '>=', lt: '<', lte: '<=',
+      and: '&&', or: '||', not: '!',
+    };
+  }
+
+  // ── Format hints (parser / lexer) ─────────────────────────────────────────
+
+  getVariableSigils(): ReadonlyArray<{ sigil: string; variableType: 'story' | 'temporary' }> {
+    return [
+      { sigil: '$', variableType: 'story' },
+      { sigil: '_', variableType: 'temporary' },
+    ];
+  }
+
+  resolveVariableSigil(sigil: string): 'story' | 'temporary' | null {
+    if (sigil === '$') return 'story';
+    if (sigil === '_') return 'temporary';
+    return null;
+  }
+
+  getOperatorPrecedence(): Readonly<Record<string, number>> {
+    return {
+      or: 1, and: 2,
+      eq: 3, neq: 3, is: 3, isnot: 3,
+      gt: 4, gte: 4, lt: 4, lte: 4,
+      to: 0,
+    };
+  }
+
+  getScriptTags(): ReadonlyArray<string> {
+    return ['script'];
+  }
+
+  getStylesheetTags(): ReadonlyArray<string> {
+    return ['stylesheet', 'style'];
+  }
+
+  getTempVarPrefix(): string {
+    return '_';
+  }
+
+  getAssignmentOperators(): ReadonlyArray<string> {
+    return ['to', '='];
+  }
+
+  getComparisonOperators(): ReadonlyArray<string> {
+    return ['gt', 'gte', 'lt', 'lte'];
+  }
+
+  getStoryDataPassageName(): string | null {
+    return 'StoryData';
   }
 
   // ── Private ────────────────────────────────────────────────────────────────

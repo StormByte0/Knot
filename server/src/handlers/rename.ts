@@ -12,6 +12,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { offsetToPosition, getFileText, normalizeUri } from '../serverUtils';
 import { passageNameFromExpr } from '../passageArgs';
 import type { ExpressionNode, MarkupNode } from '../ast';
+import { walkMarkup, walkDocument } from '../visitors';
 
 // ---------------------------------------------------------------------------
 
@@ -53,7 +54,10 @@ export function registerRenameHandlers(
 
     // ── Variable rename ($varName) ─────────────────────────────────────────
     const text = doc.getText();
-    const word = text.slice(Math.max(0, offset - 100), offset).match(/\$([A-Za-z_][A-Za-z0-9_]*)$/);
+    const storySigil = adapter.getVariableSigils().find(s => s.variableType === 'story');
+    const storySigilChar = storySigil?.sigil ?? '$';
+    const escaped = storySigilChar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const word = text.slice(Math.max(0, offset - 100), offset).match(new RegExp(`${escaped}([A-Za-z_][A-Za-z0-9_]*)$`));
     if (word) {
       const varName = word[1]!;
       const varDef = workspace.getVariableDefinition(varName);
@@ -112,7 +116,10 @@ export function registerRenameHandlers(
 
     // 3. Variable rename
     const text = doc.getText();
-    const word = text.slice(Math.max(0, offset - 100), offset).match(/\$([A-Za-z_][A-Za-z0-9_]*)$/);
+    const storySigil = adapter.getVariableSigils().find(s => s.variableType === 'story');
+    const storySigilChar = storySigil?.sigil ?? '$';
+    const escapedSigil = storySigilChar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const word = text.slice(Math.max(0, offset - 100), offset).match(new RegExp(`${escapedSigil}([A-Za-z_][A-Za-z0-9_]*)$`));
     if (word) {
       const varName = word[1]!;
       const varDef = workspace.getVariableDefinition(varName);
@@ -196,36 +203,20 @@ function addPassageReferenceEdits(
   if (!ast) return;
   const edits: TextEdit[] = changes[uri] ?? [];
 
-  for (const p of ast.passages) {
-    if (!Array.isArray(p.body)) continue;
-    collectRenameEdits(p.body, oldName, newName, fileText, edits, adapter, passageArgMacros);
-  }
-
-  if (edits.length) changes[uri] = edits;
-}
-
-function collectRenameEdits(
-  nodes: MarkupNode[],
-  oldName: string,
-  newName: string,
-  fileText: string,
-  edits: TextEdit[],
-  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
-  passageArgMacros: ReadonlySet<string>,
-): void {
-  for (const node of nodes) {
-    // [[OldName]] and variants
-    if (node.type === 'link' && node.target === oldName) {
-      edits.push(TextEdit.replace(
-        Range.create(
-          offsetToPosition(fileText, node.targetRange.start),
-          offsetToPosition(fileText, node.targetRange.end),
-        ),
-        newName,
-      ));
-    }
-
-    if (node.type === 'macro') {
+  walkDocument(ast, {
+    onLink(node) {
+      // [[OldName]] and variants
+      if (node.target === oldName) {
+        edits.push(TextEdit.replace(
+          Range.create(
+            offsetToPosition(fileText, node.targetRange.start),
+            offsetToPosition(fileText, node.targetRange.end),
+          ),
+          newName,
+        ));
+      }
+    },
+    onMacro(node) {
       // <<goto "OldName">>, <<link "label" "OldName">>, etc.
       if (passageArgMacros.has(node.name) && node.args.length > 0) {
         const idx = adapter.getPassageArgIndex(node.name, node.args.length);
@@ -242,13 +233,10 @@ function collectRenameEdits(
           ));
         }
       }
+    },
+  });
 
-      // Recurse into body for nested constructs
-      if (node.body) {
-        collectRenameEdits(node.body, oldName, newName, fileText, edits, adapter, passageArgMacros);
-      }
-    }
-  }
+  if (edits.length) changes[uri] = edits;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,26 +358,31 @@ function findRenameTargetInNodes(
   macroDefMacros: ReadonlySet<string>,
   workspace: WorkspaceIndex,
 ): Range | null {
-  for (const node of nodes) {
-    // [[Target]]
-    if (node.type === 'link' && offset >= node.range.start && offset <= node.range.end) {
-      return Range.create(
-        doc.positionAt(node.targetRange.start),
-        doc.positionAt(node.targetRange.end),
-      );
-    }
+  let result: Range | null = null;
 
-    if (node.type === 'macro') {
+  walkMarkup(nodes, {
+    onLink(node) {
+      // [[Target]]
+      if (offset >= node.range.start && offset <= node.range.end) {
+        result = Range.create(
+          doc.positionAt(node.targetRange.start),
+          doc.positionAt(node.targetRange.end),
+        );
+        if (result) return false;
+      }
+    },
+    onMacro(node) {
       // Passage arg in macro
       if (passageArgMacros.has(node.name) && node.args.length > 0) {
         const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           // Highlight inside the quotes only
-          return Range.create(
+          result = Range.create(
             doc.positionAt(arg.range.start + 1),
             doc.positionAt(arg.range.end - 1),
           );
+          if (result) return false;
         }
       }
 
@@ -399,10 +392,11 @@ function findRenameTargetInNodes(
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           if (arg.type === 'literal' && arg.kind === 'string') {
             // Inside the string literal
-            return Range.create(
+            result = Range.create(
               doc.positionAt(arg.range.start + 1),
               doc.positionAt(arg.range.end - 1),
             );
+            if (result) return false;
           }
         }
       }
@@ -411,20 +405,17 @@ function findRenameTargetInNodes(
       if (offset >= node.nameRange.start && offset <= node.nameRange.end) {
         const macroDef = workspace.getMacroDefinition(node.name);
         if (macroDef) {
-          return Range.create(
+          result = Range.create(
             doc.positionAt(node.nameRange.start),
             doc.positionAt(node.nameRange.end),
           );
+          if (result) return false;
         }
       }
+    },
+  });
 
-      if (node.body) {
-        const found = findRenameTargetInNodes(node.body, offset, doc, adapter, passageArgMacros, macroDefMacros, workspace);
-        if (found) return found;
-      }
-    }
-  }
-  return null;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,29 +428,30 @@ function findPassageNameAtOffset(
   adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
   passageArgMacros: ReadonlySet<string>,
 ): string | null {
-  for (const node of nodes) {
-    if (node.type === 'link' && offset >= node.range.start && offset <= node.range.end) {
-      return node.target;
-    }
+  let result: string | null = null;
 
-    if (node.type === 'macro') {
+  walkMarkup(nodes, {
+    onLink(node) {
+      if (offset >= node.range.start && offset <= node.range.end) {
+        result = node.target;
+        return false;
+      }
+    },
+    onMacro(node) {
       if (passageArgMacros.has(node.name) && node.args.length > 0) {
         const idx = adapter.getPassageArgIndex(node.name, node.args.length);
         const arg = node.args[idx];
         if (arg && offset >= arg.range.start && offset <= arg.range.end) {
           if (arg.type === 'literal' && arg.kind === 'string') {
-            return String(arg.value);
+            result = String(arg.value);
+            return false;
           }
         }
       }
+    },
+  });
 
-      if (node.body) {
-        const found = findPassageNameAtOffset(node.body, offset, adapter, passageArgMacros);
-        if (found) return found;
-      }
-    }
-  }
-  return null;
+  return result;
 }
 
 function findWidgetNameAtOffset(
@@ -467,20 +459,21 @@ function findWidgetNameAtOffset(
   offset: number,
   macroDefMacros: ReadonlySet<string>,
 ): { name: string } | null {
-  for (const node of nodes) {
-    if (node.type === 'macro' && macroDefMacros.has(node.name) && node.args.length > 0) {
-      const arg = node.args[0];
-      if (arg && offset >= arg.range.start && offset <= arg.range.end) {
-        if (arg.type === 'literal' && arg.kind === 'string') {
-          return { name: String(arg.value) };
+  let result: { name: string } | null = null;
+
+  walkMarkup(nodes, {
+    onMacro(node) {
+      if (macroDefMacros.has(node.name) && node.args.length > 0) {
+        const arg = node.args[0];
+        if (arg && offset >= arg.range.start && offset <= arg.range.end) {
+          if (arg.type === 'literal' && arg.kind === 'string') {
+            result = { name: String(arg.value) };
+            return false;
+          }
         }
       }
-    }
+    },
+  });
 
-    if (node.type === 'macro' && node.body) {
-      const found = findWidgetNameAtOffset(node.body, offset, macroDefMacros);
-      if (found) return found;
-    }
-  }
-  return null;
+  return result;
 }

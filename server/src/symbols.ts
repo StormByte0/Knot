@@ -3,6 +3,7 @@ import * as walk from 'acorn-walk';
 import { DocumentNode, ExpressionNode, MacroNode, MarkupNode } from './ast';
 import { SourceRange } from './tokenTypes'; 
 import type { StoryFormatAdapter } from './formats/types';
+import { walkMarkup, walkExpression } from './visitors';
 
 export enum SymbolKind {
   Passage = 'Passage',
@@ -124,7 +125,7 @@ export function buildSymbolTable(ast: DocumentNode, uri: string, adapter?: Story
   for (const passage of ast.passages) {
     if (Array.isArray(passage.body)) {
       collectMarkupSymbols(passage.body, uri, table, unresolvedPassageLinks, adapter);
-      collectInlineScriptSymbols(passage.body, uri, table);
+      collectInlineScriptSymbols(passage.body, uri, table, adapter);
     } else if (passage.body.type === 'scriptBody') {
       collectScriptSymbols(passage.body.source, passage.body.range.start, uri, table);
     }
@@ -140,22 +141,19 @@ function collectMarkupSymbols(
   unresolved: Array<{ target: string; uri: string; range: SourceRange }>,
   adapter?: StoryFormatAdapter,
 ): void {
-  for (const node of nodes) {
-    if (node.type === 'link') {
+  walkMarkup(nodes, {
+    onLink(node) {
       const resolved = table.resolveByKind(SymbolKind.Passage, node.target);
       if (resolved?.tier === 'user') {
         table.addReference(SymbolKind.Passage, node.target, { uri, range: node.range });
       } else {
         unresolved.push({ target: node.target, uri, range: node.range });
       }
-      continue;
-    }
-
-    if (node.type === 'macro') {
+    },
+    onMacro(node) {
       collectMacroSymbols(node, uri, table, unresolved, adapter);
-      if (node.body) collectMarkupSymbols(node.body, uri, table, unresolved, adapter);
-    }
-  }
+    },
+  });
 }
 
 function collectMacroSymbols(
@@ -169,9 +167,10 @@ function collectMacroSymbols(
 
   // Use adapter for variable assignment macros
   const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
+  const assignmentOps = adapter?.getAssignmentOperators() ?? ['to', '='];
   if (varAssignmentMacros?.has(node.name)) {
     const arg = node.args[0];
-    if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
+    if (arg?.type === 'binaryOp' && assignmentOps.includes(arg.operator)) {
       const varName = extractStoryVarName(arg.left);
       if (varName) table.addUserSymbol(SymbolKind.StoryVar, varName, uri, arg.left.range);
     }
@@ -227,54 +226,47 @@ function collectScriptSymbols(source: string, baseOffset: number, uri: string, t
   } catch {}
 }
 
-function collectInlineScriptSymbols(nodes: MarkupNode[], uri: string, table: SymbolTable): void {
-  // Get inline script macro names from the adapter - but we don't have it here
-  // Fall back to checking 'script' which is the only one in SugarCube
-  for (const node of nodes) {
-    if (node.type === 'macro' && node.name === 'script' && node.body) {
-      const src = node.body.filter(n => n.type === 'text').map(n => (n as any).value).join('');
-      if (src.trim()) {
-        const baseOffset = node.range.start;
-        try {
-          const program = acorn.parse(src, { ecmaVersion: 'latest' });
-          walk.simple(program as never, {
-            CallExpression(callNode: any) {
-              if (callNode?.callee?.type !== 'MemberExpression') return;
-              if (callNode.callee.object?.name !== 'Macro') return;
-              if (callNode.callee.property?.name !== 'add') return;
-              const firstArg = callNode.arguments?.[0];
-              if (!firstArg || firstArg.type !== 'Literal' || typeof firstArg.value !== 'string') return;
-              const start = baseOffset + (firstArg.start ?? 0) + 1;
-              const end = start + firstArg.value.length;
-              table.addUserSymbol(SymbolKind.Macro, firstArg.value, uri, { start, end });
-            },
-          });
-        } catch {}
+function collectInlineScriptSymbols(
+  nodes: MarkupNode[],
+  uri: string,
+  table: SymbolTable,
+  adapter?: StoryFormatAdapter,
+): void {
+  const inlineScriptMacros = adapter?.getInlineScriptMacros();
+  walkMarkup(nodes, {
+    onMacro(node) {
+      const isInlineScript = inlineScriptMacros?.has(node.name) ?? node.name === 'script';
+      if (isInlineScript && node.body) {
+        const src = node.body.filter(n => n.type === 'text').map(n => (n as import('./ast').TextNode).value).join('');
+        if (src.trim()) {
+          const baseOffset = node.body.length > 0 ? node.body[0]!.range.start : 0;
+          try {
+            const program = acorn.parse(src, { ecmaVersion: 'latest' });
+            walk.simple(program as never, {
+              CallExpression(callNode: any) {
+                if (callNode?.callee?.type !== 'MemberExpression') return;
+                if (callNode.callee.object?.name !== 'Macro') return;
+                if (callNode.callee.property?.name !== 'add') return;
+                const firstArg = callNode.arguments?.[0];
+                if (!firstArg || firstArg.type !== 'Literal' || typeof firstArg.value !== 'string') return;
+                const start = baseOffset + (firstArg.start ?? 0) + 1;
+                const end = start + firstArg.value.length;
+                table.addUserSymbol(SymbolKind.Macro, firstArg.value, uri, { start, end });
+              },
+            });
+          } catch {}
+        }
       }
-    }
-    if (node.type === 'macro' && node.body) collectInlineScriptSymbols(node.body, uri, table);
-  }
+    },
+  });
 }
 
 function collectExprSymbols(expr: ExpressionNode, uri: string, table: SymbolTable): void {
-  switch (expr.type) {
-    case 'storyVar':
-      table.addReference(SymbolKind.StoryVar, expr.name, { uri, range: expr.range }); return;
-    case 'binaryOp':
-      collectExprSymbols(expr.left, uri, table); collectExprSymbols(expr.right, uri, table); return;
-    case 'unaryOp': collectExprSymbols(expr.operand, uri, table); return;
-    case 'propertyAccess': collectExprSymbols(expr.object, uri, table); return;
-    case 'indexAccess':
-      collectExprSymbols(expr.object, uri, table); collectExprSymbols(expr.index, uri, table); return;
-    case 'call':
-      collectExprSymbols(expr.callee, uri, table);
-      for (const a of expr.args) collectExprSymbols(a, uri, table); return;
-    case 'arrayLiteral':
-      for (const el of expr.elements) collectExprSymbols(el, uri, table); return;
-    case 'objectLiteral':
-      for (const p of expr.properties) collectExprSymbols(p.value, uri, table); return;
-    default: return;
-  }
+  walkExpression(expr, e => {
+    if (e.type === 'storyVar') {
+      table.addReference(SymbolKind.StoryVar, e.name, { uri, range: e.range });
+    }
+  });
 }
 
 function extractStoryVarName(expr: ExpressionNode): string | null {

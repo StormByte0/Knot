@@ -1,4 +1,4 @@
-import { DocumentNode, ExpressionNode, MarkupNode, ParseDiagnostic } from './ast';
+import { DocumentNode, ParseDiagnostic } from './ast';
 import { AnalysisResult, SyntaxAnalyzer } from './analyzer';
 import { IncrementalParser } from './incrementalParser';
 import { SymbolKind, UserSymbol, buildSymbolTable } from './symbols';
@@ -7,52 +7,31 @@ import { SourceRange } from './tokenTypes';
 import { passageNameFromExpr } from './passageArgs';
 import { FormatRegistry } from './formats/registry';
 import type { StoryFormatAdapter } from './formats/types';
+import { walkMarkup, walkDocument, walkExpression, walkDocumentExpressions } from './visitors';
 import { DiagnosticSeverity } from 'vscode-languageserver/node';
 
+// Decomposed components (R5)
+import { DefinitionRegistry } from './definitionRegistry';
+import type { PassageDef, VarDef, JsDef } from './definitionRegistry';
+import { ReferenceIndex } from './referenceIndex';
+import type { PassageRef, MacroRef } from './referenceIndex';
+import { LinkGraph } from './linkGraph';
+import type { LinkRef } from './linkGraph';
+import { ParseCache } from './parseCache';
+import type { ParsedFile } from './parseCache';
+
+// Diagnostic rule system (R6)
+import { DiagnosticEngine, DiagnosticRule } from './diagnosticEngine';
+
+// Re-export types so existing consumers keep working
+export type { PassageDef, VarDef, JsDef } from './definitionRegistry';
+export type { PassageRef, MacroRef } from './referenceIndex';
+export type { LinkRef } from './linkGraph';
+export type { ParsedFile } from './parseCache';
+
 // ---------------------------------------------------------------------------
-// Types
+// Types — kept here for backward compat
 // ---------------------------------------------------------------------------
-
-interface ParsedFile {
-  ast: DocumentNode;
-  diagnostics: ParseDiagnostic[];
-}
-
-interface LinkRef {
-  target:        string;
-  range:         SourceRange;
-  sourcePassage: string;
-}
-
-interface MacroRef {
-  uri:   string;
-  range: SourceRange;
-}
-
-interface PassageDef {
-  uri:         string;
-  range:       SourceRange;
-  passageName: string;
-}
-
-interface VarDef {
-  uri:          string;
-  range:        SourceRange;
-  passageName:  string;
-  inferredType?: InferredType;
-}
-
-interface JsDef {
-  uri:          string;
-  range:        SourceRange;
-  inferredType: InferredType;
-}
-
-interface PassageRef {
-  uri:           string;
-  range:         SourceRange;
-  sourcePassage: string;
-}
 
 export interface IncomingLink {
   sourcePassage: string;
@@ -62,7 +41,7 @@ export interface IncomingLink {
 }
 
 // ---------------------------------------------------------------------------
-// LintConfig — severity settings for diagnostics
+// LintConfig — severity settings for diagnostics (backward compat)
 // ---------------------------------------------------------------------------
 
 export interface LintConfig {
@@ -74,17 +53,8 @@ export interface LintConfig {
   containerStructure:  DiagnosticSeverity;
 }
 
-const DEFAULT_LINT_CONFIG: LintConfig = {
-  unknownPassage:     DiagnosticSeverity.Warning,
-  unknownMacro:       DiagnosticSeverity.Warning,
-  duplicatePassage:   DiagnosticSeverity.Error,
-  typeMismatch:       DiagnosticSeverity.Error,
-  unreachablePassage: DiagnosticSeverity.Warning,
-  containerStructure: DiagnosticSeverity.Error,
-};
-
 // ---------------------------------------------------------------------------
-// WorkspaceIndex
+// WorkspaceIndex — thin coordinator delegating to decomposed components
 // ---------------------------------------------------------------------------
 
 export class WorkspaceIndex {
@@ -92,78 +62,35 @@ export class WorkspaceIndex {
   private analyzer = new SyntaxAnalyzer();
   private typer    = new TypeInference();
 
-  // Ground truth
-  private parseCache = new Map<string, ParsedFile>();
+  // Decomposed components (R5)
+  private definitions  = new DefinitionRegistry();
+  private references   = new ReferenceIndex();
+  private links        = new LinkGraph();
+  private parseCache   = new ParseCache();
 
-  // Maximum number of files to keep in the parse cache. When exceeded,
-  // the least-recently-analyzed files are evicted to prevent unbounded
-  // memory growth on very large workspaces.
-  private static readonly MAX_CACHED_FILES = 500;
-
-  // Track access order for LRU eviction
-  private accessOrder: string[] = [];
+  // Diagnostic rule system (R6)
+  private diagnosticEngine = new DiagnosticEngine();
 
   // Derived — rebuilt entirely by reanalyzeAll()
-  private analysisCache       = new Map<string, AnalysisResult>();
-  private passageDefinitions  = new Map<string, PassageDef>();
-  /** All definitions for each passage name — used for duplicate detection. */
-  private allPassageDefinitions = new Map<string, PassageDef[]>();
-  private macroDefinitions    = new Map<string, PassageDef>();
-  private variableDefinitions = new Map<string, VarDef>();
-  private jsGlobalDefinitions = new Map<string, JsDef>();
-  private passageReferences   = new Map<string, PassageRef[]>();
-  private variableReferences  = new Map<string, Array<{ uri: string; range: SourceRange }>>();
-  private macroCallSites      = new Map<string, MacroRef[]>();
-  private fileLinkRefs        = new Map<string, LinkRef[]>();
+  private analysisCache = new Map<string, AnalysisResult>();
 
   private _activeFormatId = '';
-  private _lintConfig: LintConfig = { ...DEFAULT_LINT_CONFIG };
 
   // ---- File management -----------------------------------------------------
 
   upsertFile(uri: string, text: string): void {
     const parsed = this.parser.parse(uri, text);
     this.parseCache.set(uri, parsed);
-    // Update access order for LRU
-    const idx = this.accessOrder.indexOf(uri);
-    if (idx !== -1) this.accessOrder.splice(idx, 1);
-    this.accessOrder.push(uri);
-    this.evictIfNeeded();
   }
 
   removeFile(uri: string): void {
     this.parseCache.delete(uri);
     this.analysisCache.delete(uri);
     this.parser.evictUri(uri);
-    // Remove from access order
-    const idx = this.accessOrder.indexOf(uri);
-    if (idx !== -1) this.accessOrder.splice(idx, 1);
-  }
-
-  /**
-   * Evict oldest entries when the parse cache exceeds the limit.
-   * Only evicts files not currently in the derived analysis — those are
-   * likely to be needed again soon.
-   */
-  private evictIfNeeded(): void {
-    while (this.parseCache.size > WorkspaceIndex.MAX_CACHED_FILES && this.accessOrder.length > 0) {
-      const oldest = this.accessOrder[0]!;
-      // Don't evict files that have active analysis results
-      if (this.analysisCache.has(oldest)) {
-        // Skip to next — move to end so we try other candidates
-        this.accessOrder.shift();
-        this.accessOrder.push(oldest);
-        // Safety: if all files have analysis, stop evicting
-        if (this.accessOrder.every(u => this.analysisCache.has(u))) break;
-        continue;
-      }
-      this.parseCache.delete(oldest);
-      this.accessOrder.shift();
-    }
   }
 
   getKnownUris(): string[] {
-    return [...this.parseCache.keys()].sort();
+    return this.parseCache.keys();
   }
 
   hasFile(uri: string): boolean {
@@ -180,15 +107,9 @@ export class WorkspaceIndex {
   reanalyzeAll(): void {
     // Clear all derived state
     this.analysisCache.clear();
-    this.passageDefinitions.clear();
-    this.allPassageDefinitions.clear();
-    this.macroDefinitions.clear();
-    this.variableDefinitions.clear();
-    this.jsGlobalDefinitions.clear();
-    this.passageReferences.clear();
-    this.variableReferences.clear();
-    this.macroCallSites.clear();
-    this.fileLinkRefs.clear();
+    this.definitions.clear();
+    this.references.clear();
+    this.links.clear();
     // Clear the incremental parser's passage cache on full reanalysis
     // to prevent stale entries from accumulating across many sessions.
     this.parser.clearCache();
@@ -206,6 +127,9 @@ export class WorkspaceIndex {
     for (const uri of uris) {
       this._extractAndIndexLinks(uri, adapter);
     }
+
+    // Build the set of analyzed URIs for LRU eviction
+    const analyzedUris = new Set<string>();
 
     // Pass 3: analyze (all defs + refs now complete)
     for (const uri of uris) {
@@ -226,9 +150,13 @@ export class WorkspaceIndex {
       }
 
       this.analysisCache.set(uri, analysis);
+      analyzedUris.add(uri);
       this._indexVariableRefs(parsed.ast, uri);
       this._indexCallSites(parsed.ast, uri);
     }
+
+    // Evict old parse cache entries
+    this.parseCache.evictIfNeeded(analyzedUris);
   }
 
   // ---- Duplicate passage diagnostics ---------------------------------------
@@ -240,12 +168,14 @@ export class WorkspaceIndex {
    */
   private _buildDuplicateDiagnosticsForUri(uri: string, ast: DocumentNode): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
-    const severity = this._lintConfig.duplicatePassage === DiagnosticSeverity.Error ? 'error' as const
-      : this._lintConfig.duplicatePassage === DiagnosticSeverity.Warning ? 'warning' as const
+
+    if (!this.diagnosticEngine.isEnabled(DiagnosticRule.DuplicatePassage)) return diags;
+
+    const severity = this.diagnosticEngine.getSeverity(DiagnosticRule.DuplicatePassage) === DiagnosticSeverity.Error ? 'error' as const
       : 'warning' as const;
 
     for (const passage of ast.passages) {
-      const allDefs = this.allPassageDefinitions.get(passage.name);
+      const allDefs = this.definitions.getAllPassageDefinitions(passage.name);
       if (!allDefs || allDefs.length < 2) continue;
       // Single-pass: count self vs other
       let othersCount = 0;
@@ -284,54 +214,15 @@ export class WorkspaceIndex {
     const adapter = this.getActiveAdapter();
     const startPassage = this._getStartPassageName();
     const specialNames = adapter.getSpecialPassageNames();
-    const allNames = new Set(this.passageDefinitions.keys());
+    const allNames = new Set(this.definitions.passageKeys());
 
     if (allNames.size === 0) return [];
 
-    // Build adjacency list from passageReferences
-    const visited = new Set<string>();
-
-    // Always mark special passages as reachable
-    for (const name of specialNames) {
-      if (allNames.has(name)) visited.add(name);
-    }
-
-    // BFS from start passage
-    if (startPassage && allNames.has(startPassage)) {
-      const queue: string[] = [startPassage];
-      visited.add(startPassage);
-
-      while (queue.length > 0) {
-        const current = queue.shift()!;
-        // Find all passages that current links to
-        const refs = this.passageReferences.get(current);
-        if (!refs) continue;
-
-        // Get unique targets from this passage
-        const targets = new Set<string>();
-        for (const ref of refs) {
-          // We need the target passage name - use fileLinkRefs to find it
-          // Actually, passageReferences maps target -> sources. We need source -> targets.
-          // Let's use fileLinkRefs instead
-        }
-      }
-    }
-
-    // Build forward adjacency from fileLinkRefs
-    const forwardAdj = new Map<string, Set<string>>();
-    for (const [uri, links] of this.fileLinkRefs) {
-      for (const link of links) {
-        let targets = forwardAdj.get(link.sourcePassage);
-        if (!targets) {
-          targets = new Set();
-          forwardAdj.set(link.sourcePassage, targets);
-        }
-        targets.add(link.target);
-      }
-    }
+    // Build forward adjacency from LinkGraph
+    const forwardAdj = this.links.getForwardAdjacency();
 
     // BFS from start passage using forward adjacency
-    visited.clear();
+    const visited = new Set<string>();
     // Always mark special passages as reachable
     for (const name of specialNames) {
       if (allNames.has(name)) visited.add(name);
@@ -371,11 +262,13 @@ export class WorkspaceIndex {
 
   private _buildUnreachableDiagnostics(uri: string, ast: DocumentNode, adapter: StoryFormatAdapter): ParseDiagnostic[] {
     const diags: ParseDiagnostic[] = [];
+
+    if (!this.diagnosticEngine.isEnabled(DiagnosticRule.UnreachablePassage)) return diags;
+
     const unreachable = new Set(this.getUnreachablePassages());
     if (unreachable.size === 0) return diags;
 
-    const severity = this._lintConfig.unreachablePassage === DiagnosticSeverity.Error ? 'error' as const
-      : this._lintConfig.unreachablePassage === DiagnosticSeverity.Warning ? 'warning' as const
+    const severity = this.diagnosticEngine.getSeverity(DiagnosticRule.UnreachablePassage) === DiagnosticSeverity.Error ? 'error' as const
       : 'warning' as const;
 
     for (const passage of ast.passages) {
@@ -392,9 +285,12 @@ export class WorkspaceIndex {
 
   /** Get the start passage name from StoryData. */
   private _getStartPassageName(): string | null {
+    const adapter = this.getActiveAdapter();
+    const sdName = adapter.getStoryDataPassageName();
+    if (!sdName) return null;
     // Look through all parsed files for StoryData
-    for (const [, parsed] of this.parseCache) {
-      const storyDataPassage = parsed.ast.passages.find(p => p.name === 'StoryData');
+    for (const [, parsed] of this.parseCache.entries()) {
+      const storyDataPassage = parsed.ast.passages.find(p => p.name === sdName);
       if (!storyDataPassage) continue;
 
       // Parse the body to find "start" field
@@ -422,38 +318,38 @@ export class WorkspaceIndex {
     return null;
   }
 
-  // ---- Accessors -----------------------------------------------------------
+  // ---- Accessors — delegate to components ----------------------------------
 
   getAnalysis(uri: string): AnalysisResult | undefined {
     return this.analysisCache.get(uri);
   }
 
   getPassageDefinition(name: string): PassageDef | undefined {
-    return this.passageDefinitions.get(name);
+    return this.definitions.getPassageDefinition(name);
   }
 
   getMacroDefinition(name: string): PassageDef | undefined {
-    return this.macroDefinitions.get(name);
+    return this.definitions.getMacroDefinition(name);
   }
 
   getVariableDefinition(name: string): VarDef | undefined {
-    return this.variableDefinitions.get(name);
+    return this.definitions.getVariableDefinition(name);
   }
 
   getJsGlobalDefinition(name: string): JsDef | undefined {
-    return this.jsGlobalDefinitions.get(name);
+    return this.definitions.getJsGlobalDefinition(name);
   }
 
   getAllJsGlobals(): Map<string, JsDef> {
-    return this.jsGlobalDefinitions;
+    return this.definitions.getAllJsGlobals();
   }
 
   getPassageNames(): string[] {
-    return [...this.passageDefinitions.keys()];
+    return this.definitions.getPassageNames();
   }
 
   getReferencingFiles(passageName: string): string[] {
-    return [...new Set((this.passageReferences.get(passageName) ?? []).map(r => r.uri))].sort();
+    return this.references.getReferencingFiles(passageName);
   }
 
   /**
@@ -464,7 +360,7 @@ export class WorkspaceIndex {
    * hover can show a badge like "PassageName (×2)".
    */
   getIncomingLinks(passageName: string): IncomingLink[] {
-    const rawRefs = this.passageReferences.get(passageName) ?? [];
+    const rawRefs = this.references.getPassageReferences(passageName);
 
     // Group by `uri:sourcePassage` — count raw refs per group
     const grouped = new Map<string, { sourcePassage: string; uri: string; count: number }>();
@@ -482,11 +378,11 @@ export class WorkspaceIndex {
   }
 
   getVariableReferences(varName: string): Array<{ uri: string; range: SourceRange }> {
-    return this.variableReferences.get(varName) ?? [];
+    return this.references.getVariableReferences(varName);
   }
 
   getMacroCallSites(name: string): MacroRef[] {
-    return this.macroCallSites.get(name) ?? [];
+    return this.references.getMacroCallSites(name);
   }
 
   // Kept for backward compat with hover handler
@@ -501,12 +397,19 @@ export class WorkspaceIndex {
     return FormatRegistry.resolve(this._activeFormatId || 'sugarcube-2');
   }
 
+  // ---- Lint config — delegates to DiagnosticEngine (backward compat) -------
+
   setLintConfig(config: Partial<LintConfig>): void {
-    this._lintConfig = { ...this._lintConfig, ...config };
+    this.diagnosticEngine.configureFromLintConfig(config as Record<string, DiagnosticSeverity>);
   }
 
   getLintConfig(): LintConfig {
-    return this._lintConfig;
+    return this.diagnosticEngine.toLintConfig();
+  }
+
+  /** Expose the DiagnosticEngine for the analyzer and other consumers. */
+  getDiagnosticEngine(): DiagnosticEngine {
+    return this.diagnosticEngine;
   }
 
   // ---- Private: Pass 1 — definition registration --------------------------
@@ -522,37 +425,25 @@ export class WorkspaceIndex {
     for (const sym of symbols.table.getUserSymbols()) {
       if (sym.kind === SymbolKind.Passage) {
         const def: PassageDef = { uri, range: sym.range, passageName: sym.name };
-
-        // First-write-wins for the primary definition map (go-to-definition)
-        if (!this.passageDefinitions.has(sym.name)) {
-          this.passageDefinitions.set(sym.name, def);
-        }
-
-        // All definitions — for duplicate detection.
-        // Deduplicate by (uri, range.start) so re-entrant calls do not double-count.
-        const all = this.allPassageDefinitions.get(sym.name) ?? [];
-        if (!all.some(d => d.uri === uri && d.range.start === sym.range.start)) {
-          all.push(def);
-        }
-        this.allPassageDefinitions.set(sym.name, all);
+        this.definitions.addPassageDefinition(sym.name, def);
       }
     }
 
     // Macros / widgets
     for (const sym of symbols.table.getUserSymbols()) {
       if (sym.kind === SymbolKind.Macro || sym.kind === SymbolKind.Widget) {
-        if (!this.macroDefinitions.has(sym.name)) {
+        if (!this.definitions.hasMacro(sym.name)) {
           const passage = this._passageForOffset(parsed.ast, sym.range.start);
-          this.macroDefinitions.set(sym.name, { uri, range: sym.range, passageName: passage ?? '' });
+          this.definitions.addMacroDefinition(sym.name, { uri, range: sym.range, passageName: passage ?? '' });
         }
       }
     }
 
     // Story variables (first assignment wins for type inference)
     for (const sym of symbols.table.getUserSymbols()) {
-      if (sym.kind === SymbolKind.StoryVar && !this.variableDefinitions.has(sym.name)) {
+      if (sym.kind === SymbolKind.StoryVar && !this.definitions.getVariableDefinition(sym.name)) {
         const passage = this._passageForOffset(parsed.ast, sym.range.start);
-        this.variableDefinitions.set(sym.name, {
+        this.definitions.addVariableDefinition(sym.name, {
           uri, range: sym.range,
           passageName: passage ?? '',
           inferredType: typeResult.assignments.get(sym.name),
@@ -562,8 +453,8 @@ export class WorkspaceIndex {
 
     // JS globals
     for (const [name, def] of typeResult.jsGlobals) {
-      if (!this.jsGlobalDefinitions.has(name)) {
-        this.jsGlobalDefinitions.set(name, { uri, range: def.range, inferredType: def.inferredType });
+      if (!this.definitions.getJsGlobalDefinition(name)) {
+        this.definitions.addJsGlobalDefinition(name, { uri, range: def.range, inferredType: def.inferredType });
       }
     }
   }
@@ -574,98 +465,57 @@ export class WorkspaceIndex {
     const parsed = this.parseCache.get(uri);
     if (!parsed) return;
 
-    const links: LinkRef[] = [];
+    const linkRefs: LinkRef[] = [];
     const passageArgMacros = adapter.getPassageArgMacros();
 
+    // Walk each passage separately so we can capture the source passage name
     for (const passage of parsed.ast.passages) {
       if (!Array.isArray(passage.body)) continue;
       const src = passage.name;
 
-      const walk = (nodes: MarkupNode[]): void => {
-        for (const node of nodes) {
-          if (node.type === 'link') {
-            links.push({ target: node.target, range: node.range, sourcePassage: src });
-          } else if (node.type === 'macro') {
-            if (passageArgMacros.has(node.name) && node.args.length > 0) {
-              const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
-              const arg    = node.args[idx];
-              const target = arg ? passageNameFromExpr(arg) : null;
-              if (target && arg) links.push({ target, range: arg.range, sourcePassage: src });
-            }
-            if (node.body) walk(node.body);
+      walkMarkup(passage.body, {
+        onLink(node) {
+          linkRefs.push({ target: node.target, range: node.range, sourcePassage: src });
+        },
+        onMacro(node) {
+          if (passageArgMacros.has(node.name) && node.args.length > 0) {
+            const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
+            const arg    = node.args[idx];
+            const target = arg ? passageNameFromExpr(arg) : null;
+            if (target && arg) linkRefs.push({ target, range: arg.range, sourcePassage: src });
           }
-        }
-      };
-
-      walk(passage.body);
+        },
+      });
     }
 
-    this.fileLinkRefs.set(uri, links);
+    this.links.setFileLinks(uri, linkRefs);
 
-    for (const link of links) {
-      const refs = this.passageReferences.get(link.target) ?? [];
-      // Deduplicate by source offset — guards against reanalyzeAll being called
-      // more than once with the same content before the clear takes effect.
-      if (!refs.some(r => r.uri === uri && r.range.start === link.range.start)) {
-        refs.push({ uri, range: link.range, sourcePassage: link.sourcePassage });
-      }
-      this.passageReferences.set(link.target, refs);
+    for (const link of linkRefs) {
+      this.references.addPassageReference(link.target, { uri, range: link.range, sourcePassage: link.sourcePassage });
     }
   }
 
   // ---- Private: Pass 3 helpers --------------------------------------------
 
   private _indexVariableRefs(ast: DocumentNode, uri: string): void {
-    const walk = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        if (node.type !== 'macro') continue;
-        for (const arg of node.args) this._walkExprVars(arg, uri);
-        if (node.body) walk(node.body);
+    const refs = this.references;
+    walkDocumentExpressions(ast, expr => {
+      if (expr.type === 'storyVar') {
+        refs.addVariableReference(expr.name, { uri, range: expr.range });
       }
-    };
-    for (const p of ast.passages) {
-      if (Array.isArray(p.body)) walk(p.body);
-    }
-  }
-
-  private _walkExprVars(expr: ExpressionNode, uri: string): void {
-    switch (expr.type) {
-      case 'storyVar': {
-        const refs = this.variableReferences.get(expr.name) ?? [];
-        if (!refs.some(r => r.uri === uri && r.range.start === expr.range.start)) {
-          refs.push({ uri, range: expr.range });
-          this.variableReferences.set(expr.name, refs);
-        }
-        return;
-      }
-      case 'binaryOp':    this._walkExprVars(expr.left, uri); this._walkExprVars(expr.right, uri); return;
-      case 'unaryOp':     this._walkExprVars(expr.operand, uri); return;
-      case 'propertyAccess': this._walkExprVars(expr.object, uri); return;
-      case 'indexAccess': this._walkExprVars(expr.object, uri); this._walkExprVars(expr.index, uri); return;
-      case 'call':        this._walkExprVars(expr.callee, uri); expr.args.forEach(a => this._walkExprVars(a, uri)); return;
-      case 'arrayLiteral': expr.elements.forEach(e => this._walkExprVars(e, uri)); return;
-      case 'objectLiteral': expr.properties.forEach(p => this._walkExprVars(p.value, uri)); return;
-      default: return;
-    }
+    });
   }
 
   private _indexCallSites(ast: DocumentNode, uri: string): void {
-    const walk = (nodes: MarkupNode[]): void => {
-      for (const node of nodes) {
-        if (node.type !== 'macro') continue;
-        if (this.macroDefinitions.has(node.name)) {
-          const existing = this.macroCallSites.get(node.name) ?? [];
-          if (!existing.some(r => r.uri === uri && r.range.start === node.nameRange.start)) {
-            existing.push({ uri, range: node.nameRange });
-            this.macroCallSites.set(node.name, existing);
-          }
+    const defs = this.definitions;
+    const refs = this.references;
+    walkDocument(ast, {
+      onMacro(node) {
+        if (defs.hasMacro(node.name)) {
+          refs.addMacroCallSite(node.name, { uri, range: node.nameRange });
         }
-        if (node.body) walk(node.body);
-      }
-    };
-    for (const p of ast.passages) {
-      if (Array.isArray(p.body)) walk(p.body);
-    }
+      },
+    });
   }
 
   // ---- Private: utilities --------------------------------------------------
@@ -679,9 +529,10 @@ export class WorkspaceIndex {
 
   private _scriptFirstOrder(uris: string[]): string[] {
     const adapter = this.getActiveAdapter();
+    const cache = this.parseCache;
     return [...uris].sort((a, b) => {
-      const aAst = this.parseCache.get(a)?.ast;
-      const bAst = this.parseCache.get(b)?.ast;
+      const aAst = cache.get(a)?.ast;
+      const bAst = cache.get(b)?.ast;
       // Sort by analysis priority of first passage
       const aPriority = aAst ? Math.min(...aAst.passages.map(p => adapter.getAnalysisPriority(p.name))) : 100;
       const bPriority = bAst ? Math.min(...bAst.passages.map(p => adapter.getAnalysisPriority(p.name))) : 100;

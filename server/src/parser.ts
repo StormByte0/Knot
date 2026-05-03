@@ -28,6 +28,7 @@ import {
 import { lex } from './lexer';
 import { MacroPairTable, preScan } from './preScan';
 import { Token, TokenType, SourceRange } from './tokenTypes';
+import type { StoryFormatAdapter } from './formats/types';
 
 // ---------------------------------------------------------------------------
 // Passage span extraction (fast regex — no full parse needed)
@@ -43,12 +44,6 @@ export interface PassageSpan {
 }
 
 const HEADER_RE = /^::[ \t]*([^\n\[{]+?)[ \t]*(?:\[([^\]]*)\])?[ \t]*(?:\{[^}]*\})?[ \t]*$/gm;
-
-const SPECIAL_PASSAGES = new Set([
-  'StoryInit', 'StoryCaption', 'StoryBanner', 'StorySubtitle',
-  'StoryAuthor', 'StoryMenu', 'StoryDisplayTitle', 'StoryShare',
-  'PassageDone', 'PassageHeader', 'PassageFooter',
-]);
 
 export function extractPassageSpans(text: string): PassageSpan[] {
   const headers: Array<{
@@ -87,14 +82,40 @@ export function extractPassageSpans(text: string): PassageSpan[] {
   }));
 }
 
-function detectPassageKind(name: string, tags: string[]): PassageKind {
+function detectPassageKind(name: string, tags: string[], adapter?: StoryFormatAdapter): PassageKind {
   // NOTE: [widget] passages are intentionally kept as 'markup', NOT 'script'.
   // Widget passages contain <<widget "name">>...</widget>> Twee markup — treating
   // them as 'script' would parse their body as a raw ScriptBodyNode, skipping
   // collectMarkupSymbols and losing all <<widget>> declarations.
-  if (name === 'Story JavaScript' || tags.includes('script'))               return 'script';
-  if (name === 'Story Stylesheet' || tags.includes('stylesheet') || tags.includes('style')) return 'stylesheet';
-  if (SPECIAL_PASSAGES.has(name) || name.startsWith('_'))                   return 'special';
+  const scriptTags     = adapter?.getScriptTags()     ?? ['script'];
+  const stylesheetTags = adapter?.getStylesheetTags() ?? ['stylesheet', 'style'];
+  const specialNames   = adapter?.getSpecialPassageNames() ?? new Set([
+    'StoryInit', 'StoryCaption', 'StoryBanner', 'StorySubtitle',
+    'StoryAuthor', 'StoryMenu', 'StoryDisplayTitle', 'StoryShare',
+    'PassageDone', 'PassageHeader', 'PassageFooter',
+  ]);
+  const systemNames    = adapter?.getSystemPassageNames() ?? new Set(['StoryData', 'Story JavaScript', 'Story Stylesheet']);
+  const tempVarPrefix  = adapter?.getTempVarPrefix() ?? '_';
+
+  // Script: by tag
+  if (scriptTags.some(t => tags.includes(t))) return 'script';
+  // Stylesheet: by tag
+  if (stylesheetTags.some(t => tags.includes(t))) return 'stylesheet';
+
+  // System passage name-based kind detection.
+  // We match system passage names against the adapter's tag vocabularies
+  // (case-insensitive substring) so that e.g. 'Story JavaScript' → script
+  // and 'Story Stylesheet' → stylesheet without hardcoding those names.
+  if (systemNames.has(name)) {
+    const lower = name.toLowerCase();
+    if (scriptTags.some(t => lower.includes(t.toLowerCase())))     return 'script';
+    if (stylesheetTags.some(t => lower.includes(t.toLowerCase()))) return 'stylesheet';
+    return 'special';  // e.g. StoryData
+  }
+
+  // Special passages
+  if (specialNames.has(name) || (tempVarPrefix && name.startsWith(tempVarPrefix))) return 'special';
+
   return 'markup';
 }
 
@@ -102,10 +123,10 @@ function detectPassageKind(name: string, tags: string[]): PassageKind {
 // Public entry points
 // ---------------------------------------------------------------------------
 
-export function parseDocument(text: string): ParseOutput {
+export function parseDocument(text: string, adapter?: StoryFormatAdapter): ParseOutput {
   const diagnostics: ParseDiagnostic[] = [];
   const spans = extractPassageSpans(text);
-  const passages = spans.map(s => parsePassage(text, s, diagnostics));
+  const passages = spans.map(s => parsePassage(text, s, diagnostics, adapter));
   return {
     ast: { type: 'document', range: { start: 0, end: text.length }, passages },
     diagnostics,
@@ -116,8 +137,9 @@ export function parsePassage(
   text: string,
   span: PassageSpan,
   diagnostics: ParseDiagnostic[],
+  adapter?: StoryFormatAdapter,
 ): PassageNode {
-  const kind = detectPassageKind(span.name, span.tags);
+  const kind = detectPassageKind(span.name, span.tags, adapter);
   const nameRange = { start: span.nameStart, end: span.nameStart + span.name.length };
   const range = { start: span.nameStart, end: span.bodyEnd };
   const bodySource = text.slice(span.bodyStart, span.bodyEnd);
@@ -138,7 +160,7 @@ export function parsePassage(
     return { type: 'passage', name: span.name, tags: span.tags, kind, nameRange, range, body };
   }
 
-  const body = parseMarkupBody(bodySource, span.bodyStart, diagnostics);
+  const body = parseMarkupBody(bodySource, span.bodyStart, diagnostics, adapter);
   return { type: 'passage', name: span.name, tags: span.tags, kind, nameRange, range, body };
 }
 
@@ -153,6 +175,7 @@ class Parser {
     private tokens: Token[],
     private pairTable: MacroPairTable,
     private diagnostics: ParseDiagnostic[],
+    private adapter?: StoryFormatAdapter,
   ) {}
 
   // ---- Markup context -------------------------------------------------------
@@ -296,7 +319,7 @@ class Parser {
       this.emitError(open, `Unclosed macro <<${name}>`);
     }
 
-    const args = parseExprArgs(argTokens, this.diagnostics);
+    const args = parseExprArgs(argTokens, this.diagnostics, this.adapter);
     const closeOffset = this.pairTable.pairs.get(open.range.start);
     const hasBody = closeOffset !== null && closeOffset !== undefined;
 
@@ -354,9 +377,10 @@ function parseMarkupBody(
   bodySource: string,
   baseOffset: number,
   diagnostics: ParseDiagnostic[],
+  adapter?: StoryFormatAdapter,
 ): MarkupNode[] {
   // Lex relative to body, then shift ranges to absolute offsets
-  const rawTokens = lex(bodySource);
+  const rawTokens = lex(bodySource, adapter);
 
   // Emit diagnostics for lexer errors (unterminated comments, unclosed
   // macros, etc.) before filtering — these are structural problems the
@@ -385,7 +409,7 @@ function parseMarkupBody(
     diagnostics.push({ message: `Unexpected closing macro tag`, range: orphan.range, severity: 'error' });
   }
 
-  const parser = new Parser(tokens, pairTable, diagnostics);
+  const parser = new Parser(tokens, pairTable, diagnostics, adapter);
   const nodes = parser.parseMarkup();
 
   // Emit diagnostics for genuinely unclosed macros.
@@ -426,14 +450,16 @@ function skipTrivia(tokens: Token[], state: { i: number }): void {
   }
 }
 
-function getPrecedence(tok: Token): number {
+const DEFAULT_SUGAR_PRECEDENCE: Record<string, number> = {
+  or: 1, and: 2,
+  eq: 3, neq: 3, is: 3, isnot: 3,
+  gt: 4, gte: 4, lt: 4, lte: 4,
+  to: 0,
+};
+
+function getPrecedence(tok: Token, adapter?: StoryFormatAdapter): number {
   if (tok.type === TokenType.SugarOperator) {
-    const p: Record<string, number> = {
-      or: 1, and: 2,
-      eq: 3, neq: 3, is: 3, isnot: 3,
-      gt: 4, gte: 4, lt: 4, lte: 4,
-      to: 0, // assignment-like — lowest
-    };
+    const p = adapter?.getOperatorPrecedence() ?? DEFAULT_SUGAR_PRECEDENCE;
     return p[tok.value] ?? -1;
   }
   if (tok.type === TokenType.Operator) {
@@ -450,7 +476,7 @@ function getPrecedence(tok: Token): number {
   return -1;
 }
 
-export function parseExprArgs(tokens: Token[], diagnostics: ParseDiagnostic[]): ExpressionNode[] {
+export function parseExprArgs(tokens: Token[], diagnostics: ParseDiagnostic[], adapter?: StoryFormatAdapter): ExpressionNode[] {
   const state = { i: 0 };
   const args: ExpressionNode[] = [];
 
@@ -458,7 +484,7 @@ export function parseExprArgs(tokens: Token[], diagnostics: ParseDiagnostic[]): 
     skipTrivia(tokens, state);
     if (state.i >= tokens.length) break;
 
-    const expr = parseExpr(tokens, state, diagnostics, 0);
+    const expr = parseExpr(tokens, state, diagnostics, 0, adapter);
     if (!expr) {
       const tok = tokens[state.i];
       if (tok) { diagnostics.push({ message: `Unexpected token: ${tok.value}`, range: tok.range }); state.i++; }
@@ -475,18 +501,19 @@ export function parseExprArgs(tokens: Token[], diagnostics: ParseDiagnostic[]): 
 function parseExpr(
   tokens: Token[], state: { i: number },
   diagnostics: ParseDiagnostic[], minPrec: number,
+  adapter?: StoryFormatAdapter,
 ): ExpressionNode | null {
-  let left = parseUnary(tokens, state, diagnostics);
+  let left = parseUnary(tokens, state, diagnostics, adapter);
   if (!left) return null;
 
   while (state.i < tokens.length) {
     skipTrivia(tokens, state);
     const op = tokens[state.i];
     if (!op) break;
-    const prec = getPrecedence(op);
+    const prec = getPrecedence(op, adapter);
     if (prec < minPrec) break;
     state.i++;
-    const right = parseExpr(tokens, state, diagnostics, prec + 1);
+    const right = parseExpr(tokens, state, diagnostics, prec + 1, adapter);
     if (!right) {
       diagnostics.push({ message: `Missing right-hand side for '${op.value}'`, range: op.range });
       return left;
@@ -500,7 +527,7 @@ function parseExpr(
   return left;
 }
 
-function parseUnary(tokens: Token[], state: { i: number }, diagnostics: ParseDiagnostic[]): ExpressionNode | null {
+function parseUnary(tokens: Token[], state: { i: number }, diagnostics: ParseDiagnostic[], adapter?: StoryFormatAdapter): ExpressionNode | null {
   skipTrivia(tokens, state);
   const tok = tokens[state.i];
   if (!tok) return null;
@@ -509,15 +536,15 @@ function parseUnary(tokens: Token[], state: { i: number }, diagnostics: ParseDia
     (tok.type === TokenType.Operator && ['!', '-', '+'].includes(tok.value)) ||
     (tok.type === TokenType.SugarOperator && tok.value === 'not');
 
-  if (!isUnary) return parsePostfix(tokens, state, diagnostics);
+  if (!isUnary) return parsePostfix(tokens, state, diagnostics, adapter);
 
   state.i++;
-  const operand = parseUnary(tokens, state, diagnostics);
+  const operand = parseUnary(tokens, state, diagnostics, adapter);
   if (!operand) { diagnostics.push({ message: `Missing operand for '${tok.value}'`, range: tok.range }); return null; }
   return { type: 'unaryOp', operator: tok.value, operand, range: { start: tok.range.start, end: operand.range.end } } as UnaryOpNode;
 }
 
-function parsePostfix(tokens: Token[], state: { i: number }, diagnostics: ParseDiagnostic[]): ExpressionNode | null {
+function parsePostfix(tokens: Token[], state: { i: number }, diagnostics: ParseDiagnostic[], adapter?: StoryFormatAdapter): ExpressionNode | null {
   let expr = parsePrimary(tokens, state, diagnostics);
   if (!expr) return null;
 
@@ -546,7 +573,7 @@ function parsePostfix(tokens: Token[], state: { i: number }, diagnostics: ParseD
     // [index]
     if (tok.type === TokenType.BracketOpen) {
       state.i++;
-      const idx = parseExpr(tokens, state, diagnostics, 0);
+      const idx = parseExpr(tokens, state, diagnostics, 0, adapter);
       skipTrivia(tokens, state);
       const close = tokens[state.i];
       if (!idx || !close || close.type !== TokenType.BracketClose) {
@@ -568,7 +595,7 @@ function parsePostfix(tokens: Token[], state: { i: number }, diagnostics: ParseD
       const callArgs: ExpressionNode[] = [];
       while (state.i < tokens.length && tokens[state.i]?.type !== TokenType.ParenClose) {
         skipTrivia(tokens, state);
-        const arg = parseExpr(tokens, state, diagnostics, 0);
+        const arg = parseExpr(tokens, state, diagnostics, 0, adapter);
         if (!arg) break;
         callArgs.push(arg);
         skipTrivia(tokens, state);

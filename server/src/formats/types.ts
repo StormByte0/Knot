@@ -47,6 +47,33 @@ export interface AdapterDiagnosticRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Builtin macro info returned by adapters.
+//
+// This is a self-contained interface so that types.ts doesn't need to import
+// from format-specific modules. SugarCube's MacroDef extends this.
+// ---------------------------------------------------------------------------
+
+export interface BuiltinMacroInfo {
+  name: string;
+  description: string;
+  hasBody: boolean;
+  deprecated?: boolean;
+  deprecationMessage?: string;
+  container?: string;
+  containerAnyOf?: string[];
+  category?: string;
+  args?: ReadonlyArray<{
+    position: number;
+    label: string;
+    isPassageRef?: boolean;
+    isSelector?: boolean;
+    isVariable?: boolean;
+    isRequired?: boolean;
+    kind: 'expression' | 'string' | 'selector' | 'variable';
+  }>;
+}
+
+// ---------------------------------------------------------------------------
 // The adapter interface every format must implement.
 // ---------------------------------------------------------------------------
 
@@ -123,7 +150,7 @@ export interface StoryFormatAdapter {
   // ── Builtins ───────────────────────────────────────────────────────────────
 
   /** Builtin macro definitions for this format. */
-  getBuiltinMacros(): ReadonlyArray<{ name: string; description: string; hasBody: boolean }>;
+  getBuiltinMacros(): ReadonlyArray<BuiltinMacroInfo>;
 
   /** Builtin global definitions for this format. */
   getBuiltinGlobals(): ReadonlyArray<{ name: string; description: string }>;
@@ -159,4 +186,46 @@ export interface StoryFormatAdapter {
 
   /** Map from macro name to the valid parent macro names it requires. */
   getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>>;
+
+  // ── Virtual doc generation ────────────────────────────────────────────────
+
+  /** Convert a story variable name (without sigil) to its JavaScript representation.
+   *  SugarCube: State.variables.name */
+  storyVarToJs(name: string): string;
+
+  /** Convert a temp variable name (without sigil) to its JavaScript representation.
+   *  SugarCube: temporary.name */
+  tempVarToJs(name: string): string;
+
+  /** Map of sugar operators to their JS equivalents for virtual doc generation. */
+  getOperatorNormalization(): Readonly<Record<string, string>>;
+
+  // ── Format hints (parser / lexer) ──────────────────────────────────────────
+
+  /** Variable sigils used by this format. SugarCube: $ for story vars, _ for temp vars. */
+  getVariableSigils(): ReadonlyArray<{ sigil: string; variableType: 'story' | 'temporary' }>;
+
+  /** Resolve a sigil character to the variable type it represents, or null. */
+  resolveVariableSigil(sigil: string): 'story' | 'temporary' | null;
+
+  /** Operator precedence table for this format's sugar operators. Maps operator name to precedence number. */
+  getOperatorPrecedence(): Readonly<Record<string, number>>;
+
+  /** Names of passage-header tags that indicate a script passage. SugarCube: ['script'] */
+  getScriptTags(): ReadonlyArray<string>;
+
+  /** Names of passage-header tags that indicate a stylesheet passage. SugarCube: ['stylesheet', 'style'] */
+  getStylesheetTags(): ReadonlyArray<string>;
+
+  /** Whether the format uses a prefix for temporary/passage-scoped variables (e.g. '_' in SugarCube). */
+  getTempVarPrefix(): string;
+
+  /** Assignment operators for this format. SugarCube: ['to', '='] */
+  getAssignmentOperators(): ReadonlyArray<string>;
+
+  /** Comparison operators that should trigger type-mismatch warnings. SugarCube: ['gt', 'gte', 'lt', 'lte'] */
+  getComparisonOperators(): ReadonlyArray<string>;
+
+  /** Name of the special passage containing story metadata (JSON), or null if the format doesn't use one. SugarCube: 'StoryData' */
+  getStoryDataPassageName(): string | null;
 }

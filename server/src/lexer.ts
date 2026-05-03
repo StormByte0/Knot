@@ -1,9 +1,12 @@
 import { Token, TokenType } from './tokenTypes';
+import type { StoryFormatAdapter } from './formats/types';
 
 const MACRO_NAME_RE = /^[A-Za-z_=][A-Za-z0-9_-]*/;
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
 const NUMBER_RE = /^(?:\d+\.\d+|\d+)/;
-const SUGAR_OPS = new Set([
+
+/** Default sugar operators — SugarCube conventions used when no adapter is provided. */
+const DEFAULT_SUGAR_OPS = new Set([
   'to', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte',
   'and', 'or', 'not', 'is', 'isnot',
 ]);
@@ -24,8 +27,12 @@ const SUGAR_OPS = new Set([
  *                     >> end-check, so >> inside the comment is never seen
  *   // ...        line comment, only inside macro args (// is plain text in markup)
  */
-export function lex(input: string): Token[] {
-  return new Lexer(input).tokenize();
+export function lex(input: string, adapter?: StoryFormatAdapter): Token[] {
+  // Build the operator set from the adapter if provided, otherwise use defaults
+  const sugarOps = adapter
+    ? new Set(Object.keys(adapter.getOperatorPrecedence()))
+    : DEFAULT_SUGAR_OPS;
+  return new Lexer(input, sugarOps, adapter).tokenize();
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +55,11 @@ class Lexer {
   private tokens: Token[] = [];
   private stack: Enc[] = [];
 
-  constructor(private src: string) {}
+  constructor(
+    private src: string,
+    private sugarOps: Set<string>,
+    private adapter?: StoryFormatAdapter,
+  ) {}
 
   tokenize(): Token[] {
     while (this.pos < this.src.length) {
@@ -172,10 +183,20 @@ class Lexer {
 
     if (ch === '"' || ch === "'" || ch === '`') { this.scanString(ch); return; }
 
-    if (ch === '$') { this.scanVar(TokenType.StoryVar); return; }
-    if (ch === '_') {
-      const next = this.src[this.pos + 1];
-      if (next && /[A-Za-z_]/.test(next)) { this.scanVar(TokenType.TempVar); return; }
+    if (this.adapter) {
+      const sigilType = this.adapter.resolveVariableSigil(ch);
+      if (sigilType === 'story') { this.scanVar(TokenType.StoryVar); return; }
+      if (sigilType === 'temporary') {
+        const next = this.src[this.pos + 1];
+        if (next && /[A-Za-z_]/.test(next)) { this.scanVar(TokenType.TempVar); return; }
+      }
+    } else {
+      // Default SugarCube behavior
+      if (ch === '$') { this.scanVar(TokenType.StoryVar); return; }
+      if (ch === '_') {
+        const next = this.src[this.pos + 1];
+        if (next && /[A-Za-z_]/.test(next)) { this.scanVar(TokenType.TempVar); return; }
+      }
     }
 
     const numMatch = this.src.slice(this.pos).match(NUMBER_RE);
@@ -189,7 +210,7 @@ class Lexer {
     const idMatch = this.src.slice(this.pos).match(IDENTIFIER_RE);
     if (idMatch) {
       const v = idMatch[0]!;
-      const type = SUGAR_OPS.has(v) ? TokenType.SugarOperator : TokenType.Identifier;
+      const type = this.sugarOps.has(v) ? TokenType.SugarOperator : TokenType.Identifier;
       this.push(type, v, this.pos, this.pos + v.length);
       this.pos += v.length;
       return;

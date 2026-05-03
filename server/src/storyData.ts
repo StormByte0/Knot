@@ -1,4 +1,5 @@
 import { DocumentNode } from './ast';
+import type { StoryFormatAdapter } from './formats/types';
 
 // ---------------------------------------------------------------------------
 // StoryData is a special passage whose body is raw JSON.
@@ -26,8 +27,9 @@ const EMPTY: StoryData = {
   raw: {},
 };
 
-export function parseStoryData(ast: DocumentNode): StoryData {
-  const passage = ast.passages.find(p => p.name === 'StoryData');
+export function parseStoryData(ast: DocumentNode, adapter?: StoryFormatAdapter): StoryData {
+  const sdName = adapter?.getStoryDataPassageName();
+  const passage = sdName ? ast.passages.find(p => p.name === sdName) : undefined;
   if (!passage) return EMPTY;
 
   // The body of StoryData is either a raw ScriptBodyNode (source string)

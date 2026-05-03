@@ -1,5 +1,6 @@
 import { DocumentNode, ParseDiagnostic, ParseOutput, PassageNode } from './ast';
 import { PassageSpan, extractPassageSpans, parsePassage } from './parser';
+import type { StoryFormatAdapter } from './formats/types';
 
 interface CachedPassage {
   node: PassageNode;
@@ -17,7 +18,7 @@ export class IncrementalParser {
   // key: "uri:passageName"
   private cache = new Map<string, CachedPassage>();
 
-  parse(uri: string, text: string): ParseOutput {
+  parse(uri: string, text: string, adapter?: StoryFormatAdapter): ParseOutput {
     const diagnostics: ParseDiagnostic[] = [];
     const spans = extractPassageSpans(text);
     const passages: PassageNode[] = [];
@@ -38,7 +39,7 @@ export class IncrementalParser {
         continue;
       }
 
-      const node = parsePassage(text, span, diagnostics);
+      const node = parsePassage(text, span, diagnostics, adapter);
       this.cache.set(key, { node, bodyText, tagsKey });
       passages.push(node);
     }

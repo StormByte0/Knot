@@ -3,6 +3,7 @@ import * as walk from 'acorn-walk';
 import { DocumentNode, ExpressionNode } from './ast';
 import { SourceRange } from './tokenTypes';
 import type { StoryFormatAdapter } from './formats/types';
+import { walkMarkup } from './visitors';
 
 export interface InferredType {
   kind: 'unknown' | 'number' | 'string' | 'boolean' | 'null' | 'object' | 'array';
@@ -18,9 +19,18 @@ export interface InferenceResult {
 }
 
 export class TypeInference {
+  private assignmentOps: ReadonlyArray<string> = ['to', '='];
+
   inferDocument(ast: DocumentNode, adapter?: StoryFormatAdapter): InferenceResult {
     const assignments = new Map<string, InferredType>();
     const jsGlobals   = new Map<string, { inferredType: InferredType; range: SourceRange }>();
+
+    // Cache assignment operators from adapter for use in infer()
+    if (adapter) {
+      this.assignmentOps = adapter.getAssignmentOperators();
+    } else {
+      this.assignmentOps = ['to', '='];
+    }
 
     // Analyse by priority — use adapter if available, else fallback
     const sorted = [...ast.passages].sort((a, b) => {
@@ -51,23 +61,22 @@ export class TypeInference {
     adapter?: StoryFormatAdapter,
   ): void {
     const varAssignmentMacros = adapter?.getVariableAssignmentMacros();
-    for (const node of nodes) {
-      if (node.type === 'macro') {
+    const assignmentOps = adapter?.getAssignmentOperators() ?? ['to', '='];
+    const self = this;
+    walkMarkup(nodes, {
+      onMacro(node: import('./ast').MacroNode) {
         const isAssignmentMacro = varAssignmentMacros?.has(node.name) ?? node.name === 'set';
         if (isAssignmentMacro) {
           const arg = node.args[0];
-          if (arg?.type === 'binaryOp' && (arg.operator === 'to' || arg.operator === '=')) {
+          if (arg?.type === 'binaryOp' && assignmentOps.includes(arg.operator)) {
             const varName = extractVarName(arg.left);
             if (varName && !assignments.has(varName)) {
-              assignments.set(varName, this.infer(arg.right));
+              assignments.set(varName, self.infer(arg.right));
             }
           }
         }
-      }
-      if (node.type === 'macro' && node.body) {
-        this.collectSetAssignments(node.body, assignments, adapter);
-      }
-    }
+      },
+    });
   }
 
   /** Walk markup nodes looking for <<script>>…<</script>> macro bodies and harvest JS globals. */
@@ -77,21 +86,20 @@ export class TypeInference {
     adapter?: StoryFormatAdapter,
   ): void {
     const inlineScriptMacros = adapter?.getInlineScriptMacros();
-    for (const node of nodes) {
-      if (node.type !== 'macro') continue;
-      const isInlineScript = inlineScriptMacros?.has(node.name) ?? node.name === 'script';
-      if (isInlineScript && node.body) {
-        // The body is MarkupNode[] containing text nodes — reconstruct source
-        const src = node.body
-          .filter(n => n.type === 'text')
-          .map(n => (n as import('./ast').TextNode).value)
-          .join('');
-        const baseOff = node.body.length > 0 ? node.body[0]!.range.start : 0;
-        if (src.trim()) collectJsGlobals(src, baseOff, jsGlobals);
-      } else if (node.body) {
-        this.collectInlineScriptGlobals(node.body, jsGlobals, adapter);
-      }
-    }
+    walkMarkup(nodes, {
+      onMacro(node) {
+        const isInlineScript = inlineScriptMacros?.has(node.name) ?? node.name === 'script';
+        if (isInlineScript && node.body) {
+          // The body is MarkupNode[] containing text nodes — reconstruct source
+          const src = node.body
+            .filter(n => n.type === 'text')
+            .map(n => (n as import('./ast').TextNode).value)
+            .join('');
+          const baseOff = node.body.length > 0 ? node.body[0]!.range.start : 0;
+          if (src.trim()) collectJsGlobals(src, baseOff, jsGlobals);
+        }
+      },
+    });
   }
 
   infer(expr: ExpressionNode): InferredType {
@@ -118,7 +126,7 @@ export class TypeInference {
       }
 
       case 'binaryOp':
-        if (expr.operator === 'to' || expr.operator === '=') return this.infer(expr.right);
+        if (this.assignmentOps.includes(expr.operator)) return this.infer(expr.right);
         return { kind: 'unknown' };
 
       default:

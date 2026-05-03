@@ -1,4 +1,5 @@
 import { DocumentNode, ExpressionNode, MarkupNode } from './ast';
+import type { StoryFormatAdapter } from './formats/types';
 
 export interface MappingEntry {
   virtualStart: number;
@@ -17,8 +18,13 @@ export interface VirtualDoc {
  *
  * Key invariant: SC operators (to, eq, gt, ...) are normalized to JS equivalents
  * ONLY here. They are never modified in the AST itself.
+ *
+ * All format-specific mappings (variable JS representation, operator normalization,
+ * runtime preamble) are delegated to the StoryFormatAdapter.
  */
 export class VirtualDocGenerator {
+  constructor(private adapter: StoryFormatAdapter) {}
+
   generate(ast: DocumentNode, uri: string): VirtualDoc {
     const parts: string[] = [];
     const map: MappingEntry[] = [];
@@ -31,8 +37,8 @@ export class VirtualDocGenerator {
       offset += source.length;
     };
 
-    // Preamble: SugarCube runtime type stubs — mapped to offset 0 of the source
-    const preamble = this.buildPreamble();
+    // Preamble: format-specific runtime type stubs — mapped to offset 0 of the source
+    const preamble = this.adapter.getVirtualRuntimePrelude();
     emit(preamble, 0);
 
     for (const passage of ast.passages) {
@@ -89,8 +95,8 @@ export class VirtualDocGenerator {
 
   emitExpression(expr: ExpressionNode): string {
     switch (expr.type) {
-      case 'storyVar':       return `State.variables.${expr.name}`;
-      case 'tempVar':        return `temporary.${expr.name}`;
+      case 'storyVar':       return this.adapter.storyVarToJs(expr.name);
+      case 'tempVar':        return this.adapter.tempVarToJs(expr.name);
       case 'identifier':     return expr.name;
       case 'literal':        return expr.kind === 'string' ? JSON.stringify(expr.value) : String(expr.value);
       case 'binaryOp':
@@ -110,26 +116,9 @@ export class VirtualDocGenerator {
     }
   }
 
-  // SC operators normalized to JS — ONLY in this file
+  // Operators normalized to JS via the adapter — ONLY in this file
   private normalizeOp(op: string): string {
-    const table: Record<string, string> = {
-      to: '=', eq: '===', neq: '!==', is: '===', isnot: '!==',
-      gt: '>', gte: '>=', lt: '<', lte: '<=',
-      and: '&&', or: '||', not: '!',
-    };
+    const table = this.adapter.getOperatorNormalization();
     return table[op] ?? op;
-  }
-
-  private buildPreamble(): string {
-    return [
-      '/** @type {{ [key: string]: any }} */',
-      'const State = { variables: {}, temporary: {} };',
-      'const temporary = State.temporary;',
-      'const Story = {};',
-      'const Engine = {};',
-      'const Dialog = {};',
-      'const Macro = { add: () => {} };',
-      '',
-    ].join('\n');
   }
 }
