@@ -1,4 +1,4 @@
-import { DocumentNode, ParseDiagnostic } from './ast';
+import { DocumentNode, ParseDiagnostic, ScriptBodyNode } from './ast';
 import { AnalysisResult, SyntaxAnalyzer } from './analyzer';
 import { IncrementalParser } from './incrementalParser';
 import { SymbolKind, UserSymbol, buildSymbolTable } from './symbols';
@@ -467,25 +467,103 @@ export class WorkspaceIndex {
 
     const linkRefs: LinkRef[] = [];
     const passageArgMacros = adapter.getPassageArgMacros();
+    const implicitPatterns = adapter.getImplicitPassagePatterns();
+    const passageRefApis = adapter.getPassageRefApiCalls();
+
+    // Build a quick lookup for API calls: "ObjectName.method" → true
+    const apiCallSet = new Set<string>();
+    for (const api of passageRefApis) {
+      for (const method of api.methods) {
+        apiCallSet.add(`${api.objectName}.${method}`);
+      }
+    }
 
     // Walk each passage separately so we can capture the source passage name
     for (const passage of parsed.ast.passages) {
-      if (!Array.isArray(passage.body)) continue;
       const src = passage.name;
 
-      walkMarkup(passage.body, {
-        onLink(node) {
-          linkRefs.push({ target: node.target, range: node.range, sourcePassage: src });
-        },
-        onMacro(node) {
-          if (passageArgMacros.has(node.name) && node.args.length > 0) {
-            const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
-            const arg    = node.args[idx];
-            const target = arg ? passageNameFromExpr(arg) : null;
-            if (target && arg) linkRefs.push({ target, range: arg.range, sourcePassage: src });
+      // ── Standard links: [[Target]] and <<goto "Target">> ─────────────────
+      if (Array.isArray(passage.body)) {
+        walkMarkup(passage.body, {
+          onLink(node) {
+            linkRefs.push({ target: node.target, range: node.range, sourcePassage: src });
+          },
+          onMacro(node) {
+            if (passageArgMacros.has(node.name) && node.args.length > 0) {
+              const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
+              const arg    = node.args[idx];
+              const target = arg ? passageNameFromExpr(arg) : null;
+              if (target && arg) linkRefs.push({ target, range: arg.range, sourcePassage: src });
+            }
+
+            // ── Implicit passage refs in macro expression args ───────────
+            // Walk expression trees looking for Engine.play("name"), Story.get("name"), etc.
+            if (apiCallSet.size > 0) {
+              for (const arg of node.args) {
+                walkExpression(arg, expr => {
+                  if (expr.type !== 'call') return;
+                  const callee = expr.callee;
+                  if (callee.type !== 'propertyAccess') return;
+                  if (callee.object.type !== 'identifier') return;
+                  const key = `${callee.object.name}.${callee.property}`;
+                  if (!apiCallSet.has(key)) return;
+                  // First string argument is the passage name
+                  if (expr.args.length === 0) return;
+                  const firstArg = expr.args[0]!;
+                  if (firstArg.type === 'literal' && firstArg.kind === 'string' && typeof firstArg.value === 'string') {
+                    linkRefs.push({
+                      target: firstArg.value,
+                      range: firstArg.range,
+                      sourcePassage: src,
+                    });
+                  }
+                });
+              }
+            }
+          },
+          // ── Implicit passage refs in text nodes (data-passage, etc.) ────
+          onText(node) {
+            if (implicitPatterns.length === 0) return;
+            for (const ip of implicitPatterns) {
+              // Reset lastIndex since these patterns use the /g flag
+              ip.pattern.lastIndex = 0;
+              let m: RegExpExecArray | null;
+              while ((m = ip.pattern.exec(node.value)) !== null) {
+                const name = m[1];
+                if (!name) continue;
+                // Calculate offset within the passage source
+                const matchOffset = node.range.start + m.index;
+                linkRefs.push({
+                  target: name,
+                  range: { start: matchOffset, end: matchOffset + m[0].length },
+                  sourcePassage: src,
+                });
+              }
+            }
+          },
+        });
+      }
+
+      // ── Script passages: scan for implicit passage refs in JS source ────
+      if (passage.body && typeof passage.body === 'object' && (passage.body as ScriptBodyNode).type === 'scriptBody') {
+        const scriptBody = passage.body as ScriptBodyNode;
+        if (implicitPatterns.length > 0) {
+          for (const ip of implicitPatterns) {
+            ip.pattern.lastIndex = 0;
+            let m: RegExpExecArray | null;
+            while ((m = ip.pattern.exec(scriptBody.source)) !== null) {
+              const name = m[1];
+              if (!name) continue;
+              const matchOffset = scriptBody.range.start + m.index;
+              linkRefs.push({
+                target: name,
+                range: { start: matchOffset, end: matchOffset + m[0].length },
+                sourcePassage: src,
+              });
+            }
           }
-        },
-      });
+        }
+      }
     }
 
     this.links.setFileLinks(uri, linkRefs);

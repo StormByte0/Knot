@@ -283,4 +283,21 @@ describe('FallbackAdapter', () => {
       assert.strictEqual(adapter.getStoryDataPassageName(), null);
     });
   });
+
+  describe('Implicit passage patterns', () => {
+    it('should return empty array from getImplicitPassagePatterns', () => {
+      assert.deepStrictEqual(adapter.getImplicitPassagePatterns(), []);
+    });
+
+    it('should not detect any implicit references in text', () => {
+      const patterns = adapter.getImplicitPassagePatterns();
+      assert.strictEqual(patterns.length, 0);
+    });
+  });
+
+  describe('Passage ref API calls', () => {
+    it('should return empty array from getPassageRefApiCalls', () => {
+      assert.deepStrictEqual(adapter.getPassageRefApiCalls(), []);
+    });
+  });
 });

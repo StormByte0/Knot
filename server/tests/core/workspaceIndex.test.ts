@@ -391,4 +391,84 @@ describe('WorkspaceIndex', () => {
       assert.ok(links.length >= 0); // Link extraction depends on macro arg parsing
     });
   });
+
+  describe('Implicit passage references (data-passage, JS APIs)', () => {
+    it('should detect data-passage HTML attributes as passage references', () => {
+      workspace.upsertFile('test://ui.tw', ':: StoryInterface\n<div data-passage="UI Outfit Label">content</div>');
+      workspace.upsertFile('test://target.tw', ':: UI Outfit Label\n<<print "wearing">>');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('UI Outfit Label');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'StoryInterface');
+    });
+
+    it('should detect Engine.play() calls in macro bodies as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Engine.play("Secret Room")>>');
+      workspace.upsertFile('test://target.tw', ':: Secret Room\nYou found it');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Secret Room');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'Start');
+    });
+
+    it('should detect Engine.goto() calls as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Engine.goto("Destination")>>');
+      workspace.upsertFile('test://target.tw', ':: Destination\nArrived');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Destination');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect Story.get() calls as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Story.get("Lore Entry")>>');
+      workspace.upsertFile('test://target.tw', ':: Lore Entry\nDeep lore');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Lore Entry');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect multiple data-passage attributes in one passage', () => {
+      workspace.upsertFile('test://ui.tw', ':: StoryInterface\n<div data-passage="UI Outfit Label"></div>\n<div data-passage="UI Date"></div>');
+      workspace.upsertFile('test://targets.tw', ':: UI Outfit Label\nLabel\n\n:: UI Date\nDate');
+      workspace.reanalyzeAll();
+
+      assert.strictEqual(workspace.getIncomingLinks('UI Outfit Label').length, 1);
+      assert.strictEqual(workspace.getIncomingLinks('UI Date').length, 1);
+    });
+
+    it('should detect implicit refs in script passages', () => {
+      workspace.upsertFile('test://js.tw', ':: Story JavaScript\nEngine.play("Dynamic Passage");');
+      workspace.upsertFile('test://target.tw', ':: Dynamic Passage\nLoaded from JS');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Dynamic Passage');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'Story JavaScript');
+    });
+
+    it('should make data-passage-referenced passages reachable from start', () => {
+      workspace.upsertFile('test://sd.tw', ':: StoryData\n{"ifid":"test","format":"sugarcube-2","start":"Start"}');
+      workspace.upsertFile('test://start.tw', ':: Start\n[[Go|Hub]]');
+      workspace.upsertFile('test://hub.tw', ':: Hub\n<div data-passage="UI Panel">panel</div>');
+      workspace.upsertFile('test://panel.tw', ':: UI Panel\nPanel content');
+      workspace.reanalyzeAll();
+
+      // UI Panel should NOT be unreachable — it's referenced via data-passage
+      const unreachable = workspace.getUnreachablePassages();
+      assert.ok(!unreachable.includes('UI Panel'), `UI Panel should be reachable but was in unreachable list: ${unreachable.join(', ')}`);
+    });
+
+    it('should handle data-passage with single quotes', () => {
+      workspace.upsertFile('test://ui.tw', ":: StoryInterface\n<div data-passage='UI Panel'>content</div>");
+      workspace.upsertFile('test://target.tw', ':: UI Panel\nContent');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('UI Panel');
+      assert.strictEqual(links.length, 1);
+    });
+  });
 });
