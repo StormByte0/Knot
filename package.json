@@ -1,23 +1,42 @@
 {
   "name": "knot",
-  "displayName": "Knot Language Server",
-  "description": "Twine/SugarCube language tooling for .tw and .twee files.",
+  "displayName": "Knot — Twine/SugarCube Language Support",
+  "description": "Language server for Twine/SugarCube 2 development: diagnostics, completions, go-to-definition, rename, type inference, and Tweego build integration.",
   "version": "0.1.0",
   "publisher": "Stormbyte",
   "preview": true,
-  "keywords": ["twine", "twee", "sugarcube", "interactive fiction", "visual novel"],
+  "keywords": [
+    "twine",
+    "twee",
+    "sugarcube",
+    "sugarcube 2",
+    "interactive fiction",
+    "visual novel",
+    "if",
+    "interactive narrative",
+    "tweego"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/stormbyte0/knot"
+    "url": "https://github.com/StormByte0/Knot"
   },
+  "bugs": {
+    "url": "https://github.com/StormByte0/Knot/issues"
+  },
+  "homepage": "https://github.com/StormByte0/Knot#readme",
   "icon": "assets/icon.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.96.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Linters"
   ],
+  "galleryBanner": {
+    "color": "#1a1e2e",
+    "theme": "dark"
+  },
   "main": "./client/out/extension.js",
   "activationEvents": [
     "workspaceContains:**/*.tw",
@@ -155,7 +174,7 @@
       }
     ],
     "configuration": {
-      "title": "knot Language Server",
+      "title": "knot",
       "properties": {
         "knot.tweego.path": {
           "type": "string",

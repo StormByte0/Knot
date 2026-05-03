@@ -110,6 +110,7 @@ export class WorkspaceIndex {
   removeFile(uri: string): void {
     this.parseCache.delete(uri);
     this.analysisCache.delete(uri);
+    this.parser.evictUri(uri);
     // Remove from access order
     const idx = this.accessOrder.indexOf(uri);
     if (idx !== -1) this.accessOrder.splice(idx, 1);

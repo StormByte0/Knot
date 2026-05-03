@@ -11,7 +11,7 @@ import { WorkspaceIndex } from '../workspaceIndex';
 import { SymbolKind } from '../symbols';
 import { resolveTypePath, inferredTypeToString } from '../serverUtils';
 import { FormatRegistry } from '../formats/registry';
-import { PASSAGE_ARG_MACROS } from '../passageArgs';
+import { PASSAGE_ARG_MACROS, LABEL_THEN_PASSAGE } from '../passageArgs';
 
 export function registerCompletionHandler(
   connection: Connection,
@@ -208,10 +208,6 @@ function extractMacroPassageArgContext(text: string, offset: number): string | n
   // We're in arg index = argsSoFar (0-based)
   // For label-then-passage macros with 2+ args, passage is arg 1
   // For single-arg macros, passage is arg 0
-  const LABEL_THEN_PASSAGE = new Set([
-    'link', 'button', 'click', 'linkappend', 'linkprepend', 'linkreplace',
-  ]);
-
   const isPassageArg = LABEL_THEN_PASSAGE.has(macroName)
     ? argsSoFar >= 1   // second or later arg
     : argsSoFar === 0; // first arg
