@@ -70,6 +70,18 @@ export class IncrementalParser {
   }
 
   /**
+   * Evict all cached passages for a given URI.
+   * Called by WorkspaceIndex when a file is removed, so stale entries
+   * don't accumulate in the passage cache between full reanalyses.
+   */
+  evictUri(uri: string): void {
+    const prefix = `${uri}:`;
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(prefix)) this.cache.delete(key);
+    }
+  }
+
+  /**
    * Clear the passage-granularity cache. Called when the WorkspaceIndex
    * needs to reclaim memory — e.g. after files are removed from the index.
    */

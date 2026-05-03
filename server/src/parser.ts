@@ -245,19 +245,20 @@ class Parser {
     const pipeIdx  = innerText.indexOf('|');
     const fwdIdx   = innerText.indexOf('->');
     const backIdx  = innerText.indexOf('<-');
-    const sepIdx   = pipeIdx !== -1 && (fwdIdx === -1 || pipeIdx <= fwdIdx) && (backIdx === -1 || pipeIdx <= backIdx)
-      ? pipeIdx
-      : fwdIdx !== -1 && (backIdx === -1 || fwdIdx <= backIdx)
-        ? fwdIdx
-        : backIdx;
+
+    // Pick the earliest separator — matches the lexer's candidate-sort logic.
+    // Ties are broken by SugarCube precedence: | > -> > <-
+    const candidates: [number, '|' | '->' | '<-'][] = [];
+    if (pipeIdx  !== -1) candidates.push([pipeIdx,  '|']);
+    if (fwdIdx   !== -1) candidates.push([fwdIdx,   '->']);
+    if (backIdx  !== -1) candidates.push([backIdx,  '<-']);
+    candidates.sort((a, b) => a[0] - b[0]);
+    const [sepIdx, sep] = candidates[0] ?? [-1, null];
 
     let target = innerText.trim();
     let display: string | null = null;
 
-    if (sepIdx !== -1) {
-      const sep = innerText[sepIdx] === '|' ? '|'
-        : innerText.startsWith('->', sepIdx) ? '->'
-        : '<-';
+    if (sepIdx !== -1 && sep) {
       const sepLen = sep.length;
       const left  = innerText.slice(0, sepIdx).trim();
       const right = innerText.slice(sepIdx + sepLen).trim();

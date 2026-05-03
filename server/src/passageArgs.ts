@@ -11,7 +11,7 @@ export const PASSAGE_ARG_MACROS = new Set([
 ]);
 
 // These macros take (label, passage) when 2 args are present
-const LABEL_THEN_PASSAGE = new Set([
+export const LABEL_THEN_PASSAGE = new Set([
   'link', 'button', 'click', 'linkappend', 'linkprepend', 'linkreplace',
 ]);
 

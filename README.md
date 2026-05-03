@@ -1,104 +1,64 @@
-# knot Language Server
+# Knot
 
-Professional language tooling for [Twine](https://twinery.org/) / [SugarCube 2](https://www.motoslave.net/sugarcube/2/) interactive fiction development. Works with `.tw` and `.twee` files.
+Language support for [Twine](https://twinery.org/) / [SugarCube 2](https://www.motoslave.net/sugarcube/2/) development in VS Code. Works with `.tw` and `.twee` files.
 
-## Features
+This is an early preview. Some features are incomplete or may have rough edges — see [Current Limitations](#current-limitations) below.
 
-### Core Language Intelligence
+## What It Does
 
-**Smart Diagnostics** — Real-time warnings for unknown macros, broken passage links, undefined variables, type mismatches, and StoryData validation errors, including cross-file analysis across your whole project.
+**Diagnostics** — Warns about unknown macros, broken passage links, type mismatches in comparisons, and duplicate passage names across your project. Not every SugarCube pattern is detected yet.
 
-**Go to Definition (F12)** — Jump to macro definitions, passage declarations, variable assignments, widget definitions, and JavaScript globals. Supports both `Ctrl+Click` and keyboard shortcut.
+**Go to Definition (F12)** — Jump to passage declarations, `<<widget>>` definitions, `Macro.add()` calls in script passages, and variable assignments. Works across files.
 
-**Find References** — Find all usages of passages, story variables (`$var`), and custom macros/widgets across your entire workspace.
+**Find All References** — Find where a passage is linked, where a story variable (`$var`) is used, or where a custom macro is called.
 
-**Rename Symbol (F2)** — Safely rename passages, story variables, and custom macros with workspace-wide refactoring support. All links and references are automatically updated.
+**Rename (F2)** — Rename passages and story variables. Updates references across all files in the workspace.
 
-**IntelliSense Autocomplete** — Context-aware completions for:
-- All built-in SugarCube macros (with auto-inserted close tags for block macros like `<<if>>...<</if>>`)
-- Passage names in links `[[link->PassageName]]`
-- Story variables (`$storyVar`) and temporary variables (`_tempVar`)
-- Property access completion (`$player.stats.hp` shows available properties)
-- Custom widgets and macros defined via `<<widget>>` or `Macro.add()`
-- JavaScript globals defined in your script passages
+**Autocomplete** — Completions for:
+- Built-in SugarCube macros (with snippet bodies for block macros)
+- Passage names inside `<<goto "">>`, `<<link "">>`, etc.
+- Story variables (`$var`) and their properties (e.g. `$player.stats.`)
+- Custom widgets and macros
+- Close-tag suggestions (`<</`) for currently open block macros
 
-**Hover Documentation** — Rich hover tooltips showing:
-- Variable types and definitions with reference counts
-- Macro documentation and usage hints
-- Passage metadata with incoming link information
-- Property path type inference (`$player.stats.hp` shows inferred type at each level)
-- JavaScript global type information
+**Hover** — Hover over a macro to see its description. Hover over `$var` to see its inferred type and where it was defined. Hover over a passage link to see incoming reference counts.
 
-**Type Inference** — Automatic type tracking for story variables. Hover over `$player.stats.hp` to see the inferred type chain from your `StoryInit` assignments. Supports nested objects and arrays.
+**Type Inference** — Tracks types assigned to story variables via `<<set>>`. When you write `<<set $player = {name: "Alex", hp: 100}>>`, the extension remembers the shape so property completions on `$player.` work later. This is best-effort — complex expressions, mutations through `<<run>>`, and dynamically constructed objects may not be tracked accurately.
 
-**Semantic Highlighting** — Enhanced syntax highlighting powered by semantic analysis:
-- Functions (macros, widgets)
-- Classes (passages)
-- Variables (story and temp vars)
-- Operators (SugarCube operators)
-- Strings, numbers, comments
+**Semantic Highlighting** — Macros, passages, variables, and SugarCube operators get distinct colors beyond what the TextMate grammar provides.
 
-### Document & Workspace Features
+**Outline & Workspace Symbols** — Passages, widgets, and variable assignments appear in the Outline panel. `Ctrl+T` searches across all files.
 
-**Syntax Highlighting** — Full embedded JavaScript highlighting inside `[script]` passages and `<<script>>` blocks, CSS inside `[stylesheet]` passages, and SugarCube expression colouring inside macro arguments.
+**Code Actions** — "Create missing passage" quick fix when you reference a passage that doesn't exist yet.
 
-**Code Folding** — Fold passages, macro blocks (`<<if>>`, `<<for>>`, etc.), and comment blocks for easier navigation of large files.
+**Tweego Integration** — Build, watch, and test your project via the [Tweego](https://www.motoslave.net/tweego/) CLI. Configurable output path, module directories, format override, and extra arguments.
 
-**Outline View** — The VS Code Outline panel shows all passages in the current file, with `$variable` assignments and `<<widget>>` definitions listed as children.
+## Commands
 
-**Workspace Symbols (Ctrl+T)** — Quick symbol search across all passages, widgets, macros, and story variables in your project.
-
-**Workspace Awareness** — Full project understanding across all `.tw` and `.twee` files. Custom macros defined via `Macro.add()` in your Story JavaScript and widgets defined with `<<widget>>` are recognised everywhere.
-
-**Document Symbols** — Per-file symbol extraction for breadcrumbs and outline navigation.
-
-### Code Actions
-
-**Quick Fixes** — Auto-generate missing passages when you reference an undefined passage link. Click the lightbulb or use `Ctrl+.` to create a new passage stub instantly.
-
-### Build & Development Tools
-
-**Tweego Integration** — Full integration with the Tweego CLI compiler:
-- **Build** (`Ctrl+Shift+B`) — Compile your story to HTML with configurable output path
-- **Watch Mode** — Automatically rebuild on file changes
-- **Test Mode** — Build with test-specific configurations
-- **Format Listing** — View available story formats installed on your system
-- Configurable via settings: `tweego.path`, `tweego.outputFile`, `tweego.formatOverride`, `tweego.modulePaths`, `tweego.headFile`, `tweego.noTrim`, `tweego.logFiles`, `tweego.extraArgs`
-
-**Custom Commands**:
-| Command | Keybinding | Description |
+| Command | Shortcut | What it does |
 |---|---|---|
-| **knot: Go to Passage** | `Ctrl+Alt+P` (Mac: `Cmd+Alt+P`) | Quick-pick navigation to any passage with incoming link preview |
-| **knot: Build** | `Ctrl+Shift+B` (Mac: `Cmd+Shift+B`) | Compile story with Tweego |
-| **knot: Build (Test Mode)** | — | Build with test configuration |
-| **knot: Start Watch Mode** | — | Enable automatic rebuilding on save |
-| **knot: Stop Watch Mode** | — | Disable watch mode |
-| **knot: List Available Story Formats** | — | Show installed Tweego story formats |
-| **knot: Refresh All Documents** | — | Re-index the entire workspace |
-| **knot: Restart Language Server** | — | Restart the server process |
-| **knot: Show Language Server Output** | — | Open the output channel for debug logs |
-| **knot: Open Settings** | — | Open knot configuration panel |
-| **knot: Open Menu** | — | Unified command palette for all knot actions |
-
-**Unified Status Bar Menu** — Click the `knot` status bar item to access a unified menu with all commands, passage navigation, build tools, and settings.
-
-### Query API
-
-The language server exposes custom LSP requests for external tooling:
-- `knot/getPassages` — Retrieve all passages with metadata (name, URI, reference count, incoming links)
-- `knot/getStoryData` — Get StoryData metadata (IFID, format, format version, start passage, total passage count)
-- `knot/storyDataUpdated` — Notification broadcast when story data changes
+| Go to Passage | `Ctrl+Alt+P` | Quick-pick to any passage |
+| Build | `Ctrl+Alt+B` | Run tweego to compile |
+| Build (Test Mode) | — | Build with test configuration |
+| Start/Stop Watch | — | Auto-rebuild on file changes |
+| Verify Tweego | — | Check if tweego is found and working |
+| List Story Formats | — | Show available formats |
+| Refresh All Documents | — | Re-index the workspace |
+| Restart Language Server | — | Restart the server |
+| Show Output | — | Open the log output channel |
+| Open Settings | — | Open knot settings |
+| Open Menu | — | Unified command palette |
 
 ## Quick Start
 
-1. Open a folder containing your `.tw` or `.twee` files
-2. The server activates automatically
-3. The status bar shows `⟳ knot` while indexing and `✓ knot` when ready — click it to access output logs and server actions
+1. Open a folder with `.tw` or `.twee` files
+2. The extension activates automatically
+3. The status bar shows indexing progress — click it for logs
 
 ## Example
 
 ```twee
-:: StoryInit [startup]
+:: StoryInit
 <<set $player = {
   name: "Alex",
   stats: { hp: 100, mp: 50 }
@@ -109,67 +69,66 @@ Welcome, <<print $player.name>>!
 <<if $player.stats.hp gt 80>>
   You feel healthy.
 <</if>>
-[[Explore->Forest]]
+[[Go exploring->Forest]]
 
 :: Forest
-The trees are dense.
+The trees close in around you.
 [[Return->Start]]
 ```
 
-## Supported File Types
-
-- `.tw` — Twine source files
-- `.twee` — Twee source files
-
-Passages using SugarCube 2 syntax are supported in both Twine 2 editor exports and [tweego](https://www.motoslave.net/tweego/) CLI projects.
-
 ## Configuration
 
-All settings are prefixed with `knot.`:
+All settings are under `knot.`:
 
-### Tweego Settings
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `tweego.path` | string | `"tweego"` | Path to the Tweego executable |
-| `tweego.outputFile` | string | `"dist/index.html"` | Output file path for compiled HTML |
-| `tweego.formatOverride` | string | `""` | Story format ID to use, overriding `StoryData` |
-| `tweego.modulePaths` | array | `[]` | Module directories (-m): CSS, JS, fonts bundled into `<head>` |
-| `tweego.headFile` | string | `""` | File whose contents are appended to `<head>` (--head) |
-| `tweego.noTrim` | boolean | `false` | Disable whitespace trimming (--no-trim) |
-| `tweego.logFiles` | boolean | `false` | Log all processed input files (--log-files) |
-| `tweego.extraArgs` | string | `""` | Extra arguments appended verbatim (e.g. `--twee2-compat`) |
+### Tweego
+
+| Setting | Default | Description |
+|---|---|---|
+| `knot.tweego.path` | `"tweego"` | Path to the tweego executable |
+| `knot.tweego.outputFile` | `"dist/index.html"` | Compiled HTML output path (relative to workspace) |
+| `knot.tweego.formatOverride` | `""` | Override the story format from StoryData |
+| `knot.tweego.modulePaths` | `[]` | Module directories (`-m`) bundled into `<head>` |
+| `knot.tweego.headFile` | `""` | File appended to `<head>` (`--head`) |
+| `knot.tweego.noTrim` | `false` | Disable whitespace trimming (`--no-trim`) |
+| `knot.tweego.logFiles` | `false` | Log processed files (`--log-files`) |
+| `knot.tweego.extraArgs` | `""` | Extra CLI arguments (e.g. `--twee2-compat`) |
+
+### Project
+
+| Setting | Default | Description |
+|---|---|---|
+| `knot.project.storyFilesDirectory` | `"src"` | Source directory passed to tweego |
+| `knot.project.storyFormatsDirectory` | `".storyformats"` | Story format packages (added to `TWEEGO_PATH`) |
+| `knot.project.include` | `[]` | Directories to include in indexing (empty = all) |
+| `knot.project.exclude` | `[]` | Glob patterns to exclude from indexing |
+
+## Current Limitations
+
+- **SugarCube 2 only.** Harlowe, Chapbox, and other story formats are not supported. The format adapter system exists for future expansion, but no other adapters are implemented yet.
+- **Type inference is best-effort.** It tracks `<<set $var to ...>>` and `<<set $var = ...>>` assignments. Variables mutated through `<<run>>`, JavaScript, or indirect assignment may lose their inferred type. There is no type annotation syntax — types are inferred from assignment patterns only.
+- **No story map or graph view.** There is no visual passage-link graph. The Outline panel and `Go to Passage` command are the current navigation options.
+- **No debugger.** There is no interactive debugging support for SugarCube stories.
+- **No lint configuration.** All diagnostics are always-on. There is no way to suppress specific warnings or configure severity levels.
+- **Incremental parsing is passage-granular, not character-granular.** After an edit, the affected passage is re-parsed, then the whole workspace is reanalyzed. This is fast for small-to-medium projects but may lag on very large workspaces.
+
+## Supported File Types
+
+- `.tw`
+- `.twee`
+
+Compatible with Twine 2 editor exports and [tweego](https://www.motoslave.net/tweego/) CLI projects using SugarCube 2 syntax.
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
 npm --prefix client install
 npm --prefix server install
 
-# Build
-npm run build
-
-# Run tests
-npm test
-
-# Package
-npm run package:vsix
-
-# Watch mode (development)
-npm run watch:client
-npm run watch:server
+npm run build          # build client + server
+npm test               # run server tests
+npm run package:vsix   # build + package as .vsix
 ```
-
-## Architecture
-
-- **Client** (`client/`) — VS Code extension providing UI integration, status bar, commands, and Tweego build tools
-- **Server** (`server/`) — Language Server Protocol implementation with:
-  - Lexer and parser for SugarCube/Twee syntax
-  - Workspace indexer for cross-file analysis
-  - Type inference engine for story variables
-  - Format adapters for extensible story format support
-  - Handler modules for LSP features (completion, hover, definition, etc.)
 
 ## License
 
