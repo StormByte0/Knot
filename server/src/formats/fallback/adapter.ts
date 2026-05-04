@@ -155,4 +155,8 @@ export class FallbackAdapter implements StoryFormatAdapter {
   getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall> {
     return [];
   }
+
+  getDynamicNavigationMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
+  }
 }
