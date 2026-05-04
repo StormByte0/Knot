@@ -12,6 +12,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocuments } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { randomUUID } from 'node:crypto';
 import { WorkspaceIndex } from '../workspaceIndex';
 import { parseStoryData } from '../storyData';
 import { normalizeUri } from '../serverUtils';
@@ -21,12 +22,10 @@ import { walkMarkup } from '../visitors';
 const TOKEN_TYPES = ['function', 'class', 'variable', 'operator', 'string', 'number', 'comment'];
 
 // ---------------------------------------------------------------------------
-// Simple UUID v4 for IFID generation (server-side, no crypto module needed)
+// UUID v4 for IFID generation using Node crypto (cryptographically secure)
 // ---------------------------------------------------------------------------
 function generateIfid(): string {
-  const hex = () => Math.floor(Math.random() * 16).toString(16);
-  const seg = (n: number) => Array.from({ length: n }, hex).join('');
-  return `${seg(8)}-${seg(4)}-4${seg(3)}-${['8','9','a','b'][Math.floor(Math.random()*4)]}${seg(3)}-${seg(12)}`.toUpperCase();
+  return randomUUID().toUpperCase();
 }
 
 export function registerFeatureHandlers(

@@ -11,7 +11,7 @@ export { WorkspaceIndex }    from './workspaceIndex';
 export { SyntaxAnalyzer, type AnalysisResult, type SemanticToken } from './analyzer';
 export { TypeInference, type InferredType, type InferenceResult }  from './typeInference';
 export { VirtualDocGenerator, type VirtualDoc, type MappingEntry } from './virtualDoc';
-export { runVirtualDiagnostics, type VirtualDiagnosticResult }     from './virtualDiagnostics';
+export { runVirtualDiagnostics, type VirtualDiagnosticResult }     from './virtualDiagnostics';  // exported for direct testing; not yet wired into the reanalysis pipeline
 export type {
   DocumentNode, PassageNode, MarkupNode, MacroNode, LinkNode,
   TextNode, CommentNode, ExpressionNode,

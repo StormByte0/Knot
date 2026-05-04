@@ -2,13 +2,15 @@
 
 Language support for [Twine](https://twinery.org/) / [SugarCube 2](https://www.motoslave.net/sugarcube/2/) development in VS Code. Works with `.tw` and `.twee` files.
 
-Full Documentation
+This is an early preview. Some features are incomplete or may have rough edges — see [Current Limitations](#current-limitations) below.
 
-See the [complete feature documentation](https://stormbyte0.github.io/Knot/) for every feature, comparison with alternatives, configuration reference, and tips.
+## Full Documentation
+
+See the [complete feature documentation](https://stormbyte0.github.io/Knot/) for every feature, configuration reference, and tips.
 
 ## What It Does
 
-**Diagnostics** — Warns about unknown macros, broken passage links, type mismatches in comparisons, and duplicate passage names across your project. Not every SugarCube pattern is detected yet.
+**Diagnostics** — Warns about unknown macros, broken passage links, type mismatches in comparisons, and duplicate passage names across your project. Six lint rules are individually configurable &mdash; set severity to error, warning, info, or off via `knot.lint.*` settings.
 
 **Go to Definition (F12)** — Jump to passage declarations, `<<widget>>` definitions, `Macro.add()` calls in script passages, and variable assignments. Works across files.
 
@@ -104,13 +106,26 @@ All settings are under `knot.`:
 | `knot.project.include` | `[]` | Directories to include in indexing (empty = all) |
 | `knot.project.exclude` | `[]` | Glob patterns to exclude from indexing |
 
+### Linting
+
+| Setting | Default | Description |
+|---|---|---|
+| `knot.lint.unknownPassage` | `"warning"` | Severity for links to undefined passages |
+| `knot.lint.unknownMacro` | `"warning"` | Severity for unrecognized macro names |
+| `knot.lint.duplicatePassage` | `"error"` | Severity for duplicate passage definitions |
+| `knot.lint.typeMismatch` | `"error"` | Severity for type mismatches in comparisons |
+| `knot.lint.unreachablePassage` | `"warning"` | Severity for passages unreachable from start |
+| `knot.lint.containerStructure` | `"error"` | Severity for invalid macro nesting |
+
+All lint settings accept: `"error"`, `"warning"`, `"info"`, or `"off"`.
+
 ## Current Limitations
 
 - **SugarCube 2 only.** Harlowe, Chapbox, and other story formats are not supported. The format adapter system exists for future expansion, but no other adapters are implemented yet.
 - **Type inference is best-effort.** It tracks `<<set $var to ...>>` and `<<set $var = ...>>` assignments. Variables mutated through `<<run>>`, JavaScript, or indirect assignment may lose their inferred type. There is no type annotation syntax — types are inferred from assignment patterns only.
 - **No story map or graph view.** There is no visual passage-link graph. The Outline panel and `Go to Passage` command are the current navigation options.
 - **No debugger.** There is no interactive debugging support for SugarCube stories.
-- **No lint configuration.** All diagnostics are always-on. There is no way to suppress specific warnings or configure severity levels.
+- **Configurable diagnostics.** Six lint rules (`knot.lint.*`) can be set to error, warning, info, or off. Additional always-on checks (deprecated macros, missing required arguments, assignment target errors, StoryData validation, JavaScript syntax) cannot be suppressed.
 - **Incremental parsing is passage-granular, not character-granular.** After an edit, the affected passage is re-parsed, then the whole workspace is reanalyzed. This is fast for small-to-medium projects but may lag on very large workspaces.
 
 ## Supported File Types

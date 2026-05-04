@@ -189,8 +189,8 @@ export class TweegoIntegration {
   }
 
   /** Build state is propagated via the onBuildStateChange event. */
-  // Direct state access is intentionally omitted — all consumers should
-  // subscribe to the event emitter for reactive updates.
+  // _buildState is used internally to guard against concurrent builds (e.g. in startWatch).
+  // External consumers should subscribe to the event emitter for reactive updates.
 
   private setState(s: BuildState): void {
     this._buildState = s;

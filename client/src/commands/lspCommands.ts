@@ -8,6 +8,7 @@ interface PassageEntry {
   fileName:     string;
   refCount:     number;
   incomingFrom: string[];
+  nameLine:     number;
 }
 const GET_PASSAGES_REQUEST = 'knot/getPassages';
 
@@ -133,21 +134,8 @@ export function registerLspCommands(
 
       const doc    = await vscode.workspace.openTextDocument(vscode.Uri.parse(picked.entry.uri));
       const editor = await vscode.window.showTextDocument(doc);
-      const lines  = doc.getText().split('\n');
-      let target = -1;
 
-      for (let i = 0; i < lines.length; i++) {
-        if (/^::/.test(lines[i]!)) {
-          const m = lines[i]!.match(/^::\s*([^\[{]+?)\s*(?:[\[{]|$)/);
-          if (m && m[1]!.trim() === picked.entry.name) { target = i; break; }
-        }
-      }
-
-      if (target === -1) {
-        vscode.window.showWarningMessage(`knot: Could not locate passage "${picked.entry.name}" in the file. It may have been moved.`);
-        return;
-      }
-
+      const target = picked.entry.nameLine;
       const pos = new vscode.Position(target, 0);
       editor.selection = new vscode.Selection(pos, pos);
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.AtTop);

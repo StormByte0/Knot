@@ -125,7 +125,11 @@ export function buildTypeSection(t: InferredType): string {
 }
 
 export function wordAt(text: string, offset: number): string {
-  // Search locally around the offset instead of scanning from position 0
+  // CAVEAT: This uses lastIndexOf(' ') for boundary detection, which breaks on
+  // tabs, newlines, dots, and other non-space characters. It also cannot
+  // distinguish property access (returns `$player` when cursor is on `stats` in
+  // `$player.stats`). Use only as a fallback when the AST walk doesn't find a
+  // hit — the AST-based paths in hover/definition handle these cases correctly.
   const start = Math.max(0, text.lastIndexOf(' ', offset) + 1);
   const m = text.slice(start).match(/^([$A-Za-z_][A-Za-z0-9_]*)/);
   return m && start + m[0].length >= offset ? m[0] : '';

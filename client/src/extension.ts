@@ -169,7 +169,8 @@ async function populateWorkspace(lspClient: LanguageClient): Promise<void> {
   });
   try {
     await statePromise;
-  } catch {
+  } catch (err) {
+    channel?.appendLine(`[populate] Aborted waiting for server ready: ${err}`);
     return;
   }
 
@@ -179,9 +180,11 @@ async function populateWorkspace(lspClient: LanguageClient): Promise<void> {
     ? `{${proj.include.map(p => `**/${p}/**/*.{tw,twee}`).join(',')}}`
     : '**/*.{tw,twee}';
 
+  // Always exclude common non-source directories even if the user didn't
+  const HARD_EXCLUDES = ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**', '**/.vscode/**'];
   const excludeGlob = proj.exclude.length > 0
-    ? `{${proj.exclude.join(',')}}`
-    : undefined;
+    ? `{${[...proj.exclude, ...HARD_EXCLUDES].join(',')}}`
+    : `{${HARD_EXCLUDES.join(',')}}`;
 
   let files: vscode.Uri[];
   try {

@@ -28,6 +28,7 @@ export interface PassageEntry {
   fileName:     string;
   refCount:     number;
   incomingFrom: string[];   // source passage names that link here, deduplicated
+  nameLine:     number;     // 0-based line of the passage header
 }
 
 export interface StoryDataResponse {
@@ -65,6 +66,7 @@ export function registerQueryHandlers(
       const analysis = workspace.getAnalysis(uri);
       if (!analysis) continue;
 
+      const doc = documents.get(uri);
       for (const sym of analysis.symbols.getUserSymbols()) {
         if (sym.kind !== SymbolKind.Passage) continue;
         if (seen.has(sym.name)) continue;
@@ -75,6 +77,7 @@ export function registerQueryHandlers(
           fileName:     path.basename(sym.uri),
           refCount:     workspace.getReferencingFiles(sym.name).length,
           incomingFrom: workspace.getIncomingLinks(sym.name).map(l => l.sourcePassage),
+          nameLine:     doc ? doc.positionAt(sym.range.start).line : 0,
         });
       }
     }
