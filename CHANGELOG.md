@@ -1,5 +1,69 @@
 # Change Log
 
+
+## 0.2.0 — Major Update
+
+This release improves accuracy, performance, and flexibility. The internal architecture was redesigned, resulting in more reliable behavior across the extension.
+
+---
+
+### What’s New
+
+**Improved Diagnostics**
+
+* More accurate errors and warnings
+* New checks for:
+
+  * Deprecated macros
+  * Missing required arguments
+  * Invalid assignment usage
+* Diagnostic rules can now be enabled, disabled, or customized
+
+**Better Code Intelligence**
+
+* Improved type inference for variables
+* More reliable macro validation and structure checks
+* More consistent results across large projects
+
+**Performance Improvements**
+
+* Smarter caching reduces unnecessary reprocessing
+* Better handling of large workspaces
+* Fewer duplicate or inconsistent results
+
+---
+
+### General Improvements
+
+* More reliable “Go to Definition”, references, and rename
+* Improved parsing of scripts, styles, and expressions
+* Better handling of passage links and relationships
+* Reduced edge-case bugs during editing
+
+---
+
+### Advanced / Extensibility
+
+* New adapter system enables support for multiple story formats
+* Architecture improvements make future updates easier
+
+---
+
+### Breaking Changes
+
+* Story format adapters now require additional methods
+* Some internal APIs now require an adapter parameter
+
+(Does not affect normal usage.)
+
+---
+
+### Stability
+
+* Expanded test coverage
+* More consistent behavior across files and projects
+
+
 ## 0.1.0
 
 Initial preview release.

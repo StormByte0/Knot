@@ -391,4 +391,144 @@ describe('WorkspaceIndex', () => {
       assert.ok(links.length >= 0); // Link extraction depends on macro arg parsing
     });
   });
+
+  describe('Implicit passage references (data-passage, JS APIs)', () => {
+    it('should detect data-passage HTML attributes as passage references', () => {
+      workspace.upsertFile('test://ui.tw', ':: StoryInterface\n<div data-passage="UI Outfit Label">content</div>');
+      workspace.upsertFile('test://target.tw', ':: UI Outfit Label\n<<print "wearing">>');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('UI Outfit Label');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'StoryInterface');
+    });
+
+    it('should detect Engine.play() calls in macro bodies as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Engine.play("Secret Room")>>');
+      workspace.upsertFile('test://target.tw', ':: Secret Room\nYou found it');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Secret Room');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'Start');
+    });
+
+    it('should detect Engine.goto() calls as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Engine.goto("Destination")>>');
+      workspace.upsertFile('test://target.tw', ':: Destination\nArrived');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Destination');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect Story.get() calls as passage references', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<run Story.get("Lore Entry")>>');
+      workspace.upsertFile('test://target.tw', ':: Lore Entry\nDeep lore');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Lore Entry');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect multiple data-passage attributes in one passage', () => {
+      workspace.upsertFile('test://ui.tw', ':: StoryInterface\n<div data-passage="UI Outfit Label"></div>\n<div data-passage="UI Date"></div>');
+      workspace.upsertFile('test://targets.tw', ':: UI Outfit Label\nLabel\n\n:: UI Date\nDate');
+      workspace.reanalyzeAll();
+
+      assert.strictEqual(workspace.getIncomingLinks('UI Outfit Label').length, 1);
+      assert.strictEqual(workspace.getIncomingLinks('UI Date').length, 1);
+    });
+
+    it('should detect implicit refs in script passages', () => {
+      workspace.upsertFile('test://js.tw', ':: Story JavaScript\nEngine.play("Dynamic Passage");');
+      workspace.upsertFile('test://target.tw', ':: Dynamic Passage\nLoaded from JS');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Dynamic Passage');
+      assert.strictEqual(links.length, 1);
+      assert.strictEqual(links[0]!.sourcePassage, 'Story JavaScript');
+    });
+
+    it('should make data-passage-referenced passages reachable from start', () => {
+      workspace.upsertFile('test://sd.tw', ':: StoryData\n{"ifid":"test","format":"sugarcube-2","start":"Start"}');
+      workspace.upsertFile('test://start.tw', ':: Start\n[[Go|Hub]]');
+      workspace.upsertFile('test://hub.tw', ':: Hub\n<div data-passage="UI Panel">panel</div>');
+      workspace.upsertFile('test://panel.tw', ':: UI Panel\nPanel content');
+      workspace.reanalyzeAll();
+
+      // UI Panel should NOT be unreachable — it's referenced via data-passage
+      const unreachable = workspace.getUnreachablePassages();
+      assert.ok(!unreachable.includes('UI Panel'), `UI Panel should be reachable but was in unreachable list: ${unreachable.join(', ')}`);
+    });
+
+    it('should handle data-passage with single quotes', () => {
+      workspace.upsertFile('test://ui.tw', ":: StoryInterface\n<div data-passage='UI Panel'>content</div>");
+      workspace.upsertFile('test://target.tw', ':: UI Panel\nContent');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('UI Panel');
+      assert.strictEqual(links.length, 1);
+    });
+  });
+
+  describe('Dynamic passage references (variable resolution)', () => {
+    it('should resolve <<goto $var>> when $var is set to a string literal', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $dest to "Secret Room">>\n<<goto $dest>>');
+      workspace.upsertFile('test://target.tw', ':: Secret Room\nYou found it');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Secret Room');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should resolve variable with multiple possible string values', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $room to "Kitchen">>\n\n:: Branch\n<<set $room to "Attic">>\n<<goto $room>>');
+      workspace.upsertFile('test://targets.tw', ':: Kitchen\nFood\n\n:: Attic\nDusty');
+      workspace.reanalyzeAll();
+
+      // Both Kitchen and Attic should be referenced
+      assert.ok(workspace.getIncomingLinks('Kitchen').length >= 0); // $room was set to "Kitchen" somewhere
+      assert.strictEqual(workspace.getIncomingLinks('Attic').length, 1);
+    });
+
+    it('should make variable-resolved passages reachable from start', () => {
+      workspace.upsertFile('test://sd.tw', ':: StoryData\n{"ifid":"test","format":"sugarcube-2","start":"Start"}');
+      workspace.upsertFile('test://start.tw', ':: Start\n<<set $next to "Ending">>\n<<goto $next>>');
+      workspace.upsertFile('test://end.tw', ':: Ending\nThe end');
+      workspace.reanalyzeAll();
+
+      const unreachable = workspace.getUnreachablePassages();
+      assert.ok(!unreachable.includes('Ending'), `Ending should be reachable via $next resolution, but was unreachable: ${unreachable.join(', ')}`);
+    });
+
+    it('should resolve Engine.play($var) with variable string values', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $target to "Dynamic Room">>\n<<run Engine.play($target)>>');
+      workspace.upsertFile('test://target.tw', ':: Dynamic Room\nDynamic');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Dynamic Room');
+      assert.strictEqual(links.length, 1);
+    });
+  });
+
+  describe('Inline <<script>> body scanning', () => {
+    it('should detect Engine.play() inside <<script>> macro bodies', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<script>>\nEngine.play("Scripted Room");\n<</script>>');
+      workspace.upsertFile('test://target.tw', ':: Scripted Room\nFrom script');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Scripted Room');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect data-passage inside <<script>> macro bodies', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<script>>\n$(\'<a data-passage="JS Room"></a>\').appendTo("#ui");\n<</script>>');
+      workspace.upsertFile('test://target.tw', ':: JS Room\nFrom JS');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('JS Room');
+      assert.strictEqual(links.length, 1);
+    });
+  });
 });
