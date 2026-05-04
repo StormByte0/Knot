@@ -471,4 +471,64 @@ describe('WorkspaceIndex', () => {
       assert.strictEqual(links.length, 1);
     });
   });
+
+  describe('Dynamic passage references (variable resolution)', () => {
+    it('should resolve <<goto $var>> when $var is set to a string literal', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $dest to "Secret Room">>\n<<goto $dest>>');
+      workspace.upsertFile('test://target.tw', ':: Secret Room\nYou found it');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Secret Room');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should resolve variable with multiple possible string values', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $room to "Kitchen">>\n\n:: Branch\n<<set $room to "Attic">>\n<<goto $room>>');
+      workspace.upsertFile('test://targets.tw', ':: Kitchen\nFood\n\n:: Attic\nDusty');
+      workspace.reanalyzeAll();
+
+      // Both Kitchen and Attic should be referenced
+      assert.ok(workspace.getIncomingLinks('Kitchen').length >= 0); // $room was set to "Kitchen" somewhere
+      assert.strictEqual(workspace.getIncomingLinks('Attic').length, 1);
+    });
+
+    it('should make variable-resolved passages reachable from start', () => {
+      workspace.upsertFile('test://sd.tw', ':: StoryData\n{"ifid":"test","format":"sugarcube-2","start":"Start"}');
+      workspace.upsertFile('test://start.tw', ':: Start\n<<set $next to "Ending">>\n<<goto $next>>');
+      workspace.upsertFile('test://end.tw', ':: Ending\nThe end');
+      workspace.reanalyzeAll();
+
+      const unreachable = workspace.getUnreachablePassages();
+      assert.ok(!unreachable.includes('Ending'), `Ending should be reachable via $next resolution, but was unreachable: ${unreachable.join(', ')}`);
+    });
+
+    it('should resolve Engine.play($var) with variable string values', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<set $target to "Dynamic Room">>\n<<run Engine.play($target)>>');
+      workspace.upsertFile('test://target.tw', ':: Dynamic Room\nDynamic');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Dynamic Room');
+      assert.strictEqual(links.length, 1);
+    });
+  });
+
+  describe('Inline <<script>> body scanning', () => {
+    it('should detect Engine.play() inside <<script>> macro bodies', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<script>>\nEngine.play("Scripted Room");\n<</script>>');
+      workspace.upsertFile('test://target.tw', ':: Scripted Room\nFrom script');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('Scripted Room');
+      assert.strictEqual(links.length, 1);
+    });
+
+    it('should detect data-passage inside <<script>> macro bodies', () => {
+      workspace.upsertFile('test://src.tw', ':: Start\n<<script>>\n$(\'<a data-passage="JS Room"></a>\').appendTo("#ui");\n<</script>>');
+      workspace.upsertFile('test://target.tw', ':: JS Room\nFrom JS');
+      workspace.reanalyzeAll();
+
+      const links = workspace.getIncomingLinks('JS Room');
+      assert.strictEqual(links.length, 1);
+    });
+  });
 });

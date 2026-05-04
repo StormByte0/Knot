@@ -163,6 +163,12 @@ const PASSAGE_REF_API_CALLS: ReadonlyArray<PassageRefApiCall> = [
   { objectName: 'Story',  methods: ['get', 'passage'] },
 ];
 
+/** Macros that can navigate to a passage dynamically (variable args, runtime resolution). */
+const DYNAMIC_NAVIGATION_MACROS: ReadonlySet<string> = new Set([
+  'goto', 'include', 'link', 'button',  // passage-arg macros (variable args possible)
+  'replace', 'append', 'prepend',       // DOM macros that can contain passage-arg children
+]);
+
 export class SugarCubeAdapter implements StoryFormatAdapter {
   readonly id          = 'sugarcube-2';
   readonly displayName = 'SugarCube 2';
@@ -422,6 +428,10 @@ declare const $args:    unknown[];
 
   getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall> {
     return PASSAGE_REF_API_CALLS;
+  }
+
+  getDynamicNavigationMacros(): ReadonlySet<string> {
+    return DYNAMIC_NAVIGATION_MACROS;
   }
 
   // ── Private ────────────────────────────────────────────────────────────────

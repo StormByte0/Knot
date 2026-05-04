@@ -300,4 +300,10 @@ describe('FallbackAdapter', () => {
       assert.deepStrictEqual(adapter.getPassageRefApiCalls(), []);
     });
   });
+
+  describe('Dynamic navigation macros', () => {
+    it('should return empty set from getDynamicNavigationMacros', () => {
+      assert.strictEqual(adapter.getDynamicNavigationMacros().size, 0);
+    });
+  });
 });
