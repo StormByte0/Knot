@@ -3,29 +3,32 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Knot — Twine/SugarCube Language Support for VS Code</title>
+<title>Knot — Twine/SugarCube for VS Code</title>
+<link rel="icon" type="image/png" href="icon.png">
 <style>
   :root {
-    --bg: #0d1117;
-    --bg-surface: #161b22;
-    --bg-elevated: #1c2333;
-    --bg-subtle: #21283b;
-    --border: #30363d;
-    --border-accent: #1b6b7a;
-    --text: #e6edf3;
-    --text-secondary: #8b949e;
-    --text-muted: #6e7681;
-    --accent: #58a6ff;
-    --accent-green: #3fb950;
+    --bg: #0f0e17;
+    --bg-surface: #1a1830;
+    --bg-elevated: #23203d;
+    --bg-subtle: #2c284a;
+    --border: #3a3560;
+    --border-accent: #7a5020;
+    --text: #eae6f5;
+    --text-secondary: #9b96b0;
+    --text-muted: #6e6988;
+    --accent: #d4a85a;
+    --accent-dim: #b07830;
+    --accent-glow: rgba(212,168,90,.15);
+    --accent-blue: #7a9ebf;
+    --accent-green: #6bc77a;
     --accent-orange: #d29922;
     --accent-red: #f85149;
     --accent-purple: #bc8cff;
-    --accent-teal: #39d2c0;
-    --code-bg: #0d1117;
-    --table-header: #1b6b7a;
-    --table-stripe: #161b22;
-    --tip-bg: #0d2137;
-    --tip-border: #1b6b7a;
+    --code-bg: #0f0e17;
+    --table-header: #2a1f3d;
+    --table-stripe: #16142a;
+    --tip-bg: #1f1a30;
+    --tip-border: #d4a85a;
     --warn-bg: #2b1d0e;
     --warn-border: #d29922;
   }
@@ -35,51 +38,72 @@
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
     background: var(--bg); color: var(--text); line-height: 1.7; font-size: 16px;
   }
+
+  /* ── Top Navigation ── */
   .topnav {
     position: sticky; top: 0; z-index: 100;
-    background: rgba(13,17,23,.85); backdrop-filter: blur(12px);
+    background: rgba(15,14,23,.88); backdrop-filter: blur(14px) saturate(1.4);
     border-bottom: 1px solid var(--border); padding: 0 32px;
-    display: flex; align-items: center; gap: 24px; height: 56px;
+    display: flex; align-items: center; gap: 20px; height: 56px;
   }
-  .topnav .logo { font-size: 20px; font-weight: 700; color: var(--accent-teal); letter-spacing: -0.5px; }
-  .topnav .logo span { color: var(--text-secondary); font-weight: 400; font-size: 14px; margin-left: 8px; }
+  .topnav .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 20px; font-weight: 700; color: var(--accent); letter-spacing: -0.5px;
+  }
+  .topnav .logo img { width: 28px; height: 28px; border-radius: 4px; }
+  .topnav .logo .subtitle { color: var(--text-muted); font-weight: 400; font-size: 13px; }
   .topnav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; transition: color .15s; }
   .topnav a:hover { color: var(--accent); }
   .topnav .spacer { flex: 1; }
   .topnav .badge {
-    background: var(--accent-teal); color: #000; font-size: 11px; font-weight: 700;
-    padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: .5px;
+    background: var(--accent); color: #0f0e17; font-size: 11px; font-weight: 700;
+    padding: 3px 10px; border-radius: 10px; text-transform: uppercase; letter-spacing: .5px;
   }
+
+  /* ── Hero ── */
   .hero {
     text-align: center; padding: 80px 24px 60px;
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #0d1117 0%, #111a2e 100%);
+    background: linear-gradient(180deg, #0f0e17 0%, #1a1530 40%, #2a1f3d 100%);
+    position: relative; overflow: hidden;
   }
-  .hero h1 { font-size: 56px; font-weight: 800; letter-spacing: -2px; margin-bottom: 12px; }
-  .hero h1 .knot-name { color: var(--accent-teal); }
-  .hero .tagline { font-size: 20px; color: var(--text-secondary); max-width: 640px; margin: 0 auto 32px; }
+  .hero::before {
+    content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+    background: radial-gradient(ellipse at 50% 40%, rgba(212,168,90,.06) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .hero h1 { font-size: 60px; font-weight: 800; letter-spacing: -2px; margin-bottom: 12px; position: relative; }
+  .hero h1 .knot-name { color: var(--accent); }
+  .hero .tagline { font-size: 20px; color: var(--text-secondary); max-width: 660px; margin: 0 auto 32px; position: relative; }
   .hero .install-btn {
-    display: inline-block; background: var(--accent-teal); color: #000; font-weight: 700;
+    display: inline-block; background: var(--accent); color: #0f0e17; font-weight: 700;
     padding: 12px 32px; border-radius: 8px; text-decoration: none; font-size: 16px;
-    transition: transform .15s, box-shadow .15s;
+    transition: transform .15s, box-shadow .15s; position: relative;
   }
-  .hero .install-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(57,210,192,.25); }
-  .hero .sub-links { margin-top: 16px; font-size: 14px; color: var(--text-muted); }
-  .hero .sub-links a { color: var(--accent); text-decoration: none; }
+  .hero .install-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 28px rgba(212,168,90,.3); }
+  .hero .sub-links { margin-top: 16px; font-size: 14px; color: var(--text-muted); position: relative; }
+  .hero .sub-links a { color: var(--accent-blue); text-decoration: none; }
   .hero .sub-links a:hover { text-decoration: underline; }
+
+  /* ── Feature Grid ── */
   .feature-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
     gap: 20px; max-width: 1200px; margin: 48px auto; padding: 0 24px;
   }
   .feature-card {
     background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px;
-    padding: 24px; transition: border-color .2s, transform .2s;
+    padding: 24px; transition: border-color .2s, transform .2s, box-shadow .2s;
   }
-  .feature-card:hover { border-color: var(--border-accent); transform: translateY(-2px); }
-  .feature-card .icon { font-size: 28px; margin-bottom: 12px; }
-  .feature-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--accent-teal); }
+  .feature-card:hover { border-color: var(--accent-dim); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(212,168,90,.08); }
+  .feature-card .icon { width: 36px; height: 36px; margin-bottom: 12px; color: var(--accent); }
+  .feature-card .icon svg { width: 100%; height: 100%; }
+  .feature-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--accent); }
   .feature-card p { font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+
+  /* ── Layout ── */
   .layout { display: flex; max-width: 1280px; margin: 0 auto; }
+
+  /* ── Sidebar ── */
   .sidebar {
     width: 260px; min-width: 260px; position: sticky; top: 56px; height: calc(100vh - 56px);
     overflow-y: auto; padding: 24px 16px; border-right: 1px solid var(--border);
@@ -94,131 +118,157 @@
     border-radius: 6px; transition: color .15s, background .15s; line-height: 1.5;
   }
   .sidebar a:hover { color: var(--text); background: var(--bg-elevated); }
-  .sidebar a.active { color: var(--accent-teal); background: var(--bg-elevated); font-weight: 500; }
+  .sidebar a.active { color: var(--accent); background: var(--bg-elevated); font-weight: 500; }
   .sidebar a.sub { padding-left: 24px; font-size: 13px; }
+
+  /* ── Main Content ── */
   .main { flex: 1; padding: 40px 48px 80px; min-width: 0; }
   h2 { font-size: 28px; font-weight: 700; margin: 56px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); letter-spacing: -0.5px; color: var(--text); }
   h2:first-child { margin-top: 0; }
   h3 { font-size: 20px; font-weight: 600; margin: 36px 0 12px; color: var(--text); }
-  h4 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; color: var(--accent-teal); }
+  h4 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; color: var(--accent); }
   p { margin-bottom: 16px; color: var(--text-secondary); }
   p strong { color: var(--text); }
   code {
     background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 4px;
     padding: 2px 6px; font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 13px; color: var(--accent-teal);
+    font-size: 13px; color: var(--accent);
   }
   pre {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 16px 20px; overflow-x: auto; margin: 16px 0; font-size: 14px; line-height: 1.6;
   }
   pre code { background: none; border: none; padding: 0; color: var(--text); font-size: 13px; }
+
+  /* ── Syntax Highlighting Classes ── */
   .kw { color: var(--accent-purple); }
-  .fn { color: var(--accent-teal); }
+  .fn { color: var(--accent-blue); }
   .str { color: var(--accent-green); }
   .cm { color: var(--text-muted); font-style: italic; }
   .var { color: var(--accent-orange); }
-  .mac { color: var(--accent); }
+  .mac { color: var(--accent-blue); }
   .num { color: var(--accent-orange); }
+
+  /* ── Tables ── */
   table {
     width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px;
     border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
   }
   thead th {
     background: var(--table-header); color: #fff; font-weight: 600; text-align: left;
-    padding: 10px 16px; border-bottom: 2px solid var(--table-header);
+    padding: 10px 16px; border-bottom: 2px solid var(--accent-dim);
   }
   tbody td { padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
   tbody tr:nth-child(even) { background: var(--table-stripe); }
   tbody tr:hover { background: var(--bg-elevated); }
+
+  /* ── Callouts ── */
   .tip, .warn {
     border-radius: 8px; padding: 16px 20px; margin: 20px 0; border-left: 4px solid;
+    display: flex; gap: 12px; align-items: flex-start;
   }
   .tip { background: var(--tip-bg); border-left-color: var(--tip-border); }
-  .tip .tip-title { color: var(--accent-teal); font-weight: 600; margin-bottom: 4px; font-size: 14px; }
+  .tip .callout-icon { flex-shrink: 0; width: 20px; height: 20px; color: var(--accent); margin-top: 2px; }
+  .tip .callout-body { flex: 1; }
+  .tip .tip-title { color: var(--accent); font-weight: 600; margin-bottom: 4px; font-size: 14px; }
   .tip p { color: var(--text-secondary); font-size: 14px; margin-bottom: 0; }
   .warn { background: var(--warn-bg); border-left-color: var(--warn-border); }
+  .warn .callout-icon { flex-shrink: 0; width: 20px; height: 20px; color: var(--accent-orange); margin-top: 2px; }
+  .warn .callout-body { flex: 1; }
   .warn .tip-title { color: var(--accent-orange); font-weight: 600; margin-bottom: 4px; font-size: 14px; }
-  .comparison td .yes { color: var(--accent-green); font-weight: 600; }
-  .comparison td .no { color: var(--accent-red); font-weight: 600; }
-  .comparison td .partial { color: var(--accent-orange); font-weight: 600; }
-  .comparison td .na { color: var(--text-muted); }
+
+  /* ── Inline Elements ── */
   kbd {
     background: var(--bg-elevated); border: 1px solid var(--border); border-bottom-width: 2px;
     border-radius: 4px; padding: 2px 8px; font-size: 12px; font-family: inherit;
     color: var(--text-secondary); white-space: nowrap;
   }
   .setting { margin: 12px 0; padding: 12px 16px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px; }
-  .setting-name { font-family: monospace; font-size: 14px; color: var(--accent-teal); font-weight: 600; }
+  .setting-name { font-family: monospace; font-size: 14px; color: var(--accent); font-weight: 600; }
   .setting-default { font-family: monospace; font-size: 13px; color: var(--accent-orange); margin-left: 12px; }
   .setting-desc { font-size: 14px; color: var(--text-secondary); margin-top: 4px; }
   .check { color: var(--accent-green); font-weight: 700; }
   ul, ol { margin: 12px 0 12px 24px; color: var(--text-secondary); }
   li { margin-bottom: 6px; }
+
+  /* ── Footer ── */
+  footer a { color: var(--accent-blue); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  /* ── Responsive ── */
   @media (max-width: 960px) {
     .sidebar { display: none; }
     .main { padding: 24px; }
     .hero h1 { font-size: 36px; }
+    .topnav .subtitle { display: none; }
   }
+
+  /* ── Scrollbar ── */
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* ── Selection ── */
+  ::selection { background: rgba(212,168,90,.25); color: var(--text); }
 </style>
 </head>
 <body>
 
 <nav class="topnav">
-  <div class="logo">Knot <span>Twine/SugarCube for VS Code</span></div>
+  <div class="logo">
+    <img src="icon.svg" alt="Knot">
+    Knot
+    <span class="subtitle">SugarCube Language Server</span>
+  </div>
   <a href="#features">Features</a>
-  <a href="#comparison">Comparison</a>
   <a href="#configuration">Configuration</a>
   <a href="#commands">Commands</a>
   <div class="spacer"></div>
-  <span class="badge">Preview</span>
+  <span class="badge">v1.0</span>
   <a href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot" target="_blank">Marketplace</a>
   <a href="https://github.com/Stormbyte0/Knot" target="_blank">GitHub</a>
 </nav>
 
 <section class="hero">
   <h1><span class="knot-name">Knot</span></h1>
-  <p class="tagline">The most complete language server for Twine/SugarCube 2 development in VS Code. Smart completions, type inference, cross-file navigation, build integration, and deep semantic understanding of your interactive fiction.</p>
+  <p class="tagline">A full-featured language server for Twine/SugarCube 2 development in VS Code. Smart completions, type inference, cross-file navigation, build integration, and deep semantic understanding of your interactive fiction.</p>
   <a class="install-btn" href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot" target="_blank">Install from Marketplace</a>
   <p class="sub-links">
     <a href="https://github.com/Stormbyte0/Knot">Source on GitHub</a> &middot;
     <a href="#quick-start">Quick Start</a> &middot;
-    <a href="#comparison">See How It Compares</a>
+    <a href="#configuration">Configuration</a>
   </p>
 </section>
 
 <section class="feature-grid">
   <div class="feature-card">
-    <div class="icon">&#x1F9E0;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a7 7 0 0 1 0 14 7 7 0 0 1 0-14"/><path d="M12 2a3.5 3.5 0 0 1 0 7 3.5 3.5 0 0 1 0-7"/><line x1="12" y1="16" x2="12" y2="22"/></svg></div>
     <h3>Smart Completions</h3>
     <p>50+ built-in macros with snippet bodies, passage name completions inside macro args, variable &amp; property chains, close-tag suggestions, and custom widget/macro detection.</p>
   </div>
   <div class="feature-card">
-    <div class="icon">&#x1F50D;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
     <h3>Go to Definition</h3>
     <p>F12 jumps to passage definitions, widget/Macro.add() declarations, variable assignments, and JS globals &mdash; across all files in your workspace.</p>
   </div>
   <div class="feature-card">
-    <div class="icon">&#x1F4CA;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M4 12h8"/><path d="M4 8h16"/><path d="M4 16h16"/></svg></div>
     <h3>Type Inference</h3>
     <p>Automatically infers types from <code>&lt;&lt;set&gt;&gt;</code> assignments. Objects, arrays, numbers, strings &mdash; property completions and hover type tables just work.</p>
   </div>
   <div class="feature-card">
-    <div class="icon">&#x26A0;&#xFE0F;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
     <h3>9 Diagnostic Rules</h3>
     <p>Unknown passages, unknown macros, duplicate passages, unreachable passages, type mismatches, container structure errors, and more. All configurable.</p>
   </div>
   <div class="feature-card">
-    <div class="icon">&#x1F504;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div>
     <h3>Rename Everywhere</h3>
     <p>F2 renames passages, variables, and widgets across all files. Updates links, macro args, <code>[[brackets]]</code>, and definitions in one operation.</p>
   </div>
   <div class="feature-card">
-    <div class="icon">&#x1F3D7;&#xFE0F;</div>
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20h20"/><path d="M5 20V8l7-5 7 5v12"/><path d="M9 20v-6h6v6"/></svg></div>
     <h3>Tweego Integration</h3>
     <p>Build, watch, and test your project directly from VS Code. Build errors appear as inline diagnostics. One-click open in browser.</p>
   </div>
@@ -229,7 +279,6 @@
 <aside class="sidebar">
   <div class="nav-section">Getting Started</div>
   <a href="#quick-start">Quick Start</a>
-  <a href="#comparison">Feature Comparison</a>
   <div class="nav-section">Core Features</div>
   <a href="#completions">Smart Completions</a>
   <a href="#completions-macros">Built-in Macro Snippets</a>
@@ -269,55 +318,24 @@
 <main class="main" id="features">
 
 <h2 id="quick-start">Quick Start</h2>
-<p>Install Knot from the <a href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot" style="color:var(--accent)">VS Code Marketplace</a>, open a folder containing <code>.tw</code> or <code>.twee</code> files, and Knot automatically begins indexing your workspace. No configuration is required for basic functionality.</p>
+<p>Install Knot from the <a href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot" style="color:var(--accent-blue)">VS Code Marketplace</a>, open a folder containing <code>.tw</code> or <code>.twee</code> files, and Knot automatically begins indexing your workspace. No configuration is required for basic functionality.</p>
 <p>The status bar at the bottom of VS Code shows a spinning indicator while indexing, then displays a <span class="check">&#x2713;</span> checkmark with your passage count and detected story format when ready. Click it anytime to open the command menu.</p>
 <div class="tip">
-  <div class="tip-title">&#x1F4A1; First Project Setup</div>
-  <p>If you also use <a href="https://www.motoslave.net/tweego/" style="color:var(--accent)">tweego</a> to compile, set <code>knot.tweego.path</code> to the tweego executable path. Then use <kbd>Ctrl+Alt+B</kbd> to build and <kbd>Ctrl+Alt+P</kbd> to navigate between passages.</p>
+  <div class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></div>
+  <div class="callout-body">
+    <div class="tip-title">First Project Setup</div>
+    <p>If you also use <a href="https://www.motoslave.net/tweego/" style="color:var(--accent-blue)">tweego</a> to compile, set <code>knot.tweego.path</code> to the tweego executable path. Then use <kbd>Ctrl+Alt+B</kbd> to build and <kbd>Ctrl+Alt+P</kbd> to navigate between passages.</p>
+  </div>
 </div>
-
-<h2 id="comparison">Feature Comparison</h2>
-<p>How Knot stacks up against other Twine/SugarCube development tools. Knot is the only tool that provides deep semantic language server features &mdash; completions, type inference, cross-file navigation, and configurable diagnostics &mdash; all inside VS Code.</p>
-<table class="comparison">
-  <thead>
-    <tr><th style="width:36%">Feature</th><th>Knot</th><th>Twine Editor</th><th>T3LT (VS Code)</th><th>Twee2</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>SugarCube macro completions (50+)</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="partial">~</span> limited</td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Close-tag suggestions (<code>&lt;&lt;/</code>)</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Passage name completions in macro args</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Variable property chain completions</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Custom widget/macro detection</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Macro.add() detection &amp; go-to-def</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Go to Definition (F12)</td><td><span class="yes">&#x2713;</span> passages, vars, macros, JS</td><td><span class="no">&#x2717;</span></td><td><span class="partial">~</span> passages only</td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Find All References (Shift+F12)</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Rename across files (F2)</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Rich hover information</td><td><span class="yes">&#x2713;</span> types, links, refs, deprecation</td><td><span class="no">&#x2717;</span></td><td><span class="partial">~</span> basic</td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Type inference from <code>&lt;&lt;set&gt;&gt;</code></td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Dynamic passage ref resolution</td><td><span class="yes">&#x2713;</span> <code>&lt;&lt;goto $var&gt;&gt;</code></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Implicit passage ref detection</td><td><span class="yes">&#x2713;</span> data-passage, Engine.play</td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>9 configurable diagnostic rules</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="partial">~</span> basic lint</td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Unreachable passage detection</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Code actions (create passage, IFID gen)</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Semantic token highlighting</td><td><span class="yes">&#x2713;</span> 7 token types</td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Embedded JS/CSS syntax injection</td><td><span class="yes">&#x2713;</span></td><td><span class="partial">~</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Smart indentation &amp; bracket matching</td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td><td><span class="na">&mdash;</span></td></tr>
-    <tr><td>Build/watch via tweego</td><td><span class="yes">&#x2713;</span></td><td><span class="yes">&#x2713;</span> built-in</td><td><span class="no">&#x2717;</span></td><td><span class="yes">&#x2713;</span> CLI</td></tr>
-    <tr><td>Visual story map / graph</td><td><span class="no">&#x2717;</span></td><td><span class="yes">&#x2713;</span></td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td></tr>
-    <tr><td>In-editor play/preview</td><td><span class="no">&#x2717;</span></td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="no">&#x2717;</span></td></tr>
-    <tr><td>Harlowe / Chapbook support</td><td><span class="no">&#x2717;</span></td><td><span class="yes">&#x2713;</span></td><td><span class="no">&#x2717;</span></td><td><span class="partial">~</span></td></tr>
-  </tbody>
-</table>
-<p><strong>Key takeaway:</strong> Knot is the only tool that understands your SugarCube code semantically. Other tools either provide basic text editing (Twine, Twee2) or syntax highlighting with limited navigation (T3LT). Knot gives you the full IDE experience: type-aware completions, cross-file refactoring, configurable linting, and build integration &mdash; all in VS Code.</p>
 
 <h2 id="completions">Smart Completions</h2>
 <p>Knot provides context-aware completions that adapt based on where and what you're typing. Completions are triggered by the characters <code>&lt;</code>, <code>[</code>, <code>$</code>, <code>_</code>, <code>.</code>, and <code>"</code>, or you can invoke them manually with <kbd>Ctrl+Space</kbd>.</p>
 
 <h3 id="completions-macros">Built-in SugarCube Macro Snippets</h3>
 <p>Typing <code>&lt;&lt;</code> provides completions for all <strong>50+ built-in SugarCube macros</strong>, each with a snippet that expands the macro with placeholder arguments:</p>
-<pre><code><span class="mac">&lt;&lt;if&gt;&gt;</span>        <span class="cm">\u2192 expands to:</span>  <span class="mac">&lt;&lt;if</span> <span class="var">${1:condition}</span><span class="mac">&gt;&gt;</span>
-<span class="mac">&lt;&lt;for&gt;&gt;</span>       <span class="cm">\u2192 expands to:</span>  <span class="mac">&lt;&lt;for</span> <span class="var">${1:_i}</span> <span class="kw">to</span> <span class="var">${2:0}</span> <span class="kw">through</span> <span class="var">${3:10}</span><span class="mac">&gt;&gt;</span>
-<span class="mac">&lt;&lt;link&gt;&gt;</span>      <span class="cm">\u2192 expands to:</span>  <span class="mac">&lt;&lt;link</span> <span class="str">"${1:label}"</span> <span class="str">"${2:passage}"</span><span class="mac">&gt;&gt;</span></code></pre>
+<pre><code><span class="mac">&lt;&lt;if&gt;&gt;</span>        <span class="cm">// expands to:</span>  <span class="mac">&lt;&lt;if</span> <span class="var">${1:condition}</span><span class="mac">&gt;&gt;</span>
+<span class="mac">&lt;&lt;for&gt;&gt;</span>       <span class="cm">// expands to:</span>  <span class="mac">&lt;&lt;for</span> <span class="var">${1:_i}</span> <span class="kw">to</span> <span class="var">${2:0}</span> <span class="kw">through</span> <span class="var">${3:10}</span><span class="mac">&gt;&gt;</span>
+<span class="mac">&lt;&lt;link&gt;&gt;</span>      <span class="cm">// expands to:</span>  <span class="mac">&lt;&lt;link</span> <span class="str">"${1:label}"</span> <span class="str">"${2:passage}"</span><span class="mac">&gt;&gt;</span></code></pre>
 <p>This dramatically reduces syntax errors and speeds up authoring, especially for macros you use infrequently.</p>
 
 <h3 id="completions-close">Close-Tag Suggestions</h3>
@@ -325,25 +343,28 @@
 <pre><code><span class="mac">&lt;&lt;widget&gt;&gt;</span>
   <span class="mac">&lt;&lt;for&gt;&gt;</span>
     <span class="mac">&lt;&lt;if&gt;&gt;</span>
-      <span class="cm">&lt;&lt;/   \u2190 suggests: &lt;&lt;/if&gt;&gt;  &lt;&lt;/for&gt;&gt;  &lt;&lt;/widget&gt;&gt;</span></code></pre>
+      <span class="cm">&lt;&lt;/   // suggests: &lt;&lt;/if&gt;&gt;  &lt;&lt;/for&gt;&gt;  &lt;&lt;/widget&gt;&gt;</span></code></pre>
 <p>If no open stack is found, it falls back to showing all known block macro names.</p>
 
 <h3 id="completions-passage">Passage Name Completions in Macro Arguments</h3>
 <p>When your cursor is inside a string argument of a passage-referencing macro, Knot provides all workspace passage names as completions:</p>
-<pre><code><span class="mac">&lt;&lt;goto</span> <span class="str">"|"</span><span class="mac">&gt;&gt;</span>       <span class="cm">\u2190 cursor between quotes shows all passage names</span>
-<span class="mac">&lt;&lt;link</span> <span class="str">"Talk"</span> <span class="str">"|"</span><span class="mac">&gt;&gt;</span>  <span class="cm">\u2190 second arg shows passage names</span></code></pre>
+<pre><code><span class="mac">&lt;&lt;goto</span> <span class="str">"|"</span><span class="mac">&gt;&gt;</span>       <span class="cm">// cursor between quotes shows all passage names</span>
+<span class="mac">&lt;&lt;link</span> <span class="str">"Talk"</span> <span class="str">"|"</span><span class="mac">&gt;&gt;</span>  <span class="cm">// second arg shows passage names</span></code></pre>
 <p>This works for <code>&lt;&lt;goto&gt;&gt;</code>, <code>&lt;&lt;link&gt;&gt;</code>, <code>&lt;&lt;button&gt;&gt;</code>, <code>&lt;&lt;include&gt;&gt;</code>, and all other navigation macros.</p>
 
 <h3 id="completions-variables">Variable &amp; Property Completions</h3>
 <p>Typing <code>$</code> outside a macro-open context triggers completions for <strong>all known story variables</strong> across your workspace, with inferred type information. Once you select a variable and type a dot, Knot resolves the inferred type and provides <strong>property chain completions</strong>:</p>
-<pre><code><span class="var">$player</span>.         <span class="cm">\u2190 suggests: name, hp, inventory, stats</span>
-<span class="var">$player</span>.stats.    <span class="cm">\u2190 suggests: hp, mp, strength</span></code></pre>
+<pre><code><span class="var">$player</span>.         <span class="cm">// suggests: name, hp, inventory, stats</span>
+<span class="var">$player</span>.stats.    <span class="cm">// suggests: hp, mp, strength</span></code></pre>
 
 <h3 id="completions-custom">Custom Widget &amp; Macro Completions</h3>
 <p>User-defined macros via <code>&lt;&lt;widget&gt;&gt;</code> or <code>Macro.add()</code> appear in completions alongside built-in macros. The defining passage name is shown in the detail field. <strong>JS globals</strong> declared in Story JavaScript or inline <code>&lt;&lt;script&gt;&gt;</code> blocks also appear as completions with inferred types.</p>
 <div class="tip">
-  <div class="tip-title">&#x1F4A1; Header Suppression</div>
-  <p>Completions are automatically suppressed on passage header lines (<code>:: PassageName</code>) to avoid noise.</p>
+  <div class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></div>
+  <div class="callout-body">
+    <div class="tip-title">Header Suppression</div>
+    <p>Completions are automatically suppressed on passage header lines (<code>:: PassageName</code>) to avoid noise.</p>
+  </div>
 </div>
 
 <h2 id="go-to-definition">Go to Definition (F12)</h2>
@@ -372,7 +393,7 @@
 <table>
   <thead><tr><th>Target</th><th>What gets updated</th></tr></thead>
   <tbody>
-    <tr><td>Passage</td><td><code>[[OldName]]</code> \u2192 <code>[[NewName]]</code>, <code>&lt;&lt;goto "OldName"&gt;&gt;</code> \u2192 <code>&lt;&lt;goto "NewName"&gt;&gt;</code>, header <code>:: OldName</code> \u2192 <code>:: NewName</code></td></tr>
+    <tr><td>Passage</td><td><code>[[OldName]]</code> &rarr; <code>[[NewName]]</code>, <code>&lt;&lt;goto "OldName"&gt;&gt;</code> &rarr; <code>&lt;&lt;goto "NewName"&gt;&gt;</code>, header <code>:: OldName</code> &rarr; <code>:: NewName</code></td></tr>
     <tr><td>Variable</td><td>Every <code>&lt;&lt;set $oldVar&gt;&gt;</code> and usage site</td></tr>
     <tr><td>Widget/Macro</td><td>Definition <code>&lt;&lt;widget "oldName"&gt;&gt;</code> and all call sites <code>&lt;&lt;oldName&gt;&gt;</code></td></tr>
   </tbody>
@@ -396,14 +417,17 @@
     <tr><td>Custom macro/widget</td><td>"Custom Macro" + defining passage name</td></tr>
     <tr><td>Story variable (<code>$var</code>)</td><td>Name, sigil description, definition location, reference count, <strong>inferred type table</strong></td></tr>
     <tr><td>Temp variable (<code>_var</code>)</td><td>Name, scope description (passage-local)</td></tr>
-    <tr><td>Passage name</td><td>Name, defining file, <strong>incoming links grouped by source</strong> with \u00d7N badge</td></tr>
+    <tr><td>Passage name</td><td>Name, defining file, <strong>incoming links grouped by source</strong> with count badges</td></tr>
     <tr><td>Property path (<code>$obj.prop</code>)</td><td>Resolved type of the property; if unknown, shows parent's known properties as suggestions</td></tr>
     <tr><td>SugarCube global</td><td>API description (State, Engine, Story, etc.)</td></tr>
   </tbody>
 </table>
 <div class="tip">
-  <div class="tip-title">&#x1F4A1; Passage Hover Example</div>
-  <p>Hovering over <code>[[Forest]]</code> might show: <strong>Forest</strong> \u2014 defined in <code>rooms.tw</code> \u2014 3 incoming links: Hallway (\u00d72), Garden (\u00d71).</p>
+  <div class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></div>
+  <div class="callout-body">
+    <div class="tip-title">Passage Hover Example</div>
+    <p>Hovering over <code>[[Forest]]</code> might show: <strong>Forest</strong> &mdash; defined in <code>rooms.tw</code> &mdash; 3 incoming links: Hallway (2), Garden (1).</p>
+  </div>
 </div>
 <p>Recognized SugarCube globals: <code>State</code>, <code>Story</code>, <code>Engine</code>, <code>Dialog</code>, <code>Fullscreen</code>, <code>LoadScreen</code>, <code>Macro</code>, <code>Passage</code>, <code>Save</code>, <code>Setting</code>, <code>Settings</code>, <code>SimpleAudio</code>, <code>Template</code>, <code>UI</code>, <code>UIBar</code>, <code>Config</code>, <code>SugarCube</code>, <code>setup</code>, <code>prehistory</code>, <code>predisplay</code>, <code>prerender</code>, <code>postdisplay</code>, <code>postrender</code>, <code>passage</code>, <code>tags</code>, <code>visited</code>, <code>turns</code>, <code>time</code>, <code>$args</code>.</p>
 
@@ -419,23 +443,23 @@
 }<span class="mac">&gt;&gt;</span>
 
 <span class="cm">:: Later passage</span>
-<span class="mac">&lt;&lt;print</span> <span class="var">$player</span>.name<span class="mac">&gt;&gt;</span>     <span class="cm">\u2190 Knot knows this is a string</span>
-<span class="mac">&lt;&lt;if</span> <span class="var">$player</span>.stats.hp <span class="kw">gt</span> <span class="num">80</span><span class="mac">&gt;&gt;</span>  <span class="cm">\u2190 Knot knows hp is a number</span></code></pre>
+<span class="mac">&lt;&lt;print</span> <span class="var">$player</span>.name<span class="mac">&gt;&gt;</span>     <span class="cm">// Knot knows this is a string</span>
+<span class="mac">&lt;&lt;if</span> <span class="var">$player</span>.stats.hp <span class="kw">gt</span> <span class="num">80</span><span class="mac">&gt;&gt;</span>  <span class="cm">// Knot knows hp is a number</span></code></pre>
 <h3>JS Global Type Inference</h3>
-<p>Knot parses Story JavaScript and inline <code>&lt;&lt;script&gt;&gt;</code> bodies using <strong>acorn</strong>. It infers types from initializer expressions: <code>var counter = 0</code> \u2192 number, <code>var labels = ["a", "b"]</code> \u2192 string[], <code>var config = {debug: true}</code> \u2192 {debug: boolean}.</p>
+<p>Knot parses Story JavaScript and inline <code>&lt;&lt;script&gt;&gt;</code> bodies using <strong>acorn</strong>. It infers types from initializer expressions: <code>var counter = 0</code> &rarr; number, <code>var labels = ["a", "b"]</code> &rarr; string[], <code>var config = {debug: true}</code> &rarr; {debug: boolean}.</p>
 
 <h2 id="dynamic-refs">Dynamic Passage Reference Detection</h2>
 <p>SugarCube allows passage names to be computed at runtime using variables and expressions. Knot handles this through several mechanisms:</p>
 <h3>Variable-Based Resolution</h3>
 <p>When a navigation macro uses a variable target, Knot builds a workspace-wide map of variable-to-string assignments:</p>
 <pre><code><span class="mac">&lt;&lt;set</span> <span class="var">$destination</span> <span class="kw">to</span> <span class="str">"Forest"</span><span class="mac">&gt;&gt;</span>
-<span class="mac">&lt;&lt;goto</span> <span class="var">$destination</span><span class="mac">&gt;&gt;</span>   <span class="cm">\u2190 Knot resolves $destination \u2192 "Forest"</span></code></pre>
+<span class="mac">&lt;&lt;goto</span> <span class="var">$destination</span><span class="mac">&gt;&gt;</span>   <span class="cm">// Knot resolves $destination &rarr; "Forest"</span></code></pre>
 <p>Resolved passages are included in the link graph and unreachable passage analysis.</p>
 <h3>Implicit Passage Patterns</h3>
 <p>Knot detects passage references beyond <code>[[links]]</code> and navigation macros:</p>
-<pre><code>&lt;div data-passage="Room"&gt;        <span class="cm">\u2190 HTML attribute</span>
-<span class="fn">Engine</span>.play(<span class="str">"Room"</span>)            <span class="cm">\u2190 JS API call</span>
-<span class="fn">Story</span>.get(<span class="str">"Room"</span>)              <span class="cm">\u2190 JS API call</span></code></pre>
+<pre><code>&lt;div data-passage="Room"&gt;        <span class="cm">// HTML attribute</span>
+<span class="fn">Engine</span>.play(<span class="str">"Room"</span>)            <span class="cm">// JS API call</span>
+<span class="fn">Story</span>.get(<span class="str">"Room"</span>)              <span class="cm">// JS API call</span></code></pre>
 <p>These implicit references are included in reference counts, Find All References, and reachability analysis.</p>
 
 <h2 id="macro-add">Macro.add() Detection</h2>
@@ -446,7 +470,7 @@
 <p>After detection, <code>&lt;&lt;addtime&gt;&gt;</code> gets full language support: completions, hover, F12 go-to-definition, and Find All References. The established SugarCube pattern using <code>$(document).one(':storyready', function() { registerMacros(); })</code> is fully supported.</p>
 
 <h2 id="diagnostics">Diagnostics &amp; Error Detection</h2>
-<p>Knot continuously analyzes your workspace and reports problems as colored underlines. All diagnostic rules are <strong>configurable</strong> \u2014 set severity to error, warning, info, or off.</p>
+<p>Knot continuously analyzes your workspace and reports problems as colored underlines. All diagnostic rules are <strong>configurable</strong> &mdash; set severity to error, warning, info, or off.</p>
 <table>
   <thead><tr><th>Rule</th><th>Default</th><th>What It Catches</th></tr></thead>
   <tbody>
@@ -470,8 +494,11 @@
   </tbody>
 </table>
 <div class="tip">
-  <div class="tip-title">&#x1F4A1; Unreachable Passage Analysis</div>
-  <p>Special passages (StoryInit, StoryCaption, etc.) and system passages (StoryData, Story JavaScript, Story Stylesheet) are always considered reachable. Dynamic references like <code>&lt;&lt;goto $dest&gt;&gt;</code> are resolved by tracking variable assignments to string literals.</p>
+  <div class="callout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></div>
+  <div class="callout-body">
+    <div class="tip-title">Unreachable Passage Analysis</div>
+    <p>Special passages (StoryInit, StoryCaption, etc.) and system passages (StoryData, Story JavaScript, Story Stylesheet) are always considered reachable. Dynamic references like <code>&lt;&lt;goto $dest&gt;&gt;</code> are resolved by tracking variable assignments to string literals.</p>
+  </div>
 </div>
 
 <h2 id="code-actions">Code Actions (Quick Fixes)</h2>
@@ -508,7 +535,7 @@
 <table>
   <thead><tr><th>Feature</th><th>Behavior</th></tr></thead>
   <tbody>
-    <tr><td>Bracket auto-close</td><td><code>&lt;&lt;</code> \u2192 <code>&gt;&gt;</code>, <code>[[</code> \u2192 <code>]]</code>, plus standard brackets and quotes</td></tr>
+    <tr><td>Bracket auto-close</td><td><code>&lt;&lt;</code> &rarr; <code>&gt;&gt;</code>, <code>[[</code> &rarr; <code>]]</code>, plus standard brackets and quotes</td></tr>
     <tr><td>Surrounding pairs</td><td>Select text + <code>[[</code> wraps as <code>[[selected text]]</code></td></tr>
     <tr><td>Smart indent</td><td>Auto-indent after <code>&lt;&lt;if&gt;&gt;</code>, <code>&lt;&lt;for&gt;&gt;</code>, <code>&lt;&lt;widget&gt;&gt;</code>, etc.</td></tr>
     <tr><td>Folding</td><td>Passage bodies, block comments, block macros (individually foldable when nested)</td></tr>
@@ -517,7 +544,7 @@
 </table>
 
 <h2 id="tweego">Tweego Build Integration</h2>
-<p>Knot integrates with the <a href="https://www.motoslave.net/tweego/" style="color:var(--accent)">tweego</a> compiler for build, test, and watch functionality directly from VS Code.</p>
+<p>Knot integrates with the <a href="https://www.motoslave.net/tweego/" style="color:var(--accent-blue)">tweego</a> compiler for build, test, and watch functionality directly from VS Code.</p>
 <h3>Building</h3>
 <p><kbd>Ctrl+Alt+B</kbd> runs tweego with your configured settings. On success, a notification shows build duration and offers an <strong>"Open in browser"</strong> button. On failure, structured errors are published as inline diagnostics.</p>
 <h3>Watch Mode</h3>
@@ -531,16 +558,16 @@
   <tbody>
     <tr><td>knot.goToPassage</td><td><kbd>Ctrl+Alt+P</kbd></td><td>Quick-pick to navigate to any passage</td></tr>
     <tr><td>knot.build</td><td><kbd>Ctrl+Alt+B</kbd></td><td>Run tweego build</td></tr>
-    <tr><td>knot.buildTest</td><td>\u2014</td><td>Build with test mode (<code>-t</code>)</td></tr>
-    <tr><td>knot.startWatch</td><td>\u2014</td><td>Start tweego watch mode (<code>-w</code>)</td></tr>
-    <tr><td>knot.stopWatch</td><td>\u2014</td><td>Stop the watch process</td></tr>
-    <tr><td>knot.listFormats</td><td>\u2014</td><td>List available story formats</td></tr>
-    <tr><td>knot.verifyTweego</td><td>\u2014</td><td>Verify tweego installation</td></tr>
-    <tr><td>knot.restart</td><td>\u2014</td><td>Restart the language server</td></tr>
-    <tr><td>knot.refreshDocuments</td><td>\u2014</td><td>Re-index entire workspace</td></tr>
-    <tr><td>knot.showOutput</td><td>\u2014</td><td>Open the Knot output channel</td></tr>
-    <tr><td>knot.openSettings</td><td>\u2014</td><td>Open knot settings</td></tr>
-    <tr><td>knot.mainMenu</td><td>\u2014</td><td>Unified command quick-pick menu</td></tr>
+    <tr><td>knot.buildTest</td><td>&mdash;</td><td>Build with test mode (<code>-t</code>)</td></tr>
+    <tr><td>knot.startWatch</td><td>&mdash;</td><td>Start tweego watch mode (<code>-w</code>)</td></tr>
+    <tr><td>knot.stopWatch</td><td>&mdash;</td><td>Stop the watch process</td></tr>
+    <tr><td>knot.listFormats</td><td>&mdash;</td><td>List available story formats</td></tr>
+    <tr><td>knot.verifyTweego</td><td>&mdash;</td><td>Verify tweego installation</td></tr>
+    <tr><td>knot.restart</td><td>&mdash;</td><td>Restart the language server</td></tr>
+    <tr><td>knot.refreshDocuments</td><td>&mdash;</td><td>Re-index entire workspace</td></tr>
+    <tr><td>knot.showOutput</td><td>&mdash;</td><td>Open the Knot output channel</td></tr>
+    <tr><td>knot.openSettings</td><td>&mdash;</td><td>Open knot settings</td></tr>
+    <tr><td>knot.mainMenu</td><td>&mdash;</td><td>Unified command quick-pick menu</td></tr>
   </tbody>
 </table>
 
@@ -590,17 +617,17 @@
 <h3>Format Adapter System</h3>
 <p>SugarCube 2 provides the full feature set. A fallback adapter provides safe no-op behavior with basic workspace features. Format resolution uses a 4-step strategy: exact match, alias match, prefix match, then fallback. Defaults to SugarCube 2.</p>
 <h3>Virtual Document Generation</h3>
-<p>For JavaScript syntax checking, Knot converts Twee markup into a virtual JS document: extracts script bodies, injects runtime prelude, normalizes SugarCube operators (<code>to</code> \u2192 <code>=</code>, <code>eq</code> \u2192 <code>===</code>, <code>gt</code> \u2192 <code>&gt;</code>), and converts <code>$var</code> to <code>State.variables.var</code>. A source map maps virtual offsets back to original positions.</p>
+<p>For JavaScript syntax checking, Knot converts Twee markup into a virtual JS document: extracts script bodies, injects runtime prelude, normalizes SugarCube operators (<code>to</code> &rarr; <code>=</code>, <code>eq</code> &rarr; <code>===</code>, <code>gt</code> &rarr; <code>&gt;</code>), and converts <code>$var</code> to <code>State.variables.var</code>. A source map maps virtual offsets back to original positions.</p>
 
 <h2 id="tips">Tips &amp; Tricks</h2>
-<h3>Discovering Hidden Features</h3>
+<h3>Discovering Context-Sensitive Features</h3>
 <p>Many of Knot's features are context-sensitive and only appear in specific situations:</p>
 <ul>
   <li><strong>IFID generation</strong> only appears when your cursor is inside a StoryData passage lacking an IFID</li>
   <li><strong>Passage name completions</strong> only appear inside macro string arguments</li>
   <li><strong>Property completions</strong> only appear after typing a dot following a variable</li>
   <li><strong>Close-tag suggestions</strong> only appear when you type <code>&lt;&lt;/</code></li>
-  <li><strong>Hover</strong> over anything is almost always informative \u2014 try it!</li>
+  <li><strong>Hover</strong> over anything is almost always informative &mdash; try it!</li>
 </ul>
 <h3>Efficient Authoring Workflow</h3>
 <ol>
@@ -629,7 +656,7 @@ function registerMacros() {
 </div>
 
 <footer style="text-align:center; padding:32px 24px; border-top:1px solid var(--border); color:var(--text-muted); font-size:14px;">
-  <p>Knot by <a href="https://github.com/Stormbyte0" style="color:var(--accent)">Stormbyte</a> &mdash; <a href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot" style="color:var(--accent)">VS Code Marketplace</a> &mdash; <a href="https://github.com/Stormbyte0/Knot" style="color:var(--accent)">GitHub</a></p>
+  <p>Knot by <a href="https://github.com/Stormbyte0">Stormbyte</a> &mdash; <a href="https://marketplace.visualstudio.com/items?itemName=Stormbyte.knot">VS Code Marketplace</a> &mdash; <a href="https://github.com/Stormbyte0/Knot">GitHub</a></p>
   <p style="margin-top:8px">MIT License</p>
 </footer>
 
