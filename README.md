@@ -3,6 +3,9 @@
 Language support for [Twine](https://twinery.org/) / [SugarCube 2](https://www.motoslave.net/sugarcube/2/) development in VS Code. Works with `.tw` and `.twee` files.
 
 This is an early preview. Some features are incomplete or may have rough edges — see [Current Limitations](#current-limitations) below.
+Full Documentation
+
+See the [complete feature documentation](https://stormbyte0.github.io/Knot/) for every feature, comparison with alternatives, configuration reference, and tips.
 
 ## What It Does
 
