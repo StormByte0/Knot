@@ -1,4 +1,4 @@
-import { DocumentNode, ParseDiagnostic } from './ast';
+import { DocumentNode, ExpressionNode, ParseDiagnostic, ScriptBodyNode, TextNode } from './ast';
 import { AnalysisResult, SyntaxAnalyzer } from './analyzer';
 import { IncrementalParser } from './incrementalParser';
 import { SymbolKind, UserSymbol, buildSymbolTable } from './symbols';
@@ -467,25 +467,128 @@ export class WorkspaceIndex {
 
     const linkRefs: LinkRef[] = [];
     const passageArgMacros = adapter.getPassageArgMacros();
+    const implicitPatterns = adapter.getImplicitPassagePatterns();
+    const passageRefApis = adapter.getPassageRefApiCalls();
+    const dynamicNavMacros = adapter.getDynamicNavigationMacros();
+    const inlineScriptMacros = adapter.getInlineScriptMacros();
+
+    // Build a quick lookup for API calls: "ObjectName.method" → true
+    const apiCallSet = new Set<string>();
+    for (const api of passageRefApis) {
+      for (const method of api.methods) {
+        apiCallSet.add(`${api.objectName}.${method}`);
+      }
+    }
+
+    // ── Build a map of variable → known string values across all passages ──
+    // This lets us resolve <<goto $dest>> when $dest was set to "Room1" somewhere
+    const varStringValues = this._buildVarStringMap(parsed.ast, adapter);
 
     // Walk each passage separately so we can capture the source passage name
     for (const passage of parsed.ast.passages) {
-      if (!Array.isArray(passage.body)) continue;
       const src = passage.name;
 
-      walkMarkup(passage.body, {
-        onLink(node) {
-          linkRefs.push({ target: node.target, range: node.range, sourcePassage: src });
-        },
-        onMacro(node) {
-          if (passageArgMacros.has(node.name) && node.args.length > 0) {
-            const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
-            const arg    = node.args[idx];
-            const target = arg ? passageNameFromExpr(arg) : null;
-            if (target && arg) linkRefs.push({ target, range: arg.range, sourcePassage: src });
-          }
-        },
-      });
+      // ── Standard links: [[Target]] and <<goto "Target">> ─────────────────
+      if (Array.isArray(passage.body)) {
+        walkMarkup(passage.body, {
+          onLink(node) {
+            linkRefs.push({ target: node.target, range: node.range, sourcePassage: src });
+          },
+          onMacro(node) {
+            // Explicit passage-arg macros with string literal args
+            if (passageArgMacros.has(node.name) && node.args.length > 0) {
+              const idx    = adapter.getPassageArgIndex(node.name, node.args.length);
+              const arg    = node.args[idx];
+              const target = arg ? passageNameFromExpr(arg) : null;
+              if (target && arg) {
+                linkRefs.push({ target, range: arg.range, sourcePassage: src });
+              }
+            }
+
+            // ── Dynamic variable passage refs ───────────────────────────────
+            // When a passage-arg macro uses a variable arg (<<goto $dest>>),
+            // resolve the variable's known string values from assignments
+            if (dynamicNavMacros.has(node.name) && node.args.length > 0) {
+              const idx = adapter.getPassageArgIndex(node.name, node.args.length);
+              const arg = node.args[idx < 0 ? 0 : idx];
+              if (arg) {
+                const varNames = _extractVarRefsFromExpr(arg);
+                for (const varName of varNames) {
+                  const values = varStringValues.get(varName);
+                  if (values) {
+                    for (const val of values) {
+                      linkRefs.push({
+                        target: val,
+                        range: arg.range,
+                        sourcePassage: src,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+
+            // ── Implicit passage refs in macro expression args ───────────
+            // Walk expression trees looking for Engine.play("name"), Story.get("name"), etc.
+            if (apiCallSet.size > 0) {
+              for (const a of node.args) {
+                walkExpression(a, expr => {
+                  if (expr.type !== 'call') return;
+                  const callee = expr.callee;
+                  if (callee.type !== 'propertyAccess') return;
+                  if (callee.object.type !== 'identifier') return;
+                  const key = `${callee.object.name}.${callee.property}`;
+                  if (!apiCallSet.has(key)) return;
+                  // First string argument is the passage name
+                  if (expr.args.length === 0) return;
+                  const firstArg = expr.args[0]!;
+                  if (firstArg.type === 'literal' && firstArg.kind === 'string' && typeof firstArg.value === 'string') {
+                    linkRefs.push({
+                      target: firstArg.value,
+                      range: firstArg.range,
+                      sourcePassage: src,
+                    });
+                  }
+                  // Also try resolving variable args in API calls
+                  const apiVarNames = _extractVarRefsFromExpr(firstArg);
+                  for (const vn of apiVarNames) {
+                    const vals = varStringValues.get(vn);
+                    if (vals) {
+                      for (const v of vals) {
+                        linkRefs.push({ target: v, range: firstArg.range, sourcePassage: src });
+                      }
+                    }
+                  }
+                });
+              }
+            }
+
+            // ── Inline <<script>> bodies: scan for passage refs ──────────
+            if (inlineScriptMacros.has(node.name) && node.body) {
+              const scriptText = node.body
+                .filter((n): n is TextNode => n.type === 'text')
+                .map(n => n.value)
+                .join('');
+              if (scriptText && implicitPatterns.length > 0) {
+                _scanRawTextForRefs(scriptText, node.body[0]?.range.start ?? node.range.start, src, implicitPatterns, linkRefs);
+              }
+            }
+          },
+          // ── Implicit passage refs in text nodes (data-passage, etc.) ────
+          onText(node) {
+            if (implicitPatterns.length === 0) return;
+            _scanRawTextForRefs(node.value, node.range.start, src, implicitPatterns, linkRefs);
+          },
+        });
+      }
+
+      // ── Script passages: scan for implicit passage refs in JS source ────
+      if (passage.body && typeof passage.body === 'object' && (passage.body as ScriptBodyNode).type === 'scriptBody') {
+        const scriptBody = passage.body as ScriptBodyNode;
+        if (implicitPatterns.length > 0) {
+          _scanRawTextForRefs(scriptBody.source, scriptBody.range.start, src, implicitPatterns, linkRefs);
+        }
+      }
     }
 
     this.links.setFileLinks(uri, linkRefs);
@@ -493,6 +596,40 @@ export class WorkspaceIndex {
     for (const link of linkRefs) {
       this.references.addPassageReference(link.target, { uri, range: link.range, sourcePassage: link.sourcePassage });
     }
+  }
+
+  /**
+   * Build a map of variable name → set of known string literal values.
+   * Traces assignments like <<set $dest to "Room1">> so we can later
+   * resolve <<goto $dest>> → Room1.
+   */
+  private _buildVarStringMap(ast: DocumentNode, adapter: StoryFormatAdapter): Map<string, Set<string>> {
+    const varStrings = new Map<string, Set<string>>();
+    const assignmentMacros = adapter.getVariableAssignmentMacros();
+    const assignmentOps = adapter.getAssignmentOperators();
+
+    walkDocument(ast, {
+      onMacro(node) {
+        if (!assignmentMacros.has(node.name)) return;
+        for (const arg of node.args) {
+          walkExpression(arg, expr => {
+            if (expr.type !== 'binaryOp') return;
+            if (!assignmentOps.includes(expr.operator)) return;
+            // Left side must be a variable
+            const varName = _extractVarName(expr.left);
+            if (!varName) return;
+            // Right side must be a string literal
+            if (expr.right.type === 'literal' && expr.right.kind === 'string' && typeof expr.right.value === 'string') {
+              let set = varStrings.get(varName);
+              if (!set) { set = new Set(); varStrings.set(varName, set); }
+              set.add(expr.right.value);
+            }
+          });
+        }
+      },
+    });
+
+    return varStrings;
   }
 
   // ---- Private: Pass 3 helpers --------------------------------------------
@@ -555,5 +692,54 @@ export class WorkspaceIndex {
   removeDocument(uri: string): void {
     this.removeFile(uri);
     this.reanalyzeAll();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module-level helpers for link extraction
+// ---------------------------------------------------------------------------
+
+import type { ImplicitPassageRefPattern } from './formats/types';
+
+/** Extract variable names referenced in an expression (for dynamic resolution). */
+function _extractVarRefsFromExpr(expr: ExpressionNode): string[] {
+  const names: string[] = [];
+  walkExpression(expr, e => {
+    if (e.type === 'storyVar') names.push(e.name);
+    if (e.type === 'tempVar') names.push('_' + e.name);
+  });
+  return names;
+}
+
+/** Extract a variable name from the left-hand side of an assignment. */
+function _extractVarName(expr: ExpressionNode): string | null {
+  if (expr.type === 'storyVar') return expr.name;
+  if (expr.type === 'tempVar') return '_' + expr.name;
+  if (expr.type === 'propertyAccess') return _extractVarName(expr.object);
+  if (expr.type === 'indexAccess') return _extractVarName(expr.object);
+  return null;
+}
+
+/** Scan raw text for implicit passage reference patterns and emit LinkRefs. */
+function _scanRawTextForRefs(
+  text: string,
+  baseOffset: number,
+  sourcePassage: string,
+  patterns: ReadonlyArray<ImplicitPassageRefPattern>,
+  out: LinkRef[],
+): void {
+  for (const ip of patterns) {
+    ip.pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ip.pattern.exec(text)) !== null) {
+      const name = m[1];
+      if (!name) continue;
+      const matchOffset = baseOffset + m.index;
+      out.push({
+        target: name,
+        range: { start: matchOffset, end: matchOffset + m[0].length },
+        sourcePassage,
+      });
+    }
   }
 }

@@ -6,6 +6,8 @@ import type {
   AdapterHoverRequest,
   AdapterDiagnosticRequest,
   BuiltinMacroInfo,
+  ImplicitPassageRefPattern,
+  PassageRefApiCall,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -142,5 +144,19 @@ export class FallbackAdapter implements StoryFormatAdapter {
 
   getStoryDataPassageName(): string | null {
     return null;
+  }
+
+  // ── Implicit passage references ────────────────────────────────────────────
+
+  getImplicitPassagePatterns(): ReadonlyArray<ImplicitPassageRefPattern> {
+    return [];
+  }
+
+  getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall> {
+    return [];
+  }
+
+  getDynamicNavigationMacros(): ReadonlySet<string> {
+    return EMPTY_SET;
   }
 }
