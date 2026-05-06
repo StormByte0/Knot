@@ -1,19 +1,21 @@
 {
   "name": "knot",
-  "displayName": "Knot — Twine/SugarCube Language Support",
-  "description": "Language server for Twine/SugarCube 2 development: diagnostics, completions, go-to-definition, rename, type inference, and Tweego build integration.",
-  "version": "1.0.0",
+  "displayName": "Knot — Twine Language Support",
+  "description": "Language server for Twine development with multi-format support: diagnostics, completions, go-to-definition, rename, type inference, and Tweego build integration.",
+  "version": "2.0.0",
   "publisher": "Stormbyte",
   "keywords": [
     "twine",
     "twee",
     "sugarcube",
-    "sugarcube 2",
+    "harlowe",
+    "chapbook",
     "interactive fiction",
     "visual novel",
     "if",
     "interactive narrative",
-    "tweego"
+    "tweego",
+    "language server"
   ],
   "repository": {
     "type": "git",
@@ -45,51 +47,55 @@
     "commands": [
       {
         "command": "knot.showOutput",
-        "title": "knot: Show Language Server Output"
+        "title": "Knot: Show Language Server Output"
       },
       {
         "command": "knot.restart",
-        "title": "knot: Restart Language Server"
+        "title": "Knot: Restart Language Server"
       },
       {
         "command": "knot.refreshDocuments",
-        "title": "knot: Refresh All Documents"
+        "title": "Knot: Refresh All Documents"
       },
       {
         "command": "knot.goToPassage",
-        "title": "knot: Go to Passage"
+        "title": "Knot: Go to Passage"
       },
       {
         "command": "knot.openSettings",
-        "title": "knot: Open Settings"
+        "title": "Knot: Open Settings"
       },
       {
         "command": "knot.verifyTweego",
-        "title": "knot: Verify Tweego Installation"
+        "title": "Knot: Verify Tweego Installation"
       },
       {
         "command": "knot.listFormats",
-        "title": "knot: List Available Story Formats"
+        "title": "Knot: List Available Story Formats"
+      },
+      {
+        "command": "knot.selectFormat",
+        "title": "Knot: Select Story Format"
       },
       {
         "command": "knot.build",
-        "title": "knot: Build"
+        "title": "Knot: Build"
       },
       {
         "command": "knot.buildTest",
-        "title": "knot: Build (Test Mode)"
+        "title": "Knot: Build (Test Mode)"
       },
       {
         "command": "knot.startWatch",
-        "title": "knot: Start Watch Mode"
+        "title": "Knot: Start Watch Mode"
       },
       {
         "command": "knot.stopWatch",
-        "title": "knot: Stop Watch Mode"
+        "title": "Knot: Stop Watch Mode"
       },
       {
         "command": "knot.mainMenu",
-        "title": "knot: Open Menu"
+        "title": "Knot: Open Menu"
       }
     ],
     "keybindings": [
@@ -104,6 +110,12 @@
         "key": "ctrl+alt+b",
         "mac": "cmd+alt+b",
         "when": "editorLangId == twine || resourceExtname == .tw || resourceExtname == .twee"
+      },
+      {
+        "command": "knot.selectFormat",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorLangId == twine || resourceExtname == .tw || resourceExtname == .twee"
       }
     ],
     "languages": [
@@ -111,8 +123,7 @@
         "id": "twine",
         "aliases": [
           "Twine",
-          "Twee",
-          "SugarCube 2"
+          "Twee"
         ],
         "extensions": [
           ".tw",
@@ -158,7 +169,7 @@
             "variable.other.story.twee"
           ],
           "operator": [
-            "keyword.operator.sugarcube.twee"
+            "keyword.operator.twee"
           ],
           "string": [
             "string.quoted.double.twee"
@@ -173,22 +184,32 @@
       }
     ],
     "configuration": {
-      "title": "knot",
+      "title": "Knot",
       "properties": {
+        "knot.format.activeFormat": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Story format ID to use for language features. When empty, Knot auto-detects from `StoryData`. Supported: `sugarcube-2`, `harlowe-3`, `chapbook-1`, or any installed format."
+        },
+        "knot.format.formatsDirectory": {
+          "type": "string",
+          "default": ".storyformats",
+          "markdownDescription": "Directory containing story format packages. Each subdirectory should contain a `format.js` or equivalent format definition."
+        },
         "knot.tweego.path": {
           "type": "string",
           "default": "tweego",
-          "markdownDescription": "Path to the Tweego executable. Use `tweego` if it is on your PATH, or provide an absolute path. Run **knot: Verify Tweego Installation** from the command palette to test it."
+          "markdownDescription": "Path to the Tweego executable. Can be an absolute path or a command name available on `$PATH`."
         },
         "knot.tweego.outputFile": {
           "type": "string",
           "default": "dist/index.html",
-          "markdownDescription": "Output file path for the compiled HTML, relative to the workspace root."
+          "markdownDescription": "Output file path for the compiled HTML file, relative to the workspace root."
         },
         "knot.tweego.formatOverride": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Story format ID to use, overriding the format declared in `StoryData`. Leave empty to use `StoryData`."
+          "markdownDescription": "Story format ID to pass to Tweego, overriding the format declared in `StoryData`. Leave empty to use the detected format."
         },
         "knot.tweego.modulePaths": {
           "type": "array",
@@ -196,37 +217,32 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Module directories (`-m`): CSS, JS, and font files bundled into the compiled HTML `<head>`."
+          "markdownDescription": "Module directories (`-m`) to include when building. Paths are relative to the workspace root."
         },
         "knot.tweego.headFile": {
           "type": "string",
           "default": "",
-          "markdownDescription": "File whose contents are appended verbatim to the `<head>` of the compiled HTML (`--head`)."
+          "markdownDescription": "File whose contents are appended verbatim to the `<head>` of the compiled HTML."
         },
         "knot.tweego.noTrim": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Disable whitespace trimming around passage content (`--no-trim`)."
+          "markdownDescription": "Disable whitespace trimming in the compiled output."
         },
         "knot.tweego.logFiles": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Log all processed input files to the knot output channel (`--log-files`)."
+          "markdownDescription": "Log all processed input files to the output channel."
         },
         "knot.tweego.extraArgs": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Extra arguments appended verbatim to every tweego invocation (e.g. `--twee2-compat`)."
+          "markdownDescription": "Extra arguments appended verbatim to the Tweego command line."
         },
         "knot.project.storyFilesDirectory": {
           "type": "string",
           "default": "src",
-          "markdownDescription": "Directory containing `.tw`/`.twee` source files, relative to the workspace root. Passed to tweego as the input directory."
-        },
-        "knot.project.storyFormatsDirectory": {
-          "type": "string",
-          "default": ".storyformats",
-          "markdownDescription": "Folder containing story format packages. Added to `TWEEGO_PATH` automatically so tweego can find them."
+          "markdownDescription": "Directory containing `.tw`/`.twee` source files, relative to the workspace root."
         },
         "knot.project.include": {
           "type": "array",
@@ -234,7 +250,7 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Directories to include in indexing. Leave empty to include all `.tw`/`.twee` files in the workspace."
+          "markdownDescription": "Additional directories to include in workspace indexing. Glob patterns are supported."
         },
         "knot.project.exclude": {
           "type": "array",
@@ -242,43 +258,84 @@
             "type": "string"
           },
           "default": [],
-          "markdownDescription": "Glob patterns for files and folders to exclude from indexing and compilation (e.g. `vendor/**`)."
+          "markdownDescription": "Glob patterns to exclude from workspace indexing."
         },
         "knot.lint.unknownPassage": {
           "type": "string",
           "default": "warning",
-          "enum": ["error", "warning", "info", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
           "description": "Severity for unknown passage link targets."
         },
         "knot.lint.unknownMacro": {
           "type": "string",
           "default": "warning",
-          "enum": ["error", "warning", "info", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
           "description": "Severity for unknown macro names."
         },
         "knot.lint.duplicatePassage": {
           "type": "string",
           "default": "error",
-          "enum": ["error", "warning", "info", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
           "description": "Severity for duplicate passage names."
         },
         "knot.lint.typeMismatch": {
           "type": "string",
           "default": "error",
-          "enum": ["error", "warning", "info", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
           "description": "Severity for type mismatch in comparisons."
         },
         "knot.lint.unreachablePassage": {
           "type": "string",
           "default": "warning",
-          "enum": ["error", "warning", "info", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
           "description": "Severity for passages unreachable from start."
         },
         "knot.lint.containerStructure": {
           "type": "string",
           "default": "error",
-          "enum": ["error", "warning", "info", "off"],
-          "description": "Severity for structural errors (elseif outside if, etc.)."
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
+          "description": "Severity for structural errors (e.g., else outside if)."
+        },
+        "knot.lint.deprecatedMacro": {
+          "type": "string",
+          "default": "warning",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
+          "description": "Severity for deprecated macro usage."
         }
       }
     }
@@ -292,7 +349,7 @@
     "test": "npm --prefix server test",
     "package:vsix": "node client/build.js && node server/build.js && npx @vscode/vsce package",
     "watch:client": "node -e \"require('esbuild').context({entryPoints:['client/src/extension.ts'],bundle:true,outfile:'client/out/extension.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\"",
-    "watch:server": "node -e \"require('esbuild').context({entryPoints:['server/src/lspServer.ts'],bundle:true,outfile:'server/out/src/lspServer.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\""
+    "watch:server": "node -e \"require('esbuild').context({entryPoints:['server/src/server.ts'],bundle:true,outfile:'server/out/src/server.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\""
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",

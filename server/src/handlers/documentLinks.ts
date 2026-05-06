@@ -1,90 +1,39 @@
-import {
-  type Connection,
-  DocumentLink,
-  Range,
-} from 'vscode-languageserver/node';
-import { TextDocuments } from 'vscode-languageserver/node';
-import { TextDocument } from 'vscode-languageserver-textdocument';
-import { WorkspaceIndex } from '../workspaceIndex';
-import { normalizeUri, getFileText, offsetToPosition } from '../serverUtils';
-import { passageNameFromExpr } from '../passageArgs';
-import type { MarkupNode } from '../ast';
-import { walkMarkup } from '../visitors';
+/**
+ * Knot v2 — Document Links Handler
+ *
+ * Format-agnostic document link handler.
+ * Makes passage links clickable in the editor.
+ * Uses format's FormatModule (via formatRegistry) for link syntax parsing.
+ *
+ * Imports:
+ *   - formats/formatRegistry (format module for link parsing)
+ *   - formats/_types (FormatModule, LinkResolution)
+ *   - core/workspaceIndex (to validate link targets)
+ *
+ * MUST NOT import from: formats/<name>/
+ */
 
-export function registerDocumentLinkHandler(
-  connection: Connection,
-  documents: TextDocuments<TextDocument>,
-  workspace: WorkspaceIndex,
-): void {
-  connection.onDocumentLinks(params => {
-    const doc = documents.get(params.textDocument.uri);
-    if (!doc) return [];
-    
-    const normUri = normalizeUri(doc.uri);
-    const cached = workspace.getParsedFile(normUri);
-    const ast = cached?.ast;
-    if (!ast) return [];
-    
-    const links: DocumentLink[] = [];
-    const adapter = workspace.getActiveAdapter();
-    const passageArgMacros = adapter.getPassageArgMacros();
-    const fileText = doc.getText();
-    
-    // Walk AST finding [[link]] targets and passage-arg macro references
-    for (const passage of ast.passages) {
-      if (!Array.isArray(passage.body)) continue;
-      collectLinks(passage.body, doc, workspace, links, adapter, passageArgMacros, fileText);
-    }
-    
-    return links;
-  });
-}
+import { FormatRegistry } from '../formats/formatRegistry';
+import type { FormatModule, LinkResolution } from '../formats/_types';
+// TODO: import { WorkspaceIndex } from '../core/workspaceIndex';
 
-function collectLinks(
-  nodes: MarkupNode[],
-  doc: TextDocument,
-  workspace: WorkspaceIndex,
-  links: DocumentLink[],
-  adapter: ReturnType<WorkspaceIndex['getActiveAdapter']>,
-  passageArgMacros: ReadonlySet<string>,
-  fileText: string,
-): void {
-  walkMarkup(nodes, {
-    onLink(node) {
-      // [[Target]] links
-      const def = workspace.getPassageDefinition(node.target);
-      if (def) {
-        links.push(DocumentLink.create(
-          Range.create(
-            doc.positionAt(node.targetRange.start),
-            doc.positionAt(node.targetRange.end),
-          ),
-          def.uri,
-        ));
-      }
-    },
-    onMacro(node) {
-      // Passage arg macros like <<goto "Target">>, <<link "label" "Target">>
-      if (passageArgMacros.has(node.name) && node.args.length > 0) {
-        const idx = adapter.getPassageArgIndex(node.name, node.args.length);
-        const arg = node.args[idx];
-        if (arg) {
-          const targetName = passageNameFromExpr(arg);
-          if (targetName) {
-            const def = workspace.getPassageDefinition(targetName);
-            if (def) {
-              // Link the string content (inside quotes) to the passage definition
-              links.push(DocumentLink.create(
-                Range.create(
-                  doc.positionAt(arg.range.start + 1),
-                  doc.positionAt(arg.range.end - 1),
-                ),
-                def.uri,
-              ));
-            }
-          }
-        }
-      }
-    },
-  });
+export class DocumentLinksHandler {
+  private formatRegistry: FormatRegistry;
+
+  constructor(formatRegistry: FormatRegistry) {
+    this.formatRegistry = formatRegistry;
+  }
+
+  /**
+   * Handle a document links request.
+   * Finds all clickable links in a document.
+   */
+  async handleDocumentLinks(uri: string): Promise<unknown[]> {
+    const format = this.formatRegistry.getActiveFormat();
+
+    // TODO: Parse document for link syntax using format.resolveLinkBody()
+    // TODO: Validate targets against WorkspaceIndex
+    // TODO: Build DocumentLink[]
+    throw new Error('TODO: implement handleDocumentLinks()');
+  }
 }
