@@ -11,15 +11,16 @@ import { PassageKind } from '../../hooks/hookTypes';
 export const SPECIAL_PASSAGES: SpecialPassageDef[] = [
   // ── Named special passages ────────────────────────────────────
   { name: 'StoryInit',         kind: PassageKind.Special, description: 'Runs code before every passage render',      priority: 0, tag: 'init', typeId: 'init' },
-  { name: 'PassageHeader',     kind: PassageKind.Special, description: 'Rendered before every passage content',     priority: 2 },
-  { name: 'PassageFooter',     kind: PassageKind.Special, description: 'Rendered after every passage content',      priority: 2 },
-  { name: 'PassageReady',      kind: PassageKind.Special, description: 'Runs code after every passage renders',     priority: 2 },
-  { name: 'PassageDone',       kind: PassageKind.Special, description: 'Runs code after every passage transition',  priority: 2 },
-  { name: 'StoryMenu',         kind: PassageKind.Special, description: 'Items for the story menu',                  priority: 2 },
-  { name: 'StoryAuthor',       kind: PassageKind.Special, description: 'Author name display',                       priority: 2 },
-  { name: 'StoryCaption',      kind: PassageKind.Special, description: 'Sidebar caption',                           priority: 2 },
-  { name: 'StoryDisplayTitle', kind: PassageKind.Special, description: 'Custom story title display',                priority: 2 },
-  { name: 'StorySubtitle',     kind: PassageKind.Special, description: 'Story subtitle',                            priority: 2 },
+  { name: 'StoryInterface',    kind: PassageKind.Special, description: 'Defines the story\'s custom HTML interface structure', priority: 0, typeId: 'interface' },
+  { name: 'PassageHeader',     kind: PassageKind.Special, description: 'Rendered before every passage content',     priority: 2, typeId: 'header' },
+  { name: 'PassageFooter',     kind: PassageKind.Special, description: 'Rendered after every passage content',      priority: 2, typeId: 'footer' },
+  { name: 'PassageReady',      kind: PassageKind.Special, description: 'Runs code after every passage renders',     priority: 2, typeId: 'post-render' },
+  { name: 'PassageDone',       kind: PassageKind.Special, description: 'Runs code after every passage transition',  priority: 2, typeId: 'post-transition' },
+  { name: 'StoryMenu',         kind: PassageKind.Special, description: 'Items for the story menu',                  priority: 2, typeId: 'menu' },
+  { name: 'StoryAuthor',       kind: PassageKind.Special, description: 'Author name display',                       priority: 2, typeId: 'author' },
+  { name: 'StoryCaption',      kind: PassageKind.Special, description: 'Sidebar caption',                           priority: 2, typeId: 'caption' },
+  { name: 'StoryDisplayTitle', kind: PassageKind.Special, description: 'Custom story title display',                priority: 2, typeId: 'display-title' },
+  { name: 'StorySubtitle',     kind: PassageKind.Special, description: 'Story subtitle',                            priority: 2, typeId: 'subtitle' },
 
   // ── Debug passages (active when Config.debug is true) ─────────
   { name: 'DebugView',         kind: PassageKind.Special, description: 'Customize debug view output',               priority: 3 },

@@ -23,8 +23,8 @@
  */
 
 import { FormatRegistry } from '../formats/formatRegistry';
-import type { FormatModule, SourceRange, DiagnosticResult } from '../formats/_types';
-import { PassageRefKind, PassageType } from '../hooks/hookTypes';
+import type { FormatModule, SourceRange, DiagnosticResult, SpecialPassageDef } from '../formats/_types';
+import { PassageRefKind, PassageType, PassageKind } from '../hooks/hookTypes';
 import { PassageGroup } from './ast';
 import {
   CFGBuilder,
@@ -36,7 +36,7 @@ import {
   AbstractValue,
   getReachableNavigationEdges,
 } from './cfg';
-import { WorkspaceIndex } from './workspaceIndex';
+import { WorkspaceIndex, PassageEntry } from './workspaceIndex';
 
 // ─── Public Types ──────────────────────────────────────────────
 
@@ -169,12 +169,23 @@ export class StoryFlowGraphBuilder {
       };
     }
 
-    // Step 3: Build inter-passage edges
+    // Step 3: Build inter-passage edges (explicit links/macros)
     const edges = this.buildStoryFlowEdges(nodes, format);
 
+    // Step 3b: Add virtual edges for special passages
+    //   StoryInit → Start passage (runs before the first navigation)
+    //   PassageHeader → every passage (runs before each passage body)
+    //   PassageFooter → every passage (runs after each passage body)
+    //   PassageReady/Done → every passage (post-render hooks)
+    this.addSpecialPassageVirtualEdges(nodes, edges, startPassage, format);
+
     // Step 4: Compute reachability with variable state flow
+    //   IMPORTANT: We seed the start passage's variable state with
+    //   the effects of StoryInit and PassageHeader, because those
+    //   run BEFORE the start passage body executes.
+    const initVariableState = this.computeInitVariableState(nodes, startPassage, format);
     const { reachable, conditionallyReachable } = this.computeConditionalReachability(
-      nodes, edges, startPassage, format,
+      nodes, edges, startPassage, format, initVariableState,
     );
 
     // Step 5: Detect dead conditions
@@ -203,8 +214,24 @@ export class StoryFlowGraphBuilder {
 
   // ─── Step 2: Find Start Passage ─────────────────────────────
 
+  /**
+   * Find the start passage by checking, in order:
+   *   1. StoryData JSON's "start" property (the canonical source)
+   *   2. Twee convention: passage named "Start" or "start"
+   *   3. Fallback: first passage in the workspace
+   *
+   * StoryData is a JSON passage that contains metadata like:
+   *   { "start": "My First Passage", "format": "SugarCube", ... }
+   * Every Twine format stores the start passage name there.
+   */
   private findStartPassage(): string | null {
-    // Look for "Start" passage (Twee convention)
+    // 1. Check StoryData JSON for the "start" property
+    const storyDataStart = this.extractStartFromStoryData();
+    if (storyDataStart && this.workspaceIndex.hasPassage(storyDataStart)) {
+      return storyDataStart;
+    }
+
+    // 2. Twee convention: "Start" passage
     const startNames = ['Start', 'start'];
     for (const name of startNames) {
       if (this.workspaceIndex.hasPassage(name)) {
@@ -212,9 +239,30 @@ export class StoryFlowGraphBuilder {
       }
     }
 
-    // Fall back to the first passage
+    // 3. Fall back to the first passage
     const allNames = this.workspaceIndex.getAllPassageNames();
     return allNames.length > 0 ? allNames[0] : null;
+  }
+
+  /**
+   * Extract the "start" property from the StoryData passage.
+   * StoryData is a special passage containing JSON metadata.
+   */
+  private extractStartFromStoryData(): string | null {
+    const storyDataPassages = this.workspaceIndex.getPassagesByType(PassageType.StoryData);
+    if (storyDataPassages.length === 0) return null;
+
+    for (const entry of storyDataPassages) {
+      try {
+        const data = JSON.parse(entry.body.trim());
+        if (data.start && typeof data.start === 'string') {
+          return data.start;
+        }
+      } catch {
+        // Malformed JSON — skip
+      }
+    }
+    return null;
   }
 
   // ─── Step 3: Build Inter-Passage Edges ──────────────────────
@@ -263,6 +311,7 @@ export class StoryFlowGraphBuilder {
     edges: StoryFlowEdge[],
     startPassage: string,
     format: FormatModule,
+    initVariableState: VariableStateMap,
   ): { reachable: Set<string>; conditionallyReachable: Set<string> } {
     const reachable = new Set<string>();
     const conditionallyReachable = new Set<string>();
@@ -272,9 +321,10 @@ export class StoryFlowGraphBuilder {
     const startNode = nodes.get(startPassage);
     if (!startNode) return { reachable, conditionallyReachable };
 
-    // Set initial variable state for start passage
-    // StoryInit might set variables, but we'll handle that separately
-    startNode.variableStateAtEntry = new Map();
+    // Seed the start passage with the init variable state.
+    // This includes variables set by StoryInit and PassageHeader,
+    // which run before the start passage body executes.
+    startNode.variableStateAtEntry = new Map(initVariableState);
     reachable.add(startPassage);
 
     // BFS with variable state propagation
@@ -282,17 +332,26 @@ export class StoryFlowGraphBuilder {
       { passageName: startPassage, isConditional: false },
     ];
 
-    // Also include special passages that always "run"
-    // (PassageHeader, PassageFooter, PassageReady, etc.)
-    for (const [name, node] of nodes) {
-      const passage = this.workspaceIndex.getPassage(name);
-      // Special passages like PassageHeader/Footer run on every passage render
-      // They're always "reachable" but don't affect normal navigation flow
-      if (passage) {
-        // Mark script/stylesheet passages as reachable
-        if (passage.type === PassageType.Script || passage.type === PassageType.Stylesheet) {
-          reachable.add(name);
+    // Mark special passages as always reachable — they run automatically
+    // by the engine regardless of whether any link points to them.
+    // This includes: StoryInit, PassageHeader, PassageFooter, etc.
+    const specialPassageNames = this.getSpecialPassageNames(format);
+    for (const name of specialPassageNames) {
+      if (nodes.has(name)) {
+        reachable.add(name);
+        // Seed their variable state too
+        const spNode = nodes.get(name)!;
+        if (spNode.variableStateAtEntry.size === 0) {
+          spNode.variableStateAtEntry = new Map(initVariableState);
         }
+      }
+    }
+
+    // Script/stylesheet passages are also always "reachable" (loaded by engine)
+    for (const [name] of nodes) {
+      const passage = this.workspaceIndex.getPassage(name);
+      if (passage?.type === PassageType.Script || passage?.type === PassageType.Stylesheet) {
+        reachable.add(name);
       }
     }
 
@@ -350,16 +409,6 @@ export class StoryFlowGraphBuilder {
             });
           }
         }
-      }
-    }
-
-    // Also consider special passages as always reachable
-    for (const [name] of nodes) {
-      const passage = this.workspaceIndex.getPassage(name);
-      if (passage?.type === PassageType.Script || passage?.type === PassageType.Stylesheet) {
-        // Script/stylesheet passages are not "reachable" in the navigation sense
-        // but they're not unreachable either
-        reachable.add(name);
       }
     }
 
@@ -607,6 +656,247 @@ export class StoryFlowGraphBuilder {
       });
     }
   }
+
+  // ─── Special Passage Integration ────────────────────────────
+
+  /**
+   * Add virtual edges to the graph for special passages that run
+   * automatically by the engine, even though no link points to them.
+   *
+   * These edges represent the engine's execution order:
+   *
+   *   ENGINE START:
+   *     [StoryInit] ──virtual──→ [Start passage]
+   *     StoryInit runs once before the first passage. Variables set
+   *     here flow into every passage's entry state.
+   *
+   *   EVERY PASSAGE RENDER:
+   *     [PassageHeader] ──virtual──→ [PassageBody] ──virtual──→ [PassageFooter]
+   *     PassageHeader runs before each passage body.
+   *     PassageFooter runs after each passage body.
+   *     PassageReady runs after the DOM is ready.
+   *     PassageDone runs after the passage transition completes.
+   *
+   * These "virtual" edges use PassageRefKind.Implicit because they
+   * aren't authored by the user — they're engine behavior.
+   */
+  private addSpecialPassageVirtualEdges(
+    nodes: Map<string, StoryFlowNode>,
+    edges: StoryFlowEdge[],
+    startPassage: string,
+    format: FormatModule,
+  ): void {
+    if (!format.specialPassages || format.specialPassages.length === 0) return;
+
+    // Find special passages by their typeId — format-agnostic!
+    // SugarCube: StoryInit (typeId='init'), PassageHeader (typeId='header'), PassageFooter (typeId='footer')
+    // Harlowe:   Startup    (typeId='init'), Header       (typeId='header'), Footer      (typeId='footer')
+    // The typeId is the universal contract; passage names differ per format.
+    const initPassage = this.findSpecialPassageByTypeId(format, 'init');
+    const headerPassage = this.findSpecialPassageByTypeId(format, 'header');
+    const footerPassage = this.findSpecialPassageByTypeId(format, 'footer');
+
+    // ── Init passage → Start passage ───────────────────────────────
+    // The init passage (StoryInit/Startup) runs once at engine startup,
+    // before any passage renders. Variables set here are the "first
+    // declarations" — they flow into the start passage and from there
+    // into every reachable passage.
+    if (initPassage && initPassage.name && nodes.has(initPassage.name)) {
+      edges.push({
+        from: initPassage.name,
+        to: startPassage,
+        condition: null,
+        sourceNavEdge: {
+          targetPassage: startPassage,
+          sourceEdge: {
+            from: 'virtual',
+            to: 'virtual',
+            kind: 'navigation' as const,
+            condition: null,
+          },
+          condition: null,
+          refKind: PassageRefKind.Implicit,
+          range: { start: 0, end: 0 },
+        },
+        refKind: PassageRefKind.Implicit,
+      });
+    }
+
+    // ── Interface passage → Start passage ──────────────────────────────
+    // The interface passage (StoryInterface) defines the story's HTML
+    // structure. It runs at engine startup, before any passage renders.
+    // It's loaded automatically — no link points to it. Variables set
+    // here (rare but possible) flow into the start passage.
+    const interfacePassage = this.findSpecialPassageByTypeId(format, 'interface');
+    if (interfacePassage && interfacePassage.name && nodes.has(interfacePassage.name)) {
+      edges.push({
+        from: interfacePassage.name,
+        to: startPassage,
+        condition: null,
+        sourceNavEdge: {
+          targetPassage: startPassage,
+          sourceEdge: {
+            from: 'virtual',
+            to: 'virtual',
+            kind: 'navigation' as const,
+            condition: null,
+          },
+          condition: null,
+          refKind: PassageRefKind.Implicit,
+          range: { start: 0, end: 0 },
+        },
+        refKind: PassageRefKind.Implicit,
+      });
+    }
+
+    // ── Header passage → every passage ─────────────────────────────
+    // The header passage (PassageHeader/Header) content is prepended to
+    // every passage render. For the graph, this means: variable state
+    // from the header passage flows into every passage's entry state.
+    //
+    // We add a virtual edge from the header passage to every story passage.
+    // This is important because the header passage may set/modify variables
+    // that affect every passage's initial state.
+    if (headerPassage && headerPassage.name && nodes.has(headerPassage.name)) {
+      for (const [passageName, node] of nodes) {
+        const entry = this.workspaceIndex.getPassage(passageName);
+        // Don't add header→header, header→footer, header→storydata, etc.
+        if (!entry) continue;
+        if (entry.type !== PassageType.Story && entry.type !== PassageType.Start) continue;
+        if (passageName === headerPassage.name) continue;
+
+        edges.push({
+          from: headerPassage.name,
+          to: passageName,
+          condition: null,
+          sourceNavEdge: {
+            targetPassage: passageName,
+            sourceEdge: {
+              from: 'virtual',
+              to: 'virtual',
+              kind: 'navigation' as const,
+              condition: null,
+            },
+            condition: null,
+            refKind: PassageRefKind.Implicit,
+            range: { start: 0, end: 0 },
+          },
+          refKind: PassageRefKind.Implicit,
+        });
+      }
+    }
+
+    // The footer passage (PassageFooter/Footer) and post-render passages
+    // (PassageReady/Done) run AFTER the passage body, so they don't affect
+    // the entry variable state of other passages. We still mark them as
+    // reachable but don't add edges FROM them to other passages (their
+    // effects are local to the current render cycle).
+    //
+    // Widget passages (tag: widget) are also always reachable but
+    // don't participate in navigation flow — they define custom macros.
+  }
+
+  /**
+   * Compute the initial variable state that exists before the start
+   * passage runs. This is the combined effect of:
+   *   1. StoryInit (runs once at engine startup)
+   *   2. PassageHeader (runs before every passage, including Start)
+   *
+   * This is the ONLY way to correctly track variable definitions:
+   * a variable set in StoryInit like <<set $hp to 100>> must be
+   * known to exist (with value 100) when the Start passage begins.
+   * Without this, the semantic analyzer would flag $hp as
+   * "used but never assigned" when it appears in the Start passage.
+   */
+  private computeInitVariableState(
+    nodes: Map<string, StoryFlowNode>,
+    startPassage: string,
+    format: FormatModule,
+  ): VariableStateMap {
+    const state: VariableStateMap = new Map();
+
+    // 1. Apply init passage effects (StoryInit/Startup — typeId='init')
+    const initPassage = this.findSpecialPassageByTypeId(format, 'init');
+    if (initPassage && initPassage.name && nodes.has(initPassage.name)) {
+      const initNode = nodes.get(initPassage.name)!;
+      // Propagate through the StoryInit CFG to get exit variable state
+      const initExitState = this.propagateVariableState(initNode);
+      for (const [varName, value] of initExitState) {
+        state.set(varName, value);
+      }
+    }
+
+    // 1b. Apply interface passage effects (StoryInterface — typeId='interface')
+    //     Runs at engine startup, like StoryInit. Rarely sets variables,
+    //     but if it does, those should be tracked.
+    const interfacePassage = this.findSpecialPassageByTypeId(format, 'interface');
+    if (interfacePassage && interfacePassage.name && nodes.has(interfacePassage.name)) {
+      const interfaceNode = nodes.get(interfacePassage.name)!;
+      interfaceNode.variableStateAtEntry = new Map(state);
+      const interfaceExitState = this.propagateVariableState(interfaceNode);
+      for (const [varName, value] of interfaceExitState) {
+        if (state.has(varName)) {
+          state.set(varName, this.mergeValues(state.get(varName)!, value));
+        } else {
+          state.set(varName, value);
+        }
+      }
+    }
+
+    // 2. Apply header passage effects (PassageHeader/Header — typeId='header')
+    //    Runs before every passage body.
+    const headerPassage = this.findSpecialPassageByTypeId(format, 'header');
+    if (headerPassage && headerPassage.name && nodes.has(headerPassage.name)) {
+      const headerNode = nodes.get(headerPassage.name)!;
+      // The header passage sees the same variable state as the init passage produced
+      headerNode.variableStateAtEntry = new Map(state);
+      const headerExitState = this.propagateVariableState(headerNode);
+      for (const [varName, value] of headerExitState) {
+        // Merge with existing state (init passage may have set some vars too)
+        if (state.has(varName)) {
+          state.set(varName, this.mergeValues(state.get(varName)!, value));
+        } else {
+          state.set(varName, value);
+        }
+      }
+    }
+
+    return state;
+  }
+
+  /**
+   * Get the names of all special passages defined by the current format.
+   */
+  private getSpecialPassageNames(format: FormatModule): string[] {
+    const names: string[] = [];
+    for (const sp of format.specialPassages) {
+      if (sp.name) {
+        // Check if this special passage actually exists in the workspace
+        if (this.workspaceIndex.hasPassage(sp.name)) {
+          names.push(sp.name);
+        }
+      }
+      if (sp.tag) {
+        // Tag-based special passages — find all passages with this tag
+        const tagged = this.workspaceIndex.getAllPassages().filter(
+          p => sp.tag && p.tags.includes(sp.tag),
+        );
+        for (const p of tagged) {
+          names.push(p.name);
+        }
+      }
+    }
+    return names;
+  }
+
+  /**
+   * Find a SpecialPassageDef by its typeId.
+   */
+  private findSpecialPassageByTypeId(format: FormatModule, typeId: string): SpecialPassageDef | undefined {
+    return format.specialPassages.find(sp => sp.typeId === typeId);
+  }
+
+
 
   // ─── Helpers ────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@
  */
 
 import type { MacroDef } from '../_types';
-import { mc, sig, arg, MacroCategory, MacroKind } from './macros-helpers';
+import { mc, m, sig, arg, MacroCategory, MacroKind } from './macros-helpers';
 
 export function getRevisionMacros(): MacroDef[] {
   return [
