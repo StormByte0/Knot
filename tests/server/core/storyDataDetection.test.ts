@@ -7,16 +7,16 @@
  * StoryData is a universal Twine concept — every story format uses it
  * to store metadata. These tests verify:
  *   - Raw text search for :: StoryData
- *   - JSON body extraction
- *   - FormatRegistry.detectFormat() parsing
+ *   - JSON body extraction via Parser
+ *   - FormatRegistry.detectFromStoryData() parsing
  *   - Format detection for known/unknown formats
  *   - Edge cases (tags, non-first position, invalid JSON)
  */
 
 import * as assert from 'assert';
-import { HookRegistry } from '../../../server/src/hooks/hookRegistry';
 import { FormatRegistry } from '../../../server/src/formats/formatRegistry';
 import { Parser } from '../../../server/src/core/parser';
+import { createMockRegistry } from '../../helpers/testFixtures';
 
 describe('StoryData Detection — Twine Engine Core', () => {
 
@@ -50,8 +50,7 @@ describe('StoryData Detection — Twine Engine Core', () => {
     let parser: Parser;
 
     beforeEach(() => {
-      const registry = new HookRegistry();
-      parser = new Parser(registry);
+      parser = new Parser(createMockRegistry());
     });
 
     it('should extract JSON body after StoryData header', () => {
@@ -81,87 +80,79 @@ describe('StoryData Detection — Twine Engine Core', () => {
     });
   });
 
-  // ─── FormatRegistry.detectFormat() ───────────────────────────
+  // ─── FormatRegistry.detectFromStoryData() ────────────────────
 
-  describe('FormatRegistry.detectFormat()', () => {
-    let registry: HookRegistry;
+  describe('FormatRegistry.detectFromStoryData()', () => {
     let formatRegistry: FormatRegistry;
 
     beforeEach(() => {
-      registry = new HookRegistry();
-      formatRegistry = new FormatRegistry(registry);
-      formatRegistry.registerBuiltinFormats();
+      formatRegistry = new FormatRegistry();
+      formatRegistry.loadBuiltinFormats();
     });
 
     it('should detect SugarCube from StoryData JSON', () => {
       const json = '{"format":"SugarCube","format-version":"2.36.0"}';
-      const result = formatRegistry.detectFormat(json);
-      assert.strictEqual(result, 'sugarcube-2');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'sugarcube-2');
     });
 
     it('should detect Harlowe from StoryData JSON', () => {
       const json = '{"format":"Harlowe","format-version":"3.3.8"}';
-      const result = formatRegistry.detectFormat(json);
-      assert.strictEqual(result, 'harlowe-3');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'harlowe-3');
     });
 
     it('should detect format case-insensitively', () => {
       const json = '{"format":"sugarcube","format-version":"2.36.0"}';
-      const result = formatRegistry.detectFormat(json);
-      assert.strictEqual(result, 'sugarcube-2');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'sugarcube-2');
     });
 
-    it('should return undefined for unknown format', () => {
-      const json = '{"format":"Chapbook","format-version":"1.0.0"}';
-      const result = formatRegistry.detectFormat(json);
-      // Chapbook is recognized by detectFormat but has no adapter registered
-      assert.strictEqual(result, 'chapbook-1');
+    it('should return fallback for unknown format', () => {
+      const json = '{"format":"UnknownFormat","format-version":"1.0.0"}';
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'fallback');
     });
 
-    it('should return undefined for invalid JSON', () => {
-      const result = formatRegistry.detectFormat('not json at all');
-      assert.strictEqual(result, undefined);
+    it('should return fallback for invalid JSON', () => {
+      const result = formatRegistry.detectFromStoryData('not json at all');
+      assert.strictEqual(result.formatId, 'fallback');
     });
 
-    it('should return fallback for JSON without format field (empty format matches fallback)', () => {
+    it('should return fallback for JSON without format field', () => {
       const json = '{"something":"else"}';
-      const result = formatRegistry.detectFormat(json);
-      // When format field is missing, formatName is empty string.
-      // String.includes('') returns true for any string, so the first
-      // registered format (fallback) matches. This is the current behavior.
-      assert.ok(result !== undefined, 'Should return some format (likely fallback)');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'fallback');
     });
 
-    it('should return undefined for empty string', () => {
-      const result = formatRegistry.detectFormat('');
-      assert.strictEqual(result, undefined);
+    it('should return fallback for empty string', () => {
+      const result = formatRegistry.detectFromStoryData('');
+      assert.strictEqual(result.formatId, 'fallback');
     });
 
     it('should handle StoryData with whitespace', () => {
       const json = '  {"format":"Harlowe","format-version":"3.3.8"}  ';
-      const result = formatRegistry.detectFormat(json);
-      assert.strictEqual(result, 'harlowe-3');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'harlowe-3');
     });
 
     it('should handle StoryData JSON with extra fields', () => {
       const json = '{"format":"SugarCube","format-version":"2.36.0","start":"Start","ifid":"ABC123"}';
-      const result = formatRegistry.detectFormat(json);
-      assert.strictEqual(result, 'sugarcube-2');
+      const result = formatRegistry.detectFromStoryData(json);
+      assert.strictEqual(result.formatId, 'sugarcube-2');
     });
   });
 
   // ─── Pre-scan Integration ────────────────────────────────────
 
   describe('Pre-scan integration', () => {
-    let registry: HookRegistry;
     let formatRegistry: FormatRegistry;
     let parser: Parser;
 
     beforeEach(() => {
-      registry = new HookRegistry();
-      formatRegistry = new FormatRegistry(registry);
-      formatRegistry.registerBuiltinFormats();
-      parser = new Parser(registry);
+      formatRegistry = new FormatRegistry();
+      formatRegistry.loadBuiltinFormats();
+      parser = new Parser(formatRegistry);
     });
 
     it('should pre-scan StoryData with tags :: StoryData [special]', () => {
@@ -172,8 +163,8 @@ describe('StoryData Detection — Twine Engine Core', () => {
       assert.ok(storyData!.tags.includes('special'));
 
       // Body should still be the JSON
-      const detected = formatRegistry.detectFormat(storyData!.body);
-      assert.strictEqual(detected, 'sugarcube-2');
+      const detected = formatRegistry.detectFromStoryData(storyData!.body);
+      assert.strictEqual(detected.formatId, 'sugarcube-2');
     });
 
     it('should pre-scan StoryData when not the first passage', () => {
@@ -182,8 +173,8 @@ describe('StoryData Detection — Twine Engine Core', () => {
       const storyData = passages.find(p => p.name === 'StoryData');
       assert.ok(storyData);
 
-      const detected = formatRegistry.detectFormat(storyData!.body);
-      assert.strictEqual(detected, 'harlowe-3');
+      const detected = formatRegistry.detectFromStoryData(storyData!.body);
+      assert.strictEqual(detected.formatId, 'harlowe-3');
     });
 
     it('should handle full twee file pre-scan flow', () => {
@@ -204,8 +195,8 @@ describe('StoryData Detection — Twine Engine Core', () => {
       const storyData = passages.find(p => p.name === 'StoryData');
       assert.ok(storyData);
 
-      const detected = formatRegistry.detectFormat(storyData!.body);
-      assert.strictEqual(detected, 'sugarcube-2');
+      const detected = formatRegistry.detectFromStoryData(storyData!.body);
+      assert.strictEqual(detected.formatId, 'sugarcube-2');
     });
   });
 });

@@ -345,11 +345,15 @@
     "server"
   ],
   "scripts": {
-    "build": "node client/build.js && node server/build.js",
+    "build": "npm --prefix client run build && npm --prefix server run build",
+    "build:client": "npm --prefix client run build",
+    "build:server": "npm --prefix server run build",
     "test": "npm --prefix server test",
-    "package:vsix": "node client/build.js && node server/build.js && npx @vscode/vsce package",
-    "watch:client": "node -e \"require('esbuild').context({entryPoints:['client/src/extension.ts'],bundle:true,outfile:'client/out/extension.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\"",
-    "watch:server": "node -e \"require('esbuild').context({entryPoints:['server/src/server.ts'],bundle:true,outfile:'server/out/src/server.js',external:['vscode'],format:'cjs',platform:'node',sourcemap:true}).then(c=>c.watch())\""
+    "test:compile": "npm --prefix server run pretest",
+    "package:vsix": "npm run build && npx @vscode/vsce package",
+    "watch:client": "npm --prefix client run watch",
+    "watch:server": "npm --prefix server run watch",
+    "watch": "npx concurrently \"npm run watch:client\" \"npm run watch:server\""
   },
   "devDependencies": {
     "@vscode/vsce": "^3.2.2",

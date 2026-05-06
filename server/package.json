@@ -4,6 +4,7 @@
   "main": "out/src/server.js",
   "scripts": {
     "build": "node build.js",
+    "watch": "node build.js --watch",
     "pretest": "tsc --project tsconfig.test.json",
     "test": "mocha \"out/tests/**/*.test.js\""
   },

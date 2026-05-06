@@ -314,10 +314,13 @@ export class ASTWorkspace {
       });
 
       // Add variable symbols from the passage body
+      // Resolve scope through VariableCapability.sigils (never hardcoded)
       walkTree(passage.body, node => {
         if (node.nodeType === 'Variable' && node.data.varName) {
           const sigil = node.data.varSigil ?? '';
-          const scope = sigil === '$' ? 'story' : sigil === '_' ? 'temp' : 'unknown';
+          const format = this.formatRegistry.getActiveFormat();
+          const sigilDef = format.variables?.sigils.find(s => s.sigil === sigil);
+          const scope = sigilDef?.kind ?? 'unknown';
           const kind = scope === 'story' ? SymbolKind.StoryVariable : SymbolKind.TempVariable;
 
           this.symbolTable.addSymbol({

@@ -28,6 +28,7 @@ import {
   Range,
   Position,
   CodeActionKind,
+  RequestType,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { FormatRegistry } from './formats/formatRegistry';
@@ -43,6 +44,25 @@ import { ASTNode, DocumentAST, walkTree, findDeepestNode } from './core/ast';
 import { PassageType, MacroCategory, MacroKind, LinkKind, PassageRefKind } from './hooks/hookTypes';
 import { registerHandlers, createDiagnosticsHandler, HandlerDependencies, TOKEN_TYPES, TOKEN_MODIFIERS } from './handlers';
 import { DiagnosticsHandler } from './handlers/diagnostics';
+// ─── Custom Protocol Types (mirrors shared/protocol.ts) ──────────
+// Defined inline to avoid rootDir constraint with composite projects.
+// Must stay in sync with shared/protocol.ts.
+
+namespace RefreshDocumentsRequest {
+  export const type = new RequestType<void, void, void>('knot/refreshDocuments');
+}
+
+namespace ListPassagesRequest {
+  export const type = new RequestType<void, string[], void>('knot/listPassages');
+}
+
+namespace ListFormatsRequest {
+  export const type = new RequestType<void, Array<{ id: string; name: string; version: string }>, void>('knot/listFormats');
+}
+
+namespace SelectFormatRequest {
+  export const type = new RequestType<{ formatId: string }, { success: boolean; formatName: string }, void>('knot/selectFormat');
+}
 
 // ─── LSP Server ────────────────────────────────────────────────
 
@@ -156,6 +176,45 @@ export class LspServer {
     };
     registerHandlers(handlerDeps);
 
+    // Register custom protocol handlers
+    this.connection.onRequest(RefreshDocumentsRequest.type, () => {
+      this.reindexAll();
+      // Re-publish diagnostics for all open documents
+      for (const uri of this.documentStore.getUris()) {
+        this.publishDiagnostics(uri);
+      }
+      return undefined; // void response
+    });
+
+    this.connection.onRequest(ListPassagesRequest.type, () => {
+      return this.workspaceIndex.getAllPassageNames();
+    });
+
+    this.connection.onRequest(ListFormatsRequest.type, () => {
+      return this.formatRegistry.getAvailableFormatIds()
+        .map(id => this.formatRegistry.getFormat(id))
+        .filter((fmt): fmt is NonNullable<typeof fmt> => fmt !== undefined)
+        .map(fmt => ({
+          id: fmt.formatId,
+          name: fmt.displayName,
+          version: fmt.version,
+        }));
+    });
+
+    this.connection.onRequest(SelectFormatRequest.type, (params) => {
+      const format = this.formatRegistry.getFormat(params.formatId);
+      if (format) {
+        this.formatRegistry.setActiveFormat(params.formatId);
+        this.reindexAll();
+        // Re-publish diagnostics with new format
+        for (const uri of this.documentStore.getUris()) {
+          this.publishDiagnostics(uri);
+        }
+        return { success: true, formatName: format.displayName };
+      }
+      return { success: false, formatName: '' };
+    });
+
     // Register configuration change handler
     this.connection.onDidChangeConfiguration(this.onConfigurationChange.bind(this));
 
@@ -225,16 +284,21 @@ export class LspServer {
     this.settings = settings;
 
     // Update diagnostic settings
+    // Normalize camelCase setting keys (from package.json) to hyphenated rule IDs
+    // used by diagnosticEngine.getSeverity() lookups.
+    const lint = settings.lint ?? {};
     this.diagnosticEngine.updateSettings({
-      unknownPassage: settings.lint?.unknownPassage,
-      unknownMacro: settings.lint?.unknownMacro,
-      duplicatePassage: settings.lint?.duplicatePassage,
-      typeMismatch: settings.lint?.typeMismatch,
-      unreachablePassage: settings.lint?.unreachablePassage,
-      containerStructure: settings.lint?.containerStructure,
-      deprecatedMacro: settings.lint?.deprecatedMacro,
-      missingArgument: settings.lint?.missingArgument,
-      invalidAssignment: settings.lint?.invalidAssignment,
+      'unknown-passage': lint.unknownPassage,
+      'unknown-macro': lint.unknownMacro,
+      'duplicate-passage': lint.duplicatePassage,
+      'type-mismatch': lint.typeMismatch,
+      'unreachable-passage': lint.unreachablePassage,
+      'container-structure': lint.containerStructure,
+      'deprecated-macro': lint.deprecatedMacro,
+      'missing-argument': lint.missingArgument,
+      // NOTE: 'invalid-assignment' is passed through but has no matching rule ID
+      // in CORE_DIAGNOSTIC_RULES or any format module. This setting is inert.
+      'invalid-assignment': lint.invalidAssignment,
     });
 
     // Check for format change

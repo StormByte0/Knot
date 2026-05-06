@@ -12,14 +12,25 @@
  *   1. No file in core/ imports from formats/
  *   2. No file in core/ contains format name strings (sugarcube, harlowe)
  *   3. No hardcoded <<>> patterns in core/ code (only in comments is OK)
- *   4. No hardcoded $/_ sigil logic in core/ (only through classifyVariableSigil)
+ *   4. No hardcoded $/_ sigil logic in core/ (only through VariableCapability)
+ *   5. Enum completeness checks for the slimmed enums
  */
 
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// The compiled test JS lives at: server/out/tests/tests/server/core/boundary.test.js
+import {
+  MacroCategory,
+  MacroKind,
+  MacroBodyStyle,
+  PassageType,
+  PassageKind,
+  LinkKind,
+  PassageRefKind,
+} from '../../../server/src/hooks/hookTypes';
+
+// The compiled test JS lives at: .../server/out/tests/tests/server/core/boundary.test.js
 // So __dirname = .../server/out/tests/tests/server/core/
 // We need to reach: .../server/src/
 // That's 5 levels up then 'src'
@@ -95,9 +106,14 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
 
             const importMatch = line.match(/^import\s+.*from\s+['"]\.\.\/formats/);
             if (importMatch) {
-              violations.push(
-                `${path.relative(process.cwd(), file)}:${i + 1}: ${line.trim()}`
-              );
+              // Allow imports from formats/_types, formats/formatRegistry, formats/index (the approved boundary)
+              // Forbid imports from formats/sugarcube/, formats/harlowe/, etc.
+              const isAllowed = line.includes('formats/_types') || line.includes('formats/formatRegistry') || line.includes('formats/index');
+              if (!isAllowed) {
+                violations.push(
+                  `${path.relative(process.cwd(), file)}:${i + 1}: ${line.trim()}`
+                );
+              }
             }
           }
         }
@@ -180,9 +196,6 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
             // Allow MacroBodyStyle enum references
             if (line.includes('MacroBodyStyle')) continue;
 
-            // Allow ISyntaxProvider references (documentation about the interface)
-            if (line.includes('ISyntaxProvider')) continue;
-
             if (sugarCubeMacroPattern.test(line)) {
               violations.push(
                 `${path.relative(process.cwd(), file)}:${i + 1}: ${line.trim()}`
@@ -195,7 +208,7 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
           assert.fail(
             `Hardcoded <<>> pattern found in ${dir}/!\n` +
             violations.join('\n') +
-            '\n<<>> is SugarCube-specific! Use adapter\'s ISyntaxProvider instead.'
+            '\n<<>> is SugarCube-specific! Use FormatModule\'s macroDelimiters instead.'
           );
         }
       });
@@ -215,7 +228,7 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
       // Patterns that indicate hardcoded sigil logic:
       // "$" => 'story', '_' => 'temp', etc.
       // BUT: allow these in comments and in the context of
-      // calling classifyVariableSigil (which is the adapter method)
+      // using VariableCapability from the format module
       const hardcodedSigilPatterns = [
         /\$\s*[=:]\s*['"]story['"]/,
         /_\s*[=:]\s*['"]temp['"]/,
@@ -234,8 +247,8 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
           if (isCommentLine(line)) continue;
           if (isDocumentationContent(line)) continue;
 
-          // Allow lines that are calling classifyVariableSigil
-          if (line.includes('classifyVariableSigil')) continue;
+          // Allow lines that reference VariableCapability or sigils from format modules
+          if (line.includes('VariableCapability') || line.includes('variables')) continue;
 
           for (const pattern of hardcodedSigilPatterns) {
             if (pattern.test(line)) {
@@ -251,13 +264,13 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
         assert.fail(
           `Hardcoded sigil logic found in core/!\n` +
           violations.join('\n') +
-          '\nVariable scope must be determined through classifyVariableSigil(), never hardcoded!'
+          '\nVariable scope must be determined through VariableCapability, never hardcoded!'
         );
       }
     });
   });
 
-  // ─── lspServer.ts check ───────────────────────────────────────
+  // ─── 5. lspServer.ts check ───────────────────────────────────
 
   describe('lspServer.ts — no format bleed-through', () => {
     it('should not contain format name references', () => {
@@ -273,54 +286,79 @@ describe('Zero Bleed-Through — Format Boundary Enforcement', () => {
     });
   });
 
-  // ─── Hook type completeness ───────────────────────────────────
+  // ─── 6. Hook type completeness (slimmed enums) ───────────────
 
   describe('Hook type completeness', () => {
-    it('MacroCategory should cover Harlowe-specific categories', () => {
-      const required = [
-        'iteration', 'dataStructure', 'math', 'string', 'colour',
-        'dateTime', 'interactive', 'revision', 'live', 'pattern',
-        'customMacro', 'debugging', 'save',
-      ];
-      const file = path.join(SERVER_SRC, 'hooks', 'hookTypes.ts');
-      const content = fs.readFileSync(file, 'utf8');
+    it('MacroCategory should have exactly 8 values', () => {
+      const values = Object.values(MacroCategory);
+      assert.strictEqual(values.length, 8, `MacroCategory should have 8 values, got ${values.length}`);
+    });
+
+    it('MacroCategory should have required universal categories', () => {
+      const required = ['navigation', 'output', 'control', 'variable', 'styling', 'system', 'utility', 'custom'];
+      const values = Object.values(MacroCategory);
       for (const cat of required) {
-        const camelCat = cat.charAt(0).toUpperCase() + cat.slice(1);
-        assert.ok(content.includes(camelCat), `MacroCategory.${camelCat} is missing — needed for Harlowe`);
+        assert.ok(values.includes(cat as MacroCategory), `MacroCategory missing: ${cat}`);
       }
     });
 
-    it('MacroBodyStyle should have CloseTag, Hook, and Inline', () => {
+    it('MacroKind should have exactly 3 values (Changer, Command, Instant)', () => {
+      const values = Object.values(MacroKind);
+      assert.strictEqual(values.length, 3, `MacroKind should have 3 values, got ${values.length}`);
+      assert.ok(values.includes('changer' as MacroKind), 'Missing Changer');
+      assert.ok(values.includes('command' as MacroKind), 'Missing Command');
+      assert.ok(values.includes('instant' as MacroKind), 'Missing Instant');
+    });
+
+    it('MacroBodyStyle should have exactly 3 values (CloseTag, Hook, Inline)', () => {
+      const values = Object.values(MacroBodyStyle);
+      assert.strictEqual(values.length, 3, `MacroBodyStyle should have 3 values, got ${values.length}`);
+      assert.ok(values.includes('close-tag' as MacroBodyStyle), 'Missing CloseTag');
+      assert.ok(values.includes('hook' as MacroBodyStyle), 'Missing Hook');
+      assert.ok(values.includes('inline' as MacroBodyStyle), 'Missing Inline');
+    });
+
+    it('PassageType should have exactly 6 values', () => {
+      const values = Object.values(PassageType);
+      assert.strictEqual(values.length, 6, `PassageType should have 6 values, got ${values.length}`);
+    });
+
+    it('PassageKind should have exactly 4 values (Markup, Script, Stylesheet, Special)', () => {
+      const values = Object.values(PassageKind);
+      assert.strictEqual(values.length, 4, `PassageKind should have 4 values, got ${values.length}`);
+      assert.ok(values.includes('markup' as PassageKind), 'Missing Markup');
+      assert.ok(values.includes('script' as PassageKind), 'Missing Script');
+      assert.ok(values.includes('stylesheet' as PassageKind), 'Missing Stylesheet');
+      assert.ok(values.includes('special' as PassageKind), 'Missing Special');
+    });
+
+    it('LinkKind should have exactly 3 values (Passage, External, Custom)', () => {
+      const values = Object.values(LinkKind);
+      assert.strictEqual(values.length, 3, `LinkKind should have 3 values, got ${values.length}`);
+      assert.ok(values.includes('passage' as LinkKind), 'Missing Passage');
+      assert.ok(values.includes('external' as LinkKind), 'Missing External');
+      assert.ok(values.includes('custom' as LinkKind), 'Missing Custom');
+    });
+
+    it('PassageRefKind should have exactly 4 values (Link, Macro, API, Implicit)', () => {
+      const values = Object.values(PassageRefKind);
+      assert.strictEqual(values.length, 4, `PassageRefKind should have 4 values, got ${values.length}`);
+      assert.ok(values.includes('link' as PassageRefKind), 'Missing Link');
+      assert.ok(values.includes('macro' as PassageRefKind), 'Missing Macro');
+      assert.ok(values.includes('api' as PassageRefKind), 'Missing API');
+      assert.ok(values.includes('implicit' as PassageRefKind), 'Missing Implicit');
+    });
+
+    it('NO FormatCapability enum should exist in hookTypes', () => {
       const file = path.join(SERVER_SRC, 'hooks', 'hookTypes.ts');
       const content = fs.readFileSync(file, 'utf8');
-      assert.ok(content.includes('CloseTag'), 'MacroBodyStyle.CloseTag missing');
-      assert.ok(content.includes('Hook'), 'MacroBodyStyle.Hook missing');
-      assert.ok(content.includes('Inline'), 'MacroBodyStyle.Inline missing');
+      assert.ok(!content.includes('FormatCapability'), 'FormatCapability enum should NOT exist — capabilities are now checked via bag presence on FormatModule');
     });
 
-    it('PassageKind should have Markup, Script, Stylesheet, Special', () => {
+    it('NO DiagnosticRule enum should exist in hookTypes', () => {
       const file = path.join(SERVER_SRC, 'hooks', 'hookTypes.ts');
       const content = fs.readFileSync(file, 'utf8');
-      assert.ok(content.includes('Markup'), 'PassageKind.Markup missing');
-      assert.ok(content.includes('Special'), 'PassageKind.Special missing');
-    });
-
-    it('ISyntaxProvider should have classifyVariableSigil', () => {
-      const file = path.join(SERVER_SRC, 'hooks', 'formatHooks.ts');
-      const content = fs.readFileSync(file, 'utf8');
-      assert.ok(content.includes('classifyVariableSigil'), 'ISyntaxProvider.classifyVariableSigil missing');
-    });
-
-    it('IPassageProvider should have classifyPassage', () => {
-      const file = path.join(SERVER_SRC, 'hooks', 'formatHooks.ts');
-      const content = fs.readFileSync(file, 'utf8');
-      assert.ok(content.includes('classifyPassage'), 'IPassageProvider.classifyPassage missing');
-    });
-
-    it('ILinkProvider should have resolveLinkBody', () => {
-      const file = path.join(SERVER_SRC, 'hooks', 'formatHooks.ts');
-      const content = fs.readFileSync(file, 'utf8');
-      assert.ok(content.includes('resolveLinkBody'), 'ILinkProvider.resolveLinkBody missing');
+      assert.ok(!content.includes('DiagnosticRule'), 'DiagnosticRule enum should NOT exist — rules now use string IDs via DiagnosticRuleDef');
     });
   });
 });

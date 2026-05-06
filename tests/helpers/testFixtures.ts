@@ -1,123 +1,186 @@
 /**
  * Knot v2 — Test Fixtures
  *
- * Shared mock providers for testing core/handler code.
+ * Shared mock FormatModule for testing core/handler code.
  * CRITICAL: Tests for core/handlers MUST use these mocks,
- * never real format adapters. This enforces the boundary.
+ * never real format modules. This enforces the boundary.
+ *
+ * The old IFormatProvider / IMacroProvider / IPassageProvider etc.
+ * class-based mocks have been replaced by a single mock FormatModule
+ * object literal conforming to the FormatModule interface.
  */
 
-import {
-  IFormatProvider,
-  IMacroProvider,
-  IPassageProvider,
-  IDiagnosticProvider,
-  ILinkProvider,
-  ISyntaxProvider,
-  MacroDefinition,
-  PassageTypeDefinition,
-  DiagnosticResult,
-  ParsedLink,
-  AdapterToken,
-} from '../../server/src/hooks/formatHooks';
+import type {
+  FormatModule,
+  FormatASTNodeTypes,
+  ASTNodeTypeDef,
+  TokenTypeDef,
+  MacroDef,
+  MacroDelimiters,
+  LinkResolution,
+  PassageRef,
+  BodyToken,
+} from '../../server/src/formats/_types';
 
 import {
   MacroCategory,
   MacroKind,
   MacroBodyStyle,
-  PassageType,
-  PassageKind,
   LinkKind,
-  DiagnosticRule,
-  FormatCapability,
+  PassageRefKind,
 } from '../../server/src/hooks/hookTypes';
 
-export class MockMacroProvider implements IMacroProvider {
-  private macros: Map<string, MacroDefinition> = new Map();
-  addMacro(def: MacroDefinition): void {
-    this.macros.set(def.name, def);
-    if (def.aliases) for (const alias of def.aliases) this.macros.set(alias, def);
+import { FormatRegistry } from '../../server/src/formats/formatRegistry';
+
+// ─── Baseline AST Node Types (used by mock module) ──────────────
+
+const MOCK_AST_NODE_TYPES: FormatASTNodeTypes = (() => {
+  const defs: ASTNodeTypeDef[] = [
+    { id: 'Document',       label: 'Document',        canHaveChildren: true,  childNodeTypeIds: ['PassageHeader', 'PassageBody'] },
+    { id: 'PassageHeader',  label: 'Passage Header',  canHaveChildren: false },
+    { id: 'PassageBody',    label: 'Passage Body',    canHaveChildren: true,  childNodeTypeIds: ['Link', 'Text'] },
+    { id: 'Link',           label: 'Link',            canHaveChildren: false },
+    { id: 'Text',           label: 'Text',            canHaveChildren: false },
+  ];
+  const types = new Map(defs.map(d => [d.id, d]));
+  return {
+    types,
+    Document: 'Document',
+    PassageHeader: 'PassageHeader',
+    PassageBody: 'PassageBody',
+    Link: 'Link',
+    Text: 'Text',
+  };
+})();
+
+// ─── Baseline Token Types ────────────────────────────────────────
+
+const MOCK_TOKEN_TYPES: TokenTypeDef[] = [
+  { id: 'text',    label: 'Text',    category: 'literal' },
+  { id: 'newline', label: 'Newline', category: 'whitespace' },
+  { id: 'eof',     label: 'EOF',     category: 'whitespace' },
+];
+
+// ─── Mock FormatModule Factory ───────────────────────────────────
+
+/**
+ * Create a mock FormatModule object literal.
+ * Defaults to a minimal baseline module (no capability bags).
+ * Pass `overrides` to customize fields or add capability bags.
+ */
+export function createMockFormatModule(overrides?: Partial<FormatModule>): FormatModule {
+  return {
+    formatId: 'mock',
+    displayName: 'Mock Format',
+    version: '0.0.1',
+    aliases: ['mock'],
+
+    astNodeTypes: MOCK_AST_NODE_TYPES,
+    tokenTypes: MOCK_TOKEN_TYPES,
+
+    lexBody: (_input: string, baseOffset: number): BodyToken[] => {
+      return [{ typeId: 'eof', text: '', range: { start: baseOffset, end: baseOffset } }];
+    },
+
+    extractPassageRefs: (body: string, bodyOffset: number): PassageRef[] => {
+      // Default: find [[ ]] links only
+      const refs: PassageRef[] = [];
+      const linkRe = /\[\[([^\]]+?)\]\]/g;
+      linkRe.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = linkRe.exec(body)) !== null) {
+        const rawBody = match[1];
+        const target = rawBody.trim();
+        refs.push({
+          target,
+          kind: PassageRefKind.Link,
+          range: { start: bodyOffset + match.index, end: bodyOffset + match.index + match[0].length },
+          source: '[[ ]]',
+          linkKind: LinkKind.Passage,
+        });
+      }
+      return refs;
+    },
+
+    resolveLinkBody: (rawBody: string): LinkResolution => {
+      const ra = rawBody.lastIndexOf('->');
+      if (ra >= 0) {
+        return {
+          target: rawBody.substring(ra + 2).trim(),
+          displayText: rawBody.substring(0, ra).trim(),
+          kind: LinkKind.Passage,
+        };
+      }
+      return { target: rawBody.trim(), kind: LinkKind.Passage };
+    },
+
+    specialPassages: [],
+
+    macroBodyStyle: MacroBodyStyle.Inline,
+
+    macroDelimiters: {
+      open: '',
+      close: '',
+    } satisfies MacroDelimiters,
+
+    macroPattern: null,
+
+    ...overrides,
+  };
+}
+
+// ─── Convenience: Mock Registry ──────────────────────────────────
+
+/**
+ * Create a FormatRegistry pre-loaded with a mock FormatModule
+ * set as the active format. Useful for parser and core tests
+ * that need a FormatRegistry but should NOT import real format modules.
+ */
+export function createMockRegistry(mockModule?: FormatModule): FormatRegistry {
+  const registry = new FormatRegistry();
+  const mod = mockModule ?? createMockFormatModule();
+  registry.register(mod);
+  registry.setActiveFormat('mock');
+  return registry;
+}
+
+// ─── Convenience: Mock module with macro capability ──────────────
+
+/**
+ * Create a mock FormatModule with a macros capability bag
+ * containing the given macro definitions.
+ */
+export function createMockFormatModuleWithMacros(macros: MacroDef[]): FormatModule {
+  const aliasMap = new Map<string, string>();
+  for (const macro of macros) {
+    if (macro.aliases) {
+      for (const alias of macro.aliases) {
+        aliasMap.set(alias, macro.name);
+      }
+    }
   }
-  getMacros(): MacroDefinition[] { return Array.from(new Set(this.macros.values())); }
-  getMacroByName(name: string): MacroDefinition | undefined { return this.macros.get(name); }
-  isMacroKnown(name: string): boolean { return this.macros.has(name); }
+
+  return createMockFormatModule({
+    macros: {
+      builtins: macros,
+      aliases: aliasMap,
+    },
+  });
 }
 
-export class MockPassageProvider implements IPassageProvider {
-  private passageTypes: Map<PassageType, PassageTypeDefinition> = new Map();
-  private specialTags: string[] = [];
-  private storyDataName = 'StoryData';
-  private startName = 'Start';
-  private classifyFn: ((name: string, tags: string[]) => PassageKind | null) | null = null;
-  configure(opts: any): void { Object.assign(this, opts); }
-  getPassageTypes(): Map<PassageType, PassageTypeDefinition> { return this.passageTypes; }
-  getSpecialTags(): string[] { return this.specialTags; }
-  getStoryDataPassageName(): string { return this.storyDataName; }
-  getStartPassageName(): string { return this.startName; }
-  getPassageHeaderPattern(): RegExp { return /^::\s*([^\[\]]+)(?:\s*\[([^\]]*)\])?\s*$/m; }
-  getSpecialPassagePattern(_type: PassageType): RegExp | undefined { return undefined; }
-  classifyPassage(name: string, tags: string[]): PassageKind | null {
-    return this.classifyFn ? this.classifyFn(name, tags) : null;
-  }
-}
+// ─── Convenience: Sample macro definition factory ────────────────
 
-export class MockDiagnosticProvider implements IDiagnosticProvider {
-  private supportedRules: DiagnosticRule[] = [];
-  addRule(rule: DiagnosticRule, severity: string): void { this.supportedRules.push(rule); }
-  getSupportedRules(): DiagnosticRule[] { return this.supportedRules; }
-  getRuleSeverity(_rule: DiagnosticRule): string | undefined { return undefined; }
-  checkMacroUsage(_name: string, _args: any[]): DiagnosticResult[] { return []; }
-  checkPassageStructure(_pt: PassageType, _c: string): DiagnosticResult[] { return []; }
-}
-
-export class MockLinkProvider implements ILinkProvider {
-  getLinkKinds(): LinkKind[] { return [LinkKind.Passage]; }
-  resolveLinkBody(rawBody: string): ParsedLink | undefined {
-    const ra = rawBody.lastIndexOf('->');
-    if (ra >= 0) return { kind: LinkKind.Passage, target: rawBody.substring(ra + 2).trim(), displayText: rawBody.substring(0, ra).trim() };
-    return { kind: LinkKind.Passage, target: rawBody.trim() };
-  }
-  parseLinkSyntax(text: string): ParsedLink | undefined {
-    const m = text.match(/^\[\[(.+?)\]\]$/);
-    return m ? this.resolveLinkBody(m[1]) : undefined;
-  }
-  resolveLinkTarget(link: ParsedLink): string | undefined { return link.kind === LinkKind.Passage ? link.target : undefined; }
-}
-
-export class MockSyntaxProvider implements ISyntaxProvider {
-  private bodyStyle: MacroBodyStyle = MacroBodyStyle.Inline;
-  private macroPat: RegExp | null = null;
-  private varPat: RegExp | null = null;
-  configure(opts: any): void { Object.assign(this, opts); }
-  getMacroBodyStyle(): MacroBodyStyle { return this.bodyStyle; }
-  lexBody(_body: string): AdapterToken[] { return []; }
-  getMacroPattern(): RegExp | null { return this.macroPat; }
-  getVariablePattern(): RegExp | null { return this.varPat; }
-  getMacroTriggerChars(): string[] { return []; }
-  getVariableTriggerChars(): string[] { return []; }
-  getMacroCallPrefix(): string { return ''; }
-  getMacroCallSuffix(): string { return ''; }
-  getMacroClosePrefix(): string { return ''; }
-  getMacroCloseSuffix(): string { return ''; }
-  classifyVariableSigil(_sigil: string): 'story' | 'temp' | null { return null; }
-}
-
-export class MockFormatProvider implements IFormatProvider {
-  readonly formatId = 'mock';
-  readonly formatName = 'Mock Format';
-  readonly formatVersion = '0.0.1';
-  readonly capabilities = new Set<FormatCapability>();
-  readonly macroProvider = new MockMacroProvider();
-  readonly passageProvider = new MockPassageProvider();
-  readonly diagnosticProvider = new MockDiagnosticProvider();
-  readonly linkProvider = new MockLinkProvider();
-  readonly syntaxProvider = new MockSyntaxProvider();
-  getMacroProvider(): IMacroProvider { return this.macroProvider; }
-  getPassageProvider(): IPassageProvider { return this.passageProvider; }
-  getDiagnosticProvider(): IDiagnosticProvider { return this.diagnosticProvider; }
-  getLinkProvider(): ILinkProvider { return this.linkProvider; }
-  getSyntaxProvider(): ISyntaxProvider { return this.syntaxProvider; }
-}
-
-export function createSampleMacro(overrides?: Partial<MacroDefinition>): MacroDefinition {
-  return { name: 'testMacro', category: MacroCategory.Output, kind: MacroKind.Command, description: 'Test', signatures: [{ args: [{ name: 'arg1', type: 'string', required: true }] }], ...overrides };
+/**
+ * Create a sample MacroDef for testing.
+ * Mirrors the fields from the FormatModule MacroDef interface.
+ */
+export function createSampleMacroDef(overrides?: Partial<MacroDef>): MacroDef {
+  return {
+    name: 'testMacro',
+    category: MacroCategory.Output,
+    kind: MacroKind.Command,
+    description: 'A test macro',
+    signatures: [{ args: [{ name: 'arg1', type: 'string', required: true }] }],
+    ...overrides,
+  };
 }
