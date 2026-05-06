@@ -179,6 +179,9 @@
           ],
           "comment": [
             "comment.block.twee"
+          ],
+          "enumMember": [
+            "string.other.link.twee"
           ]
         }
       }

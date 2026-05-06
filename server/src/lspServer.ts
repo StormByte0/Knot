@@ -29,6 +29,7 @@ import {
   Position,
   CodeActionKind,
   RequestType,
+  NotificationType,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { FormatRegistry } from './formats/formatRegistry';
@@ -62,6 +63,10 @@ namespace ListFormatsRequest {
 
 namespace SelectFormatRequest {
   export const type = new RequestType<{ formatId: string }, { success: boolean; formatName: string }, void>('knot/selectFormat');
+}
+
+namespace FormatChangedNotification {
+  export const type = new NotificationType<{ formatId: string; formatName: string }>('knot/formatChanged');
 }
 
 // ─── LSP Server ────────────────────────────────────────────────
@@ -155,6 +160,11 @@ export class LspServer {
             tokenModifiers: TOKEN_MODIFIERS,
           },
         },
+        workspace: {
+          workspaceFolders: {
+            supported: true,
+          },
+        } satisfies any,
       },
     };
   }
@@ -218,10 +228,14 @@ export class LspServer {
     // Register configuration change handler
     this.connection.onDidChangeConfiguration(this.onConfigurationChange.bind(this));
 
+    // Pull initial configuration from the client
+    this.pullConfiguration();
+
     // Try to detect format from workspace StoryData passage
     this.detectWorkspaceFormat();
 
     this.connection.console.info('Knot v2 language server initialized');
+    this.connection.console.info(`Active format: ${this.formatRegistry.getActiveFormat().formatId} (${this.formatRegistry.getActiveFormat().displayName})`);
   }
 
   // ─── Document Synchronization ────────────────────────────────
@@ -243,6 +257,7 @@ export class LspServer {
       if (detectedFormat && detectedFormat !== this.formatRegistry.getActiveFormat().formatId) {
         this.formatRegistry.setActiveFormat(detectedFormat);
         this.connection.console.info(`Detected story format from new document: ${detectedFormat}`);
+        this.notifyFormatChanged();
         // Re-index any already-open documents with the new format
         this.reindexAll();
       }
@@ -305,6 +320,7 @@ export class LspServer {
     const formatId = settings.format?.activeFormat;
     if (formatId && formatId !== this.formatRegistry.getActiveFormat().formatId) {
       this.formatRegistry.setActiveFormat(formatId);
+      this.notifyFormatChanged();
       // Re-index with new format
       this.reindexAll();
     }
@@ -338,7 +354,7 @@ export class LspServer {
    */
   preScanStoryData(content: string): string | undefined {
     // Raw text search for :: StoryData passage header
-    const storyDataHeader = /^::\s*StoryData(?:\s*\[([^\]]*)\])?\s*$/m;
+    const storyDataHeader = /^::\s*StoryData(?:\s*\[([^\]]*)\])?(?:\s*\{[^}]*\})?\s*$/m;
     const headerMatch = content.match(storyDataHeader);
     if (!headerMatch) return undefined;
 
@@ -373,6 +389,7 @@ export class LspServer {
       if (detected.formatId !== 'fallback') {
         this.formatRegistry.setActiveFormat(detected.formatId);
         this.connection.console.info(`Detected story format: ${detected.formatId}`);
+        this.notifyFormatChanged();
         // Re-index with the correct format module now that we know the format
         this.reindexAll();
         return;
@@ -387,6 +404,7 @@ export class LspServer {
         if (detectedFormat) {
           this.formatRegistry.setActiveFormat(detectedFormat);
           this.connection.console.info(`Detected story format via pre-scan: ${detectedFormat}`);
+          this.notifyFormatChanged();
           this.reindexAll();
           return;
         }
@@ -500,5 +518,40 @@ export class LspServer {
     }
 
     return Array.from(chars);
+  }
+
+  // ─── Configuration Pull ────────────────────────────────────────
+
+  /**
+   * Pull configuration from the client using workspace/configuration.
+   * This ensures we get settings even if the initial push notification
+   * was missed or the client uses a pull-based configuration model.
+   */
+  private async pullConfiguration(): Promise<void> {
+    try {
+      const config = await this.connection.workspace.getConfiguration([
+        { section: 'knot' },
+      ]);
+      if (config && config.length > 0 && config[0]) {
+        this.onConfigurationChange({ settings: { knot: config[0] } });
+      }
+    } catch {
+      // workspace/configuration not supported — rely on push notifications
+    }
+  }
+
+  // ─── Format Change Notification ─────────────────────────────────
+
+  /**
+   * Notify the client that the active format has changed.
+   * The client uses this to update the status bar.
+   */
+  private notifyFormatChanged(): void {
+    const activeFormat = this.formatRegistry.getActiveFormat();
+    this.connection.sendNotification(FormatChangedNotification.type, {
+      formatId: activeFormat.formatId,
+      formatName: activeFormat.displayName,
+    });
+    this.connection.console.info(`Active format changed to: ${activeFormat.formatId} (${activeFormat.displayName})`);
   }
 }

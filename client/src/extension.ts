@@ -19,6 +19,7 @@ import {
   LanguageClientOptions,
   ServerOptions,
   TransportKind,
+  NotificationType,
 } from 'vscode-languageclient/node';
 import { StatusBar } from './statusBar';
 import { registerLspCommands } from './commands/lspCommands';
@@ -84,6 +85,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const menuProvider = new MenuProvider(client);
   context.subscriptions.push(
     vscode.commands.registerCommand('knot.mainMenu', () => menuProvider.showMainMenu()),
+  );
+
+  // ─── Listen for server format change notifications ──────────
+  client.onNotification(
+    new NotificationType<{ formatId: string; formatName: string }>('knot/formatChanged'),
+    (params) => {
+      statusBar?.updateFormat(params.formatId, params.formatName);
+    },
   );
 
   // ─── Watch Configuration Changes ───────────────────────────

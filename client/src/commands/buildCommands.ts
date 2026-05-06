@@ -252,7 +252,7 @@ function execAsync(
       if (error) {
         reject(Object.assign(error, { stdout, stderr }));
       } else {
-        resolve({ stdout, stderr });
+        resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
       }
     });
   });
