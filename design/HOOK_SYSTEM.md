@@ -13,6 +13,7 @@ The FormatModule system is the **sole boundary** between format-agnostic core lo
 5. **Declarative over imperative.** Formats provide data declarations (`SpecialPassageDef[]`, `DiagnosticRuleDef[]`, `MacroDelimiters`, `MacroDef` boolean flags) rather than functions that core must call. Core derives what it needs at load time.
 6. **Capability bags, not flat sub-providers.** Optional features are expressed as optional properties on `FormatModule`. Absent = unsupported. No stubs, no dead code.
 7. **Object literals, not classes.** Every format exports a single `FormatModule` object literal. Capabilities are explicit. No hidden stub methods from class hierarchies.
+8. **Single source of truth for passage references.** `extractPassageRefs()` is the ONLY way core learns about passage references. Core NEVER extracts passage references on its own.
 
 ---
 
@@ -21,108 +22,93 @@ The FormatModule system is the **sole boundary** between format-agnostic core lo
 Enums remain the backbone of data interchange. Core and formats share these enum values to communicate without coupling.
 
 ### `MacroCategory`
-Classifies what kind of macro a format provides. Used by core/handlers to categorize completions, hover results, and diagnostics without knowing the format.
+Classifies what kind of macro a format provides. Used by core/handlers to categorize completions, hover results, and diagnostics without knowing the format. Slimmed to universal categories only; format-specific categories use `Custom` with a `categoryDetail` string.
 
 ```typescript
 export enum MacroCategory {
-  Navigation = "navigation",     // Links, passage navigation
-  Output      = "output",        // Content rendering
-  Control     = "control",       // Flow control (if, for, while)
-  Variable    = "variable",      // Variable get/set
-  Widget      = "widget",        // Widget definition/usage
-  Styling     = "styling",       // CSS/style related
-  System      = "system",        // Save, load, settings
-  Dialog      = "dialog",        // Modal, alert, prompt
-  Audio       = "audio",         // Sound/music
-  Utility     = "utility",       // General utility
-  Custom      = "custom",        // Format-specific extension point
+  Navigation = 'navigation',   // Links, passage navigation
+  Output     = 'output',       // Content rendering
+  Control    = 'control',      // Flow control (if, for, while)
+  Variable   = 'variable',     // Variable get/set
+  Styling    = 'styling',      // CSS/style related
+  System     = 'system',       // Save, load, settings
+  Utility    = 'utility',      // General utility
+  Custom     = 'custom',       // Format-specific extension point (use categoryDetail)
 }
 ```
 
 ### `MacroKind`
-How a macro call is structured. Replaces the old `container`/`selfClose` boolean pair on `MacroDefinition`.
+How a macro relates to its body content. This is universal across formats:
+
+- **Changer**: attaches to a body (SugarCube: `<<if>>...<</if>>`, Harlowe: `(if:)[...]`)
+- **Command**: standalone action (SugarCube: `<<goto>>`, Harlowe: `(go-to:)`)
+- **Instant**: silent side-effect (SugarCube: `<<set>>`, Harlowe: `(set:)`)
 
 ```typescript
 export enum MacroKind {
-  Container  = "container",   // <<macro>>...<</macro>>
-  SelfClose  = "selfClose",   // <<macro ... />>
-  Changer    = "changer",     // Harlowe changer (attaches to hooks)
-  Command    = "command",     // Harlowe command (produces output)
-  Instant    = "instant",     // Harlowe instant (no output, side-effect only)
+  Changer = 'changer',
+  Command = 'command',
+  Instant = 'instant',
 }
 ```
 
 ### `MacroBodyStyle`
-How a macro's body is delimited. Core needs this to parse macro bodies correctly.
+How a format's macros delimit their body content. Determines how the AST builder assembles macro body nodes.
 
 ```typescript
 export enum MacroBodyStyle {
-  CloseTag = "closeTag",   // <<macro>>body<</macro>> — SugarCube
-  Hook     = "hook",       // (macro:)[body] — Harlowe
-  None     = "none",       // No body — self-closing macros
+  CloseTag = 'close-tag',   // <<macro>>body<</macro>> — SugarCube
+  Hook     = 'hook',        // (macro:)[body] — Harlowe
+  Inline   = 'inline',      // No macro bodies — Chapbook/Snowman/Fallback
 }
 ```
 
 ### `PassageType`
-Classifies what kind of passage it is. Used by workspace index and parser to categorize passages without format knowledge.
+Classifies what kind of passage it is at the Twine Engine level. Only universal types — format-specific passage types use `Custom` with a `typeId` string from `SpecialPassageDef`.
 
 ```typescript
 export enum PassageType {
-  Story     = "story",       // Normal story passage
-  Widget    = "widget",      // Widget definition passage
-  Stylesheet = "stylesheet", // CSS passage
-  Script    = "script",      // JavaScript passage
-  Init      = "init",        // Initialization passage
-  Start     = "start",       // Starting passage
-  StoryData = "storydata",   // Story metadata passage
-  Custom    = "custom",      // Format-specific passage type
-  Other     = "other",       // Unclassified passage
+  Story     = 'story',       // Normal story passage — the default
+  Stylesheet = 'stylesheet', // CSS passage (Twee 3 spec: [stylesheet] tag)
+  Script    = 'script',      // JavaScript passage (Twee 3 spec: [script] tag)
+  Start     = 'start',       // The starting passage
+  StoryData = 'storydata',   // Story metadata passage (JSON)
+  Custom    = 'custom',      // Format-specific passage type
 }
 ```
 
 ### `PassageKind`
-The kind of special passage, used in `SpecialPassageDef`. Core pre-classifies Twee 3 spec passages, then uses format-provided `SpecialPassageDef[]` for format-specific ones.
+The fundamental kind of passage, used in `SpecialPassageDef`. Core recognizes `Script` and `Stylesheet` from Twee 3 spec tags; format-specific kinds use `Special`.
 
 ```typescript
 export enum PassageKind {
-  Start     = "start",
-  StoryData = "storydata",
-  Script    = "script",
-  Stylesheet = "stylesheet",
-  Init      = "init",
-  Widget    = "widget",
-  Custom    = "custom",
+  Markup    = 'markup',      // Normal story passage (default, safe fallback)
+  Script    = 'script',      // JavaScript passage (Twee 3 spec: [script] tag)
+  Stylesheet = 'stylesheet', // CSS passage (Twee 3 spec: [stylesheet] tag)
+  Special   = 'special',     // Format-specific special passage (widget, header, init, etc.)
 }
 ```
 
 ### `LinkKind`
-Classifies link types for the link graph and reference index.
+Classifies link types for the link graph and reference index. Only universal types — format-specific link kinds use `Custom`.
 
 ```typescript
 export enum LinkKind {
-  Passage  = "passage",   // Internal passage link
-  External = "external",  // External URL
-  Action   = "action",    // Interactive/action link
-  Back     = "back",      // Back/history link
-  Custom   = "custom",    // Format-specific link type
+  Passage  = 'passage',   // Internal passage link
+  External = 'external',  // External URL
+  Custom   = 'custom',    // Format-specific link type
 }
 ```
 
-### `FormatCapability`
-Declares which LSP features a format supports. Core checks these before delegating.
+### `PassageRefKind`
+How a passage is referenced from within a passage body. Core NEVER detects these — the format's `extractPassageRefs()` is the single source of truth for ALL passage references.
 
 ```typescript
-export enum FormatCapability {
-  MacroCompletion    = "macroCompletion",
-  PassageCompletion  = "passageCompletion",
-  VariableCompletion = "variableCompletion",
-  MacroHover         = "macroHover",
-  PassageHover       = "passageHover",
-  MacroDefinition    = "macroDefinition",
-  TypeInference      = "typeInference",
-  CustomDiagnostics  = "customDiagnostics",
-  Rename             = "rename",
-  CodeActions        = "codeActions",
+export enum PassageRefKind {
+  Link     = 'link',      // [[ ]] syntax (every format has this)
+  Macro    = 'macro',     // Format macro (<<goto>>, (go-to:), etc.)
+  API      = 'api',       // JavaScript API call (Engine.play(), story.show(), etc.)
+  Implicit = 'implicit',  // Implicit reference (data-passage, {embed passage:}, etc.)
 }
 ```
 
@@ -149,6 +135,10 @@ export interface FormatModule {
   // ── Body lexing (required) ────────────────────────────────────────
   readonly lexBody: (input: string, baseOffset: number) => BodyToken[];
 
+  // ── Passage reference extraction (required) ───────────────────────
+  // THE single source of truth for "what passages does this body reference?"
+  readonly extractPassageRefs: (body: string, bodyOffset: number) => PassageRef[];
+
   // ── Link resolution (required) ────────────────────────────────────
   readonly resolveLinkBody: (rawBody: string) => LinkResolution;
 
@@ -168,8 +158,9 @@ export interface FormatModule {
   readonly macros?: MacroCapability;
   readonly variables?: VariableCapability;
   readonly customMacros?: CustomMacroCapability;
-  readonly navigation?: NavigationCapability;
   readonly diagnostics?: DiagnosticCapability;
+  readonly snippets?: SnippetsCapability;
+  readonly runtime?: RuntimeCapability;
 }
 ```
 
@@ -286,6 +277,14 @@ export interface MacroArgDef {
   readonly required: boolean;
   readonly variadic?: boolean;
   readonly description?: string;
+  /**
+   * If this argument contains embedded source code in another language.
+   * Enables semantic token highlighting for embedded JS/CSS/HTML,
+   * virtual document creation, and diagnostics from the embedded language.
+   * Examples: SugarCube <<run>> → 'javascript', <<style>> → 'css'
+   * Omit if the argument is a plain string value (no embedded language).
+   */
+  readonly embeddedLanguage?: 'javascript' | 'css' | 'html';
 }
 ```
 
@@ -323,11 +322,35 @@ export interface SpecialPassageDef {
   readonly description: string;
   readonly priority?: number;   // Analysis priority (lower = first; 0 = highest)
   readonly tag?: string;        // Tag that identifies this type, if tag-based
-  readonly typeId?: string;     // Format-specific type ID for Custom kinds
+  readonly typeId?: string;     // Format-specific type ID (e.g. 'init', 'header', 'footer', 'interface', 'widget')
 }
 ```
 
 **Replaces `classifyPassage(name, tags)`**: Instead of calling a function per-passage, core does a single O(1) name lookup in a Map derived from this list at format-load time. Core pre-classifies Twee 3 spec tags (`[script]`→Script, `[stylesheet]`→Stylesheet), then checks the format's `SpecialPassageDef[]` for format-specific passages.
+
+The `typeId` field is critical for the story flow graph. The graph looks up special passages by `typeId` — not by passage name — because passage names differ across formats (e.g. SugarCube's `StoryInit` vs Harlowe's `Startup` both have `typeId: 'init'`). Known typeIds:
+
+| typeId | Meaning | SugarCube | Harlowe |
+|---|---|---|---|
+| `'init'` | Runs once at engine startup | StoryInit | Startup |
+| `'header'` | Runs before every passage body | PassageHeader | Header |
+| `'footer'` | Runs after every passage body | PassageFooter | Footer |
+| `'interface'` | Defines HTML structure at startup | StoryInterface | (none) |
+| `'widget'` | Defines custom macros (tag-based) | (tag: widget) | (none) |
+
+### Passage Reference
+
+```typescript
+export interface PassageRef {
+  readonly target: string;       // The passage name being referenced
+  readonly kind: PassageRefKind; // How this reference was produced
+  readonly range: SourceRange;   // Character range in the passage body (relative to body start)
+  readonly source: string;       // What produced this reference, e.g. '[[ ]]', '<<goto>>', '(go-to:)', 'data-passage'
+  readonly linkKind?: LinkKind;  // For [[ ]] links, resolved from resolveLinkBody
+}
+```
+
+**This is the single source of truth** for all passage references. Core NEVER extracts passage references on its own — no `[[` regex in core, no hardcoded macro names for navigation. Every downstream consumer (LinkGraph, ReferenceIndex, StoryFlowGraph, diagnostics, rename, definition, document links) uses this one type.
 
 ### Link Resolution
 
@@ -396,7 +419,7 @@ export interface MacroCapability {
 }
 ```
 
-Present for: SugarCube, Harlowe. Absent for: Chapbook (uses inserts), Snowman (uses templates).
+Present for: SugarCube, Harlowe. Absent for: Chapbook (inserts, not macros), Snowman (templates).
 
 ### VariableCapability
 
@@ -436,23 +459,6 @@ export interface CustomMacroCapability {
 
 Present for: SugarCube (widget). Absent for: Chapbook, Snowman.
 
-### NavigationCapability
-
-```typescript
-export interface NavigationCapability {
-  readonly implicitPatterns: readonly {
-    readonly pattern: RegExp;
-    readonly description: string;
-  }[];
-  readonly apiCalls: readonly {
-    readonly objectName: string;
-    readonly methods: readonly string[];
-  }[];
-}
-```
-
-Provides implicit passage reference patterns beyond `[[links]]`. Present for formats with API-based navigation.
-
 ### DiagnosticCapability
 
 ```typescript
@@ -471,17 +477,71 @@ export interface DiagnosticCheckContext {
 
 Rules are **declarative** — core's diagnostic engine enforces them. `customCheck?` is an escape hatch for rules that can't be expressed declaratively. Use sparingly.
 
+### SnippetsCapability
+
+```typescript
+export interface SnippetsCapability {
+  readonly templates: readonly SnippetDef[];
+}
+
+export interface SnippetDef {
+  readonly key: string;           // Unique key, e.g. 'if', 'for-range'
+  readonly prefix: string;       // Trigger prefix, e.g. 'if', 'for'
+  readonly description: string;  // Shown in completion list
+  readonly body: readonly string[]; // VS Code snippet syntax ($1, ${1:default}, $0, etc.)
+  readonly category?: string;    // Grouping category
+}
+```
+
+Present for: SugarCube, Harlowe, Chapbook. Absent for: Snowman, Fallback.
+
+### RuntimeCapability
+
+```typescript
+export interface RuntimeCapability {
+  readonly globals: readonly RuntimeGlobalDef[];
+  readonly virtualPrelude?: string;
+}
+
+export interface RuntimeGlobalDef {
+  readonly name: string;          // e.g. 'State', 'Engine', 'Config'
+  readonly description: string;
+  readonly hasMembers: boolean;
+  readonly members?: readonly {
+    readonly name: string;
+    readonly description: string;
+    readonly type?: string;
+  }[];
+}
+```
+
+Present for: SugarCube (State, Engine, Config, Dialog, etc.), Harlowe, Chapbook, Snowman. Absent for: Fallback.
+
+The `virtualPrelude` is JavaScript code that sets up a virtual runtime environment for analysis. This enables the semantic analyzer to understand runtime globals without actually executing format code.
+
 ### Core Diagnostic Rules
 
 Core provides `CORE_DIAGNOSTIC_RULES` that run regardless of the active format. These check Twine Engine level issues:
 
 ```typescript
 export const CORE_DIAGNOSTIC_RULES: DiagnosticRuleDef[] = [
-  { id: 'duplicate-passage', description: '...', defaultSeverity: 'error', scope: 'workspace' },
-  { id: 'unknown-passage', description: '...', defaultSeverity: 'warning', scope: 'passage' },
-  { id: 'unreachable-passage', description: '...', defaultSeverity: 'warning', scope: 'workspace' },
+  { id: 'duplicate-passage', ... },
+  { id: 'unknown-passage', ... },
+  { id: 'unreachable-passage', ... },
+  { id: 'conditionally-reachable', ... },
+  { id: 'dead-if-branch', ... },
+  { id: 'dead-else-branch', ... },
 ];
 ```
+
+| Rule ID | Description | Severity | Scope |
+|---|---|---|---|
+| `duplicate-passage` | Two or more passages share the same name | error | workspace |
+| `unknown-passage` | A link targets a passage that does not exist | warning | passage |
+| `unreachable-passage` | A passage cannot be reached from the start passage | warning | workspace |
+| `conditionally-reachable` | A passage is only reachable via conditional links | hint | workspace |
+| `dead-if-branch` | A conditional branch can never execute (condition always false) | hint | passage |
+| `dead-else-branch` | An else branch can never execute (condition always true) | hint | passage |
 
 Format-specific rules come from `DiagnosticCapability.rules`. Both use the same `DiagnosticRuleDef` structure with string `id`.
 
@@ -507,7 +567,7 @@ export class FormatRegistry {
   getModule(formatId?: string): FormatModule | undefined;
 
   /** Get the currently active format module */
-  getActiveModule(): FormatModule | undefined;
+  getActiveFormat(): FormatModule | undefined;
 
   /** Set the active format by ID or alias */
   setActiveFormat(formatId: string): void;
@@ -541,6 +601,8 @@ export class FormatRegistry {
 const BUILTIN_LOADERS: Map<string, () => FormatModule> = new Map([
   ['sugarcube-2', () => sugarcubeModule],
   ['harlowe-3',   () => harloweModule],
+  ['chapbook-2',  () => chapbookModule],
+  ['snowman-3',   () => snowmanModule],
   ['fallback',    () => fallbackModule],
 ]);
 ```
@@ -553,23 +615,53 @@ Lazy loaders ensure format code is only loaded when needed. Future: async import
 
 1. User types `<<` in a `.tw` file
 2. `handlers/completions.ts` receives the LSP completion request
-3. Handler calls `FormatRegistry.getActiveModule()` → gets `FormatModule`
+3. Handler calls `FormatRegistry.getActiveFormat()` → gets `FormatModule`
 4. Handler checks `module.macros` — if present, uses `builtins` for macro completion
 5. Handler checks `module.macroDelimiters` for trigger character matching
 6. Handler filters by `MacroCategory`, builds `CompletionItem[]`
-7. Returns completion list — **handler never knew which format was active**
+7. On resolve, handler enriches the item with `macro.signatures`, `macro.description`, format-specific delimiters
+8. Returns completion list — **handler never knew which format was active**
 
 ---
 
 ## Data Flow Example: Diagnostics
 
 1. Document changes, `core/diagnosticEngine.ts` runs
-2. Engine runs `CORE_DIAGNOSTIC_RULES` (format-agnostic: duplicate-passage, unknown-passage, unreachable-passage)
+2. Engine runs `CORE_DIAGNOSTIC_RULES` (format-agnostic: duplicate-passage, unknown-passage, unreachable-passage, conditionally-reachable, dead-if-branch, dead-else-branch)
 3. Engine checks `module.diagnostics` — if present, iterates `DiagnosticCapability.rules`
 4. Engine enforces each `DiagnosticRuleDef` declaratively (no calling format methods)
 5. If `DiagnosticCapability.customCheck` is defined, engine calls it as an escape hatch
 6. Engine merges format-specific results with core results
 7. Publishes diagnostics — **engine never knew which format was active**
+
+---
+
+## Data Flow Example: Passage Reference Extraction
+
+1. Parser extracts a passage body after a `::` header
+2. Core calls `format.extractPassageRefs(body, bodyOffset)` — THE single source of truth
+3. Format returns `PassageRef[]`, each with `target`, `kind` (PassageRefKind), `range`, `source`
+4. `PassageRefKind.Link` — `[[ ]]` links (the format resolves the interior via `resolveLinkBody`)
+5. `PassageRefKind.Macro` — navigation macros (`<<goto>>`, `(go-to:)`)
+6. `PassageRefKind.API` — JavaScript API calls (`Engine.play()`)
+7. `PassageRefKind.Implicit` — implicit references (`data-passage`, `{embed passage:}`)
+8. Every downstream consumer uses the same `PassageRef[]` array — **no duplicate extraction logic**
+
+---
+
+## Data Flow Example: Story Flow Graph with Special Passages
+
+1. `StoryFlowGraphBuilder.buildAndAnalyze()` is called with all passages
+2. For each passage, `CFGBuilder.buildPassageCFG()` builds a per-passage control flow graph
+3. `buildStoryFlowEdges()` creates inter-passage navigation edges from `PassageRef[]`
+4. `addSpecialPassageVirtualEdges()` looks up `format.specialPassages` by `typeId`:
+   - `typeId: 'init'` → virtual edge from init passage to Start
+   - `typeId: 'interface'` → virtual edge from interface passage to Start (StoryInterface IS a special passage)
+   - `typeId: 'header'` → virtual edges from header passage to every story passage
+5. `computeInitVariableState()` propagates through init and header CFGs to seed Start's variable state
+6. BFS reachability with variable state flow, conditional reachability detection
+7. Dead condition detection using known variable states
+8. **Graph never knew which format was active** — it used `typeId` lookups, not format names
 
 ---
 
@@ -597,6 +689,21 @@ Lazy loaders ensure format code is only loaded when needed. Future: async import
 
 ---
 
+## Data Flow Example: Semantic Tokens
+
+1. VS Code requests semantic tokens for a `.twee` document
+2. `handlers/semanticTokens.ts` receives the request
+3. Handler tokenizes passage headers using `::` regex (Twine engine level)
+4. Handler calls `format.lexBody()` for each passage body
+5. Handler maps `BodyToken.typeId` to LSP semantic token types:
+   - `'macro-call'`/`'macro-close'` → function (only known macros highlighted)
+   - `'variable'` → variable
+   - `'hook-open'`/`'hook-close'` → operator
+6. Builds `SemanticTokens` with delta encoding
+7. **Handler never knew which format was active** — it used format-declared token type IDs
+
+---
+
 ## Deprecated: hooks/hookRegistry.ts and hooks/formatHooks.ts
 
 These files still exist for backward compatibility during migration:
@@ -610,12 +717,15 @@ New code should import directly from `formats/formatRegistry` and `formats/_type
 
 ## Adding a New Format
 
-To add a new story format (e.g., Chapbook):
+To add a new story format (e.g., ImaginaryFormat):
 
-1. Create `server/src/formats/chapbook/adapter.ts`
-2. Export a `chapbookModule: FormatModule` object literal with:
-   - Required fields: `formatId`, `displayName`, `version`, `aliases`, `astNodeTypes`, `tokenTypes`, `lexBody`, `resolveLinkBody`, `specialPassages`, `macroBodyStyle`, `macroDelimiters`, `macroPattern`
-   - Optional capability bags: only the ones Chapbook supports (e.g. `navigation`, `diagnostics` — no `macros` or `variables` bags since Chapbook uses different syntax)
+1. Create `server/src/formats/imaginary/` directory with:
+   - `index.ts` — exports `imaginaryModule: FormatModule`
+   - `lexer.ts` — body lexer implementing `lexBody()`
+   - Other files as needed (snippets, runtime, macros split by category, etc.)
+2. Export a `imaginaryModule: FormatModule` object literal with:
+   - Required fields: `formatId`, `displayName`, `version`, `aliases`, `astNodeTypes`, `tokenTypes`, `lexBody`, `extractPassageRefs`, `resolveLinkBody`, `specialPassages`, `macroBodyStyle`, `macroDelimiters`, `macroPattern`
+   - Optional capability bags: only the ones the format supports
 3. Add a lazy loader to `BUILTIN_LOADERS` in `formatRegistry.ts`
 4. **That's it.** No changes to core, handlers, or client.
 
@@ -631,7 +741,7 @@ The new format is instantly available with zero core modifications. Absent capab
 | `IMacroProvider` interface | `macros?: MacroCapability` bag | Optional — absent = no macros |
 | `IPassageProvider` interface | `specialPassages: SpecialPassageDef[]` | Declarative, O(1) lookup |
 | `IDiagnosticProvider` interface | `diagnostics?: DiagnosticCapability` bag | Declarative rules, optional |
-| `ILinkProvider` interface | `resolveLinkBody()` function | Direct function on FormatModule |
+| `ILinkProvider` interface | `resolveLinkBody()` + `extractPassageRefs()` | Direct functions on FormatModule |
 | `ISyntaxProvider` interface | Declarative properties + `lexBody()` | MacroDelimiters, VariableCapability, etc. |
 | `HookRegistry` | `FormatRegistry` | Lazy loading, O(1) alias resolution, auto-detect |
 | `hookRegistry.register(id, provider)` | `FormatRegistry.register(module)` | Module carries its own identity |
@@ -643,3 +753,9 @@ The new format is instantly available with zero core modifications. Absent capab
 | 6 parallel macro maps | `MacroDef` boolean flags | Core derives Sets at load time |
 | `DiagnosticRule` enum | `DiagnosticRuleDef` with string `id` | Extensible, format-defined rules |
 | `FormatDiagnosticRule` type | `DiagnosticRuleDef` | Unified rule definition format |
+| Core extracts passage refs | `extractPassageRefs() → PassageRef[]` | Single source of truth, no format bleed |
+| `FormatCapability` enum | Capability bag presence check | Simpler — absent bag = unsupported |
+| `adapter.ts` entry point | `index.ts` with modular files | Better organization, split by category |
+| `MacroKind.Container`/`SelfClose` | `MacroKind.Changer`/`Command`/`Instant` | Cleaner, format-agnostic classification |
+| `PassageRefKind` didn't exist | `PassageRefKind` (Link/Macro/API/Implicit) | Required for single source of truth |
+| `NavigationCapability` bag | `extractPassageRefs()` method | Method replaces separate capability bag |

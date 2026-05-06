@@ -6,7 +6,7 @@
  */
 
 import type { MacroDef } from '../_types';
-import { mc, sig, arg } from './macros-helpers';
+import { mc, sig, arg, MacroKind } from './macros-helpers';
 
 export function getMiscMacros(): MacroDef[] {
   return [

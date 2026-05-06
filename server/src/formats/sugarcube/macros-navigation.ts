@@ -7,7 +7,7 @@
  */
 
 import type { MacroDef } from '../_types';
-import { m, mc, sig, arg, MacroCategory } from './macros-helpers';
+import { m, mc, sig, arg, MacroCategory, MacroKind } from './macros-helpers';
 
 export function getNavigationMacros(): MacroDef[] {
   return [

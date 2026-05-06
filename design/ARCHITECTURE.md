@@ -47,10 +47,11 @@ These are entirely the domain of format modules. Core code MUST NOT contain any 
 | Macro syntax and delimiters | `<<>>` (SugarCube) vs `(:)` (Harlowe) vs `<% %>` (Snowman) |
 | Variable sigils and scoping | `$/_` (SugarCube) vs `$` only (Harlowe) — scope rules differ |
 | Hook syntax | `[...]` with nametags is Harlowe-only |
-| Link body interpretation | `\|` vs `->` vs `<-` pipe/arrow syntax varies by format |
-| Special passage types beyond Twee 3 | Widget passages, init passages, etc. are format-specific |
-| Macro kind (changer/command/instant) | Harlowe-specific classification; SugarCube uses container/self-close |
+| Link body interpretation | `|` vs `->` vs `<-` pipe/arrow syntax varies by format |
+| Special passage types beyond Twee 3 | Widget passages, init passages, StoryInterface, etc. are format-specific |
+| Macro kind (changer/command/instant) | Macro call structure classification; SugarCube uses changer style, Harlowe uses changer/command/instant |
 | Template blocks | `{insert}` (Chapbook) or `<% %>` (Snowman) — format-specific |
+| Passage reference extraction | Whether a passage is referenced via `<<goto>>`, `(go-to:)`, `Engine.play()`, `data-passage`, etc. is entirely format-specific |
 
 ### Data Flow Through FormatModule
 
@@ -58,11 +59,13 @@ Core never interprets format-specific syntax on its own. Instead, it follows a c
 
 ```
 Core detects :: header  →  Parser checks SpecialPassageDef[] for O(1) name/tag lookup
-Core detects [[...]]    →  Parser calls format.resolveLinkBody() to interpret the interior
+Core detects [[...]]    →  Format's extractPassageRefs() resolves the link interior
 Core extracts body text →  Parser calls format.lexBody(body, baseOffset) for tokenization
 Core sees a sigil       →  Parser checks VariableCapability.sigils for scope classification
 Core needs completion   →  Parser checks macroDelimiters + triggerChars for completion triggers
 Core runs diagnostics   →  DiagnosticEngine enforces DiagnosticCapability.rules declaratively
+Core builds link graph  →  Format's extractPassageRefs() is THE single source of truth for passage references
+Core builds flow graph  →  StoryFlowGraph uses format.specialPassages for virtual edges and init variable state
 ```
 
 Every one of these questions is answered through the `FormatModule` interface and its optional capability bags. Core NEVER makes assumptions about delimiters, sigils, or syntax — even something as seemingly universal as `$` for variables is determined by the format's `VariableCapability.sigils` declarations.
@@ -90,7 +93,7 @@ Every one of these questions is answered through the `FormatModule` interface an
                        ▼
 ┌─────────────────────────────────────────────────┐
 │  Layer 3: Core (workspace index, handlers,      │
-│  parser, lexer, diagnostic engine)              │
+│  parser, CFG, flow graph, AST, diagnostics)     │
 │  PROMISES: format-agnostic LSP operations       │
 │  IMPORTS: from formats/_types (FormatModule,    │
 │           capability bags) + hooks/hookTypes    │
@@ -99,7 +102,8 @@ Every one of these questions is answered through the `FormatModule` interface an
                        │ FormatModule + enums
                        ▼
 ┌─────────────────────────────────────────────────┐
-│  Layer 4: Formats (sugarcube/, fallback/, ...)  │
+│  Layer 4: Formats (sugarcube/, harlowe/,        │
+│  chapbook/, snowman/, fallback/)                │
 │  PROMISES: format-specific data via FormatModule│
 │  IMPORTS: from formats/_types + hooks/hookTypes │
 │  NEVER IMPORTS: from core/ or handlers/         │
@@ -113,20 +117,21 @@ Every one of these questions is answered through the `FormatModule` interface an
 The core never knows about specific formats. Instead:
 
 1. **`hooks/hookTypes.ts`** defines **enums** that represent categories of format-provided data:
-   - `MacroCategory` — what kind of macro (navigation, control, output, etc.)
-   - `PassageType` — what kind of passage (story, widget, stylesheet, script, etc.)
-   - `LinkKind` — what kind of link (passage, external, action, etc.)
-   - `MacroKind` — what kind of macro (container, self-close, changer, command, etc.)
-   - `MacroBodyStyle` — how macro bodies are delimited (close-tag, hook, etc.)
-   - `PassageKind` — what kind of special passage (start, storydata, init, etc.)
-   - `FormatCapability` — which LSP features a format supports
+   - `MacroCategory` (8 values) — what kind of macro (navigation, output, control, variable, styling, system, utility, custom)
+   - `MacroKind` (3 values) — what kind of macro body (changer, command, instant)
+   - `MacroBodyStyle` (3 values) — how macro bodies are delimited (close-tag, hook, inline)
+   - `PassageType` (6 values) — what kind of passage (story, stylesheet, script, start, storydata, custom)
+   - `PassageKind` (4 values) — what kind of special passage (markup, script, stylesheet, special)
+   - `LinkKind` (3 values) — what kind of link (passage, external, custom)
+   - `PassageRefKind` (4 values) — how a passage is referenced (link, macro, api, implicit)
 
 2. **`formats/_types.ts`** defines **the FormatModule contract** — the single interface every format module must implement:
    - `FormatModule` — the top-level object literal every format exports (replaces `IFormatProvider`)
-   - Optional capability bags: `macros?`, `variables?`, `customMacros?`, `navigation?`, `diagnostics?`
+   - Optional capability bags: `macros?`, `variables?`, `customMacros?`, `diagnostics?`, `snippets?`, `runtime?`
    - Absent bags = no dead code — core checks bag presence once at format-load time
    - Declarative data: `SpecialPassageDef[]`, `MacroDelimiters`, `DiagnosticRuleDef[]`, `TokenTypeDef[]`, `ASTNodeTypeDef[]`
    - Body lexing: `lexBody(input, baseOffset)` with `baseOffset` for correct SourceRange values
+   - Passage reference extraction: `extractPassageRefs(body, bodyOffset) → PassageRef[]` — THE single source of truth
 
 3. **`formats/formatRegistry.ts`** is the **FormatRegistry** where formats are registered and resolved (replaces `HookRegistry`):
    - Core calls `FormatRegistry.getModule(formatId)` to get a `FormatModule`
@@ -165,6 +170,7 @@ export const sugarcubeModule: FormatModule = {
   astNodeTypes: { ... },
   tokenTypes: [ ... ],
   lexBody: (input, baseOffset) => [ ... ],
+  extractPassageRefs: (body, bodyOffset) => [ ... ],
   resolveLinkBody: (rawBody) => { ... },
   specialPassages: [ ... ],
   macroBodyStyle: MacroBodyStyle.CloseTag,
@@ -174,8 +180,9 @@ export const sugarcubeModule: FormatModule = {
   macros: { builtins: [...], aliases: new Map([...]) },
   variables: { sigils: [...], assignmentMacros: new Set([...]), ... },
   customMacros: { definitionMacros: new Set(['widget']), ... },
-  navigation: { implicitPatterns: [...], apiCalls: [...] },
   diagnostics: { rules: [...], customCheck: ... },
+  snippets: { templates: [...] },
+  runtime: { globals: [...], virtualPrelude: '...' },
 };
 ```
 
@@ -185,13 +192,37 @@ Instead of required `IMacroProvider`, `IPassageProvider`, `IDiagnosticProvider` 
 
 | Capability Bag | Present When | Absent Means |
 |---|---|---|
-| `macros?` | Format has macro syntax (SugarCube, Harlowe) | Format doesn't use macros (Chapbook uses inserts) |
-| `variables?` | Format has sigiled variables (`$/_`) | Format uses different variable syntax |
+| `macros?` | Format has macro syntax (SugarCube, Harlowe) | Format doesn't use macros (Chapbook uses inserts, Snowman uses templates) |
+| `variables?` | Format has sigiled variables (`$/_`) | Format uses different variable syntax (Chapbook `var.name`, Snowman `s.name`) |
 | `customMacros?` | Format supports user-defined macros (widget, macro:) | Format doesn't support custom macros |
-| `navigation?` | Format has implicit passage references beyond `[[links]]` | No implicit navigation patterns |
 | `diagnostics?` | Format has format-specific validation rules | No format-specific diagnostics beyond core rules |
+| `snippets?` | Format provides snippet templates for autocompletion | No format-specific snippets |
+| `runtime?` | Format exposes runtime globals (State, Engine, Config) | No runtime globals for completion/hover |
 
 Core checks bag presence **once at format-load time** and caches the result. No per-request `if (provider.getDiagnosticProvider())` checks.
+
+### extractPassageRefs() — Single Source of Truth
+
+The `extractPassageRefs(body, bodyOffset) → PassageRef[]` method is THE single source of truth for ALL passage references. This replaces the old pattern where core tried to extract passage references on its own. Every downstream consumer uses this one method:
+
+```
+extractPassageRefs() → PassageRef[]
+  ├── LinkGraph (BFS reachability, orphan detection)
+  ├── ReferenceIndex (cross-reference tracking)
+  ├── StoryFlowGraph (navigation edges, variable state flow)
+  ├── DiagnosticEngine (unknown-passage, unreachable-passage)
+  ├── RenameHandler (rename all references to a passage)
+  ├── DefinitionHandler (go-to-definition for passage targets)
+  └── DocumentLinksHandler (clickable passage links)
+```
+
+Every `PassageRef` carries a `PassageRefKind` telling core HOW the passage was referenced:
+- `Link` — `[[ ]]` syntax (universal across all formats)
+- `Macro` — format macro (`<<goto>>`, `(go-to:)`, etc.)
+- `API` — JavaScript API call (`Engine.play()`, `story.show()`, etc.)
+- `Implicit` — implicit reference (`data-passage`, `{embed passage:}`, etc.)
+
+This means core NEVER interprets format-specific syntax to find passage references. The format module does it all.
 
 ### Declarative Special Passages Replace classifyPassage()
 
@@ -205,6 +236,18 @@ const kind = passageProvider.classifyPassage(name, tags);
 const specialMap = buildSpecialPassageMap(module.specialPassages);
 const kind = specialMap.get(name)?.kind;
 ```
+
+Special passages include format-specific entries like SugarCube's `StoryInit`, `PassageHeader`, `PassageFooter`, `StoryInterface`, and Harlowe's `Startup`, `Header`, `Footer`. The `StoryInterface` passage IS a special passage — it goes into the story flow graph as a virtual edge because it runs at engine startup before any passage renders.
+
+### Story Flow Graph Uses Special Passages
+
+The `StoryFlowGraph` adds virtual edges for special passages that run automatically by the engine:
+
+- **Init passage** (`StoryInit`/`Startup`) → virtual edge to Start passage
+- **Interface passage** (`StoryInterface`) → virtual edge to Start passage (runs at engine startup)
+- **Header passage** (`PassageHeader`/`Header`) → virtual edge to every story passage
+
+These virtual edges use `PassageRefKind.Implicit` because they represent engine behavior, not authored links. The graph also computes init variable state by propagating through StoryInit and PassageHeader CFGs before seeding the Start passage.
 
 ### Declarative Diagnostic Rules Replace IDiagnosticProvider
 
@@ -236,6 +279,64 @@ Instead of `AdapterTokenType` enum, `BodyToken.typeId` is a string matching a `T
 ### AST Node Types Come From Formats
 
 `FormatASTNodeTypes` with `ASTNodeTypeDef[]` declarations. Core builds ASTs but isn't responsible for symbol recognition — formats declare what node types they produce.
+
+---
+
+## Core Analysis Pipeline
+
+The core provides a full analysis pipeline that processes Twee documents from raw text to diagnostics:
+
+```
+RawPassage[]        ← core/parser.ts splits on :: headers
+     ↓
+BodyToken[]         ← format.lexBody(body, baseOffset) tokenizes passage bodies
+     ↓
+ASTNode tree        ← core/astBuilder.ts builds hierarchical AST using format.macroBodyStyle
+     ↓
+SyntaxAnalysis      ← core/syntaxAnalyzer.ts checks 7 structural error categories
+     ↓
+SemanticAnalysis    ← core/semanticAnalyzer.ts checks 6 semantic error categories
+     ↓
+PassageCFG          ← core/cfg.ts builds per-passage control flow graph
+     ↓
+StoryFlowGraph      ← core/storyFlowGraph.ts combines CFGs + special passage virtual edges
+     ↓
+VirtualDocs         ← core/virtualDocs.ts extracts embedded JS/CSS for language features
+     ↓
+Diagnostics         ← core/diagnosticEngine.ts merges all analysis phases
+```
+
+### Per-Passage CFG (Control Flow Graph)
+
+The `CFGBuilder` in `core/cfg.ts` builds a control flow graph for each passage:
+
+- **Basic blocks** — sequences of statements with a single entry and exit point
+- **Navigation edges** — edges that navigate to other passages (`<<goto>>`, `(go-to:)`, `[[links]]`)
+- **Variable state tracking** — tracks what values variables can hold at each point
+- **Abstract value types** — `literal`, `type`, `range`, `truthy`, `falsy`, `union`, `unknown`
+
+The CFG uses `MacroDef` boolean flags (`isConditional`, `isNavigation`, `isAssignment`) and `format.extractPassageRefs()` to identify branching and navigation without any format-specific logic.
+
+### Story Flow Graph
+
+The `StoryFlowGraphBuilder` in `core/storyFlowGraph.ts` combines per-passage CFGs into a workspace-wide graph:
+
+- **Inter-passage edges** — navigation between passages (links, macros, API calls)
+- **Virtual edges** — special passages that run automatically (StoryInit, PassageHeader, StoryInterface)
+- **Variable state flow** — propagates variable states across passages via BFS
+- **Conditional reachability** — distinguishes "always reachable" from "only reachable via conditional links"
+- **Dead condition detection** — finds conditions that are always true/false given known variable state
+- **Fixed-point analysis** — iterates until variable states stabilize
+
+### Virtual Documents
+
+The `VirtualDocProvider` in `core/virtualDocs.ts` extracts embedded language regions:
+
+- `[script]` passages → JavaScript virtual documents
+- `[stylesheet]` passages → CSS virtual documents
+- SugarCube `<<script>>`/`<<style>>` macro bodies → JS/CSS virtual documents
+- Snowman `<% %>` template blocks → JavaScript virtual documents
+- Diagnostic remapping — virtual document diagnostics are mapped back to the source Twee document
 
 ---
 
@@ -281,23 +382,30 @@ knot_v2/
 │   ├── build.js
 │   └── src/
 │       ├── server.ts                     # Server entry point
-│       ├── lspServer.ts                  # LSP connection setup
+│       ├── lspServer.ts                  # Thin LSP dispatcher (delegates to handlers)
 │       │
 │       ├── core/                         # Layer 3: Format-agnostic core
 │       │   ├── index.ts
 │       │   ├── workspaceIndex.ts         # Workspace-wide passage indexing
 │       │   ├── parser.ts                 # Twee passage parser (uses FormatRegistry)
-│       │   ├── lexer.ts                  # Twee token lexer
 │       │   ├── documentStore.ts          # Document lifecycle management
 │       │   ├── incrementalParser.ts      # Incremental re-parsing
-│       │   ├── referenceIndex.ts         # Cross-reference tracking
-│       │   ├── linkGraph.ts              # Passage link graph
+│       │   ├── referenceIndex.ts         # Cross-reference tracking (uses PassageRef[])
+│       │   ├── linkGraph.ts              # Passage link graph (BFS reachability)
 │       │   ├── symbolTable.ts            # Symbol table for workspace
-│       │   └── diagnosticEngine.ts       # Uses FormatModule.diagnostics rules
+│       │   ├── diagnosticEngine.ts       # Uses FormatModule.diagnostics rules
+│       │   ├── ast.ts                    # AST node types and tree utilities
+│       │   ├── astBuilder.ts             # Builds hierarchical AST from BodyToken[]
+│       │   ├── astWorkspace.ts           # Coordinators: AST → syntax → semantic → virtual docs
+│       │   ├── syntaxAnalyzer.ts         # 7 structural error checks
+│       │   ├── semanticAnalyzer.ts       # 6 semantic error checks
+│       │   ├── virtualDocs.ts            # Virtual document extraction (JS/CSS)
+│       │   ├── cfg.ts                    # Per-passage control flow graph
+│       │   └── storyFlowGraph.ts         # Cross-passage story flow with variable state
 │       │
 │       ├── handlers/                     # Layer 3: LSP handlers (format-agnostic)
-│       │   ├── index.ts
-│       │   ├── completions.ts            # Completion handler (delegates via FormatModule)
+│       │   ├── index.ts                  # Handler registration + re-exports
+│       │   ├── completions.ts            # Completion + completion resolve handler
 │       │   ├── definition.ts             # Go-to-definition handler
 │       │   ├── hover.ts                  # Hover handler
 │       │   ├── references.ts             # Find-references handler
@@ -305,11 +413,12 @@ knot_v2/
 │       │   ├── symbols.ts                # Document/workspace symbols handler
 │       │   ├── diagnostics.ts            # Diagnostics handler
 │       │   ├── codeActions.ts            # Code action handler
-│       │   └── documentLinks.ts          # Document link handler
+│       │   ├── documentLinks.ts          # Document link handler
+│       │   └── semanticTokens.ts         # Semantic tokens handler
 │       │
 │       ├── hooks/                        # Enum definitions + deprecated re-exports
 │       │   ├── index.ts                  # Re-exports
-│       │   ├── hookTypes.ts              # Enums: MacroCategory, PassageType, LinkKind, etc.
+│       │   ├── hookTypes.ts              # Enums: MacroCategory, MacroKind, PassageRefKind, etc.
 │       │   ├── hookRegistry.ts           # DEPRECATED — re-exports FormatRegistry
 │       │   └── formatHooks.ts            # DEPRECATED — re-exports from formats/_types
 │       │
@@ -318,33 +427,80 @@ knot_v2/
 │           ├── formatRegistry.ts         # FormatRegistry (resolution, detection, loading)
 │           ├── index.ts                  # Re-exports
 │           ├── fallback/
-│           │   └── adapter.ts            # fallbackModule: FormatModule
+│           │   ├── index.ts              # fallbackModule: FormatModule
+│           │   └── lexer.ts              # Fallback body lexer
 │           ├── sugarcube/
-│           │   └── adapter.ts            # sugarcubeModule: FormatModule
-│           └── harlowe/
-│               └── adapter.ts            # harloweModule: FormatModule
+│           │   ├── index.ts              # sugarcubeModule: FormatModule
+│           │   ├── lexer.ts              # SugarCube body lexer
+│           │   ├── snippets.ts           # Snippet templates
+│           │   ├── runtime.ts            # Runtime globals (State, Engine, Config, etc.)
+│           │   ├── specialPassages.ts     # StoryInit, PassageHeader, PassageFooter, StoryInterface
+│           │   ├── macros-helpers.ts      # m(), mc(), sig(), arg() helper functions
+│           │   ├── macros-control.ts      # if, for, while, switch, etc.
+│           │   ├── macros-navigation.ts   # goto, return, back, etc.
+│           │   ├── macros-variable.ts     # set, capture, unset, etc.
+│           │   ├── macros-output.ts       # print, include, etc.
+│           │   ├── macros-revision.ts     # replace, append, prepend, etc.
+│           │   ├── macros-styling.ts      # addclass, removeclass, toggleclass, etc.
+│           │   ├── macros-audio.ts        # audio, cacheaudio, etc.
+│           │   ├── macros-form.ts         # textbox, checkbox, radiobutton, etc.
+│           │   ├── macros-timed.ts        # repeat, stop, wait, etc.
+│           │   ├── macros-misc.ts         # debug, nobr, etc.
+│           │   └── macros-index.ts        # Aggregates all macro categories
+│           ├── harlowe/
+│           │   ├── index.ts              # harloweModule: FormatModule
+│           │   ├── lexer.ts              # Harlowe body lexer
+│           │   ├── snippets.ts           # Snippet templates
+│           │   ├── runtime.ts            # Runtime globals
+│           │   ├── specialPassages.ts     # Startup, Header, Footer
+│           │   ├── macros-helpers.ts      # Helper functions
+│           │   ├── macros-basics.ts       # Basic macros
+│           │   ├── macros-data.ts         # Data macros
+│           │   ├── macros-display.ts      # Display macros
+│           │   ├── macros-navigation.ts   # Navigation macros
+│           │   ├── macros-interactive.ts  # Interactive macros
+│           │   ├── macros-advanced.ts     # Advanced macros
+│           │   └── macros-index.ts        # Aggregates all macro categories
+│           ├── chapbook/
+│           │   ├── index.ts              # chapbookModule: FormatModule
+│           │   ├── lexer.ts              # Chapbook body lexer
+│           │   ├── snippets.ts           # Snippet templates
+│           │   ├── runtime.ts            # Runtime globals
+│           │   ├── specialPassages.ts     # Special passages
+│           │   ├── diagnostics.ts         # Chapbook-specific diagnostics
+│           │   ├── inserts-output.ts      # Output inserts
+│           │   ├── inserts-control.ts     # Control inserts
+│           │   ├── inserts-navigation.ts  # Navigation inserts
+│           │   ├── inserts-interactive.ts # Interactive inserts
+│           │   ├── inserts-debug.ts       # Debug inserts
+│           │   ├── inserts-modifiers.ts   # Modifier inserts
+│           │   ├── inserts-helpers.ts     # Helper functions
+│           │   └── inserts-index.ts       # Aggregates all insert categories
+│           └── snowman/
+│               ├── index.ts              # snowmanModule: FormatModule
+│               ├── lexer.ts              # Snowman body lexer
+│               ├── snippets.ts           # Snippet templates
+│               ├── runtime.ts            # Runtime globals
+│               └── diagnostics.ts        # Snowman-specific diagnostics
 │
 ├── shared/                               # Cross-cutting types
 │   ├── index.ts
 │   ├── protocol.ts                       # Custom LSP protocol extensions
-│   └── enums.ts                          # Shared enums (error codes, etc.)
+│   └── enums.ts                          # Shared enums (KnotStatus, KnotErrorCode)
 │
 └── tests/
     ├── server/
     │   ├── core/
-    │   │   ├── workspaceIndex.test.ts
+    │   │   ├── storyDataDetection.test.ts
     │   │   ├── parser.test.ts
-    │   │   ├── lexer.test.ts
-    │   │   └── diagnosticEngine.test.ts
-    │   ├── handlers/
-    │   │   ├── completions.test.ts
-    │   │   └── definition.test.ts
+    │   │   └── boundary.test.ts
     │   ├── formats/
-    │   │   ├── formatRegistry.test.ts
-    │   │   └── sugarcube/
-    │   │       └── adapter.test.ts
-    │   └── helpers/
-    │       └── testFixtures.ts
+    │   │   ├── harlowe/adapter.test.ts
+    │   │   └── adapterStandardization.test.ts
+    │   └── hooks/
+    │       └── hookRegistry.test.ts
+    └── helpers/
+        └── testFixtures.ts
 ```
 
 ### Key Directory Notes
@@ -353,6 +509,9 @@ knot_v2/
 - **`formats/formatRegistry.ts`** provides `FormatRegistry` with lazy loading, O(1) alias resolution, and `detectFromStoryData()`. Core uses this instead of `HookRegistry`.
 - **`hooks/hookRegistry.ts`** and **`hooks/formatHooks.ts`** are DEPRECATED — they re-export from `formats/formatRegistry.ts` and `formats/_types.ts` respectively for backward compatibility during migration.
 - **`hooks/hookTypes.ts`** remains the authoritative source for enums used across all layers.
+- **Format modules use `index.ts`** (not `adapter.ts`) as their entry point. Each format has a modular file structure splitting macros/inserts by category.
+- **`core/cfg.ts`** and **`core/storyFlowGraph.ts`** provide control flow and story flow analysis. Both use `FormatModule` exports (never format directories).
+- **`lspServer.ts`** is a thin dispatcher — all LSP logic lives in handler modules registered via `handlers/index.ts`.
 
 ---
 
@@ -368,12 +527,15 @@ knot_v2/
 8. **Diagnostic rules are declarative (`DiagnosticRuleDef[]`)** — core's diagnostic engine enforces them. Use `customCheck?` sparingly as an escape hatch.
 9. **Special passages are declarative (`SpecialPassageDef[]`)** — core builds a Map for O(1) lookup. No `classifyPassage()` function.
 10. **`lexBody(input, baseOffset)` must use `baseOffset`** for correct `SourceRange` values in all emitted `BodyToken`s.
+11. **`extractPassageRefs(body, bodyOffset)` is THE single source of truth** for all passage references. Core NEVER extracts passage references on its own — no `[[` regex in core, no hardcoded macro names for navigation.
+12. **Special passages go into the graph** — `StoryInterface`, `StoryInit`, `PassageHeader`, etc. are all handled through `specialPassages` exports with virtual edges in the story flow graph.
 
 ---
 
 ## Build & Development
 
 - **Build**: esbuild bundles client and server separately
-- **Test**: mocha for server tests, parallel with code development
-- **Workspace index and handlers first**: These are the core entry points that accept enum/struct data from format modules
+- **Test**: mocha for server tests — written after the full working body is complete
 - **Dynamic format loading**: `BUILTIN_LOADERS` uses lazy loaders. Future: async imports for external formats.
+- **Handler-first development**: LSP handlers are the entry points that consume FormatModule exports
+- **Populate stubs first, tests after**: All handler stubs and core stubs must be fully implemented before writing tests
