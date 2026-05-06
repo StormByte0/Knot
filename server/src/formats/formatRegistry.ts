@@ -14,15 +14,16 @@
  *   4. Fall back to fallback module
  *
  * Adding a new format:
- *   1. Create formats/<name>/adapter.ts implementing FormatModule
- *   2. Export a `FormatModule` object from that file
- *   3. Add a lazy loader entry in BUILTIN_LOADERS below
- *   4. That's it — no other files need modification
+ *   1. Create formats/<name>/index.ts implementing FormatModule
+ *   2. Split into sub-files: lexer.ts, macros-*.ts, runtime.ts, snippets.ts, etc.
+ *   3. Export a `FormatModule` object from index.ts
+ *   4. Add a lazy loader entry in BUILTIN_LOADERS below
+ *   5. That's it — no other files need modification
  */
 
 import type { FormatModule } from './_types';
 
-import { fallbackModule } from './fallback/adapter';
+import { fallbackModule } from './fallback/index';
 
 // ─── Lazy Loader Type ───────────────────────────────────────────
 
@@ -40,15 +41,15 @@ const BUILTIN_LOADERS: Map<string, FormatLoader> = new Map([
     return sugarcubeModule;
   }],
   ['harlowe-3', () => {
-    const { harloweModule } = require('./harlowe/adapter');
+    const { harloweModule } = require('./harlowe/index');
     return harloweModule;
   }],
   ['chapbook-2', () => {
-    const { chapbookModule } = require('./chapbook/adapter');
+    const { chapbookModule } = require('./chapbook/index');
     return chapbookModule;
   }],
   ['snowman-2', () => {
-    const { snowmanModule } = require('./snowman/adapter');
+    const { snowmanModule } = require('./snowman/index');
     return snowmanModule;
   }],
 ]);
