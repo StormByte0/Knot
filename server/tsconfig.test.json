@@ -1,15 +1,12 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "commonjs",
-    "target": "ES2020",
-    "lib": ["ES2020"],
-    "outDir": "out",
-    "rootDir": ".",
-    "strict": true,
-    "esModuleInterop": true,
-    "types": ["node", "mocha"],
-    "sourceMap": true,
-    "skipLibCheck": true
+    "outDir": "out/tests",
+    "rootDir": "..",
+    "declaration": false,
+    "declarationMap": false,
+    "composite": false,
+    "sourceMap": true
   },
-  "include": ["src", "tests"]
+  "include": ["src/**/*", "../tests/**/*"]
 }

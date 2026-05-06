@@ -1,38 +1,7 @@
-# Dependencies
 node_modules/
-
-# TypeScript/JavaScript build output
-dist/
-build/
-**/out/
+out/
 *.js.map
-*.tsbuildinfo
-
-# Test coverage
-coverage/
-.nyc_output/
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-
-# Build artifacts
-package-lock.json
+.vscode-test/
 *.vsix
+package-lock.json
+dist/

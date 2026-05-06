@@ -1,6 +1,6 @@
 {
-  "name": "twine-ls-client",
-  "version": "0.1.0",
+  "name": "knot-client",
+  "version": "2.0.0",
   "main": "out/extension.js",
   "scripts": {
     "build": "node build.js"

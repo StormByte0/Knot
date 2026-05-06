@@ -1,19 +1,30 @@
-// Public API barrel — everything downstream imports from here
+/**
+ * Knot v2 — Server Entry Point
+ *
+ * This is the main entry point for the language server process.
+ * It creates the server connection and starts listening.
+ *
+ * Promises:
+ *   - Stdio-based LSP server startup
+ *   - Delegates to LspServer for all protocol handling
+ *
+ * Imports:
+ *   - ./lspServer
+ */
 
-export { TokenType, type Token, type SourceRange }       from './tokenTypes';
-export { lex }                                            from './lexer';
-export { preScan, type MacroPairTable }                  from './preScan';
-export { parseDocument, parsePassage, extractPassageSpans, type PassageSpan } from './parser';
-export { IncrementalParser }                             from './incrementalParser';
-export { SymbolKind, SymbolTable, buildSymbolTable,
-         type BuiltinSymbol, type UserSymbol, type ReferenceSite } from './symbols';
-export { WorkspaceIndex }    from './workspaceIndex';
-export { SyntaxAnalyzer, type AnalysisResult, type SemanticToken } from './analyzer';
-export { TypeInference, type InferredType, type InferenceResult }  from './typeInference';
-export { VirtualDocGenerator, type VirtualDoc, type MappingEntry } from './virtualDoc';
-export { runVirtualDiagnostics, type VirtualDiagnosticResult }     from './virtualDiagnostics';
-export type {
-  DocumentNode, PassageNode, MarkupNode, MacroNode, LinkNode,
-  TextNode, CommentNode, ExpressionNode,
-  ParseDiagnostic, ParseOutput,
-} from './ast';
+import { createConnection, ProposedFeatures, InitializeParams, TextDocumentSyncKind } from 'vscode-languageserver/node';
+import { LspServer } from './lspServer';
+
+const connection = createConnection(ProposedFeatures.all);
+
+const server = new LspServer(connection);
+
+connection.onInitialize((params: InitializeParams) => {
+  return server.initialize(params);
+});
+
+connection.onInitialized(() => {
+  server.initialized();
+});
+
+connection.listen();

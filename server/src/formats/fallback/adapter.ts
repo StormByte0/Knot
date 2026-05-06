@@ -1,162 +1,177 @@
-import type { CompletionItem, Diagnostic } from 'vscode-languageserver/node';
+/**
+ * Knot v2 — Fallback Format Module
+ *
+ * Minimal FormatModule for basic Twee support when no format is detected.
+ * Provides passage headers, basic [[link]] navigation, and nothing else.
+ * This is the safe default — no format-specific features.
+ *
+ * MacroBodyStyle is Inline (no macro bodies).
+ * Body lexing returns a single text token + EOF (all body is plain text).
+ * extractPassageRefs finds only [[ ]] links (the universal Twee 3 link syntax).
+ * No capability bags — no macros, no variables, no custom macros, etc.
+ */
+
 import type {
-  StoryFormatAdapter,
-  FormatContext,
-  AdapterCompletionRequest,
-  AdapterHoverRequest,
-  AdapterDiagnosticRequest,
-  BuiltinMacroInfo,
-  ImplicitPassageRefPattern,
-  PassageRefApiCall,
-} from '../types';
+  FormatModule,
+  FormatASTNodeTypes,
+  ASTNodeTypeDef,
+  TokenTypeDef,
+  BodyToken,
+  LinkResolution,
+  SpecialPassageDef,
+  MacroDelimiters,
+  PassageRef,
+} from '../_types';
 
-// ---------------------------------------------------------------------------
-// FallbackAdapter
-//
-// Used when the active story format is unknown or not yet supported.
-// All methods return safe empty values — no SugarCube-specific behaviour.
-// Users will see basic workspace features (passage nav, go-to-definition on
-// user variables) but no format-specific completions or hover docs.
-// ---------------------------------------------------------------------------
+import {
+  MacroBodyStyle,
+  LinkKind,
+  PassageRefKind,
+} from '../../hooks/hookTypes';
 
-const EMPTY_SET: ReadonlySet<string> = new Set();
-const EMPTY_MAP: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+// ─── AST Node Types (Twine Engine Only) ──────────────────────────
 
-export class FallbackAdapter implements StoryFormatAdapter {
-  readonly id          = 'fallback';
-  readonly displayName = 'Unknown Format';
+const FALLBACK_AST_NODE_TYPES: FormatASTNodeTypes = (() => {
+  const defs: ASTNodeTypeDef[] = [
+    { id: 'Document',       label: 'Document',        canHaveChildren: true,  childNodeTypeIds: ['PassageHeader', 'PassageBody'] },
+    { id: 'PassageHeader',  label: 'Passage Header',  canHaveChildren: false },
+    { id: 'PassageBody',    label: 'Passage Body',    canHaveChildren: true,  childNodeTypeIds: ['Link', 'Text'] },
+    { id: 'Link',           label: 'Link',            canHaveChildren: false },
+    { id: 'Text',           label: 'Text',            canHaveChildren: false },
+  ];
+  const types = new Map(defs.map(d => [d.id, d]));
+  return {
+    types,
+    Document: 'Document',
+    PassageHeader: 'PassageHeader',
+    PassageBody: 'PassageBody',
+    Link: 'Link',
+    Text: 'Text',
+  };
+})();
 
-  provideFormatCompletions(_req: AdapterCompletionRequest, _ctx: FormatContext): CompletionItem[] {
-    return [];
+// ─── Token Types (Minimal) ──────────────────────────────────────
+
+const FALLBACK_TOKEN_TYPES: TokenTypeDef[] = [
+  { id: 'text',    label: 'Text',    category: 'literal' },
+  { id: 'newline', label: 'Newline', category: 'whitespace' },
+  { id: 'eof',     label: 'EOF',     category: 'whitespace' },
+];
+
+// ─── Body Lexer ─────────────────────────────────────────────────
+
+function lexBody(input: string, baseOffset: number): BodyToken[] {
+  if (!input) {
+    return [{ typeId: 'eof', text: '', range: { start: baseOffset, end: baseOffset } }];
   }
-
-  buildMacroSnippet(_name: string, _hasBody: boolean): string | null {
-    return null;
+  const tokens: BodyToken[] = [];
+  // In fallback mode, the entire body is plain text
+  if (input.length > 0) {
+    tokens.push({
+      typeId: 'text',
+      text: input,
+      range: { start: baseOffset, end: baseOffset + input.length },
+    });
   }
-
-  getBlockMacroNames(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  provideBuiltinHover(_req: AdapterHoverRequest, _ctx: FormatContext): string | null {
-    return null;
-  }
-
-  describeVariableSigil(_sigil: string): string | null {
-    return null;
-  }
-
-  provideDiagnostics(_req: AdapterDiagnosticRequest, _ctx: FormatContext): Diagnostic[] {
-    return [];
-  }
-
-  getVirtualRuntimePrelude(): string {
-    return '';
-  }
-
-  getPassageArgMacros(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  getPassageArgIndex(_macroName: string, _argCount: number): number {
-    return -1;
-  }
-
-  getBuiltinMacros(): ReadonlyArray<BuiltinMacroInfo> {
-    return [];
-  }
-
-  getBuiltinGlobals(): ReadonlyArray<{ name: string; description: string }> {
-    return [];
-  }
-
-  getSpecialPassageNames(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  isSpecialPassage(_name: string): boolean {
-    return false;
-  }
-
-  getSystemPassageNames(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  getVariableAssignmentMacros(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  getMacroDefinitionMacros(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  getInlineScriptMacros(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
-
-  getAnalysisPriority(_passageName: string): number {
-    return 10;
-  }
-
-  getMacroParentConstraints(): ReadonlyMap<string, ReadonlySet<string>> {
-    return EMPTY_MAP;
-  }
-
-  // ── Virtual doc generation ────────────────────────────────────────────────
-
-  storyVarToJs(name: string): string { return name; }
-  tempVarToJs(name: string): string { return name; }
-  getOperatorNormalization(): Readonly<Record<string, string>> { return {}; }
-
-  // ── Format hints (parser / lexer) ─────────────────────────────────────────
-
-  getVariableSigils(): ReadonlyArray<{ sigil: string; variableType: 'story' | 'temporary' }> {
-    return [];
-  }
-
-  resolveVariableSigil(_sigil: string): 'story' | 'temporary' | null {
-    return null;
-  }
-
-  getOperatorPrecedence(): Readonly<Record<string, number>> {
-    return {};
-  }
-
-  getScriptTags(): ReadonlyArray<string> {
-    return [];
-  }
-
-  getStylesheetTags(): ReadonlyArray<string> {
-    return [];
-  }
-
-  getTempVarPrefix(): string {
-    return '';
-  }
-
-  getAssignmentOperators(): ReadonlyArray<string> {
-    return [];
-  }
-
-  getComparisonOperators(): ReadonlyArray<string> {
-    return [];
-  }
-
-  getStoryDataPassageName(): string | null {
-    return null;
-  }
-
-  // ── Implicit passage references ────────────────────────────────────────────
-
-  getImplicitPassagePatterns(): ReadonlyArray<ImplicitPassageRefPattern> {
-    return [];
-  }
-
-  getPassageRefApiCalls(): ReadonlyArray<PassageRefApiCall> {
-    return [];
-  }
-
-  getDynamicNavigationMacros(): ReadonlySet<string> {
-    return EMPTY_SET;
-  }
+  tokens.push({
+    typeId: 'eof',
+    text: '',
+    range: { start: baseOffset + input.length, end: baseOffset + input.length },
+  });
+  return tokens;
 }
+
+// ─── Passage Reference Extraction ────────────────────────────────
+
+const LINK_RE = /\[\[([^\]]+?)\]\]/g;
+
+/**
+ * Extract all passage references from a passage body.
+ * Fallback only handles [[ ]] links — the universal Twee 3 syntax.
+ * No macros, no API calls, no implicit patterns.
+ */
+function extractPassageRefs(body: string, bodyOffset: number): PassageRef[] {
+  const refs: PassageRef[] = [];
+  LINK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = LINK_RE.exec(body)) !== null) {
+    const rawBody = match[1];
+    const resolved = resolveLinkBody(rawBody);
+
+    // Only index passage links (not external URLs)
+    if (resolved.target && resolved.kind === LinkKind.Passage) {
+      refs.push({
+        target: resolved.target,
+        kind: PassageRefKind.Link,
+        range: { start: bodyOffset + match.index, end: bodyOffset + match.index + match[0].length },
+        source: '[[ ]]',
+        linkKind: resolved.kind,
+      });
+    }
+  }
+
+  return refs;
+}
+
+// ─── Link Resolution ────────────────────────────────────────────
+
+function resolveLinkBody(rawBody: string): LinkResolution {
+  if (!rawBody) return { target: '', kind: LinkKind.Passage };
+
+  // Basic Twee link syntax: rightmost ->, then leftmost <-
+  const rightArrow = rawBody.lastIndexOf('->');
+  if (rightArrow >= 0) {
+    const target = rawBody.substring(rightArrow + 2).trim();
+    const displayText = rawBody.substring(0, rightArrow).trim();
+    return {
+      target,
+      displayText: displayText !== target ? displayText : undefined,
+      kind: /^https?:\/\//.test(target) ? LinkKind.External : LinkKind.Passage,
+    };
+  }
+
+  const leftArrow = rawBody.indexOf('<-');
+  if (leftArrow >= 0) {
+    const target = rawBody.substring(0, leftArrow).trim();
+    const displayText = rawBody.substring(leftArrow + 2).trim();
+    return {
+      target,
+      displayText: displayText !== target ? displayText : undefined,
+      kind: /^https?:\/\//.test(target) ? LinkKind.External : LinkKind.Passage,
+    };
+  }
+
+  // Simple [[target]]
+  const target = rawBody.trim();
+  return {
+    target,
+    kind: /^https?:\/\//.test(target) ? LinkKind.External : LinkKind.Passage,
+  };
+}
+
+// ─── THE MODULE EXPORT ──────────────────────────────────────────
+
+export const fallbackModule: FormatModule = {
+  formatId: 'fallback',
+  displayName: 'Fallback (Basic Twee)',
+  version: '1.0.0',
+  aliases: ['fallback', 'twee', 'basic'],
+
+  astNodeTypes: FALLBACK_AST_NODE_TYPES,
+  tokenTypes: FALLBACK_TOKEN_TYPES,
+
+  lexBody,
+  extractPassageRefs,
+  resolveLinkBody,
+  specialPassages: [],  // No special passages beyond Twee 3 spec
+
+  macroBodyStyle: MacroBodyStyle.Inline,
+  macroDelimiters: {
+    open: '',
+    close: '',
+  } satisfies MacroDelimiters,
+  macroPattern: null,  // No macro syntax
+
+  // No capability bags — fallback has no macros, variables, custom macros, etc.
+};

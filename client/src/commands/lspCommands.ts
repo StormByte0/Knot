@@ -1,191 +1,196 @@
-import * as cp from 'node:child_process';
-import * as vscode from 'vscode';
-import type { LanguageClient } from 'vscode-languageclient/node';
+/**
+ * Knot v2 — LSP Commands
+ *
+ * Implements all LSP-related commands declared in package.json:
+ *   knot.showOutput
+ *   knot.restart
+ *   knot.refreshDocuments
+ *   knot.goToPassage
+ *   knot.openSettings
+ *   knot.listFormats
+ *   knot.selectFormat
+ */
 
-interface PassageEntry {
-  name:         string;
-  uri:          string;
-  fileName:     string;
-  refCount:     number;
-  incomingFrom: string[];
-}
-const GET_PASSAGES_REQUEST = 'knot/getPassages';
+import * as vscode from 'vscode';
+import { LanguageClient } from 'vscode-languageclient/node';
+import { StatusBar } from '../statusBar';
 
 export function registerLspCommands(
   context: vscode.ExtensionContext,
-  outputChannel: vscode.OutputChannel,
-  getClient: () => LanguageClient | undefined,
-  restartClient: () => Promise<void>,
+  client: LanguageClient,
+  statusBar: StatusBar,
 ): void {
-
-  // ── Main menu ─────────────────────────────────────────────────────────────
+  // ─── knot.showOutput ───────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand('knot.mainMenu', async () => {
-      const picked = await vscode.window.showQuickPick([
-        { label: '$(symbol-module) Go to passage',           description: 'Ctrl+Alt+P',   cmd: 'knot.goToPassage' },
-        { label: '$(refresh) Refresh workspace index',       description: '',              cmd: 'knot.refreshDocuments' },
-        { label: '$(play) Build',                            description: 'Ctrl+Alt+B', cmd: 'knot.build' },
-        { label: '$(beaker) Build (test mode)',              description: '',              cmd: 'knot.buildTest' },
-        { label: '$(eye) Start watch mode',                  description: '',              cmd: 'knot.startWatch' },
-        { label: '$(eye-closed) Stop watch mode',            description: '',              cmd: 'knot.stopWatch' },
-        { label: '$(check) Verify Tweego',                   description: '',              cmd: 'knot.verifyTweego' },
-        { label: '$(list-unordered) List story formats',     description: '',              cmd: 'knot.listFormats' },
-        { label: '$(debug-restart) Restart language server', description: '',              cmd: 'knot.restart' },
-        { label: '$(output) Show output',                    description: '',              cmd: 'knot.showOutput' },
-        { label: '$(settings-gear) knot Settings',            description: '',              cmd: 'knot.openSettings' },
-      ], { placeHolder: 'knot Language Server', matchOnDescription: true });
-      if (picked) vscode.commands.executeCommand(picked.cmd);
+    vscode.commands.registerCommand('knot.showOutput', () => {
+      client.outputChannel.show();
     }),
   );
 
+  // ─── knot.restart ──────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand('knot.showOutput', () => outputChannel.show()),
+    vscode.commands.registerCommand('knot.restart', async () => {
+      statusBar.updateStatus('stopping');
+      try {
+        await client.stop();
+        statusBar.updateStatus('starting');
+        await client.start();
+        statusBar.updateStatus('running');
+        vscode.window.showInformationMessage('Knot: Language server restarted');
+      } catch (err) {
+        statusBar.updateStatus('error');
+        vscode.window.showErrorMessage(`Knot: Failed to restart server: ${err}`);
+      }
+    }),
   );
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand('knot.restart', async () => restartClient()),
-  );
-
+  // ─── knot.refreshDocuments ─────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('knot.refreshDocuments', async () => {
-      const cfg = vscode.workspace.getConfiguration('knot.project');
-      await getClient()?.sendNotification('knot/refreshDocuments', {
-        exclude: cfg.get<string[]>('exclude', []),
-      });
+      try {
+        await client.sendRequest('knot/refreshDocuments', {});
+        vscode.window.showInformationMessage('Knot: Documents refreshed');
+      } catch (err) {
+        vscode.window.showErrorMessage(`Knot: Failed to refresh documents: ${err}`);
+      }
     }),
   );
 
-  // ── Open native VS Code settings filtered to this extension ───────────────
-  context.subscriptions.push(
-    vscode.commands.registerCommand('knot.openSettings', () => {
-      vscode.commands.executeCommand(
-        'workbench.action.openSettings',
-        '@ext:Stormbyte.knot',
-      );
-    }),
-  );
-
-  // ── Verify Tweego binary ───────────────────────────────────────────────────
-  context.subscriptions.push(
-    vscode.commands.registerCommand('knot.verifyTweego', async () => {
-      const cfg      = vscode.workspace.getConfiguration('knot.tweego');
-      const execPath = cfg.get<string>('path', 'tweego').trim() || 'tweego';
-
-      await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: 'knot: Verifying Tweego…' },
-        async () => {
-          const result = await runVerify(execPath);
-          if (result.ok) {
-            vscode.window.showInformationMessage(
-              `knot: Tweego v${result.version} found at "${execPath}".`,
-            );
-          } else {
-            vscode.window.showErrorMessage(
-              `knot: Tweego not found or failed at "${execPath}". ${result.detail}`,
-              'Configure path',
-            ).then(p => {
-              if (p === 'Configure path') {
-                vscode.commands.executeCommand(
-                  'workbench.action.openSettings',
-                  'knot.tweego.path',
-                );
-              }
-            });
-          }
-        },
-      );
-    }),
-  );
-
-  // ── Go to passage ─────────────────────────────────────────────────────────
+  // ─── knot.goToPassage ──────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('knot.goToPassage', async () => {
-      const client = getClient();
-      if (!client) {
-        vscode.window.showWarningMessage('knot Language Server is not running.');
-        return;
-      }
-
-      let entries: PassageEntry[];
       try {
-        entries = await client.sendRequest<PassageEntry[]>(GET_PASSAGES_REQUEST);
-      } catch {
-        vscode.window.showErrorMessage('knot: Could not retrieve passage list. Is the server ready?');
-        return;
-      }
-      if (!entries?.length) {
-        vscode.window.showInformationMessage('knot: No passages found.');
-        return;
-      }
-
-      const picked = await vscode.window.showQuickPick(
-        entries.map(e => ({
-          label:       e.name,
-          description: e.fileName,
-          detail:      e.incomingFrom.length > 0
-            ? `← ${e.incomingFrom.join(', ')}`
-            : '↚ no incoming links',
-          entry: e,
-        })),
-        { placeHolder: 'Type to filter passages…', matchOnDescription: true, matchOnDetail: true },
-      );
-      if (!picked) return;
-
-      const doc    = await vscode.workspace.openTextDocument(vscode.Uri.parse(picked.entry.uri));
-      const editor = await vscode.window.showTextDocument(doc);
-      const lines  = doc.getText().split('\n');
-      let target = -1;
-
-      for (let i = 0; i < lines.length; i++) {
-        if (/^::/.test(lines[i]!)) {
-          const m = lines[i]!.match(/^::\s*([^\[{]+?)\s*(?:[\[{]|$)/);
-          if (m && m[1]!.trim() === picked.entry.name) { target = i; break; }
+        // Request passage list from server
+        const passages = await client.sendRequest<string[]>('knot/listPassages');
+        if (!passages || passages.length === 0) {
+          vscode.window.showWarningMessage('Knot: No passages found in workspace');
+          return;
         }
-      }
 
-      if (target === -1) {
-        vscode.window.showWarningMessage(`knot: Could not locate passage "${picked.entry.name}" in the file. It may have been moved.`);
-        return;
-      }
+        const picked = await vscode.window.showQuickPick(passages, {
+          placeHolder: 'Go to passage...',
+        });
 
-      const pos = new vscode.Position(target, 0);
-      editor.selection = new vscode.Selection(pos, pos);
-      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.AtTop);
+        if (picked) {
+          // Request passage location from server and navigate
+          const locations = await client.sendRequest<any[]>('textDocument/definition', {
+            textDocument: { uri: vscode.window.activeTextEditor?.document.uri.toString() },
+            position: { line: 0, character: 0 },
+          });
+
+          // Fallback: search in open documents
+          const files = await vscode.workspace.findFiles('**/*.tw');
+          const tweeFiles = files.concat(await vscode.workspace.findFiles('**/*.twee'));
+
+          for (const fileUri of tweeFiles) {
+            const doc = await vscode.workspace.openTextDocument(fileUri);
+            const text = doc.getText();
+            const headerRegex = new RegExp(`^::\\s*${escapeRegex(picked)}\\b`, 'm');
+            const match = headerRegex.exec(text);
+            if (match) {
+              const position = doc.positionAt(match.index);
+              const editor = await vscode.window.showTextDocument(doc, {
+                selection: new vscode.Range(position, position),
+              });
+              editor.revealRange(
+                new vscode.Range(position, position),
+                vscode.TextEditorRevealType.InCenter,
+              );
+              return;
+            }
+          }
+
+          vscode.window.showWarningMessage(`Knot: Passage "${picked}" not found in workspace files`);
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(`Knot: Go to passage failed: ${err}`);
+      }
+    }),
+  );
+
+  // ─── knot.openSettings ─────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('knot.openSettings', () => {
+      vscode.commands.executeCommand('workbench.action.openSettings', 'knot.');
+    }),
+  );
+
+  // ─── knot.listFormats ──────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('knot.listFormats', async () => {
+      try {
+        const formats = await client.sendRequest<Array<{ id: string; name: string; version: string }>>(
+          'knot/listFormats',
+        );
+        if (!formats || formats.length === 0) {
+          vscode.window.showInformationMessage('Knot: No story formats registered');
+          return;
+        }
+
+        const items = formats.map(f => ({
+          label: f.name,
+          description: `v${f.version}`,
+          detail: `Format ID: ${f.id}`,
+        }));
+
+        await vscode.window.showQuickPick(items, {
+          placeHolder: 'Available story formats',
+        });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Knot: Failed to list formats: ${err}`);
+      }
+    }),
+  );
+
+  // ─── knot.selectFormat ─────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('knot.selectFormat', async () => {
+      try {
+        const formats = await client.sendRequest<Array<{ id: string; name: string; version: string }>>(
+          'knot/listFormats',
+        );
+        if (!formats || formats.length === 0) {
+          vscode.window.showWarningMessage('Knot: No story formats available');
+          return;
+        }
+
+        const items = formats.map(f => ({
+          label: f.name,
+          description: `v${f.version}`,
+          formatId: f.id,
+        }));
+
+        const picked = await vscode.window.showQuickPick(items, {
+          placeHolder: 'Select active story format...',
+        });
+
+        if (picked) {
+          // Send format selection to server
+          const result = await client.sendRequest<{ success: boolean; formatName: string }>(
+            'knot/selectFormat',
+            { formatId: picked.formatId },
+          );
+
+          if (result.success) {
+            // Update configuration
+            const config = vscode.workspace.getConfiguration('knot');
+            await config.update('format.activeFormat', picked.formatId, vscode.ConfigurationTarget.Workspace);
+
+            // Update status bar
+            statusBar.updateFormat(picked.formatId, picked.label);
+
+            vscode.window.showInformationMessage(`Knot: Active format set to ${picked.label}`);
+          }
+        }
+      } catch (err) {
+        vscode.window.showErrorMessage(`Knot: Failed to select format: ${err}`);
+      }
     }),
   );
 }
 
-// ---------------------------------------------------------------------------
-// Tweego verification — runs `tweego -v`, captures output
-// ---------------------------------------------------------------------------
+// ─── Utility ─────────────────────────────────────────────────
 
-function runVerify(execPath: string): Promise<{ ok: boolean; version: string; detail: string }> {
-  return new Promise(resolve => {
-    const proc = cp.spawn(execPath, ['-v'], { timeout: 8_000 });
-    let out = '';
-
-    proc.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-    proc.stderr?.on('data', (d: Buffer) => { out += d.toString(); });
-
-    proc.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'ENOENT') {
-        resolve({ ok: false, version: '', detail: 'Executable not found.' });
-      } else {
-        resolve({ ok: false, version: '', detail: err.message });
-      }
-    });
-
-    proc.on('close', () => {
-      const combined = out.trim();
-      const match    = combined.match(/\bv?(\d+\.\d+(?:\.\d+)?)\b/);
-      if (match) {
-        resolve({ ok: true, version: match[1]!, detail: combined });
-      } else if (combined.length > 0) {
-        // Binary ran but output didn't look like a version — still counts as found
-        resolve({ ok: true, version: 'unknown', detail: combined });
-      } else {
-        resolve({ ok: false, version: '', detail: 'No output received.' });
-      }
-    });
-  });
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
