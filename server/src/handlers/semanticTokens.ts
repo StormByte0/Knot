@@ -25,13 +25,14 @@ import { WorkspaceIndex } from '../core/workspaceIndex';
 // ─── Semantic Token Legend ──────────────────────────────────────
 
 export const TOKEN_TYPES: string[] = [
-  SemanticTokenTypes.function,   // macros
-  SemanticTokenTypes.class,      // passages
-  SemanticTokenTypes.variable,   // variables
-  SemanticTokenTypes.operator,   // macro delimiters
-  SemanticTokenTypes.string,     // strings
-  SemanticTokenTypes.number,     // numbers
-  SemanticTokenTypes.comment,    // comments
+  SemanticTokenTypes.function,   // 0: macros
+  SemanticTokenTypes.class,      // 1: passages
+  SemanticTokenTypes.variable,   // 2: variables
+  SemanticTokenTypes.operator,   // 3: macro delimiters / hooks
+  SemanticTokenTypes.string,     // 4: strings
+  SemanticTokenTypes.number,     // 5: numbers
+  SemanticTokenTypes.comment,    // 6: comments
+  SemanticTokenTypes.enumMember, // 7: passage links [[ ]]
 ];
 
 export const TOKEN_MODIFIERS: string[] = [];
@@ -63,12 +64,16 @@ export class SemanticTokensHandler {
     const format = this.ctx.formatRegistry.getActiveFormat();
 
     // Tokenize passage headers (Twine engine level — always :: headers)
-    const headerRegex = /^::\s*([^\[\]\n]+)/gm;
+    // Handle {position:} metadata in headers gracefully
+    const headerRegex = /^::\s*([^\[\]{}\n]+)/gm;
     let match: RegExpExecArray | null;
     while ((match = headerRegex.exec(text)) !== null) {
       const start = doc.positionAt(match.index);
-      // Push passage name as "class" token
-      builder.push(start.line, start.character + 3, match[1].trim().length, 1, 0); // 1 = class
+      const name = match[1].trim();
+      if (name) {
+        // Push passage name as "class" token
+        builder.push(start.line, start.character + 3, name.length, 1, 0); // 1 = class
+      }
     }
 
     // Tokenize macros and variables using format-driven body lexing
@@ -98,6 +103,12 @@ export class SemanticTokensHandler {
         } else if (token.typeId === 'hook-open' || token.typeId === 'hook-close') {
           const pos = doc.positionAt(token.range.start);
           builder.push(pos.line, pos.character, token.range.end - token.range.start, 3, 0); // 3 = operator
+        } else if (token.typeId === 'link') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 7, 0); // 7 = enumMember (links)
+        } else if (token.typeId === 'comment') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 6, 0); // 6 = comment
         }
       }
     }

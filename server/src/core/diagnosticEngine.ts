@@ -173,6 +173,7 @@ export class DiagnosticEngine {
                 ruleId: 'unknown-passage',
                 message: `Unknown passage: "${ref.target}"`,
                 severity: this.getSeverity('unknown-passage', 'warning') as DiagnosticResult['severity'],
+                range: ref.range,
               });
             }
           }
@@ -187,6 +188,7 @@ export class DiagnosticEngine {
             ruleId: 'duplicate-passage',
             message: `Duplicate passage name: "${passage.name}"`,
             severity: this.getSeverity('duplicate-passage', 'error') as DiagnosticResult['severity'],
+            range: { start: passage.startOffset, end: passage.endOffset },
           });
         }
       }
