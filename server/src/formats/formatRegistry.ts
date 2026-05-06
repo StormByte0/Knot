@@ -217,6 +217,40 @@ export class FormatRegistry {
   }
 
   /**
+   * Register a format module.
+   * Adds it to the loaded map and indexes its aliases.
+   * Does NOT change the active format.
+   */
+  register(mod: FormatModule): void {
+    this.loaded.set(mod.formatId, mod);
+    this.indexAliases(mod);
+  }
+
+  /**
+   * Unregister a format module by formatId.
+   * Removes it from the loaded map and cleans up alias entries.
+   * If the removed format was the active format, falls back to fallback.
+   */
+  unregister(formatId: string): void {
+    const mod = this.loaded.get(formatId);
+    if (!mod) return;
+
+    // Clean up alias entries that point to this formatId
+    for (const [alias, targetId] of this.aliasIndex) {
+      if (targetId === formatId) {
+        this.aliasIndex.delete(alias);
+      }
+    }
+
+    this.loaded.delete(formatId);
+
+    // If the active format was removed, fall back
+    if (this.activeFormat.formatId === formatId) {
+      this.activeFormat = fallbackModule;
+    }
+  }
+
+  /**
    * Check if a format is loaded.
    */
   hasFormat(formatId: string): boolean {

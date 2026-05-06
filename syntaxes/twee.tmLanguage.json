@@ -1,0 +1,172 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicolo-ribaudo/tc39-proposal-json-parse-with-source/main/textmate-grammar.json",
+  "scopeName": "source.twee",
+  "name": "Twee",
+  "patterns": [
+    {
+      "comment": "StoryData passage — JSON block",
+      "begin": "^(::\\s*StoryData\\s*(?:\\[[^\\]]*\\])?)\\s*\\n",
+      "beginCaptures": {
+        "1": {
+          "patterns": [
+            {
+              "match": "(::)\\s*",
+              "captures": {
+                "1": { "name": "punctuation.definition.passage.begin.twee" }
+              }
+            },
+            {
+              "match": "StoryData",
+              "name": "entity.name.section.passage.twee"
+            },
+            {
+              "match": "\\[([^\\]]*)\\]",
+              "captures": {
+                "0": { "name": "meta.tag.passage.twee" },
+                "1": { "name": "entity.other.attribute-name.tag.twee" }
+              }
+            }
+          ]
+        }
+      },
+      "end": "^(?=::)",
+      "patterns": [
+        {
+          "include": "source.json"
+        }
+      ]
+      },
+    {
+      "comment": "Passage headers with optional tags",
+      "match": "^(::)\\s*([^\\[\\]\\n]*)(?:\\s*(\\[)([^\\]]*)(\\]))?",
+      "captures": {
+        "1": { "name": "punctuation.definition.passage.begin.twee" },
+        "2": { "name": "entity.name.section.passage.twee" },
+        "3": { "name": "punctuation.definition.tag.begin.twee" },
+        "4": {
+          "patterns": [
+            {
+              "match": "[^\\s,]+",
+              "name": "entity.other.attribute-name.tag.twee"
+            }
+          ]
+        },
+        "5": { "name": "punctuation.definition.tag.end.twee" }
+      }
+    },
+    {
+      "comment": "Block comments: /% ... %/",
+      "begin": "/%",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.comment.begin.twee" }
+      },
+      "end": "%/",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.comment.end.twee" }
+      },
+      "name": "comment.block.twee"
+    },
+    {
+      "comment": "Line comments: %% ...",
+      "match": "%%.*$",
+      "name": "comment.line.double-percent.twee",
+      "captures": {
+        "0": {
+          "patterns": [
+            {
+              "match": "%%",
+              "name": "punctuation.definition.comment.twee"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "comment": "Double-square-bracket links — opening delimiter",
+      "match": "\\[\\[",
+      "name": "punctuation.definition.link.begin.twee"
+    },
+    {
+      "comment": "Double-square-bracket links — closing delimiter",
+      "match": "\\]\\]",
+      "name": "punctuation.definition.link.end.twee"
+    },
+    {
+      "comment": "SugarCube macro open delimiter <<",
+      "match": "<<",
+      "name": "keyword.operator.twee"
+    },
+    {
+      "comment": "SugarCube macro close delimiter >>",
+      "match": ">>",
+      "name": "keyword.operator.twee"
+    },
+    {
+      "comment": "Harlowe hook open [",
+      "match": "(?<=\\S)\\[(?=[\\w\\s]*\\|)",
+      "name": "keyword.operator.twee"
+    },
+    {
+      "comment": "Harlowe hook close ]",
+      "match": "(?<=\\|[^\\]]*)\\]",
+      "name": "keyword.operator.twee"
+    },
+    {
+      "comment": "Story variables ($prefix in SugarCube, $prefix in Harlowe)",
+      "match": "(\\$)([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.twee" },
+        "2": { "name": "variable.other.story.twee" }
+      }
+    },
+    {
+      "comment": "Temp variables (_prefix in SugarCube)",
+      "match": "(_)([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.twee" },
+        "2": { "name": "variable.other.temp.twee" }
+      }
+    },
+    {
+      "comment": "Numeric literals",
+      "match": "\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.twee"
+    },
+    {
+      "comment": "String literals — double-quoted",
+      "begin": "\"",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.twee" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.twee" }
+      },
+      "name": "string.quoted.double.twee",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.twee"
+        }
+      ]
+    },
+    {
+      "comment": "String literals — single-quoted",
+      "begin": "'",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.string.begin.twee" }
+      },
+      "end": "'",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.twee" }
+      },
+      "name": "string.quoted.single.twee",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.twee"
+        }
+      ]
+    }
+  ]
+}

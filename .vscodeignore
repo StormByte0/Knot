@@ -1,12 +1,28 @@
+# ─── Source code (only top-level src/, not out/src/) ───────────
+client/src/**
+server/src/**
+
+# ─── Build artifacts ──────────────────────────────────────────
+**/*.map
+**/tsconfig.json
+**/tsconfig.test.json
+**/tsconfig.tsbuildinfo
+**/build.js
+
+# ─── Test output ──────────────────────────────────────────────
+tests/**
+**/out/tests/**
+
+# ─── Dependencies ─────────────────────────────────────────────
+**/node_modules/**
+
+# ─── Dev/project files ────────────────────────────────────────
 .vscode/**
 .vscode-test/**
-src/**
-node_modules/**
-tsconfig.json
-tsconfig.test.json
-build.js
-*.map
-design/**
-tests/**
 .gitignore
-LICENSE
+design/**
+worklog.md
+agent-ctx/**
+shared/**
+*.zip
+*.vsix
