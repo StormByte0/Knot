@@ -57,6 +57,8 @@ const FALLBACK_AST_NODE_TYPES: FormatASTNodeTypes = (() => {
 
 const FALLBACK_TOKEN_TYPES: TokenTypeDef[] = [
   { id: 'text',    label: 'Text',    category: 'literal' },
+  { id: 'link',    label: 'Link',    category: 'identifier' },
+  { id: 'comment', label: 'Comment', category: 'literal' },
   { id: 'newline', label: 'Newline', category: 'whitespace' },
   { id: 'eof',     label: 'EOF',     category: 'whitespace' },
 ];

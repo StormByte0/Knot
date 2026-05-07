@@ -80,6 +80,8 @@ const CHAPBOOK_TOKEN_TYPES: TokenTypeDef[] = [
   { id: 'insert-close',  label: 'Insert Close',  category: 'delimiter' },
   { id: 'front-matter',  label: 'Front Matter',  category: 'delimiter' },
   { id: 'modifier',      label: 'Modifier',      category: 'delimiter' },
+  { id: 'link',          label: 'Link',           category: 'identifier' },
+  { id: 'comment',       label: 'Comment',        category: 'literal' },
   { id: 'variable',      label: 'Variable',       category: 'identifier' },
   { id: 'text',          label: 'Text',           category: 'literal' },
   { id: 'newline',       label: 'Newline',        category: 'whitespace' },

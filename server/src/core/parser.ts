@@ -51,8 +51,11 @@ export interface RawPassage {
 /** Matches a passage header line: :: Name [tag1 tag2] {position: x, y}
  *  Supports Twee 3 spec + SugarCube/Twine positional metadata in braces.
  *  The {metadata} block is optional and ignored by the parser.
+ *  Name may contain any characters except [ ] { } and newline.
+ *  Tags are optional inside [ ].
+ *  Metadata is optional inside { }.
  */
-const PASSAGE_HEADER_RE = /^::\s*([^\[\]\n{}]+?)(?:\s*\[([^\]]*)\])?(?:\s*\{[^}]*\})?\s*$/m;
+const PASSAGE_HEADER_RE = /^::\s*([^\[\]\n{}]+?)(?:\s*\[([^\]]*)\])?(?:\s*\{([^}]*)\})?\s*$/m;
 
 /** Twee 3 spec universal tags */
 const TWEE3_SCRIPT_TAG = 'script';

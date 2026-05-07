@@ -57,6 +57,51 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
   while (pos < len) {
     const remaining = input.slice(pos);
 
+    // ── Block comment: /% ... %/ ──────────────────────────────
+    if (remaining.startsWith('/%')) {
+      const closeIdx = input.indexOf('%/', pos + 2);
+      if (closeIdx !== -1) {
+        const commentText = input.slice(pos, closeIdx + 2);
+        tokens.push({
+          typeId: 'comment',
+          text: commentText,
+          range: { start: baseOffset + pos, end: baseOffset + pos + commentText.length },
+        });
+        pos += commentText.length;
+        continue;
+      }
+    }
+
+    // ── Line comment: %% ... ───────────────────────────────────
+    if (remaining.startsWith('%%')) {
+      const lineEnd = input.indexOf('\n', pos + 2);
+      const commentText = lineEnd !== -1
+        ? input.slice(pos, lineEnd)
+        : input.slice(pos);
+      tokens.push({
+        typeId: 'comment',
+        text: commentText,
+        range: { start: baseOffset + pos, end: baseOffset + pos + commentText.length },
+      });
+      pos += commentText.length;
+      continue;
+    }
+
+    // ── Link: [[...]] ─────────────────────────────────────────
+    if (remaining.startsWith('[[')) {
+      const linkEnd = input.indexOf(']]', pos + 2);
+      if (linkEnd !== -1) {
+        const fullLink = input.slice(pos, linkEnd + 2);
+        tokens.push({
+          typeId: 'link',
+          text: fullLink,
+          range: { start: baseOffset + pos, end: baseOffset + pos + fullLink.length },
+        });
+        pos += fullLink.length;
+        continue;
+      }
+    }
+
     // ── Template expression: <%= ... %> ────────────────────────
     // Must be checked BEFORE <% to avoid partial match on <%=.
     const exprMatch = remaining.match(/^<%=([\s\S]*?)%>/);
@@ -136,6 +181,9 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
     while (pos < len) {
       const r = input.slice(pos);
       if (
+        r.startsWith('/%') ||
+        r.startsWith('%%') ||
+        r.startsWith('[[') ||
         r.startsWith('<%') ||
         /^([st])\.([a-zA-Z_][a-zA-Z0-9_]*)/.test(r) ||
         input[pos] === '\n'

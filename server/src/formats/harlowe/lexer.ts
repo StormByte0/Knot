@@ -71,6 +71,45 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
   while (pos < len) {
     const ch = input[pos];
 
+    // ── Block comment: /% ... %/ ───────────────────────────
+    if (input.startsWith('/%', pos)) {
+      const endIdx = input.indexOf('%/', pos + 2);
+      const commentEnd = endIdx >= 0 ? endIdx + 2 : len;
+      tokens.push({
+        typeId: 'comment',
+        text: input.substring(pos, commentEnd),
+        range: { start: baseOffset + pos, end: baseOffset + commentEnd },
+      });
+      pos = commentEnd;
+      continue;
+    }
+
+    // ── Line comment: %% ... ───────────────────────────────
+    if (input.startsWith('%%', pos)) {
+      const eolIdx = input.indexOf('\n', pos + 2);
+      const commentEnd = eolIdx >= 0 ? eolIdx : len;
+      tokens.push({
+        typeId: 'comment',
+        text: input.substring(pos, commentEnd),
+        range: { start: baseOffset + pos, end: baseOffset + commentEnd },
+      });
+      pos = commentEnd;
+      continue;
+    }
+
+    // ── Link: [[...]] ───────────────────────────────────────
+    if (input.startsWith('[[', pos)) {
+      const closeIdx = input.indexOf(']]', pos + 2);
+      const linkEnd = closeIdx >= 0 ? closeIdx + 2 : len;
+      tokens.push({
+        typeId: 'link',
+        text: input.substring(pos, linkEnd),
+        range: { start: baseOffset + pos, end: baseOffset + linkEnd },
+      });
+      pos = linkEnd;
+      continue;
+    }
+
     // ── Macro call: (name: ...) ──
     if (ch === '(') {
       // Check if this is a macro call (name followed by colon)
@@ -154,7 +193,8 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
     let textEnd = pos + 1;
     while (textEnd < len) {
       const nextCh = input[textEnd];
-      if (nextCh === '(' || nextCh === '[' || nextCh === ']' || nextCh === '$' || nextCh === '_' || nextCh === '|' || nextCh === '\n') {
+      const remaining = input.substring(textEnd);
+      if (nextCh === '(' || nextCh === '[' || nextCh === ']' || nextCh === '$' || nextCh === '_' || nextCh === '|' || nextCh === '\n' || remaining.startsWith('/%') || remaining.startsWith('%%') || remaining.startsWith('[[')) {
         break;
       }
       textEnd++;

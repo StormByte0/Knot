@@ -186,6 +186,51 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
   }
 
   while (pos < len) {
+    // ── Block comment: /% ... %/ ────────────────────────────
+    if (input.slice(pos).startsWith('/%')) {
+      const closeIdx = input.indexOf('%/', pos + 2);
+      if (closeIdx !== -1) {
+        const commentText = input.slice(pos, closeIdx + 2);
+        tokens.push({
+          typeId: 'comment',
+          text: commentText,
+          range: { start: baseOffset + pos, end: baseOffset + pos + commentText.length },
+        });
+        pos += commentText.length;
+        continue;
+      }
+    }
+
+    // ── Line comment: %% ... ─────────────────────────────────
+    if (input.slice(pos).startsWith('%%')) {
+      const lineEnd = input.indexOf('\n', pos + 2);
+      const commentText = lineEnd !== -1
+        ? input.slice(pos, lineEnd)
+        : input.slice(pos);
+      tokens.push({
+        typeId: 'comment',
+        text: commentText,
+        range: { start: baseOffset + pos, end: baseOffset + pos + commentText.length },
+      });
+      pos += commentText.length;
+      continue;
+    }
+
+    // ── Link: [[...]] ───────────────────────────────────────
+    if (input.slice(pos).startsWith('[[')) {
+      const linkEnd = input.indexOf(']]', pos + 2);
+      if (linkEnd !== -1) {
+        const fullLink = input.slice(pos, linkEnd + 2);
+        tokens.push({
+          typeId: 'link',
+          text: fullLink,
+          range: { start: baseOffset + pos, end: baseOffset + pos + fullLink.length },
+        });
+        pos += fullLink.length;
+        continue;
+      }
+    }
+
     // ── Modifier: [name] on its own line ─────────────────────
     // Chapbook modifiers like [align center], [fade-in], [hidden]
     // use bracket syntax on their own line before a content block.
@@ -263,28 +308,6 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
       continue;
     }
 
-    // ── Link: [[...]] ────────────────────────────────────────
-    // We emit the [[ as an insert-open-like delimiter and ]] as close
-    // so the core can handle link boundaries. For Chapbook, links
-    // are just [[text->Target]] or [[Target<-text]] or [[Target]].
-    if (input.slice(pos).startsWith('[[')) {
-      const linkEnd = input.indexOf(']]', pos + 2);
-      if (linkEnd !== -1) {
-        const fullLink = input.slice(pos, linkEnd + 2);
-        const linkBody = input.slice(pos + 2, linkEnd);
-        const resolved = resolveLinkBody(linkBody);
-        tokens.push({
-          typeId: 'insert-open',
-          text: fullLink,
-          range: { start: baseOffset + pos, end: baseOffset + pos + fullLink.length },
-          macroName: resolved.target || undefined,
-          isClosing: false,
-        });
-        pos += fullLink.length;
-        continue;
-      }
-    }
-
     // ── Newline ──────────────────────────────────────────────
     if (input[pos] === '\n') {
       tokens.push({
@@ -301,8 +324,10 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
     while (pos < len) {
       const remaining = input.slice(pos);
       if (
-        remaining.startsWith('{') ||
+        remaining.startsWith('/%') ||
+        remaining.startsWith('%%') ||
         remaining.startsWith('[[') ||
+        remaining.startsWith('{') ||
         (remaining.startsWith('[') && /^\[[a-zA-Z][\w\s-]*?\]\s*$/m.test(remaining)) ||
         /^(var|temp)\.([a-zA-Z_])/.test(remaining) ||
         input[pos] === '\n'

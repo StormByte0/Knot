@@ -72,6 +72,8 @@ const SNOWMAN_AST_NODE_TYPES: FormatASTNodeTypes = (() => {
 const SNOWMAN_TOKEN_TYPES: TokenTypeDef[] = [
   { id: 'template-block',      label: 'Template Block',       category: 'delimiter' },
   { id: 'template-expression', label: 'Template Expression',  category: 'delimiter' },
+  { id: 'link',                label: 'Link',                 category: 'identifier' },
+  { id: 'comment',             label: 'Comment',              category: 'literal' },
   { id: 'variable',            label: 'Variable',             category: 'identifier' },
   { id: 'text',                label: 'Text',                 category: 'literal' },
   { id: 'newline',             label: 'Newline',              category: 'whitespace' },

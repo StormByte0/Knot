@@ -71,12 +71,14 @@ const SUGARCUBE_AST_NODE_TYPES: FormatASTNodeTypes = (() => {
 // ═══════════════════════════════════════════════════════════════════
 
 const SUGARCUBE_TOKEN_TYPES: TokenTypeDef[] = [
-  { id: 'macro-call',   label: 'Macro Call',     category: 'delimiter' },
-  { id: 'macro-close',  label: 'Macro Close Tag',category: 'delimiter' },
-  { id: 'variable',     label: 'Variable',       category: 'identifier' },
-  { id: 'text',         label: 'Text',           category: 'literal' },
-  { id: 'newline',      label: 'Newline',        category: 'whitespace' },
-  { id: 'eof',          label: 'EOF',            category: 'whitespace' },
+  { id: 'macro-call',   label: 'Macro Call',      category: 'delimiter' },
+  { id: 'macro-close',  label: 'Macro Close Tag', category: 'delimiter' },
+  { id: 'link',         label: 'Link',            category: 'identifier' },
+  { id: 'variable',     label: 'Variable',        category: 'identifier' },
+  { id: 'comment',      label: 'Comment',         category: 'literal' },
+  { id: 'text',         label: 'Text',            category: 'literal' },
+  { id: 'newline',      label: 'Newline',         category: 'whitespace' },
+  { id: 'eof',          label: 'EOF',             category: 'whitespace' },
 ];
 
 // ═══════════════════════════════════════════════════════════════════
