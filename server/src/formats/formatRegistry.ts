@@ -173,7 +173,15 @@ export class FormatRegistry {
 
   /**
    * Set the active format by ID.
-   * Falls back to fallback if the ID is unknown.
+   * When undefined, falls back to the fallback module (basic Twee).
+   *
+   * IMPORTANT: We do NOT default to any specific format (SugarCube, Harlowe, etc.)
+   * because that would bake format assumptions into the core — exactly the
+   * problem the v2 redesign solves. Instead:
+   *   - Fallback provides basic Twee features ([[links]], passage navigation)
+   *   - Format auto-detection from StoryData switches to the real format
+   *   - Heuristic detection (<< >>, (macro:), etc.) catches remaining cases
+   *   - User can manually select via "Knot: Select Story Format"
    */
   setActiveFormat(formatId: string | undefined): void {
     if (formatId) {
@@ -255,6 +263,53 @@ export class FormatRegistry {
    */
   hasFormat(formatId: string): boolean {
     return this.loaded.has(formatId);
+  }
+
+  /**
+   * Heuristic format detection from file content samples.
+   *
+   * Scans text samples against each loaded format's `macroPattern` regex.
+   * The format with the most matches wins. This is a LAST RESORT when
+   * StoryData is missing or malformed — it uses each format's self-declared
+   * pattern, so the registry never hardcodes format-specific detection logic.
+   *
+   * Formats without a `macroPattern` (null) don't participate in
+   * heuristic detection. Those formats must rely on StoryData or
+   * manual user selection.
+   *
+   * @param texts  Array of file content strings to scan (typically the
+   *               first few files from the workspace).
+   * @returns The formatId of the best-matching format, or undefined.
+   */
+  detectFromHeuristic(texts: readonly string[]): string | undefined {
+    const scores = new Map<string, number>();
+
+    for (const text of texts) {
+      for (const [formatId, format] of this.loaded) {
+        // Skip fallback — it has no macro syntax to detect
+        if (formatId === 'fallback') continue;
+        // Skip formats without a detection pattern
+        if (!format.macroPattern) continue;
+
+        // Reset the global regex before each test
+        format.macroPattern.lastIndex = 0;
+        if (format.macroPattern.test(text)) {
+          scores.set(formatId, (scores.get(formatId) ?? 0) + 1);
+        }
+      }
+    }
+
+    // Return the format with the most hits
+    let bestFormat: string | undefined;
+    let bestScore = 0;
+    for (const [formatId, score] of scores) {
+      if (score > bestScore) {
+        bestScore = score;
+        bestFormat = formatId;
+      }
+    }
+
+    return bestFormat;
   }
 
   // ─── Private Helpers ────────────────────────────────────────

@@ -109,6 +109,7 @@ export function registerHandlers(deps: HandlerDependencies): void {
   const symbolsHandler = new SymbolsHandler({
     workspaceIndex,
     documentStore,
+    formatRegistry,
   });
   connection.onDocumentSymbol(params => symbolsHandler.handleDocumentSymbols(params));
   connection.onWorkspaceSymbol(params => symbolsHandler.handleWorkspaceSymbols(params));

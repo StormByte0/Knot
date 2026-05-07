@@ -27,6 +27,7 @@ export class MenuProvider {
       { label: '$(bookmark) Select Story Format', command: 'knot.selectFormat', description: 'Change active story format' },
       { label: '$(refresh) Refresh Documents', command: 'knot.refreshDocuments', description: 'Re-index all workspace documents' },
       { label: '$(verified) Verify Tweego', command: 'knot.verifyTweego', description: 'Check Tweego installation' },
+      { label: '$(info) Show Status', command: 'knot.showStatus', description: 'Show extension health check and diagnostics' },
       { label: '$(output) Show Server Output', command: 'knot.showOutput', description: 'Open language server output channel' },
       { label: '$(refresh) Restart Server', command: 'knot.restart', description: 'Restart the language server' },
       { label: '$(settings-gear) Open Settings', command: 'knot.openSettings', description: 'Open Knot settings' },

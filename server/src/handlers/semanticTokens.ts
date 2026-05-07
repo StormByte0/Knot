@@ -3,7 +3,7 @@
  *
  * Format-agnostic semantic token provider.
  * Tokenizes passage headers (Twine engine level) and
- * format-driven body tokens (macros, variables, hooks).
+ * format-driven body tokens (macros, variables, hooks, links, comments).
  *
  * Imports:
  *   - formats/formatRegistry (format module resolution)
@@ -64,8 +64,9 @@ export class SemanticTokensHandler {
     const format = this.ctx.formatRegistry.getActiveFormat();
 
     // Tokenize passage headers (Twine engine level — always :: headers)
-    // Handle {position:} metadata in headers gracefully
-    const headerRegex = /^::\s*([^\[\]{}\n]+)/gm;
+    // Handle {position:} and other metadata in headers gracefully
+    // Pattern: :: Name [tags] {metadata}
+    const headerRegex = /^::\s*([^\[\]{}\n]+?)(?:\s*\[[^\]]*\])?(?:\s*\{[^}]*\})?\s*$/gm;
     let match: RegExpExecArray | null;
     while ((match = headerRegex.exec(text)) !== null) {
       const start = doc.positionAt(match.index);
@@ -76,14 +77,28 @@ export class SemanticTokensHandler {
       }
     }
 
-    // Tokenize macros and variables using format-driven body lexing
-    const passageHeaderRegex = /^::[^\n]*\n/gm;
+    // Tokenize passage bodies using format-driven lexing
+    // Split on passage headers and process each body
+    const passageHeaderRegex = /^::[^\n]*$/gm;
     let passageMatch: RegExpExecArray | null;
+    let lastBodyStart = 0;
+
+    // Find all header positions
+    const headerPositions: number[] = [];
     while ((passageMatch = passageHeaderRegex.exec(text)) !== null) {
-      const bodyStart = passageMatch.index + passageMatch[0].length;
-      const nextHeader = text.indexOf('\n::', bodyStart);
-      const bodyEnd = nextHeader >= 0 ? nextHeader + 1 : text.length;
+      headerPositions.push(passageMatch.index);
+    }
+
+    // Process bodies between headers
+    for (let i = 0; i < headerPositions.length; i++) {
+      const headerStart = headerPositions[i];
+      // Find the end of the header line
+      const headerEnd = text.indexOf('\n', headerStart);
+      const bodyStart = headerEnd >= 0 ? headerEnd + 1 : headerStart;
+      const bodyEnd = i + 1 < headerPositions.length ? headerPositions[i + 1] : text.length;
       const bodyText = text.substring(bodyStart, bodyEnd);
+
+      if (!bodyText.trim()) continue;
 
       const tokens = format.lexBody(bodyText, bodyStart);
       for (const token of tokens) {
@@ -109,6 +124,33 @@ export class SemanticTokensHandler {
         } else if (token.typeId === 'comment') {
           const pos = doc.positionAt(token.range.start);
           builder.push(pos.line, pos.character, token.range.end - token.range.start, 6, 0); // 6 = comment
+        }
+      }
+    }
+
+    // If no headers found at all, still try to lex the whole document as a single body
+    // (handles files with no passage headers gracefully)
+    if (headerPositions.length === 0 && text.trim()) {
+      const tokens = format.lexBody(text, 0);
+      for (const token of tokens) {
+        if (token.typeId === 'link') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 7, 0);
+        } else if (token.typeId === 'comment') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 6, 0);
+        } else if (token.typeId === 'macro-call') {
+          const isKnown = format.macros?.builtins.some(m => m.name === (token.macroName ?? '')) ?? false;
+          if (isKnown) {
+            const pos = doc.positionAt(token.range.start);
+            builder.push(pos.line, pos.character, token.range.end - token.range.start, 0, 0);
+          }
+        } else if (token.typeId === 'macro-close') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 0, 0);
+        } else if (token.typeId === 'variable') {
+          const pos = doc.positionAt(token.range.start);
+          builder.push(pos.line, pos.character, token.range.end - token.range.start, 2, 0);
         }
       }
     }

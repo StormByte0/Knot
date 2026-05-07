@@ -96,6 +96,10 @@
       {
         "command": "knot.mainMenu",
         "title": "Knot: Open Menu"
+      },
+      {
+        "command": "knot.showStatus",
+        "title": "Knot: Show Status"
       }
     ],
     "keybindings": [
@@ -339,6 +343,30 @@
             "off"
           ],
           "description": "Severity for deprecated macro usage."
+        },
+        "knot.lint.missingArgument": {
+          "type": "string",
+          "default": "warning",
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "off"
+          ],
+          "description": "Severity for missing required macro arguments."
+        },
+        "knot.logLevel": {
+          "type": "string",
+          "default": "info",
+          "enum": [
+            "off",
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "description": "Log level for the Knot output channel. Use 'debug' or 'trace' to diagnose issues."
         }
       }
     }

@@ -13,14 +13,17 @@ import { LinkKind, PassageRefKind } from '../../hooks/hookTypes';
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Tokenize a SugarCube passage body into adapter-specific tokens.
+ * Tokenize a SugarCube passage body into format-specific tokens.
  *
  * Recognizes:
- *   <<name args>>     → macro-call
- *   <</name>>         → macro-close
- *   $var / _var       → variable
- *   plain text        → text
- *   newlines          → newline
+ *   /% ... %/         → comment (block)
+ *   %% ...             → comment (line)
+ *   <<name args>>      → macro-call
+ *   <</name>>          → macro-close
+ *   [[...]]            → link
+ *   $var / _var        → variable
+ *   plain text         → text
+ *   newlines           → newline
  */
 export function lexBody(input: string, baseOffset: number): BodyToken[] {
   const tokens: BodyToken[] = [];
@@ -28,6 +31,32 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
   const len = input.length;
 
   while (pos < len) {
+    // ── Block comment: /% ... %/ ───────────────────────────
+    if (input.startsWith('/%', pos)) {
+      const endIdx = input.indexOf('%/', pos + 2);
+      const commentEnd = endIdx >= 0 ? endIdx + 2 : len;
+      tokens.push({
+        typeId: 'comment',
+        text: input.substring(pos, commentEnd),
+        range: { start: baseOffset + pos, end: baseOffset + commentEnd },
+      });
+      pos = commentEnd;
+      continue;
+    }
+
+    // ── Line comment: %% ... ───────────────────────────────
+    if (input.startsWith('%%', pos)) {
+      const eolIdx = input.indexOf('\n', pos + 2);
+      const commentEnd = eolIdx >= 0 ? eolIdx : len;
+      tokens.push({
+        typeId: 'comment',
+        text: input.substring(pos, commentEnd),
+        range: { start: baseOffset + pos, end: baseOffset + commentEnd },
+      });
+      pos = commentEnd;
+      continue;
+    }
+
     // ── Close tag: <</name>> ────────────────────────────────
     const closeMatch = input.slice(pos).match(/^<<\/(\w+)>>/);
     if (closeMatch) {
@@ -53,6 +82,19 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
         isClosing: false,
       });
       pos += macroMatch[0].length;
+      continue;
+    }
+
+    // ── Link: [[...]] ───────────────────────────────────────
+    if (input.startsWith('[[', pos)) {
+      const closeIdx = input.indexOf(']]', pos + 2);
+      const linkEnd = closeIdx >= 0 ? closeIdx + 2 : len;
+      tokens.push({
+        typeId: 'link',
+        text: input.substring(pos, linkEnd),
+        range: { start: baseOffset + pos, end: baseOffset + linkEnd },
+      });
+      pos = linkEnd;
       continue;
     }
 
@@ -96,7 +138,10 @@ export function lexBody(input: string, baseOffset: number): BodyToken[] {
     while (pos < len) {
       const remaining = input.slice(pos);
       if (
+        remaining.startsWith('/%') ||
+        remaining.startsWith('%%') ||
         remaining.startsWith('<<') ||
+        remaining.startsWith('[[') ||
         /^[$_]\w/.test(remaining) ||
         input[pos] === '\n'
       ) {

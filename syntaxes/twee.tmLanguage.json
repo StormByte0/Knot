@@ -5,7 +5,7 @@
   "patterns": [
     {
       "comment": "StoryData passage — JSON block",
-      "begin": "^(::\\s*StoryData\\s*(?:\\[[^\\]]*\\])?)\\s*\\n",
+      "begin": "^(::\\s*StoryData\\s*(?:\\[[^\\]]*\\])?\\s*(?:\\{[^}]*\\})?)\\s*\\n",
       "beginCaptures": {
         "1": {
           "patterns": [
@@ -25,6 +25,10 @@
                 "0": { "name": "meta.tag.passage.twee" },
                 "1": { "name": "entity.other.attribute-name.tag.twee" }
               }
+            },
+            {
+              "match": "\\{[^}]*\\}",
+              "name": "meta.metadata.passage.twee"
             }
           ]
         }
@@ -35,10 +39,10 @@
           "include": "source.json"
         }
       ]
-      },
+    },
     {
-      "comment": "Passage headers with optional tags",
-      "match": "^(::)\\s*([^\\[\\]\\n]*)(?:\\s*(\\[)([^\\]]*)(\\]))?",
+      "comment": "Passage headers with optional tags and {position:} metadata",
+      "match": "^(::)\\s*([^\\[\\]{}\\n]+?)(?:\\s*(\\[)([^\\]]*)(\\]))?(?:\\s*(\\{)([^}]*)(\\}))?\\s*$",
       "captures": {
         "1": { "name": "punctuation.definition.passage.begin.twee" },
         "2": { "name": "entity.name.section.passage.twee" },
@@ -51,7 +55,10 @@
             }
           ]
         },
-        "5": { "name": "punctuation.definition.tag.end.twee" }
+        "5": { "name": "punctuation.definition.tag.end.twee" },
+        "6": { "name": "punctuation.definition.metadata.begin.twee" },
+        "7": { "name": "meta.metadata.passage.twee" },
+        "8": { "name": "punctuation.definition.metadata.end.twee" }
       }
     },
     {
@@ -120,8 +127,8 @@
       }
     },
     {
-      "comment": "Temp variables (_prefix in SugarCube)",
-      "match": "(_)([a-zA-Z_][a-zA-Z0-9_]*)",
+      "comment": "Temp variables (_prefix in SugarCube) — only after << or whitespace to avoid matching normal underscores",
+      "match": "(?<=<<|\\s)(_)([a-zA-Z][a-zA-Z0-9_]*)",
       "captures": {
         "1": { "name": "punctuation.definition.variable.twee" },
         "2": { "name": "variable.other.temp.twee" }
@@ -151,12 +158,12 @@
       ]
     },
     {
-      "comment": "String literals — single-quoted",
-      "begin": "'",
+      "comment": "Single-quoted strings — ONLY inside macro/code contexts (<< >> or SugarCube/Harlowe delimiters). In markup passages, apostrophes are punctuation, not string delimiters.",
+      "begin": "(?<=<<|\\s)'",
       "beginCaptures": {
         "0": { "name": "punctuation.definition.string.begin.twee" }
       },
-      "end": "'",
+      "end": "'(?=[\\s>]|$)",
       "endCaptures": {
         "0": { "name": "punctuation.definition.string.end.twee" }
       },

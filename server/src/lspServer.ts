@@ -14,10 +14,22 @@
  *   - Handler registration (via registerHandlers())
  *   - Index change propagation (wiring core modules together)
  *   - Format detection (StoryData scanning)
+ *   - Workspace file scanning at startup
  *
  * All LSP feature logic lives in handler modules.
+ *
+ * KEY DESIGN DECISIONS (multi-format isolation):
+ *   1. Fallback is the DEFAULT — no format is baked in
+ *   2. Workspace files are scanned from disk at startup (scanRoot)
+ *   3. Format detection runs AFTER files are indexed
+ *   4. Auto-detection from StoryData switches to the real format
+ *   5. Heuristic detection as fallback when StoryData is missing
+ *   6. Closed documents stay in the index (re-read from disk)
+ *   7. File watcher keeps non-open files in sync
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   Connection,
   InitializeParams,
@@ -30,6 +42,7 @@ import {
   CodeActionKind,
   RequestType,
   NotificationType,
+  FileChangeType,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { FormatRegistry } from './formats/formatRegistry';
@@ -45,6 +58,7 @@ import { ASTNode, DocumentAST, walkTree, findDeepestNode } from './core/ast';
 import { PassageType, MacroCategory, MacroKind, LinkKind, PassageRefKind } from './hooks/hookTypes';
 import { registerHandlers, createDiagnosticsHandler, HandlerDependencies, TOKEN_TYPES, TOKEN_MODIFIERS } from './handlers';
 import { DiagnosticsHandler } from './handlers/diagnostics';
+
 // ─── Custom Protocol Types (mirrors shared/protocol.ts) ──────────
 // Defined inline to avoid rootDir constraint with composite projects.
 // Must stay in sync with shared/protocol.ts.
@@ -69,6 +83,102 @@ namespace FormatChangedNotification {
   export const type = new NotificationType<{ formatId: string; formatName: string }>('knot/formatChanged');
 }
 
+namespace ServerStatusNotification {
+  export const type = new NotificationType<{
+    state: 'initialized' | 'indexing' | 'ready' | 'error';
+    formatId: string;
+    formatName: string;
+    passageCount: number;
+    openDocuments: number;
+    message?: string;
+  }>('knot/serverStatus');
+}
+
+// ─── Constants ──────────────────────────────────────────────────
+
+const MAX_FILE_BYTES = 2 * 1024 * 1024; // 2 MB — skip oversized files
+const TW_EXTENSIONS = new Set(['.tw', '.twee']);
+
+// Directories that are always excluded from scanning
+const HARD_EXCLUDES = [
+  'node_modules', '.git', '.hg', '.svn',
+  'dist', 'build', 'out', '.storyformats',
+];
+
+// ─── URI ↔ Path helpers ─────────────────────────────────────────
+
+function uriToPath(uri: string): string {
+  let filePath: string;
+  if (uri.startsWith('file:///')) {
+    filePath = uri.slice(7); // file:///path → /path
+  } else if (uri.startsWith('file://')) {
+    filePath = uri.slice(7); // file://host/path → /host/path
+  } else if (uri.startsWith('file:')) {
+    filePath = uri.slice(5); // file:path → path
+  } else {
+    filePath = uri;
+  }
+
+  // Decode URI-encoded characters (%3A → :, %20 → space, etc.)
+  // This is critical on Windows where VS Code sends
+  // file:///d%3A/codeWS/twine/By%20the%20Book
+  try {
+    filePath = decodeURIComponent(filePath);
+  } catch {
+    // If decoding fails (malformed %), use as-is
+  }
+
+  // On Windows, strip the leading / before a drive letter
+  // e.g. /d:/codeWS/... → d:/codeWS/...
+  if (process.platform === 'win32' && /^\/[A-Za-z]:\//.test(filePath)) {
+    filePath = filePath.slice(1);
+  }
+
+  return filePath;
+}
+
+function pathToUri(filePath: string): string {
+  // Normalize backslashes to forward slashes (Windows)
+  const normalized = filePath.replace(/\\/g, '/');
+  // Encode characters that are invalid in URIs but valid in file paths
+  // (spaces, non-ASCII, etc.) — but NOT the drive letter colon on Windows
+  const encoded = normalized
+    .replace(/ /g, '%20')
+    .replace(/[^/A-Za-z0-9_.\-:]/g, c => {
+      // Encode anything that's not a safe URI character
+      // Allow colon only for Windows drive letter (first 2 chars)
+      if (c === ':' && normalized.indexOf(':') > 2) return encodeURIComponent(c);
+      if (c === ':') return c; // Keep drive letter colon as-is
+      return encodeURIComponent(c);
+    });
+  // Ensure proper file:// URI
+  if (encoded.startsWith('/')) {
+    return `file://${encoded}`;
+  }
+  return `file:///${encoded}`;
+}
+
+function normalizeUri(uri: string): string {
+  // Normalize URI for consistent lookups:
+  // 1. Replace backslashes (shouldn't happen but be safe)
+  // 2. Decode then re-encode to normalize %XX sequences
+  let normalized = uri.replace(/\\/g, '/');
+  try {
+    // Decode the path portion to normalize, then re-encode consistently
+    // This ensures file:///d%3A/ and file:///d:/ match the same document
+    const match = normalized.match(/^(file:\/\/+)?(.*)/);
+    if (match && match[2]) {
+      const decoded = decodeURIComponent(match[2]);
+      // Re-encode consistently: only encode what's truly necessary
+      const reEncoded = decoded.replace(/ /g, '%20');
+      normalized = (match[1] || '') + reEncoded;
+    }
+  } catch {
+    // If normalization fails, use the original
+  }
+  return normalized;
+}
+
 // ─── LSP Server ────────────────────────────────────────────────
 
 export class LspServer {
@@ -84,8 +194,22 @@ export class LspServer {
   private astWorkspace: ASTWorkspace;
   private diagnosticsHandler: DiagnosticsHandler;
 
-  private workspaceRoot: string | undefined;
+  /** Workspace root paths (from InitializeParams) */
+  private workspaceRoots: string[] = [];
   private settings: Record<string, unknown> = {};
+
+  /**
+   * Disk-sourced file content map.
+   * Stores content read from disk during scanRoot() and file watchers.
+   * This content persists even when documents are closed in the editor,
+   * ensuring the workspace index stays complete for cross-file features.
+   *
+   * Priority rule: LSP content (documentStore) always wins over disk content.
+   */
+  private diskContent: Map<string, string> = new Map();
+
+  /** Exclude patterns from client configuration */
+  private excludePatterns: string[] = [];
 
   constructor(connection: Connection) {
     this.connection = connection;
@@ -121,12 +245,22 @@ export class LspServer {
   // ─── Initialize ──────────────────────────────────────────────
 
   initialize(params: InitializeParams): InitializeResult {
-    this.workspaceRoot = params.rootUri ?? params.rootPath ?? undefined;
+    // Capture ALL workspace roots — not just the first one
+    this.workspaceRoots = (params.workspaceFolders ?? [])
+      .map(f => uriToPath(f.uri))
+      .filter(Boolean);
+
+    if (this.workspaceRoots.length === 0 && params.rootUri) {
+      this.workspaceRoots = [uriToPath(params.rootUri)];
+    }
 
     // Load all built-in format modules
     this.formatRegistry.loadBuiltinFormats();
 
-    // Auto-detect format or default to fallback
+    // Start on fallback — NO format is baked in as default.
+    // This is the core design principle of v2: format isolation.
+    // Format auto-detection (StoryData / heuristic) will switch to
+    // the correct format after workspace files are scanned and indexed.
     this.formatRegistry.setActiveFormat(undefined);
 
     // Compute trigger characters from all loaded format modules
@@ -188,11 +322,7 @@ export class LspServer {
 
     // Register custom protocol handlers
     this.connection.onRequest(RefreshDocumentsRequest.type, () => {
-      this.reindexAll();
-      // Re-publish diagnostics for all open documents
-      for (const uri of this.documentStore.getUris()) {
-        this.publishDiagnostics(uri);
-      }
+      this.refreshWorkspace();
       return undefined; // void response
     });
 
@@ -217,7 +347,7 @@ export class LspServer {
         this.formatRegistry.setActiveFormat(params.formatId);
         this.reindexAll();
         // Re-publish diagnostics with new format
-        for (const uri of this.documentStore.getUris()) {
+        for (const uri of this.getAllKnownUris()) {
           this.publishDiagnostics(uri);
         }
         return { success: true, formatName: format.displayName };
@@ -228,14 +358,107 @@ export class LspServer {
     // Register configuration change handler
     this.connection.onDidChangeConfiguration(this.onConfigurationChange.bind(this));
 
+    // Register file system watcher handler (keeps non-open files in sync)
+    this.connection.onDidChangeWatchedFiles(params => {
+      this.onDidChangeWatchedFiles(params);
+    });
+
     // Pull initial configuration from the client
     this.pullConfiguration();
 
-    // Try to detect format from workspace StoryData passage
+    // ─── KEY SEQUENCE (mirrors master branch) ─────────────────
+    // 1. Scan workspace roots for .tw/.twee files on disk
+    // 2. Re-feed any documents already open via LSP (they take priority)
+    // 3. THEN detect format from indexed content
+    // 4. Notify client of the active format
+
+    this.connection.console.info('Knot v2 language server initializing...');
+    this.sendServerStatus('indexing');
+
+    // Step 1: Scan all workspace roots from disk
+    for (const root of this.workspaceRoots) {
+      this.scanRoot(root, this.excludePatterns);
+    }
+    this.connection.console.info(`Scanned ${this.diskContent.size} file(s) from disk`);
+
+    // Step 2: Re-feed any documents that were already open when the server started.
+    // (VS Code sometimes sends didOpen before onInitialized completes.)
+    // LSP content always wins over disk content.
+    for (const uri of this.documentStore.getUris()) {
+      const doc = this.documentStore.get(uri);
+      if (doc) {
+        this.indexContent(uri, doc.getText());
+      }
+    }
+
+    // Step 3: Detect format from the NOW-INDEXED workspace
     this.detectWorkspaceFormat();
+
+    // Step 4: Always notify the client about the current format
+    this.notifyFormatChanged();
 
     this.connection.console.info('Knot v2 language server initialized');
     this.connection.console.info(`Active format: ${this.formatRegistry.getActiveFormat().formatId} (${this.formatRegistry.getActiveFormat().displayName})`);
+    this.connection.console.info(`Indexed ${this.workspaceIndex.size} passages across ${this.diskContent.size + this.documentStore.getUris().length} sources`);
+
+    // Send initial server status to client
+    this.sendServerStatus('ready');
+  }
+
+  // ─── Workspace Scanning ──────────────────────────────────────
+
+  /**
+   * Walk a workspace root directory and read all .tw/.twee files from disk.
+   * This mirrors the master branch's scanRoot() function.
+   *
+   * Files are stored in diskContent (not documentStore) because they are
+   * not currently open in the editor. When a file IS opened, the LSP
+   * content in documentStore takes priority.
+   */
+  private scanRoot(rootPath: string, excludePatterns: string[]): void {
+    const userExcludeSet = new Set(excludePatterns.map(p => p.toLowerCase()));
+
+    const shouldSkipDir = (name: string, fullPath: string): boolean => {
+      if (HARD_EXCLUDES.includes(name)) return true;
+      const rel = path.relative(rootPath, fullPath).replace(/\\/g, '/');
+      return userExcludeSet.has(rel) || userExcludeSet.has(name);
+    };
+
+    const walk = (dir: string): void => {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch (err) {
+        this.connection.console.warn(`[scan] Cannot read dir ${dir}: ${err}`);
+        return;
+      }
+
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (!shouldSkipDir(entry.name, fullPath)) walk(fullPath);
+        } else if (entry.isFile() && TW_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+          const uri = pathToUri(fullPath);
+          // Skip if already tracked as an open LSP document (LSP content wins)
+          if (this.documentStore.has(uri)) continue;
+          try {
+            const stat = fs.statSync(fullPath);
+            if (stat.size > MAX_FILE_BYTES) {
+              this.connection.console.warn(`[scan] Skipping oversized file (${stat.size} bytes): ${fullPath}`);
+              continue;
+            }
+            const text = fs.readFileSync(fullPath, 'utf-8');
+            this.diskContent.set(normalizeUri(uri), text);
+            this.indexContent(uri, text);
+          } catch (err) {
+            this.connection.console.warn(`[scan] Cannot read file ${fullPath}: ${err}`);
+          }
+        }
+      }
+    };
+
+    this.connection.console.info(`[scan] Scanning root: ${rootPath}`);
+    walk(rootPath);
   }
 
   // ─── Document Synchronization ────────────────────────────────
@@ -248,10 +471,10 @@ export class LspServer {
         params.textDocument.version,
         params.textDocument.text,
       );
-      this.documentStore.set(doc.uri, doc);
+      const uri = doc.uri;
+      this.documentStore.set(uri, doc);
 
       // Pre-scan for StoryData BEFORE full indexing (Twine engine level detection)
-      // This ensures the correct format module is active when we parse the document
       const text = doc.getText();
       const detectedFormat = this.preScanStoryData(text);
       if (detectedFormat && detectedFormat !== this.formatRegistry.getActiveFormat().formatId) {
@@ -262,12 +485,16 @@ export class LspServer {
         this.reindexAll();
       }
 
-      this.workspaceIndex.indexDocument(doc.uri, text);
+      this.indexContent(uri, text);
+      this.astWorkspace.buildAndAnalyze(uri, text, doc.version);
 
-      // Build AST and run full analysis pipeline
-      this.astWorkspace.buildAndAnalyze(doc.uri, text, doc.version);
+      // Remove from disk content since LSP now owns this file
+      this.diskContent.delete(normalizeUri(uri));
 
-      this.publishDiagnostics(doc.uri);
+      this.connection.console.info(`Indexed document: ${uri} (${this.workspaceIndex.size} total passages)`);
+      this.sendServerStatus('ready');
+
+      this.publishDiagnostics(uri);
     });
 
     this.connection.onDidChangeTextDocument(params => {
@@ -277,19 +504,97 @@ export class LspServer {
       // Apply incremental changes
       TextDocument.update(doc, params.contentChanges, params.textDocument.version);
       this.documentStore.set(doc.uri, doc);
-      this.workspaceIndex.reindexDocument(doc.uri, doc.getText());
+      const text = doc.getText();
+
+      this.workspaceIndex.reindexDocument(doc.uri, text);
 
       // Rebuild AST for the changed document
       this.astWorkspace.invalidate(doc.uri);
-      this.astWorkspace.buildAndAnalyze(doc.uri, doc.getText(), doc.version);
+      this.astWorkspace.buildAndAnalyze(doc.uri, text, doc.version);
 
       this.publishDiagnostics(doc.uri);
+      this.sendServerStatus('ready');
     });
 
     this.connection.onDidCloseTextDocument(params => {
-      this.documentStore.delete(params.textDocument.uri);
-      this.astWorkspace.invalidate(params.textDocument.uri);
+      const uri = params.textDocument.uri;
+
+      // DON'T delete from the index — the file still exists on disk.
+      // Re-read from disk and keep it as disk-sourced content.
+      // This mirrors the master branch: "We do NOT remove it from the index."
+      this.documentStore.delete(uri);
+      this.astWorkspace.invalidate(uri);
+
+      // Re-read from disk to reflect the saved state
+      const filePath = uriToPath(uri);
+      try {
+        const text = fs.readFileSync(filePath, 'utf-8');
+        this.diskContent.set(normalizeUri(uri), text);
+        // Re-index with disk content
+        this.indexContent(uri, text);
+        this.connection.console.info(`Document closed — re-indexed from disk: ${uri}`);
+      } catch {
+        // File may have been deleted — removal handled by onDidChangeWatchedFiles
+        this.connection.console.warn(`[sync] Could not re-read closed file: ${filePath}`);
+        // Remove from disk content too
+        this.diskContent.delete(normalizeUri(uri));
+      }
     });
+  }
+
+  // ─── File Watcher Handler ────────────────────────────────────
+
+  /**
+   * Handle file system changes for NON-OPEN files.
+   * Open files are handled by textDocument/didChange.
+   * This keeps the index in sync for files changed outside the editor
+   * (git checkouts, external editors, tweego output, etc.)
+   */
+  private onDidChangeWatchedFiles(params: { changes: Array<{ uri: string; type: number }> }): void {
+    for (const change of params.changes) {
+      // Ignore non-file URIs (git:, untitled:, etc.)
+      if (!change.uri.startsWith('file:')) continue;
+
+      const uri = change.uri;
+
+      if (change.type === FileChangeType.Deleted) {
+        // File deleted — remove from disk content and index
+        this.diskContent.delete(normalizeUri(uri));
+        this.workspaceIndex.removeDocument(uri);
+        this.astWorkspace.invalidate(uri);
+        this.connection.console.info(`[watch] File deleted: ${uri}`);
+        continue;
+      }
+
+      // Created or Changed — skip if currently open in editor (LSP owns it)
+      if (this.documentStore.has(uri)) continue;
+
+      const filePath = uriToPath(uri);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.size > MAX_FILE_BYTES) {
+          this.connection.console.warn(`[watch] Skipping oversized file: ${filePath}`);
+          continue;
+        }
+        const text = fs.readFileSync(filePath, 'utf-8');
+        this.diskContent.set(normalizeUri(uri), text);
+        this.indexContent(uri, text);
+        this.astWorkspace.buildAndAnalyze(uri, text, 0);
+        this.connection.console.info(`[watch] Re-indexed: ${uri}`);
+      } catch (err) {
+        this.connection.console.warn(`[watch] Cannot read changed file ${filePath}: ${err}`);
+      }
+    }
+  }
+
+  // ─── Index Content ───────────────────────────────────────────
+
+  /**
+   * Index file content into the workspace index.
+   * Used for both LSP-sourced and disk-sourced content.
+   */
+  private indexContent(uri: string, text: string): void {
+    this.workspaceIndex.indexDocument(uri, text);
   }
 
   // ─── Configuration ───────────────────────────────────────────
@@ -299,8 +604,6 @@ export class LspServer {
     this.settings = settings;
 
     // Update diagnostic settings
-    // Normalize camelCase setting keys (from package.json) to hyphenated rule IDs
-    // used by diagnosticEngine.getSeverity() lookups.
     const lint = settings.lint ?? {};
     this.diagnosticEngine.updateSettings({
       'unknown-passage': lint.unknownPassage,
@@ -311,8 +614,6 @@ export class LspServer {
       'container-structure': lint.containerStructure,
       'deprecated-macro': lint.deprecatedMacro,
       'missing-argument': lint.missingArgument,
-      // NOTE: 'invalid-assignment' is passed through but has no matching rule ID
-      // in CORE_DIAGNOSTIC_RULES or any format module. This setting is inert.
       'invalid-assignment': lint.invalidAssignment,
     });
 
@@ -326,15 +627,12 @@ export class LspServer {
     }
 
     // Re-publish diagnostics
-    for (const uri of this.documentStore.getUris()) {
+    for (const uri of this.getAllKnownUris()) {
       this.publishDiagnostics(uri);
     }
   }
 
   // ─── Diagnostics Publishing ──────────────────────────────────
-  // Uses the DiagnosticsHandler from handlers/ — the handler knows
-  // how to convert DiagnosticResult[] to LSP Diagnostic[] with
-  // correct range mapping (fixes the old Position.create(0, offset) bug).
 
   private publishDiagnostics(uri: string): void {
     const diagnostics = this.diagnosticsHandler.computeDiagnostics(uri);
@@ -374,11 +672,18 @@ export class LspServer {
 
   /**
    * Detect the story format from the workspace StoryData passage.
-   * If found, sets the active format and re-indexes.
-   * If NOT found, shows a warning and suggests using knot.selectFormat.
+   * Must be called AFTER workspace files have been scanned and indexed.
    *
-   * This is Twine engine behavior — StoryData detection is universal,
-   * not format-specific. Every Twine story has a StoryData passage.
+   * Detection strategy (in order):
+   *   1. Look for StoryData passage in the indexed workspace
+   *   2. Pre-scan all documents (LSP + disk) for StoryData
+   *   3. Heuristic: scan for format-specific patterns (<< >>, (macro:), etc.)
+   *
+   * If nothing is found, we stay on fallback (basic Twee) which
+   * was set during initialize(). This is intentional — we do NOT
+   * default to any specific format to avoid format bleed.
+   * Fallback provides basic Twee features ([[links]], passage navigation,
+   * core diagnostics). The user can manually select via command.
    */
   private detectWorkspaceFormat(): void {
     // First try: look for StoryData passage in the already-indexed workspace
@@ -388,49 +693,60 @@ export class LspServer {
       const detected = this.formatRegistry.detectFromStoryData(storyData.body ?? storyData.name);
       if (detected.formatId !== 'fallback') {
         this.formatRegistry.setActiveFormat(detected.formatId);
-        this.connection.console.info(`Detected story format: ${detected.formatId}`);
-        this.notifyFormatChanged();
-        // Re-index with the correct format module now that we know the format
-        this.reindexAll();
+        this.connection.console.info(`Detected story format from indexed StoryData: ${detected.formatId}`);
         return;
       }
     }
 
-    // Second try: pre-scan all open documents for StoryData
+    // Second try: pre-scan ALL documents (both LSP and disk-sourced) for StoryData
+    // This catches cases where StoryData is in a file that hasn't been
+    // classified as PassageType.StoryData yet (e.g., parsing order issue)
     for (const uri of this.documentStore.getUris()) {
       const doc = this.documentStore.get(uri);
       if (doc) {
         const detectedFormat = this.preScanStoryData(doc.getText());
         if (detectedFormat) {
           this.formatRegistry.setActiveFormat(detectedFormat);
-          this.connection.console.info(`Detected story format via pre-scan: ${detectedFormat}`);
-          this.notifyFormatChanged();
-          this.reindexAll();
+          this.connection.console.info(`Detected story format via pre-scan (LSP): ${detectedFormat}`);
           return;
         }
       }
     }
 
-    // No StoryData found — show warning and suggest manual format selection
-    this.connection.console.warn(
-      'No StoryData passage found. Cannot auto-detect story format. ' +
+    for (const [uri, text] of this.diskContent) {
+      const detectedFormat = this.preScanStoryData(text);
+      if (detectedFormat) {
+        this.formatRegistry.setActiveFormat(detectedFormat);
+        this.connection.console.info(`Detected story format via pre-scan (disk): ${detectedFormat}`);
+        return;
+      }
+    }
+
+    // Third try: heuristic format detection
+    // Delegates to FormatRegistry which checks each format's macroPattern.
+    // No format-specific knowledge lives here — the registry owns it.
+    const allTexts = [
+      ...Array.from(this.diskContent.values()),
+      ...this.documentStore.getUris()
+        .map(uri => this.documentStore.get(uri)?.getText())
+        .filter(Boolean) as string[],
+    ];
+    const sample = allTexts.slice(0, 5);
+    const heuristicFormat = this.formatRegistry.detectFromHeuristic(sample);
+    if (heuristicFormat) {
+      this.formatRegistry.setActiveFormat(heuristicFormat);
+      this.connection.console.info(`Detected story format via heuristic: ${heuristicFormat}`);
+      return;
+    }
+
+    // No StoryData found, no heuristic match — stay on fallback (basic Twee).
+    // This is intentional: we do NOT default to any specific format.
+    // Fallback provides basic Twee features ([[links]], passage navigation,
+    // core diagnostics). User can select format via command.
+    this.connection.console.info(
+      'No StoryData passage found. Staying on fallback (Basic Twee). ' +
       'Use "Knot: Select Story Format" command to set the format manually.'
     );
-    // Send a diagnostic hint to the first open document suggesting format selection
-    for (const uri of this.documentStore.getUris()) {
-      this.connection.sendDiagnostics({
-        uri,
-        diagnostics: [{
-          severity: DiagnosticSeverity.Information,
-          message: 'No StoryData passage found. Story format auto-detection unavailable. Use "Knot: Select Story Format" to set the format manually.',
-          range: Range.create(Position.create(0, 0), Position.create(0, 0)),
-          source: 'knot',
-          code: 'no-storydata',
-        }],
-      });
-      // Only show on the first document
-      break;
-    }
   }
 
   // ─── Index Change Handler ────────────────────────────────────
@@ -477,6 +793,7 @@ export class LspServer {
     this.linkGraph.clear();
     this.astWorkspace.clear();
 
+    // Re-index all LSP-sourced documents
     for (const uri of this.documentStore.getUris()) {
       const doc = this.documentStore.get(uri);
       if (doc) {
@@ -484,9 +801,61 @@ export class LspServer {
         this.astWorkspace.buildAndAnalyze(uri, doc.getText(), doc.version);
       }
     }
+
+    // Re-index all disk-sourced documents (skip those already in LSP store)
+    for (const [uri, text] of this.diskContent) {
+      if (!this.documentStore.has(uri)) {
+        this.workspaceIndex.indexDocument(uri, text);
+        this.astWorkspace.buildAndAnalyze(uri, text, 0);
+      }
+    }
+  }
+
+  /**
+   * Refresh the entire workspace — re-scan from disk and re-sync open docs.
+   * Called by the knot/refreshDocuments request.
+   */
+  private refreshWorkspace(): void {
+    this.diskContent.clear();
+
+    // Re-scan all roots from disk
+    for (const root of this.workspaceRoots) {
+      this.scanRoot(root, this.excludePatterns);
+    }
+
+    // Re-sync open documents (they take priority over disk)
+    for (const uri of this.documentStore.getUris()) {
+      const doc = this.documentStore.get(uri);
+      if (doc) {
+        this.indexContent(uri, doc.getText());
+      }
+    }
+
+    // Full re-index
+    this.reindexAll();
+
+    // Re-detect format
+    this.detectWorkspaceFormat();
+    this.notifyFormatChanged();
+
+    // Re-publish diagnostics for all known URIs
+    for (const uri of this.getAllKnownUris()) {
+      this.publishDiagnostics(uri);
+    }
+
+    this.sendServerStatus('ready');
   }
 
   // ─── Utility ─────────────────────────────────────────────────
+
+  /**
+   * Get ALL known URIs — both LSP-sourced (open) and disk-sourced.
+   */
+  private getAllKnownUris(): string[] {
+    const lspUris = this.documentStore.getUris();
+    const diskUris = Array.from(this.diskContent.keys());
+    return [...new Set([...lspUris, ...diskUris])];
+  }
 
   /**
    * Compute completion trigger characters from all loaded format modules.
@@ -553,5 +922,26 @@ export class LspServer {
       formatName: activeFormat.displayName,
     });
     this.connection.console.info(`Active format changed to: ${activeFormat.formatId} (${activeFormat.displayName})`);
+
+    // Also send full server status update
+    this.sendServerStatus('ready');
+  }
+
+  /**
+   * Send structured server status to the client.
+   * The client uses this to update the status bar and for the
+   * "Show Status" command. This is THE server-side debugging
+   * mechanism — every significant state change triggers this.
+   */
+  private sendServerStatus(state: 'initialized' | 'indexing' | 'ready' | 'error'): void {
+    const activeFormat = this.formatRegistry.getActiveFormat();
+    this.connection.sendNotification(ServerStatusNotification.type, {
+      state,
+      formatId: activeFormat.formatId,
+      formatName: activeFormat.displayName,
+      passageCount: this.workspaceIndex.size,
+      openDocuments: this.documentStore.getUris().length,
+      message: state === 'error' ? 'Server encountered an error' : undefined,
+    });
   }
 }
