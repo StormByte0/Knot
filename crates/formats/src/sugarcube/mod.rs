@@ -70,6 +70,12 @@ pub struct SugarCubePlugin {
     re_link_arrow: Regex,
     /// Regex for extracting pipe links: `[[Display|Target]]`
     re_link_pipe: Regex,
+    /// Regex for extracting `<<link "display" "passage">>` macro links
+    re_link_macro: Regex,
+    /// Regex for extracting `<<goto passage>>` macro navigation
+    re_goto_macro: Regex,
+    /// Regex for extracting `<<actions "passage1" "passage2">>` macro
+    re_actions_macro: Regex,
     /// Regex for extracting persistent variable references: `$variableName`
     re_var: Regex,
     /// Regex for extracting temporary variable references: `_variableName`
@@ -110,6 +116,12 @@ impl SugarCubePlugin {
             re_set_macro: Regex::new(r"<<set\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap(),
             // <<set _var to ...>> — write macro for temporary vars
             re_set_temp_macro: Regex::new(r"<<set\s+_([A-Za-z][A-Za-z0-9_]*)\s+to\b").unwrap(),
+            // <<link "display" "passage">> — SugarCube link macro with passage target
+            re_link_macro: Regex::new(r#"<<link\b[^>]*?\s+['"]([^'"]+)['"]\s+['"]([^'"]+)['"]"#).unwrap(),
+            // <<goto "passage">> or <<goto passage>> — SugarCube goto macro
+            re_goto_macro: Regex::new(r#"<<goto\s+['"]?([^'">\s]+)['"]?\s*>>"#).unwrap(),
+            // <<actions "passage1" "passage2">> — SugarCube actions macro (multiple links)
+            re_actions_macro: Regex::new(r#"<<actions\s+((?:['"][^'"]+['"]\s*)+)>>"#).unwrap(),
             // <<name ...>> — any open macro
             re_macro: Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap(),
             // <</name>> — closing macro tag
@@ -260,6 +272,45 @@ impl SugarCubePlugin {
             });
             if !overlaps {
                 let target = caps.get(1).unwrap().as_str().trim().to_string();
+                links.push(Link {
+                    display_text: None,
+                    target,
+                    span: body_offset + m.start()..body_offset + m.end(),
+                });
+            }
+        }
+
+        // <<link "display" "passage">> — SugarCube link macro with passage target
+        for caps in self.re_link_macro.captures_iter(body) {
+            let m = caps.get(0).unwrap();
+            let display = caps.get(1).unwrap().as_str().trim().to_string();
+            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            links.push(Link {
+                display_text: Some(display),
+                target,
+                span: body_offset + m.start()..body_offset + m.end(),
+            });
+        }
+
+        // <<goto "passage">> — SugarCube goto macro
+        for caps in self.re_goto_macro.captures_iter(body) {
+            let m = caps.get(0).unwrap();
+            let target = caps.get(1).unwrap().as_str().trim().to_string();
+            links.push(Link {
+                display_text: None,
+                target,
+                span: body_offset + m.start()..body_offset + m.end(),
+            });
+        }
+
+        // <<actions "passage1" "passage2">> — SugarCube actions macro
+        for caps in self.re_actions_macro.captures_iter(body) {
+            let m = caps.get(0).unwrap();
+            let args = caps.get(1).unwrap().as_str();
+            // Extract each quoted passage name from the arguments
+            let quoted_re = Regex::new(r#"['"]([^'"]+)['"]"#).unwrap();
+            for quote_cap in quoted_re.captures_iter(args) {
+                let target = quote_cap.get(1).unwrap().as_str().trim().to_string();
                 links.push(Link {
                     display_text: None,
                     target,

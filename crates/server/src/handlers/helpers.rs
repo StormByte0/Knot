@@ -160,6 +160,10 @@ pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
 /// Scan the workspace root for all `.tw` / `.twee` files, parse them with
 /// the format plugin, insert into the workspace, build the graph, and run
 /// analysis.
+///
+/// Uses a two-pass approach:
+/// 1. First pass: scan all files for StoryData to resolve the format early.
+/// 2. Second pass: parse all files with the correct format.
 pub(crate) async fn index_workspace(
     inner: &tokio::sync::RwLock<crate::state::ServerStateInner>,
     client: &tower_lsp::Client,
@@ -200,6 +204,28 @@ pub(crate) async fn index_workspace(
     // Send initial progress notification
     send_index_progress(client, total_files, 0).await;
 
+    // --- Pass 1: Find StoryData to resolve format early ---
+    {
+        let mut inner = inner.write().await;
+        for file_path in &twee_files {
+            if let Ok(text) = std::fs::read_to_string(file_path) {
+                if let Ok(uri) = Url::from_file_path(file_path) {
+                    let format = inner.workspace.resolve_format();
+                    let (doc, _parse_result) = parse_with_format_plugin(
+                        &inner.format_registry, &uri, &text, format, 0,
+                    );
+                    // Only extract metadata — don't store the full document yet
+                    if doc.story_data().is_some() {
+                        extract_and_set_metadata(&mut inner.workspace, &doc, &text);
+                        tracing::info!("Found StoryData in {} — format resolved to {:?}", 
+                            file_path.display(), inner.workspace.resolve_format());
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Pass 2: Parse all files with the correct format ---
     let mut parsed_count: u32 = 0;
 
     for file_path in &twee_files {
@@ -577,13 +603,27 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
 // Compiler helpers
 // ===========================================================================
 
-/// Search for the Tweego compiler on the system PATH.
+/// Search for the Tweego compiler:
+/// 1. In the configured path (from knot.json)
+/// 2. In the system PATH (via `which`/`where`)
+/// 3. In workspace subdirectories (e.g., `.knot/tweego`, `tools/tweego`)
 ///
 /// On Unix systems, uses `which` to locate the binary.
 /// On Windows, uses `where` instead (the `which` command does not exist).
 /// Falls back to trying direct execution with `--version` if the
 /// system locator is unavailable.
 pub(crate) fn which_compiler() -> Option<std::path::PathBuf> {
+    which_compiler_in_path().or_else(which_compiler_in_workspace)
+}
+
+/// Same as `which_compiler` but searches workspace subdirectories
+/// relative to the given root path.
+pub(crate) fn which_compiler_with_root(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    which_compiler_in_path().or_else(|| which_compiler_in_workspace_root(root))
+}
+
+/// Search for Tweego on the system PATH.
+fn which_compiler_in_path() -> Option<std::path::PathBuf> {
     let candidates: &[&str] = if cfg!(windows) {
         &["tweego.exe"]
     } else {
@@ -621,6 +661,53 @@ pub(crate) fn which_compiler() -> Option<std::path::PathBuf> {
             .is_ok()
         {
             return Some(std::path::PathBuf::from(name));
+        }
+    }
+
+    None
+}
+
+/// Search for Tweego in common workspace subdirectories.
+fn which_compiler_in_workspace() -> Option<std::path::PathBuf> {
+    which_compiler_in_workspace_root(std::path::Path::new("."))
+}
+
+/// Search for Tweego in common workspace subdirectories relative to root.
+fn which_compiler_in_workspace_root(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    // Common locations where Tweego might be installed locally
+    let search_dirs: &[&str] = &[
+        ".knot",
+        "tools",
+        "vendor",
+        "bin",
+        ".tools",
+    ];
+
+    let binary_name = if cfg!(windows) { "tweego.exe" } else { "tweego" };
+
+    // Try each search directory under root
+    for dir_name in search_dirs {
+        let candidate = root.join(dir_name).join(binary_name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Try searching recursively in .knot directory
+    let knot_dir = root.join(".knot");
+    if knot_dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&knot_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let candidate = path.join(binary_name);
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                } else if path.file_name().map(|n| n == binary_name).unwrap_or(false) {
+                    return Some(path);
+                }
+            }
         }
     }
 

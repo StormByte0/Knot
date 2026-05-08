@@ -125,11 +125,11 @@ impl ServerState {
             }
         };
 
-        // Resolve compiler path: config override > PATH lookup
+        // Resolve compiler path: config override > PATH + workspace lookup
         let compiler_path = if let Some(ref path) = config.compiler_path {
             Some(path.clone())
         } else {
-            helpers::which_compiler()
+            helpers::which_compiler_with_root(&root_path)
         };
 
         let Some(compiler_path) = compiler_path else {
@@ -846,6 +846,7 @@ impl ServerState {
         }
 
         let config = inner.workspace.config.clone();
+        let root_path = inner.workspace.root_uri.to_file_path().ok();
         drop(inner);
 
         // Check configured path first
@@ -859,8 +860,14 @@ impl ServerState {
                 });
             }
 
-        // Check PATH
-        if let Some(path) = helpers::which_compiler() {
+        // Check PATH + workspace subdirectories
+        let compiler_path = if let Some(ref root) = root_path {
+            helpers::which_compiler_with_root(root)
+        } else {
+            helpers::which_compiler()
+        };
+
+        if let Some(path) = compiler_path {
             return Ok(KnotCompilerDetectResponse {
                 compiler_found: true,
                 compiler_name: Some("tweego".to_string()),

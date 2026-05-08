@@ -6,8 +6,10 @@ use knot_server::KnotServer;
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
+    // Initialize tracing — MUST write to stderr, since stdout is the LSP transport
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("knot_server=info".parse().unwrap()),
