@@ -1,0 +1,9 @@
+/target
+node_modules/
+out/
+*.vsix
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

@@ -748,6 +748,79 @@ This avoids unreliable diagnostics in formats that cannot be safely analyzed sta
 
 ---
 
+# Language Server Capabilities
+
+Knot implements a comprehensive set of standard LSP features alongside its custom extensions. The server advertises the following capabilities during the `initialize` handshake.
+
+## Standard LSP Methods
+
+| Method | Description |
+|---|---|
+| `textDocument/completion` | Context-aware completion: passage names (`[[`), variables (`$`), SugarCube macros (`<<`). Supports snippets, sort/filter text, and `completionItem/resolve`. |
+| `textDocument/hover` | Passage metadata hover: link count, variable count, tags, incoming links. |
+| `textDocument/declaration` | Same as definition for Twine — navigates from links to passage headers. |
+| `textDocument/definition` | Go-to-definition: navigates from `[[link]]` to the target passage header. |
+| `textDocument/typeDefinition` | Navigates to the StoryData passage (the type declaration for the story). |
+| `textDocument/implementation` | Shows all passages that link to the passage under the cursor (reverse navigation). |
+| `textDocument/references` | Finds all references to a passage: header definition + all link occurrences. |
+| `textDocument/rename` | Renames a passage across all definitions and references. Supports `prepareRename`. |
+| `textDocument/documentSymbol` | Lists all passages in a document as symbols with tag details. |
+| `workspace/symbol` | Workspace-wide passage search with query filtering. |
+| `textDocument/signatureHelp` | SugarCube macro signature information with parameter hints. |
+| `textDocument/codeAction` | Quick-fix actions: create missing passage, initialize variable, add content template. |
+| `textDocument/codeLens` | Inline lens above passage headers showing link/reference counts. |
+| `textDocument/inlayHint` | Variable initialization state hints at passage entry points. |
+| `textDocument/foldingRange` | Foldable passage body regions. |
+| `textDocument/documentLink` | Clickable passage links that navigate to the target passage. |
+| `textDocument/selectionRange` | Hierarchical selection: link text → full link → passage body. |
+| `textDocument/formatting` | Basic Twee formatting: normalize headers, trim whitespace, blank lines between passages. |
+| `textDocument/rangeFormatting` | Range-restricted formatting. |
+| `textDocument/onTypeFormatting` | Auto-close `[[` with `]]` and `<<` with `>>`. |
+| `textDocument/linkedEditingRange` | Linked editing: rename passage name in header and all matching links simultaneously. |
+| `textDocument/prepareCallHierarchy` | Prepare call hierarchy for passage navigation. |
+| `callHierarchy/incomingCalls` | Incoming navigation: passages that link to the current passage. |
+| `callHierarchy/outgoingCalls` | Outgoing navigation: passages linked from the current passage. |
+| `textDocument/diagnostic` | Pull diagnostics model alongside existing push model. |
+| `textDocument/semanticTokens/full` | Full semantic token highlighting for 10 token types and 4 modifiers. |
+
+## Diagnostic Features
+
+Knot provides 13 configurable diagnostic categories:
+
+| Category | Default Severity | Description |
+|---|---|---|
+| `broken-link` | Warning | Links to non-existent passages |
+| `unreachable-passage` | Hint | Passages unreachable from start |
+| `infinite-loop` | Warning | Cycles with no state mutation |
+| `uninitialized-variable` | Warning | Variables used before initialization |
+| `unused-variable` | Hint | Variables written but never read |
+| `redundant-write` | Hint | Variables written twice without intervening read |
+| `duplicate-passage-name` | Error | Multiple passages with the same name |
+| `empty-passage` | Hint | Passages with no body content |
+| `dead-end-passage` | Info | Passages with no outgoing links |
+| `invalid-passage-name` | Warning | Passage names with problematic characters |
+| `orphaned-passage` | Info | Passages with only one incoming link |
+| `complex-passage` | Hint | Passages with 6+ outgoing links |
+| `large-passage` | Hint | Passages exceeding 500 words |
+
+All diagnostics include `related_information` pointing to the source of the issue (e.g., the broken link location for broken-link diagnostics).
+
+## VS Code Client Surface
+
+The VS Code extension integrates with native editor APIs:
+
+| API | Description |
+|---|---|
+| **Decorations API** | Gutter badges on passage headers, faded unreachable passages, wavy underlines on broken links |
+| **Language Status API** | Native language status indicator showing format, passage count, broken/unreachable counts |
+| **Task Provider** | `knot` task type with `build` and `watch` tasks, integrated with `Ctrl+Shift+B` |
+| **Story Map Webview** | Cytoscape.js-based interactive graph visualization |
+| **Debug View** | Passage inspection panel with trace, step-over, breakpoints, and variable watch |
+| **Profile View** | Workspace statistics with complexity metrics and structural balance analysis |
+| **Play Mode** | In-editor story preview with auto-rebuild, history sidebar, and debug panel |
+
+---
+
 # Knot-Specific LSP Extensions
 
 Knot extends the standard Language Server Protocol with custom requests and notifications.
