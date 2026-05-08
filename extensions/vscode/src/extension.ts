@@ -21,7 +21,7 @@ import { StoryMapProvider } from './storyMapProvider';
 import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse } from './types';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -152,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register custom notification handler for knot/indexProgress
     client.onNotification(
         { method: 'knot/indexProgress' },
-        (params: { total_files: number; parsed_files: number }) => {
+        (params: KnotIndexProgress) => {
             if (statusBarItem) {
                 if (params.parsed_files < params.total_files) {
                     statusBarItem.text = `$(sync~spin) Knot: Indexing ${params.parsed_files}/${params.total_files}`;
@@ -190,7 +190,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register custom notification handler for knot/buildOutput
     client.onNotification(
         { method: 'knot/buildOutput' },
-        (params: { line: string; is_error: boolean }) => {
+        (params: KnotBuildOutput) => {
             if (buildOutputChannel) {
                 buildOutputChannel.appendLine(params.line);
                 if (params.is_error) {

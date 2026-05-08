@@ -586,3 +586,25 @@ pub struct KnotWatchVariable {
     /// The passage name where this variable was last written (if traceable).
     pub last_written_in: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// knot/reindexWorkspace — trigger full workspace re-index
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/reindexWorkspace` — re-index all workspace files.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotReindexParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+}
+
+/// Response: `knot/reindexWorkspace`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotReindexResponse {
+    /// Whether re-indexing succeeded.
+    pub success: bool,
+    /// Number of files indexed.
+    pub files_indexed: u32,
+    /// Error message if re-indexing failed.
+    pub error: Option<String>,
+}

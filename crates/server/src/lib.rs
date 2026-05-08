@@ -33,6 +33,7 @@ impl KnotServer {
             .custom_method("knot/breakpoints", ServerState::knot_breakpoints)
             .custom_method("knot/stepOver", ServerState::knot_step_over)
             .custom_method("knot/watchVariables", ServerState::knot_watch_variables)
+            .custom_method("knot/reindexWorkspace", ServerState::knot_reindex_workspace)
             .finish();
 
         let stdin = tokio::io::stdin();

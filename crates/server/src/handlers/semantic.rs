@@ -2,13 +2,10 @@
 //! semantic_tokens_full, inlay_hint, code_lens.
 
 use crate::handlers::helpers;
-use crate::handlers::macros;
 use crate::state::ServerState;
-use knot_core::passage::StoryFormat;
 use knot_core::AnalysisEngine;
 use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
-use tower_lsp::LanguageServer;
 
 // ---------------------------------------------------------------------------
 // Semantic token constants (used by encoding functions)

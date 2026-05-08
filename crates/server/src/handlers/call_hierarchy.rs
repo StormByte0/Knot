@@ -4,7 +4,6 @@
 use crate::handlers::helpers;
 use crate::state::ServerState;
 use lsp_types::*;
-use tower_lsp::LanguageServer;
 
 pub(crate) async fn prepare_call_hierarchy(
     state: &ServerState,

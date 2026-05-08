@@ -7,10 +7,7 @@ use crate::handlers::helpers;
 use crate::lsp_ext::*;
 use crate::state::ServerState;
 use knot_core::AnalysisEngine;
-use knot_core::passage::StoryFormat;
-use lsp_types::*;
 use std::collections::HashMap;
-use tower_lsp::LanguageServer;
 
 impl ServerState {
     /// `knot/graph` — export the passage graph for the Story Map webview.
@@ -125,11 +122,11 @@ impl ServerState {
             }
         };
 
-        // Resolve compiler path: config override > PATH + workspace lookup
+        // Resolve compiler path: config override > PATH lookup
         let compiler_path = if let Some(ref path) = config.compiler_path {
             Some(path.clone())
         } else {
-            helpers::which_compiler_with_root(&root_path)
+            helpers::which_compiler()
         };
 
         let Some(compiler_path) = compiler_path else {
@@ -846,7 +843,6 @@ impl ServerState {
         }
 
         let config = inner.workspace.config.clone();
-        let root_path = inner.workspace.root_uri.to_file_path().ok();
         drop(inner);
 
         // Check configured path first
@@ -860,14 +856,8 @@ impl ServerState {
                 });
             }
 
-        // Check PATH + workspace subdirectories
-        let compiler_path = if let Some(ref root) = root_path {
-            helpers::which_compiler_with_root(root)
-        } else {
-            helpers::which_compiler()
-        };
-
-        if let Some(path) = compiler_path {
+        // Check PATH
+        if let Some(path) = helpers::which_compiler() {
             return Ok(KnotCompilerDetectResponse {
                 compiler_found: true,
                 compiler_name: Some("tweego".to_string()),
@@ -1104,5 +1094,45 @@ impl ServerState {
             read_in_passage,
             potentially_uninitialized,
         })
+    }
+
+    /// `knot/reindexWorkspace` — trigger a full re-index of the workspace.
+    pub async fn knot_reindex_workspace(
+        &self,
+        _params: KnotReindexParams,
+    ) -> Result<KnotReindexResponse, tower_lsp::jsonrpc::Error> {
+        tracing::info!("knot/reindexWorkspace: re-indexing workspace");
+
+        // Reset workspace state — create a fresh workspace keeping the root URI and config
+        {
+            let mut inner = self.inner.write().await;
+            let root = inner.workspace.root_uri.clone();
+            let config = inner.workspace.config.clone();
+            inner.workspace = knot_core::Workspace::new(root);
+            inner.workspace.config = config;
+            inner.open_documents.clear();
+            inner.format_diagnostics.clear();
+        }
+
+        // Run the full indexing pipeline
+        match helpers::index_workspace(&self.inner, &self.client).await {
+            Ok(()) => {
+                let inner = self.inner.read().await;
+                let files_indexed = inner.workspace.document_count() as u32;
+                Ok(KnotReindexResponse {
+                    success: true,
+                    files_indexed,
+                    error: None,
+                })
+            }
+            Err(e) => {
+                tracing::error!("Re-indexing failed: {}", e);
+                Ok(KnotReindexResponse {
+                    success: false,
+                    files_indexed: 0,
+                    error: Some(e),
+                })
+            }
+        }
     }
 }

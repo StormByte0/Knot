@@ -31,7 +31,8 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
     inner.workspace.insert_document(doc);
-    helpers::rebuild_graph(&mut inner.workspace);
+    let format = inner.workspace.resolve_format();
+    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
     let open_docs = inner.open_documents.clone();
@@ -258,13 +259,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         let mut inner = state.inner.write().await;
                         let format = inner.workspace.resolve_format();
                         let (doc, parse_result) =
-                            helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format, 0);
+                            helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
 
                         inner.open_documents.insert(uri.clone(), text.clone());
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                         helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                         inner.workspace.insert_document(doc);
-                        helpers::rebuild_graph(&mut inner.workspace);
+                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
                         let diagnostics = AnalysisEngine::analyze(&inner.workspace);
                         let open_docs = inner.open_documents.clone();
@@ -313,13 +314,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             let mut inner = state.inner.write().await;
                             let format = inner.workspace.resolve_format();
                             let (doc, parse_result) =
-                                helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format, 0);
+                                helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
 
                             inner.open_documents.insert(uri.clone(), text.clone());
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                             helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                             inner.workspace.insert_document(doc);
-                            helpers::rebuild_graph(&mut inner.workspace);
+                            inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
                             let diagnostics = AnalysisEngine::analyze(&inner.workspace);
                             let open_docs = inner.open_documents.clone();

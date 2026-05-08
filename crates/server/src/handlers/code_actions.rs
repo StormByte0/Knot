@@ -1,12 +1,10 @@
 //! Code action and pull diagnostic handlers.
 
 use crate::handlers::helpers;
-use crate::handlers::macros;
 use crate::state::ServerState;
 use knot_core::AnalysisEngine;
 use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
-use tower_lsp::LanguageServer;
 
 pub(crate) async fn code_action(
     state: &ServerState,

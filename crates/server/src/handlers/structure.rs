@@ -2,11 +2,8 @@
 //! signature_help.
 
 use crate::handlers::helpers;
-use crate::handlers::macros;
 use crate::state::ServerState;
-use knot_core::passage::StoryFormat;
 use lsp_types::*;
-use tower_lsp::LanguageServer;
 
 pub(crate) async fn folding_range(
     state: &ServerState,
@@ -216,8 +213,13 @@ pub(crate) async fn signature_help(
 
     let inner = state.inner.read().await;
     let format = inner.workspace.resolve_format();
+    let plugin = inner.format_registry.get(&format);
 
-    if !matches!(format, StoryFormat::SugarCube) {
+    // Only provide signature help for formats with macro catalogs
+    let Some(plugin) = plugin else {
+        return Ok(None);
+    };
+    if plugin.builtin_macros().is_empty() {
         return Ok(None);
     }
 
@@ -243,32 +245,38 @@ pub(crate) async fn signature_help(
                 let macro_content = &line_text[content_start..content_end];
                 let macro_name = macro_content.split_whitespace().next().unwrap_or("");
 
-                if let Some(sig) = macros::sugarcube_macro_signatures().iter().find(|m| m.name == macro_name) {
-                    // Count commas to determine active parameter
+                if let Some(mdef) = plugin.find_macro(macro_name) {
                     let after_name = &macro_content[macro_name.len()..];
                     let active_param = after_name.matches(',').count() as u32;
 
-                    let params_list: Vec<ParameterInformation> = sig
-                        .param_names()
-                        .iter()
-                        .map(|p| ParameterInformation {
-                            label: ParameterLabel::Simple(p.clone()),
+                    let params_list: Vec<ParameterInformation> = if let Some(args) = mdef.args {
+                        args.iter().map(|a| ParameterInformation {
+                            label: ParameterLabel::Simple(a.label.to_string()),
                             documentation: None,
-                        })
-                        .collect();
+                        }).collect()
+                    } else {
+                        Vec::new()
+                    };
 
+                    let sig_str = if let Some(args) = mdef.args {
+                        args.iter().map(|a| a.label).collect::<Vec<_>>().join(", ")
+                    } else {
+                        String::new()
+                    };
+
+                    let has_params = !params_list.is_empty();
                     return Ok(Some(SignatureHelp {
                         signatures: vec![SignatureInformation {
-                            label: format!("<<{} {}>>", sig.name, sig.signature),
+                            label: format!("<<{} {}>>", mdef.name, sig_str),
                             documentation: Some(Documentation::MarkupContent(MarkupContent {
                                 kind: MarkupKind::Markdown,
-                                value: sig.description.to_string(),
+                                value: mdef.description.to_string(),
                             })),
-                            parameters: if params_list.is_empty() { None } else { Some(params_list) },
-                            active_parameter: if sig.param_names().is_empty() { None } else { Some(active_param) },
+                            parameters: if has_params { Some(params_list) } else { None },
+                            active_parameter: if has_params { Some(active_param) } else { None },
                         }],
                         active_signature: Some(0),
-                        active_parameter: if sig.param_names().is_empty() { None } else { Some(active_param) },
+                        active_parameter: if has_params { Some(active_param) } else { None },
                     }));
                 }
             }
@@ -282,31 +290,38 @@ pub(crate) async fn signature_help(
                 let macro_content = &line_text[content_start..];
                 let macro_name = macro_content.split_whitespace().next().unwrap_or("");
 
-                if let Some(sig) = macros::sugarcube_macro_signatures().iter().find(|m| m.name == macro_name) {
+                if let Some(mdef) = plugin.find_macro(macro_name) {
                     let after_name = &macro_content[macro_name.len()..];
                     let active_param = after_name.matches(',').count() as u32;
 
-                    let params_list: Vec<ParameterInformation> = sig
-                        .param_names()
-                        .iter()
-                        .map(|p| ParameterInformation {
-                            label: ParameterLabel::Simple(p.clone()),
+                    let params_list: Vec<ParameterInformation> = if let Some(args) = mdef.args {
+                        args.iter().map(|a| ParameterInformation {
+                            label: ParameterLabel::Simple(a.label.to_string()),
                             documentation: None,
-                        })
-                        .collect();
+                        }).collect()
+                    } else {
+                        Vec::new()
+                    };
 
+                    let sig_str = if let Some(args) = mdef.args {
+                        args.iter().map(|a| a.label).collect::<Vec<_>>().join(", ")
+                    } else {
+                        String::new()
+                    };
+
+                    let has_params = !params_list.is_empty();
                     return Ok(Some(SignatureHelp {
                         signatures: vec![SignatureInformation {
-                            label: format!("<<{} {}>>", sig.name, sig.signature),
+                            label: format!("<<{} {}>>", mdef.name, sig_str),
                             documentation: Some(Documentation::MarkupContent(MarkupContent {
                                 kind: MarkupKind::Markdown,
-                                value: sig.description.to_string(),
+                                value: mdef.description.to_string(),
                             })),
-                            parameters: if params_list.is_empty() { None } else { Some(params_list) },
-                            active_parameter: if sig.param_names().is_empty() { None } else { Some(active_param) },
+                            parameters: if has_params { Some(params_list) } else { None },
+                            active_parameter: if has_params { Some(active_param) } else { None },
                         }],
                         active_signature: Some(0),
-                        active_parameter: if sig.param_names().is_empty() { None } else { Some(active_param) },
+                        active_parameter: if has_params { Some(active_param) } else { None },
                     }));
                 }
             }

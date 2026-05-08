@@ -12,7 +12,8 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { KnotLanguageClient } from './types';
+import * as fs from 'fs/promises';
+import { KnotLanguageClient, KnotPlayResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Play session state
@@ -380,11 +381,10 @@ export class PlayModeProvider {
                 requestParams.start_passage = this._startPassage;
             }
 
-            const result: any = await this._client.sendRequest('knot/play', requestParams);
+            const result: KnotPlayResponse = await this._client.sendRequest('knot/play', requestParams);
 
             if (result.html_path) {
-                const { readFileSync } = require('fs');
-                const htmlContent: string = readFileSync(result.html_path, 'utf-8');
+                const htmlContent: string = await fs.readFile(result.html_path, 'utf-8');
                 this._lastBuildHtml = htmlContent;
 
                 if (this._panel) {
@@ -553,7 +553,7 @@ export class PlayModeProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' *; script-src 'unsafe-inline' 'unsafe-eval' *; img-src * data: blob:; connect-src *; font-src *;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https:; script-src 'unsafe-inline' 'unsafe-eval' https:; img-src https: data: blob:; connect-src https:; font-src https:;">
     <title>Knot: Play Story</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
