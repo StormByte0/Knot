@@ -144,6 +144,90 @@ export interface KnotDebugDiagnostic {
 }
 
 // ---------------------------------------------------------------------------
+// Trace types (matches Rust-side KnotTraceResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotTraceStep {
+    passage_name: string;
+    depth: number;
+    variables_written: string[];
+    available_links: string[];
+    is_loop: boolean;
+}
+
+export interface KnotTraceResponse {
+    steps: KnotTraceStep[];
+    truncated: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Step-over types (matches Rust-side KnotStepOverResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotStepChoice {
+    passage_name: string;
+    display_text: string | null;
+    target_exists: boolean;
+}
+
+export interface KnotStepOverResponse {
+    from_passage: string;
+    choices: KnotStepChoice[];
+    variables_written: string[];
+    variables_read: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Variable watch types (matches Rust-side KnotWatchVariablesResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotWatchVariable {
+    name: string;
+    is_temporary: boolean;
+    file_uri: string;
+    last_written_in: string | null;
+}
+
+export interface KnotWatchVariablesResponse {
+    at_passage: string;
+    initialized_at_entry: KnotWatchVariable[];
+    written_in_passage: KnotWatchVariable[];
+    read_in_passage: KnotWatchVariable[];
+    potentially_uninitialized: KnotWatchVariable[];
+}
+
+// ---------------------------------------------------------------------------
+// Breakpoint types (matches Rust-side KnotBreakpointsResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotBreakpointInfo {
+    passage_name: string;
+    passage_exists: boolean;
+    file_uri: string | null;
+    incoming_links: number;
+    outgoing_links: number;
+}
+
+// ---------------------------------------------------------------------------
+// Variable flow types (matches Rust-side KnotVariableFlowResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotVariableInfo {
+    name: string;
+    is_temporary: boolean;
+    written_in: KnotVariableLocation[];
+    read_in: KnotVariableLocation[];
+    initialized_at_start: boolean;
+    is_unused: boolean;
+}
+
+export interface KnotVariableLocation {
+    passage_name: string;
+    file_uri: string;
+    is_write: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Build types (matches Rust-side KnotBuildResponse)
 // ---------------------------------------------------------------------------
 
@@ -151,6 +235,15 @@ export interface KnotBuildResponse {
     success: boolean;
     output_path?: string;
     errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Play types (matches Rust-side KnotPlayResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotPlayResponse {
+    html_path?: string;
+    error?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -162,4 +255,30 @@ export interface KnotCompilerDetectResponse {
     compiler_name?: string;
     compiler_version?: string;
     compiler_path?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Reindex types (matches Rust-side KnotReindexResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotReindexResponse {
+    success: boolean;
+    files_indexed: number;
+    error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Notification types
+// ---------------------------------------------------------------------------
+
+/** Notification: knot/indexProgress */
+export interface KnotIndexProgress {
+    total_files: number;
+    parsed_files: number;
+}
+
+/** Notification: knot/buildOutput */
+export interface KnotBuildOutput {
+    line: string;
+    is_error: boolean;
 }

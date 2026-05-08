@@ -160,10 +160,6 @@ pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
 /// Scan the workspace root for all `.tw` / `.twee` files, parse them with
 /// the format plugin, insert into the workspace, build the graph, and run
 /// analysis.
-///
-/// Uses a two-pass approach:
-/// 1. First pass: scan all files for StoryData to resolve the format early.
-/// 2. Second pass: parse all files with the correct format.
 pub(crate) async fn index_workspace(
     inner: &tokio::sync::RwLock<crate::state::ServerStateInner>,
     client: &tower_lsp::Client,
@@ -204,28 +200,6 @@ pub(crate) async fn index_workspace(
     // Send initial progress notification
     send_index_progress(client, total_files, 0).await;
 
-    // --- Pass 1: Find StoryData to resolve format early ---
-    {
-        let mut inner = inner.write().await;
-        for file_path in &twee_files {
-            if let Ok(text) = std::fs::read_to_string(file_path) {
-                if let Ok(uri) = Url::from_file_path(file_path) {
-                    let format = inner.workspace.resolve_format();
-                    let (doc, _parse_result) = parse_with_format_plugin(
-                        &inner.format_registry, &uri, &text, format, 0,
-                    );
-                    // Only extract metadata — don't store the full document yet
-                    if doc.story_data().is_some() {
-                        extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-                        tracing::info!("Found StoryData in {} — format resolved to {:?}", 
-                            file_path.display(), inner.workspace.resolve_format());
-                    }
-                }
-            }
-        }
-    }
-
-    // --- Pass 2: Parse all files with the correct format ---
     let mut parsed_count: u32 = 0;
 
     for file_path in &twee_files {
@@ -268,7 +242,8 @@ pub(crate) async fn index_workspace(
 
     // After all files are loaded, rebuild the graph and run analysis
     let mut inner = inner.write().await;
-    rebuild_graph(&mut inner.workspace);
+    let format = inner.workspace.resolve_format();
+    inner.workspace.graph = rebuild_graph(&inner.workspace, &inner.format_registry, format);
     inner.workspace.mark_indexed();
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
@@ -298,18 +273,52 @@ async fn send_index_progress(client: &tower_lsp::Client, total_files: u32, parse
 // ===========================================================================
 
 /// Rebuild the passage graph from all workspace documents.
+///
+/// Delegates format-specific logic (variable string map building and
+/// dynamic navigation link resolution) to the active format plugin
+/// when available, falling back to no-op defaults otherwise.
+///
+/// Returns the newly constructed `PassageGraph`. The caller is responsible
+/// for assigning it to `workspace.graph`.
 #[allow(clippy::type_complexity)]
-pub(crate) fn rebuild_graph(workspace: &mut Workspace) {
-    // Collect passage info first (avoid borrow issues)
+pub(crate) fn rebuild_graph(
+    workspace: &Workspace,
+    registry: &fmt_plugin::FormatRegistry,
+    format: StoryFormat,
+) -> knot_core::PassageGraph {
+    let plugin = registry.get(&format);
+
+    // ── Step 1: Build dynamic variable resolution map ───────────────────
+    // Delegate to the format plugin so that format-specific assignment
+    // syntax (e.g., SugarCube <<set $var to "literal">>) is handled
+    // by the appropriate plugin rather than hardcoded regexes.
+    let var_string_map = plugin
+        .map(|p| p.build_var_string_map(workspace))
+        .unwrap_or_default();
+
+    // ── Step 2: Collect passage info ────────────────────────────────────
     let info: Vec<(String, String, bool, bool, Vec<(Option<String>, String)>)> = workspace
         .documents()
         .flat_map(|doc| {
             doc.passages.iter().map(|p| {
-                let edges: Vec<(Option<String>, String)> = p
+                let mut edges: Vec<(Option<String>, String)> = p
                     .links
                     .iter()
                     .map(|l| (l.display_text.clone(), l.target.clone()))
                     .collect();
+
+                // ── Dynamic variable resolution for navigation macros ────
+                // Delegate to the format plugin so that format-specific
+                // navigation patterns (e.g., SugarCube <<goto $var>>) are
+                // resolved by the appropriate plugin.
+                edges.extend(
+                    plugin
+                        .map(|plug| plug.resolve_dynamic_navigation_links(p, &var_string_map))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|link| (link.display_text, link.target)),
+                );
+
                 (
                     p.name.clone(),
                     doc.uri.to_string(),
@@ -321,7 +330,7 @@ pub(crate) fn rebuild_graph(workspace: &mut Workspace) {
         })
         .collect();
 
-    workspace.graph = knot_core::PassageGraph::new();
+    let mut graph = knot_core::PassageGraph::new();
 
     for (name, file_uri, is_special, is_metadata, _edges) in &info {
         let node = PassageNode {
@@ -330,20 +339,22 @@ pub(crate) fn rebuild_graph(workspace: &mut Workspace) {
             is_special: *is_special,
             is_metadata: *is_metadata,
         };
-        workspace.graph.add_passage(node);
+        graph.add_passage(node);
     }
 
     // Add edges after all nodes exist so broken-link detection works.
     for (source, _, _, _, edges) in &info {
         for (display_text, target) in edges {
-            let target_exists = workspace.graph.contains_passage(target);
+            let target_exists = graph.contains_passage(target);
             let edge = PassageEdge {
                 display_text: display_text.clone(),
                 is_broken: !target_exists,
             };
-            workspace.graph.add_edge(source, target, edge);
+            graph.add_edge(source, target, edge);
         }
     }
+
+    graph
 }
 
 // ===========================================================================
@@ -603,27 +614,13 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
 // Compiler helpers
 // ===========================================================================
 
-/// Search for the Tweego compiler:
-/// 1. In the configured path (from knot.json)
-/// 2. In the system PATH (via `which`/`where`)
-/// 3. In workspace subdirectories (e.g., `.knot/tweego`, `tools/tweego`)
+/// Search for the Tweego compiler on the system PATH.
 ///
 /// On Unix systems, uses `which` to locate the binary.
 /// On Windows, uses `where` instead (the `which` command does not exist).
 /// Falls back to trying direct execution with `--version` if the
 /// system locator is unavailable.
 pub(crate) fn which_compiler() -> Option<std::path::PathBuf> {
-    which_compiler_in_path().or_else(which_compiler_in_workspace)
-}
-
-/// Same as `which_compiler` but searches workspace subdirectories
-/// relative to the given root path.
-pub(crate) fn which_compiler_with_root(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    which_compiler_in_path().or_else(|| which_compiler_in_workspace_root(root))
-}
-
-/// Search for Tweego on the system PATH.
-fn which_compiler_in_path() -> Option<std::path::PathBuf> {
     let candidates: &[&str] = if cfg!(windows) {
         &["tweego.exe"]
     } else {
@@ -661,53 +658,6 @@ fn which_compiler_in_path() -> Option<std::path::PathBuf> {
             .is_ok()
         {
             return Some(std::path::PathBuf::from(name));
-        }
-    }
-
-    None
-}
-
-/// Search for Tweego in common workspace subdirectories.
-fn which_compiler_in_workspace() -> Option<std::path::PathBuf> {
-    which_compiler_in_workspace_root(std::path::Path::new("."))
-}
-
-/// Search for Tweego in common workspace subdirectories relative to root.
-fn which_compiler_in_workspace_root(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    // Common locations where Tweego might be installed locally
-    let search_dirs: &[&str] = &[
-        ".knot",
-        "tools",
-        "vendor",
-        "bin",
-        ".tools",
-    ];
-
-    let binary_name = if cfg!(windows) { "tweego.exe" } else { "tweego" };
-
-    // Try each search directory under root
-    for dir_name in search_dirs {
-        let candidate = root.join(dir_name).join(binary_name);
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    // Try searching recursively in .knot directory
-    let knot_dir = root.join(".knot");
-    if knot_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&knot_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    let candidate = path.join(binary_name);
-                    if candidate.exists() {
-                        return Some(candidate);
-                    }
-                } else if path.file_name().map(|n| n == binary_name).unwrap_or(false) {
-                    return Some(path);
-                }
-            }
         }
     }
 
@@ -1663,27 +1613,40 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // sugarcube_macro_signatures
+    // SugarCube macro catalog via format plugin
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_sugarcube_macro_signatures_nonempty() {
-        let sigs = crate::handlers::macros::sugarcube_macro_signatures();
-        assert!(!sigs.is_empty());
+    fn test_sugarcube_builtin_macros_nonempty() {
+        use knot_formats::plugin::FormatPlugin;
+        use knot_core::passage::StoryFormat;
+
+        let registry = knot_formats::plugin::FormatRegistry::with_defaults();
+        let plugin = registry.get(&StoryFormat::SugarCube).expect("SugarCube plugin");
+        let macros = plugin.builtin_macros();
+        assert!(!macros.is_empty(), "SugarCube plugin should have builtin macros");
         // Spot-check a few well-known macros
-        assert!(sigs.iter().any(|m| m.name == "set"));
-        assert!(sigs.iter().any(|m| m.name == "if"));
-        assert!(sigs.iter().any(|m| m.name == "goto"));
+        assert!(macros.iter().any(|m| m.name == "set"), "should have <<set>>");
+        assert!(macros.iter().any(|m| m.name == "if"), "should have <<if>>");
+        assert!(macros.iter().any(|m| m.name == "goto"), "should have <<goto>>");
     }
 
     #[test]
-    fn test_macro_signature_insert_snippet() {
-        let sigs = crate::handlers::macros::sugarcube_macro_signatures();
-        let set_macro = sigs.iter().find(|m| m.name == "set").unwrap();
-        assert_eq!(set_macro.insert_snippet(), " ${1:args}");
+    fn test_macro_find_and_snippet() {
+        use knot_formats::plugin::FormatPlugin;
+        use knot_core::passage::StoryFormat;
 
-        let else_macro = sigs.iter().find(|m| m.name == "else").unwrap();
-        assert_eq!(else_macro.insert_snippet(), "");
+        let registry = knot_formats::plugin::FormatRegistry::with_defaults();
+        let plugin = registry.get(&StoryFormat::SugarCube).expect("SugarCube plugin");
+
+        let set_macro = plugin.find_macro("set").expect("should find <<set>>");
+        assert!(!set_macro.args.is_none() || set_macro.args.as_ref().map(|a| a.is_empty()).unwrap_or(true) == false,
+            "<<set>> should have args");
+
+        let else_macro = plugin.find_macro("else").expect("should find <<else>>");
+        // <<else>> is a bare macro with no arguments
+        assert!(else_macro.args.is_none() || else_macro.args.as_ref().map(|a| a.is_empty()).unwrap_or(true),
+            "<<else>> should have no args");
     }
 
     // -----------------------------------------------------------------------

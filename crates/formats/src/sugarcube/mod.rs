@@ -13,16 +13,23 @@
 //! The parser never hard-fails on invalid input. Malformed constructs are captured
 //! as [`Block::Incomplete`] and reported as diagnostics rather than causing panics.
 
+pub mod macros;
+
 use knot_core::passage::{
     Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use url::Url;
 
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
+};
+use crate::types::{
+    GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization, ResolvedNavLink,
+    VariableSigilInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -70,12 +77,6 @@ pub struct SugarCubePlugin {
     re_link_arrow: Regex,
     /// Regex for extracting pipe links: `[[Display|Target]]`
     re_link_pipe: Regex,
-    /// Regex for extracting `<<link "display" "passage">>` macro links
-    re_link_macro: Regex,
-    /// Regex for extracting `<<goto passage>>` macro navigation
-    re_goto_macro: Regex,
-    /// Regex for extracting `<<actions "passage1" "passage2">>` macro
-    re_actions_macro: Regex,
     /// Regex for extracting persistent variable references: `$variableName`
     re_var: Regex,
     /// Regex for extracting temporary variable references: `_variableName`
@@ -116,12 +117,6 @@ impl SugarCubePlugin {
             re_set_macro: Regex::new(r"<<set\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap(),
             // <<set _var to ...>> — write macro for temporary vars
             re_set_temp_macro: Regex::new(r"<<set\s+_([A-Za-z][A-Za-z0-9_]*)\s+to\b").unwrap(),
-            // <<link "display" "passage">> — SugarCube link macro with passage target
-            re_link_macro: Regex::new(r#"<<link\b[^>]*?\s+['"]([^'"]+)['"]\s+['"]([^'"]+)['"]"#).unwrap(),
-            // <<goto "passage">> or <<goto passage>> — SugarCube goto macro
-            re_goto_macro: Regex::new(r#"<<goto\s+['"]?([^'">\s]+)['"]?\s*>>"#).unwrap(),
-            // <<actions "passage1" "passage2">> — SugarCube actions macro (multiple links)
-            re_actions_macro: Regex::new(r#"<<actions\s+((?:['"][^'"]+['"]\s*)+)>>"#).unwrap(),
             // <<name ...>> — any open macro
             re_macro: Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap(),
             // <</name>> — closing macro tag
@@ -272,45 +267,6 @@ impl SugarCubePlugin {
             });
             if !overlaps {
                 let target = caps.get(1).unwrap().as_str().trim().to_string();
-                links.push(Link {
-                    display_text: None,
-                    target,
-                    span: body_offset + m.start()..body_offset + m.end(),
-                });
-            }
-        }
-
-        // <<link "display" "passage">> — SugarCube link macro with passage target
-        for caps in self.re_link_macro.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
-            links.push(Link {
-                display_text: Some(display),
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-            });
-        }
-
-        // <<goto "passage">> — SugarCube goto macro
-        for caps in self.re_goto_macro.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let target = caps.get(1).unwrap().as_str().trim().to_string();
-            links.push(Link {
-                display_text: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-            });
-        }
-
-        // <<actions "passage1" "passage2">> — SugarCube actions macro
-        for caps in self.re_actions_macro.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let args = caps.get(1).unwrap().as_str();
-            // Extract each quoted passage name from the arguments
-            let quoted_re = Regex::new(r#"['"]([^'"]+)['"]"#).unwrap();
-            for quote_cap in quoted_re.captures_iter(args) {
-                let target = quote_cap.get(1).unwrap().as_str().trim().to_string();
                 links.push(Link {
                     display_text: None,
                     target,
@@ -643,11 +599,19 @@ impl SugarCubePlugin {
         ]
     }
 
-    /// Basic validation: check for common SugarCube errors.
+    /// Comprehensive validation: check for common SugarCube errors.
+    ///
+    /// This includes:
+    /// - Unclosed macro brackets
+    /// - Unclosed link brackets
+    /// - Structural validation (macro parent constraints)
+    /// - Unknown macro detection
+    /// - Deprecated macro warnings
+    /// - Implicit passage reference detection
     fn validate(&self, body: &str, body_offset: usize) -> Vec<FormatDiagnostic> {
         let mut diagnostics = Vec::new();
 
-        // Check for unclosed macro brackets.
+        // ── Unclosed macro brackets ──────────────────────────────────────
         let mut depth = 0i32;
         let mut open_pos: Option<usize> = None;
         let bytes = body.as_bytes();
@@ -688,7 +652,7 @@ impl SugarCubePlugin {
                 });
             }
 
-        // Check for broken link syntax: `[[` without closing `]]`.
+        // ── Unclosed link brackets ──────────────────────────────────────
         let mut link_depth = 0i32;
         let mut link_open: Option<usize> = None;
         let mut j = 0;
@@ -728,7 +692,139 @@ impl SugarCubePlugin {
                 });
             }
 
+        // ── Structural validation: macro parent constraints ──────────────
+        // Build a stack of open macros and validate that child macros
+        // appear only inside their valid parent containers.
+        let constraints = macros::structural_constraints();
+        let deprecated = macros::deprecated_macros();
+        let known_macros = macros::known_macro_names();
+
+        let mut open_stack: Vec<(&str, usize)> = Vec::new(); // (name, byte_offset_of_<<)
+
+        // Process open macros: <<name ...>> or <<name>>
+        for caps in self.re_macro.captures_iter(body) {
+            let m = caps.get(0).unwrap();
+            let name = caps.get(1).unwrap().as_str();
+
+            // Check for deprecated macros
+            if let Some(msg) = deprecated.get(name) {
+                diagnostics.push(FormatDiagnostic {
+                    range: body_offset + m.start()..body_offset + m.end(),
+                    message: format!("Deprecated macro: {}", msg),
+                    severity: FormatDiagnosticSeverity::Info,
+                    code: "sc-deprecated-macro".into(),
+                });
+            }
+
+            // Check for unknown macros
+            if !known_macros.contains(name) && !name.starts_with('/') {
+                diagnostics.push(FormatDiagnostic {
+                    range: body_offset + m.start()..body_offset + m.end(),
+                    message: format!("Unknown SugarCube macro `<<{}>>`", name),
+                    severity: FormatDiagnosticSeverity::Hint,
+                    code: "sc-unknown-macro".into(),
+                });
+            }
+
+            // Validate structural constraints
+            if let Some(valid_parents) = constraints.get(name) {
+                let has_valid_parent = open_stack.iter().rev().any(|(parent, _)| {
+                    valid_parents.contains(parent)
+                });
+                if !has_valid_parent {
+                    let parent_list: Vec<String> = valid_parents
+                        .iter()
+                        .map(|p| format!("`<<{}>>`", p))
+                        .collect();
+                    diagnostics.push(FormatDiagnostic {
+                        range: body_offset + m.start()..body_offset + m.end(),
+                        message: format!(
+                            "`<<{}>>` must be inside {}",
+                            name,
+                            parent_list.join(" or ")
+                        ),
+                        severity: FormatDiagnosticSeverity::Error,
+                        code: "sc-container-structure".into(),
+                    });
+                }
+            }
+
+            // Push to open stack (only for block macros that can contain children)
+            let is_block = macros::is_block_macro(name);
+            if is_block {
+                open_stack.push((name, m.start()));
+            }
+        }
+
+        // Process close macros: <</name>> — pop from open stack
+        for caps in self.re_macro_close.captures_iter(body) {
+            let name = caps.get(1).unwrap().as_str();
+
+            // Find and pop the matching open tag from the stack
+            for idx in (0..open_stack.len()).rev() {
+                if open_stack[idx].0 == name {
+                    open_stack.remove(idx);
+                    break;
+                }
+            }
+        }
+
         diagnostics
+    }
+
+    /// Extract implicit passage references from raw text/HTML/JS.
+    ///
+    /// Detects patterns like `data-passage="..."`, `Engine.play("...")`,
+    /// `Story.get("...")` that reference passages but aren't standard
+    /// `[[links]]` or `<<macro>>` passage-args.
+    fn extract_implicit_passage_refs(&self, body: &str, body_offset: usize) -> Vec<Link> {
+        let mut links = Vec::new();
+
+        let patterns: &[(&Regex, &str)] = &[
+            // HTML data-passage attribute
+            (
+                &Regex::new(r#"data-passage\s*=\s*["']([^"']+)["']"#).unwrap(),
+                "data-passage attribute",
+            ),
+            // Engine.play()
+            (
+                &Regex::new(r#"Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']"#).unwrap(),
+                "Engine.play() call",
+            ),
+            // Engine.goto()
+            (
+                &Regex::new(r#"Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap(),
+                "Engine.goto() call",
+            ),
+            // Story.get()
+            (
+                &Regex::new(r#"Story\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap(),
+                "Story.get() call",
+            ),
+            // Story.passage()
+            (
+                &Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap(),
+                "Story.passage() call",
+            ),
+        ];
+
+        for (re, _desc) in patterns {
+            for caps in re.captures_iter(body) {
+                if let Some(target_match) = caps.get(1) {
+                    let full_match = caps.get(0).unwrap();
+                    let target = target_match.as_str().trim().to_string();
+                    if !target.is_empty() {
+                        links.push(Link {
+                            display_text: None,
+                            target,
+                            span: body_offset + full_match.start()..body_offset + full_match.end(),
+                        });
+                    }
+                }
+            }
+        }
+
+        links
     }
 
     /// Build a text block covering the entire body (simplified — in a full
@@ -783,6 +879,8 @@ impl FormatPlugin for SugarCubePlugin {
 
             // Extract body elements.
             passage.links = self.extract_links(body, body_offset);
+            // Also extract implicit passage references (data-passage, Engine.play, etc.)
+            passage.links.extend(self.extract_implicit_passage_refs(body, body_offset));
             passage.vars = self.extract_vars(body, body_offset);
             let macros = self.extract_macros(body, body_offset);
             passage.body = self.build_body_blocks(body, body_offset, &macros);
@@ -838,6 +936,220 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn display_name(&self) -> &str {
         "SugarCube 2"
+    }
+
+    // -------------------------------------------------------------------
+    // Macro catalog (behavioral overrides)
+    // -------------------------------------------------------------------
+
+    fn builtin_macros(&self) -> &'static [MacroDef] {
+        macros::builtin_macros()
+    }
+
+    fn block_macro_names(&self) -> HashSet<&'static str> {
+        macros::block_macro_names()
+    }
+
+    fn passage_arg_macro_names(&self) -> HashSet<&'static str> {
+        macros::passage_arg_macro_names()
+    }
+
+    fn label_then_passage_macros(&self) -> HashSet<&'static str> {
+        macros::label_then_passage_macros()
+    }
+
+    fn variable_assignment_macros(&self) -> HashSet<&'static str> {
+        macros::variable_assignment_macros()
+    }
+
+    fn macro_definition_macros(&self) -> HashSet<&'static str> {
+        macros::macro_definition_macros()
+    }
+
+    fn inline_script_macros(&self) -> HashSet<&'static str> {
+        macros::inline_script_macros()
+    }
+
+    fn dynamic_navigation_macros(&self) -> HashSet<&'static str> {
+        macros::dynamic_navigation_macros()
+    }
+
+    fn find_macro(&self, name: &str) -> Option<&'static MacroDef> {
+        macros::find_macro(name)
+    }
+
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        macros::build_macro_snippet(name, has_body)
+    }
+
+    fn macro_parent_constraints(&self) -> HashMap<&'static str, HashSet<&'static str>> {
+        macros::macro_parent_constraints()
+    }
+
+    fn get_passage_arg_index(&self, macro_name: &str, arg_count: usize) -> i32 {
+        macros::get_passage_arg_index(macro_name, arg_count)
+    }
+
+    // -------------------------------------------------------------------
+    // Special passages (extended)
+    // -------------------------------------------------------------------
+
+    fn special_passage_names(&self) -> HashSet<&'static str> {
+        macros::special_passage_names()
+    }
+
+    fn system_passage_names(&self) -> HashSet<&'static str> {
+        macros::system_passage_names()
+    }
+
+    // -------------------------------------------------------------------
+    // Variable tracking
+    // -------------------------------------------------------------------
+
+    fn variable_sigils(&self) -> Vec<VariableSigilInfo> {
+        macros::variable_sigils()
+    }
+
+    fn describe_variable_sigil(&self, sigil: char) -> Option<&'static str> {
+        macros::describe_variable_sigil(sigil)
+    }
+
+    fn resolve_variable_sigil(&self, sigil: char) -> Option<&'static str> {
+        macros::resolve_variable_sigil(sigil)
+    }
+
+    fn assignment_operators(&self) -> Vec<&'static str> {
+        macros::assignment_operators()
+    }
+
+    fn comparison_operators(&self) -> Vec<&'static str> {
+        macros::comparison_operators()
+    }
+
+    // -------------------------------------------------------------------
+    // Implicit passage references
+    // -------------------------------------------------------------------
+
+    fn implicit_passage_patterns(&self) -> Vec<ImplicitPassagePattern> {
+        macros::implicit_passage_patterns()
+    }
+
+    // -------------------------------------------------------------------
+    // Dynamic navigation resolution
+    // -------------------------------------------------------------------
+
+    fn build_var_string_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, Vec<String>> {
+        // SugarCube-specific: scan <<set $var to "literal">> patterns
+        let re_set_string = regex::Regex::new(
+            r#"<<set\s+([\$][A-Za-z_][A-Za-z0-9_]*)\s+to\s+"([^"]*)""#
+        ).unwrap();
+
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for doc in workspace.documents() {
+            for passage in &doc.passages {
+                for block in &passage.body {
+                    let content = match block {
+                        knot_core::passage::Block::Text { content, .. } => content.as_str(),
+                        knot_core::passage::Block::Macro { args, .. } => args.as_str(),
+                        _ => continue,
+                    };
+                    for caps in re_set_string.captures_iter(content) {
+                        if let (Some(var_match), Some(val_match)) = (caps.get(1), caps.get(2)) {
+                            let var_name = var_match.as_str().to_string();
+                            let string_val = val_match.as_str().to_string();
+                            map.entry(var_name).or_default().push(string_val);
+                        }
+                    }
+                }
+            }
+        }
+        for values in map.values_mut() {
+            values.sort();
+            values.dedup();
+        }
+        map
+    }
+
+    fn resolve_dynamic_navigation_links(
+        &self,
+        passage: &Passage,
+        var_string_map: &HashMap<String, Vec<String>>,
+    ) -> Vec<ResolvedNavLink> {
+        // SugarCube-specific: resolve <<goto $var>>, <<include $var>>, <<link "label" $var>>, <<button "label" $var>>
+        let re_nav_var = regex::Regex::new(
+            r#"<<(?:goto|include|link|button)\s+(?:"[^"]*"\s+)?([\$][A-Za-z_][A-Za-z0-9_]*)"#
+        ).unwrap();
+
+        let mut links = Vec::new();
+        for block in &passage.body {
+            let content = match block {
+                knot_core::passage::Block::Text { content, .. } => content.as_str(),
+                knot_core::passage::Block::Macro { args, .. } => args.as_str(),
+                _ => continue,
+            };
+            for caps in re_nav_var.captures_iter(content) {
+                if let Some(var_match) = caps.get(1) {
+                    let var_name = var_match.as_str().to_string();
+                    if let Some(known_values) = var_string_map.get(&var_name) {
+                        for value in known_values {
+                            links.push(ResolvedNavLink {
+                                display_text: Some(format!("{} (via {})", value, var_name)),
+                                target: value.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        links
+    }
+
+    // -------------------------------------------------------------------
+    // Hover / documentation
+    // -------------------------------------------------------------------
+
+    fn global_hover_text(&self, name: &str) -> Option<&'static str> {
+        macros::global_hover_text(name)
+    }
+
+    fn builtin_globals(&self) -> &'static [GlobalDef] {
+        macros::builtin_globals()
+    }
+
+    fn global_object_names(&self) -> HashSet<&'static str> {
+        macros::builtin_globals().iter().map(|g| g.name).collect()
+    }
+
+    // -------------------------------------------------------------------
+    // Operator normalization
+    // -------------------------------------------------------------------
+
+    fn operator_normalization(&self) -> Vec<OperatorNormalization> {
+        macros::operator_normalization()
+    }
+
+    fn operator_precedence(&self) -> Vec<(&'static str, u8)> {
+        macros::operator_precedence()
+    }
+
+    // -------------------------------------------------------------------
+    // Script/stylesheet tags
+    // -------------------------------------------------------------------
+
+    fn script_tags(&self) -> Vec<&'static str> {
+        macros::script_tags()
+    }
+
+    fn stylesheet_tags(&self) -> Vec<&'static str> {
+        macros::stylesheet_tags()
+    }
+
+    // -------------------------------------------------------------------
+    // Macro snippet mapping
+    // -------------------------------------------------------------------
+
+    fn macro_snippet(&self, name: &str) -> Option<&'static str> {
+        macros::macro_snippet(name)
     }
 }
 
@@ -996,5 +1308,104 @@ mod tests {
             .collect();
         assert_eq!(temp_writes.len(), 1);
         assert!(temp_writes[0].is_temporary);
+    }
+
+    #[test]
+    fn structural_validation_else_without_if() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<else>>Some text\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == "sc-container-structure"),
+            "Should detect <<else>> outside <<if>>"
+        );
+    }
+
+    #[test]
+    fn structural_validation_break_without_for() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<break>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == "sc-container-structure"),
+            "Should detect <<break>> outside <<for>>"
+        );
+    }
+
+    #[test]
+    fn structural_validation_else_inside_if_ok() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<if $x>><<else>>OK<</if>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "sc-container-structure"),
+            "<<else>> inside <<if>> should not trigger structural validation"
+        );
+    }
+
+    #[test]
+    fn deprecated_macro_warning() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<click \"label\" \"target\">>Click<</click>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == "sc-deprecated-macro"),
+            "Should detect deprecated <<click>> macro"
+        );
+    }
+
+    #[test]
+    fn unknown_macro_hint() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<foobar>>test<</foobar>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            result.diagnostics.iter().any(|d| d.code == "sc-unknown-macro"),
+            "Should detect unknown <<foobar>> macro"
+        );
+    }
+
+    #[test]
+    fn implicit_passage_ref_data_passage() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<a data-passage=\"Forest\">Go</a>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Forest"),
+            "Should detect data-passage implicit reference"
+        );
+    }
+
+    #[test]
+    fn implicit_passage_ref_engine_play() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>Engine.play(\"Forest\");<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Forest"),
+            "Should detect Engine.play() implicit reference"
+        );
+    }
+
+    #[test]
+    fn implicit_passage_ref_story_get() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>var p = Story.get(\"Forest\");<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Forest"),
+            "Should detect Story.get() implicit reference"
+        );
     }
 }

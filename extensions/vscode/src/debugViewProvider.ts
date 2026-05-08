@@ -6,56 +6,17 @@
 //! step-over capability, and variable watch.
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotDebugResponse } from './types';
-
-interface KnotTraceStep {
-    passage_name: string;
-    depth: number;
-    variables_written: string[];
-    available_links: string[];
-    is_loop: boolean;
-}
-
-interface KnotTraceResponse {
-    steps: KnotTraceStep[];
-    truncated: boolean;
-}
-
-interface KnotStepChoice {
-    passage_name: string;
-    display_text: string | null;
-    target_exists: boolean;
-}
-
-interface KnotStepOverResponse {
-    from_passage: string;
-    choices: KnotStepChoice[];
-    variables_written: string[];
-    variables_read: string[];
-}
-
-interface KnotWatchVariable {
-    name: string;
-    is_temporary: boolean;
-    file_uri: string;
-    last_written_in: string | null;
-}
-
-interface KnotWatchVariablesResponse {
-    at_passage: string;
-    initialized_at_entry: KnotWatchVariable[];
-    written_in_passage: KnotWatchVariable[];
-    read_in_passage: KnotWatchVariable[];
-    potentially_uninitialized: KnotWatchVariable[];
-}
-
-interface KnotBreakpointInfo {
-    passage_name: string;
-    passage_exists: boolean;
-    file_uri: string | null;
-    incoming_links: number;
-    outgoing_links: number;
-}
+import {
+    KnotLanguageClient,
+    KnotDebugResponse,
+    KnotTraceStep,
+    KnotTraceResponse,
+    KnotStepChoice,
+    KnotStepOverResponse,
+    KnotWatchVariable,
+    KnotWatchVariablesResponse,
+    KnotBreakpointInfo,
+} from './types';
 
 // ---------------------------------------------------------------------------
 // Debug View webview provider

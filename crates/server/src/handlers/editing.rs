@@ -5,7 +5,6 @@ use crate::handlers::helpers;
 use crate::state::ServerState;
 use lsp_types::*;
 use std::collections::HashMap;
-use tower_lsp::LanguageServer;
 use url::Url;
 
 pub(crate) async fn formatting(
