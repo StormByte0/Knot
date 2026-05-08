@@ -241,6 +241,12 @@ impl PassageGraph {
             if node.is_metadata {
                 continue;
             }
+            // Skip special passages (StoryInit, StoryCaption, etc.) — they
+            // are not reachable via normal narrative links but are invoked
+            // by the story engine at specific lifecycle points.
+            if node.is_special {
+                continue;
+            }
             if !reachable.contains(&idx) {
                 diagnostics.push(GraphDiagnostic {
                     passage_name: node.name.clone(),

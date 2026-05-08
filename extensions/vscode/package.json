@@ -318,7 +318,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint src",
     "pretest": "npm run compile",
     "test": "node ./out/test/runTest.js",
     "vsce:pack": "vsce package"
@@ -328,9 +328,9 @@
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
     "@vscode/vsce": "^2.22.0",
-    "eslint": "^8.56.0",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0"
+    "eslint": "^9.22.0",
+    "@typescript-eslint/eslint-plugin": "^8.30.0",
+    "@typescript-eslint/parser": "^8.30.0"
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
