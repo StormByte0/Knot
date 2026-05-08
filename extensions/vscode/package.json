@@ -1,0 +1,342 @@
+{
+  "name": "knot",
+  "displayName": "Knot — Twine IDE",
+  "description": "Next-generation IDE for Twine and Twee projects",
+  "version": "0.3.0",
+  "publisher": "stormbyte",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Debuggers"
+  ],
+  "keywords": [
+    "twine",
+    "twee",
+    "sugarcube",
+    "harlowe",
+    "interactive fiction"
+  ],
+  "activationEvents": [
+    "onLanguage:twee",
+    "onLanguage:sugarcube",
+    "workspaceContains:**/*.tw",
+    "workspaceContains:**/*.twee"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "twee",
+        "extensions": [
+          ".tw",
+          ".twee"
+        ],
+        "aliases": [
+          "Twee",
+          "Twine"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "twee",
+        "scopeName": "source.twee",
+        "path": "./syntaxes/twee.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "knot.openStoryMap",
+        "title": "Knot: Open Story Map",
+        "category": "Knot",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "knot.build",
+        "title": "Knot: Build Project",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.play",
+        "title": "Knot: Play Story",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.restartServer",
+        "title": "Knot: Restart Language Server",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.reindexWorkspace",
+        "title": "Knot: Re-index Workspace",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.detectCompiler",
+        "title": "Knot: Detect Compiler",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.openPassageByName",
+        "title": "Knot: Open Passage by Name",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.toggleAutoRebuild",
+        "title": "Knot: Toggle Auto-Rebuild in Play Mode",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.playFromPassage",
+        "title": "Knot: Play from This Passage",
+        "category": "Knot",
+        "icon": "$(play)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "knot.play",
+        "key": "f5",
+        "when": "resourceLangId == twee"
+      },
+      {
+        "command": "knot.playFromPassage",
+        "key": "shift+f5",
+        "when": "resourceLangId == twee"
+      },
+      {
+        "command": "knot.build",
+        "key": "f6",
+        "when": "resourceLangId == twee"
+      },
+      {
+        "command": "knot.openStoryMap",
+        "key": "ctrl+shift+m",
+        "mac": "cmd+shift+m",
+        "when": "resourceLangId == twee"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "knot-container",
+          "title": "Knot IDE",
+          "icon": "$(graph)"
+        }
+      ]
+    },
+    "views": {
+      "knot-container": [
+        {
+          "type": "webview",
+          "id": "knot.storyMap",
+          "name": "Story Map",
+          "icon": "$(graph)",
+          "visibility": "visible"
+        },
+        {
+          "type": "webview",
+          "id": "knot.debugView",
+          "name": "Passage Debug",
+          "icon": "$(bug)",
+          "visibility": "visible"
+        },
+        {
+          "type": "webview",
+          "id": "knot.profileView",
+          "name": "Workspace Profile",
+          "icon": "$(dashboard)",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "knot.playFromPassage",
+          "when": "resourceLangId == twee",
+          "group": "navigation@10"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "knot.openStoryMap",
+          "when": "view == knot.storyMap",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Knot",
+      "properties": {
+        "knot.experimental.rustServer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the native Rust language server for analysis. When disabled, falls back to TextMate grammar only."
+        },
+        "knot.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to the knot-server binary. Leave empty to use the bundled binary."
+        },
+        "knot.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace level for the Knot language server communication.",
+          "enumDescriptions": [
+            "No tracing",
+            "Log messages only",
+            "Log messages and detailed communication"
+          ]
+        },
+        "knot.diagnostics.broken-link": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "warning",
+          "description": "Severity for broken link diagnostics (links to non-existent passages)."
+        },
+        "knot.diagnostics.unreachable-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for unreachable passage diagnostics."
+        },
+        "knot.diagnostics.infinite-loop": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "warning",
+          "description": "Severity for infinite loop diagnostics (cycles with no state mutation)."
+        },
+        "knot.diagnostics.uninitialized-variable": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "warning",
+          "description": "Severity for uninitialized variable diagnostics."
+        },
+        "knot.diagnostics.unused-variable": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for unused variable diagnostics."
+        },
+        "knot.diagnostics.redundant-write": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for redundant write diagnostics (variable written twice without intervening read)."
+        },
+        "knot.diagnostics.duplicate-passage-name": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "error",
+          "description": "Severity for duplicate passage name diagnostics."
+        },
+        "knot.diagnostics.empty-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for empty passage diagnostics."
+        },
+        "knot.diagnostics.dead-end-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "info",
+          "description": "Severity for dead-end passage diagnostics (no outgoing links)."
+        },
+        "knot.diagnostics.invalid-passage-name": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "warning",
+          "description": "Severity for invalid passage name diagnostics."
+        },
+        "knot.diagnostics.orphaned-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "info",
+          "description": "Severity for orphaned passage diagnostics (only one incoming link)."
+        },
+        "knot.diagnostics.complex-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for complex passage diagnostics (too many outgoing links)."
+        },
+        "knot.diagnostics.large-passage": {
+          "type": "string",
+          "enum": ["error", "warning", "info", "hint", "off"],
+          "default": "hint",
+          "description": "Severity for large passage diagnostics (exceeds word count threshold)."
+        }
+      }
+    },
+    "taskDefinitions": [
+      {
+        "type": "knot",
+        "required": ["task"],
+        "properties": {
+          "task": {
+            "type": "string",
+            "enum": ["build", "watch"],
+            "description": "The Knot task to run."
+          }
+        }
+      }
+    ],
+    "configurationDefaults": {
+      "[twee]": {
+        "editor.wordWrap": "on",
+        "editor.wordBasedSuggestions": "off",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.acceptSuggestionOnEnter": "on",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.bracketPairColorization.enabled": true
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "pretest": "npm run compile",
+    "test": "node ./out/test/runTest.js",
+    "vsce:pack": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^2.22.0",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stormbyte/knot"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1a1a2e",
+    "theme": "dark"
+  }
+}

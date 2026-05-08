@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/knot-core",
+    "crates/knot-formats",
+    "crates/knot-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/StormByte0/Knot"
+
+[workspace.dependencies]
+# LSP
+tower-lsp = "0.20"
+lsp-types = "0.94"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Graph
+petgraph = "0.7"
+
+# Text
+ropey = "1.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Parsing
+logos = "0.15"
+regex = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+insta = "1"
+proptest = "1"
+
+# Internal crates
+knot-core = { path = "crates/knot-core" }
+knot-formats = { path = "crates/knot-formats" }

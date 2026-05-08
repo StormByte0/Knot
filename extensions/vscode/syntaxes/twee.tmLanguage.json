@@ -1,0 +1,42 @@
+{
+    "scopeName": "source.twee",
+    "name": "Twee",
+    "patterns": [
+        {
+            "name": "meta.passage.header.twee",
+            "match": "^::\\s+(.*)$",
+            "captures": {
+                "1": { "name": "entity.name.passage.twee" }
+            }
+        },
+        {
+            "name": "meta.tag.twee",
+            "match": "\\[([^\\]]+)\\]",
+            "captures": {
+                "1": { "name": "entity.other.attribute-name.tag.twee" }
+            }
+        },
+        {
+            "name": "markup.underline.link.twee",
+            "match": "\\[\\[([^\\]]+)\\]\\]"
+        },
+        {
+            "name": "keyword.control.macro.sugarcube",
+            "match": "<<[^>]+>>"
+        },
+        {
+            "name": "variable.other.sugarcube",
+            "match": "\\$[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        {
+            "name": "variable.other.sugarcube",
+            "match": "_[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        {
+            "name": "comment.block.twee",
+            "begin": "/%",
+            "end": "%/",
+            "name": "comment.block.twee"
+        }
+    ]
+}
