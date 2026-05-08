@@ -11,8 +11,8 @@
 //! - Keyboard shortcuts for navigation
 
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
+import { KnotLanguageClient } from './types';
 
 // ---------------------------------------------------------------------------
 // Play session state
@@ -44,8 +44,9 @@ interface PlaySessionState {
 
 export class PlayModeProvider {
     private _panel: vscode.WebviewPanel | undefined;
-    private _client: any;
+    private _client: KnotLanguageClient | null = null;
     private _extensionUri: vscode.Uri;
+    private _context: vscode.ExtensionContext;
     private _sessionState: PlaySessionState;
     private _lastBuildHtml: string | null = null;
     private _rebuildDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -54,8 +55,9 @@ export class PlayModeProvider {
     private _statusBarItem: vscode.StatusBarItem | null = null;
     private _startPassage: string | undefined;
 
-    constructor(extensionUri: vscode.Uri) {
+    constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this._extensionUri = extensionUri;
+        this._context = context;
         this._sessionState = {
             history: [],
             historyIndex: -1,
@@ -65,7 +67,7 @@ export class PlayModeProvider {
     }
 
     /** Set the language client reference. */
-    public setClient(client: any) {
+    public setClient(client: KnotLanguageClient | null) {
         this._client = client;
     }
 
@@ -86,6 +88,9 @@ export class PlayModeProvider {
             ? `Knot: Play from ${startPassage}`
             : 'Knot: Play Story';
 
+        // Include the global storage URI so the webview can load the temp HTML file
+        const storageUri = this._context.globalStorageUri;
+
         this._panel = vscode.window.createWebviewPanel(
             'knot.playMode',
             title,
@@ -93,7 +98,7 @@ export class PlayModeProvider {
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
-                localResourceRoots: [],
+                localResourceRoots: [this._extensionUri, storageUri],
             }
         );
 
@@ -232,9 +237,9 @@ export class PlayModeProvider {
                 this._sessionState.totalVisits = 0;
                 this._postSessionState();
                 this._updateStatusBar();
-                // Reload the iframe by re-rendering
+                // Reload the iframe by re-building
                 if (this._lastBuildHtml && this._panel) {
-                    this._panel.webview.html = this._getStoryHtml(this._lastBuildHtml);
+                    this._loadStoryHtml(this._lastBuildHtml);
                 }
                 break;
             }
@@ -368,21 +373,22 @@ export class PlayModeProvider {
         this._notifyBuildStatus('building');
 
         try {
-            const requestParams: any = {
+            const requestParams: Record<string, string> = {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             };
             if (this._startPassage) {
                 requestParams.start_passage = this._startPassage;
             }
 
-            const result = await this._client.sendRequest('knot/play', requestParams);
+            const result: any = await this._client.sendRequest('knot/play', requestParams);
 
             if (result.html_path) {
-                const htmlContent = fs.readFileSync(result.html_path, 'utf-8');
+                const { readFileSync } = require('fs');
+                const htmlContent: string = readFileSync(result.html_path, 'utf-8');
                 this._lastBuildHtml = htmlContent;
 
                 if (this._panel) {
-                    this._panel.webview.html = this._getStoryHtml(htmlContent);
+                    await this._loadStoryHtml(htmlContent);
                 }
                 this._notifyBuildStatus('success');
             } else {
@@ -395,6 +401,21 @@ export class PlayModeProvider {
         } finally {
             this._isBuilding = false;
         }
+    }
+
+    /** Write the story HTML to a temp file and load it via file:// URI in the iframe. */
+    private async _loadStoryHtml(storyHtml: string) {
+        if (!this._panel) { return; }
+
+        // Write the compiled HTML to a temp file in the extension's global storage
+        const storageUri = this._context.globalStorageUri;
+        await vscode.workspace.fs.createDirectory(storageUri);
+        const htmlFile = vscode.Uri.joinPath(storageUri, 'play-preview.html');
+        await vscode.workspace.fs.writeFile(htmlFile, Buffer.from(storyHtml, 'utf-8'));
+
+        // Convert the file URI to a webview-compatible URI and send it to the webview
+        const webViewUri = this._panel.webview.asWebviewUri(htmlFile);
+        this._panel.webview.postMessage({ command: 'loadStory', url: webViewUri.toString() });
     }
 
     /** Show an error message in the webview. */
@@ -414,6 +435,7 @@ export class PlayModeProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
     <title>Knot: Play Story</title>
     <style>
         body {
@@ -464,6 +486,7 @@ export class PlayModeProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
     <title>Knot: Play Story</title>
     <style>
         body {
@@ -522,21 +545,15 @@ export class PlayModeProvider {
 </html>`;
     }
 
-    /** Generate the HTML that embeds the story with navigation and history. */
-    private _getStoryHtml(storyHtml: string): string {
-        // Embed the story HTML using srcdoc on an iframe.
-        // We also inject a script into the iframe that tracks passage navigation
-        // by monitoring the hash/URL changes and DOM mutations that Twine formats use.
-        const escaped = storyHtml
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-
+    /** Generate the HTML that embeds the story with navigation and history.
+     *  The iframe starts empty and loads the story via a file:// URI when
+     *  the extension sends a 'loadStory' message. */
+    private _getStoryHtml(): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' *; script-src 'unsafe-inline' 'unsafe-eval' *; img-src * data: blob:; connect-src *; font-src *;">
     <title>Knot: Play Story</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -847,8 +864,8 @@ export class PlayModeProvider {
 
     <!-- Main area -->
     <div class="main">
-        <!-- Story iframe -->
-        <iframe id="story-frame" class="story-frame" srcdoc="${escaped}" sandbox="allow-scripts allow-same-origin"></iframe>
+        <!-- Story iframe — loaded via file:// URI from extension message -->
+        <iframe id="story-frame" class="story-frame" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe>
 
         <!-- History sidebar -->
         <div class="history-panel">
@@ -958,6 +975,11 @@ export class PlayModeProvider {
         window.addEventListener('message', (event) => {
             const message = event.data;
             switch (message.command) {
+                case 'loadStory': {
+                    // Load the story HTML from the file:// URI
+                    storyFrame.src = event.data.url;
+                    break;
+                }
                 case 'updateSession':
                     sessionHistory = message.data.history;
                     sessionHistoryIndex = message.data.historyIndex;

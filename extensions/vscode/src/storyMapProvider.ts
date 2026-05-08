@@ -12,35 +12,7 @@
 //! - Zoom-to-fit and layout switching controls
 
 import * as vscode from 'vscode';
-
-// ---------------------------------------------------------------------------
-// Graph data types (matches Rust-side KnotGraphResponse)
-// ---------------------------------------------------------------------------
-
-interface KnotGraphNode {
-    id: string;
-    label: string;
-    file: string;
-    line: number;
-    tags: string[];
-    out_degree: number;
-    in_degree: number;
-    is_special: boolean;
-    is_metadata: boolean;
-    is_unreachable: boolean;
-}
-
-interface KnotGraphEdge {
-    source: string;
-    target: string;
-    is_broken: boolean;
-}
-
-interface KnotGraphResponse {
-    nodes: KnotGraphNode[];
-    edges: KnotGraphEdge[];
-    layout?: string;
-}
+import { KnotLanguageClient, KnotGraphResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Story Map webview provider
@@ -50,13 +22,13 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'knot.storyMap';
 
     private _view?: vscode.WebviewView;
-    private _client: any;
+    private _client: KnotLanguageClient | null = null;
     private _graphData: KnotGraphResponse | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
     /** Set the language client reference so we can send LSP requests. */
-    public setClient(client: any) {
+    public setClient(client: KnotLanguageClient | null) {
         this._client = client;
         // If the view is already resolved, refresh the graph immediately
         if (this._view) {
@@ -126,7 +98,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                 return;
             }
 
-            const result: KnotGraphResponse = await this._client.sendRequest('knot/graph', {
+            const result = await this._client.sendRequest<KnotGraphResponse>('knot/graph', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
 
@@ -149,14 +121,22 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 
     /** Generate the HTML for the webview. */
     private _getHtmlForWebview(webview: vscode.Webview): string {
-        // Use the Cytoscape.js CDN
-        const cytoscapeScript = 'https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js';
-        const dagreScript = 'https://cdnjs.cloudflare.com/ajax/libs/cytoscape-dagre/2.5.0/cytoscape-dagre.min.js';
+        // Cytoscape.js scripts are loaded from the extension's media/ directory.
+        // If the files are not bundled, the webview will fail to load them.
+        // For development, you can download them from:
+        //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js
+        //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape-dagre/2.5.0/cytoscape-dagre.min.js
+        // And place them in extensions/vscode/media/
+        const cytoscapeLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape.min.js'));
+        const dagreLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape-dagre.min.js'));
+        const cytoscapeScript = cytoscapeLocal.toString();
+        const dagreScript = dagreLocal.toString();
 
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Story Map</title>
     <script src="${cytoscapeScript}"></script>

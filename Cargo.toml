@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/knot-core",
-    "crates/knot-formats",
-    "crates/knot-server",
+    "crates/core",
+    "crates/formats",
+    "crates/server",
 ]
 
 [workspace.package]
@@ -43,5 +43,8 @@ insta = "1"
 proptest = "1"
 
 # Internal crates
-knot-core = { path = "crates/knot-core" }
-knot-formats = { path = "crates/knot-formats" }
+knot-core = { path = "crates/core" }
+knot-formats = { path = "crates/formats" }
+
+# Shared across multiple crates
+url = { version = "2", features = ["serde"] }

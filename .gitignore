@@ -7,3 +7,10 @@ out/
 *.swo
 *~
 .DS_Store
+
+# Bundled server binaries (built by build.sh release/package)
+extensions/vscode/bin/knot-server
+extensions/vscode/bin/knot-server.exe
+
+# Preserve the .gitkeep placeholder
+!extensions/vscode/bin/.gitkeep
