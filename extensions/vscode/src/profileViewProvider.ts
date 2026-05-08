@@ -5,69 +5,7 @@
 //! variable metrics, and graph analysis results.
 
 import * as vscode from 'vscode';
-
-// ---------------------------------------------------------------------------
-// Profile data types (matches Rust-side KnotProfileResponse)
-// ---------------------------------------------------------------------------
-
-interface KnotLinkDistribution {
-    zero_links: number;
-    few_links: number;
-    moderate_links: number;
-    many_links: number;
-}
-
-interface KnotTagStat {
-    tag: string;
-    passage_count: number;
-    avg_word_count: number;
-    total_word_count: number;
-    avg_out_links: number;
-}
-
-interface KnotComplexityMetrics {
-    avg_word_count: number;
-    median_word_count: number;
-    max_word_count: number;
-    min_word_count: number;
-    avg_out_links: number;
-    out_links_stddev: number;
-    complex_passage_count: number;
-}
-
-interface KnotStructuralBalance {
-    dead_end_ratio: number;
-    orphaned_ratio: number;
-    is_well_connected: boolean;
-    connected_components: number;
-    diameter: number;
-    avg_clustering: number;
-}
-
-interface KnotProfileResponse {
-    document_count: number;
-    passage_count: number;
-    special_passage_count: number;
-    metadata_passage_count: number;
-    unreachable_passage_count: number;
-    broken_link_count: number;
-    infinite_loop_count: number;
-    total_links: number;
-    avg_out_degree: number;
-    avg_in_degree: number;
-    max_depth: number;
-    dead_end_count: number;
-    variable_count: number;
-    variable_issue_count: number;
-    format: string;
-    format_version: string | null;
-    has_story_data: boolean;
-    total_word_count: number;
-    link_distribution: KnotLinkDistribution;
-    tag_stats: KnotTagStat[];
-    complexity_metrics: KnotComplexityMetrics;
-    structural_balance: KnotStructuralBalance;
-}
+import { KnotLanguageClient, KnotProfileResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Profile View webview provider
@@ -77,12 +15,12 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'knot.profileView';
 
     private _view?: vscode.WebviewView;
-    private _client: any;
+    private _client: KnotLanguageClient | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
     /** Set the language client reference. */
-    public setClient(client: any) {
+    public setClient(client: KnotLanguageClient | null) {
         this._client = client;
         if (this._view) {
             this.refresh();
@@ -130,7 +68,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         }
 
         try {
-            const result: KnotProfileResponse = await this._client.sendRequest('knot/profile', {
+            const result = await this._client.sendRequest<KnotProfileResponse>('knot/profile', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
 
@@ -151,6 +89,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Profile</title>
     <style>

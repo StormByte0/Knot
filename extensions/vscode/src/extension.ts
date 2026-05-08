@@ -16,10 +16,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 import { StoryMapProvider } from './storyMapProvider';
 import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse } from './types';
+
+// The LanguageClient class is only available at runtime from the node entry.
+// We use require() to access it since the typings don't export it.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const VLCModule = require('vscode-languageclient');
+const LanguageClientCtor: typeof VLCModule.LanguageClient = VLCModule.LanguageClient;
 
 // ---------------------------------------------------------------------------
 // Binary resolution
@@ -78,7 +86,7 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
 // Extension activation
 // ---------------------------------------------------------------------------
 
-let client: any = null;
+let client: KnotLanguageClient | null = null;
 let crashCount = 0;
 const MAX_CRASH_RETRIES = 3;
 let statusBarItem: vscode.StatusBarItem | null = null;
@@ -118,12 +126,12 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
-    const serverOptions: any = {
+    const serverOptions = {
         command: serverPath,
         args: ['--stdio'],
     };
 
-    const clientOptions: any = {
+    const clientOptions = {
         documentSelector: [
             { scheme: 'file', language: 'twee' },
         ],
@@ -134,16 +142,12 @@ export async function activate(context: vscode.ExtensionContext) {
         },
     };
 
-    // We need to import LanguageClient dynamically since the types
-    // are from vscode-languageclient
-    const { LanguageClient } = await import('vscode-languageclient');
-
-    client = new LanguageClient(
+    client = new LanguageClientCtor(
         'knot',
         'Knot Language Server',
         serverOptions,
         clientOptions
-    );
+    ) as unknown as KnotLanguageClient;
 
     // Register custom notification handler for knot/indexProgress
     client.onNotification(
@@ -161,10 +165,10 @@ export async function activate(context: vscode.ExtensionContext) {
                         try {
                             const wsFolders = vscode.workspace.workspaceFolders;
                             if (wsFolders && wsFolders.length > 0) {
-                                const profile: any = await client.sendRequest('knot/profile', {
+                                const profile = await client?.sendRequest<KnotProfileResponse>('knot/profile', {
                                     workspace_uri: wsFolders[0].uri.toString(),
                                 });
-                                if (statusBarItem) {
+                                if (statusBarItem && profile) {
                                     const fmt = profile.format || 'Unknown';
                                     const passages = profile.passage_count || 0;
                                     statusBarItem.text = `$(graph) Knot: ${fmt} | ${passages} passages`;
@@ -223,8 +227,8 @@ export async function activate(context: vscode.ExtensionContext) {
         )
     );
 
-    // Create the Play Mode provider
-    playModeProvider = new PlayModeProvider(context.extensionUri);
+    // Create the Play Mode provider — now requires context for storage URI
+    playModeProvider = new PlayModeProvider(context.extensionUri, context);
 
     // Create the build output channel
     buildOutputChannel = vscode.window.createOutputChannel('Knot Build');
@@ -295,6 +299,117 @@ function refreshStoryMap() {
 }
 
 // ---------------------------------------------------------------------------
+// Tweego compiler availability
+// ---------------------------------------------------------------------------
+
+/** Check if Tweego is available; prompt to download if not. */
+async function ensureTweegoAvailable(context: vscode.ExtensionContext): Promise<string | undefined> {
+    // 1. Check if tweego is on PATH via the language server
+    try {
+        const result = await client?.sendRequest<KnotCompilerDetectResponse>('knot/compilerDetect', { workspace_uri: '' });
+        if (result && result.compiler_found) {
+            return result.compiler_path;
+        }
+    } catch { /* ignore */ }
+
+    // 2. Check if tweego is in .knot/bin/ in the workspace
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders) {
+        const localBin = vscode.Uri.joinPath(workspaceFolders[0].uri, '.knot', 'bin');
+        const tweegoPath = vscode.Uri.joinPath(localBin, process.platform === 'win32' ? 'tweego.exe' : 'tweego');
+        try {
+            await vscode.workspace.fs.stat(tweegoPath);
+            return tweegoPath.fsPath;
+        } catch { /* not found */ }
+    }
+
+    // 3. Prompt user to download
+    const choice = await vscode.window.showWarningMessage(
+        'Tweego compiler not found. Knot needs Tweego to build and preview Twine stories.',
+        'Download Tweego',
+        'Set Path Manually',
+        'Cancel'
+    );
+
+    if (choice === 'Download Tweego') {
+        return await downloadTweego(context);
+    } else if (choice === 'Set Path Manually') {
+        const fileUri = await vscode.window.showOpenDialog({
+            canSelectFiles: true,
+            canSelectFolders: false,
+            canSelectMany: false,
+            title: 'Select Tweego binary',
+            filters: { 'Executable': ['exe', 'sh', ''] }
+        });
+        if (fileUri && fileUri[0]) {
+            return fileUri[0].fsPath;
+        }
+    }
+    return undefined;
+}
+
+/** Download Tweego from GitHub releases. */
+async function downloadTweego(context: vscode.ExtensionContext): Promise<string | undefined> {
+    const platform = process.platform;
+
+    // Determine download URL based on platform
+    let downloadUrl: string;
+    let binaryName: string;
+
+    if (platform === 'win32') {
+        downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-windows-x64.zip';
+        binaryName = 'tweego.exe';
+    } else if (platform === 'darwin') {
+        downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-macos-x64.zip';
+        binaryName = 'tweego';
+    } else {
+        downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-linux-x64.zip';
+        binaryName = 'tweego';
+    }
+
+    return vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Downloading Tweego...',
+        cancellable: true
+    }, async (progress, _token) => {
+        try {
+            progress.report({ message: 'Downloading...' });
+
+            const binDir = vscode.Uri.joinPath(context.globalStorageUri, 'tweego');
+            await vscode.workspace.fs.createDirectory(binDir);
+            const zipPath = vscode.Uri.joinPath(binDir, 'tweego.zip');
+
+            // Download
+            const response = await fetch(downloadUrl);
+            if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            await vscode.workspace.fs.writeFile(zipPath, new Uint8Array(buffer));
+
+            // Extract (use system unzip)
+            const { execSync } = require('child_process');
+            execSync(`unzip -o "${zipPath.fsPath}" -d "${binDir.fsPath}"`, { stdio: 'pipe' });
+
+            // Find the binary
+            const binaryPath = vscode.Uri.joinPath(binDir, binaryName);
+
+            // Make executable on Unix
+            if (platform !== 'win32') {
+                execSync(`chmod +x "${binaryPath.fsPath}"`, { stdio: 'pipe' });
+            }
+
+            // Clean up zip
+            await vscode.workspace.fs.delete(zipPath);
+
+            vscode.window.showInformationMessage('Tweego downloaded successfully!');
+            return binaryPath.fsPath;
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to download Tweego: ${e}`);
+            return undefined;
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Command registration
 // ---------------------------------------------------------------------------
 
@@ -317,6 +432,12 @@ function registerCommands(context: vscode.ExtensionContext) {
                 return;
             }
 
+            // Check for Tweego availability
+            const tweegoPath = await ensureTweegoAvailable(context);
+            if (!tweegoPath) {
+                return;
+            }
+
             const workspaceFolders = vscode.workspace.workspaceFolders;
             if (!workspaceFolders || workspaceFolders.length === 0) {
                 vscode.window.showWarningMessage('Knot: No workspace folder open.');
@@ -324,7 +445,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
 
             try {
-                const result = await client.sendRequest('knot/build', {
+                const result = await client.sendRequest<KnotBuildResponse>('knot/build', {
                     workspace_uri: workspaceFolders[0].uri.toString(),
                 });
                 if (result.success) {
@@ -343,8 +464,14 @@ function registerCommands(context: vscode.ExtensionContext) {
     // Play Story
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.play', async () => {
+            // Check for Tweego availability
+            const tweegoPath = await ensureTweegoAvailable(context);
+            if (!tweegoPath) {
+                return;
+            }
+
             if (!playModeProvider) {
-                playModeProvider = new PlayModeProvider(context.extensionUri);
+                playModeProvider = new PlayModeProvider(context.extensionUri, context);
                 if (client) {
                     playModeProvider.setClient(client);
                 }
@@ -386,8 +513,14 @@ function registerCommands(context: vscode.ExtensionContext) {
                 return;
             }
 
+            // Check for Tweego availability
+            const tweegoPath = await ensureTweegoAvailable(context);
+            if (!tweegoPath) {
+                return;
+            }
+
             if (!playModeProvider) {
-                playModeProvider = new PlayModeProvider(context.extensionUri);
+                playModeProvider = new PlayModeProvider(context.extensionUri, context);
                 if (client) {
                     playModeProvider.setClient(client);
                 }
@@ -410,46 +543,41 @@ function registerCommands(context: vscode.ExtensionContext) {
     // Restart Language Server
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.restartServer', async () => {
-            if (client) {
-                try {
-                    await client.stop();
-                } catch {
-                    // Ignore errors during stop
-                }
-                client = null;
-            }
-
-            // Re-activate
             if (statusBarItem) {
                 statusBarItem.text = '$(sync~spin) Knot: Restarting...';
                 statusBarItem.show();
             }
 
-            vscode.commands.executeCommand('workbench.action.reloadWindow');
+            try {
+                await client?.stop();
+                // Small delay to let the server fully shut down
+                await new Promise(resolve => setTimeout(resolve, 500));
+                await client?.start();
+                vscode.window.showInformationMessage('Knot language server restarted.');
+            } catch (e) {
+                vscode.window.showErrorMessage(`Failed to restart Knot server: ${e}`);
+            }
         })
     );
 
     // Re-index Workspace
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.reindexWorkspace', async () => {
-            if (!client || !client.isRunning()) {
-                vscode.window.showWarningMessage('Knot: Language server is not running.');
-                return;
-            }
-
             if (statusBarItem) {
                 statusBarItem.text = '$(sync~spin) Knot: Re-indexing...';
                 statusBarItem.show();
             }
 
-            // Restart the server to force a full re-index
             try {
-                await client.stop();
-            } catch {
-                // Ignore
+                await client?.stop();
+                await new Promise(resolve => setTimeout(resolve, 500));
+                await client?.start();
+                // Request re-indexing
+                await client?.sendRequest('knot/reindexWorkspace', {});
+                vscode.window.showInformationMessage('Knot workspace re-indexed.');
+            } catch (e) {
+                vscode.window.showErrorMessage(`Failed to re-index workspace: ${e}`);
             }
-            client = null;
-            vscode.commands.executeCommand('workbench.action.reloadWindow');
         })
     );
 
@@ -468,7 +596,7 @@ function registerCommands(context: vscode.ExtensionContext) {
             }
 
             try {
-                const result = await client.sendRequest('knot/compilerDetect', {
+                const result = await client.sendRequest<KnotCompilerDetectResponse>('knot/compilerDetect', {
                     workspace_uri: workspaceFolders[0].uri.toString(),
                 });
                 if (result.compiler_found) {
@@ -492,16 +620,16 @@ function registerCommands(context: vscode.ExtensionContext) {
             if (!client || !client.isRunning()) {
                 return;
             }
-            // Search for the passage across all open documents
+
+            // First, search open documents
             for (const doc of vscode.workspace.textDocuments) {
                 if (doc.languageId !== 'twee') { continue; }
-                const text = doc.getText();
-                for (let i = 0; i < text.lineCount; i++) {
-                    const line = text.lineAt(i).text;
+                for (let i = 0; i < doc.lineCount; i++) {
+                    const line = doc.lineAt(i).text;
                     if (line.startsWith('::')) {
                         const name = line.substring(2).trim().split('[')[0].trim();
                         if (name === passageName) {
-                            const editor = await vscode.window.showTextDocument(doc, {
+                            await vscode.window.showTextDocument(doc, {
                                 preview: true,
                                 selection: new vscode.Range(i, 0, i, line.length),
                             });
@@ -510,9 +638,196 @@ function registerCommands(context: vscode.ExtensionContext) {
                     }
                 }
             }
-            vscode.window.showWarningMessage(`Knot: Passage '${passageName}' not found in open documents.`);
+
+            // If not found in open documents, search all workspace files
+            const files = await vscode.workspace.findFiles('**/*.{tw,twee}');
+            for (const fileUri of files) {
+                try {
+                    const doc = await vscode.workspace.openTextDocument(fileUri);
+                    for (let i = 0; i < doc.lineCount; i++) {
+                        const line = doc.lineAt(i).text;
+                        if (line.startsWith('::')) {
+                            const name = line.substring(2).trim().split('[')[0].trim();
+                            if (name === passageName) {
+                                await vscode.window.showTextDocument(doc, {
+                                    preview: true,
+                                    selection: new vscode.Range(i, 0, i, line.length),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                } catch {
+                    // Skip files that can't be opened
+                }
+            }
+
+            vscode.window.showWarningMessage(`Knot: Passage '${passageName}' not found in workspace.`);
         })
     );
+
+    // Initialize Project
+    const initProject = vscode.commands.registerCommand('knot.initProject', async () => {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            vscode.window.showErrorMessage('Please open a workspace folder first.');
+            return;
+        }
+
+        const rootUri = workspaceFolders[0].uri;
+
+        // Step 1: Select story format
+        const formatItems: vscode.QuickPickItem[] = [
+            { label: 'SugarCube 2', description: 'Most popular, full-featured format', detail: 'Best for complex stories with variables, macros, and state management' },
+            { label: 'Harlowe 3', description: 'Built-in Twine 2 format', detail: 'Beginner-friendly, uses markup-based syntax' },
+            { label: 'Chapbook', description: 'Simple, modern format', detail: 'Uses markdown-style syntax with state management' },
+            { label: 'Snowman', description: 'Developer-oriented format', detail: 'Uses JavaScript and Underscore.js templating' },
+        ];
+
+        const selectedFormat = await vscode.window.showQuickPick(formatItems, {
+            placeHolder: 'Select your story format',
+            title: 'Knot: Initialize Twine Project'
+        });
+        if (!selectedFormat) return;
+
+        const formatName = selectedFormat.label.split(' ')[0]; // SugarCube, Harlowe, Chapbook, Snowman
+
+        // Step 2: Story title
+        const storyTitle = await vscode.window.showInputBox({
+            prompt: 'Enter your story title',
+            value: 'My Story',
+            title: 'Knot: Initialize Twine Project'
+        });
+        if (!storyTitle) return;
+
+        // Step 3: Generate project files
+        try {
+            // Create directory structure
+            const srcDir = vscode.Uri.joinPath(rootUri, 'src');
+            const assetsDir = vscode.Uri.joinPath(rootUri, 'assets');
+            const stylesDir = vscode.Uri.joinPath(rootUri, 'styles');
+            await vscode.workspace.fs.createDirectory(srcDir);
+            await vscode.workspace.fs.createDirectory(assetsDir);
+            await vscode.workspace.fs.createDirectory(stylesDir);
+
+            // Generate IFID
+            const ifid = crypto.randomUUID().toUpperCase();
+
+            // Generate main.tw with StoryData and Start passage
+            let mainContent = '';
+
+            // StoryTitle passage
+            mainContent += `:: StoryTitle\n${storyTitle}\n\n`;
+
+            // StoryData passage
+            mainContent += `:: StoryData\n`;
+            mainContent += JSON.stringify({
+                ifid,
+                format: formatName,
+                "format-version": formatName === 'SugarCube' ? '2.36.1' : formatName === 'Harlowe' ? '3.3.0' : formatName === 'Chapbook' ? '1.2.1' : '1.4.0',
+                start: 'Start',
+                zoom: 1
+            }, null, 2);
+            mainContent += '\n\n';
+
+            // Start passage with format-specific content
+            mainContent += `:: Start\n`;
+            switch (formatName) {
+                case 'SugarCube':
+                    mainContent += `Welcome to ${storyTitle}.\n\n`;
+                    mainContent += `<<set $playerName to "">>\n`;
+                    mainContent += `<<set $score to 0>>\n\n`;
+                    mainContent += `[[Enter the story->First Passage]]\n\n`;
+                    mainContent += `:: First Passage\n`;
+                    mainContent += `You find yourself at the beginning of your adventure.\n\n`;
+                    mainContent += `<<if $score eq 0>>You have no points yet.<<else>>You have $score points.<</if>>\n\n`;
+                    mainContent += `<<set $score to $score + 1>>\n\n`;
+                    mainContent += `[[Continue->Second Passage]]\n\n`;
+                    mainContent += `:: Second Passage\n`;
+                    mainContent += `The story continues from here.\n\n`;
+                    mainContent += `[[Go back->Start]]\n`;
+                    break;
+                case 'Harlowe':
+                    mainContent += `Welcome to ${storyTitle}.\n\n`;
+                    mainContent += `(set: $playerName to "")\n`;
+                    mainContent += `(set: $score to 0)\n\n`;
+                    mainContent += `[[Enter the story->First Passage]]\n\n`;
+                    mainContent += `:: First Passage\n`;
+                    mainContent += `You find yourself at the beginning of your adventure.\n\n`;
+                    mainContent += `(if: $score is 0)[You have no points yet.](else:)[You have $score points.]\n\n`;
+                    mainContent += `(set: $score to it + 1)\n\n`;
+                    mainContent += `[[Continue->Second Passage]]\n\n`;
+                    mainContent += `:: Second Passage\n`;
+                    mainContent += `The story continues from here.\n\n`;
+                    mainContent += `[[Go back->Start]]\n`;
+                    break;
+                case 'Chapbook':
+                    mainContent += `Welcome to ${storyTitle}.\n\n`;
+                    mainContent += `[javascript]\nstate.score = 0;\n[/javascript]\n\n`;
+                    mainContent += `[[First Passage]]\n\n`;
+                    mainContent += `:: First Passage\n`;
+                    mainContent += `You find yourself at the beginning of your adventure.\n\n`;
+                    mainContent += `Your score is {state.score}.\n\n`;
+                    mainContent += `[javascript]\nstate.score = state.score + 1;\n[/javascript]\n\n`;
+                    mainContent += `[[Second Passage]]\n\n`;
+                    mainContent += `:: Second Passage\n`;
+                    mainContent += `The story continues from here.\n\n`;
+                    mainContent += `[[Start]]\n`;
+                    break;
+                case 'Snowman':
+                    mainContent += `Welcome to ${storyTitle}.\n\n`;
+                    mainContent += `<% s.score = 0; %>\n\n`;
+                    mainContent += `[[First Passage]]\n\n`;
+                    mainContent += `:: First Passage\n`;
+                    mainContent += `You find yourself at the beginning of your adventure.\n\n`;
+                    mainContent += `<p>Your score is <%= s.score %>.</p>\n\n`;
+                    mainContent += `<% s.score += 1; %>\n\n`;
+                    mainContent += `[[Second Passage]]\n\n`;
+                    mainContent += `:: Second Passage\n`;
+                    mainContent += `The story continues from here.\n\n`;
+                    mainContent += `[[Start]]\n`;
+                    break;
+            }
+
+            // Write main.tw
+            const mainFile = vscode.Uri.joinPath(srcDir, 'main.tw');
+            await vscode.workspace.fs.writeFile(mainFile, new TextEncoder().encode(mainContent));
+
+            // Generate .vscode/knot.json config
+            const knotConfig = {
+                format: formatName,
+                compiler: {
+                    path: '',
+                    args: []
+                },
+                diagnostics: {
+                    'broken-link': 'warning',
+                    'unreachable-passage': 'hint',
+                    'infinite-loop': 'warning',
+                    'uninitialized-variable': 'warning',
+                    'unused-variable': 'hint'
+                }
+            };
+            const vscodeDir = vscode.Uri.joinPath(rootUri, '.vscode');
+            await vscode.workspace.fs.createDirectory(vscodeDir);
+            const knotConfigFile = vscode.Uri.joinPath(vscodeDir, 'knot.json');
+            await vscode.workspace.fs.writeFile(knotConfigFile, new TextEncoder().encode(JSON.stringify(knotConfig, null, 2)));
+
+            // Generate styles/story.css
+            const cssFile = vscode.Uri.joinPath(stylesDir, 'story.css');
+            await vscode.workspace.fs.writeFile(cssFile, new TextEncoder().encode('/* Custom story styles */\n'));
+
+            vscode.window.showInformationMessage(`Knot: Initialized ${formatName} project "${storyTitle}" successfully!`);
+
+            // Open the main file
+            const doc = await vscode.workspace.openTextDocument(mainFile);
+            await vscode.window.showTextDocument(doc);
+
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to initialize project: ${e}`);
+        }
+    });
+    context.subscriptions.push(initProject);
 }
 
 // ---------------------------------------------------------------------------
@@ -533,16 +848,13 @@ function registerLanguageStatus(context: vscode.ExtensionContext) {
     context.subscriptions.push(languageStatusItem);
 
     // Update language status when indexing progress arrives
-    const origOnNotification = client.onNotification;
-    // The client is already set up with knot/indexProgress handler above,
-    // so we update language status from there
     // We also set up a periodic refresh for profile data
     const statusRefreshInterval = setInterval(async () => {
         if (!client || !client.isRunning() || !languageStatusItem) { return; }
         try {
             const wsFolders = vscode.workspace.workspaceFolders;
             if (wsFolders && wsFolders.length > 0) {
-                const profile: any = await client.sendRequest('knot/profile', {
+                const profile = await client.sendRequest<KnotProfileResponse>('knot/profile', {
                     workspace_uri: wsFolders[0].uri.toString(),
                 });
                 const fmt = profile.format || 'Unknown';
@@ -651,7 +963,7 @@ async function updateDecorations(editor: vscode.TextEditor) {
         const wsFolders = vscode.workspace.workspaceFolders;
         if (wsFolders && wsFolders.length > 0) {
             // Fetch graph data to find unreachable passages
-            const graph: any = await client.sendRequest('knot/graph', {
+            const graph = await client.sendRequest<import('./types').KnotGraphResponse>('knot/graph', {
                 workspace_uri: wsFolders[0].uri.toString(),
             });
 
@@ -794,7 +1106,7 @@ class KnotBuildTerminal implements vscode.Pseudoterminal {
         }
 
         try {
-            const result: any = await client.sendRequest('knot/build', {
+            const result = await client.sendRequest<KnotBuildResponse>('knot/build', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
 
@@ -849,7 +1161,7 @@ class KnotWatchTerminal implements vscode.Pseudoterminal {
             if (!workspaceFolders || workspaceFolders.length === 0) { return; }
 
             try {
-                const result: any = await client.sendRequest('knot/build', {
+                const result = await client.sendRequest<KnotBuildResponse>('knot/build', {
                     workspace_uri: workspaceFolders[0].uri.toString(),
                 });
                 if (result.success) {
@@ -927,13 +1239,6 @@ function handleServerFailure(
 // ---------------------------------------------------------------------------
 // Deactivation
 // ---------------------------------------------------------------------------
-
-/** Refresh the Play Mode webview if it's active. */
-function refreshPlayMode() {
-    if (playModeProvider) {
-        playModeProvider.refresh();
-    }
-}
 
 export async function deactivate() {
     if (playModeProvider) {

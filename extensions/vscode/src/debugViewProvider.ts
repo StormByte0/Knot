@@ -6,43 +6,7 @@
 //! step-over capability, and variable watch.
 
 import * as vscode from 'vscode';
-
-// ---------------------------------------------------------------------------
-// Debug data types (matches Rust-side KnotDebugResponse)
-// ---------------------------------------------------------------------------
-
-interface KnotDebugVariable {
-    name: string;
-    is_temporary: boolean;
-}
-
-interface KnotDebugLink {
-    passage_name: string;
-    display_text: string | null;
-    target_exists: boolean;
-}
-
-interface KnotDebugDiagnostic {
-    kind: string;
-    message: string;
-}
-
-interface KnotDebugResponse {
-    passage_name: string;
-    file_uri: string;
-    is_reachable: boolean;
-    is_special: boolean;
-    is_metadata: boolean;
-    variables_written: KnotDebugVariable[];
-    variables_read: KnotDebugVariable[];
-    initialized_at_entry: string[];
-    outgoing_links: KnotDebugLink[];
-    incoming_links: KnotDebugLink[];
-    predecessors: string[];
-    successors: string[];
-    in_infinite_loop: boolean;
-    diagnostics: KnotDebugDiagnostic[];
-}
+import { KnotLanguageClient, KnotDebugResponse } from './types';
 
 interface KnotTraceStep {
     passage_name: string;
@@ -101,7 +65,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'knot.debugView';
 
     private _view?: vscode.WebviewView;
-    private _client: any;
+    private _client: KnotLanguageClient | null = null;
     private _currentPassage: string = '';
     private _debugData: KnotDebugResponse | null = null;
     private _traceData: KnotTraceResponse | null = null;
@@ -112,7 +76,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
     /** Set the language client reference. */
-    public setClient(client: any) {
+    public setClient(client: KnotLanguageClient | null) {
         this._client = client;
     }
 
@@ -197,7 +161,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
         }
 
         try {
-            const result: KnotDebugResponse = await this._client.sendRequest('knot/debug', {
+            const result = await this._client.sendRequest<KnotDebugResponse>('knot/debug', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
                 passage_name: this._currentPassage,
             });
@@ -345,6 +309,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Debug</title>
     <style>

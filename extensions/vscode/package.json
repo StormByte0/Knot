@@ -22,7 +22,6 @@
   ],
   "activationEvents": [
     "onLanguage:twee",
-    "onLanguage:sugarcube",
     "workspaceContains:**/*.tw",
     "workspaceContains:**/*.twee"
   ],
@@ -96,6 +95,12 @@
         "title": "Knot: Play from This Passage",
         "category": "Knot",
         "icon": "$(play)"
+      },
+      {
+        "command": "knot.initProject",
+        "title": "Knot: Initialize Project",
+        "category": "Knot",
+        "icon": "$(add)"
       }
     ],
     "keybindings": [
