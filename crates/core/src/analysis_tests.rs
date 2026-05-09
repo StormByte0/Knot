@@ -94,6 +94,7 @@ mod tests {
                 file_uri: file_uri.clone(),
                 is_special: *is_special,
                 is_metadata: *is_metadata,
+                is_placeholder: false,
             });
         }
 
@@ -536,6 +537,7 @@ mod tests {
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         graph.add_passage(start);
         graph.add_edge(
@@ -553,6 +555,7 @@ mod tests {
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         graph.add_passage(forest);
         graph.recheck_broken_links();
@@ -572,12 +575,14 @@ mod tests {
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         graph.add_passage(start);
         graph.add_passage(forest);
@@ -723,24 +728,28 @@ mod tests {
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
             file_uri: "file:///project/story.tw".to_string(),
             is_special: false,
             is_metadata: false,
+            is_placeholder: false,
         };
         let story_init = PassageNode {
             name: "StoryInit".to_string(),
             file_uri: "file:///project/story.tw".to_string(),
             is_special: true,
             is_metadata: false,
+            is_placeholder: false,
         };
         let story_data = PassageNode {
             name: "StoryData".to_string(),
             file_uri: "file:///project/story.tw".to_string(),
             is_special: true,
             is_metadata: true,
+            is_placeholder: false,
         };
 
         graph.add_passage(start);
@@ -765,8 +774,10 @@ mod tests {
 
         let export = graph.export_graph_with_metadata(&tags, &unreachable);
 
-        // Verify nodes — 5 total (Start, Forest, StoryInit, StoryData + auto-created MissingPassage placeholder)
-        assert_eq!(export.nodes.len(), 5);
+        // Verify nodes — 4 real nodes (Start, Forest, StoryInit, StoryData).
+        // MissingPassage is a placeholder node (created by get_or_create_node for
+        // broken-link targets) and is filtered out of the export.
+        assert_eq!(export.nodes.len(), 4);
 
         let start_node = export.nodes.iter().find(|n| n.id == "Start").unwrap();
         assert_eq!(start_node.tags, vec!["important", "begin"]);

@@ -33,6 +33,7 @@ serde_json = "1"
 # Parsing
 logos = "0.15"
 regex = "1"
+once_cell = "1"
 
 # Logging
 tracing = "0.1"
@@ -48,3 +49,4 @@ knot-formats = { path = "crates/formats" }
 
 # Shared across multiple crates
 url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }

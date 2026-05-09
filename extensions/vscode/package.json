@@ -157,6 +157,13 @@
           "name": "Workspace Profile",
           "icon": "$(dashboard)",
           "visibility": "visible"
+        },
+        {
+          "type": "webview",
+          "id": "knot.variableFlowView",
+          "name": "Variable Flow",
+          "icon": "$(symbol-variable)",
+          "visibility": "visible"
         }
       ]
     },

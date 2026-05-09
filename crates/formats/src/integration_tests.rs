@@ -66,6 +66,7 @@ fn rebuild_graph(workspace: &mut Workspace) {
             file_uri: file_uri.clone(),
             is_special: *is_special,
             is_metadata: *is_metadata,
+            is_placeholder: false,
         });
     }
 

@@ -91,6 +91,7 @@ impl ServerState {
                 source: e.source,
                 target: e.target,
                 is_broken: e.is_broken,
+                display_text: e.display_text,
             })
             .collect();
 
@@ -107,6 +108,18 @@ impl ServerState {
         params: KnotBuildParams,
     ) -> Result<KnotBuildResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/build: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let root_uri = inner.workspace.root_uri.clone();
         let config = inner.workspace.config.clone();
         drop(inner);
@@ -253,6 +266,18 @@ impl ServerState {
         params: KnotVariableFlowParams,
     ) -> Result<KnotVariableFlowResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/variableFlow: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let workspace = &inner.workspace;
         let format = workspace.resolve_format();
 
@@ -331,6 +356,18 @@ impl ServerState {
         params: KnotDebugParams,
     ) -> Result<KnotDebugResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/debug: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let workspace = &inner.workspace;
 
         // Find the passage
@@ -473,6 +510,18 @@ impl ServerState {
         params: KnotTraceParams,
     ) -> Result<KnotTraceResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/trace: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let workspace = &inner.workspace;
 
         let mut steps = Vec::new();
@@ -627,9 +676,9 @@ impl ServerState {
                         }
                     }
 
-                    // Orphan detection (1 incoming link)
+                    // Orphan detection (0 incoming links)
                     let in_count = workspace.graph.incoming_neighbors(&passage.name).len();
-                    if in_count == 1 && !passage.is_special {
+                    if in_count == 0 && !passage.is_special {
                         orphaned_count += 1;
                     }
                 }
@@ -879,6 +928,19 @@ impl ServerState {
         &self,
         params: KnotBreakpointsParams,
     ) -> Result<KnotBreakpointsResponse, tower_lsp::jsonrpc::Error> {
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let inner = self.inner.read().await;
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/breakpoints: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+            drop(inner);
+        }
+
         // Handle mutations
         if params.clear_all == Some(true) {
             let mut inner = self.inner.write().await;
@@ -927,6 +989,18 @@ impl ServerState {
         params: KnotStepOverParams,
     ) -> Result<KnotStepOverResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/stepOver: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let workspace = &inner.workspace;
 
         let (choices, variables_written, variables_read) =
@@ -970,6 +1044,18 @@ impl ServerState {
         params: KnotWatchVariablesParams,
     ) -> Result<KnotWatchVariablesResponse, tower_lsp::jsonrpc::Error> {
         let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/watchVariables: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
         let workspace = &inner.workspace;
         let format = workspace.resolve_format();
 
@@ -1097,10 +1183,52 @@ impl ServerState {
     }
 
     /// `knot/reindexWorkspace` — trigger a full re-index of the workspace.
+    /// `knot/generateIfid` — generate a new IFID (Interactive Fiction IDentifier).
+    ///
+    /// IFIDs are UUIDs in uppercase per the Twine/Twee specification.
+    /// This endpoint is accessible at workspace init time so that clients
+    /// can generate IFIDs for new project skeletons.
+    pub async fn knot_generate_ifid(
+        &self,
+        params: KnotGenerateIfidParams,
+    ) -> Result<KnotGenerateIfidResponse, tower_lsp::jsonrpc::Error> {
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let inner = self.inner.read().await;
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/generateIfid: workspace_uri '{}' doesn't match server root '{}' — proceeding anyway",
+                    params.workspace_uri, root
+                );
+            }
+            drop(inner);
+        }
+
+        let ifid = knot_core::Workspace::generate_ifid();
+        tracing::info!("Generated IFID: {}", ifid);
+
+        Ok(KnotGenerateIfidResponse { ifid })
+    }
+
+    /// `knot/reindexWorkspace` — re-index all workspace files.
     pub async fn knot_reindex_workspace(
         &self,
-        _params: KnotReindexParams,
+        params: KnotReindexParams,
     ) -> Result<KnotReindexResponse, tower_lsp::jsonrpc::Error> {
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let inner = self.inner.read().await;
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/reindexWorkspace: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+            drop(inner);
+        }
+
         tracing::info!("knot/reindexWorkspace: re-indexing workspace");
 
         // Reset workspace state — create a fresh workspace keeping the root URI and config

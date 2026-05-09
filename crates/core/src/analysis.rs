@@ -137,17 +137,14 @@ impl AnalysisEngine {
 
         // Step 4: Generate diagnostics from the flow states
         diagnostics.extend(Self::detect_uninitialized_reads(
-            workspace,
             &passage_data,
             &flow_states,
         ));
         diagnostics.extend(Self::detect_unused_variables(
-            workspace,
             &passage_data,
             &flow_states,
         ));
         diagnostics.extend(Self::detect_redundant_writes(
-            workspace,
             &passage_data,
         ));
 
@@ -316,13 +313,13 @@ impl AnalysisEngine {
         diagnostics
     }
 
-    /// Detect orphaned passages — passages with only one incoming link.
+    /// Detect orphaned passages — passages with no incoming links.
     ///
-    /// An orphaned passage is one that is only reachable through a single
-    /// path, meaning it has exactly one predecessor in the graph. While
-    /// this is not inherently wrong, it may indicate a passage that is
-    /// insufficiently connected to the story structure or that the author
-    /// intended additional paths to reach it.
+    /// A true orphaned passage is one that has zero incoming links, meaning
+    /// no other passage in the workspace links to it. This almost always
+    /// indicates a dead branch or a passage the author forgot to connect.
+    /// Passages with exactly one incoming link are NOT flagged, since that
+    /// is the normal state for linear narrative chains.
     fn detect_orphaned_passages(workspace: &Workspace) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
 
@@ -333,15 +330,14 @@ impl AnalysisEngine {
                 }
 
                 let incoming = workspace.graph.incoming_neighbors(&passage.name);
-                if incoming.len() == 1 {
+                if incoming.is_empty() {
                     diagnostics.push(GraphDiagnostic {
                         passage_name: passage.name.clone(),
                         file_uri: doc.uri.to_string(),
                         kind: DiagnosticKind::OrphanedPassage,
                         message: format!(
-                            "Passage '{}' has only one incoming link (from '{}'); consider adding more paths to reach it",
+                            "Passage '{}' has no incoming links — no other passage links to it",
                             passage.name,
-                            incoming.first().map(|s| s.as_str()).unwrap_or("unknown")
                         ),
                     });
                 }
@@ -528,7 +524,7 @@ impl AnalysisEngine {
     /// Harlowe's startup, and Snowman's Script passage. These writes
     /// form the initial "definitely initialized" seed set.
     pub fn collect_special_passage_initializers(
-        workspace: &Workspace,
+        _workspace: &Workspace,
         passage_data: &HashMap<String, PassageVarData>,
     ) -> InitSet {
         let mut seed = InitSet::new();
@@ -541,9 +537,11 @@ impl AnalysisEngine {
             }
         }
 
-        // Also check for special passages defined in format plugins
-        // that may not be in passage_data (e.g., if they're in unindexed files)
-        let _ = workspace; // Ensure we use the workspace parameter
+        // TODO: Also check for special passages defined in format plugins
+        // that may not be in passage_data (e.g., if they're in unindexed files).
+        // This would require inspecting workspace.format_registry via the
+        // server's FormatRegistry, which is not accessible from the core crate.
+        // When this is implemented, the _workspace parameter will be used.
         seed
     }
 
@@ -733,7 +731,6 @@ impl AnalysisEngine {
     /// For each passage, we check reads against the entry initialized set.
     /// Within a passage, earlier writes can satisfy later reads.
     fn detect_uninitialized_reads(
-        workspace: &Workspace,
         passage_data: &HashMap<String, PassageVarData>,
         flow_states: &HashMap<String, PassageFlowState>,
     ) -> Vec<GraphDiagnostic> {
@@ -782,7 +779,6 @@ impl AnalysisEngine {
             }
         }
 
-        let _ = workspace;
         diagnostics
     }
 
@@ -793,7 +789,6 @@ impl AnalysisEngine {
     /// 2. It is never read in any reachable passage, AND
     /// 3. It is not a special passage initializer (those have side effects)
     fn detect_unused_variables(
-        workspace: &Workspace,
         passage_data: &HashMap<String, PassageVarData>,
         flow_states: &HashMap<String, PassageFlowState>,
     ) -> Vec<GraphDiagnostic> {
@@ -839,7 +834,6 @@ impl AnalysisEngine {
             }
         }
 
-        let _ = workspace;
         diagnostics
     }
 
@@ -852,7 +846,6 @@ impl AnalysisEngine {
     /// <<set $gold to 20>>  ← redundant write
     /// ```
     fn detect_redundant_writes(
-        workspace: &Workspace,
         passage_data: &HashMap<String, PassageVarData>,
     ) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
@@ -892,7 +885,6 @@ impl AnalysisEngine {
             }
         }
 
-        let _ = workspace;
         diagnostics
     }
 }
