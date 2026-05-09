@@ -142,6 +142,26 @@ static RE_STORY_GET: Lazy<Regex> =
 static RE_STORY_PASSAGE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
 
+/// Navigation macros with a single passage argument: <<goto "target">>,
+/// <<include "target">>, <<display "target">>, <<actions "target">>.
+/// Supports both double and single quoted strings.
+static RE_NAV_MACRO_SINGLE_ARG: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"<<(?:goto|include|display|actions)\s+["']([^"']+)["']"#
+    ).unwrap()
+});
+
+/// Link/button macros with label + passage arguments:
+/// <<link "label" "target">>, <<button "label" "target">>,
+/// <<linkappend "label" "target">>, <<linkprepend "label" "target">>,
+/// <<linkreplace "label" "target">>, <<click "label" "target">>.
+/// Supports both double and single quoted strings.
+static RE_NAV_MACRO_LABEL_PASSAGE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"<<(?:link|button|linkappend|linkprepend|linkreplace|click)\s+["'][^"']*["']\s+["']([^"']+)["']"#
+    ).unwrap()
+});
+
 impl SugarCubePlugin {
     /// Create a new SugarCube plugin instance.
     ///
@@ -556,8 +576,21 @@ impl SugarCubePlugin {
     }
 
     /// SugarCube special passage definitions.
+    ///
+    /// These passages are invoked automatically by the SugarCube engine at
+    /// specific lifecycle points — they are never reached via normal
+    /// `[[links]]`, so they must be exempted from reachability analysis.
+    ///
+    /// The definitions here must cover **every** name listed in
+    /// `special_passage_names()` and `system_passage_names()` (in
+    /// `macros.rs`) to ensure consistent `is_special` flagging during
+    /// parsing. Any name that appears in those sets but not here will
+    /// be treated as a normal passage and flagged as unreachable.
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
+            // ── Startup ────────────────────────────────────────────────
+            // StoryInit runs before the first passage is rendered.
+            // Most variable initialisation happens here ($var = …).
             SpecialPassageDef {
                 name: "StoryInit".into(),
                 behavior: SpecialPassageBehavior::Startup,
@@ -565,6 +598,7 @@ impl SugarCubePlugin {
                 participates_in_graph: false,
                 execution_priority: Some(0),
             },
+            // ── Metadata ───────────────────────────────────────────────
             SpecialPassageDef {
                 name: "StoryTitle".into(),
                 behavior: SpecialPassageBehavior::Metadata,
@@ -579,6 +613,8 @@ impl SugarCubePlugin {
                 participates_in_graph: false,
                 execution_priority: None,
             },
+            // ── Chrome / UI passages ───────────────────────────────────
+            // These render as part of the story interface, not the narrative.
             SpecialPassageDef {
                 name: "StoryCaption".into(),
                 behavior: SpecialPassageBehavior::Chrome,
@@ -587,12 +623,74 @@ impl SugarCubePlugin {
                 execution_priority: Some(100),
             },
             SpecialPassageDef {
+                name: "StoryBanner".into(),
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(95),
+            },
+            SpecialPassageDef {
+                name: "StorySubtitle".into(),
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(96),
+            },
+            SpecialPassageDef {
+                name: "StoryAuthor".into(),
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(97),
+            },
+            SpecialPassageDef {
+                name: "StoryDisplayTitle".into(),
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(98),
+            },
+            SpecialPassageDef {
                 name: "StoryMenu".into(),
                 behavior: SpecialPassageBehavior::Chrome,
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(101),
             },
+            SpecialPassageDef {
+                name: "StoryShare".into(),
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(102),
+            },
+            // StoryInterface replaces the default UI layout entirely.
+            SpecialPassageDef {
+                name: "StoryInterface".into(),
+                behavior: SpecialPassageBehavior::Custom("StoryInterface".into()),
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: None,
+            },
+            // ── System passages (script / style) ───────────────────────
+            // "Story JavaScript" and "Story Stylesheet" are system-level
+            // passages that inject JS/CSS into the compiled story. They
+            // never participate in narrative flow.
+            SpecialPassageDef {
+                name: "Story JavaScript".into(),
+                behavior: SpecialPassageBehavior::Custom("StoryJavaScript".into()),
+                contributes_variables: true,
+                participates_in_graph: false,
+                execution_priority: None,
+            },
+            SpecialPassageDef {
+                name: "Story Stylesheet".into(),
+                behavior: SpecialPassageBehavior::Custom("StoryStylesheet".into()),
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: None,
+            },
+            // ── Passage lifecycle ──────────────────────────────────────
             SpecialPassageDef {
                 name: "PassageReady".into(),
                 behavior: SpecialPassageBehavior::PassageReady,
@@ -833,6 +931,66 @@ impl SugarCubePlugin {
         links
     }
 
+    /// Extract passage references from navigation macros with literal
+    /// string arguments.
+    ///
+    /// SugarCube has two categories of macro-based navigation:
+    ///
+    /// 1. **Single-arg navigation** — the first (and only) quoted string
+    ///    is the passage name:
+    ///    - `<<goto "target">>`
+    ///    - `<<include "target">>`
+    ///    - `<<display "target">>`  (deprecated)
+    ///    - `<<actions "target">>`
+    ///
+    /// 2. **Label-then-passage navigation** — the first quoted string is
+    ///    a display label, the second is the passage name:
+    ///    - `<<link "label" "target">>`
+    ///    - `<<button "label" "target">>`
+    ///    - `<<linkappend "label" "target">>`
+    ///    - `<<linkprepend "label" "target">>`
+    ///    - `<<linkreplace "label" "target">>`
+    ///    - `<<click "label" "target">>`  (deprecated)
+    ///
+    /// Variable-based navigation (e.g., `<<goto $var>>`) is handled
+    /// separately by `resolve_dynamic_navigation_links()` during graph
+    /// building.
+    fn extract_macro_passage_refs(&self, body: &str, body_offset: usize) -> Vec<Link> {
+        let mut links = Vec::new();
+
+        // Single-arg navigation macros: <<goto "target">>, etc.
+        for caps in RE_NAV_MACRO_SINGLE_ARG.captures_iter(body) {
+            if let Some(target_match) = caps.get(1) {
+                let full_match = caps.get(0).unwrap();
+                let target = target_match.as_str().trim().to_string();
+                if !target.is_empty() {
+                    links.push(Link {
+                        display_text: None,
+                        target,
+                        span: body_offset + full_match.start()..body_offset + full_match.end(),
+                    });
+                }
+            }
+        }
+
+        // Label-then-passage macros: <<link "label" "target">>, etc.
+        for caps in RE_NAV_MACRO_LABEL_PASSAGE.captures_iter(body) {
+            if let Some(target_match) = caps.get(1) {
+                let full_match = caps.get(0).unwrap();
+                let target = target_match.as_str().trim().to_string();
+                if !target.is_empty() {
+                    links.push(Link {
+                        display_text: None,
+                        target,
+                        span: body_offset + full_match.start()..body_offset + full_match.end(),
+                    });
+                }
+            }
+        }
+
+        links
+    }
+
     /// Build content blocks from the body text, interleaving text and macro
     /// blocks without duplication.
     ///
@@ -945,6 +1103,9 @@ impl FormatPlugin for SugarCubePlugin {
             passage.links = self.extract_links(body, body_offset);
             // Also extract implicit passage references (data-passage, Engine.play, etc.)
             passage.links.extend(self.extract_implicit_passage_refs(body, body_offset));
+            // Also extract passage references from navigation macros
+            // (<<link "label" "target">>, <<goto "target">>, etc.)
+            passage.links.extend(self.extract_macro_passage_refs(body, body_offset));
             passage.vars = self.extract_vars(body, body_offset);
             let macros = self.extract_macros(body, body_offset);
             passage.body = self.build_body_blocks(body, body_offset, &macros);
