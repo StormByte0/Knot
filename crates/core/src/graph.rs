@@ -26,6 +26,11 @@ pub struct PassageNode {
     pub is_special: bool,
     /// Whether this passage is metadata (StoryData/StoryTitle).
     pub is_metadata: bool,
+    /// Whether this is a placeholder node created for a link target that
+    /// doesn't exist yet. Placeholder nodes have empty `file_uri` and
+    /// should be excluded from reachability analysis and graph exports.
+    #[serde(default)]
+    pub is_placeholder: bool,
 }
 
 /// Edge data representing a link between passages.
@@ -81,9 +86,7 @@ pub enum DiagnosticKind {
     DeadEndPassage,
     /// A passage name contains spaces or special characters.
     InvalidPassageName,
-    /// A passage is only linked to by one other passage (orphaned — may
-    /// be unreachable from the main narrative flow or insufficiently
-    /// connected to the story structure).
+    /// A passage has no incoming links from any other passage (orphaned).
     OrphanedPassage,
     /// A passage has a high cyclomatic complexity (too many links or
     /// conditionals, making it hard to follow or test).
@@ -161,6 +164,10 @@ impl PassageGraph {
     }
 
     /// Get the node index for a passage name, or create a placeholder.
+    ///
+    /// Placeholder nodes represent link targets that don't exist in the
+    /// workspace yet. They are marked with `is_placeholder: true` and
+    /// excluded from reachability analysis and graph exports.
     fn get_or_create_node(&mut self, name: &str) -> NodeIndex {
         if let Some(&idx) = self.name_to_idx.get(name) {
             idx
@@ -170,6 +177,7 @@ impl PassageGraph {
                 file_uri: String::new(),
                 is_special: false,
                 is_metadata: false,
+                is_placeholder: true,
             };
             let idx = self.graph.add_node(node.clone());
             self.name_to_idx.insert(node.name, idx);
@@ -245,6 +253,11 @@ impl PassageGraph {
             // are not reachable via normal narrative links but are invoked
             // by the story engine at specific lifecycle points.
             if node.is_special {
+                continue;
+            }
+            // Skip placeholder nodes — they represent link targets that
+            // don't exist in the workspace, not real passages.
+            if node.is_placeholder {
                 continue;
             }
             if !reachable.contains(&idx) {
@@ -351,6 +364,7 @@ impl PassageGraph {
         let nodes: Vec<GraphNodeExport> = self
             .graph
             .node_indices()
+            .filter(|idx| !self.graph[*idx].is_placeholder)
             .map(|idx| {
                 let node = &self.graph[idx];
                 let out_degree = self

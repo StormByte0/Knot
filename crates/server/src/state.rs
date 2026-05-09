@@ -52,7 +52,11 @@ pub struct ServerState {
 impl ServerState {
     /// Create a new server state from a tower-lsp client handle.
     pub fn new(client: Client) -> Self {
-        let placeholder_uri = Url::parse("file:///").unwrap();
+        let placeholder_uri = Url::parse("file:///").unwrap_or_else(|e| {
+            tracing::error!("Failed to parse placeholder URI: {e}");
+            // This should never happen with a valid constant, but provide a safe fallback
+            Url::parse("file:///").unwrap()
+        });
         let workspace = Workspace::new(placeholder_uri);
 
         Self {

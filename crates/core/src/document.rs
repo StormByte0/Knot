@@ -88,6 +88,13 @@ impl Document {
 
 /// A snapshot of a document at a particular version, used for incremental
 /// updates and change tracking.
+///
+/// **Note:** This struct is currently defined but not yet wired into the
+/// editing pipeline. The intended use is to cache `Rope`-based snapshots for
+/// efficient incremental text updates (avoiding full re-parses on every
+/// keystroke). Once the `apply_change` / incremental update path is connected
+/// to the `did_change` handler, `DocumentSnapshot` will replace the current
+/// `HashMap<Url, String>` text cache in `ServerStateInner`.
 #[derive(Debug, Clone)]
 pub struct DocumentSnapshot {
     /// The document URI.

@@ -257,6 +257,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 if let Ok(path) = uri.to_file_path()
                     && let Ok(text) = std::fs::read_to_string(&path) {
                         let mut inner = state.inner.write().await;
+
+                        // Remember the current format before inserting the new document
+                        let format_before = inner.workspace.resolve_format();
+
                         let format = inner.workspace.resolve_format();
                         let (doc, parse_result) =
                             helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
@@ -265,7 +269,37 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                         helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                         inner.workspace.insert_document(doc);
-                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
+
+                        // If the new file's StoryData changed the format, re-parse
+                        // ALL existing documents with the updated format. Without
+                        // this, documents remain parsed with the wrong format plugin
+                        // (e.g., SugarCube files parsed as Harlowe).
+                        let format_after = inner.workspace.resolve_format();
+                        if format_before != format_after {
+                            tracing::info!(
+                                "Format changed from {:?} to {:?} after file creation — re-parsing all documents",
+                                format_before, format_after
+                            );
+                            // Re-parse all documents with the new format
+                            let uris: Vec<url::Url> = inner.open_documents.keys().cloned().collect();
+                            let texts: Vec<String> = uris.iter()
+                                .filter_map(|u| inner.open_documents.get(u).cloned())
+                                .collect();
+
+                            for (doc_uri, doc_text) in uris.iter().zip(texts.iter()) {
+                                // Skip the newly created file — it's already parsed above
+                                if *doc_uri == uri {
+                                    continue;
+                                }
+                                let (re_parsed, re_result) =
+                                    helpers::parse_with_format_plugin(&inner.format_registry, doc_uri, doc_text, format_after.clone(), 0);
+                                inner.format_diagnostics.insert(doc_uri.clone(), re_result.diagnostics);
+                                helpers::extract_and_set_metadata(&mut inner.workspace, &re_parsed, doc_text);
+                                inner.workspace.insert_document(re_parsed);
+                            }
+                        }
+
+                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after);
 
                         let diagnostics = AnalysisEngine::analyze(&inner.workspace);
                         let open_docs = inner.open_documents.clone();

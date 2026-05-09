@@ -7,12 +7,18 @@ use knot_server::KnotServer;
 #[tokio::main]
 async fn main() {
     // Initialize tracing — MUST write to stderr, since stdout is the LSP transport
+    let directive = "knot_server=info".parse::<tracing_subscriber::filter::Directive>()
+        .unwrap_or_else(|e| {
+            eprintln!("Invalid tracing directive: {e}");
+            // Fallback to a simple level directive
+            "info".parse().unwrap()
+        });
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("knot_server=info".parse().unwrap()),
+                .add_directive(directive),
         )
         .init();
 

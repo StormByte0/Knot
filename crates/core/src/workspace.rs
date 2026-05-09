@@ -38,7 +38,9 @@ pub struct KnotConfig {
     #[serde(default)]
     pub ignore: Vec<String>,
     /// Story format override. When set, this takes priority over StoryData
-    /// as the resolved format (Priority 2 in the architecture).
+    /// as the resolved format (Priority 1 in the architecture). This allows
+    /// developers to test their project with a different format without
+    /// modifying source files.
     #[serde(default)]
     pub format: Option<String>,
 }
@@ -256,23 +258,26 @@ impl Workspace {
     }
 
     /// Resolve the story format using the priority order:
-    /// 1. StoryData passage
-    /// 2. knot.json configuration
-    /// 3. Heuristic scan
-    /// 4. Default (SugarCube 2)
+    /// 1. knot.json configuration (explicit override — takes precedence when set)
+    /// 2. StoryData passage (authoritative format declaration in source)
+    /// 3. Default (SugarCube 2)
+    ///
+    /// The config override exists so developers can test their project with a
+    /// different format without modifying source files. When `config.format`
+    /// is set, it wins over StoryData.
     pub fn resolve_format(&self) -> StoryFormat {
-        // Priority 1: StoryData
-        if let Some(metadata) = &self.metadata {
-            return metadata.format.clone();
-        }
-
-        // Priority 2: knot.json configuration
+        // Priority 1: knot.json configuration (explicit override)
         if let Some(format_str) = &self.config.format
             && let Ok(format) = StoryFormat::from_str(format_str) {
                 return format;
             }
 
-        // Priority 4: Default
+        // Priority 2: StoryData passage
+        if let Some(metadata) = &self.metadata {
+            return metadata.format.clone();
+        }
+
+        // Priority 3: Default
         StoryFormat::default_format()
     }
 
@@ -378,6 +383,15 @@ impl Workspace {
     /// Check if a document with the given URI exists in the workspace.
     pub fn contains_document(&self, uri: &Url) -> bool {
         self.documents.contains_key(uri)
+    }
+
+    /// Generate a new IFID (Interactive Fiction IDentifier).
+    ///
+    /// IFIDs are UUIDs in uppercase, following the Twine/Twee specification.
+    /// This can be used when creating a new project skeleton or when a
+    /// StoryData passage is missing an IFID.
+    pub fn generate_ifid() -> String {
+        uuid::Uuid::new_v4().to_string().to_uppercase()
     }
 }
 
@@ -529,19 +543,19 @@ mod tests {
         let mut ws = workspace_with_story_data(json);
         ws.parse_story_data().unwrap();
 
-        // Priority 1: StoryData metadata
+        // No config override set, so Priority 2 (StoryData) wins
         assert_eq!(ws.resolve_format(), StoryFormat::Harlowe);
     }
 
     #[test]
-    fn resolve_format_from_config() {
-        let json = r#"{"ifid": "TEST"}"#;
+    fn resolve_format_config_overrides_metadata() {
+        let json = r#"{"format": "SugarCube", "ifid": "TEST"}"#;
         let mut ws = workspace_with_story_data(json);
         ws.parse_story_data().unwrap();
 
-        // StoryData has no format, so metadata.format = SugarCube (default).
-        // But since metadata IS set, Priority 1 wins.
-        assert_eq!(ws.resolve_format(), StoryFormat::SugarCube);
+        // Config override takes priority over StoryData
+        ws.config.format = Some("Harlowe".to_string());
+        assert_eq!(ws.resolve_format(), StoryFormat::Harlowe);
     }
 
     #[test]
@@ -549,7 +563,7 @@ mod tests {
         let mut ws = Workspace::new(Url::parse("file:///project/").unwrap());
         // No metadata, config has format
         ws.config.format = Some("Harlowe".to_string());
-        // Priority 2: knot.json config
+        // Priority 1: knot.json config override
         assert_eq!(ws.resolve_format(), StoryFormat::Harlowe);
     }
 

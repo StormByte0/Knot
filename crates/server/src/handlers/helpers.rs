@@ -160,6 +160,23 @@ pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
 /// Scan the workspace root for all `.tw` / `.twee` files, parse them with
 /// the format plugin, insert into the workspace, build the graph, and run
 /// analysis.
+///
+/// ## Two-pass indexing
+///
+/// The indexing process uses two passes to ensure correct format resolution:
+///
+/// 1. **Pass 1 (StoryData discovery)**: Read all files and search for a
+///    `StoryData` passage. The first `StoryData` found determines the story
+///    format. This pass is lightweight — it only extracts the `format` field
+///    from the JSON body, it does not parse the full document.
+///
+/// 2. **Pass 2 (Full parse)**: Now that the correct format is resolved,
+///    parse every file with the appropriate format plugin. This guarantees
+///    that Harlowe files are parsed with Harlowe, SugarCube with SugarCube,
+///    etc. — even when `StoryData` appears in a later file.
+///
+/// If no `.tw`/`.twee` files are found, a `knot/noTweeFiles` notification
+/// is sent to the client so it can prompt the user to initialize a project.
 pub(crate) async fn index_workspace(
     inner: &tokio::sync::RwLock<crate::state::ServerStateInner>,
     client: &tower_lsp::Client,
@@ -173,7 +190,13 @@ pub(crate) async fn index_workspace(
         .to_file_path()
         .map_err(|_| "Workspace root is not a file:// URI".to_string())?;
 
-    // Collect all .tw/.twee files using walkdir
+    // Get ignore patterns from knot.json config
+    let ignore_patterns: Vec<String> = {
+        let inner = inner.read().await;
+        inner.workspace.config.ignore.clone()
+    };
+
+    // Collect all .tw/.twee files using walkdir, filtering against ignore patterns
     let twee_files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&root_path)
         .into_iter()
         .filter_map(|entry| entry.ok())
@@ -182,11 +205,63 @@ pub(crate) async fn index_workspace(
             let ext = entry.path().extension().and_then(|e| e.to_str());
             ext == Some("tw") || ext == Some("twee")
         })
+        .filter(|entry| {
+            // Apply knot.json ignore patterns
+            if ignore_patterns.is_empty() {
+                return true;
+            }
+            let path_str = entry.path().to_string_lossy();
+            // Normalize to forward slashes for consistent matching
+            let normalized = path_str.replace('\\', "/");
+            let relative = normalized.strip_prefix(&root_path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or(&normalized);
+            let relative = relative.trim_start_matches('/');
+            // Simple glob-style matching: each ignore pattern is checked against
+            // the relative path. Supports basic glob patterns:
+            // - "node_modules" matches any path component
+            // - "*.tmp" matches file extension
+            // - "build/**" matches directory and contents
+            for pattern in &ignore_patterns {
+                if pattern.starts_with('*') {
+                    // Extension pattern like "*.tmp"
+                    if relative.ends_with(&pattern[1..]) {
+                        return false;
+                    }
+                } else if pattern.ends_with("/**") {
+                    // Directory pattern like "build/**"
+                    let dir_name = &pattern[..pattern.len() - 3];
+                    if relative.starts_with(dir_name) {
+                        return false;
+                    }
+                } else {
+                    // Simple name match against any path component
+                    for component in relative.split('/') {
+                        if component == pattern {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        })
         .map(|entry| entry.into_path())
         .collect();
 
     let total_files = twee_files.len() as u32;
     if total_files == 0 {
+        // Notify the client that no Twee files were found, so it can
+        // suggest initializing a project skeleton.
+        client
+            .send_notification::<KnotNoTweeFilesNotification>(KnotNoTweeFiles {
+                workspace_uri: root_uri.to_string(),
+            })
+            .await;
+        client
+            .log_message(
+                MessageType::INFO,
+                "No .tw/.twee files found in workspace. Use 'Knot: Initialize Project' to create one.",
+            )
+            .await;
         return Ok(());
     }
 
@@ -200,18 +275,83 @@ pub(crate) async fn index_workspace(
     // Send initial progress notification
     send_index_progress(client, total_files, 0).await;
 
+    // ── Pass 1: StoryData discovery ────────────────────────────────────
+    // Read all files and look for a StoryData passage to resolve the correct
+    // story format BEFORE parsing. This ensures that files are always parsed
+    // with the correct format plugin, regardless of what order they appear in
+    // the file system.
+    client
+        .log_message(MessageType::INFO, "Pass 1: Scanning for StoryData…")
+        .await;
+
+    let mut discovered_metadata: Option<StoryMetadata> = None;
+    let mut file_texts: HashMap<Url, String> = HashMap::new();
+
+    for file_path in &twee_files {
+        if let Ok(text) = tokio::fs::read_to_string(file_path).await {
+            if let Ok(uri) = Url::from_file_path(file_path) {
+                file_texts.insert(uri.clone(), text.clone());
+
+                // Quick scan for StoryData passage in this file
+                if discovered_metadata.is_none() {
+                    if let Some(meta) = quick_scan_story_data(&text) {
+                        tracing::info!(
+                            "StoryData found in {}: format={:?}",
+                            file_path.display(),
+                            meta.format
+                        );
+                        discovered_metadata = Some(meta);
+                    }
+                }
+            }
+        }
+    }
+
+    // Apply the discovered format (or keep knot.json override / default)
+    {
+        let mut inner = inner.write().await;
+        if let Some(meta) = discovered_metadata {
+            // Always update metadata from freshly discovered StoryData.
+            // The knot.json config.format override is handled separately
+            // by resolve_format() (Priority 1 = config, Priority 2 = StoryData).
+            inner.workspace.metadata = Some(meta);
+        }
+    }
+
+    let resolved_format = {
+        let inner = inner.read().await;
+        inner.workspace.resolve_format()
+    };
+
+    tracing::info!("Resolved story format: {:?}", resolved_format);
+    client
+        .log_message(
+            MessageType::INFO,
+            format!("Pass 1 complete: format = {}", resolved_format),
+        )
+        .await;
+
+    // ── Pass 2: Full parse with correct format ─────────────────────────
+    client
+        .log_message(MessageType::INFO, "Pass 2: Parsing files…")
+        .await;
+
     let mut parsed_count: u32 = 0;
 
     for file_path in &twee_files {
-        let text = tokio::fs::read_to_string(file_path)
-            .await
-            .map_err(|e| format!("Failed to read {}: {}", file_path.display(), e))?;
+        let uri = match Url::from_file_path(file_path) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
 
-        let uri = Url::from_file_path(file_path)
-            .map_err(|_| format!("Invalid file path: {}", file_path.display()))?;
+        let text = match file_texts.get(&uri) {
+            Some(t) => t.clone(),
+            None => continue,
+        };
 
         let mut inner = inner.write().await;
-        let format = inner.workspace.resolve_format();
+        // Use the resolved format from Pass 1 for ALL files
+        let format = resolved_format.clone();
 
         inner.open_documents.insert(uri.clone(), text.clone());
 
@@ -226,7 +366,7 @@ pub(crate) async fn index_workspace(
         // Store format diagnostics
         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
 
-        // Check for StoryData
+        // Check for StoryData (may update metadata with start passage, ifid, etc.)
         extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
         inner.workspace.insert_document(doc);
@@ -255,6 +395,46 @@ pub(crate) async fn index_workspace(
     publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
     Ok(())
+}
+
+/// Quick-scan a file's text for a StoryData passage and extract the format.
+///
+/// This is a lightweight scan that only looks for the `:: StoryData` header
+/// and parses the JSON body to extract the `format` field. It does NOT
+/// perform a full parse with the format plugin — that happens in Pass 2.
+///
+/// Returns `Some(StoryMetadata)` if a StoryData passage was found, or
+/// `None` if the file doesn't contain one.
+fn quick_scan_story_data(text: &str) -> Option<StoryMetadata> {
+    // Find the StoryData passage header
+    let mut story_data_start: Option<usize> = None;
+    for (i, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("::") {
+            let name = trimmed[2..].trim();
+            // Strip tags: "StoryData [tag]" → "StoryData"
+            let name = if let Some(bracket) = name.find('[') {
+                name[..bracket].trim()
+            } else {
+                name
+            };
+            if name == "StoryData" {
+                // Body starts after this line
+                let header_end = text.lines().take(i + 1).map(|l| l.len() + 1).sum::<usize>();
+                story_data_start = Some(header_end);
+                break;
+            }
+        }
+    }
+
+    let body_start = story_data_start?;
+    let body = &text[body_start.min(text.len())..];
+
+    // Find the next passage header (if any) to limit the body
+    let body_end = body.find("\n::").unwrap_or(body.len());
+    let body = &body[..body_end];
+
+    parse_story_data_json(body)
 }
 
 /// Send a `knot/indexProgress` notification to the client.
@@ -338,6 +518,7 @@ pub(crate) fn rebuild_graph(
             file_uri: file_uri.clone(),
             is_special: *is_special,
             is_metadata: *is_metadata,
+            is_placeholder: false,
         };
         graph.add_passage(node);
     }
@@ -1618,7 +1799,6 @@ mod tests {
 
     #[test]
     fn test_sugarcube_builtin_macros_nonempty() {
-        use knot_formats::plugin::FormatPlugin;
         use knot_core::passage::StoryFormat;
 
         let registry = knot_formats::plugin::FormatRegistry::with_defaults();
@@ -1633,7 +1813,6 @@ mod tests {
 
     #[test]
     fn test_macro_find_and_snippet() {
-        use knot_formats::plugin::FormatPlugin;
         use knot_core::passage::StoryFormat;
 
         let registry = knot_formats::plugin::FormatRegistry::with_defaults();
