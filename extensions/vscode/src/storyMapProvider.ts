@@ -18,6 +18,15 @@ import { KnotLanguageClient, KnotGraphResponse } from './types';
 // Story Map webview provider
 // ---------------------------------------------------------------------------
 
+function getNonce(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let nonce = '';
+    for (let i = 0; i < 32; i++) {
+        nonce += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return nonce;
+}
+
 export class StoryMapProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'knot.storyMap';
 
@@ -131,16 +140,16 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         const dagreLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape-dagre.min.js'));
         const cytoscapeScript = cytoscapeLocal.toString();
         const dagreScript = dagreLocal.toString();
+        const nonce = getNonce();
 
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource};">    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Story Map</title>
-    <script src="${cytoscapeScript}"></script>
-    <script src="${dagreScript}"></script>
+    <script nonce="${nonce}" src="${cytoscapeScript}"></script>
+    <script nonce="${nonce}" src="${dagreScript}"></script>
     <style>
         * {
             margin: 0;
@@ -348,7 +357,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         <span class="stat" id="statUnreachable">Unreachable: 0</span>
     </div>
 
-    <script>
+    <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         let cy = null;
         let currentData = null;
@@ -404,7 +413,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                     {
-                        selector: 'node[[is_metadata = true]]',
+                        selector: 'node[is_metadata = true]',
                         style: {
                             'shape': 'diamond',
                             'width': 30,
@@ -425,7 +434,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                     {
-                        selector: 'edge[[is_broken = true]]',
+                        selector: 'edge[is_broken = true]',
                         style: {
                             'line-color': COLORS.broken,
                             'target-arrow-color': COLORS.broken,
@@ -510,14 +519,17 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 
         function buildGraph(data) {
             if (!cy) return;
-            currentData = data;
+            const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+            const edges = Array.isArray(data?.edges) ? data.edges : [];
+            currentData = { ...data, nodes, edges };
+
 
             cy.elements().remove();
 
             const elements = [];
 
             // Add nodes
-            for (const node of data.nodes) {
+            for (const node of nodes) {
                 const color = getNodeColor(node);
                 const size = Math.max(40, Math.min(80, 30 + Math.max(node.out_degree, node.in_degree) * 5));
                 elements.push({
@@ -541,7 +553,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             }
 
             // Add edges
-            for (const edge of data.edges) {
+            for (const edge of edges) {
                 elements.push({
                     data: {
                         id: edge.source + '->' + edge.target,
@@ -555,13 +567,13 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             cy.add(elements);
 
             // Apply layout
-            applyLayout(data.layout || 'dagre');
+            applyLayout(currentData.layout || 'dagre');
 
             // Update stats
-            const brokenCount = data.edges.filter(e => e.is_broken).length;
-            const unreachableCount = data.nodes.filter(n => n.is_unreachable).length;
-            document.getElementById('statNodes').textContent = 'Nodes: ' + data.nodes.length;
-            document.getElementById('statEdges').textContent = 'Edges: ' + data.edges.length;
+            const brokenCount = edges.filter(e => e.is_broken).length;
+            const unreachableCount = nodes.filter(n => n.is_unreachable).length;
+            document.getElementById('statNodes').textContent = 'Nodes: ' + nodes.length;
+            document.getElementById('statEdges').textContent = 'Edges: ' + edges.length;
             document.getElementById('statBroken').textContent = 'Broken: ' + brokenCount;
             document.getElementById('statUnreachable').textContent = 'Unreachable: ' + unreachableCount;
         }

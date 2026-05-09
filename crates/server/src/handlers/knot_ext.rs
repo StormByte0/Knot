@@ -15,7 +15,7 @@ impl ServerState {
         &self,
         params: KnotGraphParams,
     ) -> Result<KnotGraphResponse, tower_lsp::jsonrpc::Error> {
-        let inner = self.inner.read().await;
+        let mut inner = self.inner.read().await;
 
         // Validate workspace_uri matches our workspace
         if !params.workspace_uri.is_empty() {
@@ -27,6 +27,55 @@ impl ServerState {
                 );
             }
         }
+        // If the Story Map is opened while indexing or after an edit path left
+        // the canonical graph empty, rebuild from the authoritative document
+        // set before exporting. Do the common export path under a read lock,
+        // and upgrade to a write lock only for the rare rebuild case.
+        let mut document_count = inner.workspace.documents().count();
+        let mut passage_count: usize = inner
+            .workspace
+            .documents()
+            .map(|doc| doc.passages.len())
+            .sum();
+        if inner.workspace.graph.passage_count() == 0 && passage_count > 0 {
+            drop(inner);
+
+            let mut writable = self.inner.write().await;
+            document_count = writable.workspace.documents().count();
+            passage_count = writable
+                .workspace
+                .documents()
+                .map(|doc| doc.passages.len())
+                .sum();
+            if writable.workspace.graph.passage_count() == 0 && passage_count > 0 {
+                let format = writable.workspace.resolve_format();
+                writable.workspace.graph = helpers::rebuild_graph(
+                    &writable.workspace,
+                    &writable.format_registry,
+                    format,
+                );
+                tracing::info!(
+                    "knot/graph: rebuilt empty graph from {} documents / {} passages",
+                    document_count, passage_count
+                );
+            }
+            drop(writable);
+
+            inner = self.inner.read().await;
+            document_count = inner.workspace.documents().count();
+            passage_count = inner
+                .workspace
+                .documents()
+                .map(|doc| doc.passages.len())
+                .sum();
+        }
+
+        tracing::debug!(
+            "knot/graph: exporting {} documents / {} passages / {} graph nodes",
+            document_count,
+            passage_count,
+            inner.workspace.graph.passage_count()
+        );
 
         // Collect passage tags from all documents
         let mut passage_tags: std::collections::HashMap<String, Vec<String>> =

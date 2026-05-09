@@ -59,31 +59,21 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
 
     let mut inner = state.inner.write().await;
 
-    // Debounce — record the edit time
-    inner.debounce.record_edit();
-
     // Always update the text cache immediately so go-to-definition etc.
-    // see the latest content, even if we skip heavy analysis this round.
+    // see the latest content
     inner.open_documents.insert(uri.clone(), text.clone());
 
-    // If we're still inside the debounce window, skip the expensive
-    // parse + graph surgery + analysis pass. The next did_change that
-    // arrives after the debounce window will carry the full text and
-    // trigger a complete re-analysis. This trades a small delay in
-    // diagnostic updates for significantly less CPU usage during rapid
-    // typing bursts.
-    if inner.debounce.is_pending() {
-        tracing::debug!("did_change: debounced — skipping full analysis for {}", uri);
-        inner.debounce.mark_skipped();
-        drop(inner);
-        return;
-    }
+    // Record the edit after updating the text cache, but do not skip the
+    // parse/analysis pass. The old debounce gate reset its timer before
+    // checking readiness, so every FULL-sync didChange was considered
+    // pending and the canonical workspace document/graph never caught up to
+    // the editor buffer. Correctness is more important than throttling here;
+    // a future debounce implementation should schedule a delayed flush rather
+    // than returning without one.
+    inner.debounce.record_edit();
 
-    // If a previous edit was skipped and the debounce window has now expired,
-    // we must still run full analysis to catch up.
     if inner.debounce.needs_flush() {
         inner.debounce.clear_skipped();
-        // Fall through to the full analysis below
     }
 
     // Parse with format plugin
