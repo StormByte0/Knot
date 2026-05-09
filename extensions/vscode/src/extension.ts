@@ -163,6 +163,9 @@ export async function activate(context: vscode.ExtensionContext) {
                     statusBarItem.text = '$(check) Knot: Ready';
                     statusBarItem.command = 'knot.openStoryMap';
                     statusBarItem.tooltip = 'Knot: Click to open Story Map';
+                    refreshStoryMap();
+                    variableFlowProvider?.refresh();
+
                     // Fetch profile data for status bar enrichment
                     (async () => {
                         try {
