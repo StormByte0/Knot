@@ -247,7 +247,7 @@ impl HarlowePlugin {
             let var_end = var_start + var_name.len();
             vars.push(VarOp {
                 name: var_name,
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: var_start..var_end,
                 is_temporary: false,
             });
@@ -267,7 +267,7 @@ impl HarlowePlugin {
                 if !already_covered {
                     vars.push(VarOp {
                         name: var_name,
-                        kind: VarKind::Write,
+                        kind: VarKind::Init,
                         span: var_start..var_end,
                         is_temporary: false,
                     });
@@ -316,7 +316,7 @@ impl HarlowePlugin {
                 if !already_covered {
                     vars.push(VarOp {
                         name: dst_name,
-                        kind: VarKind::Write,
+                        kind: VarKind::Init,
                         span: dst_start..dst_end,
                         is_temporary: false,
                     });
@@ -338,7 +338,7 @@ impl HarlowePlugin {
                 if !already_covered {
                     vars.push(VarOp {
                         name: var_name,
-                        kind: VarKind::Write,
+                        kind: VarKind::Init,
                         span: var_start..var_end,
                         is_temporary: false,
                     });
@@ -1311,7 +1311,7 @@ mod tests {
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Write));
+        assert!(vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Init));
         assert!(vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Read));
     }
 
@@ -1323,7 +1323,7 @@ mod tests {
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Write));
+        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Init));
         assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Read));
     }
 
@@ -1335,7 +1335,7 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Read));
-        assert!(!vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Write));
+        assert!(!vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Init));
     }
 
     // -----------------------------------------------------------------------
@@ -1418,7 +1418,7 @@ mod tests {
         );
         // $dest should be a write (move writes to it)
         assert!(
-            vars.iter().any(|v| v.name == "$dest" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "$dest" && v.kind == VarKind::Init),
             "Should detect $dest as a write in (move:)"
         );
     }
@@ -1431,7 +1431,7 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "$result" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "$result" && v.kind == VarKind::Init),
             "Should detect $result as a write in (unpack:)"
         );
     }
@@ -1589,9 +1589,9 @@ mod tests {
         let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Write));
-        assert!(vars.iter().any(|v| v.name == "$name" && v.kind == VarKind::Write));
-        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Write));
+        assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Init));
+        assert!(vars.iter().any(|v| v.name == "$name" && v.kind == VarKind::Init));
+        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Init));
         assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Read));
         assert!(vars.iter().any(|v| v.name == "$name" && v.kind == VarKind::Read));
     }

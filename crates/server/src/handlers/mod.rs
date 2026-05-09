@@ -272,8 +272,8 @@ impl LanguageServer for ServerState {
         call_hierarchy::outgoing_calls(self, params).await
     }
 
-    // NOTE: The `diagnostic` pull-model handler is intentionally removed.
-    // The server uses push diagnostics exclusively via `publishDiagnostics`.
-    // Supporting both push and pull models caused VS Code to display every
-    // diagnostic twice. See lifecycle.rs for details.
+    // NOTE: The pull-diagnostic handler (`textDocument/diagnostic`) is intentionally
+    // removed. The server uses the push model (`publish_diagnostics`) exclusively.
+    // Running both models simultaneously causes VS Code to display every diagnostic
+    // twice, which makes errors and warnings appear duplicated in hover.
 }

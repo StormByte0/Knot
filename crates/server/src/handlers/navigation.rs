@@ -84,8 +84,8 @@ pub(crate) async fn goto_implementation(
                         locations.push(Location {
                             uri: doc_uri.clone(),
                             range: Range {
-                                start: Position { line: line_idx as u32, character: content_start as u32 },
-                                end: Position { line: line_idx as u32, character: content_end as u32 },
+                                start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_start) },
+                                end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_end) },
                             },
                         });
                     }
@@ -169,7 +169,7 @@ pub(crate) async fn references(
                             },
                             end: Position {
                                 line: line_idx as u32,
-                                character: line.len() as u32,
+                                character: helpers::utf16_len(line),
                             },
                         },
                     });
@@ -199,11 +199,11 @@ pub(crate) async fn references(
                             range: Range {
                                 start: Position {
                                     line: line_idx as u32,
-                                    character: content_start as u32,
+                                    character: helpers::utf16_len_up_to(line, content_start),
                                 },
                                 end: Position {
                                     line: line_idx as u32,
-                                    character: content_end as u32,
+                                    character: helpers::utf16_len_up_to(line, content_end),
                                 },
                             },
                         });

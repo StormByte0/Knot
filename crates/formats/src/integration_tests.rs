@@ -141,7 +141,7 @@ fn sugarcube_parse_and_analyze() {
     // Should have $gold as a written variable
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
-    assert!(start_passage.vars.iter().any(|v| v.name == "$gold" && v.kind == knot_core::VarKind::Write));
+    assert!(start_passage.vars.iter().any(|v| v.name == "$gold" && v.kind == knot_core::VarKind::Init));
 }
 
 // ===========================================================================
@@ -213,7 +213,7 @@ fn chapbook_parse_and_analyze() {
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == knot_core::VarKind::Write),
+        start_passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect state.visited write"
     );
     assert!(
@@ -234,11 +234,11 @@ fn chapbook_modify_block() {
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "modify.gold" && v.kind == knot_core::VarKind::Write),
+        start_passage.vars.iter().any(|v| v.name == "modify.gold" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect modify.gold write"
     );
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "modify.name" && v.kind == knot_core::VarKind::Write),
+        start_passage.vars.iter().any(|v| v.name == "modify.name" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect modify.name write"
     );
 }
@@ -267,7 +267,7 @@ fn snowman_parse_and_analyze() {
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Write),
+        start_passage.vars.iter().any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Init),
         "Snowman: should detect gold write"
     );
     assert!(

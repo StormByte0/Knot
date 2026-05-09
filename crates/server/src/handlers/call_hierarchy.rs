@@ -96,8 +96,8 @@ pub(crate) async fn incoming_calls(
                                     data: None,
                                 },
                                 from_ranges: vec![Range {
-                                    start: Position { line: line_idx as u32, character: content_start as u32 },
-                                    end: Position { line: line_idx as u32, character: content_end as u32 },
+                                    start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_start) },
+                                    end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_end) },
                                 }],
                             });
                             break; // One match per passage is enough

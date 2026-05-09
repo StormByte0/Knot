@@ -35,7 +35,7 @@ mod tests {
             .iter()
             .map(|v| VarOp {
                 name: v.to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..v.len(),
                 is_temporary: false,
             })
@@ -239,7 +239,7 @@ mod tests {
         let mut forest = make_passage("Forest", &["Start"]);
         forest.vars.push(VarOp {
             name: "$visited".to_string(),
-            kind: VarKind::Write,
+            kind: VarKind::Init,
             span: 0..8,
             is_temporary: false,
         });
@@ -830,7 +830,7 @@ mod tests {
             .iter()
             .map(|v| VarOp {
                 name: v.to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..v.len(),
                 is_temporary: false,
             })
@@ -842,7 +842,7 @@ mod tests {
             }))
             .chain(temp_writes.iter().map(|v| VarOp {
                 name: v.to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..v.len(),
                 is_temporary: true,
             }))
@@ -870,7 +870,7 @@ mod tests {
         p.vars = vec![
             VarOp {
                 name: "$initialized".to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..13,
                 is_temporary: false,
             },
@@ -1059,13 +1059,13 @@ mod tests {
         p.vars = vec![
             VarOp {
                 name: "$gold".to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..5,
                 is_temporary: false,
             },
             VarOp {
                 name: "$gold".to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 10..15,
                 is_temporary: false,
             },
@@ -1108,7 +1108,7 @@ mod tests {
         p.vars = vec![
             VarOp {
                 name: "$gold".to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 0..5,
                 is_temporary: false,
             },
@@ -1120,7 +1120,7 @@ mod tests {
             },
             VarOp {
                 name: "$gold".to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: 10..15,
                 is_temporary: false,
             },

@@ -73,8 +73,8 @@ pub struct Link {
 pub enum VarKind {
     /// Variable is being read.
     Read,
-    /// Variable is being written/assigned.
-    Write,
+    /// Variable is being initialized/assigned.
+    Init,
 }
 
 /// A variable operation within a passage.
@@ -217,9 +217,9 @@ impl Passage {
         self.links.iter().map(|l| l.target.as_str())
     }
 
-    /// Returns all variable write operations in this passage.
-    pub fn variable_writes(&self) -> impl Iterator<Item = &VarOp> {
-        self.vars.iter().filter(|v| v.kind == VarKind::Write)
+    /// Returns all variable init operations in this passage.
+    pub fn variable_inits(&self) -> impl Iterator<Item = &VarOp> {
+        self.vars.iter().filter(|v| v.kind == VarKind::Init)
     }
 
     /// Returns all variable read operations in this passage.
@@ -227,11 +227,11 @@ impl Passage {
         self.vars.iter().filter(|v| v.kind == VarKind::Read)
     }
 
-    /// Returns all persistent (non-temporary) variable write operations.
+    /// Returns all persistent (non-temporary) variable init operations.
     /// Temporary variables (e.g., SugarCube `_temp`) are excluded because
     /// they do not survive passage transitions.
-    pub fn persistent_variable_writes(&self) -> impl Iterator<Item = &VarOp> {
-        self.vars.iter().filter(|v| v.kind == VarKind::Write && !v.is_temporary)
+    pub fn persistent_variable_inits(&self) -> impl Iterator<Item = &VarOp> {
+        self.vars.iter().filter(|v| v.kind == VarKind::Init && !v.is_temporary)
     }
 
     /// Returns all persistent (non-temporary) variable read operations.

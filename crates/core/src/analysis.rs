@@ -490,8 +490,8 @@ impl AnalysisEngine {
                 }
 
                 let sorted_vars = passage.vars_sorted_by_span();
-                let persistent_writes: Vec<String> = passage
-                    .persistent_variable_writes()
+                let persistent_inits: Vec<String> = passage
+                    .persistent_variable_inits()
                     .map(|v| v.name.clone())
                     .collect();
                 let persistent_reads: Vec<String> = passage
@@ -507,7 +507,7 @@ impl AnalysisEngine {
                     PassageVarData {
                         file_uri: doc.uri.to_string(),
                         ordered_vars,
-                        persistent_writes: persistent_writes.into_iter().collect(),
+                        persistent_inits: persistent_inits.into_iter().collect(),
                         persistent_reads: persistent_reads.into_iter().collect(),
                         contributes_variables: passage.contributes_variables(),
                         is_special: passage.is_special,
@@ -531,7 +531,7 @@ impl AnalysisEngine {
 
         for data in passage_data.values() {
             if data.contributes_variables && data.is_special {
-                for var_name in &data.persistent_writes {
+                for var_name in &data.persistent_inits {
                     seed.insert(var_name.clone());
                 }
             }
@@ -716,7 +716,7 @@ impl AnalysisEngine {
                 continue;
             }
             match var.kind {
-                VarKind::Write => {
+                VarKind::Init => {
                     init_set.insert(var.name.clone());
                 }
                 VarKind::Read => {
@@ -772,7 +772,7 @@ impl AnalysisEngine {
                             });
                         }
                     }
-                    VarKind::Write => {
+                    VarKind::Init => {
                         local_init.insert(var.name.clone());
                     }
                 }
@@ -804,7 +804,7 @@ impl AnalysisEngine {
                 continue;
             }
 
-            for var_name in &data.persistent_writes {
+            for var_name in &data.persistent_inits {
                 all_writes
                     .entry(var_name.clone())
                     .or_default()
@@ -861,14 +861,14 @@ impl AnalysisEngine {
                 }
 
                 match var.kind {
-                    VarKind::Write => {
+                    VarKind::Init => {
                         if written_not_read.contains(&var.name) && !reported.contains(&var.name) {
                             diagnostics.push(GraphDiagnostic {
                                 passage_name: name.clone(),
                                 file_uri: data.file_uri.clone(),
                                 kind: DiagnosticKind::RedundantWrite,
                                 message: format!(
-                                    "Variable '{}' is written again without being read since the last write",
+                                    "Variable '{}' is initialized again without being read since the last init",
                                     var.name
                                 ),
                             });
@@ -895,8 +895,8 @@ pub struct PassageVarData {
     file_uri: String,
     /// All variable operations sorted by source position.
     ordered_vars: Vec<VarOp>,
-    /// Set of persistent variable names written in this passage.
-    persistent_writes: HashSet<String>,
+    /// Set of persistent variable names initialized in this passage.
+    persistent_inits: HashSet<String>,
     /// Set of persistent variable names read in this passage.
     persistent_reads: HashSet<String>,
     /// Whether this passage contributes variable state (special passage).

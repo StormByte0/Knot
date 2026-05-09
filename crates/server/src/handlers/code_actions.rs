@@ -1,9 +1,7 @@
-//! Code action and pull diagnostic handlers.
+//! Code action handlers.
 
 use crate::handlers::helpers;
 use crate::state::ServerState;
-use knot_core::AnalysisEngine;
-use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
 
 pub(crate) async fn code_action(
@@ -97,98 +95,8 @@ pub(crate) async fn code_action(
     }
 }
 
-pub(crate) async fn diagnostic(
-    state: &ServerState,
-    params: DocumentDiagnosticParams,
-) -> Result<DocumentDiagnosticReportResult, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
-    let inner = state.inner.read().await;
-
-    let text = match inner.open_documents.get(uri) {
-        Some(t) => t,
-        None => {
-            return Ok(DocumentDiagnosticReportResult::Report(
-                DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-                    related_documents: None,
-                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                        result_id: None,
-                        items: vec![],
-                    },
-                }),
-            ));
-        }
-    };
-
-    let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-    let uri_str = uri.to_string();
-    let config = &inner.workspace.config;
-
-    let mut items: Vec<Diagnostic> = Vec::new();
-
-    for gd in &diagnostics {
-        if gd.file_uri != uri_str { continue; }
-
-        let default_severity = helpers::diagnostic_kind_to_severity(&gd.kind);
-
-        let diag_key = format!("{:?}", gd.kind);
-        let severity = if let Some(custom) = config.diagnostics.get(&diag_key) {
-            match custom {
-                knot_core::workspace::DiagnosticSeverity::Off => continue,
-                knot_core::workspace::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                knot_core::workspace::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                knot_core::workspace::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
-                knot_core::workspace::DiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-            }
-        } else {
-            default_severity
-        };
-
-        let range = helpers::find_passage_header_range(text, &gd.passage_name);
-
-        // Build related information
-        let related_information = helpers::build_related_information(
-            &inner, &gd.kind, &gd.passage_name, &gd.message,
-        );
-
-        items.push(Diagnostic {
-            range,
-            severity: Some(severity),
-            code: Some(NumberOrString::String(diag_key)),
-            source: Some("knot".to_string()),
-            message: gd.message.clone(),
-            related_information,
-            ..Default::default()
-        });
-    }
-
-    // Also add format diagnostics
-    if let Some(fmt_diags) = inner.format_diagnostics.get(uri) {
-        for fd in fmt_diags {
-            let range = helpers::byte_range_to_lsp_range(text, &fd.range);
-            let severity = match fd.severity {
-                fmt_plugin::FormatDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                fmt_plugin::FormatDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                fmt_plugin::FormatDiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
-                fmt_plugin::FormatDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-            };
-            items.push(Diagnostic {
-                range,
-                severity: Some(severity),
-                code: Some(NumberOrString::String(format!("format:{}", fd.code))),
-                source: Some("knot".to_string()),
-                message: fd.message.clone(),
-                ..Default::default()
-            });
-        }
-    }
-
-    Ok(DocumentDiagnosticReportResult::Report(
-        DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
-            related_documents: None,
-            full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                result_id: None,
-                items,
-            },
-        }),
-    ))
-}
+// NOTE: The pull-diagnostic handler (`diagnostic`) has been removed.
+// The server uses the push model (`publish_diagnostics`) exclusively.
+// Using both models simultaneously causes VS Code to display every
+// diagnostic twice, which makes errors appear duplicated in hover
+// and the Problems panel.

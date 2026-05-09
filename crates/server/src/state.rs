@@ -24,18 +24,7 @@ pub struct ServerStateInner {
     /// Debounce timer for edit events.
     pub debounce: DebounceTimer,
     /// Cache of open document text (URI → current text).
-    /// This map ONLY contains documents that are currently open in the
-    /// editor (populated by `did_open`, cleared by `did_close`). It must
-    /// NOT be populated during workspace indexing — that caused a
-    /// double-parsing bug where `did_open` re-parsed every file that
-    /// indexing had already processed, and also broke the
-    /// `did_change_watched_files` CHANGED handler's `is_open` check.
     pub open_documents: HashMap<Url, String>,
-    /// Text cache for ALL indexed documents (URI → current text).
-    /// Unlike `open_documents`, this includes files that are closed in the
-    /// editor but still part of the workspace. Used for diagnostic range
-    /// computation and other text lookups.
-    pub document_texts: HashMap<Url, String>,
     /// Per-document format plugin diagnostics (URI → diagnostics).
     /// These are separate from graph diagnostics because they are produced
     /// by the format parser during parsing, not by graph analysis.
@@ -77,7 +66,6 @@ impl ServerState {
                 format_registry: FormatRegistry::with_defaults(),
                 debounce: DebounceTimer::new(),
                 open_documents: HashMap::new(),
-                document_texts: HashMap::new(),
                 format_diagnostics: HashMap::new(),
                 breakpoints: Vec::new(),
             }),
