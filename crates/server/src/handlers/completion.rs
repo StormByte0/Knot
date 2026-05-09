@@ -10,6 +10,7 @@ use crate::handlers::helpers;
 use crate::state::ServerState;
 use knot_formats::plugin::FormatPlugin;
 use knot_formats::types::MacroArgKind;
+use knot_formats::GlobalProperty;
 use lsp_types::*;
 use std::collections::HashMap;
 
@@ -35,9 +36,10 @@ pub(crate) async fn completion(
 
     // Get line text for context-aware completion
     let line_idx = position.line as usize;
-    let char_pos = position.character as usize;
     let line_text = text.lines().nth(line_idx).unwrap_or("");
-    let before_cursor = &line_text[..char_pos.min(line_text.len())];
+    // position.character is UTF-16; convert to byte offset for string slicing
+    let byte_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
+    let before_cursor = &line_text[..byte_pos.min(line_text.len())];
 
     // ── Close-tag context: <</ ... ──────────────────────────────────────
     if let Some(plugin) = plugin {
@@ -165,9 +167,15 @@ pub(crate) async fn completion(
             }
         }
 
-        // ── "." trigger: global object property completion ───────────────
+        // ── "." trigger: global object property completion + variable dot-notation ─
         Some(".") => {
             if let Some(plugin) = plugin {
+                // Try variable dot-notation completion first (e.g., $item.)
+                if let Some(var_items) = try_variable_dot_completion(before_cursor, &inner.workspace, plugin) {
+                    return Ok(Some(CompletionResponse::Array(var_items)));
+                }
+
+                // Then try global object property completion (e.g., State.)
                 if !plugin.global_object_names().is_empty() {
                     // Check if preceding text ends with a global object name + "."
                     // e.g., "State." → offer "variables", "temporary", etc.
@@ -523,10 +531,8 @@ fn try_passage_in_quote_completion(
 ///
 /// E.g., after `State.` offers `variables`, `temporary`, `turns`, etc.
 ///
-/// The entry guard checks the format plugin's `global_object_names()` to
-/// determine if the identifier is a known global object. The property lists
-/// themselves are currently still hardcoded per format (as a temporary measure
-/// until the format plugin's global defs include property lists).
+/// Queries the format plugin's `builtin_globals()` for property lists,
+/// falling back to an empty list if no properties are defined.
 fn try_global_property_completion(
     before_cursor: &str,
     plugin: &dyn FormatPlugin,
@@ -542,76 +548,86 @@ fn try_global_property_completion(
         return None;
     }
 
-    // Return property completions for known global objects.
-    // TODO: Move these property lists into the format plugin once the
-    // GlobalDef type supports property/method definitions.
-    let items = match ident {
-        "State" => vec![
-            simple_property("variables", "Record<string, unknown> — story variables"),
-            simple_property("temporary", "Record<string, unknown> — temporary variables"),
-            simple_property("turns", "number — turn count"),
-            simple_property("passage", "string — current passage name"),
-            simple_property("active", "object — active passage info"),
-            simple_property("top", "object — top passage info"),
-            simple_property("history", "array — passage history"),
-            simple_property("has()", "boolean — check if passage visited"),
-            simple_property("hasTag()", "boolean — check if tag visited"),
-            simple_property("index", "number — current history index"),
-            simple_property("size", "number — history size"),
-        ],
-        "Engine" => vec![
-            simple_property("play()", "void — navigate to passage"),
-            simple_property("forward()", "void — go forward in history"),
-            simple_property("backward()", "void — go backward in history"),
-            simple_property("goto()", "void — navigate to passage"),
-            simple_property("isIdle()", "boolean — is engine idle"),
-            simple_property("isPlaying()", "boolean — is engine playing"),
-        ],
-        "Story" => vec![
-            simple_property("title", "string — story title"),
-            simple_property("has()", "boolean — check passage exists"),
-            simple_property("get()", "object — get passage data"),
-            simple_property("filter()", "array — filter passages"),
-        ],
-        "Save" => vec![
-            simple_property("save()", "void — save game"),
-            simple_property("load()", "void — load game"),
-            simple_property("delete()", "void — delete save"),
-            simple_property("ok()", "boolean — check save exists"),
-            simple_property("sizes()", "object — save sizes"),
-        ],
-        "Config" => vec![
-            simple_property("debug", "boolean — debug mode"),
-            simple_property("history", "object — history config"),
-            simple_property("macros", "object — macro config"),
-            simple_property("navigation", "object — navigation config"),
-            simple_property("ui", "object — UI config"),
-        ],
-        "UI" => vec![
-            simple_property("alert()", "void — show alert dialog"),
-            simple_property("restart()", "void — restart story"),
-            simple_property("squash()", "void — squash history"),
-            simple_property("goto()", "void — navigate to passage"),
-            simple_property("include()", "void — include passage"),
-        ],
-        _ => return None,
+    // Look up the global definition and its properties
+    let global_def = plugin.builtin_globals().iter().find(|g| g.name == ident)?;
+
+    let properties = match global_def.properties {
+        Some(props) => props,
+        None => return None,
     };
 
-    Some(items)
+    let items: Vec<CompletionItem> = properties
+        .iter()
+        .map(|prop| global_property_completion(prop))
+        .collect();
+
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
-/// Create a simple property completion item.
-fn simple_property(name: &str, detail: &str) -> CompletionItem {
+/// Create a completion item from a GlobalProperty.
+fn global_property_completion(prop: &GlobalProperty) -> CompletionItem {
     CompletionItem {
-        label: name.to_string(),
-        kind: Some(if name.ends_with("()") {
+        label: prop.name.to_string(),
+        kind: Some(if prop.is_method {
             CompletionItemKind::METHOD
         } else {
             CompletionItemKind::PROPERTY
         }),
-        detail: Some(detail.to_string()),
-        insert_text: Some(name.to_string()),
+        detail: Some(prop.description.to_string()),
+        insert_text: Some(prop.name.to_string()),
         insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
         ..Default::default()
+    }
+}
+
+/// Try variable dot-notation completion after a dot.
+///
+/// E.g., after `$item.` offers `sword`, `shield` (one layer deep).
+fn try_variable_dot_completion(
+    before_cursor: &str,
+    workspace: &knot_core::Workspace,
+    plugin: &dyn FormatPlugin,
+) -> Option<Vec<CompletionItem>> {
+    // Find the text before the dot
+    let before_dot = before_cursor.trim_end_matches('.');
+
+    // Check if this looks like a variable reference with a dot
+    // e.g., "$item" in "$item."
+    let var_name = before_dot
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+        .next()?;
+
+    // Must start with $ (SugarCube story variable)
+    if !var_name.starts_with('$') {
+        return None;
+    }
+
+    // Build the property map from the format plugin
+    let prop_map = plugin.build_object_property_map(workspace);
+
+    let properties = prop_map.get(var_name)?;
+
+    let items: Vec<CompletionItem> = properties
+        .iter()
+        .enumerate()
+        .map(|(i, prop)| CompletionItem {
+            label: prop.clone(),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some(format!("Property of {}", var_name)),
+            sort_text: Some(format!("0_{:06}_{}", i, prop)),
+            insert_text: Some(prop.clone()),
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+            ..Default::default()
+        })
+        .collect();
+
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
     }
 }

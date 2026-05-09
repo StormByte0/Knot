@@ -91,11 +91,24 @@ pub struct MacroDef {
     pub container_any_of: Option<&'static [&'static str]>,
 }
 
+/// A property or method of a builtin global object.
+#[derive(Debug, Clone)]
+pub struct GlobalProperty {
+    /// The property/method name (e.g., "variables", "save()").
+    pub name: &'static str,
+    /// Human-readable description of the property/method.
+    pub description: &'static str,
+    /// Whether this is a method (ends with `()`) or a property.
+    pub is_method: bool,
+}
+
 /// A format-specific builtin global object definition.
 #[derive(Debug, Clone)]
 pub struct GlobalDef {
     pub name: &'static str,
     pub description: &'static str,
+    /// Properties/methods of this global object for dot-notation completion.
+    pub properties: Option<&'static [GlobalProperty]>,
 }
 
 /// A lightweight completion/hover entry for macro signatures.

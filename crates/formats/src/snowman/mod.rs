@@ -470,7 +470,7 @@ impl SnowmanPlugin {
             let var_end = var_start + prefix.len();
             vars.push(VarOp {
                 name: var_name.to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: var_start..var_end,
                 is_temporary: false,
             });
@@ -486,7 +486,7 @@ impl SnowmanPlugin {
             let var_end = var_start + prefix.len();
             vars.push(VarOp {
                 name: var_name.to_string(),
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: var_start..var_end,
                 is_temporary: false,
             });
@@ -659,7 +659,7 @@ impl SnowmanPlugin {
         let written_vars: std::collections::HashSet<String> = passages
             .iter()
             .flat_map(|p| p.vars.iter())
-            .filter(|v| v.kind == VarKind::Write)
+            .filter(|v| v.kind == VarKind::Init)
             .map(|v| v.name.clone())
             .collect();
 
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect s.gold write"
         );
         assert!(
@@ -1096,7 +1096,7 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect s.gold as write in <% %> block"
         );
 
@@ -1202,7 +1202,7 @@ mod tests {
         // Variable operations
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "name" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "name" && v.kind == VarKind::Init),
             "Should detect s.name write"
         );
         assert!(
@@ -1232,11 +1232,11 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "health" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "health" && v.kind == VarKind::Init),
             "Should detect s.health write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "mana" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "mana" && v.kind == VarKind::Init),
             "Should detect s.mana write"
         );
     }
@@ -1251,11 +1251,11 @@ mod tests {
 
         // Writes
         assert!(
-            vars.iter().any(|v| v.name == "x" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "x" && v.kind == VarKind::Init),
             "Should detect s.x write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "y" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "y" && v.kind == VarKind::Init),
             "Should detect s.y write"
         );
 
@@ -1343,7 +1343,7 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect window.story.state.gold write"
         );
         assert!(

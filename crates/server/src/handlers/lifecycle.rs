@@ -104,13 +104,11 @@ pub(crate) async fn initialize(
         }),
         linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
-        // NOTE: Pull diagnostics (`textDocument/diagnostic`) are deliberately
-        // NOT registered here. The server uses the push model
-        // (`textDocument/publishDiagnostics`) exclusively — diagnostics are
-        // published eagerly on every did_open / did_change / watched-file
-        // event. Registering both models causes VS Code to show every
-        // diagnostic twice (push + pull), which was the root cause of the
-        // "hover shows alerts twice" bug.
+        // NOTE: diagnostic_provider (pull model) is intentionally NOT registered here.
+        // The server uses the push model (publish_diagnostics) exclusively.
+        // Using both models simultaneously causes VS Code to display every
+        // diagnostic twice — once from the push and once from the pull — which
+        // makes errors appear duplicated in hover and the Problems panel.
         diagnostic_provider: None,
         semantic_tokens_provider: Some(
             SemanticTokensServerCapabilities::SemanticTokensOptions(

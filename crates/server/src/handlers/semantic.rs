@@ -44,6 +44,11 @@ struct SemTok {
 
 /// Convert format-plugin semantic tokens (byte-offset based) to the
 /// intermediate `SemTok` representation (line/character based).
+///
+/// The `start` and `length` fields from the format plugin are in **byte**
+/// offsets and byte lengths respectively. We convert:
+/// - `start` → LSP Position via `byte_offset_to_position` (UTF-16 character)
+/// - `length` → UTF-16 code unit count (LSP requires UTF-16, not byte length)
 fn convert_semantic_tokens(
     text: &str,
     plugin_tokens: &[fmt_plugin::SemanticToken],
@@ -55,10 +60,18 @@ fn convert_semantic_tokens(
         let token_type = map_token_type(&pt.token_type);
         let modifiers = map_token_modifier(&pt.modifier);
 
+        // Convert byte length to UTF-16 code unit length for the LSP wire format.
+        let safe_start = pt.start.min(text.len());
+        let safe_end = (safe_start + pt.length).min(text.len());
+        let token_text = &text[safe_start..safe_end];
+        let utf16_length: u32 = token_text.chars()
+            .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
+            .sum();
+
         tokens.push(SemTok {
             line: pos.line,
             start_char: pos.character,
-            length: pt.length as u32,
+            length: utf16_length,
             token_type,
             token_modifiers: modifiers,
         });
@@ -197,11 +210,11 @@ pub(crate) async fn document_symbol(
                 selection_range: Range {
                     start: Position {
                         line: line_idx as u32,
-                        character: 2, // after "::"
+                        character: 2, // after "::" (always 2 UTF-16 code units for ASCII)
                     },
                     end: Position {
                         line: line_idx as u32,
-                        character: line.len() as u32,
+                        character: helpers::utf16_len(line),
                     },
                 },
                 children: None,
@@ -256,7 +269,7 @@ pub(crate) async fn symbol(
                         uri: doc.uri.clone(),
                         range: Range {
                             start: Position { line: line_idx as u32, character: 0 },
-                            end: Position { line: line_idx as u32, character: line.len() as u32 },
+                            end: Position { line: line_idx as u32, character: helpers::utf16_len(line) },
                         },
                     },
                     container_name: None,
@@ -318,7 +331,7 @@ pub(crate) async fn code_lens(
                 lenses.push(CodeLens {
                     range: Range {
                         start: Position { line: line_idx as u32, character: 0 },
-                        end: Position { line: line_idx as u32, character: line.len() as u32 },
+                        end: Position { line: line_idx as u32, character: helpers::utf16_len(line) },
                     },
                     command: Some(Command {
                         title: if outgoing > 0 {
@@ -401,7 +414,7 @@ pub(crate) async fn inlay_hint(
                                         uninit_vars.push(var.name.clone());
                                     }
                             }
-                            knot_core::passage::VarKind::Write => {
+                            knot_core::passage::VarKind::Init => {
                                 local_init.insert(var.name.clone());
                             }
                         }

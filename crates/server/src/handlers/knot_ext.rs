@@ -38,11 +38,8 @@ impl ServerState {
             for passage in &doc.passages {
                 passage_tags.insert(passage.name.clone(), passage.tags.clone());
             }
-            // Find passage line numbers from the document text.
-            // Use document_texts (ALL indexed files), not open_documents
-            // (editor-open only) — otherwise closed-file passages get line: 0
-            // which breaks click-to-navigate in the Story Map.
-            if let Some(text) = inner.document_texts.get(&doc.uri) {
+            // Find passage line numbers from the document text
+            if let Some(text) = inner.open_documents.get(&doc.uri) {
                 for (line_num, line) in text.lines().enumerate() {
                     if line.starts_with("::") {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
@@ -327,10 +324,10 @@ impl ServerState {
                     let location = KnotVariableLocation {
                         passage_name: passage.name.clone(),
                         file_uri: doc.uri.to_string(),
-                        is_write: var.kind == knot_core::VarKind::Write,
+                        is_write: var.kind == knot_core::VarKind::Init,
                     };
 
-                    if var.kind == knot_core::VarKind::Write {
+                    if var.kind == knot_core::VarKind::Init {
                         entry.written_in.push(location);
                     } else {
                         entry.read_in.push(location);
@@ -413,7 +410,7 @@ impl ServerState {
 
         // Variable info
         let variables_written: Vec<KnotDebugVariable> = passage
-            .persistent_variable_writes()
+            .persistent_variable_inits()
             .map(|v| KnotDebugVariable {
                 name: v.name.clone(),
                 is_temporary: v.is_temporary,
@@ -559,7 +556,7 @@ impl ServerState {
 
                     // Find the passage data
                     let (variables_written, available_links) = if let Some((_, passage)) = workspace.find_passage(&passage_name) {
-                        let vars: Vec<String> = passage.persistent_variable_writes().map(|v| v.name.clone()).collect();
+                        let vars: Vec<String> = passage.persistent_variable_inits().map(|v| v.name.clone()).collect();
                         let links: Vec<String> = passage.links.iter().map(|l| l.target.clone()).collect();
                         (vars, links)
                     } else {
@@ -1019,7 +1016,7 @@ impl ServerState {
                     .collect();
 
                 let written: Vec<String> = passage
-                    .persistent_variable_writes()
+                    .persistent_variable_inits()
                     .map(|v| v.name.clone())
                     .collect();
 
@@ -1125,7 +1122,7 @@ impl ServerState {
 
         // Build written-in-passage list
         let written_in_passage: Vec<KnotWatchVariable> = passage
-            .persistent_variable_writes()
+            .persistent_variable_inits()
             .filter(|v| {
                 filter_set.as_ref().is_none_or(|f| f.contains(&v.name))
             })
@@ -1169,7 +1166,7 @@ impl ServerState {
                             });
                         }
                     }
-                    knot_core::passage::VarKind::Write => {
+                    knot_core::passage::VarKind::Init => {
                         local_init.insert(var.name.clone());
                     }
                 }

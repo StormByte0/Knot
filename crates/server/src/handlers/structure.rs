@@ -84,8 +84,8 @@ pub(crate) async fn document_link(
                     if let Some(target_uri) = inner.workspace.find_passage_file_uri(target) {
                         links.push(DocumentLink {
                             range: Range {
-                                start: Position { line: line_idx as u32, character: content_start as u32 },
-                                end: Position { line: line_idx as u32, character: content_end as u32 },
+                                start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_start) },
+                                end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_end) },
                             },
                             target: Some(target_uri),
                             tooltip: Some(format!("Go to {}", target)),
@@ -133,7 +133,8 @@ pub(crate) async fn selection_range(
                 if let Some(rel_end) = line_text[abs_start..].find("]]") {
                     let content_start = abs_start + 2;
                     let content_end = abs_start + rel_end;
-                    if position.character as usize >= content_start && position.character as usize <= content_end {
+                    let byte_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
+                    if byte_pos >= content_start && byte_pos <= content_end {
                         // Link text range
                         let target_start = if let Some(arrow) = line_text[content_start..content_end].find("->") {
                             content_start + arrow + 2
@@ -143,13 +144,13 @@ pub(crate) async fn selection_range(
                             content_start
                         };
                         range_chain.push(Range {
-                            start: Position { line: position.line, character: target_start as u32 },
-                            end: Position { line: position.line, character: content_end as u32 },
+                            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, target_start) },
+                            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, content_end) },
                         });
                         // Full link range
                         range_chain.push(Range {
-                            start: Position { line: position.line, character: abs_start as u32 },
-                            end: Position { line: position.line, character: (abs_start + rel_end + 2) as u32 },
+                            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, abs_start) },
+                            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, abs_start + rel_end + 2) },
                         });
                         break;
                     }
@@ -239,7 +240,7 @@ pub(crate) async fn signature_help(
         if let Some(rel_end) = line_text[abs_start..].find(">>") {
             let content_start = abs_start + 2;
             let content_end = abs_start + rel_end;
-            let char_pos = position.character as usize;
+            let char_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
 
             if char_pos >= content_start && char_pos <= content_end {
                 let macro_content = &line_text[content_start..content_end];
@@ -285,7 +286,7 @@ pub(crate) async fn signature_help(
         } else {
             // Unclosed macro — cursor might be inside
             let content_start = abs_start + 2;
-            let char_pos = position.character as usize;
+            let char_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
             if char_pos >= content_start {
                 let macro_content = &line_text[content_start..];
                 let macro_name = macro_content.split_whitespace().next().unwrap_or("");

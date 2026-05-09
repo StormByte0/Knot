@@ -37,7 +37,7 @@ pub mod snowman;
 
 pub use plugin::{FormatPlugin, ParseResult, SemanticToken, FormatDiagnostic};
 pub use types::{
-    MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, MacroSignature,
+    MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
     ResolvedNavLink,
 };

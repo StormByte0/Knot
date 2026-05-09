@@ -381,7 +381,7 @@ impl ChapbookPlugin {
             let var_end = var_start + var_name.len();
             vars.push(VarOp {
                 name: var_name,
-                kind: VarKind::Write,
+                kind: VarKind::Init,
                 span: var_start..var_end,
                 is_temporary: false,
             });
@@ -434,7 +434,7 @@ impl ChapbookPlugin {
                     let var_end = var_start + key.len();
                     vars.push(VarOp {
                         name: var_name,
-                        kind: VarKind::Write,
+                        kind: VarKind::Init,
                         span: var_start..var_end,
                         is_temporary: false,
                     });
@@ -963,7 +963,7 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Init),
             "Should detect state.gold write"
         );
     }
@@ -990,7 +990,7 @@ mod tests {
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Write));
+        assert!(vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Init));
         assert!(vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read));
     }
 
@@ -1046,11 +1046,11 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "modify.gold" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "modify.gold" && v.kind == VarKind::Init),
             "Should detect modify.gold write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "modify.name" && v.kind == VarKind::Write),
+            vars.iter().any(|v| v.name == "modify.name" && v.kind == VarKind::Init),
             "Should detect modify.name write"
         );
     }
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(passage.links[0].target, "Cave");
 
         // Should have variable operations
-        assert!(passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == VarKind::Write));
+        assert!(passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == VarKind::Init));
         assert!(passage.vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read));
 
         // Should have mixed blocks
@@ -1203,7 +1203,7 @@ mod tests {
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
         assert_eq!(result.passages[1].name, "Forest");
-        assert!(result.passages[0].vars.iter().any(|v| v.name == "state.x" && v.kind == VarKind::Write));
+        assert!(result.passages[0].vars.iter().any(|v| v.name == "state.x" && v.kind == VarKind::Init));
         assert!(result.passages[1].vars.iter().any(|v| v.name == "state.x" && v.kind == VarKind::Read));
     }
 

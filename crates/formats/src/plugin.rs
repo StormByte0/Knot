@@ -388,6 +388,18 @@ pub trait FormatPlugin: Send + Sync {
     fn macro_snippet(&self, _name: &str) -> Option<&'static str> {
         None
     }
+
+    // -----------------------------------------------------------------------
+    // Dot-notation completion (optional)
+    // -----------------------------------------------------------------------
+
+    /// Build a map of variable dot-path → set of immediate child property names.
+    ///
+    /// Used for dot-notation completion (e.g., `$item.` → suggest "sword", "shield").
+    /// The default implementation returns an empty map.
+    fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
+        HashMap::new()
+    }
 }
 
 // ===========================================================================

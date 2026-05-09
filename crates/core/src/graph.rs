@@ -300,7 +300,7 @@ impl PassageGraph {
                         // (temporary variable writes don't persist across passages)
                         let has_mutation = passage_vars
                             .get(&node.name)
-                            .map(|ops| ops.iter().any(|v| v.kind == VarKind::Write && !v.is_temporary))
+                            .map(|ops| ops.iter().any(|v| v.kind == VarKind::Init && !v.is_temporary))
                             .unwrap_or(false);
 
                         if !has_mutation {
@@ -324,7 +324,7 @@ impl PassageGraph {
                 let name = &self.graph[idx].name;
                 passage_vars
                     .get(name)
-                    .map(|ops| ops.iter().any(|v| v.kind == VarKind::Write && !v.is_temporary))
+                    .map(|ops| ops.iter().any(|v| v.kind == VarKind::Init && !v.is_temporary))
                     .unwrap_or(false)
             });
 

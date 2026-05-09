@@ -353,9 +353,7 @@ pub(crate) async fn index_workspace(
         // Use the resolved format from Pass 1 for ALL files
         let format = resolved_format.clone();
 
-        // Store in document_texts (NOT open_documents — only did_open
-        // populates open_documents to track which files the editor has open).
-        inner.document_texts.insert(uri.clone(), text.clone());
+        inner.open_documents.insert(uri.clone(), text.clone());
 
         let (doc, parse_result) = parse_with_format_plugin(
             &inner.format_registry,
@@ -389,12 +387,12 @@ pub(crate) async fn index_workspace(
     inner.workspace.mark_indexed();
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-    let doc_texts = inner.document_texts.clone();
+    let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
     drop(inner);
 
-    publish_all_diagnostics(client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+    publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
     Ok(())
 }
@@ -562,15 +560,11 @@ pub(crate) fn count_incoming_links(workspace: &Workspace, passage_name: &str) ->
 /// - Format plugin diagnostics (syntax errors, parsing warnings, etc.)
 ///
 /// Groups results by `file_uri` and publishes each group separately.
-///
-/// The `document_texts` parameter provides the raw text for range computation
-/// and comes from `ServerStateInner::document_texts` (which contains ALL
-/// indexed files, not just open ones).
 pub(crate) async fn publish_all_diagnostics(
     client: &tower_lsp::Client,
     graph_diagnostics: &[knot_core::graph::GraphDiagnostic],
     format_diagnostics: &std::collections::HashMap<Url, Vec<fmt_plugin::FormatDiagnostic>>,
-    document_texts: &std::collections::HashMap<Url, String>,
+    open_documents: &std::collections::HashMap<Url, String>,
     config: &knot_core::workspace::KnotConfig,
 ) {
     use std::collections::HashMap as StdHashMap;
@@ -585,7 +579,7 @@ pub(crate) async fn publish_all_diagnostics(
     }
 
     // Collect all files that should have diagnostics published
-    let all_uris: std::collections::HashSet<Url> = document_texts
+    let all_uris: std::collections::HashSet<Url> = open_documents
         .keys()
         .chain(format_diagnostics.keys())
         .cloned()
@@ -593,7 +587,7 @@ pub(crate) async fn publish_all_diagnostics(
 
     for uri in &all_uris {
         let uri_str = uri.to_string();
-        let text = document_texts.get(uri).map(|s| s.as_str()).unwrap_or("");
+        let text = open_documents.get(uri).map(|s| s.as_str()).unwrap_or("");
 
         let mut lsp_diagnostics: Vec<Diagnostic> = Vec::new();
 
@@ -621,7 +615,7 @@ pub(crate) async fn publish_all_diagnostics(
 
                 // Build related information pointing to source or target passages
                 let related_information = build_related_information_for_push(
-                    document_texts, &gd.kind, &gd.passage_name, &gd.message,
+                    open_documents, &gd.kind, &gd.passage_name, &gd.message,
                 );
 
                 lsp_diagnostics.push(Diagnostic {
@@ -666,33 +660,85 @@ pub(crate) async fn publish_all_diagnostics(
 }
 
 // ===========================================================================
-// Position / Range helpers
+// Position / Range helpers (UTF-16 aware)
 // ===========================================================================
+
+/// Count the number of UTF-16 code units in a string slice.
+///
+/// LSP specifies that `Position.character` is measured in UTF-16 code
+/// units, not bytes or Unicode scalar values.  Basic Multilingual Plane
+/// characters (U+0000–U+FFFF) occupy one UTF-16 code unit; supplementary
+/// characters (U+10000–U+10FFFF) occupy two (a surrogate pair).
+pub(crate) fn utf16_len(s: &str) -> u32 {
+    s.chars().map(|c| {
+        if (c as u32) < 0x10000 { 1u32 } else { 2u32 }
+    }).sum()
+}
+
+/// Count UTF-16 code units in the first `byte_limit` bytes of `text`.
+///
+/// Used to convert byte offsets (from string slicing / regex matches) to
+/// the UTF-16 character offsets the LSP requires.
+pub(crate) fn utf16_len_up_to(text: &str, byte_limit: usize) -> u32 {
+    let safe = byte_limit.min(text.len());
+    let mut count = 0u32;
+    for ch in text[..safe].chars() {
+        count += if (ch as u32) < 0x10000 { 1u32 } else { 2u32 };
+    }
+    count
+}
+
+/// Convert a UTF-16 code unit offset on a single line to a byte offset.
+///
+/// The LSP sends `Position.character` as UTF-16 code units. Before slicing
+/// a Rust `&str` (which is UTF-8), this offset must be converted back to
+/// bytes.  Without this conversion, using `position.character as usize`
+/// as a byte index will produce wrong positions — and can **panic** if
+/// the offset falls inside a multi-byte UTF-8 sequence.
+pub(crate) fn utf16_to_byte_offset(line: &str, utf16_offset: usize) -> usize {
+    let mut utf16_count = 0usize;
+    let mut byte_offset = 0usize;
+    for ch in line.chars() {
+        if utf16_count >= utf16_offset {
+            break;
+        }
+        utf16_count += if (ch as u32) < 0x10000 { 1usize } else { 2usize };
+        byte_offset += ch.len_utf8();
+    }
+    byte_offset
+}
 
 /// Convert a byte offset to an LSP Position (0-based line & UTF-16 character).
 ///
-/// LSP positions use UTF-16 code units for the `character` field, not byte
-/// offsets. This function correctly converts byte offsets to UTF-16 code
-/// unit positions, which is critical for files containing non-ASCII
-/// characters (e.g., CJK text, emoji). The previous implementation used
-/// byte offsets directly, causing incorrect positions for non-ASCII text.
-///
-/// Twine source files are UTF-8, but the LSP protocol mandates UTF-16
-/// for all position fields. This function bridges the gap.
+/// The LSP specification requires `character` to be measured in **UTF-16
+/// code units**, not bytes. The previous implementation incorrectly used
+/// byte offsets, which produced wrong positions for any non-ASCII text
+/// (e.g., emoji, CJK characters, or other multi-byte UTF-8 sequences).
 pub(crate) fn byte_offset_to_position(text: &str, offset: usize) -> Position {
     let safe_offset = offset.min(text.len());
     let text_before = &text[..safe_offset];
-    let line = text_before.lines().count() as u32;
-    let line = if text_before.is_empty() || text_before.ends_with('\n') {
-        line
+
+    // Count lines (0-based)
+    let line = if text_before.is_empty() {
+        0u32
     } else {
-        line - 1
+        // `.lines()` does not count a trailing empty line after a final `\n`,
+        // so we need to handle that case explicitly.
+        let line_count = text_before.lines().count() as u32;
+        if text_before.ends_with('\n') {
+            line_count  // the \n itself is part of the previous line
+        } else {
+            line_count - 1  // we're on the last counted line
+        }
     };
+
+    // Extract the text on the current line up to the offset
     let last_newline = text_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_text = &text_before[last_newline..];
-    // Count UTF-16 code units in the line up to the offset.
-    // LSP `character` = number of UTF-16 code units, NOT bytes.
-    let character = line_text.encode_utf16().count() as u32;
+    let line_text_before_offset = &text[last_newline..safe_offset];
+
+    // Count UTF-16 code units on this line up to the offset
+    let character = utf16_len(line_text_before_offset);
+
     Position { line, character }
 }
 
@@ -703,62 +749,15 @@ pub(crate) fn byte_range_to_lsp_range(text: &str, range: &std::ops::Range<usize>
     Range { start, end }
 }
 
-/// Convert an LSP Position (UTF-16 character offset) to a byte offset.
-///
-/// This is the inverse of `byte_offset_to_position` — it converts an
-/// LSP position (which uses UTF-16 code units) back to a byte offset
-/// into the source text. This is needed when receiving positions from
-/// the client (e.g., in goto-definition, completion, rename requests).
-pub(crate) fn lsp_position_to_byte_offset(text: &str, position: Position) -> usize {
-    let line_idx = position.line as usize;
-    let utf16_char = position.character as usize;
-
-    // Find the start of the target line
-    let mut line_start = 0;
-    for _ in 0..line_idx {
-        match text[line_start..].find('\n') {
-            Some(nl) => line_start += nl + 1,
-            None => return text.len(), // Line beyond text
-        }
-    }
-
-    // Find the end of the target line
-    let line_end = text[line_start..].find('\n').map_or(text.len(), |nl| line_start + nl);
-    let line_text = &text[line_start..line_end];
-
-    // Walk through UTF-16 code units until we've consumed `utf16_char` units,
-    // then return the corresponding byte offset.
-    let mut utf16_consumed = 0;
-    let mut byte_pos = 0;
-    for ch in line_text.chars() {
-        if utf16_consumed >= utf16_char {
-            break;
-        }
-        let utf16_len = ch.len_utf16();
-        utf16_consumed += utf16_len;
-        byte_pos += ch.len_utf8();
-    }
-
-    line_start + byte_pos
-}
-
-/// Convert an LSP Range (UTF-16 positions) to a byte range.
-pub(crate) fn lsp_range_to_byte_range(text: &str, range: &Range) -> std::ops::Range<usize> {
-    let start = lsp_position_to_byte_offset(text, range.start);
-    let end = lsp_position_to_byte_offset(text, range.end);
-    start..end
-}
-
 /// Find the LSP Range for a passage header line.
 ///
-/// Character positions use UTF-16 code units per LSP spec.
+/// Returns a Range covering the full header line with `character` values
+/// measured in UTF-16 code units (as required by the LSP specification).
 pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range {
     for (line_idx, line) in text.lines().enumerate() {
         if line.starts_with("::") {
             let name = parse_passage_name_from_header(&line[2..]);
             if name == passage_name {
-                // LSP character = UTF-16 code unit count
-                let char_end = line.encode_utf16().count() as u32;
                 return Range {
                     start: Position {
                         line: line_idx as u32,
@@ -766,7 +765,7 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
                     },
                     end: Position {
                         line: line_idx as u32,
-                        character: char_end,
+                        character: utf16_len(line),
                     },
                 };
             }
@@ -797,9 +796,27 @@ pub(crate) fn find_passage_at_position(text: &str, position: Position) -> Option
 }
 
 /// Find a link target at a given LSP position.
+///
+/// The `position.character` is in UTF-16 code units (LSP spec). This
+/// function converts the UTF-16 character offset to a byte offset for
+/// string slicing, then searches for `[[...]]` links on the line.
 pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Option<String> {
     let line_text = text.lines().nth(position.line as usize)?;
-    let char_offset = position.character as usize;
+
+    // Convert UTF-16 character offset to a byte offset on this line
+    let utf16_offset = position.character as usize;
+    let mut utf16_count = 0usize;
+    let mut byte_offset = 0usize;
+    for ch in line_text.chars() {
+        if utf16_count >= utf16_offset {
+            break;
+        }
+        let code_units = if (ch as u32) < 0x10000 { 1usize } else { 2usize };
+        utf16_count += code_units;
+        byte_offset += ch.len_utf8();
+    }
+
+    let char_offset = byte_offset;
 
     let mut search_from = 0;
     while let Some(rel_start) = line_text[search_from..].find("[[") {
@@ -1053,13 +1070,10 @@ pub(crate) fn format_twee_text(text: &str) -> Vec<TextEdit> {
         // Trim trailing whitespace
         let trimmed_end = line.trim_end();
         if trimmed_end.len() != line.len() {
-            // Use UTF-16 code unit counts for LSP character positions
-            let trimmed_utf16 = trimmed_end.encode_utf16().count() as u32;
-            let line_utf16 = line.encode_utf16().count() as u32;
             edits.push(TextEdit {
                 range: Range {
-                    start: Position { line: i as u32, character: trimmed_utf16 },
-                    end: Position { line: i as u32, character: line_utf16 },
+                    start: Position { line: i as u32, character: utf16_len(trimmed_end) },
+                    end: Position { line: i as u32, character: utf16_len(line) },
                 },
                 new_text: String::new(),
             });
@@ -1068,7 +1082,8 @@ pub(crate) fn format_twee_text(text: &str) -> Vec<TextEdit> {
         // Normalize passage header spacing: ensure exactly one space after "::"
         if let Some(rest) = line.strip_prefix("::") {
             if rest.starts_with(|c: char| c != ' ' && c != '[' && c != '\t') && !rest.is_empty() {
-                // Missing space after "::", add one
+                // Missing space after "::", add one.
+                // "::" is always 2 UTF-16 code units (ASCII), so character=2 is correct.
                 edits.push(TextEdit {
                     range: Range {
                         start: Position { line: i as u32, character: 2 },
@@ -1104,12 +1119,11 @@ pub(crate) fn format_twee_text(text: &str) -> Vec<TextEdit> {
     if formatted_text != original_text {
         // Return a single edit replacing the entire document
         let line_count = lines.len() as u32;
-        let last_line = lines.last().map(|l| *l).unwrap_or("");
-        let last_line_utf16 = last_line.encode_utf16().count() as u32;
+        let last_line_utf16_len = lines.last().map(|l| utf16_len(l)).unwrap_or(0);
         vec![TextEdit {
             range: Range {
                 start: Position { line: 0, character: 0 },
-                end: Position { line: line_count.saturating_sub(1), character: last_line_utf16 },
+                end: Position { line: line_count.saturating_sub(1), character: last_line_utf16_len },
             },
             new_text: formatted_text,
         }]
@@ -1454,8 +1468,8 @@ pub(crate) fn find_link_locations(
                             location: Location {
                                 uri: doc_uri.clone(),
                                 range: Range {
-                                    start: Position { line: line_idx as u32, character: content_start as u32 },
-                                    end: Position { line: line_idx as u32, character: content_end as u32 },
+                                    start: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_start) },
+                                    end: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_end) },
                                 },
                             },
                             message: format!("Link to '{}'", passage_name),
@@ -1486,7 +1500,7 @@ pub(crate) fn find_definition_location(
                             uri: doc_uri.clone(),
                             range: Range {
                                 start: Position { line: line_idx as u32, character: 0 },
-                                end: Position { line: line_idx as u32, character: line.encode_utf16().count() as u32 },
+                                end: Position { line: line_idx as u32, character: utf16_len(line) },
                             },
                         },
                         message: format!("Definition of '{}'", passage_name),
@@ -1514,7 +1528,7 @@ pub(crate) fn find_all_definition_locations(
                             uri: doc_uri.clone(),
                             range: Range {
                                 start: Position { line: line_idx as u32, character: 0 },
-                                end: Position { line: line_idx as u32, character: line.encode_utf16().count() as u32 },
+                                end: Position { line: line_idx as u32, character: utf16_len(line) },
                             },
                         },
                         message: format!("Definition of '{}'", passage_name),
@@ -1572,8 +1586,8 @@ pub(crate) fn find_variable_read_locations(
                         location: Location {
                             uri: doc_uri.clone(),
                             range: Range {
-                                start: Position { line: line_idx as u32, character: byte_start as u32 },
-                                end: Position { line: line_idx as u32, character: byte_end as u32 },
+                                start: Position { line: line_idx as u32, character: utf16_len_up_to(line, byte_start) },
+                                end: Position { line: line_idx as u32, character: utf16_len_up_to(line, byte_end) },
                             },
                         },
                         message: format!("Variable {} is read here", var_name),
@@ -1627,8 +1641,8 @@ pub(crate) fn find_link_ranges_for_target(text: &str, target: &str) -> Vec<Range
                 };
                 if link_target.trim() == target {
                     ranges.push(Range {
-                        start: Position { line: line_idx as u32, character: content_start as u32 },
-                        end: Position { line: line_idx as u32, character: content_end as u32 },
+                        start: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_start) },
+                        end: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_end) },
                     });
                 }
                 search_from = abs_start + rel_end + 2;

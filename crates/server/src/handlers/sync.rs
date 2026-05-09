@@ -15,10 +15,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     tracing::info!("did_open: {}", uri);
 
     let mut inner = state.inner.write().await;
-    // Only open_documents tracks editor-open files.
-    // document_texts tracks ALL indexed file texts for range computation.
     inner.open_documents.insert(uri.clone(), text.clone());
-    inner.document_texts.insert(uri.clone(), text.clone());
 
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
@@ -38,12 +35,12 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-    let doc_texts = inner.document_texts.clone();
+    let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
     drop(inner);
 
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -68,7 +65,6 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Always update the text cache immediately so go-to-definition etc.
     // see the latest content, even if we skip heavy analysis this round.
     inner.open_documents.insert(uri.clone(), text.clone());
-    inner.document_texts.insert(uri.clone(), text.clone());
 
     // If we're still inside the debounce window, skip the expensive
     // parse + graph surgery + analysis pass. The next did_change that
@@ -124,12 +120,12 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     inner.workspace.graph.recheck_broken_links();
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-    let doc_texts = inner.document_texts.clone();
+    let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
     drop(inner);
 
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
@@ -137,9 +133,6 @@ pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentP
     tracing::info!("did_close: {}", uri);
 
     let mut inner = state.inner.write().await;
-    // Only remove from open_documents (editor-open tracker).
-    // Keep the text in document_texts so diagnostics can still be
-    // computed for closed files.
     inner.open_documents.remove(&uri);
     inner.format_diagnostics.remove(&uri);
     drop(inner);
@@ -229,12 +222,12 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
 
     // Re-run analysis and publish diagnostics with updated config
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-    let doc_texts = inner.document_texts.clone();
+    let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
     drop(inner);
 
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 }
 
 pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidChangeWatchedFilesParams) {
@@ -272,9 +265,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         let (doc, parse_result) =
                             helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
 
-                        // Store in document_texts (not open_documents — this file
-                        // was created on disk, not opened in the editor).
-                        inner.document_texts.insert(uri.clone(), text.clone());
+                        inner.open_documents.insert(uri.clone(), text.clone());
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                         helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                         inner.workspace.insert_document(doc);
@@ -290,9 +281,9 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 format_before, format_after
                             );
                             // Re-parse all documents with the new format
-                            let uris: Vec<url::Url> = inner.document_texts.keys().cloned().collect();
+                            let uris: Vec<url::Url> = inner.open_documents.keys().cloned().collect();
                             let texts: Vec<String> = uris.iter()
-                                .filter_map(|u| inner.document_texts.get(u).cloned())
+                                .filter_map(|u| inner.open_documents.get(u).cloned())
                                 .collect();
 
                             for (doc_uri, doc_text) in uris.iter().zip(texts.iter()) {
@@ -311,19 +302,18 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after);
 
                         let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-                        let doc_texts = inner.document_texts.clone();
+                        let open_docs = inner.open_documents.clone();
                         let fmt_diags = inner.format_diagnostics.clone();
                         let config = inner.workspace.config.clone();
                         drop(inner);
 
-                        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+                        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
                     }
             }
             FileChangeType::DELETED => {
                 tracing::info!("File deleted: {}", uri);
                 let mut inner = state.inner.write().await;
                 inner.open_documents.remove(&uri);
-                inner.document_texts.remove(&uri);
                 inner.format_diagnostics.remove(&uri);
                 inner.workspace.remove_document_and_update_graph(&uri);
 
@@ -331,12 +321,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 inner.workspace.graph.recheck_broken_links();
 
                 let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-                let doc_texts = inner.document_texts.clone();
+                let open_docs = inner.open_documents.clone();
                 let fmt_diags = inner.format_diagnostics.clone();
                 let config = inner.workspace.config.clone();
                 drop(inner);
 
-                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
                 // Clear diagnostics for the deleted file
                 state.client
@@ -360,21 +350,19 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             let (doc, parse_result) =
                                 helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
 
-                            // Store in document_texts (not open_documents —
-                            // this file changed on disk, not in the editor).
-                            inner.document_texts.insert(uri.clone(), text.clone());
+                            inner.open_documents.insert(uri.clone(), text.clone());
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                             helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                             inner.workspace.insert_document(doc);
                             inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
                             let diagnostics = AnalysisEngine::analyze(&inner.workspace);
-                            let doc_texts = inner.document_texts.clone();
+                            let open_docs = inner.open_documents.clone();
                             let fmt_diags = inner.format_diagnostics.clone();
                             let config = inner.workspace.config.clone();
                             drop(inner);
 
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &doc_texts, &config).await;
+                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
                         }
             }
             _ => {}

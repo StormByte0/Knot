@@ -124,10 +124,15 @@ fn try_macro_hover(
         let abs_start = search_from + rel_start;
         if let Some(rel_end) = line[abs_start..].find(">>") {
             let abs_end = abs_start + rel_end + 2;
-            // Convert byte offsets to UTF-16 code unit counts for LSP positions.
-            let utf16_start = line[..abs_start].encode_utf16().count();
-            let utf16_end = line[..abs_end].encode_utf16().count();
-            if char_pos >= utf16_start && char_pos <= utf16_end {
+
+            // Convert byte-based abs_start/abs_end to UTF-16 code unit offsets
+            // for the LSP range.  char_pos arrives as UTF-16 from the client,
+            // so we must compare against UTF-16 offsets as well.
+            let utf16_start = helpers::utf16_len_up_to(line, abs_start);
+            let utf16_end = helpers::utf16_len_up_to(line, abs_end);
+            let utf16_pos = char_pos; // already UTF-16 from the client
+
+            if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
                 let content = &line[abs_start + 2..abs_end - 2];
                 let macro_name = content.split_whitespace().next().unwrap_or(content).trim();
 
@@ -184,11 +189,11 @@ fn try_macro_hover(
                         range: Some(Range {
                             start: Position {
                                 line: line_idx as u32,
-                                character: utf16_start as u32,
+                                character: utf16_start,
                             },
                             end: Position {
                                 line: line_idx as u32,
-                                character: utf16_end as u32,
+                                character: utf16_end,
                             },
                         }),
                     });
@@ -240,12 +245,14 @@ fn try_variable_hover(
         let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
         let byte_end: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
 
-        // Convert byte offsets to UTF-16 code unit counts for LSP positions.
-        // LSP character = UTF-16 code units, not bytes.
-        let utf16_start = line[..byte_start].encode_utf16().count();
-        let utf16_end = line[..byte_end].encode_utf16().count();
+        // Convert byte positions to UTF-16 code unit offsets for LSP.
+        // char_pos arrives as UTF-16 from the client, so we must compare
+        // against UTF-16 offsets as well.
+        let utf16_start = helpers::utf16_len_up_to(line, byte_start);
+        let utf16_end = helpers::utf16_len_up_to(line, byte_end);
+        let utf16_pos = char_pos; // already UTF-16 from the client
 
-        if char_pos >= utf16_start && char_pos <= utf16_end {
+        if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
             // Find where this variable is written and read across the workspace
             let mut write_locations: Vec<String> = Vec::new();
             let mut read_count = 0;
@@ -254,7 +261,7 @@ fn try_variable_hover(
                     for var in &passage.vars {
                         if var.name == var_name {
                             match var.kind {
-                                knot_core::passage::VarKind::Write => {
+                                knot_core::passage::VarKind::Init => {
                                     write_locations.push(passage.name.clone());
                                 }
                                 knot_core::passage::VarKind::Read => {
@@ -296,11 +303,11 @@ fn try_variable_hover(
                 range: Some(Range {
                     start: Position {
                         line: line_idx as u32,
-                        character: utf16_start as u32,
+                        character: utf16_start,
                     },
                     end: Position {
                         line: line_idx as u32,
-                        character: utf16_end as u32,
+                        character: utf16_end,
                     },
                 }),
             });
@@ -316,15 +323,29 @@ fn try_global_hover(
     char_pos: usize,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
-    // Extract the word at the cursor position
+    // Extract the word at the cursor position.
+    // char_pos is in UTF-16 code units (from LSP). Convert to a
+    // Unicode-scalar-value index so we can index into `chars[]`.
     let chars: Vec<char> = line.chars().collect();
-    if char_pos == 0 || char_pos > chars.len() {
+    let utf16_to_char_idx = |utf16_offset: usize| -> usize {
+        let mut utf16_count = 0usize;
+        for (i, ch) in chars.iter().enumerate() {
+            if utf16_count >= utf16_offset {
+                return i;
+            }
+            utf16_count += if (*ch as u32) < 0x10000 { 1usize } else { 2usize };
+        }
+        chars.len()
+    };
+
+    let char_idx = utf16_to_char_idx(char_pos);
+    if char_idx == 0 || char_idx > chars.len() {
         return None;
     }
 
     // Find the start of the identifier at the cursor
-    let mut end = char_pos;
-    let mut start = char_pos;
+    let mut end = char_idx;
+    let mut start = char_idx;
     while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
         start -= 1;
     }
@@ -347,9 +368,9 @@ fn try_global_hover(
         let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
         let byte_end: usize = chars[..end].iter().map(|c| c.len_utf8()).sum();
 
-        // Convert byte offsets to UTF-16 code unit counts for LSP positions.
-        let utf16_start = line[..byte_start].encode_utf16().count();
-        let utf16_end = line[..byte_end].encode_utf16().count();
+        // Convert byte positions to UTF-16 code unit offsets for LSP
+        let utf16_start = helpers::utf16_len_up_to(line, byte_start);
+        let utf16_end = helpers::utf16_len_up_to(line, byte_end);
 
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -359,11 +380,11 @@ fn try_global_hover(
             range: Some(Range {
                 start: Position {
                     line: line_idx as u32,
-                    character: utf16_start as u32,
+                    character: utf16_start,
                 },
                 end: Position {
                     line: line_idx as u32,
-                    character: utf16_end as u32,
+                    character: utf16_end,
                 },
             }),
         });
@@ -373,6 +394,9 @@ fn try_global_hover(
 }
 
 /// Try to show hover info for a passage link when cursor is inside [[...]].
+///
+/// All byte offsets from string slicing are converted to UTF-16 code unit
+/// offsets for LSP positions, as required by the specification.
 fn try_link_hover(
     line: &str,
     line_idx: usize,
@@ -387,11 +411,12 @@ fn try_link_hover(
             let content_start = abs_start + 2;
             let content_end = abs_start + rel_end;
 
-            // Convert byte offsets to UTF-16 code unit counts for LSP positions.
-            let utf16_start = line[..abs_start].encode_utf16().count();
-            let utf16_end = line[..abs_end].encode_utf16().count();
+            // Convert byte offsets to UTF-16 code unit offsets for LSP
+            let utf16_start = helpers::utf16_len_up_to(line, abs_start);
+            let utf16_end = helpers::utf16_len_up_to(line, abs_end);
+            let utf16_pos = char_pos; // already UTF-16 from the client
 
-            if char_pos >= utf16_start && char_pos <= utf16_end {
+            if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
                 let link_text = &line[content_start..content_end];
 
                 // Extract target: handle arrow (->) and pipe (|) syntax
@@ -418,7 +443,7 @@ fn try_link_hover(
 
                         // Add variable info for the target passage
                         if !passage.vars.is_empty() {
-                            let writes: Vec<&str> = passage.persistent_variable_writes().map(|v| v.name.as_str()).collect();
+                            let writes: Vec<&str> = passage.persistent_variable_inits().map(|v| v.name.as_str()).collect();
                             let reads: Vec<&str> = passage.persistent_variable_reads().map(|v| v.name.as_str()).collect();
                             if !writes.is_empty() {
                                 hover_text.push_str(&format!("\nVariables written: {}", writes.join(", ")));
@@ -436,11 +461,11 @@ fn try_link_hover(
                             range: Some(Range {
                                 start: Position {
                                     line: line_idx as u32,
-                                    character: utf16_start as u32,
+                                    character: utf16_start,
                                 },
                                 end: Position {
                                     line: line_idx as u32,
-                                    character: utf16_end as u32,
+                                    character: utf16_end,
                                 },
                             }),
                         });
@@ -454,11 +479,11 @@ fn try_link_hover(
                             range: Some(Range {
                                 start: Position {
                                     line: line_idx as u32,
-                                    character: utf16_start as u32,
+                                    character: utf16_start,
                                 },
                                 end: Position {
                                     line: line_idx as u32,
-                                    character: utf16_end as u32,
+                                    character: utf16_end,
                                 },
                             }),
                         });

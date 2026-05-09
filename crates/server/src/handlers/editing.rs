@@ -70,13 +70,14 @@ pub(crate) async fn on_type_formatting(
     };
 
     let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-    let char_pos = position.character as usize;
+    // position.character is UTF-16; convert to byte offset for string slicing
+    let byte_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
 
     // Auto-close [[ with ]]
-    if ch == "]" && char_pos >= 2 {
-        let before = &line_text[..char_pos];
+    if ch == "]" && byte_pos >= 2 {
+        let before = &line_text[..byte_pos];
         if before.ends_with("[[") {
-            let insert_pos = Position { line: position.line, character: char_pos as u32 };
+            let insert_pos = Position { line: position.line, character: position.character };
             return Ok(Some(vec![TextEdit {
                 range: Range { start: insert_pos, end: insert_pos },
                 new_text: "]]".to_string(),
@@ -85,10 +86,10 @@ pub(crate) async fn on_type_formatting(
     }
 
     // Auto-close << with >>
-    if ch == ">" && char_pos >= 2 {
-        let before = &line_text[..char_pos];
+    if ch == ">" && byte_pos >= 2 {
+        let before = &line_text[..byte_pos];
         if before.ends_with("<<") {
-            let insert_pos = Position { line: position.line, character: char_pos as u32 };
+            let insert_pos = Position { line: position.line, character: position.character };
             return Ok(Some(vec![TextEdit {
                 range: Range { start: insert_pos, end: insert_pos },
                 new_text: ">>".to_string(),
@@ -118,8 +119,8 @@ pub(crate) async fn linked_editing_range(
         let name_start = line_text.find(&name).unwrap_or(2);
 
         let mut ranges = vec![Range {
-            start: Position { line: position.line, character: name_start as u32 },
-            end: Position { line: position.line, character: (name_start + name.len()) as u32 },
+            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start) },
+            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start + name.len()) },
         }];
 
         // Find all [[name]] links in the document
@@ -143,8 +144,8 @@ pub(crate) async fn linked_editing_range(
                     if link_target.trim() == name {
                         let target_start = content_start + (link_text.len() - link_target.len());
                         ranges.push(Range {
-                            start: Position { line: line_idx as u32, character: target_start as u32 },
-                            end: Position { line: line_idx as u32, character: (target_start + name.len()) as u32 },
+                            start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start) },
+                            end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start + name.len()) },
                         });
                     }
 
@@ -177,12 +178,13 @@ pub(crate) async fn prepare_rename(
         // Check if cursor is on a passage header
         if let Some(name) = helpers::find_passage_at_position(text, position) {
             let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-            let name_start = line_text.find(&name).unwrap_or(2) as u32;
-            let name_end = name_start + name.len() as u32;
+            let name_start_byte = line_text.find(&name).unwrap_or(2);
+            let name_start_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte);
+            let name_end_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte + name.len());
             return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
                 range: Range {
-                    start: Position { line: position.line, character: name_start },
-                    end: Position { line: position.line, character: name_end },
+                    start: Position { line: position.line, character: name_start_utf16 },
+                    end: Position { line: position.line, character: name_end_utf16 },
                 },
                 placeholder: name,
             }));
@@ -198,11 +200,14 @@ pub(crate) async fn prepare_rename(
                 if let Some(rel_end) = line_text[abs_start..].find("]]") {
                     let content_start = abs_start + 2;
                     let content_end = abs_start + rel_end;
-                    if position.character as usize >= content_start && position.character as usize <= content_end {
+                    // Compare UTF-16 cursor position with UTF-16 offsets of link content
+                    let utf16_content_start = helpers::utf16_len_up_to(line_text, content_start);
+                    let utf16_content_end = helpers::utf16_len_up_to(line_text, content_end);
+                    if position.character >= utf16_content_start && position.character <= utf16_content_end {
                         return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
                             range: Range {
-                                start: Position { line: position.line, character: content_start as u32 },
-                                end: Position { line: position.line, character: content_end as u32 },
+                                start: Position { line: position.line, character: utf16_content_start },
+                                end: Position { line: position.line, character: utf16_content_end },
                             },
                             placeholder: target_name,
                         }));
@@ -254,8 +259,8 @@ pub(crate) async fn rename(
                     let name_start = line.find(&name).unwrap_or(2);
                     doc_edits.push(TextEdit {
                         range: Range {
-                            start: Position { line: line_idx as u32, character: name_start as u32 },
-                            end: Position { line: line_idx as u32, character: (name_start + name.len()) as u32 },
+                            start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, name_start) },
+                            end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, name_start + name.len()) },
                         },
                         new_text: new_name.clone(),
                     });
@@ -282,10 +287,11 @@ pub(crate) async fn rename(
                     if link_target.trim() == old_name {
                         // Find the exact position of the target name in the link
                         let target_start = content_start + (link_text.len() - link_target.len());
+                        let target_end = target_start + link_target.trim().len();
                         doc_edits.push(TextEdit {
                             range: Range {
-                                start: Position { line: line_idx as u32, character: target_start as u32 },
-                                end: Position { line: line_idx as u32, character: (target_start + link_target.trim().len()) as u32 },
+                                start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start) },
+                                end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_end) },
                             },
                             new_text: new_name.clone(),
                         });
