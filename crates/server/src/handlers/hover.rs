@@ -124,7 +124,10 @@ fn try_macro_hover(
         let abs_start = search_from + rel_start;
         if let Some(rel_end) = line[abs_start..].find(">>") {
             let abs_end = abs_start + rel_end + 2;
-            if char_pos >= abs_start && char_pos <= abs_end {
+            // Convert byte offsets to UTF-16 code unit counts for LSP positions.
+            let utf16_start = line[..abs_start].encode_utf16().count();
+            let utf16_end = line[..abs_end].encode_utf16().count();
+            if char_pos >= utf16_start && char_pos <= utf16_end {
                 let content = &line[abs_start + 2..abs_end - 2];
                 let macro_name = content.split_whitespace().next().unwrap_or(content).trim();
 
@@ -181,11 +184,11 @@ fn try_macro_hover(
                         range: Some(Range {
                             start: Position {
                                 line: line_idx as u32,
-                                character: abs_start as u32,
+                                character: utf16_start as u32,
                             },
                             end: Position {
                                 line: line_idx as u32,
-                                character: abs_end as u32,
+                                character: utf16_end as u32,
                             },
                         }),
                     });
@@ -237,7 +240,12 @@ fn try_variable_hover(
         let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
         let byte_end: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
 
-        if char_pos >= byte_start && char_pos <= byte_end {
+        // Convert byte offsets to UTF-16 code unit counts for LSP positions.
+        // LSP character = UTF-16 code units, not bytes.
+        let utf16_start = line[..byte_start].encode_utf16().count();
+        let utf16_end = line[..byte_end].encode_utf16().count();
+
+        if char_pos >= utf16_start && char_pos <= utf16_end {
             // Find where this variable is written and read across the workspace
             let mut write_locations: Vec<String> = Vec::new();
             let mut read_count = 0;
@@ -288,11 +296,11 @@ fn try_variable_hover(
                 range: Some(Range {
                     start: Position {
                         line: line_idx as u32,
-                        character: byte_start as u32,
+                        character: utf16_start as u32,
                     },
                     end: Position {
                         line: line_idx as u32,
-                        character: byte_end as u32,
+                        character: utf16_end as u32,
                     },
                 }),
             });
@@ -339,6 +347,10 @@ fn try_global_hover(
         let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
         let byte_end: usize = chars[..end].iter().map(|c| c.len_utf8()).sum();
 
+        // Convert byte offsets to UTF-16 code unit counts for LSP positions.
+        let utf16_start = line[..byte_start].encode_utf16().count();
+        let utf16_end = line[..byte_end].encode_utf16().count();
+
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -347,11 +359,11 @@ fn try_global_hover(
             range: Some(Range {
                 start: Position {
                     line: line_idx as u32,
-                    character: byte_start as u32,
+                    character: utf16_start as u32,
                 },
                 end: Position {
                     line: line_idx as u32,
-                    character: byte_end as u32,
+                    character: utf16_end as u32,
                 },
             }),
         });
@@ -375,7 +387,11 @@ fn try_link_hover(
             let content_start = abs_start + 2;
             let content_end = abs_start + rel_end;
 
-            if char_pos >= abs_start && char_pos <= abs_end {
+            // Convert byte offsets to UTF-16 code unit counts for LSP positions.
+            let utf16_start = line[..abs_start].encode_utf16().count();
+            let utf16_end = line[..abs_end].encode_utf16().count();
+
+            if char_pos >= utf16_start && char_pos <= utf16_end {
                 let link_text = &line[content_start..content_end];
 
                 // Extract target: handle arrow (->) and pipe (|) syntax
@@ -420,11 +436,11 @@ fn try_link_hover(
                             range: Some(Range {
                                 start: Position {
                                     line: line_idx as u32,
-                                    character: abs_start as u32,
+                                    character: utf16_start as u32,
                                 },
                                 end: Position {
                                     line: line_idx as u32,
-                                    character: abs_end as u32,
+                                    character: utf16_end as u32,
                                 },
                             }),
                         });
@@ -438,11 +454,11 @@ fn try_link_hover(
                             range: Some(Range {
                                 start: Position {
                                     line: line_idx as u32,
-                                    character: abs_start as u32,
+                                    character: utf16_start as u32,
                                 },
                                 end: Position {
                                     line: line_idx as u32,
-                                    character: abs_end as u32,
+                                    character: utf16_end as u32,
                                 },
                             }),
                         });

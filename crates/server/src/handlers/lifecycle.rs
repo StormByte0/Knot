@@ -104,14 +104,14 @@ pub(crate) async fn initialize(
         }),
         linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
-        diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
-            DiagnosticOptions {
-                identifier: Some("knot".to_string()),
-                inter_file_dependencies: true,
-                workspace_diagnostics: false,
-                work_done_progress_options: Default::default(),
-            },
-        )),
+        // NOTE: Pull diagnostics (`textDocument/diagnostic`) are deliberately
+        // NOT registered here. The server uses the push model
+        // (`textDocument/publishDiagnostics`) exclusively — diagnostics are
+        // published eagerly on every did_open / did_change / watched-file
+        // event. Registering both models causes VS Code to show every
+        // diagnostic twice (push + pull), which was the root cause of the
+        // "hover shows alerts twice" bug.
+        diagnostic_provider: None,
         semantic_tokens_provider: Some(
             SemanticTokensServerCapabilities::SemanticTokensOptions(
                 SemanticTokensOptions {
