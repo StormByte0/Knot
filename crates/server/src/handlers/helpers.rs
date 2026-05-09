@@ -734,7 +734,7 @@ pub(crate) fn lsp_position_to_byte_offset(text: &str, position: Position) -> usi
         if utf16_consumed >= utf16_char {
             break;
         }
-        let utf16_len = ch.encode_utf16().count();
+        let utf16_len = ch.len_utf16();
         utf16_consumed += utf16_len;
         byte_pos += ch.len_utf8();
     }

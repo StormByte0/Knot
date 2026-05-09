@@ -38,8 +38,11 @@ impl ServerState {
             for passage in &doc.passages {
                 passage_tags.insert(passage.name.clone(), passage.tags.clone());
             }
-            // Find passage line numbers from the document text
-            if let Some(text) = inner.open_documents.get(&doc.uri) {
+            // Find passage line numbers from the document text.
+            // Use document_texts (ALL indexed files), not open_documents
+            // (editor-open only) — otherwise closed-file passages get line: 0
+            // which breaks click-to-navigate in the Story Map.
+            if let Some(text) = inner.document_texts.get(&doc.uri) {
                 for (line_num, line) in text.lines().enumerate() {
                     if line.starts_with("::") {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
