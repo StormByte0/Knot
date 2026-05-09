@@ -272,10 +272,8 @@ impl LanguageServer for ServerState {
         call_hierarchy::outgoing_calls(self, params).await
     }
 
-    async fn diagnostic(
-        &self,
-        params: DocumentDiagnosticParams,
-    ) -> Result<DocumentDiagnosticReportResult, tower_lsp::jsonrpc::Error> {
-        code_actions::diagnostic(self, params).await
-    }
+    // NOTE: The `diagnostic` pull-model handler is intentionally removed.
+    // The server uses push diagnostics exclusively via `publishDiagnostics`.
+    // Supporting both push and pull models caused VS Code to display every
+    // diagnostic twice. See lifecycle.rs for details.
 }

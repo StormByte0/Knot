@@ -119,6 +119,11 @@ impl DocumentSnapshot {
     }
 
     /// Apply a range of text changes to the rope.
+    ///
+    /// **Note**: The `range` parameter uses byte offsets for internal
+    /// processing. When receiving ranges from LSP (which uses UTF-16),
+    /// convert UTF-16 positions to byte offsets first using
+    /// `lsp_position_to_byte_offset`.
     pub fn apply_change(&mut self, range: Range<usize>, new_text: &str) {
         self.rope.remove(range.start..range.end);
         self.rope.insert(range.start, new_text);
