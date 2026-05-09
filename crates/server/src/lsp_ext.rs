@@ -63,6 +63,8 @@ pub struct KnotGraphEdge {
     pub target: String,
     /// Whether the target passage does not exist (broken link).
     pub is_broken: bool,
+    /// The display text of the link (e.g., "Go to forest" in [[Go to forest->Forest]]).
+    pub display_text: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +115,29 @@ pub struct KnotVariableLocation {
     pub file_uri: String,
     /// Whether this is a write or read.
     pub is_write: bool,
+}
+
+// ---------------------------------------------------------------------------
+// knot/noTweeFiles — notification sent when no .tw/.twee files are found
+// ---------------------------------------------------------------------------
+
+/// Notification: `knot/noTweeFiles` — no Twee source files found in workspace.
+///
+/// Sent by the server when the initial workspace scan finds zero `.tw`/`.twee`
+/// files. The client can use this to automatically suggest project
+/// initialization (skeleton generation) via the `knot.initProject` command.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotNoTweeFiles {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+}
+
+/// The LSP notification type for `knot/noTweeFiles`.
+pub struct KnotNoTweeFilesNotification;
+
+impl Notification for KnotNoTweeFilesNotification {
+    type Params = KnotNoTweeFiles;
+    const METHOD: &'static str = "knot/noTweeFiles";
 }
 
 // ---------------------------------------------------------------------------
@@ -585,6 +610,29 @@ pub struct KnotWatchVariable {
     pub file_uri: String,
     /// The passage name where this variable was last written (if traceable).
     pub last_written_in: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/generateIfid — generate a new IFID (Interactive Fiction IDentifier)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/generateIfid` — generate a new IFID.
+///
+/// IFIDs are UUIDs in uppercase, following the Twine/Twee specification.
+/// This endpoint is accessible at workspace init time so that clients can
+/// generate IFIDs for new project skeletons without depending on a local
+/// crypto library.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotGenerateIfidParams {
+    /// The URI of the workspace root (for validation, not used in generation).
+    pub workspace_uri: String,
+}
+
+/// Response: `knot/generateIfid`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotGenerateIfidResponse {
+    /// The generated IFID (uppercase UUID).
+    pub ifid: String,
 }
 
 // ---------------------------------------------------------------------------

@@ -221,7 +221,10 @@ async fn register_file_watchers(client: &tower_lsp::Client) {
         method: "workspace/didChangeWatchedFiles".to_string(),
         register_options: Some(serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
             watchers,
-        }).unwrap()),
+        }).unwrap_or_else(|e| {
+            tracing::warn!("Failed to serialize DidChangeWatchedFilesRegistrationOptions: {e}");
+            serde_json::Value::Null
+        })),
     }];
 
     if let Err(e) = client.register_capability(registrations).await {

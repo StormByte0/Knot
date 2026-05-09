@@ -21,7 +21,8 @@ import { StoryMapProvider } from './storyMapProvider';
 import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput } from './types';
+import { VariableFlowProvider } from './variableFlowProvider';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -94,11 +95,13 @@ let storyMapProvider: StoryMapProvider | null = null;
 let playModeProvider: PlayModeProvider | null = null;
 let debugViewProvider: DebugViewProvider | null = null;
 let profileViewProvider: ProfileViewProvider | null = null;
+let variableFlowProvider: VariableFlowProvider | null = null;
 let buildOutputChannel: vscode.OutputChannel | null = null;
 let languageStatusItem: vscode.LanguageStatusItem | null = null;
 let passageDecorationType: vscode.TextEditorDecorationType | null = null;
 let unreachableDecorationType: vscode.TextEditorDecorationType | null = null;
 let linkDecorationType: vscode.TextEditorDecorationType | null = null;
+let decorationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 export async function activate(context: vscode.ExtensionContext) {
     const useRustServer = vscode.workspace
@@ -200,6 +203,29 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // Register custom notification handler for knot/noTweeFiles
+    // When the server finds no .tw/.twee files, suggest project initialization
+    client.onNotification(
+        { method: 'knot/noTweeFiles' },
+        (_params: { workspace_uri: string }) => {
+            if (statusBarItem) {
+                statusBarItem.text = '$(plus) Knot: No project found';
+                statusBarItem.tooltip = 'Knot: No .tw/.twee files found. Click to initialize a project.';
+                statusBarItem.command = 'knot.initProject';
+            }
+            // Prompt the user to initialize a project
+            vscode.window.showInformationMessage(
+                'Knot: No Twine project files (.tw/.twee) found in this workspace. Would you like to initialize one?',
+                'Initialize Project',
+                'Dismiss'
+            ).then(async (choice) => {
+                if (choice === 'Initialize Project') {
+                    await vscode.commands.executeCommand('knot.initProject');
+                }
+            });
+        }
+    );
+
     // Register the Story Map webview provider (sidebar panel)
     storyMapProvider = new StoryMapProvider(context.extensionUri);
     context.subscriptions.push(
@@ -227,6 +253,15 @@ export async function activate(context: vscode.ExtensionContext) {
         )
     );
 
+    // Register the Variable Flow webview provider (sidebar panel)
+    variableFlowProvider = new VariableFlowProvider(context.extensionUri);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            VariableFlowProvider.viewType,
+            variableFlowProvider,
+        )
+    );
+
     // Create the Play Mode provider — now requires context for storage URI
     playModeProvider = new PlayModeProvider(context.extensionUri, context);
 
@@ -247,6 +282,9 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (profileViewProvider) {
             profileViewProvider.setClient(client);
+        }
+        if (variableFlowProvider) {
+            variableFlowProvider.setClient(client);
         }
         if (playModeProvider) {
             playModeProvider.setClient(client);
@@ -269,9 +307,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Auto-refresh the Story Map when Twee files change
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{tw,twee}');
-    watcher.onDidChange(() => refreshStoryMap());
-    watcher.onDidCreate(() => refreshStoryMap());
-    watcher.onDidDelete(() => refreshStoryMap());
+    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
+    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
+    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
     context.subscriptions.push(watcher);
 
     // Also refresh on active editor change (for live updates)
@@ -280,6 +318,10 @@ export async function activate(context: vscode.ExtensionContext) {
             refreshStoryMap();
             // Update debug view with passage under cursor
             updateDebugViewForEditor(editor);
+            // Refresh variable flow view
+            if (variableFlowProvider) {
+                variableFlowProvider.refresh();
+            }
         }
     });
 
@@ -563,18 +605,26 @@ function registerCommands(context: vscode.ExtensionContext) {
     // Re-index Workspace
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.reindexWorkspace', async () => {
+            if (!client || !client.isRunning()) {
+                vscode.window.showWarningMessage('Knot: Language server is not running.');
+                return;
+            }
+
             if (statusBarItem) {
                 statusBarItem.text = '$(sync~spin) Knot: Re-indexing...';
                 statusBarItem.show();
             }
 
             try {
-                await client?.stop();
-                await new Promise(resolve => setTimeout(resolve, 500));
-                await client?.start();
-                // Request re-indexing
-                await client?.sendRequest('knot/reindexWorkspace', {});
-                vscode.window.showInformationMessage('Knot workspace re-indexed.');
+                const wsFolders = vscode.workspace.workspaceFolders;
+                const result = await client.sendRequest<KnotReindexResponse>('knot/reindexWorkspace', {
+                    workspace_uri: wsFolders && wsFolders.length > 0 ? wsFolders[0].uri.toString() : '',
+                });
+                if (result && !result.success) {
+                    vscode.window.showWarningMessage(`Knot: Re-index had issues: ${result.error || 'unknown'}`);
+                } else {
+                    vscode.window.showInformationMessage(`Knot: Re-indexed ${result?.files_indexed || 0} files.`);
+                }
             } catch (e) {
                 vscode.window.showErrorMessage(`Failed to re-index workspace: ${e}`);
             }
@@ -710,8 +760,18 @@ function registerCommands(context: vscode.ExtensionContext) {
             await vscode.workspace.fs.createDirectory(assetsDir);
             await vscode.workspace.fs.createDirectory(stylesDir);
 
-            // Generate IFID
-            const ifid = crypto.randomUUID().toUpperCase();
+            // Generate IFID — prefer server-side generator for consistency with
+            // Workspace::generate_ifid(), fall back to local crypto if server
+            // is unavailable.
+            let ifid: string;
+            try {
+                const result = await client?.sendRequest<KnotGenerateIfidResponse>('knot/generateIfid', {
+                    workspace_uri: rootUri.toString(),
+                });
+                ifid = result?.ifid || crypto.randomUUID().toUpperCase();
+            } catch {
+                ifid = crypto.randomUUID().toUpperCase();
+            }
 
             // Generate main.tw with StoryData and Start passage
             let mainContent = '';
@@ -920,7 +980,16 @@ function registerDecorations(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeTextDocument((event) => {
         const editor = vscode.window.activeTextEditor;
         if (editor && editor.document === event.document) {
-            updateDecorations(editor);
+            // Debounce decoration updates to avoid fetching the full graph
+            // on every keystroke. The graph request is expensive for large
+            // workspaces, so we wait 300ms after the last edit before refreshing.
+            if (decorationDebounceTimer) {
+                clearTimeout(decorationDebounceTimer);
+            }
+            decorationDebounceTimer = setTimeout(() => {
+                decorationDebounceTimer = null;
+                updateDecorations(editor);
+            }, 300);
         }
     }, null, context.subscriptions);
 

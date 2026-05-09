@@ -18,6 +18,7 @@ pub mod macros;
 use knot_core::passage::{
     Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
 };
+use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -70,26 +71,10 @@ struct ParsedHeader {
 // ---------------------------------------------------------------------------
 
 /// SugarCube 2.x format plugin.
-pub struct SugarCubePlugin {
-    /// Regex for extracting simple links: `[[Target]]`
-    re_link_simple: Regex,
-    /// Regex for extracting arrow links: `[[Display->Target]]`
-    re_link_arrow: Regex,
-    /// Regex for extracting pipe links: `[[Display|Target]]`
-    re_link_pipe: Regex,
-    /// Regex for extracting persistent variable references: `$variableName`
-    re_var: Regex,
-    /// Regex for extracting temporary variable references: `_variableName`
-    re_temp_var: Regex,
-    /// Regex for extracting `<<set …>>` macro (variable writes) for persistent vars.
-    re_set_macro: Regex,
-    /// Regex for extracting `<<set …>>` macro for temporary vars.
-    re_set_temp_macro: Regex,
-    /// Regex for extracting any macro: `<<name …>>` or `<<name>>`
-    re_macro: Regex,
-    /// Regex for extracting closing macros: `<</name>>`
-    re_macro_close: Regex,
-}
+///
+/// Regexes are compiled once using `once_cell::sync::Lazy` rather than
+/// per-instance, since they are immutable and identical across all instances.
+pub struct SugarCubePlugin;
 
 impl Default for SugarCubePlugin {
     fn default() -> Self {
@@ -97,31 +82,72 @@ impl Default for SugarCubePlugin {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lazy-compiled regexes (compiled once, shared across all instances)
+// ---------------------------------------------------------------------------
+
+/// [[Target]] — simple passage link
+static RE_LINK_SIMPLE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+
+/// [[Display->Target]] — arrow-style link
+static RE_LINK_ARROW: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+
+/// [[Display|Target]] — pipe-style link
+static RE_LINK_PIPE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+
+/// $variableName — SugarCube persistent variable reference
+static RE_VAR: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+
+/// _variableName — SugarCube temporary/scratch variable reference
+static RE_TEMP_VAR: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"_([A-Za-z][A-Za-z0-9_]*)").unwrap());
+
+/// <<set $var to ...>> — write macro for persistent vars
+static RE_SET_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<set\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap());
+
+/// <<set _var to ...>> — write macro for temporary vars
+static RE_SET_TEMP_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<set\s+_([A-Za-z][A-Za-z0-9_]*)\s+to\b").unwrap());
+
+/// <<name ...>> — any open macro
+static RE_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap());
+
+/// <</name>> — closing macro tag
+static RE_MACRO_CLOSE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap());
+
+/// HTML data-passage attribute — implicit passage reference
+static RE_DATA_PASSAGE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"data-passage\s*=\s*["']([^"']+)["']"#).unwrap());
+
+/// Engine.play() — implicit passage reference
+static RE_ENGINE_PLAY: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// Engine.goto() — implicit passage reference
+static RE_ENGINE_GOTO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// Story.get() — implicit passage reference
+static RE_STORY_GET: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Story\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// Story.passage() — implicit passage reference
+static RE_STORY_PASSAGE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
+
 impl SugarCubePlugin {
     /// Create a new SugarCube plugin instance.
+    ///
+    /// Regexes are pre-compiled as `Lazy` statics, so this is essentially free.
     pub fn new() -> Self {
-        Self {
-            // [[Target]] — simple passage link
-            re_link_simple: Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap(),
-            // [[Display->Target]] — arrow-style link
-            re_link_arrow: Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap(),
-            // [[Display|Target]] — pipe-style link
-            re_link_pipe: Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap(),
-            // $variableName — SugarCube persistent variable reference
-            re_var: Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap(),
-            // _variableName — SugarCube temporary/scratch variable reference
-            // Simple pattern: matches any _varName. We filter in code to avoid
-            // matching inside identifiers like foo_bar by checking the preceding char.
-            re_temp_var: Regex::new(r"_([A-Za-z][A-Za-z0-9_]*)").unwrap(),
-            // <<set $var to ...>> — write macro for persistent vars
-            re_set_macro: Regex::new(r"<<set\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap(),
-            // <<set _var to ...>> — write macro for temporary vars
-            re_set_temp_macro: Regex::new(r"<<set\s+_([A-Za-z][A-Za-z0-9_]*)\s+to\b").unwrap(),
-            // <<name ...>> — any open macro
-            re_macro: Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap(),
-            // <</name>> — closing macro tag
-            re_macro_close: Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap(),
-        }
+        Self
     }
 
     // -----------------------------------------------------------------------
@@ -222,7 +248,7 @@ impl SugarCubePlugin {
         let mut links = Vec::new();
 
         // Arrow-style links: [[Display->Target]]
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -234,7 +260,7 @@ impl SugarCubePlugin {
         }
 
         // Pipe-style links: [[Display|Target]]
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -248,17 +274,16 @@ impl SugarCubePlugin {
         // Simple links: [[Target]]
         // We must skip matches that are sub-spans of arrow/pipe links.
         // A simple approach: collect all arrow/pipe spans and filter overlaps.
-        let arrow_pipe_spans: Vec<Range<usize>> = self
-            .re_link_arrow
+        let arrow_pipe_spans: Vec<Range<usize>> = RE_LINK_ARROW
             .captures_iter(body)
-            .chain(self.re_link_pipe.captures_iter(body))
+            .chain(RE_LINK_PIPE.captures_iter(body))
             .filter_map(|caps| {
                 let m = caps.get(0)?;
                 Some(m.start()..m.end())
             })
             .collect();
 
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let span = m.start()..m.end();
             // Only include if not overlapped by an arrow/pipe link.
@@ -289,7 +314,7 @@ impl SugarCubePlugin {
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
         // Detect persistent writes via <<set $var to ...>>
-        for caps in self.re_set_macro.captures_iter(body) {
+        for caps in RE_SET_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let var_match = caps.get(1).unwrap();
             let name = format!("${}", var_match.as_str());
@@ -305,7 +330,7 @@ impl SugarCubePlugin {
         }
 
         // Detect temporary writes via <<set _var to ...>>
-        for caps in self.re_set_temp_macro.captures_iter(body) {
+        for caps in RE_SET_TEMP_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let var_match = caps.get(1).unwrap();
             let name = format!("_{}", var_match.as_str());
@@ -321,7 +346,7 @@ impl SugarCubePlugin {
         }
 
         // Detect all persistent variable references ($varName) not already writes
-        for caps in self.re_var.captures_iter(body) {
+        for caps in RE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -341,7 +366,7 @@ impl SugarCubePlugin {
 
         // Detect all temporary variable references (_varName) not already writes
         // Filter: skip matches where the preceding character is alphanumeric (e.g., foo_bar)
-        for caps in self.re_temp_var.captures_iter(body) {
+        for caps in RE_TEMP_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -376,7 +401,7 @@ impl SugarCubePlugin {
         let mut blocks = Vec::new();
 
         // Open macros: <<name args>>
-        for caps in self.re_macro.captures_iter(body) {
+        for caps in RE_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let name = caps.get(1).unwrap().as_str().to_string();
             let args = caps.get(2).map(|a| a.as_str().to_string()).unwrap_or_default();
@@ -388,7 +413,7 @@ impl SugarCubePlugin {
         }
 
         // Close macros: <</name>>
-        for caps in self.re_macro_close.captures_iter(body) {
+        for caps in RE_MACRO_CLOSE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let name = caps.get(1).unwrap().as_str().to_string();
             blocks.push(Block::Macro {
@@ -406,7 +431,7 @@ impl SugarCubePlugin {
         let mut tokens = Vec::new();
 
         // Macro tokens
-        for caps in self.re_macro.captures_iter(body) {
+        for caps in RE_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -415,7 +440,7 @@ impl SugarCubePlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_macro_close.captures_iter(body) {
+        for caps in RE_MACRO_CLOSE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -427,7 +452,7 @@ impl SugarCubePlugin {
 
         // Variable tokens
         let mut write_spans: Vec<Range<usize>> = Vec::new();
-        for caps in self.re_set_macro.captures_iter(body) {
+        for caps in RE_SET_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
             let var_name = format!("${}", caps.get(1).unwrap().as_str());
@@ -441,7 +466,7 @@ impl SugarCubePlugin {
             write_spans.push(var_start..var_end);
         }
 
-        for caps in self.re_var.captures_iter(body) {
+        for caps in RE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -459,7 +484,7 @@ impl SugarCubePlugin {
         }
 
         // Link tokens
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -468,7 +493,7 @@ impl SugarCubePlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -477,7 +502,7 @@ impl SugarCubePlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -702,7 +727,7 @@ impl SugarCubePlugin {
         let mut open_stack: Vec<(&str, usize)> = Vec::new(); // (name, byte_offset_of_<<)
 
         // Process open macros: <<name ...>> or <<name>>
-        for caps in self.re_macro.captures_iter(body) {
+        for caps in RE_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let name = caps.get(1).unwrap().as_str();
 
@@ -757,7 +782,7 @@ impl SugarCubePlugin {
         }
 
         // Process close macros: <</name>> — pop from open stack
-        for caps in self.re_macro_close.captures_iter(body) {
+        for caps in RE_MACRO_CLOSE.captures_iter(body) {
             let name = caps.get(1).unwrap().as_str();
 
             // Find and pop the matching open tag from the stack
@@ -780,35 +805,16 @@ impl SugarCubePlugin {
     fn extract_implicit_passage_refs(&self, body: &str, body_offset: usize) -> Vec<Link> {
         let mut links = Vec::new();
 
-        let patterns: &[(&Regex, &str)] = &[
-            // HTML data-passage attribute
-            (
-                &Regex::new(r#"data-passage\s*=\s*["']([^"']+)["']"#).unwrap(),
-                "data-passage attribute",
-            ),
-            // Engine.play()
-            (
-                &Regex::new(r#"Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']"#).unwrap(),
-                "Engine.play() call",
-            ),
-            // Engine.goto()
-            (
-                &Regex::new(r#"Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap(),
-                "Engine.goto() call",
-            ),
-            // Story.get()
-            (
-                &Regex::new(r#"Story\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap(),
-                "Story.get() call",
-            ),
-            // Story.passage()
-            (
-                &Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap(),
-                "Story.passage() call",
-            ),
+        // All regexes are Lazy statics — compiled once, reused across all calls.
+        let patterns: &[&Lazy<Regex>] = &[
+            &RE_DATA_PASSAGE,
+            &RE_ENGINE_PLAY,
+            &RE_ENGINE_GOTO,
+            &RE_STORY_GET,
+            &RE_STORY_PASSAGE,
         ];
 
-        for (re, _desc) in patterns {
+        for re in patterns {
             for caps in re.captures_iter(body) {
                 if let Some(target_match) = caps.get(1) {
                     let full_match = caps.get(0).unwrap();
@@ -827,22 +833,80 @@ impl SugarCubePlugin {
         links
     }
 
-    /// Build a text block covering the entire body (simplified — in a full
-    /// implementation, we would interleave text and non-text blocks).
+    /// Build content blocks from the body text, interleaving text and macro
+    /// blocks without duplication.
+    ///
+    /// Previous implementation added the entire body as a single `Block::Text`
+    /// PLUS all macros as `Block::Macro`, causing duplicate content. This
+    /// version collects macro spans, then creates text blocks only for the
+    /// gaps between macros (or the whole body if no macros are present).
     fn build_body_blocks(&self, body: &str, body_offset: usize, macros: &[Block]) -> Vec<Block> {
         let mut blocks: Vec<Block> = Vec::new();
 
-        // Add macro blocks.
-        blocks.extend_from_slice(macros);
+        if macros.is_empty() {
+            // No macros — the entire body is a single text block
+            if !body.trim().is_empty() {
+                blocks.push(Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                });
+            }
+            return blocks;
+        }
 
-        // If there's remaining text not covered by macros, add a text block.
-        // For simplicity, we add a single text block for the whole body.
-        // A production parser would interleave text and macro blocks.
-        if !body.trim().is_empty() {
-            blocks.push(Block::Text {
-                content: body.to_string(),
-                span: body_offset..body_offset + body.len(),
-            });
+        // Collect macro spans so we can identify the gaps (non-macro text)
+        let mut macro_spans: Vec<std::ops::Range<usize>> = macros
+            .iter()
+            .filter_map(|m| match m {
+                Block::Macro { span, .. } => Some(span.start - body_offset..span.end - body_offset),
+                _ => None,
+            })
+            .collect();
+
+        // Sort by start position
+        macro_spans.sort_by_key(|s| s.start);
+
+        // Build blocks: text gaps + macros, in source order
+        let mut cursor: usize = 0;
+        let mut macro_idx: usize = 0;
+
+        while macro_idx < macro_spans.len() {
+            let mspan = &macro_spans[macro_idx];
+
+            // Add text block for the gap before this macro (if non-empty)
+            if cursor < mspan.start {
+                let gap = &body[cursor..mspan.start];
+                if !gap.trim().is_empty() {
+                    blocks.push(Block::Text {
+                        content: gap.to_string(),
+                        span: body_offset + cursor..body_offset + mspan.start,
+                    });
+                }
+            }
+
+            // Add the macro block itself
+            if let Some(macro_block) = macros.get(macro_idx) {
+                blocks.push(macro_block.clone());
+            }
+
+            cursor = mspan.end;
+            macro_idx += 1;
+        }
+
+        // Add trailing text after the last macro
+        if cursor < body.len() {
+            let trailing = &body[cursor..];
+            if !trailing.trim().is_empty() {
+                blocks.push(Block::Text {
+                    content: trailing.to_string(),
+                    span: body_offset + cursor..body_offset + body.len(),
+                });
+            }
+        }
+
+        // If no blocks were created (all macros but no text gaps), just add macros
+        if blocks.is_empty() && !macros.is_empty() {
+            blocks.extend_from_slice(macros);
         }
 
         blocks
