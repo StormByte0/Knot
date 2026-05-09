@@ -79,6 +79,7 @@ pub fn graph_surgery(
                 file_uri: file_uri.to_string(),
                 is_special: passage.is_special,
                 is_metadata: passage.is_metadata(),
+                is_placeholder: false,
             };
             graph.add_passage(node);
 

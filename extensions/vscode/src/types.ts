@@ -41,6 +41,7 @@ export interface KnotGraphEdge {
     source: string;
     target: string;
     is_broken: boolean;
+    display_text?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +213,15 @@ export interface KnotBreakpointInfo {
 // Variable flow types (matches Rust-side KnotVariableFlowResponse)
 // ---------------------------------------------------------------------------
 
+export interface KnotVariableFlowParams {
+    workspace_uri: string;
+    variable_name?: string;
+}
+
+export interface KnotVariableFlowResponse {
+    variables: KnotVariableInfo[];
+}
+
 export interface KnotVariableInfo {
     name: string;
     is_temporary: boolean;
@@ -265,6 +275,14 @@ export interface KnotReindexResponse {
     success: boolean;
     files_indexed: number;
     error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// IFID generation types (matches Rust-side KnotGenerateIfidResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotGenerateIfidResponse {
+    ifid: string;
 }
 
 // ---------------------------------------------------------------------------
