@@ -26,14 +26,14 @@ pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
             name: "PassageReady".into(),
             behavior: SpecialPassageBehavior::PassageReady,
             contributes_variables: true,
-            participates_in_graph: false,
+            participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(50),
         },
         SpecialPassageDef {
             name: "PassageDone".into(),
             behavior: SpecialPassageBehavior::Custom("PassageDone".into()),
             contributes_variables: true,
-            participates_in_graph: false,
+            participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(200),
         },
 
@@ -42,35 +42,35 @@ pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
             name: "PassageHeader".into(),
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
-            participates_in_graph: false,
+            participates_in_graph: true, // Prepended to each rendered passage
             execution_priority: Some(90),
         },
         SpecialPassageDef {
             name: "PassageFooter".into(),
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
-            participates_in_graph: false,
+            participates_in_graph: true, // Appended to each rendered passage
             execution_priority: Some(110),
         },
         SpecialPassageDef {
             name: "StoryCaption".into(),
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
-            participates_in_graph: false,
+            participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(100),
         },
         SpecialPassageDef {
             name: "StoryMenu".into(),
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
-            participates_in_graph: false,
+            participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(101),
         },
         SpecialPassageDef {
             name: "StoryBanner".into(),
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
-            participates_in_graph: false,
+            participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(102),
         },
         SpecialPassageDef {

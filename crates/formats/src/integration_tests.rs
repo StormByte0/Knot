@@ -400,7 +400,7 @@ fn graph_surgery_with_sugarcube_parse() {
     let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw");
+    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Forest"));
@@ -416,7 +416,7 @@ fn graph_surgery_with_harlowe_parse() {
     let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw");
+    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));
@@ -432,7 +432,7 @@ fn graph_surgery_with_chapbook_parse() {
     let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw");
+    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));
@@ -447,7 +447,7 @@ fn graph_surgery_with_snowman_parse() {
     let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw");
+    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));

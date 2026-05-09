@@ -15,6 +15,41 @@ use std::collections::HashMap;
 use url::Url;
 
 // ===========================================================================
+// URI normalization
+// ===========================================================================
+
+/// Normalize a file:// URI to a canonical form.
+///
+/// **Root cause of duplicate passage errors**: On Windows, `Url::from_file_path()`
+/// produces URIs like `file:///d:/path` (unencoded colon in the drive letter),
+/// while VS Code sends URIs like `file:///d%3A/path` (colon percent-encoded).
+/// These are semantically equivalent but have different serializations, causing
+/// `HashMap<Url, _>` to treat them as different keys. The same file then gets
+/// stored twice — once from workspace indexing and once from `did_open` — each
+/// containing the same passages, which triggers duplicate passage name errors.
+///
+/// The fix: convert file URIs to a file path and back, which produces a
+/// consistent serialization regardless of the input encoding. Non-file URIs
+/// are returned unchanged.
+pub(crate) fn normalize_file_uri(uri: &Url) -> Url {
+    // Only normalize file:// URIs
+    if uri.scheme() != "file" {
+        return uri.clone();
+    }
+
+    // Try to convert to a file path and back. This produces a consistent
+    // URI encoding (e.g., `file:///d:/path` on Windows) regardless of
+    // whether the input had percent-encoded colons (`%3A`) or not.
+    match uri.to_file_path() {
+        Ok(path) => match Url::from_file_path(&path) {
+            Ok(normalized) => normalized,
+            Err(_) => uri.clone(), // Fallback: return as-is
+        },
+        Err(_) => uri.clone(), // Not a valid file path — return as-is
+    }
+}
+
+// ===========================================================================
 // Format plugin parsing
 // ===========================================================================
 
@@ -535,6 +570,90 @@ pub(crate) fn rebuild_graph(
         }
     }
 
+    // ── Step 4: Add implicit edges for special passages ──────────────────
+    // SugarCube's navigation lifecycle invokes certain special passages
+    // on every passage transition. These are implicit edges in the graph.
+    //
+    // Navigation order (from SugarCube docs):
+    // 1. :passageinit
+    // 2. PassageReady
+    // 3. :passagestart
+    // 4. PassageHeader
+    // 5. [passage render]
+    // 6. PassageFooter
+    // 7. :passagerender
+    // 8. PassageDone
+    // 9. :passagedisplay
+    // 10. StoryBanner, StoryDisplayTitle, StorySubtitle, StoryAuthor, StoryCaption, StoryMenu
+    // 11. :passageend
+    //
+    // Every passage that is navigated to implicitly "invokes" these passages.
+    // We add edges from each navigable passage to the per-navigation special
+    // passages that exist in the workspace.
+
+    if plugin.is_some() {
+        // Special passages invoked on every navigation (per SugarCube lifecycle)
+        let per_navigation_specials: &[&str] = &[
+            "PassageReady",
+            "PassageHeader",
+            "PassageFooter",
+            "PassageDone",
+        ];
+
+        // Chrome passages updated on every navigation
+        let chrome_specials: &[&str] = &[
+            "StoryBanner",
+            "StoryDisplayTitle",
+            "StorySubtitle",
+            "StoryAuthor",
+            "StoryCaption",
+            "StoryMenu",
+        ];
+
+        // Collect all non-special, non-metadata passage names
+        let navigable_passages: Vec<&str> = info.iter()
+            .filter(|(_, _, is_special, is_metadata, _)| !*is_special && !*is_metadata)
+            .map(|(name, _, _, _, _)| name.as_str())
+            .collect();
+
+        // Add implicit edges from navigable passages to per-navigation specials
+        for special_name in per_navigation_specials.iter().chain(chrome_specials.iter()) {
+            if graph.contains_passage(special_name) {
+                for nav_passage in &navigable_passages {
+                    // Only add if not already an explicit edge
+                    let already_exists = graph.outgoing_neighbors(nav_passage)
+                        .iter()
+                        .any(|n| n == *special_name);
+                    if !already_exists {
+                        let edge = PassageEdge {
+                            display_text: Some(format!("(implicit: {})", special_name)),
+                            is_broken: false,
+                        };
+                        graph.add_edge(nav_passage, special_name, edge);
+                    }
+                }
+            }
+        }
+
+        // Add implicit edge from Start passage to StoryInit
+        let start_passage = workspace.metadata
+            .as_ref()
+            .map(|m| m.start_passage.as_str())
+            .unwrap_or("Start");
+        if graph.contains_passage("StoryInit") && graph.contains_passage(start_passage) {
+            let already_exists = graph.outgoing_neighbors(start_passage)
+                .iter()
+                .any(|n| n == "StoryInit");
+            if !already_exists {
+                let edge = PassageEdge {
+                    display_text: Some("(implicit: StoryInit)".to_string()),
+                    is_broken: false,
+                };
+                graph.add_edge(start_passage, "StoryInit", edge);
+            }
+        }
+    }
+
     graph
 }
 
@@ -543,16 +662,41 @@ pub(crate) fn rebuild_graph(
 // ===========================================================================
 
 /// Count the number of incoming links to a passage from other passages.
+/// Deduplicates by passage name to avoid double-counting when the same
+/// passage name appears in multiple documents (e.g., during race conditions).
 pub(crate) fn count_incoming_links(workspace: &Workspace, passage_name: &str) -> usize {
-    let mut count = 0;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for doc in workspace.documents() {
         for passage in &doc.passages {
             if passage.links.iter().any(|l| l.target == passage_name) {
-                count += 1;
+                seen.insert(passage.name.clone());
             }
         }
     }
-    count
+    // Also count graph edges (handles dynamic navigation links)
+    for source in workspace.graph.incoming_neighbors(passage_name) {
+        seen.insert(source);
+    }
+    seen.len()
+}
+
+/// Get the list of passage names that link to a given passage.
+/// Deduplicates by source passage name.
+pub(crate) fn incoming_link_sources(workspace: &Workspace, passage_name: &str) -> Vec<String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for doc in workspace.documents() {
+        for passage in &doc.passages {
+            if passage.links.iter().any(|l| l.target == passage_name) {
+                seen.insert(passage.name.clone());
+            }
+        }
+    }
+    for source in workspace.graph.incoming_neighbors(passage_name) {
+        seen.insert(source);
+    }
+    let mut sources: Vec<String> = seen.into_iter().collect();
+    sources.sort();
+    sources
 }
 
 /// Publish diagnostics to **all** affected files. This combines:

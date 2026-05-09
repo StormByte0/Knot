@@ -49,6 +49,7 @@ pub fn graph_surgery(
     old_passages: &[Passage],
     new_passages: &[Passage],
     file_uri: &str,
+    extra_edges: &[(String, Option<String>, String)],
 ) -> UpdateResult {
     let old_names: HashSet<String> = old_passages.iter().map(|p| p.name.clone()).collect();
     let new_names: HashSet<String> = new_passages.iter().map(|p| p.name.clone()).collect();
@@ -91,6 +92,18 @@ pub fn graph_surgery(
                     is_broken: !target_exists,
                 };
                 graph.add_edge(&passage.name, &link.target, edge);
+            }
+
+            // Re-add extra edges (dynamic navigation links) for this passage
+            for (source, display_text, target) in extra_edges {
+                if *source == passage.name {
+                    let target_exists = graph.contains_passage(target);
+                    let edge = PassageEdge {
+                        display_text: display_text.clone(),
+                        is_broken: !target_exists,
+                    };
+                    graph.add_edge(source, target, edge);
+                }
             }
         }
     }

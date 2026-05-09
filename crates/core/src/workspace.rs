@@ -146,8 +146,36 @@ impl Workspace {
     }
 
     /// Add or replace a document in the workspace.
+    ///
+    /// If a document with the same URI already exists, it is replaced.
+    /// Additionally, this checks for URI-equivalent documents that may
+    /// have different serializations (e.g., `file:///d:/path` vs
+    /// `file:///d%3A/path` on Windows) and removes them to prevent
+    /// duplicate passage entries.
+    ///
     /// Returns the previous document if one existed at the same URI.
     pub fn insert_document(&mut self, doc: Document) -> Option<Document> {
+        // Safety net: remove any URI-equivalent document that has a different
+        // serialization. This handles edge cases where normalization might not
+        // have been applied at the entry point.
+        let incoming_path = doc.uri.to_file_path().ok();
+        if let Some(ref path) = incoming_path {
+            let equiv_keys: Vec<Url> = self.documents.keys()
+                .filter(|existing_uri| {
+                    **existing_uri != doc.uri && // Different serialization
+                    existing_uri.to_file_path().map_or(false, |p| p == *path)
+                })
+                .cloned()
+                .collect();
+            for key in equiv_keys {
+                tracing::warn!(
+                    "Removing URI-equivalent document: {} (canonical: {})",
+                    key, doc.uri
+                );
+                self.documents.remove(&key);
+            }
+        }
+
         self.documents.insert(doc.uri.clone(), doc)
     }
 

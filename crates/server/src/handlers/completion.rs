@@ -19,13 +19,13 @@ pub(crate) async fn completion(
     params: CompletionParams,
 ) -> Result<Option<CompletionResponse>, tower_lsp::jsonrpc::Error> {
     let inner = state.inner.read().await;
-    let uri = &params.text_document_position.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position.text_document.uri);
     let position = params.text_document_position.position;
 
     // Determine the trigger character
     let trigger = params.context.as_ref().and_then(|ctx| ctx.trigger_character.clone());
 
-    let text = match inner.open_documents.get(uri) {
+    let text = match inner.open_documents.get(&uri) {
         Some(t) => t,
         None => return Ok(None),
     };

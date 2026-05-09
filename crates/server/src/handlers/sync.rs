@@ -7,14 +7,37 @@ use knot_core::editing::graph_surgery;
 use knot_core::passage::Passage;
 use knot_core::AnalysisEngine;
 use lsp_types::*;
+use url::Url;
+
 pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentParams) {
-    let uri = params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let text = params.text_document.text;
     let version = params.text_document.version;
 
     tracing::info!("did_open: {}", uri);
 
     let mut inner = state.inner.write().await;
+
+    // Clean up any stale URI-equivalent entries from workspace indexing.
+    // We collect stale keys first to avoid double mutable borrow issues.
+    let stale_keys: Vec<Url> = {
+        let canonical_path = uri.to_file_path().ok();
+        match canonical_path {
+            Some(path) => inner.open_documents.keys()
+                .filter(|k| **k != uri)
+                .filter(|k| k.to_file_path().map_or(false, |p| p == path))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        }
+    };
+    for key in &stale_keys {
+        tracing::debug!("Removing stale URI-equivalent entry: {} (canonical: {})", key, uri);
+        inner.open_documents.remove(key);
+        inner.format_diagnostics.remove(key);
+    }
+
+    inner.editor_open_docs.insert(uri.clone());
     inner.open_documents.insert(uri.clone(), text.clone());
 
     let format = inner.workspace.resolve_format();
@@ -31,6 +54,15 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
     inner.workspace.insert_document(doc);
+    tracing::info!(
+        passage_count = inner.workspace.get_document(&uri)
+            .map(|d| d.passages.len()).unwrap_or(0),
+        passages = ?inner.workspace.get_document(&uri)
+            .map(|d| d.passages.iter().map(|p| format!("{}(links={},vars={},special={})", 
+                p.name, p.links.len(), p.vars.len(), p.is_special)).collect::<Vec<_>>())
+            .unwrap_or_default(),
+        "did_open: passages defined"
+    );
     let format = inner.workspace.resolve_format();
     inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
@@ -44,7 +76,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
-    let uri = params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let version = params.text_document.version;
 
     tracing::debug!("did_change: {} (v{})", uri, version);
@@ -64,12 +96,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     inner.open_documents.insert(uri.clone(), text.clone());
 
     // Record the edit after updating the text cache, but do not skip the
-    // parse/analysis pass. The old debounce gate reset its timer before
-    // checking readiness, so every FULL-sync didChange was considered
-    // pending and the canonical workspace document/graph never caught up to
-    // the editor buffer. Correctness is more important than throttling here;
-    // a future debounce implementation should schedule a delayed flush rather
-    // than returning without one.
+    // parse/analysis pass.
     inner.debounce.record_edit();
 
     if inner.debounce.needs_flush() {
@@ -79,7 +106,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Parse with format plugin
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
-        helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format, version);
+        helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), version);
 
     // Update format diagnostics
     inner.format_diagnostics.insert(
@@ -92,24 +119,78 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         .get_document(&uri)
         .map(|d| d.passages.clone())
         .unwrap_or_default();
+    tracing::debug!(
+        file = %uri,
+        old_passage_count = old_passages.len(),
+        old_passages = ?old_passages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        "did_change: comparing old vs new passages"
+    );
     let new_passages = doc.passages.clone();
+
+    // Compute dynamic navigation edges for the new passages
+    let extra_edges: Vec<(String, Option<String>, String)> = if let Some(plug) = inner.format_registry.get(&format) {
+        let var_string_map = plug.build_var_string_map(&inner.workspace);
+        new_passages.iter()
+            .flat_map(|p| {
+                plug.resolve_dynamic_navigation_links(p, &var_string_map)
+                    .into_iter()
+                    .map(|link| (p.name.clone(), link.display_text, link.target))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Check for StoryData changes
     helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
     inner.workspace.insert_document(doc);
     let file_uri_str = uri.to_string();
-    graph_surgery(
+    let surgery_result = graph_surgery(
         &mut inner.workspace.graph,
         &old_passages,
         &new_passages,
         &file_uri_str,
+        &extra_edges,
+    );
+    tracing::debug!(
+        "graph_surgery result: added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
+        surgery_result.added,
+        surgery_result.removed,
+        surgery_result.modified,
+        inner.workspace.graph.passage_count(),
+        inner.workspace.graph.edge_count()
     );
 
     // Update broken-link flags on all edges after surgery
     inner.workspace.graph.recheck_broken_links();
 
     let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+    tracing::debug!(
+        file = %uri,
+        diagnostic_count = diagnostics.len(),
+        workspace_total_passages = inner.workspace.passage_count(),
+        workspace_total_documents = inner.workspace.document_count(),
+        graph_nodes = inner.workspace.graph.passage_count(),
+        graph_edges = inner.workspace.graph.edge_count(),
+        "did_change: analysis complete, workspace state dump"
+    );
+
+    // Log all passage definitions across the workspace for debugging
+    // duplicate detection issues
+    {
+        let mut all_passage_names: Vec<(String, String)> = Vec::new();
+        for d in inner.workspace.documents() {
+            for p in &d.passages {
+                all_passage_names.push((p.name.clone(), d.uri.to_string()));
+            }
+        }
+        tracing::debug!(
+            all_passages = ?all_passage_names,
+            "did_change: full workspace passage definitions"
+        );
+    }
     let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
@@ -119,11 +200,13 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
-    let uri = params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     tracing::info!("did_close: {}", uri);
 
     let mut inner = state.inner.write().await;
-    inner.open_documents.remove(&uri);
+    // Remove from editor-open set only; keep text in open_documents cache
+    // so that features like find-references still work for closed files
+    inner.editor_open_docs.remove(&uri);
     inner.format_diagnostics.remove(&uri);
     drop(inner);
 
@@ -224,7 +307,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
     tracing::info!("did_change_watched_files: {} events", params.changes.len());
 
     for event in params.changes {
-        let uri = event.uri;
+        let uri = helpers::normalize_file_uri(&event.uri);
         let file_type = uri.to_file_path().and_then(|p| {
             p.extension()
                 .and_then(|e| e.to_str().map(|s| s.to_string()))
@@ -261,9 +344,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         inner.workspace.insert_document(doc);
 
                         // If the new file's StoryData changed the format, re-parse
-                        // ALL existing documents with the updated format. Without
-                        // this, documents remain parsed with the wrong format plugin
-                        // (e.g., SugarCube files parsed as Harlowe).
+                        // ALL existing documents with the updated format.
                         let format_after = inner.workspace.resolve_format();
                         if format_before != format_after {
                             tracing::info!(
@@ -304,6 +385,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 tracing::info!("File deleted: {}", uri);
                 let mut inner = state.inner.write().await;
                 inner.open_documents.remove(&uri);
+                inner.editor_open_docs.remove(&uri);
                 inner.format_diagnostics.remove(&uri);
                 inner.workspace.remove_document_and_update_graph(&uri);
 
@@ -325,14 +407,15 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
             }
             FileChangeType::CHANGED => {
                 tracing::info!("File changed on disk: {}", uri);
-                // Re-read and re-index the file if it's not currently open
-                // (open files are tracked by did_change)
-                let is_open = {
+                // Re-read and re-index the file ONLY if it's NOT currently
+                // open in the editor. When a file is open, the did_change
+                // handler manages updates from the editor buffer.
+                let is_editor_open = {
                     let inner = state.inner.read().await;
-                    inner.open_documents.contains_key(&uri)
+                    inner.editor_open_docs.contains(&uri)
                 };
 
-                if !is_open
+                if !is_editor_open
                     && let Ok(path) = uri.to_file_path()
                         && let Ok(text) = std::fs::read_to_string(&path) {
                             let mut inner = state.inner.write().await;

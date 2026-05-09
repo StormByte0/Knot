@@ -6,7 +6,7 @@
 use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
 use knot_formats::plugin::{FormatDiagnostic, FormatRegistry};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tower_lsp::Client;
 use url::Url;
@@ -23,7 +23,15 @@ pub struct ServerStateInner {
     pub format_registry: FormatRegistry,
     /// Debounce timer for edit events.
     pub debounce: DebounceTimer,
-    /// Cache of open document text (URI → current text).
+    /// URIs of documents currently open in the VS Code editor.
+    /// This tracks ONLY files with an active text editor — used to determine
+    /// whether a file change on disk should be ignored (did_change handles it)
+    /// or re-read from disk. This is intentionally separate from `open_documents`
+    /// which acts as a general text cache for ALL known files.
+    pub editor_open_docs: HashSet<Url>,
+    /// Cache of document text for ALL known files (URI → current text).
+    /// This includes both editor-open files and files read from disk during
+    /// workspace indexing. Used for position lookups, hover text, diagnostics, etc.
     pub open_documents: HashMap<Url, String>,
     /// Per-document format plugin diagnostics (URI → diagnostics).
     /// These are separate from graph diagnostics because they are produced
@@ -65,6 +73,7 @@ impl ServerState {
                 workspace,
                 format_registry: FormatRegistry::with_defaults(),
                 debounce: DebounceTimer::new(),
+                editor_open_docs: HashSet::new(),
                 open_documents: HashMap::new(),
                 format_diagnostics: HashMap::new(),
                 breakpoints: Vec::new(),

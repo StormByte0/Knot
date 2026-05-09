@@ -9,12 +9,12 @@ pub(crate) async fn prepare_call_hierarchy(
     state: &ServerState,
     params: CallHierarchyPrepareParams,
 ) -> Result<Option<Vec<CallHierarchyItem>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 

@@ -143,10 +143,25 @@ impl PassageGraph {
 
     /// Add an edge (link) from one passage to another.
     /// If either passage doesn't exist, the edge is still added (for broken link detection).
+    ///
+    /// Deduplicates: if an edge with the same source, target, and display_text
+    /// already exists, the new edge is NOT added. This prevents accumulation of
+    /// duplicate edges during graph surgery or repeated parse cycles.
     pub fn add_edge(&mut self, from: &str, to: &str, edge: PassageEdge) {
         let from_idx = self.get_or_create_node(from);
         let to_idx = self.get_or_create_node(to);
-        self.graph.add_edge(from_idx, to_idx, edge);
+
+        // Check for an existing edge with the same source, target, and display_text
+        let already_exists = self
+            .graph
+            .edges_connecting(from_idx, to_idx)
+            .any(|existing| {
+                existing.weight().display_text == edge.display_text
+            });
+
+        if !already_exists {
+            self.graph.add_edge(from_idx, to_idx, edge);
+        }
     }
 
     /// Remove all edges originating from a given passage.

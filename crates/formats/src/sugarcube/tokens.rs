@@ -112,21 +112,20 @@ pub(crate) fn header_tokens(header: &ParsedHeader) -> Vec<SemanticToken> {
         modifier: None,
     });
 
-    // Passage name starts after `:: ` (2 for :: + however many spaces).
-    let name_start = header.header_start + 2;
+    // Passage name — use the pre-computed name_start which correctly accounts
+    // for any whitespace between `::` and the name (e.g., `:: Start` has 1 space).
     tokens.push(SemanticToken {
-        start: name_start,
+        start: header.name_start,
         length: header.name.len(),
         token_type: SemanticTokenType::PassageHeader,
         modifier: None,
     });
 
-    // Tags
+    // Tags — positions are approximate since the header may have variable
+    // whitespace between the name and the tag bracket.
     for (i, tag) in header.tags.iter().enumerate() {
-        // Tags are inside [tag1 tag2], approximate their positions.
-        // This is best-effort for semantic highlighting.
         tokens.push(SemanticToken {
-            start: name_start + header.name.len() + 2 + i * (tag.len() + 1),
+            start: header.name_start + header.name.len() + 2 + i * (tag.len() + 1),
             length: tag.len(),
             token_type: SemanticTokenType::Tag,
             modifier: None,

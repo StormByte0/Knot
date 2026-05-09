@@ -9,10 +9,10 @@ pub(crate) async fn folding_range(
     state: &ServerState,
     params: FoldingRangeParams,
 ) -> Result<Option<Vec<FoldingRange>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -52,10 +52,10 @@ pub(crate) async fn document_link(
     state: &ServerState,
     params: DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -112,10 +112,10 @@ pub(crate) async fn selection_range(
     state: &ServerState,
     params: SelectionRangeParams,
 ) -> Result<Option<Vec<SelectionRange>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -209,7 +209,7 @@ pub(crate) async fn signature_help(
     state: &ServerState,
     params: SignatureHelpParams,
 ) -> Result<Option<SignatureHelp>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
@@ -224,7 +224,7 @@ pub(crate) async fn signature_help(
         return Ok(None);
     }
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 

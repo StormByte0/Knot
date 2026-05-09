@@ -21,6 +21,7 @@ pub mod tokens;
 pub mod validation;
 pub mod blocks;
 pub mod special_passages;
+pub mod comments;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
@@ -86,28 +87,102 @@ impl FormatPlugin for SugarCubePlugin {
 
             passage.tags = header.tags.clone();
 
-            // Extract body elements.
-            passage.links = links::extract_links(body, body_offset);
-            passage.links.extend(links::extract_implicit_passage_refs(body, body_offset));
-            passage.links.extend(links::extract_macro_passage_refs(body, body_offset));
-            passage.vars = vars::extract_vars(body, body_offset);
-            let macros = blocks::extract_macros(body, body_offset);
-            passage.body = blocks::build_body_blocks(body, body_offset, &macros);
+            // ── Context-aware parsing ──────────────────────────────────────
+            // Detect script and stylesheet passages. These contain non-Twine
+            // content (JavaScript or CSS) and should NOT be parsed with
+            // SugarCube regexes for links, variables, or macro structure.
+            //
+            // Script passages: tagged [script] or named "Story JavaScript"
+            // Stylesheet passages: tagged [stylesheet] or named "Story Stylesheet"
+            let is_script = passage.is_script_passage();
+            let is_stylesheet = passage.is_stylesheet_passage();
 
-            // Semantic tokens for header.
-            tokens.extend(tokens::header_tokens(header));
+            if is_script {
+                // Script passages: only extract implicit passage refs and
+                // JS variable aliasing (Engine.play, State.variables, etc.)
+                passage.links = links::extract_implicit_passage_refs(body, body_offset);
+                passage.vars = vars::extract_vars(body, body_offset);
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
 
-            // Semantic tokens for body.
-            tokens.extend(tokens::body_tokens(body, body_offset));
+                // Semantic tokens: mark entire body as a script block
+                tokens.extend(tokens::header_tokens(header));
 
-            // Validation diagnostics.
-            let body_diags = validation::validate(body, body_offset);
-            for d in &body_diags {
-                if matches!(d.severity, FormatDiagnosticSeverity::Error) {
-                    has_errors = true;
+                // Validation: skip SugarCube-specific bracket checks
+                // (no [[/]] or <</>> validation on JS content)
+            } else if is_stylesheet {
+                // Stylesheet passages: no link extraction, no variable
+                // extraction — just store as a raw text block
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
+
+                // Semantic tokens: mark entire body as a stylesheet block
+                tokens.extend(tokens::header_tokens(header));
+
+                // No validation on CSS content
+            } else {
+                // Normal Twine passage: full SugarCube parsing
+
+                // Find block comment spans so we can filter out matches
+                // that fall within /* ... */ comments
+                let comment_spans = comments::find_comment_spans(body);
+
+                // Extract body elements, filtering out comment-embedded matches
+                let mut raw_links = links::extract_links(body, body_offset);
+                raw_links.extend(links::extract_implicit_passage_refs(body, body_offset));
+                raw_links.extend(links::extract_macro_passage_refs(body, body_offset));
+
+                // Filter links that fall inside comments
+                passage.links = raw_links.into_iter().filter(|link| {
+                    !comments::is_in_comment(&comment_spans, &link.span)
+                }).collect();
+
+                // Deduplicate links by (display_text, target) — the same
+                // passage reference should not appear multiple times
+                {
+                    let mut seen = HashSet::new();
+                    passage.links.retain(|link| {
+                        let key = (link.display_text.clone(), link.target.clone());
+                        seen.insert(key)
+                    });
                 }
+
+                passage.vars = vars::extract_vars(body, body_offset);
+                // Filter vars inside comments
+                passage.vars.retain(|var| {
+                    !comments::is_in_comment(&comment_spans, &var.span)
+                });
+
+                let macros = blocks::extract_macros(body, body_offset);
+                passage.body = blocks::build_body_blocks(body, body_offset, &macros);
+
+                // Semantic tokens for header.
+                tokens.extend(tokens::header_tokens(header));
+
+                // Semantic tokens for body (filter comment-embedded tokens)
+                let mut body_tokens = tokens::body_tokens(body, body_offset);
+                body_tokens.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(body_tokens);
+
+                // Validation diagnostics (filter comment-embedded ranges)
+                let body_diags = validation::validate(body, body_offset);
+                let filtered_diags: Vec<_> = body_diags.into_iter().filter(|d| {
+                    !comments::is_in_comment(&comment_spans, &d.range)
+                }).collect();
+                for d in &filtered_diags {
+                    if matches!(d.severity, FormatDiagnosticSeverity::Error) {
+                        has_errors = true;
+                    }
+                }
+                diagnostics.extend(filtered_diags);
             }
-            diagnostics.extend(body_diags);
 
             passages.push(passage);
         }
@@ -131,12 +206,51 @@ impl FormatPlugin for SugarCubePlugin {
             Passage::new(passage_name.to_string(), 0..passage_text.len())
         };
 
-        passage.links = links::extract_links(passage_text, 0);
-        passage.links.extend(links::extract_implicit_passage_refs(passage_text, 0));
-        passage.links.extend(links::extract_macro_passage_refs(passage_text, 0));
-        passage.vars = vars::extract_vars(passage_text, 0);
-        let macros = blocks::extract_macros(passage_text, 0);
-        passage.body = blocks::build_body_blocks(passage_text, 0, &macros);
+        // Context-aware: skip SugarCube regex on script/stylesheet passages
+        let is_script = passage.is_script_passage();
+        let is_stylesheet = passage.is_stylesheet_passage();
+
+        if is_script {
+            passage.links = links::extract_implicit_passage_refs(passage_text, 0);
+            passage.vars = vars::extract_vars(passage_text, 0);
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else if is_stylesheet {
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else {
+            let comment_spans = comments::find_comment_spans(passage_text);
+
+            passage.links = links::extract_links(passage_text, 0);
+            passage.links.extend(links::extract_implicit_passage_refs(passage_text, 0));
+            passage.links.extend(links::extract_macro_passage_refs(passage_text, 0));
+
+            // Filter links inside comments
+            passage.links.retain(|link| {
+                !comments::is_in_comment(&comment_spans, &link.span)
+            });
+
+            // Deduplicate
+            {
+                let mut seen = HashSet::new();
+                passage.links.retain(|link| {
+                    let key = (link.display_text.clone(), link.target.clone());
+                    seen.insert(key)
+                });
+            }
+
+            passage.vars = vars::extract_vars(passage_text, 0);
+            passage.vars.retain(|var| {
+                !comments::is_in_comment(&comment_spans, &var.span)
+            });
+
+            let macros = blocks::extract_macros(passage_text, 0);
+            passage.body = blocks::build_body_blocks(passage_text, 0, &macros);
+        }
 
         Some(passage)
     }
