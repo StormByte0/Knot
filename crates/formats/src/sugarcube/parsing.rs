@@ -38,6 +38,9 @@ pub(crate) struct ParsedHeader {
     pub header_start: usize,
     /// Byte length of the header line (including trailing newline if present).
     pub header_len: usize,
+    /// Byte offset where the passage name starts (after `::` and any whitespace).
+    /// This is an absolute offset into the source text.
+    pub name_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +97,12 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
 /// Parse a single `:: Name [tags]` header line.
 pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
     // Strip the leading `::` and optional whitespace.
-    let rest = line.strip_prefix("::")?;
-    let rest = rest.trim_start();
+    let after_colons = line.strip_prefix("::")?;
+    let whitespace_len = after_colons.len() - after_colons.trim_start().len();
+    let rest = after_colons.trim_start();
+
+    // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
+    let name_start = offset + 2 + whitespace_len;
 
     // Extract tags if present: `Name [tag1 tag2]`
     let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
@@ -123,6 +130,7 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
         tags,
         header_start: offset,
         header_len: line.len(),
+        name_start,
     })
 }
 

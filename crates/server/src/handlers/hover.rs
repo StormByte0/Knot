@@ -18,11 +18,11 @@ pub(crate) async fn hover(
     state: &ServerState,
     params: HoverParams,
 ) -> Result<Option<Hover>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -73,6 +73,7 @@ pub(crate) async fn hover(
         };
 
         let incoming = helpers::count_incoming_links(&inner.workspace, &passage_name);
+        let incoming_sources = helpers::incoming_link_sources(&inner.workspace, &passage_name);
 
         // Check for special passage info
         let special_info = if passage.is_special {
@@ -92,9 +93,15 @@ pub(crate) async fn hover(
             String::new()
         };
 
+        let incoming_detail = if incoming <= 5 && !incoming_sources.is_empty() {
+            format!("{} ({})", incoming, incoming_sources.join(", "))
+        } else {
+            incoming.to_string()
+        };
+
         let hover_text = format!(
             "**{}**{}\n\nLinks: {} | Variables: {} | Tags: {} | Incoming: {}",
-            passage.name, special_info, links_count, vars_count, tags, incoming
+            passage.name, special_info, links_count, vars_count, tags, incoming_detail
         );
         return Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {

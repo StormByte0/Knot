@@ -2,7 +2,8 @@
 //!
 //! Contains regexes and functions for extracting variable operations
 //! (`$var`, `_var`, `<<set>>`, etc.) from SugarCube passage bodies.
-//! Also provides dot-notation path extraction for JSON object completion.
+//! Also provides dot-notation path extraction for JSON object completion
+//! and JavaScript alias chain tracking for State.variables.
 
 use knot_core::passage::{VarKind, VarOp};
 use once_cell::sync::Lazy;
@@ -35,6 +36,29 @@ pub(crate) static RE_VAR_DOT_PATH: Lazy<Regex> = Lazy::new(|| Regex::new(
     r"\$([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)"
 ).unwrap());
 
+/// var/let/const x = State.variables.specificVar — JS aliasing of a specific
+/// SugarCube state variable (e.g., `var gold = State.variables.gold`)
+pub(crate) static RE_JS_ALIAS_SPECIFIC: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:var|let|const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*State\.variables\.([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+});
+
+/// var/let/const x = State.variables — JS aliasing of the ENTIRE State.variables
+/// object (e.g., `var v = State.variables; v.gold = 10;`)
+pub(crate) static RE_JS_ALIAS_WHOLE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:var|let|const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*State\.variables\b").unwrap()
+});
+
+/// State.variables.varName = value — JS direct write to SugarCube state
+pub(crate) static RE_JS_STATE_WRITE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"State\.variables\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap()
+});
+
+/// alias.property — access through a whole-object alias
+/// This is detected after finding a `var x = State.variables` alias
+pub(crate) static RE_ALIAS_PROPERTY: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+});
+
 // ---------------------------------------------------------------------------
 // Variable extraction
 // ---------------------------------------------------------------------------
@@ -49,6 +73,10 @@ pub(crate) static RE_VAR_DOT_PATH: Lazy<Regex> = Lazy::new(|| Regex::new(
 /// Dot-notation paths like `$item.sword.damage` are also captured as
 /// variable operations with the full path as the name, plus the base
 /// variable name as a separate read operation.
+///
+/// JavaScript aliasing is tracked in two forms:
+/// 1. **Specific alias**: `var x = State.variables.gold` → `$gold` read via `x`
+/// 2. **Whole-object alias**: `var v = State.variables` → `$v.prop` tracks as `$prop`
 pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     let mut vars = Vec::new();
     let mut init_spans: Vec<Range<usize>> = Vec::new();
@@ -162,6 +190,121 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         }
     }
 
+    // ── JavaScript alias tracking ──────────────────────────────────────
+
+    // Track whole-object aliases: var v = State.variables
+    // After finding one, any v.propertyName is treated as $propertyName
+    let mut whole_aliases: HashMap<String, usize> = HashMap::new(); // alias_name → byte offset
+    for caps in RE_JS_ALIAS_WHOLE.captures_iter(body) {
+        let alias_name = caps.get(1).unwrap().as_str().to_string();
+        let full = caps.get(0).unwrap();
+        let alias_offset = body_offset + full.start();
+
+        // Check that this isn't also matched by the specific alias regex
+        // (i.e., var x = State.variables.gold would match both, but the
+        // specific match should take precedence)
+        let is_specific = RE_JS_ALIAS_SPECIFIC.captures_iter(body)
+            .any(|specific_caps| {
+                specific_caps.get(0).unwrap().start() == full.start()
+            });
+
+        if !is_specific {
+            whole_aliases.insert(alias_name, alias_offset);
+        }
+    }
+
+    // Detect specific aliases: var x = State.variables.gold → $gold read
+    for caps in RE_JS_ALIAS_SPECIFIC.captures_iter(body) {
+        let _alias_name = caps.get(1).unwrap().as_str();
+        let sc_var = caps.get(2).unwrap().as_str();
+        let full = caps.get(0).unwrap();
+        let var_start = body_offset + full.start();
+        let var_end = body_offset + full.end();
+
+        // Record the $var as a read (accessed via State.variables)
+        let dollar_name = format!("${}", sc_var);
+        let is_already = vars.iter().any(|v| {
+            v.name == dollar_name && v.span.start == var_start
+        });
+        if !is_already {
+            vars.push(VarOp {
+                name: dollar_name,
+                kind: VarKind::Read,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+        }
+    }
+
+    // Resolve whole-object alias property accesses:
+    // If we have `var v = State.variables` and later `v.gold` or `v.gold = 10`,
+    // treat v.gold as $gold (read or write)
+    if !whole_aliases.is_empty() {
+        for caps in RE_ALIAS_PROPERTY.captures_iter(body) {
+            let alias_name = caps.get(1).unwrap().as_str();
+            let property = caps.get(2).unwrap().as_str();
+            let full = caps.get(0).unwrap();
+
+            if let Some(&alias_offset) = whole_aliases.get(alias_name) {
+                // Skip the alias declaration itself (var v = State.variables)
+                let prop_start = body_offset + full.start();
+                if prop_start <= alias_offset {
+                    continue;
+                }
+
+                let prop_end = body_offset + full.end();
+                let dollar_name = format!("${}", property);
+
+                // Determine if this is a write (look for = after the property access)
+                let after_match = &body[full.end()..];
+                let is_write = after_match.trim_start().starts_with('=')
+                    && !after_match.trim_start().starts_with("==")
+                    && !after_match.trim_start().starts_with("===");
+
+                // Don't double-count if we already have this exact span
+                let is_already = vars.iter().any(|v| {
+                    v.span.start == prop_start && v.span.end == prop_end
+                });
+
+                if !is_already {
+                    vars.push(VarOp {
+                        name: dollar_name,
+                        kind: if is_write { VarKind::Init } else { VarKind::Read },
+                        span: prop_start..prop_end,
+                        is_temporary: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // Detect direct writes to State.variables.varName = value
+    for caps in RE_JS_STATE_WRITE.captures_iter(body) {
+        let sc_var = caps.get(1).unwrap().as_str();
+        let full = caps.get(0).unwrap();
+        let var_start = body_offset + full.start();
+        let var_end = body_offset + full.end();
+
+        let dollar_name = format!("${}", sc_var);
+        let is_already_init = init_spans.iter().any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+
+        // Don't double-count if already captured via whole-alias or specific-alias
+        let is_already = vars.iter().any(|v| {
+            v.name == dollar_name && v.span.start == var_start
+        });
+
+        if !is_already_init && !is_already {
+            vars.push(VarOp {
+                name: dollar_name,
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+        }
+    }
+
     vars
 }
 
@@ -240,6 +383,41 @@ mod tests {
         let vars = extract_vars(body, 0);
 
         assert!(vars.iter().any(|v| v.name == "$item.sword.damage" && v.kind == VarKind::Read));
+    }
+
+    #[test]
+    fn test_extract_vars_js_whole_alias() {
+        let body = "var v = State.variables;\nv.gold = 10;\nvar x = v.health;";
+        let vars = extract_vars(body, 0);
+
+        // v.gold = 10 should be detected as $gold Init
+        assert!(
+            vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Init),
+            "Should detect v.gold = 10 as $gold Init"
+        );
+    }
+
+    #[test]
+    fn test_extract_vars_js_specific_alias() {
+        let body = "var gold = State.variables.gold;";
+        let vars = extract_vars(body, 0);
+
+        // Should detect $gold as a Read
+        assert!(
+            vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Read),
+            "Should detect State.variables.gold as $gold Read"
+        );
+    }
+
+    #[test]
+    fn test_extract_vars_js_state_write() {
+        let body = "State.variables.gold = 10;";
+        let vars = extract_vars(body, 0);
+
+        assert!(
+            vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Init),
+            "Should detect State.variables.gold = as $gold Init"
+        );
     }
 
     #[test]

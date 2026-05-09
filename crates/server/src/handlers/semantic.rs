@@ -147,10 +147,10 @@ pub(crate) async fn document_symbol(
     state: &ServerState,
     params: DocumentSymbolParams,
 ) -> Result<Option<DocumentSymbolResponse>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -289,13 +289,13 @@ pub(crate) async fn semantic_tokens_full(
     state: &ServerState,
     params: SemanticTokensParams,
 ) -> Result<Option<SemanticTokensResult>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    if let Some(text) = inner.open_documents.get(uri) {
+    if let Some(text) = inner.open_documents.get(&uri) {
         let format = inner.workspace.resolve_format();
         if let Some(plugin) = inner.format_registry.get(&format) {
-            let parse_result = plugin.parse(uri, text);
+            let parse_result = plugin.parse(&uri, text);
             let tokens = convert_semantic_tokens(text, &parse_result.tokens);
             let data = encode_semantic_tokens(&tokens);
             return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -312,10 +312,10 @@ pub(crate) async fn code_lens(
     state: &ServerState,
     params: CodeLensParams,
 ) -> Result<Option<Vec<CodeLens>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -359,10 +359,10 @@ pub(crate) async fn inlay_hint(
     state: &ServerState,
     params: InlayHintParams,
 ) -> Result<Option<Vec<InlayHint>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 

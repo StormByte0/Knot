@@ -8,7 +8,7 @@ pub(crate) async fn code_action(
     state: &ServerState,
     params: CodeActionParams,
 ) -> Result<Option<CodeActionResponse>, tower_lsp::jsonrpc::Error> {
-    let _uri = &params.text_document.uri;
+    let _uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();

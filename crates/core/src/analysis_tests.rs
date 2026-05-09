@@ -435,7 +435,7 @@ mod tests {
 
         // Add initial passage
         let old_passages = vec![make_passage("Start", &["Forest"])];
-        graph_surgery(&mut graph, &[], &old_passages, "file:///project/story.tw");
+        graph_surgery(&mut graph, &[], &old_passages, "file:///project/story.tw", &[]);
 
         // Verify the passage has the correct file_uri
         let node = graph.get_passage("Start");
@@ -451,7 +451,7 @@ mod tests {
 
         // Initial state: just Start
         let initial = vec![make_passage("Start", &["Forest"])];
-        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw");
+        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw", &[]);
 
         // Add Forest passage
         let updated = vec![
@@ -463,6 +463,7 @@ mod tests {
             &initial,
             &updated,
             "file:///project/story.tw",
+            &[],
         );
 
         assert!(result.added.contains(&"Forest".to_string()));
@@ -480,7 +481,7 @@ mod tests {
             make_passage("Start", &["Forest"]),
             make_passage("Forest", &[]),
         ];
-        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw");
+        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw", &[]);
 
         // Remove Forest passage AND update Start to not link to it
         let updated = vec![make_passage("Start", &[])];
@@ -489,6 +490,7 @@ mod tests {
             &initial,
             &updated,
             "file:///project/story.tw",
+            &[],
         );
 
         assert!(result.removed.contains(&"Forest".to_string()));
@@ -505,7 +507,7 @@ mod tests {
             make_passage("Start", &["Forest"]),
             make_passage("Forest", &[]),
         ];
-        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw");
+        graph_surgery(&mut graph, &[], &initial, "file:///project/story.tw", &[]);
 
         // Modify Start to link to Cave instead of Forest
         let updated = vec![
@@ -517,6 +519,7 @@ mod tests {
             &initial,
             &updated,
             "file:///project/story.tw",
+            &[],
         );
 
         assert!(result.modified.contains(&"Start".to_string()));

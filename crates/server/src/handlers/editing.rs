@@ -11,10 +11,10 @@ pub(crate) async fn formatting(
     state: &ServerState,
     params: DocumentFormattingParams,
 ) -> Result<Option<Vec<TextEdit>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -30,10 +30,10 @@ pub(crate) async fn range_formatting(
     state: &ServerState,
     params: DocumentRangeFormattingParams,
 ) -> Result<Option<Vec<TextEdit>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -59,13 +59,13 @@ pub(crate) async fn on_type_formatting(
     state: &ServerState,
     params: DocumentOnTypeFormattingParams,
 ) -> Result<Option<Vec<TextEdit>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position.text_document.uri);
     let position = params.text_document_position.position;
     let ch = &params.ch;
 
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -104,12 +104,12 @@ pub(crate) async fn linked_editing_range(
     state: &ServerState,
     params: LinkedEditingRangeParams,
 ) -> Result<Option<LinkedEditingRanges>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
 
-    let Some(text) = inner.open_documents.get(uri) else {
+    let Some(text) = inner.open_documents.get(&uri) else {
         return Ok(None);
     };
 
@@ -169,12 +169,12 @@ pub(crate) async fn prepare_rename(
     state: &ServerState,
     params: TextDocumentPositionParams,
 ) -> Result<Option<PrepareRenameResponse>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let position = params.position;
 
     let inner = state.inner.read().await;
 
-    if let Some(text) = inner.open_documents.get(uri) {
+    if let Some(text) = inner.open_documents.get(&uri) {
         // Check if cursor is on a passage header
         if let Some(name) = helpers::find_passage_at_position(text, position) {
             let line_text = text.lines().nth(position.line as usize).unwrap_or("");
@@ -227,14 +227,14 @@ pub(crate) async fn rename(
     state: &ServerState,
     params: RenameParams,
 ) -> Result<Option<WorkspaceEdit>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position.text_document.uri);
     let position = params.text_document_position.position;
     let new_name = params.new_name;
 
     let inner = state.inner.read().await;
 
     // Determine what the user is renaming
-    let target_passage = if let Some(text) = inner.open_documents.get(uri) {
+    let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
         helpers::find_passage_at_position(text, position)
             .or_else(|| helpers::find_link_target_at_position(text, position))
     } else {

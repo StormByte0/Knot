@@ -252,4 +252,18 @@ impl Passage {
     pub fn is_metadata(&self) -> bool {
         self.name == "StoryData" || self.name == "StoryTitle"
     }
+
+    /// Whether this passage is a script passage (contains JavaScript).
+    /// In SugarCube, script passages have the "script" tag.
+    pub fn is_script_passage(&self) -> bool {
+        self.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
+            || self.name == "Story JavaScript"
+    }
+
+    /// Whether this passage is a stylesheet passage (contains CSS).
+    /// In SugarCube, stylesheet passages have the "stylesheet" tag.
+    pub fn is_stylesheet_passage(&self) -> bool {
+        self.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"))
+            || self.name == "Story Stylesheet"
+    }
 }

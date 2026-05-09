@@ -8,12 +8,12 @@ pub(crate) async fn goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<Option<GotoDefinitionResponse>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
 
-    if let Some(text) = inner.open_documents.get(uri)
+    if let Some(text) = inner.open_documents.get(&uri)
         && let Some(target_name) = helpers::find_link_target_at_position(text, position)
             && let Some((doc, passage)) = inner.workspace.find_passage(&target_name) {
                 let target_uri = doc.uri.clone();
@@ -46,12 +46,12 @@ pub(crate) async fn goto_implementation(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<Option<GotoDefinitionResponse>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position_params.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
 
     let inner = state.inner.read().await;
 
-    let target_passage = if let Some(text) = inner.open_documents.get(uri) {
+    let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
         helpers::find_passage_at_position(text, position)
             .or_else(|| helpers::find_link_target_at_position(text, position))
     } else {
@@ -132,13 +132,13 @@ pub(crate) async fn references(
     state: &ServerState,
     params: ReferenceParams,
 ) -> Result<Option<Vec<Location>>, tower_lsp::jsonrpc::Error> {
-    let uri = &params.text_document_position.text_document.uri;
+    let uri = helpers::normalize_file_uri(&params.text_document_position.text_document.uri);
     let position = params.text_document_position.position;
 
     let inner = state.inner.read().await;
 
     // First, determine what the user is on: a passage header or a link
-    let target_passage = if let Some(text) = inner.open_documents.get(uri) {
+    let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
         // Check if cursor is on a passage header
         if let Some(name) = helpers::find_passage_at_position(text, position) {
             Some(name)

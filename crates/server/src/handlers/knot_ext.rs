@@ -1288,6 +1288,7 @@ impl ServerState {
             inner.workspace = knot_core::Workspace::new(root);
             inner.workspace.config = config;
             inner.open_documents.clear();
+            inner.editor_open_docs.clear();
             inner.format_diagnostics.clear();
         }
 
