@@ -80,15 +80,18 @@ pub enum VarKind {
 /// A variable operation within a passage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VarOp {
-    /// The variable name (e.g., "$gold" in SugarCube).
+    /// The variable name, including its format-specific sigil
+    /// (e.g., `$gold` for SugarCube story variables, `gold` for Snowman).
     pub name: String,
     /// Whether this is a read or write operation.
     pub kind: VarKind,
     /// The byte range of this operation in the source text.
     pub span: Range<usize>,
-    /// Whether this is a temporary/scratch variable (e.g., `_temp` in SugarCube).
-    /// Temporary variables are per-passage and excluded from cross-passage
-    /// dataflow analysis since they do not persist across passage transitions.
+    /// Whether this is a temporary/scratch variable that does not persist
+    /// across passage transitions. Format plugins set this flag based on
+    /// their own variable scoping rules (e.g., SugarCube's `_temp` convention).
+    /// Temporary variables are excluded from cross-passage dataflow analysis
+    /// since they only exist within a single passage/moment.
     #[serde(default)]
     pub is_temporary: bool,
 }
@@ -228,8 +231,8 @@ impl Passage {
     }
 
     /// Returns all persistent (non-temporary) variable init operations.
-    /// Temporary variables (e.g., SugarCube `_temp`) are excluded because
-    /// they do not survive passage transitions.
+    /// Temporary variables (those with `is_temporary: true`) are excluded
+    /// because they do not survive passage transitions.
     pub fn persistent_variable_inits(&self) -> impl Iterator<Item = &VarOp> {
         self.vars.iter().filter(|v| v.kind == VarKind::Init && !v.is_temporary)
     }
@@ -254,14 +257,18 @@ impl Passage {
     }
 
     /// Whether this passage is a script passage (contains JavaScript).
-    /// In SugarCube, script passages have the "script" tag.
+    /// Format plugins determine script passages via their `script_tags()` method.
+    /// This convenience method checks for the common `script` tag and
+    /// well-known system passage names.
     pub fn is_script_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
             || self.name == "Story JavaScript"
     }
 
     /// Whether this passage is a stylesheet passage (contains CSS).
-    /// In SugarCube, stylesheet passages have the "stylesheet" tag.
+    /// Format plugins determine stylesheet passages via their `stylesheet_tags()` method.
+    /// This convenience method checks for the common `stylesheet` tag and
+    /// well-known system passage names.
     pub fn is_stylesheet_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"))
             || self.name == "Story Stylesheet"

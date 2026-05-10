@@ -17,6 +17,7 @@ pub use graph::PassageGraph;
 pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;
+pub use analysis::FormatVariableDiagnostic;
 
 #[cfg(test)]
 mod analysis_tests;

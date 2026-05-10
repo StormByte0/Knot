@@ -490,6 +490,26 @@ impl FormatPlugin for SugarCubePlugin {
 
         vars::extract_object_property_map(&vars_by_passage)
     }
+
+    // -------------------------------------------------------------------
+    // State variable registry & diagnostics
+    // -------------------------------------------------------------------
+
+    fn build_state_variable_registry(
+        &self,
+        workspace: &knot_core::Workspace,
+    ) -> HashMap<String, crate::types::StateVariable> {
+        vars::build_state_variable_registry(workspace)
+    }
+
+    fn compute_variable_diagnostics(
+        &self,
+        workspace: &knot_core::Workspace,
+        start_passage: &str,
+        registry: &HashMap<String, crate::types::StateVariable>,
+    ) -> Vec<crate::types::VariableDiagnostic> {
+        vars::compute_variable_diagnostics(workspace, start_passage, registry)
+    }
 }
 
 // ---------------------------------------------------------------------------

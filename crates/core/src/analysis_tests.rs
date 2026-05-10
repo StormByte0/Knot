@@ -261,11 +261,18 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Uninitialized variable detection
+    // Variable flow analysis (now delegated to format plugins)
     // -----------------------------------------------------------------------
 
+    // NOTE: The core's `analyze()` method no longer produces variable
+    // diagnostics (UninitializedVariable, UnusedVariable, RedundantWrite)
+    // because variable analysis is now delegated to format plugins via
+    // `analyze_with_format_diagnostics()`. The tests below verify the
+    // fallback `analyze_variable_flow()` method, which is still available
+    // for formats that don't provide their own variable analysis.
+
     #[test]
-    fn uninitialized_variable_detection() {
+    fn uninitialized_variable_detection_via_fallback() {
         let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
         workspace.metadata = Some(StoryMetadata {
             format: StoryFormat::SugarCube,
@@ -284,14 +291,15 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Use the fallback analyze_variable_flow() directly
+        let diagnostics = AnalysisEngine::analyze_variable_flow(&workspace, "Start");
 
         let uninit: Vec<_> = diagnostics
             .iter()
             .filter(|d| d.kind == DiagnosticKind::UninitializedVariable)
             .collect();
 
-        assert_eq!(uninit.len(), 1, "Should detect 1 uninitialized variable");
+        assert_eq!(uninit.len(), 1, "Should detect 1 uninitialized variable via fallback");
         assert!(uninit[0].message.contains("$gold"));
     }
 
@@ -996,7 +1004,8 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Use fallback analyze_variable_flow() directly (analyze() no longer includes variable diagnostics)
+        let diagnostics = AnalysisEngine::analyze_variable_flow(&workspace, "Start");
 
         let uninit: Vec<_> = diagnostics
             .iter()
@@ -1031,7 +1040,8 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Use fallback analyze_variable_flow() directly (analyze() no longer includes variable diagnostics)
+        let diagnostics = AnalysisEngine::analyze_variable_flow(&workspace, "Start");
 
         let unused: Vec<_> = diagnostics
             .iter()
@@ -1079,7 +1089,8 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Use fallback analyze_variable_flow() directly (analyze() no longer includes variable diagnostics)
+        let diagnostics = AnalysisEngine::analyze_variable_flow(&workspace, "Start");
 
         let redundant: Vec<_> = diagnostics
             .iter()

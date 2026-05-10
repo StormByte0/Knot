@@ -421,7 +421,7 @@ pub(crate) async fn index_workspace(
     inner.workspace.graph = rebuild_graph(&inner.workspace, &inner.format_registry, format);
     inner.workspace.mark_indexed();
 
-    let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+    let diagnostics = analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
@@ -1017,7 +1017,91 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
         DiagnosticKind::ComplexPassage => DiagnosticSeverity::HINT,
         DiagnosticKind::LargePassage => DiagnosticSeverity::HINT,
         DiagnosticKind::MissingStartLink => DiagnosticSeverity::WARNING,
+        // Format-delegated variable diagnostics — all HINTs because
+        // SugarCube variables are persistent game state
+        DiagnosticKind::VariableAvailabilityHint => DiagnosticSeverity::HINT,
+        DiagnosticKind::UnusedVariableHint => DiagnosticSeverity::HINT,
+        DiagnosticKind::RedundantWriteHint => DiagnosticSeverity::HINT,
+        DiagnosticKind::UnknownPropertyHint => DiagnosticSeverity::HINT,
     }
+}
+
+// ===========================================================================
+// Format-delegated variable analysis
+// ===========================================================================
+
+/// Compute format-delegated variable diagnostics using the active format plugin.
+///
+/// This is the preferred path for variable analysis. It delegates to the
+/// format plugin's `build_state_variable_registry()` and
+/// `compute_variable_diagnostics()` methods, which understand the
+/// format-specific variable semantics (e.g., SugarCube's `State.variables`
+/// persistence model).
+///
+/// Returns a list of `FormatVariableDiagnostic` that can be passed to
+/// `AnalysisEngine::analyze_with_format_diagnostics()`.
+pub(crate) fn compute_format_variable_diagnostics(
+    workspace: &Workspace,
+    registry: &fmt_plugin::FormatRegistry,
+    format: StoryFormat,
+) -> Vec<knot_core::FormatVariableDiagnostic> {
+    use knot_core::graph::DiagnosticKind;
+    use knot_formats::types::VariableDiagnosticKind;
+
+    let start_passage = workspace
+        .metadata
+        .as_ref()
+        .map(|m| m.start_passage.as_str())
+        .unwrap_or("Start");
+
+    let Some(plugin) = registry.get(&format) else {
+        return Vec::new();
+    };
+
+    let state_registry = plugin.build_state_variable_registry(workspace);
+    let var_diagnostics = plugin.compute_variable_diagnostics(workspace, start_passage, &state_registry);
+
+    // Convert format-specific VariableDiagnostic → core FormatVariableDiagnostic
+    var_diagnostics
+        .into_iter()
+        .map(|vd| {
+            let kind = match vd.kind {
+                VariableDiagnosticKind::VariableAvailabilityHint => {
+                    DiagnosticKind::VariableAvailabilityHint
+                }
+                VariableDiagnosticKind::UnusedVariableHint => {
+                    DiagnosticKind::UnusedVariableHint
+                }
+                VariableDiagnosticKind::RedundantWriteHint => {
+                    DiagnosticKind::RedundantWriteHint
+                }
+                VariableDiagnosticKind::UnknownPropertyHint => {
+                    DiagnosticKind::UnknownPropertyHint
+                }
+            };
+            knot_core::FormatVariableDiagnostic {
+                passage_name: vd.passage_name,
+                file_uri: vd.file_uri,
+                kind,
+                message: vd.message,
+            }
+        })
+        .collect()
+}
+
+/// Run analysis with format-delegated variable diagnostics.
+///
+/// This is the preferred way to run analysis in the server. It first runs
+/// the core analysis (broken links, unreachable passages, etc.), then
+/// appends format-specific variable diagnostics computed by the active
+/// format plugin.
+pub(crate) fn analyze_with_format_vars(
+    workspace: &Workspace,
+    registry: &fmt_plugin::FormatRegistry,
+) -> Vec<knot_core::graph::GraphDiagnostic> {
+    let format = workspace.resolve_format();
+    let format_var_diags = compute_format_variable_diagnostics(workspace, registry, format);
+    AnalysisEngine::analyze_with_format_diagnostics(workspace, format_var_diags)
 }
 
 // ===========================================================================

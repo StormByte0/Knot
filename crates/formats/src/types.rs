@@ -2,10 +2,36 @@
 //!
 //! These types are used by both format plugin implementations and the LSP
 //! server handlers. They define the data structures for macro catalogs,
-//! variable sigils, implicit passage patterns, and other format-specific
-//! behavioral data that handlers need to query through the FormatPlugin trait.
+//! variable sigils, implicit passage patterns, state variable tracking,
+//! and other format-specific behavioral data that handlers need to query
+//! through the FormatPlugin trait.
+//!
+//! ## Variable Tracking Architecture
+//!
+//! SugarCube variables (`$var`) are NOT traditional scoped variables — they
+//! are persistent entries in `SugarCube.State.variables` that survive for the
+//! entire game session. Once a variable is written (via `<<set>>`,
+//! `State.variables.x =`, or a JS alias), it remains in the state collection
+//! indefinitely. The `<<unset>>` macro can remove a variable, but this is rare.
+//!
+//! This means the traditional "uninitialized variable" / "definite assignment
+//! analysis" approach is **wrong** for SugarCube. Instead, we use a
+//! **state variable registry** with **graph-BFS availability computation**:
+//!
+//! 1. **Registry**: Collect all `$var` / `State.variables.*` references across
+//!    the workspace into a `StateVariable` registry.
+//! 2. **Availability**: Use the passage graph to compute which passages can
+//!    reach a variable's first write. If a read occurs in a passage that is
+//!    NOT reachable from any write (via graph traversal), it's flagged as
+//!    a **hint** (not an error), since the variable might come from a saved
+//!    game state.
+//! 3. **Properties**: Dot-notation paths (`$player.name`) are tracked as
+//!    first-class properties of their base state variable.
+//! 4. **JS Aliasing**: `State.variables.x` and `var v = State.variables; v.x`
+//!    are unified with `$x` references.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 
 // ---------------------------------------------------------------------------
 // Macro catalog types
@@ -200,4 +226,115 @@ pub struct ResolvedNavLink {
     pub display_text: Option<String>,
     /// The target passage name.
     pub target: String,
+}
+
+// ---------------------------------------------------------------------------
+// State variable tracking types
+// ---------------------------------------------------------------------------
+
+/// The kind of access to a state variable.
+///
+/// This replaces the core `VarKind::Init/Read` with format-specific granularity
+/// that captures property paths and the distinction between base-level and
+/// property-level access.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VarAccessKind {
+    /// Variable is being assigned/written (e.g., `<<set $hp to 100>>`,
+    /// `State.variables.hp = 100`, `v.hp = 100` via alias).
+    Assign,
+    /// Variable is being read (e.g., `You have $gold coins.`,
+    /// `State.variables.gold`, `v.gold` via alias).
+    Read,
+    /// A property of the variable is being read
+    /// (e.g., `$player.name`, `State.variables.player.name`).
+    /// The `path` is the dot-notation path after the base name (e.g., "name").
+    PropertyRead { path: String },
+    /// A property of the variable is being written
+    /// (e.g., `<<set $player.name to "Alice">>`,
+    /// `State.variables.player.name = "Alice"`).
+    /// The `path` is the dot-notation path after the base name.
+    PropertyWrite { path: String },
+    /// Variable is being unset (e.g., `<<unset $hp>>`).
+    /// This is rare but explicitly removes the variable from state.
+    Unset,
+}
+
+/// A location where a state variable is accessed.
+#[derive(Debug, Clone)]
+pub struct VarLocation {
+    /// The passage name where this access occurs.
+    pub passage_name: String,
+    /// The file URI where this access occurs.
+    pub file_uri: String,
+    /// The byte range of the variable reference in the source text.
+    pub span: Range<usize>,
+    /// The kind of access (assign, read, property read/write, unset).
+    pub kind: VarAccessKind,
+}
+
+/// A state variable tracked across the workspace.
+///
+/// In SugarCube, `$var` is syntactic sugar for `SugarCube.State.variables.var`.
+/// These variables persist for the entire game session once written. This struct
+/// tracks all known information about a single state variable across all passages.
+#[derive(Debug, Clone)]
+pub struct StateVariable {
+    /// The base name without the `$` sigil (e.g., "hp" for `$hp`).
+    pub base_name: String,
+    /// The dollar-prefixed name (e.g., "$hp").
+    pub dollar_name: String,
+    /// Known dot-notation property paths seen on this variable
+    /// (e.g., {"name", "health"} for `$player.name`, `$player.health`).
+    pub known_properties: HashSet<String>,
+    /// All locations where this variable is written/assigned.
+    pub write_locations: Vec<VarLocation>,
+    /// All locations where this variable is read.
+    pub read_locations: Vec<VarLocation>,
+    /// The passage name where this variable first becomes available
+    /// (computed via graph-BFS from the start passage and special passages).
+    /// `None` means availability hasn't been computed yet.
+    pub first_available: Option<String>,
+    /// Whether this variable is seeded by a special passage
+    /// (e.g., StoryInit, Story JavaScript). Variables seeded by special
+    /// passages are always available from the start of the game.
+    pub seeded_by_special: bool,
+}
+
+/// A diagnostic produced by format-specific variable analysis.
+///
+/// These diagnostics use **hint** severity rather than error/warning, because
+/// SugarCube variables are persistent game state — a "read before write" in
+/// source order doesn't mean the variable is actually unavailable at runtime
+/// (it could come from a saved game, a browser session, or a JS script that
+/// the LSP doesn't fully model).
+#[derive(Debug, Clone)]
+pub struct VariableDiagnostic {
+    /// The passage name this diagnostic is associated with.
+    pub passage_name: String,
+    /// The file URI where the diagnostic should be reported.
+    pub file_uri: String,
+    /// The diagnostic kind.
+    pub kind: VariableDiagnosticKind,
+    /// Human-readable message.
+    pub message: String,
+}
+
+/// Kinds of variable diagnostics a format plugin can produce.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum VariableDiagnosticKind {
+    /// A variable is read in a passage that is not reachable from any
+    /// passage that writes it via the narrative graph. This is a **hint**,
+    /// not an error, because the variable might exist from a saved game.
+    VariableAvailabilityHint,
+    /// A variable is written but never read on any reachable path.
+    /// This is a **hint** since "unused" state variables are common
+    /// (e.g., debug variables, state saved for future use).
+    UnusedVariableHint,
+    /// A variable is assigned twice in the same passage without an
+    /// intervening read. This is a **hint** — it's often intentional
+    /// (e.g., overwriting a default).
+    RedundantWriteHint,
+    /// A property path is accessed that hasn't been seen written anywhere.
+    /// (e.g., `$player.mana` is read but never written).
+    UnknownPropertyHint,
 }
