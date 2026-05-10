@@ -4,9 +4,28 @@
 //! variable flow analysis across the workspace. It consumes the normalized
 //! document model and passage graph to produce diagnostics and analysis results.
 //!
-//! ## Dataflow Analysis
+//! ## Variable Flow Analysis
 //!
-//! The variable flow analysis uses a forward dataflow worklist algorithm:
+//! Variable flow analysis has two paths:
+//!
+//! 1. **Format-delegated analysis**: When a format plugin implements
+//!    `build_state_variable_registry()` and `compute_variable_diagnostics()`,
+//!    the server calls those methods and passes the results to
+//!    `AnalysisEngine::analyze_with_format_diagnostics()`. This is the
+//!    preferred path for formats with persistent state variables (e.g.,
+//!    formats where variables are stored in a global state collection
+//!    rather than being scoped to functions or blocks).
+//!
+//! 2. **Core fallback analysis**: The core's built-in `analyze_variable_flow()`
+//!    uses a traditional forward dataflow worklist algorithm. This is still
+//!    available for formats that don't provide their own variable analysis,
+//!    but it may produce inaccurate results for formats with persistent
+//!    state variables because it treats variables as scoped rather than
+//!    persistent.
+//!
+//! ## Core Fallback Algorithm
+//!
+//! The forward dataflow worklist algorithm:
 //!
 //! 1. **Seed**: Collect variable writes from special passages that
 //!    `contribute_variables` (e.g., SugarCube's StoryInit, Harlowe's startup).
@@ -35,6 +54,22 @@ pub struct AnalysisEngine;
 /// Per-passage dataflow state: the set of variables that are definitely
 /// initialized at a given program point.
 type InitSet = HashSet<String>;
+
+/// A variable diagnostic produced by a format plugin, converted for use
+/// by the core analysis engine. This struct bridges the format-specific
+/// variable tracking types (in `knot-formats`) and the core's
+/// `GraphDiagnostic` system, ensuring no format-specific types leak
+/// into the core crate.
+pub struct FormatVariableDiagnostic {
+    /// The passage name this diagnostic is associated with.
+    pub passage_name: String,
+    /// The file URI where the diagnostic should be reported.
+    pub file_uri: String,
+    /// The diagnostic kind (mapped from format-specific kind).
+    pub kind: DiagnosticKind,
+    /// Human-readable message.
+    pub message: String,
+}
 
 /// Dataflow state for a passage: entry set and exit set.
 #[derive(Debug, Clone)]
@@ -70,11 +105,11 @@ impl AnalysisEngine {
         let passage_vars = Self::collect_passage_vars(workspace);
         diagnostics.extend(workspace.graph.detect_infinite_loops(&passage_vars));
 
-        // Variable flow analysis (only for formats that support it)
-        let format = workspace.resolve_format();
-        if format.supports_full_variable_tracking() || format.supports_partial_variable_tracking() {
-            diagnostics.extend(Self::analyze_variable_flow(workspace, start_passage));
-        }
+        // NOTE: Variable flow analysis is now delegated to format plugins.
+        // The server should call `analyze_with_format_diagnostics()` instead
+        // of relying on this method for variable diagnostics. The core's
+        // built-in `analyze_variable_flow()` is still available as a fallback
+        // for formats that don't provide their own variable analysis.
 
         // Advanced linting
         diagnostics.extend(Self::detect_duplicate_passage_names(workspace));
@@ -85,6 +120,35 @@ impl AnalysisEngine {
         diagnostics.extend(Self::detect_complex_passages(workspace));
         diagnostics.extend(Self::detect_large_passages(workspace));
         diagnostics.extend(Self::detect_missing_start_link(workspace, start_passage));
+
+        diagnostics
+    }
+
+    /// Run a full analysis pass with format-delegated variable diagnostics.
+    ///
+    /// This is the preferred entry point when the server has access to a
+    /// format plugin that implements `build_state_variable_registry()` and
+    /// `compute_variable_diagnostics()`. The format plugin's variable
+    /// diagnostics are converted to `GraphDiagnostic`s and appended to the
+    /// core diagnostics.
+    ///
+    /// The `format_variable_diagnostics` parameter is produced by the format
+    /// plugin's `compute_variable_diagnostics()` method (called by the server).
+    pub fn analyze_with_format_diagnostics(
+        workspace: &Workspace,
+        format_variable_diagnostics: Vec<FormatVariableDiagnostic>,
+    ) -> Vec<GraphDiagnostic> {
+        let mut diagnostics = Self::analyze(workspace);
+
+        // Convert format-specific variable diagnostics to GraphDiagnostics
+        for fvd in format_variable_diagnostics {
+            diagnostics.push(GraphDiagnostic {
+                passage_name: fvd.passage_name,
+                file_uri: fvd.file_uri,
+                kind: fvd.kind,
+                message: fvd.message,
+            });
+        }
 
         diagnostics
     }
@@ -112,8 +176,8 @@ impl AnalysisEngine {
     /// - **Must-analysis at join points**: Intersection of predecessor exit
     ///   states ensures a variable is only "definitely initialized" if it
     ///   is initialized on ALL paths.
-    /// - **Temporary variable exclusion**: SugarCube `_temp` variables are
-    ///   excluded from cross-passage analysis.
+    /// - **Temporary variable exclusion**: Variables marked `is_temporary`
+    ///   by the format plugin are excluded from cross-passage analysis.
     /// - **Intra-passage ordering**: VarOps are processed in source order
     ///   within each passage for accurate use-before-init detection.
     /// - **Unused variable detection**: Variables written but never read
@@ -520,9 +584,9 @@ impl AnalysisEngine {
 
     /// Collect variable writes from special passages that contribute_variables.
     ///
-    /// This handles SugarCube's StoryInit (runs before first passage),
-    /// Harlowe's startup, and Snowman's Script passage. These writes
-    /// form the initial "definitely initialized" seed set.
+    /// This handles format-specific startup passages (e.g., SugarCube's StoryInit,
+    /// Harlowe's startup, Snowman's Script passage). These writes form the initial
+    /// "definitely initialized" seed set.
     pub fn collect_special_passage_initializers(
         _workspace: &Workspace,
         passage_data: &HashMap<String, PassageVarData>,

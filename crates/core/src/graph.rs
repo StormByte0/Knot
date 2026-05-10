@@ -96,6 +96,16 @@ pub enum DiagnosticKind {
     /// The start passage has no outgoing links (the story immediately
     /// ends with no choices).
     MissingStartLink,
+    /// A variable may not be available in a passage (format-delegated hint).
+    /// This replaces `UninitializedVariable` for formats with persistent
+    /// state variables (where variables survive across passage transitions).
+    VariableAvailabilityHint,
+    /// A variable is written but never read (format-delegated hint).
+    UnusedVariableHint,
+    /// A variable is assigned twice without an intervening read (format-delegated hint).
+    RedundantWriteHint,
+    /// A property path is read but never written (format-delegated hint).
+    UnknownPropertyHint,
 }
 
 /// The passage graph — the core data structure for narrative analysis.

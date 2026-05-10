@@ -400,6 +400,52 @@ pub trait FormatPlugin: Send + Sync {
     fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
         HashMap::new()
     }
+
+    // -----------------------------------------------------------------------
+    // State variable registry & diagnostics (optional)
+    // -----------------------------------------------------------------------
+
+    /// Build a registry of all state variables across the workspace.
+    ///
+    /// This is the format-specific replacement for the core's `detect_uninitialized_reads()`.
+    /// Format plugins that support persistent state variables (like SugarCube's
+    /// `State.variables`) should override this to collect all `$var` /
+    /// `State.variables.*` references into a `StateVariable` registry.
+    ///
+    /// The registry tracks:
+    /// - All write and read locations for each variable
+    /// - Known dot-notation properties
+    /// - Whether the variable is seeded by a special passage
+    ///
+    /// The default implementation returns an empty registry.
+    fn build_state_variable_registry(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> HashMap<String, crate::types::StateVariable> {
+        HashMap::new()
+    }
+
+    /// Compute variable-related diagnostics using the format's state model
+    /// and the passage graph.
+    ///
+    /// This replaces the core's `detect_uninitialized_reads()`,
+    /// `detect_unused_variables()`, and `detect_redundant_writes()` with
+    /// format-aware analysis. For SugarCube, this uses graph-BFS to compute
+    /// variable availability rather than traditional definite-assignment analysis.
+    ///
+    /// The diagnostics produced are **hints** rather than errors/warnings,
+    /// because persistent state variables may exist from saved games or
+    /// scripts that the LSP cannot fully model.
+    ///
+    /// The default implementation returns an empty list (no diagnostics).
+    fn compute_variable_diagnostics(
+        &self,
+        _workspace: &knot_core::Workspace,
+        _start_passage: &str,
+        _registry: &HashMap<String, crate::types::StateVariable>,
+    ) -> Vec<crate::types::VariableDiagnostic> {
+        Vec::new()
+    }
 }
 
 // ===========================================================================

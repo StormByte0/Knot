@@ -5,7 +5,6 @@ use crate::handlers::helpers;
 use crate::state::ServerState;
 use knot_core::editing::graph_surgery;
 use knot_core::passage::Passage;
-use knot_core::AnalysisEngine;
 use lsp_types::*;
 use url::Url;
 
@@ -66,7 +65,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     let format = inner.workspace.resolve_format();
     inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
-    let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
@@ -166,7 +165,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Update broken-link flags on all edges after surgery
     inner.workspace.graph.recheck_broken_links();
 
-    let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     tracing::debug!(
         file = %uri,
         diagnostic_count = diagnostics.len(),
@@ -294,7 +293,7 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
     }
 
     // Re-run analysis and publish diagnostics with updated config
-    let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
@@ -372,7 +371,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after);
 
-                        let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+                        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                         let open_docs = inner.open_documents.clone();
                         let fmt_diags = inner.format_diagnostics.clone();
                         let config = inner.workspace.config.clone();
@@ -392,7 +391,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // Recheck broken links after removal
                 inner.workspace.graph.recheck_broken_links();
 
-                let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+                let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                 let open_docs = inner.open_documents.clone();
                 let fmt_diags = inner.format_diagnostics.clone();
                 let config = inner.workspace.config.clone();
@@ -429,7 +428,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             inner.workspace.insert_document(doc);
                             inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
-                            let diagnostics = AnalysisEngine::analyze(&inner.workspace);
+                            let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                             let open_docs = inner.open_documents.clone();
                             let fmt_diags = inner.format_diagnostics.clone();
                             let config = inner.workspace.config.clone();
