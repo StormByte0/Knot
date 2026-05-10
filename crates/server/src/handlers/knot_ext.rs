@@ -9,6 +9,33 @@ use crate::state::ServerState;
 use knot_core::AnalysisEngine;
 use std::collections::HashMap;
 
+/// Recursively convert format-agnostic `VariablePropertyNode` instances
+/// to LSP wire type `KnotVariableProperty`. This is a pure mechanical
+/// translation with no format-specific logic.
+fn convert_properties(
+    props: Vec<knot_formats::types::VariablePropertyNode>,
+) -> Vec<KnotVariableProperty> {
+    props
+        .into_iter()
+        .map(|p| KnotVariableProperty {
+            name: p.name,
+            full_name: p.full_name,
+            state_path: p.state_path,
+            written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+            }).collect(),
+            read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+            }).collect(),
+            properties: convert_properties(p.properties),
+        })
+        .collect()
+}
+
 impl ServerState {
     /// `knot/graph` — export the passage graph for the Story Map webview.
     pub async fn knot_graph(
@@ -310,6 +337,12 @@ impl ServerState {
     }
 
     /// `knot/variableFlow` — export variable dataflow information.
+    ///
+    /// Delegates to the format plugin's `build_variable_tree()` method, which
+    /// produces format-agnostic `VariableTreeNode` instances. The server then
+    /// performs a **pure mechanical translation** to LSP wire types — no
+    /// format-specific logic (no `VarAccessKind` matching, no hardcoded
+    /// `"State.variables"` strings) lives here.
     pub async fn knot_variable_flow(
         &self,
         params: KnotVariableFlowParams,
@@ -337,62 +370,39 @@ impl ServerState {
             });
         }
 
-        // Collect variable usage across all passages
-        let mut var_map: HashMap<String, KnotVariableInfo> = HashMap::new();
+        // Delegate tree construction to the format plugin.
+        // The plugin returns format-agnostic VariableTreeNode instances.
+        // The server only does a mechanical translation to LSP wire types.
+        let plugin = inner.format_registry.get(&format);
+        let tree_nodes = if let Some(p) = plugin {
+            p.build_variable_tree(workspace)
+        } else {
+            Vec::new()
+        };
 
-        // Run dataflow to determine which variables are initialized at start
-        let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
-
-        for doc in workspace.documents() {
-            for passage in &doc.passages {
-                if passage.is_metadata() {
-                    continue;
-                }
-
-                for var in &passage.vars {
-                    if var.is_temporary {
-                        continue;
-                    }
-
-                    // Apply optional filter
-                    if let Some(ref filter) = params.variable_name
-                        && var.name != *filter {
-                            continue;
-                        }
-
-                    let entry = var_map.entry(var.name.clone()).or_insert_with(|| KnotVariableInfo {
-                        name: var.name.clone(),
-                        is_temporary: false,
-                        written_in: Vec::new(),
-                        read_in: Vec::new(),
-                        initialized_at_start: seed_init.contains(&var.name),
-                        is_unused: false,
-                    });
-
-                    let location = KnotVariableLocation {
-                        passage_name: passage.name.clone(),
-                        file_uri: doc.uri.to_string(),
-                        is_write: var.kind == knot_core::VarKind::Init,
-                    };
-
-                    if var.kind == knot_core::VarKind::Init {
-                        entry.written_in.push(location);
-                    } else {
-                        entry.read_in.push(location);
-                    }
-                }
-            }
-        }
-
-        // Determine which variables are unused (written but never read)
-        for info in var_map.values_mut() {
-            info.is_unused = !info.written_in.is_empty() && info.read_in.is_empty();
-        }
-
-        let mut variables: Vec<KnotVariableInfo> = var_map.into_values().collect();
-        // Sort by name for deterministic output
-        variables.sort_by(|a, b| a.name.cmp(&b.name));
+        // Pure mechanical translation: format-agnostic tree → LSP wire types.
+        // No VarAccessKind matching, no "State.variables" hardcoding.
+        let variables: Vec<KnotVariableInfo> = tree_nodes
+            .into_iter()
+            .map(|node| KnotVariableInfo {
+                name: node.name,
+                state_path: node.state_path,
+                is_temporary: node.is_temporary,
+                written_in: node.written_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                }).collect(),
+                read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                }).collect(),
+                initialized_at_start: node.initialized_at_start,
+                is_unused: node.is_unused,
+                properties: convert_properties(node.properties),
+            })
+            .collect();
 
         Ok(KnotVariableFlowResponse {
             variables,
@@ -1314,3 +1324,4 @@ impl ServerState {
         }
     }
 }
+

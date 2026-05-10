@@ -510,6 +510,17 @@ impl FormatPlugin for SugarCubePlugin {
     ) -> Vec<crate::types::VariableDiagnostic> {
         vars::compute_variable_diagnostics(workspace, start_passage, registry)
     }
+
+    // -------------------------------------------------------------------
+    // Variable tree (format-agnostic UI representation)
+    // -------------------------------------------------------------------
+
+    fn build_variable_tree(
+        &self,
+        workspace: &knot_core::Workspace,
+    ) -> Vec<crate::types::VariableTreeNode> {
+        vars::build_variable_tree(workspace)
+    }
 }
 
 // ---------------------------------------------------------------------------

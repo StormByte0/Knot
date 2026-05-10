@@ -1397,3 +1397,233 @@ mod tests {
         assert!(map["$player"].contains("name"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Variable tree (format-agnostic UI representation)
+// ---------------------------------------------------------------------------
+
+/// Build a tree-structured representation of all SugarCube state variables
+/// for display in the variable tracker UI.
+///
+/// This function converts the flat `StateVariable` registry into a
+/// `Vec<VariableTreeNode>` that mirrors the `State.variables` hierarchy.
+/// For example, `$player.hp` maps to `State.variables.player.hp` and is
+/// represented as a child property of the `$player` variable node.
+///
+/// **Format isolation**: This function is the ONLY place where
+/// SugarCube-specific strings like `"State.variables"` are used. The server
+/// never hardcodes these — it just performs a mechanical translation from
+/// `VariableTreeNode` to LSP wire types.
+pub(crate) fn build_variable_tree(
+    workspace: &knot_core::Workspace,
+) -> Vec<crate::types::VariableTreeNode> {
+    use crate::types::{VariableTreeNode, VariableUsageLocation};
+
+    let registry = build_state_variable_registry(workspace);
+
+    let mut variables: Vec<VariableTreeNode> = Vec::new();
+
+    for (dollar_name, state_var) in &registry {
+        let base_name = &state_var.base_name;
+        let state_path = format!("State.variables.{}", base_name);
+
+        // Build write/read locations for the base variable
+        // (only base-level Assign/Read, not property accesses)
+        let mut written_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.write_locations {
+            if matches!(loc.kind, VarAccessKind::Assign) {
+                written_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: true,
+                });
+            }
+        }
+
+        let mut read_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.read_locations {
+            if matches!(loc.kind, VarAccessKind::Read) {
+                read_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: false,
+                });
+            }
+        }
+
+        let is_unused = !written_in.is_empty() && read_in.is_empty();
+
+        // Build property tree from known_properties
+        let properties = build_property_tree(
+            dollar_name,
+            &state_var.known_properties,
+            &state_var.write_locations,
+            &state_var.read_locations,
+        );
+
+        variables.push(VariableTreeNode {
+            name: dollar_name.clone(),
+            state_path,
+            is_temporary: false,
+            written_in,
+            read_in,
+            initialized_at_start: state_var.seeded_by_special,
+            is_unused,
+            properties,
+        });
+    }
+
+    // Sort by name for deterministic output
+    variables.sort_by(|a, b| a.name.cmp(&b.name));
+
+    variables
+}
+
+/// Build a recursive property tree from the known dot-notation paths.
+///
+/// Groups properties by their first segment, then recurses for deeper paths.
+/// For example, `known_properties = {"name", "inventory.sword", "inventory.shield"}`
+/// produces:
+/// ```text
+/// .name
+/// .inventory
+///   .sword
+///   .shield
+/// ```
+fn build_property_tree(
+    dollar_name: &str,
+    known_properties: &HashSet<String>,
+    write_locations: &[VarLocation],
+    read_locations: &[VarLocation],
+) -> Vec<crate::types::VariablePropertyNode> {
+    use crate::types::{VariablePropertyNode, VariableUsageLocation};
+
+    // Collect immediate children (first segment of each path)
+    let mut children: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for path in known_properties {
+        let parts: Vec<&str> = path.splitn(2, '.').collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let first = parts[0].to_string();
+        let rest = if parts.len() > 1 {
+            Some(parts[1].to_string())
+        } else {
+            None
+        };
+        children.entry(first.clone()).or_default();
+        if let Some(r) = rest {
+            children.get_mut(&first).unwrap().push(r);
+        }
+    }
+
+    let mut result = Vec::new();
+
+    for (prop_name, sub_paths) in children {
+        let full_name = format!("{}.{}", dollar_name, prop_name);
+        // Strip the $ sigil to build the State.variables path
+        let base_without_sigil = if dollar_name.starts_with('$') {
+            &dollar_name[1..]
+        } else {
+            dollar_name
+        };
+        let state_path = format!("State.variables.{}.{}", base_without_sigil, prop_name);
+
+        // Collect write locations for this specific property path
+        let mut prop_written_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in write_locations {
+            match &loc.kind {
+                VarAccessKind::PropertyWrite { path } => {
+                    if path == &prop_name {
+                        prop_written_in.push(VariableUsageLocation {
+                            passage_name: loc.passage_name.clone(),
+                            file_uri: loc.file_uri.clone(),
+                            is_write: true,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Collect read locations for this specific property path
+        let mut prop_read_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in read_locations {
+            match &loc.kind {
+                VarAccessKind::PropertyRead { path } => {
+                    if path == &prop_name {
+                        prop_read_in.push(VariableUsageLocation {
+                            passage_name: loc.passage_name.clone(),
+                            file_uri: loc.file_uri.clone(),
+                            is_write: false,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Build sub-properties recursively
+        let sub_properties = if sub_paths.is_empty() {
+            Vec::new()
+        } else {
+            let sub_set: HashSet<String> = sub_paths.into_iter().collect();
+            // Filter write/read locations for sub-paths
+            let sub_writes: Vec<VarLocation> = write_locations
+                .iter()
+                .filter(|loc| match &loc.kind {
+                    VarAccessKind::PropertyWrite { path } => {
+                        path.starts_with(&format!("{}.", prop_name))
+                    }
+                    _ => false,
+                })
+                .cloned()
+                .map(|mut loc| {
+                    // Adjust path: strip the "prop_name." prefix
+                    if let VarAccessKind::PropertyWrite { path } = &loc.kind {
+                        let new_path = path.strip_prefix(&format!("{}.", prop_name)).unwrap_or(path).to_string();
+                        loc.kind = VarAccessKind::PropertyWrite { path: new_path };
+                    }
+                    loc
+                })
+                .collect();
+
+            let sub_reads: Vec<VarLocation> = read_locations
+                .iter()
+                .filter(|loc| match &loc.kind {
+                    VarAccessKind::PropertyRead { path } => {
+                        path.starts_with(&format!("{}.", prop_name))
+                    }
+                    _ => false,
+                })
+                .cloned()
+                .map(|mut loc| {
+                    if let VarAccessKind::PropertyRead { path } = &loc.kind {
+                        let new_path = path.strip_prefix(&format!("{}.", prop_name)).unwrap_or(path).to_string();
+                        loc.kind = VarAccessKind::PropertyRead { path: new_path };
+                    }
+                    loc
+                })
+                .collect();
+
+            // Recurse with adjusted paths
+            build_property_tree(
+                &full_name,
+                &sub_set,
+                &sub_writes,
+                &sub_reads,
+            )
+        };
+
+        result.push(VariablePropertyNode {
+            name: prop_name,
+            full_name,
+            state_path,
+            written_in: prop_written_in,
+            read_in: prop_read_in,
+            properties: sub_properties,
+        });
+    }
+
+    result
+}

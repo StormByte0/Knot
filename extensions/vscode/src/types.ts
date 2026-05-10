@@ -224,11 +224,22 @@ export interface KnotVariableFlowResponse {
 
 export interface KnotVariableInfo {
     name: string;
+    state_path: string;
     is_temporary: boolean;
     written_in: KnotVariableLocation[];
     read_in: KnotVariableLocation[];
     initialized_at_start: boolean;
     is_unused: boolean;
+    properties: KnotVariableProperty[];
+}
+
+export interface KnotVariableProperty {
+    name: string;
+    full_name: string;
+    state_path: string;
+    written_in: KnotVariableLocation[];
+    read_in: KnotVariableLocation[];
+    properties: KnotVariableProperty[];
 }
 
 export interface KnotVariableLocation {

@@ -446,6 +446,38 @@ pub trait FormatPlugin: Send + Sync {
     ) -> Vec<crate::types::VariableDiagnostic> {
         Vec::new()
     }
+
+    // -----------------------------------------------------------------------
+    // Variable tree (format-agnostic UI representation)
+    // -----------------------------------------------------------------------
+
+    /// Build a tree-structured representation of all state variables for
+    /// display in the variable tracker UI.
+    ///
+    /// This method returns format-agnostic `VariableTreeNode` instances that
+    /// the server translates directly to LSP wire types without any
+    /// format-specific logic. The tree structure mirrors the runtime state
+    /// hierarchy of the format.
+    ///
+    /// For SugarCube, `$player.hp` maps to `State.variables.player.hp`, so
+    /// `$player` becomes a `VariableTreeNode` with a `.hp` child property.
+    /// Other formats can produce their own tree structures that reflect their
+    /// runtime state model — the server and UI never need to know
+    /// format-specific details.
+    ///
+    /// **Format isolation guarantee**: The server's `knot/variableFlow` handler
+    /// calls this method and performs only a mechanical translation to LSP
+    /// wire types. It never inspects format-specific enums like `VarAccessKind`
+    /// or hardcodes format-specific strings like `"State.variables"`. All
+    /// format-specific logic lives here, in the format plugin.
+    ///
+    /// The default implementation returns an empty list (no variables).
+    fn build_variable_tree(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> Vec<crate::types::VariableTreeNode> {
+        Vec::new()
+    }
 }
 
 // ===========================================================================
