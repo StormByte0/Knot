@@ -6,7 +6,7 @@
 
 use crate::lsp_ext::*;
 use knot_core::graph::{DiagnosticKind, PassageEdge, PassageNode};
-use knot_core::passage::StoryFormat;
+use knot_core::passage::{SpecialPassageBehavior, StoryFormat};
 use knot_core::workspace::StoryMetadata;
 use knot_core::{AnalysisEngine, Document, Workspace};
 use knot_formats::plugin as fmt_plugin;
@@ -571,44 +571,20 @@ pub(crate) fn rebuild_graph(
     }
 
     // ── Step 4: Add implicit edges for special passages ──────────────────
-    // SugarCube's navigation lifecycle invokes certain special passages
-    // on every passage transition. These are implicit edges in the graph.
+    // The format plugin defines special passages and their behaviors.
+    // We query the plugin's `special_passages()` list and add implicit
+    // edges based on each passage's `behavior` field:
     //
-    // Navigation order (from SugarCube docs):
-    // 1. :passageinit
-    // 2. PassageReady
-    // 3. :passagestart
-    // 4. PassageHeader
-    // 5. [passage render]
-    // 6. PassageFooter
-    // 7. :passagerender
-    // 8. PassageDone
-    // 9. :passagedisplay
-    // 10. StoryBanner, StoryDisplayTitle, StorySubtitle, StoryAuthor, StoryCaption, StoryMenu
-    // 11. :passageend
+    // - `Startup` passages: implicit edge from the start passage
+    // - `PassageReady` passages: implicit edges from all navigable passages
+    // - `Chrome` passages: implicit edges from all navigable passages
     //
-    // Every passage that is navigated to implicitly "invokes" these passages.
-    // We add edges from each navigable passage to the per-navigation special
-    // passages that exist in the workspace.
+    // This replaces the previous hardcoded SugarCube passage names and
+    // ensures format isolation: the server never hardcodes format-specific
+    // passage names.
 
-    if plugin.is_some() {
-        // Special passages invoked on every navigation (per SugarCube lifecycle)
-        let per_navigation_specials: &[&str] = &[
-            "PassageReady",
-            "PassageHeader",
-            "PassageFooter",
-            "PassageDone",
-        ];
-
-        // Chrome passages updated on every navigation
-        let chrome_specials: &[&str] = &[
-            "StoryBanner",
-            "StoryDisplayTitle",
-            "StorySubtitle",
-            "StoryAuthor",
-            "StoryCaption",
-            "StoryMenu",
-        ];
+    if let Some(plugin) = plugin {
+        let special_defs = plugin.special_passages();
 
         // Collect all non-special, non-metadata passage names
         let navigable_passages: Vec<&str> = info.iter()
@@ -616,40 +592,51 @@ pub(crate) fn rebuild_graph(
             .map(|(name, _, _, _, _)| name.as_str())
             .collect();
 
-        // Add implicit edges from navigable passages to per-navigation specials
-        for special_name in per_navigation_specials.iter().chain(chrome_specials.iter()) {
-            if graph.contains_passage(special_name) {
-                for nav_passage in &navigable_passages {
-                    // Only add if not already an explicit edge
-                    let already_exists = graph.outgoing_neighbors(nav_passage)
-                        .iter()
-                        .any(|n| n == *special_name);
-                    if !already_exists {
-                        let edge = PassageEdge {
-                            display_text: Some(format!("(implicit: {})", special_name)),
-                            is_broken: false,
-                        };
-                        graph.add_edge(nav_passage, special_name, edge);
-                    }
-                }
-            }
-        }
-
-        // Add implicit edge from Start passage to StoryInit
+        // Get the start passage name
         let start_passage = workspace.metadata
             .as_ref()
             .map(|m| m.start_passage.as_str())
             .unwrap_or("Start");
-        if graph.contains_passage("StoryInit") && graph.contains_passage(start_passage) {
-            let already_exists = graph.outgoing_neighbors(start_passage)
-                .iter()
-                .any(|n| n == "StoryInit");
-            if !already_exists {
-                let edge = PassageEdge {
-                    display_text: Some("(implicit: StoryInit)".to_string()),
-                    is_broken: false,
-                };
-                graph.add_edge(start_passage, "StoryInit", edge);
+
+        for def in &special_defs {
+            let special_name = def.name.as_str();
+
+            match &def.behavior {
+                SpecialPassageBehavior::Startup => {
+                    // Startup passages: implicit edge from start passage
+                    if graph.contains_passage(special_name) && graph.contains_passage(start_passage) {
+                        let already_exists = graph.outgoing_neighbors(start_passage)
+                            .iter()
+                            .any(|n| n == special_name);
+                        if !already_exists {
+                            let edge = PassageEdge {
+                                display_text: Some(format!("(implicit: {})", special_name)),
+                                is_broken: false,
+                            };
+                            graph.add_edge(start_passage, special_name, edge);
+                        }
+                    }
+                }
+                SpecialPassageBehavior::PassageReady | SpecialPassageBehavior::Chrome => {
+                    // Per-navigation passages: implicit edges from all navigable passages
+                    if graph.contains_passage(special_name) {
+                        for nav_passage in &navigable_passages {
+                            let already_exists = graph.outgoing_neighbors(nav_passage)
+                                .iter()
+                                .any(|n| n == special_name);
+                            if !already_exists {
+                                let edge = PassageEdge {
+                                    display_text: Some(format!("(implicit: {})", special_name)),
+                                    is_broken: false,
+                                };
+                                graph.add_edge(nav_passage, special_name, edge);
+                            }
+                        }
+                    }
+                }
+                SpecialPassageBehavior::Metadata | SpecialPassageBehavior::Custom(_) => {
+                    // Metadata and custom passages don't get implicit edges
+                }
             }
         }
     }
@@ -1552,54 +1539,86 @@ pub(crate) fn add_content_template_edit(
     }
 }
 
-/// Create a WorkspaceEdit that initializes a variable in StoryInit.
+/// Create a WorkspaceEdit that initializes a variable in the startup passage.
+///
+/// Queries the format plugin to find the startup passage name and the
+/// appropriate variable assignment syntax, instead of hardcoding
+/// SugarCube-specific names and macros.
 pub(crate) fn initialize_var_in_story_init_edit(
     inner: &crate::state::ServerStateInner,
     var_name: &str,
 ) -> WorkspaceEdit {
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
-    // Find StoryInit passage
-    if let Some((doc, _)) = inner.workspace.find_passage("StoryInit") {
-        if let Some(text) = inner.open_documents.get(&doc.uri) {
-            // Find the last line of StoryInit
-            let mut init_start: Option<u32> = None;
-            let mut init_end: u32 = 0;
-            for (i, line) in text.lines().enumerate() {
-                if line.starts_with("::") {
-                    let pname = parse_passage_name_from_header(&line[2..]);
-                    if pname == "StoryInit" {
-                        init_start = Some(i as u32);
-                    } else if init_start.is_some() {
-                        init_end = i as u32;
-                        break;
+    // Query the format plugin for the startup passage name and assignment syntax
+    let format = inner.workspace.resolve_format();
+    let plugin = inner.format_registry.get(&format);
+
+    // Find the startup passage name from the format plugin's special_passages()
+    let startup_passage_name: Option<String> = plugin.and_then(|p| {
+        p.special_passages()
+            .into_iter()
+            .find(|def| {
+                def.contributes_variables
+                    && matches!(def.behavior, SpecialPassageBehavior::Startup)
+            })
+            .map(|def| def.name)
+    });
+
+    // Get the preferred assignment operator from the format plugin
+    // (e.g., "to" for SugarCube's `<<set $var to 0>>`)
+    let assign_op = plugin
+        .map(|p| p.assignment_operators())
+        .and_then(|ops| ops.into_iter().next())
+        .unwrap_or("to");
+
+    if let Some(ref startup_name) = startup_passage_name {
+        // Find the startup passage in the workspace
+        if let Some((doc, _)) = inner.workspace.find_passage(startup_name) {
+            if let Some(text) = inner.open_documents.get(&doc.uri) {
+                // Find the last line of the startup passage
+                let mut init_start: Option<u32> = None;
+                let mut init_end: u32 = 0;
+                for (i, line) in text.lines().enumerate() {
+                    if line.starts_with("::") {
+                        let pname = parse_passage_name_from_header(&line[2..]);
+                        if pname == *startup_name {
+                            init_start = Some(i as u32);
+                        } else if init_start.is_some() {
+                            init_end = i as u32;
+                            break;
+                        }
+                    }
+                    if init_start.is_some() {
+                        init_end = i as u32 + 1;
                     }
                 }
-                if init_start.is_some() {
-                    init_end = i as u32 + 1;
-                }
-            }
 
-            let insert_line = if init_end > init_start.unwrap_or(0) { init_end } else { init_start.unwrap_or(0) + 1 };
-            changes.insert(doc.uri.clone(), vec![TextEdit {
-                range: Range {
-                    start: Position { line: insert_line, character: 0 },
-                    end: Position { line: insert_line, character: 0 },
-                },
-                new_text: format!("<<set {} to 0>>\n", var_name),
-            }]);
+                let insert_line = if init_end > init_start.unwrap_or(0) { init_end } else { init_start.unwrap_or(0) + 1 };
+                changes.insert(doc.uri.clone(), vec![TextEdit {
+                    range: Range {
+                        start: Position { line: insert_line, character: 0 },
+                        end: Position { line: insert_line, character: 0 },
+                    },
+                    new_text: format!("<<set {} {} 0>>\n", var_name, assign_op),
+                }]);
+            }
         }
     } else {
-        // No StoryInit — create one
+        // No format plugin or no startup passage — fall back to creating a
+        // default startup passage using the format's assignment syntax
         if let Some(uri) = inner.open_documents.keys().next()
             && let Some(text) = inner.open_documents.get(uri) {
                 let line_count = text.lines().count() as u32;
+                // Use "StoryInit" as a reasonable default name when no plugin
+                // provides one, with the resolved assignment operator
+                let passage_name = "StoryInit";
                 changes.insert(uri.clone(), vec![TextEdit {
                     range: Range {
                         start: Position { line: line_count, character: 0 },
                         end: Position { line: line_count, character: 0 },
                     },
-                    new_text: format!("\n:: StoryInit\n<<set {} to 0>>\n", var_name),
+                    new_text: format!("\n:: {}\n<<set {} {} 0>>\n", passage_name, var_name, assign_op),
                 }]);
             }
     }

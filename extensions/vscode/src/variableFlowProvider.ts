@@ -3,10 +3,22 @@
 //! This module implements a VS Code sidebar webview panel that displays
 //! variable flow / dataflow information for the workspace, including
 //! where each variable is written and read, initialization status,
-//! and usage badges.
+//! usage badges, and the hierarchical State.variables tree structure.
+//!
+//! For SugarCube, `$player.hp` maps to `State.variables.player.hp`.
+//! Variables are displayed as a tree reflecting this hierarchy:
+//!
+//! ```text
+//! $player  →  State.variables.player
+//! ├── .name     →  State.variables.player.name
+//! ├── .hp       →  State.variables.player.hp
+//! └── .inventory → State.variables.player.inventory
+//!     ├── .sword  → State.variables.player.inventory.sword
+//!     └── .shield → State.variables.player.inventory.shield
+//! ```
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotVariableFlowResponse, KnotVariableInfo, KnotVariableLocation } from './types';
+import { KnotLanguageClient, KnotVariableFlowResponse, KnotVariableInfo, KnotVariableProperty, KnotVariableLocation } from './types';
 
 // ---------------------------------------------------------------------------
 // Variable Flow View webview provider
@@ -128,6 +140,8 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             --error: var(--vscode-errorForeground, #f14c4c);
             --warning: var(--vscode-editorWarning-foreground, #cca700);
             --success: #66bb6a;
+            --prop-color: #ce9178;
+            --state-path-color: #6a9955;
         }
 
         body {
@@ -187,17 +201,6 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             padding: 20px 0;
         }
 
-        .section-title {
-            font-weight: 600;
-            font-size: 11px;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 6px;
-            padding-bottom: 3px;
-            border-bottom: 1px solid var(--border);
-        }
-
         .var-count {
             font-size: 10px;
             color: var(--muted);
@@ -234,7 +237,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             text-align: center;
         }
 
-        .var-item.expanded .var-expand-icon {
+        .var-item.expanded > .var-header .var-expand-icon {
             transform: rotate(90deg);
         }
 
@@ -247,6 +250,13 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
 
         .var-name .dollar {
             color: var(--accent);
+        }
+
+        .state-path {
+            font-family: monospace;
+            font-size: 10px;
+            color: var(--state-path-color);
+            opacity: 0.85;
         }
 
         .badge {
@@ -273,6 +283,11 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             color: var(--muted);
         }
 
+        .badge-props {
+            background: rgba(206, 145, 120, 0.15);
+            color: var(--prop-color);
+        }
+
         .var-counts {
             margin-left: auto;
             display: flex;
@@ -296,7 +311,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             border-top: 1px solid var(--border);
         }
 
-        .var-item.expanded .var-details {
+        .var-item.expanded > .var-details {
             display: block;
         }
 
@@ -344,6 +359,91 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             color: var(--muted);
             font-style: italic;
         }
+
+        /* Property tree styles */
+        .prop-tree {
+            margin-top: 6px;
+        }
+
+        .prop-item {
+            margin-left: 12px;
+            border-left: 1px solid var(--border);
+            padding-left: 8px;
+            margin-bottom: 2px;
+        }
+
+        .prop-header {
+            display: flex;
+            align-items: center;
+            padding: 3px 4px;
+            cursor: pointer;
+            gap: 5px;
+            border-radius: 2px;
+        }
+
+        .prop-header:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .prop-dot {
+            color: var(--prop-color);
+            font-family: monospace;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .prop-name {
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--prop-color);
+            font-weight: 500;
+        }
+
+        .prop-state-path {
+            font-family: monospace;
+            font-size: 9px;
+            color: var(--state-path-color);
+            opacity: 0.7;
+        }
+
+        .prop-counts {
+            margin-left: auto;
+            display: flex;
+            gap: 6px;
+            font-size: 9px;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+
+        .prop-counts .count-write {
+            color: var(--success);
+        }
+
+        .prop-counts .count-read {
+            color: var(--accent);
+        }
+
+        .prop-expand-icon {
+            color: var(--muted);
+            font-size: 9px;
+            transition: transform 0.15s ease;
+            flex-shrink: 0;
+            width: 10px;
+            text-align: center;
+        }
+
+        .prop-item.expanded > .prop-header .prop-expand-icon {
+            transform: rotate(90deg);
+        }
+
+        .prop-details {
+            display: none;
+            padding: 2px 4px 4px 20px;
+        }
+
+        .prop-item.expanded > .prop-details {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -385,6 +485,83 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({ command: 'filterVariable', filter: value });
         }
 
+        let _propId = 0;
+
+        function renderPropertyTree(properties, depth) {
+            if (!properties || properties.length === 0) return '';
+            let html = '<div class="prop-tree">';
+            for (const prop of properties) {
+                const propId = 'prop-' + (_propId++);
+                const hasChildren = prop.properties && prop.properties.length > 0;
+                const hasDetails = prop.written_in.length > 0 || prop.read_in.length > 0 || hasChildren;
+
+                html += '<div class="prop-item' + (hasDetails ? '' : '') + '" id="' + propId + '">';
+
+                // Property header
+                html += '<div class="prop-header"' + (hasDetails ? ' onclick="toggleExpand(\\'' + propId + '\\')"' : '') + '>';
+
+                if (hasDetails) {
+                    html += '<span class="prop-expand-icon">&#x25B6;</span>';
+                } else {
+                    html += '<span style="width:10px;display:inline-block"></span>';
+                }
+
+                html += '<span class="prop-dot">.</span>';
+                html += '<span class="prop-name">' + esc(prop.name) + '</span>';
+                html += '<span class="prop-state-path">' + esc(prop.state_path) + '</span>';
+
+                // Counts
+                html += '<span class="prop-counts">';
+                if (prop.written_in.length > 0) {
+                    html += '<span class="count-write" title="Written">W:' + prop.written_in.length + '</span>';
+                }
+                if (prop.read_in.length > 0) {
+                    html += '<span class="count-read" title="Read">R:' + prop.read_in.length + '</span>';
+                }
+                html += '</span>';
+
+                html += '</div>';
+
+                // Property details
+                if (hasDetails) {
+                    html += '<div class="prop-details">';
+
+                    // Written in passages
+                    if (prop.written_in.length > 0) {
+                        html += '<div class="detail-group">';
+                        html += '<div class="detail-label">Written in (' + prop.written_in.length + ')</div>';
+                        html += '<ul class="passage-list">';
+                        for (const loc of prop.written_in) {
+                            html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\')">' + esc(loc.passage_name) + '</span></li>';
+                        }
+                        html += '</ul></div>';
+                    }
+
+                    // Read in passages
+                    if (prop.read_in.length > 0) {
+                        html += '<div class="detail-group">';
+                        html += '<div class="detail-label">Read in (' + prop.read_in.length + ')</div>';
+                        html += '<ul class="passage-list">';
+                        for (const loc of prop.read_in) {
+                            html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\')">' + esc(loc.passage_name) + '</span></li>';
+                        }
+                        html += '</ul></div>';
+                    }
+
+                    // Sub-properties (recursive)
+                    if (hasChildren) {
+                        html += renderPropertyTree(prop.properties, depth + 1);
+                    }
+
+                    html += '</div>';
+                }
+
+                html += '</div>'; // .prop-item
+            }
+            html += '</div>';
+            return html;
+        }
+
         function renderVariableFlow(data, filter) {
             const content = document.getElementById('content');
             let html = '';
@@ -400,7 +577,21 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             // Apply filter
             if (filter) {
                 const lowerFilter = filter.toLowerCase();
-                variables = variables.filter(v => v.name.toLowerCase().includes(lowerFilter));
+                variables = variables.filter(v => {
+                    if (v.name.toLowerCase().includes(lowerFilter)) return true;
+                    if (v.state_path.toLowerCase().includes(lowerFilter)) return true;
+                    // Also match against property names
+                    function matchProps(props) {
+                        for (const p of props) {
+                            if (p.full_name.toLowerCase().includes(lowerFilter)) return true;
+                            if (p.state_path.toLowerCase().includes(lowerFilter)) return true;
+                            if (p.properties && matchProps(p.properties)) return true;
+                        }
+                        return false;
+                    }
+                    if (matchProps(v.properties || [])) return true;
+                    return false;
+                });
             }
 
             html += '<div class="var-count">' + variables.length + ' variable' + (variables.length !== 1 ? 's' : '') + (filter ? ' (filtered)' : '') + '</div>';
@@ -414,13 +605,17 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             for (let i = 0; i < variables.length; i++) {
                 const v = variables[i];
                 const varId = 'var-' + i;
+                _propId = 0; // Reset for each variable
 
                 html += '<div class="var-item" id="' + varId + '">';
 
                 // Header row
                 html += '<div class="var-header" onclick="toggleExpand(\\'' + varId + '\\')">';
                 html += '<span class="var-expand-icon">&#x25B6;</span>';
-                html += '<span class="var-name"><span class="dollar">$</span>' + esc(v.name) + '</span>';
+                html += '<span class="var-name"><span class="dollar">$</span>' + esc(v.name.startsWith('$') ? v.name.substring(1) : v.name) + '</span>';
+
+                // State.variables path
+                html += '<span class="state-path">' + esc(v.state_path) + '</span>';
 
                 // Badges
                 if (v.initialized_at_start) {
@@ -431,6 +626,9 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                 }
                 if (v.is_temporary) {
                     html += '<span class="badge badge-temp">Temporary</span>';
+                }
+                if (v.properties && v.properties.length > 0) {
+                    html += '<span class="badge badge-props">' + v.properties.length + ' prop' + (v.properties.length !== 1 ? 's' : '') + '</span>';
                 }
 
                 // Counts
@@ -471,6 +669,14 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     html += '<span class="no-passages">Never read</span>';
                 }
                 html += '</div>';
+
+                // Properties tree
+                if (v.properties && v.properties.length > 0) {
+                    html += '<div class="detail-group">';
+                    html += '<div class="detail-label">Properties (State.variables tree)</div>';
+                    html += renderPropertyTree(v.properties, 0);
+                    html += '</div>';
+                }
 
                 html += '</div>'; // .var-details
                 html += '</div>'; // .var-item

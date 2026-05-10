@@ -2,6 +2,7 @@
 
 use crate::handlers::helpers;
 use crate::state::ServerState;
+use knot_core::passage::SpecialPassageBehavior;
 use lsp_types::*;
 
 pub(crate) async fn code_action(
@@ -10,6 +11,20 @@ pub(crate) async fn code_action(
 ) -> Result<Option<CodeActionResponse>, tower_lsp::jsonrpc::Error> {
     let _uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
+
+    // Resolve the startup passage name from the format plugin
+    let format = inner.workspace.resolve_format();
+    let startup_passage_name = inner.format_registry.get(&format)
+        .and_then(|plugin| {
+            plugin.special_passages()
+                .into_iter()
+                .find(|def| {
+                    def.contributes_variables
+                        && matches!(def.behavior, SpecialPassageBehavior::Startup)
+                })
+                .map(|def| def.name)
+        })
+        .unwrap_or_else(|| "StoryInit".to_string());
 
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
@@ -75,7 +90,7 @@ pub(crate) async fn code_action(
             "UninitializedVariable" => {
                 if let Some(var_name) = helpers::extract_variable_name(&diag.message) {
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-                        title: format!("Initialize {} in StoryInit", var_name),
+                        title: format!("Initialize {} in {}", var_name, startup_passage_name),
                         kind: Some(CodeActionKind::QUICKFIX),
                         diagnostics: Some(vec![diag.clone()]),
                         edit: Some(helpers::initialize_var_in_story_init_edit(&inner, &var_name)),

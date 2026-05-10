@@ -338,3 +338,85 @@ pub enum VariableDiagnosticKind {
     /// (e.g., `$player.mana` is read but never written).
     UnknownPropertyHint,
 }
+
+// ---------------------------------------------------------------------------
+// Variable tree types (format-agnostic)
+// ---------------------------------------------------------------------------
+
+/// A simplified usage location for tree output — just passage and file info.
+///
+/// This is the format-agnostic version of `VarLocation`. Format plugins
+/// produce these from their format-specific internal types when building
+/// the variable tree for the UI. The server translates these to LSP wire
+/// types without needing to understand format-specific access kinds.
+#[derive(Debug, Clone)]
+pub struct VariableUsageLocation {
+    /// The passage name where this usage occurs.
+    pub passage_name: String,
+    /// The file URI where this usage occurs.
+    pub file_uri: String,
+    /// Whether this is a write (true) or read (false).
+    pub is_write: bool,
+}
+
+/// A tree-structured variable node for display in the variable tracker UI.
+///
+/// Format plugins build these trees from their format-specific state models.
+/// The tree structure mirrors the runtime state hierarchy of the format.
+/// For example, SugarCube's `$player.hp` maps to `State.variables.player.hp`,
+/// so `$player` becomes a `VariableTreeNode` with a `.hp` child property.
+///
+/// Other formats can produce their own tree structures that reflect their
+/// runtime state model — the server and UI never need to know format-specific
+/// details.
+#[derive(Debug, Clone)]
+pub struct VariableTreeNode {
+    /// Display name (e.g., "$player", "$gold").
+    pub name: String,
+    /// State path for display (e.g., "State.variables.player").
+    /// Format-specific — each format decides how to represent the path.
+    pub state_path: String,
+    /// Whether this variable is temporary (per-passage only).
+    pub is_temporary: bool,
+    /// Passages where this variable is written (base-level only, not properties).
+    pub written_in: Vec<VariableUsageLocation>,
+    /// Passages where this variable is read (base-level only, not properties).
+    pub read_in: Vec<VariableUsageLocation>,
+    /// Whether this variable is definitely initialized from the start
+    /// (e.g., via StoryInit in SugarCube, or setup code in other formats).
+    pub initialized_at_start: bool,
+    /// Whether this variable is never read (unused write).
+    pub is_unused: bool,
+    /// Known child properties, forming a tree that mirrors the runtime
+    /// state hierarchy (e.g., `$player.name`, `$player.hp` are children
+    /// of `$player`). Each property may itself have sub-properties.
+    pub properties: Vec<VariablePropertyNode>,
+}
+
+/// A property node in the variable tree, reflecting the hierarchical structure
+/// of the format's runtime state model.
+///
+/// For SugarCube, `$player.inventory.sword` would be represented as:
+/// - `$player` (VariableTreeNode)
+///   - `.inventory` (VariablePropertyNode)
+///     - `.sword` (VariablePropertyNode, child of inventory)
+///
+/// Each format produces its own property tree structure. The server and UI
+/// are completely format-agnostic — they just render the tree.
+#[derive(Debug, Clone)]
+pub struct VariablePropertyNode {
+    /// The property name without the parent path (e.g., "name", "hp").
+    pub name: String,
+    /// The full display name (e.g., "$player.name", "$player.hp").
+    pub full_name: String,
+    /// The full state path (e.g., "State.variables.player.name").
+    /// Format-specific — each format decides how to represent the path.
+    pub state_path: String,
+    /// Passages where this property is written.
+    pub written_in: Vec<VariableUsageLocation>,
+    /// Passages where this property is read.
+    pub read_in: Vec<VariableUsageLocation>,
+    /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
+    /// property would have `sword` as a sub-property).
+    pub properties: Vec<VariablePropertyNode>,
+}

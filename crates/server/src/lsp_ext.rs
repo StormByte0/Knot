@@ -89,10 +89,18 @@ pub struct KnotVariableFlowResponse {
 }
 
 /// Information about a single variable's usage across passages.
+///
+/// In SugarCube, `$var` maps to `State.variables.var`. Dot-notation references
+/// like `$player.name` map to `State.variables.player.name`. This struct
+/// represents the base variable and its known properties as a tree, reflecting
+/// the hierarchical structure of `State.variables`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotVariableInfo {
-    /// The variable name (e.g., "$gold").
+    /// The dollar-prefixed variable name (e.g., "$gold", "$player").
     pub name: String,
+    /// The full State.variables path (e.g., "State.variables.gold",
+    /// "State.variables.player").
+    pub state_path: String,
     /// Whether this variable is temporary (per-passage only).
     pub is_temporary: bool,
     /// Passages where this variable is written.
@@ -104,6 +112,34 @@ pub struct KnotVariableInfo {
     pub initialized_at_start: bool,
     /// Whether this variable is never read (unused write).
     pub is_unused: bool,
+    /// Known dot-notation properties of this variable.
+    /// For `$player`, this would contain entries for `name`, `hp`, etc.
+    /// Each property may itself have sub-properties (e.g., `$player.inventory.sword`
+    /// means `inventory` has a sub-property `sword`).
+    pub properties: Vec<KnotVariableProperty>,
+}
+
+/// A known property of a state variable, reflecting the tree structure
+/// of `State.variables`.
+///
+/// For example, if `$player.name` and `$player.hp` are used, the `$player`
+/// variable will have two properties: `name` and `hp`. Each property tracks
+/// where it is read and written independently of the parent variable.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVariableProperty {
+    /// The property name without the parent path (e.g., "name", "hp").
+    pub name: String,
+    /// The full dollar-prefixed path (e.g., "$player.name", "$player.hp").
+    pub full_name: String,
+    /// The full State.variables path (e.g., "State.variables.player.name").
+    pub state_path: String,
+    /// Passages where this property is written.
+    pub written_in: Vec<KnotVariableLocation>,
+    /// Passages where this property is read.
+    pub read_in: Vec<KnotVariableLocation>,
+    /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
+    /// property would have `sword` as a sub-property).
+    pub properties: Vec<KnotVariableProperty>,
 }
 
 /// Location where a variable is used within a passage.
