@@ -151,6 +151,10 @@ pub struct KnotVariableLocation {
     pub file_uri: String,
     /// Whether this is a write or read.
     pub is_write: bool,
+    /// The 0-based line number within the file where this usage occurs.
+    /// Enables "goto" navigation to a specific line within a passage,
+    /// not just the passage header. Defaults to 0 when not yet computed.
+    pub line: u32,
 }
 
 // ---------------------------------------------------------------------------

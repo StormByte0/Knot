@@ -669,7 +669,7 @@ function registerCommands(context: vscode.ExtensionContext) {
 
     // Open Passage by Name (used by debug view)
     context.subscriptions.push(
-        vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string) => {
+        vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string, targetLine?: number) => {
             if (!client || !client.isRunning()) {
                 return;
             }
@@ -682,9 +682,14 @@ function registerCommands(context: vscode.ExtensionContext) {
                     if (line.startsWith('::')) {
                         const name = line.substring(2).trim().split('[')[0].trim();
                         if (name === passageName) {
+                            // If a target line is provided, navigate to that line;
+                            // otherwise, select the passage header line.
+                            const selectionLine = (targetLine !== undefined && targetLine > 0)
+                                ? targetLine
+                                : i;
                             await vscode.window.showTextDocument(doc, {
                                 preview: true,
-                                selection: new vscode.Range(i, 0, i, line.length),
+                                selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
                             });
                             return;
                         }
@@ -702,9 +707,12 @@ function registerCommands(context: vscode.ExtensionContext) {
                         if (line.startsWith('::')) {
                             const name = line.substring(2).trim().split('[')[0].trim();
                             if (name === passageName) {
+                                const selectionLine = (targetLine !== undefined && targetLine > 0)
+                                    ? targetLine
+                                    : i;
                                 await vscode.window.showTextDocument(doc, {
                                     preview: true,
-                                    selection: new vscode.Range(i, 0, i, line.length),
+                                    selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
                                 });
                                 return;
                             }

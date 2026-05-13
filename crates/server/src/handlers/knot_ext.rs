@@ -25,11 +25,13 @@ fn convert_properties(
                 passage_name: l.passage_name,
                 file_uri: l.file_uri,
                 is_write: l.is_write,
+                line: l.line,
             }).collect(),
             read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
                 passage_name: l.passage_name,
                 file_uri: l.file_uri,
                 is_write: l.is_write,
+                line: l.line,
             }).collect(),
             properties: convert_properties(p.properties),
         })
@@ -392,11 +394,13 @@ impl ServerState {
                     passage_name: l.passage_name,
                     file_uri: l.file_uri,
                     is_write: l.is_write,
+                    line: l.line,
                 }).collect(),
                 read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
                     passage_name: l.passage_name,
                     file_uri: l.file_uri,
                     is_write: l.is_write,
+                    line: l.line,
                 }).collect(),
                 initialized_at_start: node.initialized_at_start,
                 is_unused: node.is_unused,

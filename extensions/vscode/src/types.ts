@@ -246,6 +246,10 @@ export interface KnotVariableLocation {
     passage_name: string;
     file_uri: string;
     is_write: boolean;
+    /** The 0-based line number within the file where this usage occurs.
+     *  Enables "goto" navigation to a specific line within a passage.
+     *  Defaults to 0 when not yet computed. */
+    line: number;
 }
 
 // ---------------------------------------------------------------------------

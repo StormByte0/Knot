@@ -156,6 +156,31 @@ pub(crate) static RE_VAR_INCREMENT: Lazy<Regex> =
 pub(crate) static RE_VAR_DECREMENT: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)--|--\$([A-Za-z\$_][A-Za-z0-9\$_]*))").unwrap());
 
+/// `<<run ...>>` — macro that executes raw JavaScript.
+/// Capture group 1 is the JavaScript body between `<<run ` and `>>`.
+pub(crate) static RE_RUN_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<run\s+([\s\S]*?)>>").unwrap());
+
+/// `<<if $var ...>>`, `<<elseif $var ...>>`, `<<when $var ...>>` —
+/// conditional macros that read a variable.
+pub(crate) static RE_IF_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<(?:if|elseif|when)\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+
+/// `<<capture $var ...>>` — macro that captures/assigns a variable (WRITE).
+pub(crate) static RE_CAPTURE_MACRO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"<<capture\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+
+/// `$var =` — JS-style assignment of a persistent SugarCube variable
+/// within `<<run>>` macro bodies. Must be filtered in code to exclude
+/// `==`/`===` comparisons and compound assignments (`+=`, etc.).
+pub(crate) static RE_JS_VAR_ASSIGN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
+
+/// `$var +=` etc. — JS compound assignment of a persistent variable
+/// within `<<run>>` macro bodies (also `-=`, `*=`, `/=`, `%=`).
+pub(crate) static RE_JS_VAR_COMPOUND: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
+
 // ---------------------------------------------------------------------------
 // Variable extraction
 // ---------------------------------------------------------------------------
@@ -163,14 +188,20 @@ pub(crate) static RE_VAR_DECREMENT: Lazy<Regex> =
 /// Extract variable operations from a passage body.
 ///
 /// Detects both persistent (`$var`) and temporary (`_var`) variables.
-/// First detects assignment patterns (`<<set>>`, `<<unset>>`, JS writes),
-/// then all `$var` / `_var` references not already captured as inits are
-/// treated as reads. Temporary variables are marked with `is_temporary: true`.
+/// First detects assignment patterns (`<<set>>`, `<<capture>>`, `<<run>>`,
+/// `<<unset>>`, JS writes), then all `$var` / `_var` references not already
+/// captured as inits are treated as reads. Temporary variables are marked
+/// with `is_temporary: true`.
 ///
 /// ## Detected patterns
 ///
 /// - `<<set $var to ...>>` / `<<set $var = ...>>` — base assignment
 /// - `<<set $var += ...>>` — compound assignment (also `-=`, `*=`, `/=`, `%=`)
+/// - `<<capture $var ...>>` — capture/assign a variable (WRITE)
+/// - `<<run $var = value>>` — JS assignment inside `<<run>>` macro (WRITE)
+/// - `<<run $var += value>>` — JS compound assignment inside `<<run>>` (WRITE)
+/// - `<<run State.variables.var = value>>` — JS direct write inside `<<run>>`
+/// - `<<if $var>>` / `<<elseif $var>>` / `<<when $var>>` — conditional READ
 /// - `$var++` / `++$var` / `$var--` / `--$var` — increment/decrement
 /// - `$varname` — naked variable markup (read)
 /// - `$var.prop.path` — dot-notation property access
@@ -273,6 +304,154 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
             });
             init_spans.push(var_start..var_end);
         }
+    }
+
+    // ── Capture macro: <<capture $var ...>> — WRITE ──────────────────
+    for caps in RE_CAPTURE_MACRO.captures_iter(body) {
+        let m = caps.get(0).unwrap();
+        let var_match = caps.get(1).unwrap();
+        let name = format!("${}", var_match.as_str());
+        let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + name.len();
+
+        let is_dup = init_spans.iter().any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_dup {
+            vars.push(VarOp {
+                name,
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+            init_spans.push(var_start..var_end);
+        }
+    }
+
+    // ── Conditional macros: <<if $var>>, <<elseif $var>>, <<when $var>> — READ ──
+    for caps in RE_IF_MACRO.captures_iter(body) {
+        let m = caps.get(0).unwrap();
+        let var_match = caps.get(1).unwrap();
+        let name = format!("${}", var_match.as_str());
+        let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + name.len();
+
+        // Only record if not already recorded at this exact span (avoids
+        // double-counting with the general RE_VAR scan below)
+        let is_already = vars.iter().any(|v| {
+            v.span.start == var_start && v.span.end == var_end
+        });
+        // Also skip if this position was already recorded as an Init
+        // (e.g., <<if>> after <<set>> at same spot — unlikely but safe)
+        let is_init = init_spans.iter().any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_already && !is_init {
+            vars.push(VarOp {
+                name,
+                kind: VarKind::Read,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+        }
+    }
+
+    // ── Run macro: <<run ...>> — JS body variable extraction ──────────
+    // The <<run>> macro executes raw JavaScript. Inside its body:
+    //   $var = value       → WRITE (persistent var assignment)
+    //   $var += value      → WRITE (compound assignment)
+    //   State.variables.var = value → WRITE (handled by existing scan)
+    //   State.setVar("$var", val)   → WRITE (handled by existing scan)
+    //   State.getVar("$var")        → READ  (handled by existing scan)
+    //   $var              → READ  (caught by general RE_VAR scan below)
+    for caps in RE_RUN_MACRO.captures_iter(body) {
+        let js_body = caps.get(1).unwrap();
+        let js_text = js_body.as_str();
+        let js_offset = body_offset + js_body.start();
+
+        // Detect compound assignments first: $var +=, -=, *=, /=, %=
+        for js_caps in RE_JS_VAR_COMPOUND.captures_iter(js_text) {
+            let full = js_caps.get(0).unwrap();
+            let var_match = js_caps.get(1).unwrap();
+            let name = format!("${}", var_match.as_str());
+            let var_start = js_offset + full.start();
+            let var_end = var_start + name.len();
+
+            // Skip $$ escape markup
+            let is_dollar_escape = full.start() > 0
+                && js_text.as_bytes()[full.start() - 1] == b'$';
+
+            if is_dollar_escape {
+                continue;
+            }
+
+            let is_dup = init_spans.iter().any(|s| {
+                var_start >= s.start && var_end <= s.end
+            });
+            if !is_dup {
+                vars.push(VarOp {
+                    name,
+                    kind: VarKind::Init,
+                    span: var_start..var_end,
+                    is_temporary: false,
+                });
+                init_spans.push(var_start..var_end);
+            }
+        }
+
+        // Detect simple assignments: $var = (but NOT ==, ===, or compound)
+        for js_caps in RE_JS_VAR_ASSIGN.captures_iter(js_text) {
+            let full = js_caps.get(0).unwrap();
+            let var_match = js_caps.get(1).unwrap();
+            let name = format!("${}", var_match.as_str());
+            let var_start = js_offset + full.start();
+            let var_end = var_start + name.len();
+
+            // Skip $$ escape markup
+            let is_dollar_escape = full.start() > 0
+                && js_text.as_bytes()[full.start() - 1] == b'$';
+
+            if is_dollar_escape {
+                continue;
+            }
+
+            // Skip if this is a compound assignment (already handled above)
+            let is_compound = RE_JS_VAR_COMPOUND.captures_iter(js_text).any(|cc| {
+                cc.get(0).unwrap().start() == full.start()
+            });
+            if is_compound {
+                continue;
+            }
+
+            // Skip if this is == or === (comparison, not assignment).
+            // The regex consumes the `=` sign, so we check the character
+            // immediately after the match.
+            let after_match = js_text.get(full.end()..).unwrap_or("");
+            if after_match.starts_with('=') {
+                continue;
+            }
+
+            let is_dup = init_spans.iter().any(|s| {
+                var_start >= s.start && var_end <= s.end
+            });
+            if !is_dup {
+                vars.push(VarOp {
+                    name,
+                    kind: VarKind::Init,
+                    span: var_start..var_end,
+                    is_temporary: false,
+                });
+                init_spans.push(var_start..var_end);
+            }
+        }
+
+        // Note: $var references inside <<run>> that are NOT assignments
+        // will be caught by the existing RE_VAR scan below and treated
+        // as reads (since they won't be in init_spans).
+        //
+        // State.variables.var =, State.getVar(), and State.setVar()
+        // inside <<run>> are already handled by the existing detection
+        // blocks that scan the entire body text.
     }
 
     // ── Dot-notation property references: $var.prop.path ──────────────
@@ -380,7 +559,13 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
                 full.start() >= bfull.start() && full.end() <= bfull.end()
             });
 
-        if !is_init && !is_dot_subspan && !is_bracket_subspan {
+        // Skip if already recorded at this exact span (e.g., by <<if>>/<<elseif>>/<<when>>
+        // detection or <<run>> body extraction above)
+        let is_already_recorded = vars.iter().any(|v| {
+            v.span.start == var_start && v.span.end == var_end
+        });
+
+        if !is_init && !is_dot_subspan && !is_bracket_subspan && !is_already_recorded {
             let name = full.as_str().to_string();
             vars.push(VarOp {
                 name,
@@ -1414,6 +1599,25 @@ mod tests {
 /// SugarCube-specific strings like `"State.variables"` are used. The server
 /// never hardcodes these — it just performs a mechanical translation from
 /// `VariableTreeNode` to LSP wire types.
+/// Compute a 0-based line number from a byte offset within a file.
+///
+/// Given a file URI and a byte offset, this function counts the number of
+/// newline characters before the offset to determine the line number.
+///
+/// TODO: The Workspace currently does not store the source text of documents,
+/// so we cannot count newlines directly. Future work should either:
+/// (a) Store source text in the Workspace/Document, or
+/// (b) Pass source text through the format plugin API, or
+/// (c) Use passage span information to compute line numbers from the parser.
+/// For now, returns 0 (which navigates to the passage header line).
+fn compute_line_from_offset(
+    _workspace: &knot_core::Workspace,
+    _file_uri: &str,
+    _byte_offset: usize,
+) -> u32 {
+    0
+}
+
 pub(crate) fn build_variable_tree(
     workspace: &knot_core::Workspace,
 ) -> Vec<crate::types::VariableTreeNode> {
@@ -1432,10 +1636,14 @@ pub(crate) fn build_variable_tree(
         let mut written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.write_locations {
             if matches!(loc.kind, VarAccessKind::Assign) {
+                // TODO: Compute line number from loc.span byte offset within
+                // the source document. For now, default to 0 (passage header).
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
                 written_in.push(VariableUsageLocation {
                     passage_name: loc.passage_name.clone(),
                     file_uri: loc.file_uri.clone(),
                     is_write: true,
+                    line,
                 });
             }
         }
@@ -1443,10 +1651,12 @@ pub(crate) fn build_variable_tree(
         let mut read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.read_locations {
             if matches!(loc.kind, VarAccessKind::Read) {
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
                 read_in.push(VariableUsageLocation {
                     passage_name: loc.passage_name.clone(),
                     file_uri: loc.file_uri.clone(),
                     is_write: false,
+                    line,
                 });
             }
         }
@@ -1539,6 +1749,8 @@ fn build_property_tree(
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
                             is_write: true,
+                            // TODO: Compute line from loc.span byte offset.
+                            line: 0,
                         });
                     }
                 }
@@ -1556,6 +1768,8 @@ fn build_property_tree(
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
                             is_write: false,
+                            // TODO: Compute line from loc.span byte offset.
+                            line: 0,
                         });
                     }
                 }
@@ -1619,6 +1833,8 @@ fn build_property_tree(
             name: prop_name,
             full_name,
             state_path,
+            // TODO: Compute line from the first write/read location's span.
+            line: 0,
             written_in: prop_written_in,
             read_in: prop_read_in,
             properties: sub_properties,
