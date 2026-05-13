@@ -357,6 +357,10 @@ pub struct VariableUsageLocation {
     pub file_uri: String,
     /// Whether this is a write (true) or read (false).
     pub is_write: bool,
+    /// The 0-based line number within the file where this usage occurs.
+    /// Enables "goto" navigation to a specific line within a passage,
+    /// not just the passage header. Defaults to 0 when not yet computed.
+    pub line: u32,
 }
 
 /// A tree-structured variable node for display in the variable tracker UI.
@@ -412,6 +416,10 @@ pub struct VariablePropertyNode {
     /// The full state path (e.g., "State.variables.player.name").
     /// Format-specific — each format decides how to represent the path.
     pub state_path: String,
+    /// The 0-based line number within the file where this property usage occurs.
+    /// Enables "goto" navigation to a specific line within a passage.
+    /// Defaults to 0 when not yet computed.
+    pub line: u32,
     /// Passages where this property is written.
     pub written_in: Vec<VariableUsageLocation>,
     /// Passages where this property is read.
