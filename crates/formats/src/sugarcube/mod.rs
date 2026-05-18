@@ -86,6 +86,7 @@ impl FormatPlugin for SugarCubePlugin {
             };
 
             passage.tags = header.tags.clone();
+            passage.position = header.position;
 
             // ── Context-aware parsing ──────────────────────────────────────
             // Detect script and stylesheet passages. These contain non-Twine

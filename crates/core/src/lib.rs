@@ -11,14 +11,13 @@ pub mod workspace;
 pub mod analysis;
 pub mod editing;
 
-pub use document::Document;
+pub use document::{Document, DocumentSnapshot};
 pub use passage::{Passage, Block, Link, VarOp, VarKind, SpecialPassageBehavior};
 pub use graph::PassageGraph;
 pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;
 pub use analysis::FormatVariableDiagnostic;
-pub use analysis::InitSet;
 
 #[cfg(test)]
 mod analysis_tests;

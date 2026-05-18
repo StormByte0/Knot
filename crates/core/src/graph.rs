@@ -385,6 +385,7 @@ impl PassageGraph {
         &self,
         passage_tags: &std::collections::HashMap<String, Vec<String>>,
         unreachable: &std::collections::HashSet<String>,
+        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
     ) -> GraphExport {
         let nodes: Vec<GraphNodeExport> = self
             .graph
@@ -410,6 +411,7 @@ impl PassageGraph {
                     is_special: node.is_special,
                     is_metadata: node.is_metadata,
                     is_unreachable: unreachable.contains(&node.name),
+                    position: passage_positions.get(&node.name).copied(),
                 }
             })
             .collect();
@@ -440,6 +442,7 @@ impl PassageGraph {
         self.export_graph_with_metadata(
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         )
     }
 
@@ -559,6 +562,11 @@ pub struct GraphNodeExport {
     pub is_special: bool,
     pub is_metadata: bool,
     pub is_unreachable: bool,
+    /// The (x, y) position of this passage on the Twine editor canvas.
+    /// When present, the graph view should place the node at these
+    /// coordinates instead of using an automatic layout.
+    #[serde(default)]
+    pub position: Option<(f64, f64)>,
 }
 
 /// A single edge in the exported graph.

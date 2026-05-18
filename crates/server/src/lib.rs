@@ -35,6 +35,7 @@ impl KnotServer {
             .custom_method("knot/watchVariables", ServerState::knot_watch_variables)
             .custom_method("knot/generateIfid", ServerState::knot_generate_ifid)
             .custom_method("knot/reindexWorkspace", ServerState::knot_reindex_workspace)
+            .custom_method("knot/updatePositions", ServerState::knot_update_positions)
             .finish();
 
         let stdin = tokio::io::stdin();

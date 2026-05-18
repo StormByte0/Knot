@@ -41,6 +41,9 @@ pub(crate) struct ParsedHeader {
     /// Byte offset where the passage name starts (after `::` and any whitespace).
     /// This is an absolute offset into the source text.
     pub name_start: usize,
+    /// The (x, y) position of this passage on the Twine canvas, parsed from
+    /// the header metadata JSON block (e.g., `{"position":"100,200"}`).
+    pub position: Option<(f64, f64)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +97,12 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
     results
 }
 
-/// Parse a single `:: Name [tags]` header line.
+/// Parse a single `:: Name [tags] {"metadata"}` header line.
+///
+/// Supports the Twee 3 extended header format with optional JSON metadata
+/// block after tags. The metadata can include a `"position"` field in the
+/// format `"x,y"` (as Twine 2 serialises it) or as a JSON object
+/// `{"x":100,"y":200}`.
 pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
     // Strip the leading `::` and optional whitespace.
     let after_colons = line.strip_prefix("::")?;
@@ -104,21 +112,38 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
     // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
     let name_start = offset + 2 + whitespace_len;
 
+    // Check for JSON metadata block at the end: `{"position":"100,200"}`
+    // The metadata block must be the last thing on the line and start with `{`.
+    let (rest_before_json, json_str) = if let Some(brace_start) = rest.rfind('{') {
+        if rest.trim_end().ends_with('}') {
+            let before = &rest[..brace_start].trim_end();
+            let json = &rest[brace_start..];
+            (before, Some(json))
+        } else {
+            (rest, None)
+        }
+    } else {
+        (rest, None)
+    };
+
+    // Parse position from JSON metadata block
+    let position = json_str.and_then(|json| parse_position_from_metadata(json));
+
     // Extract tags if present: `Name [tag1 tag2]`
-    let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
-        if rest.ends_with(']') {
-            let name_part = rest[..bracket_start].trim();
-            let tag_part = &rest[bracket_start + 1..rest.len() - 1];
+    let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
+        if rest_before_json.ends_with(']') {
+            let name_part = rest_before_json[..bracket_start].trim();
+            let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
             let tags = tag_part
                 .split_whitespace()
                 .map(|s| s.to_string())
                 .collect();
             (name_part.to_string(), tags)
         } else {
-            (rest.trim().to_string(), Vec::new())
+            (rest_before_json.trim().to_string(), Vec::new())
         }
     } else {
-        (rest.trim().to_string(), Vec::new())
+        (rest_before_json.trim().to_string(), Vec::new())
     };
 
     if name.is_empty() {
@@ -131,7 +156,34 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
         header_start: offset,
         header_len: line.len(),
         name_start,
+        position,
     })
+}
+
+/// Parse a `"position"` value from a passage header metadata JSON block.
+///
+/// Twine 2 serialises position as a string `"x,y"` (e.g., `"100,200"`).
+/// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
+/// Both formats are supported.
+fn parse_position_from_metadata(json: &str) -> Option<(f64, f64)> {
+    // Try to parse as a JSON value (flexible approach)
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
+        if let Some(pos_str) = val.get("position").and_then(|v| v.as_str()) {
+            // Format: "position": "x,y"
+            let parts: Vec<&str> = pos_str.split(',').collect();
+            if parts.len() == 2 {
+                let x = parts[0].trim().parse::<f64>().ok()?;
+                let y = parts[1].trim().parse::<f64>().ok()?;
+                return Some((x, y));
+            }
+        } else if let Some(pos_obj) = val.get("position").and_then(|v| v.as_object()) {
+            // Format: "position": {"x": 100, "y": 200}
+            let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
+            let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
+            return Some((x, y));
+        }
+    }
+    None
 }
 
 /// Extract macros from a passage body and produce content blocks.

@@ -7,6 +7,7 @@ use crate::handlers::helpers;
 use crate::lsp_ext::*;
 use crate::state::ServerState;
 use knot_core::AnalysisEngine;
+use lsp_types::{TextEdit as LspTextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 
 /// Recursively convert format-agnostic `VariablePropertyNode` instances
@@ -106,25 +107,41 @@ impl ServerState {
             inner.workspace.graph.passage_count()
         );
 
-        // Collect passage tags from all documents
+        // Collect passage tags and positions from all documents
         let mut passage_tags: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         let mut passage_lines: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+        let mut passage_positions: std::collections::HashMap<String, (f64, f64)> =
             std::collections::HashMap::new();
 
         for doc in inner.workspace.documents() {
             for passage in &doc.passages {
                 passage_tags.insert(passage.name.clone(), passage.tags.clone());
             }
-            // Find passage line numbers from the document text
+            // Find passage line numbers and positions from the document text
             if let Some(text) = inner.open_documents.get(&doc.uri) {
                 for (line_num, line) in text.lines().enumerate() {
                     if line.starts_with("::") {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
-                        passage_lines.insert(name, line_num as u32);
+                        passage_lines.insert(name.clone(), line_num as u32);
+                        // Try to extract position from the header line
+                        // Twee 3 format: :: Passage Name [tags] <x,y>
+                        // or Twine 2 HTML-style: position data in passage metadata
+                        if let Some(pos) = helpers::parse_passage_position(line) {
+                            passage_positions.insert(name, pos);
+                        }
                     }
                 }
             }
+        }
+
+        // Also extract positions from StoryData if available (Twine 2 JSON format
+        // stores passage positions in the "position" field of each passage entry)
+        if let Some(text) = inner.workspace.documents().find_map(|doc| {
+            inner.open_documents.get(&doc.uri)
+        }) {
+            helpers::extract_positions_from_storydata(text, &mut passage_positions);
         }
 
         // Determine unreachable passages
@@ -143,6 +160,7 @@ impl ServerState {
         let export = inner.workspace.graph.export_graph_with_metadata(
             &passage_tags,
             &unreachable_set,
+            &passage_positions,
         );
 
         let nodes: Vec<KnotGraphNode> = export
@@ -159,6 +177,8 @@ impl ServerState {
                 is_special: n.is_special,
                 is_metadata: n.is_metadata,
                 is_unreachable: n.is_unreachable,
+                position_x: n.position_x,
+                position_y: n.position_y,
             })
             .collect();
 
@@ -377,7 +397,7 @@ impl ServerState {
         // The server only does a mechanical translation to LSP wire types.
         let plugin = inner.format_registry.get(&format);
         let tree_nodes = if let Some(p) = plugin {
-            p.build_variable_tree(workspace, &inner.open_documents)
+            p.build_variable_tree(workspace)
         } else {
             Vec::new()
         };
@@ -490,11 +510,7 @@ impl ServerState {
 
         // Compute initialized-at-entry from dataflow
         let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let core_seed = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
-        let debug_format = workspace.resolve_format();
-        let seed_init = helpers::supplement_seed_with_format_specials(
-            core_seed, workspace, &inner.format_registry, debug_format
-        );
+        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
         let flow_states = AnalysisEngine::run_dataflow_from_engine(workspace, start_passage, &passage_data, &seed_init);
         let initialized_at_entry: Vec<String> = flow_states
             .get(&params.passage_name)
@@ -542,8 +558,8 @@ impl ServerState {
         let loop_diags = workspace.graph.detect_infinite_loops(&passage_vars);
         let in_infinite_loop = loop_diags.iter().any(|d| d.passage_name == params.passage_name);
 
-        // Diagnostics for this passage
-        let all_diagnostics = AnalysisEngine::analyze(workspace);
+        // Diagnostics for this passage (use format-delegated analysis)
+        let all_diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
         let diagnostics: Vec<KnotDebugDiagnostic> = all_diagnostics
             .iter()
             .filter(|d| d.passage_name == params.passage_name)
@@ -823,8 +839,8 @@ impl ServerState {
 
         let complex_passage_count = passage_out_links.iter().filter(|&&x| x > 6).count() as u32;
 
-        // Graph analysis
-        let diagnostics = AnalysisEngine::analyze(workspace);
+        // Graph analysis (use format-delegated variable diagnostics)
+        let diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
         let unreachable_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::UnreachablePassage)).count() as u32;
         let broken_link_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::BrokenLink)).count() as u32;
         let infinite_loop_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::InfiniteLoop)).count() as u32;
@@ -833,6 +849,10 @@ impl ServerState {
             knot_core::graph::DiagnosticKind::UninitializedVariable
             | knot_core::graph::DiagnosticKind::UnusedVariable
             | knot_core::graph::DiagnosticKind::RedundantWrite
+            | knot_core::graph::DiagnosticKind::VariableAvailabilityHint
+            | knot_core::graph::DiagnosticKind::UnusedVariableHint
+            | knot_core::graph::DiagnosticKind::RedundantWriteHint
+            | knot_core::graph::DiagnosticKind::UnknownPropertyHint
         )).count() as u32;
 
         let total_links = workspace.graph.edge_count() as u32;
@@ -1145,10 +1165,7 @@ impl ServerState {
             .unwrap_or("Start");
 
         let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let core_seed = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
-        let seed_init = helpers::supplement_seed_with_format_specials(
-            core_seed, workspace, &inner.format_registry, format
-        );
+        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
         let flow_states = AnalysisEngine::run_dataflow_from_engine(workspace, start_passage, &passage_data, &seed_init);
 
         // Get passage info
@@ -1333,6 +1350,165 @@ impl ServerState {
                 })
             }
         }
+    }
+
+    /// `knot/updatePositions` — update passage position metadata in source files.
+    ///
+    /// When the user drags nodes in the Story Map graph view, the webview
+    /// sends new positions via this request. The server updates the `<x,y>`
+    /// position metadata in the Twee passage headers using the standard
+    /// Twee 3 format: `:: PassageName [tags] <x,y>`.
+    ///
+    /// This preserves compatibility with Twine and other Twee editors — no
+    /// custom metadata format is introduced.
+    pub async fn knot_update_positions(
+        &self,
+        params: KnotUpdatePositionsParams,
+    ) -> Result<KnotUpdatePositionsResponse, tower_lsp::jsonrpc::Error> {
+        let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/updatePositions: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
+        let mut changes: HashMap<url::Url, Vec<LspTextEdit>> = HashMap::new();
+        let mut updated_count: u32 = 0;
+        let mut errors: Vec<String> = Vec::new();
+
+        /// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
+        fn format_coord(v: f64) -> String {
+            if v.fract() == 0.0 {
+                format!("{}", v as i64)
+            } else {
+                format!("{:.2}", v)
+            }
+        }
+
+        for update in &params.updates {
+            // Find the file URI for this passage
+            let file_uri = match inner.workspace.find_passage_file_uri(&update.passage_name) {
+                Some(uri) => uri,
+                None => {
+                    errors.push(format!(
+                        "Passage '{}' not found in workspace",
+                        update.passage_name
+                    ));
+                    continue;
+                }
+            };
+
+            // Get the file text
+            let text = match inner.open_documents.get(&file_uri) {
+                Some(t) => t,
+                None => {
+                    errors.push(format!(
+                        "File text not available for passage '{}' ({})",
+                        update.passage_name, file_uri
+                    ));
+                    continue;
+                }
+            };
+
+            // Find the passage header line and build the replacement
+            let mut found = false;
+            for (line_idx, line) in text.lines().enumerate() {
+                if line.starts_with("::") {
+                    let name = helpers::parse_passage_name_from_header(&line[2..]);
+                    if name == update.passage_name {
+                        let new_line = if helpers::parse_passage_position(line).is_some() {
+                            // Position exists: replace <oldx,oldy> with <newx,newy>
+                            let angle_start = line.rfind('<').unwrap();
+                            let new_line = format!(
+                                "{}<{},{}>",
+                                &line[..angle_start],
+                                format_coord(update.position_x),
+                                format_coord(update.position_y)
+                            );
+                            new_line
+                        } else {
+                            // No position: append <x,y> before trailing whitespace
+                            let trimmed = line.trim_end();
+                            format!(
+                                "{} <{},{}>",
+                                trimmed,
+                                format_coord(update.position_x),
+                                format_coord(update.position_y)
+                            )
+                        };
+
+                        let range = lsp_types::Range {
+                            start: lsp_types::Position {
+                                line: line_idx as u32,
+                                character: 0,
+                            },
+                            end: lsp_types::Position {
+                                line: line_idx as u32,
+                                character: helpers::utf16_len(line),
+                            },
+                        };
+
+                        changes
+                            .entry(file_uri.clone())
+                            .or_default()
+                            .push(LspTextEdit {
+                                range,
+                                new_text: new_line,
+                            });
+
+                        found = true;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                updated_count += 1;
+            } else {
+                errors.push(format!(
+                    "Could not find header line for passage '{}' in file {}",
+                    update.passage_name, file_uri
+                ));
+            }
+        }
+
+        drop(inner);
+
+        // Apply the edits via the LSP client
+        if !changes.is_empty() {
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            };
+
+            let result = self.client.apply_edit(workspace_edit).await;
+            if let Err(e) = result {
+                tracing::error!("knot/updatePositions: failed to apply edits: {}", e);
+                return Ok(KnotUpdatePositionsResponse {
+                    success: false,
+                    updated_count: 0,
+                    errors: vec![format!("Failed to apply workspace edit: {}", e)],
+                });
+            }
+        }
+
+        tracing::info!(
+            "knot/updatePositions: updated {} passage positions",
+            updated_count
+        );
+
+        Ok(KnotUpdatePositionsResponse {
+            success: errors.is_empty(),
+            updated_count,
+            errors,
+        })
     }
 }
 

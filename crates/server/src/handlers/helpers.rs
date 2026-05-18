@@ -80,11 +80,13 @@ pub(crate) fn parse_with_format_plugin(
         let mut doc = Document::new(uri.clone(), format);
         doc.version = version;
         doc.passages = result.passages.clone();
+        doc.set_snapshot_from_text(text);
         (doc, result)
     } else {
         // No plugin available — create an empty document
         tracing::warn!("No format plugin available for {:?}", format);
-        let doc = Document::new(uri.clone(), format);
+        let mut doc = Document::new(uri.clone(), format);
+        doc.set_snapshot_from_text(text);
         let result = fmt_plugin::ParseResult {
             passages: Vec::new(),
             tokens: Vec::new(),
@@ -908,10 +910,122 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
 /// Parse just the passage name from a header (the part after `::`).
 pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     let header = header.trim();
+    // Strip angle-bracket position metadata: :: Name [tags] <x,y>
+    let header = if let Some(angle_start) = header.find('<') {
+        header[..angle_start].trim()
+    } else {
+        header.trim()
+    };
     if let Some(bracket_start) = header.find('[') {
         header[..bracket_start].trim().to_string()
     } else {
         header.to_string()
+    }
+}
+
+/// Parse the position from a passage header line.
+///
+/// Twee 3 format supports position metadata in angle brackets:
+/// `:: Passage Name [tags] <100,200>`
+///
+/// The angle brackets appear after the tags (if any) and contain
+/// the x,y coordinates separated by a comma.
+pub(crate) fn parse_passage_position(line: &str) -> Option<(f64, f64)> {
+    // Find the last <...> on the line (position comes after tags)
+    let last_angle_start = line.rfind('<')?;
+    let after_angle = &line[last_angle_start + 1..];
+
+    // Find the closing >
+    let angle_end = after_angle.find('>')?;
+    let content = &after_angle[..angle_end];
+
+    // Parse "x,y" or "x, y"
+    let parts: Vec<&str> = content.split(',').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let x = parts[0].trim().parse::<f64>().ok()?;
+    let y = parts[1].trim().parse::<f64>().ok()?;
+    Some((x, y))
+}
+
+/// Extract passage positions from StoryData JSON body.
+///
+/// Twine 2's StoryData can contain per-passage position information.
+/// The StoryData JSON may include a "passages" array where each entry
+/// has a "name" and "position" field (an array of [x, y]).
+/// This function parses those positions and adds them to the map.
+pub(crate) fn extract_positions_from_storydata(
+    text: &str,
+    positions: &mut std::collections::HashMap<String, (f64, f64)>,
+) {
+    // Find the StoryData passage in the text
+    let mut in_story_data = false;
+    let mut json_start: Option<usize> = None;
+    let mut brace_depth: i32 = 0;
+    let mut json_buf = String::new();
+
+    for line in text.lines() {
+        if line.starts_with("::") {
+            let name = parse_passage_name_from_header(&line[2..]);
+            if name == "StoryData" {
+                in_story_data = true;
+                continue;
+            } else if in_story_data {
+                // End of StoryData passage
+                break;
+            }
+        } else if in_story_data {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() && json_start.is_none() {
+                json_start = Some(0);
+            }
+            json_buf.push_str(line);
+            json_buf.push('\n');
+
+            // Count braces to detect end of JSON
+            for ch in trimmed.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => {
+                        brace_depth -= 1;
+                        if brace_depth == 0 {
+                            // Try to parse the JSON
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_buf) {
+                                extract_positions_from_storydata_value(&value, positions);
+                            }
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Extract positions from a parsed StoryData JSON value.
+fn extract_positions_from_storydata_value(
+    value: &serde_json::Value,
+    positions: &mut std::collections::HashMap<String, (f64, f64)>,
+) {
+    // StoryData may contain a "passages" array with per-passage metadata
+    if let Some(passages) = value.get("passages").and_then(|v| v.as_array()) {
+        for passage in passages {
+            if let Some(name) = passage.get("name").and_then(|v| v.as_str()) {
+                if let Some(pos) = passage.get("position").and_then(|v| v.as_array()) {
+                    if pos.len() >= 2 {
+                        if let (Some(x), Some(y)) = (
+                            pos[0].as_f64(),
+                            pos[1].as_f64(),
+                        ) {
+                            positions.insert(name.to_string(), (x, y));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1027,38 +1141,6 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
 ///
 /// Returns a list of `FormatVariableDiagnostic` that can be passed to
 /// `AnalysisEngine::analyze_with_format_diagnostics()`.
-
-/// Supplement the core engine's special-passage initializer seed set with
-/// variables from the format plugin's variable registry.
-///
-/// The core's `collect_special_passage_initializers()` only scans passages
-/// that are in the indexed workspace (`passage_data`). If a special passage
-/// (e.g., `StoryInit`, `Story JavaScript`) is in an unindexed file, its
-/// variable initializers won't appear in `passage_data`, causing false
-/// "uninitialized variable" diagnostics.
-///
-/// This function queries the format plugin's `special_passage_seed_variables()`,
-/// which uses the plugin's variable registry (built from all parsed documents)
-/// to find variables with `seeded_by_special = true`. These are merged into
-/// the core's seed set to close the gap.
-pub(crate) fn supplement_seed_with_format_specials(
-    core_seed: knot_core::analysis::InitSet,
-    workspace: &Workspace,
-    registry: &fmt_plugin::FormatRegistry,
-    format: StoryFormat,
-) -> knot_core::analysis::InitSet {
-    if let Some(plugin) = registry.get(&format) {
-        let format_seeds = plugin.special_passage_seed_variables(workspace);
-        let mut merged = core_seed;
-        for var_name in format_seeds {
-            merged.insert(var_name);
-        }
-        merged
-    } else {
-        core_seed
-    }
-}
-
 pub(crate) fn compute_format_variable_diagnostics(
     workspace: &Workspace,
     registry: &fmt_plugin::FormatRegistry,

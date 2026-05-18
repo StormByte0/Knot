@@ -22,6 +22,14 @@ pub struct Document {
     pub passages: Vec<Passage>,
     /// The version number of this document (increments on each change).
     pub version: i32,
+    /// An optional snapshot of the document's source text as a Rope.
+    ///
+    /// This is set by the server when a document is opened or changed, and
+    /// used for converting byte offsets to line numbers. It is not serialized
+    /// because the Rope is only needed at runtime and can be reconstructed
+    /// from the source text.
+    #[serde(skip)]
+    pub snapshot: Option<DocumentSnapshot>,
 }
 
 impl Document {
@@ -32,6 +40,7 @@ impl Document {
             format,
             passages: Vec::new(),
             version: 0,
+            snapshot: None,
         }
     }
 
@@ -68,6 +77,30 @@ impl Document {
     /// Increment the document version.
     pub fn bump_version(&mut self) {
         self.version += 1;
+    }
+
+    /// Set the document snapshot from source text.
+    ///
+    /// Creates a `DocumentSnapshot` wrapping a Rope built from the given
+    /// text and stores it in the `snapshot` field. This enables
+    /// byte-offset-to-line-number conversion via [`Self::byte_to_line`].
+    pub fn set_snapshot_from_text(&mut self, text: &str) {
+        self.snapshot = Some(DocumentSnapshot::from_document(self, text));
+    }
+
+    /// Convert a byte offset within this document to a 0-based line number.
+    ///
+    /// If the document has a snapshot (i.e., the source text is available),
+    /// this uses the Rope's `byte_to_line` method for accurate conversion.
+    /// Returns 0 if no snapshot is available or if the offset is out of
+    /// bounds.
+    pub fn byte_to_line(&self, byte_offset: usize) -> u32 {
+        if let Some(ref snapshot) = self.snapshot {
+            let clamped = byte_offset.min(snapshot.rope.len_bytes());
+            snapshot.rope.byte_to_line(clamped) as u32
+        } else {
+            0
+        }
     }
 
     /// Remove a passage by name and return it.

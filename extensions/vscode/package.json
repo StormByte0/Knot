@@ -56,6 +56,12 @@
         "icon": "$(graph)"
       },
       {
+        "command": "knot.openStoryMapPanel",
+        "title": "Knot: Open Story Map (Full Panel)",
+        "category": "Knot",
+        "icon": "$(graph)"
+      },
+      {
         "command": "knot.build",
         "title": "Knot: Build Project",
         "category": "Knot"
@@ -180,6 +186,11 @@
           "command": "knot.openStoryMap",
           "when": "view == knot.storyMap",
           "group": "navigation"
+        },
+        {
+          "command": "knot.openStoryMapPanel",
+          "when": "view == knot.storyMap",
+          "group": "navigation"
         }
       ]
     },
@@ -213,79 +224,157 @@
         },
         "knot.diagnostics.broken-link": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "warning",
           "description": "Severity for broken link diagnostics (links to non-existent passages)."
         },
         "knot.diagnostics.unreachable-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for unreachable passage diagnostics."
         },
         "knot.diagnostics.infinite-loop": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "warning",
           "description": "Severity for infinite loop diagnostics (cycles with no state mutation)."
         },
         "knot.diagnostics.uninitialized-variable": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "warning",
           "description": "Severity for uninitialized variable diagnostics."
         },
         "knot.diagnostics.unused-variable": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for unused variable diagnostics."
         },
         "knot.diagnostics.redundant-write": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for redundant write diagnostics (variable written twice without intervening read)."
         },
         "knot.diagnostics.duplicate-passage-name": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "error",
           "description": "Severity for duplicate passage name diagnostics."
         },
         "knot.diagnostics.empty-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for empty passage diagnostics."
         },
         "knot.diagnostics.dead-end-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "info",
           "description": "Severity for dead-end passage diagnostics (no outgoing links)."
         },
         "knot.diagnostics.invalid-passage-name": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "warning",
           "description": "Severity for invalid passage name diagnostics."
         },
         "knot.diagnostics.orphaned-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "info",
           "description": "Severity for orphaned passage diagnostics (only one incoming link)."
         },
         "knot.diagnostics.complex-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for complex passage diagnostics (too many outgoing links)."
         },
         "knot.diagnostics.large-passage": {
           "type": "string",
-          "enum": ["error", "warning", "info", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "hint",
+            "off"
+          ],
           "default": "hint",
           "description": "Severity for large passage diagnostics (exceeds word count threshold)."
         }
@@ -294,11 +383,16 @@
     "taskDefinitions": [
       {
         "type": "knot",
-        "required": ["task"],
+        "required": [
+          "task"
+        ],
         "properties": {
           "task": {
             "type": "string",
-            "enum": ["build", "watch"],
+            "enum": [
+              "build",
+              "watch"
+            ],
             "description": "The Knot task to run."
           }
         }
@@ -331,15 +425,16 @@
     "vsce:pack": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.30.0",
+    "@typescript-eslint/parser": "^8.30.0",
     "@vscode/vsce": "^2.22.0",
     "eslint": "^9.22.0",
-    "@typescript-eslint/eslint-plugin": "^8.30.0",
-    "@typescript-eslint/parser": "^8.30.0"
+    "typescript": "^5.3.3"
   },
   "dependencies": {
+    "dagre": "^0.8.5",
     "vscode-languageclient": "^9.0.1"
   },
   "repository": {

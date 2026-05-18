@@ -35,6 +35,10 @@ export interface KnotGraphNode {
     is_special: boolean;
     is_metadata: boolean;
     is_unreachable: boolean;
+    /** The x-coordinate of the passage in the Twine visual editor, if available. */
+    position_x?: number;
+    /** The y-coordinate of the passage in the Twine visual editor, if available. */
+    position_y?: number;
 }
 
 export interface KnotGraphEdge {
@@ -298,6 +302,27 @@ export interface KnotReindexResponse {
 
 export interface KnotGenerateIfidResponse {
     ifid: string;
+}
+
+// ---------------------------------------------------------------------------
+// Update positions types (matches Rust-side KnotUpdatePositionsResponse)
+// ---------------------------------------------------------------------------
+
+export interface KnotPositionUpdate {
+    passage_name: string;
+    position_x: number;
+    position_y: number;
+}
+
+export interface KnotUpdatePositionsParams {
+    workspace_uri: string;
+    updates: KnotPositionUpdate[];
+}
+
+export interface KnotUpdatePositionsResponse {
+    success: boolean;
+    updated_count: number;
+    errors: string[];
 }
 
 // ---------------------------------------------------------------------------

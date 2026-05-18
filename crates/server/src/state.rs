@@ -12,16 +12,22 @@ use tower_lsp::Client;
 use url::Url;
 
 // ---------------------------------------------------------------------------
-// SourceTextProvider implementation for the server's open_documents cache
+// SourceTextProvider — newtype wrapper to satisfy Rust's orphan rules
 // ---------------------------------------------------------------------------
 
-/// Implement `SourceTextProvider` for the server's document cache so that
-/// format plugins can resolve byte offsets to line numbers.
-impl SourceTextProvider for HashMap<Url, String> {
+/// Newtype wrapper that borrows the server's `open_documents` cache so we can
+/// implement `SourceTextProvider` (defined in `knot-formats`) for it.
+///
+/// We cannot implement a foreign trait for a foreign type (`HashMap<Url, String>`),
+/// so we wrap a reference in a local newtype. The wrapper is cheap — it only
+/// stores a reference and is created on the stack at each call site that needs
+/// to pass the document cache as a `&dyn SourceTextProvider`.
+pub struct DocumentCache<'a>(pub &'a HashMap<Url, String>);
+
+impl<'a> SourceTextProvider for DocumentCache<'a> {
     fn get_source_text(&self, file_uri: &str) -> Option<&str> {
-        // Try to parse the URI string and look it up directly
         if let Ok(uri) = Url::parse(file_uri) {
-            self.get(&uri).map(|s| s.as_str())
+            self.0.get(&uri).map(|s| s.as_str())
         } else {
             None
         }

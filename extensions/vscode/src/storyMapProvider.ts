@@ -3,16 +3,18 @@
 //! This module implements a VS Code webview panel that renders an interactive
 //! passage graph using Cytoscape.js. Features include:
 //!
-//! - Force-directed and dagre (hierarchical) layout
+//! - Position-based layout (using Twee passage position property)
+//! - Force-directed and dagre (hierarchical) layout as fallbacks
 //! - Click-to-navigate (clicking a node opens the passage in the editor)
 //! - Color-coded nodes (normal, special, metadata, unreachable, broken)
 //! - Red dashed edges for broken links
 //! - Search/filter passages by name or tag
 //! - Real-time graph refresh when documents change
 //! - Zoom-to-fit and layout switching controls
+//! - Open in Full View (detachable/floating window)
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotGraphResponse } from './types';
+import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Story Map webview provider
@@ -58,7 +60,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             localResourceRoots: [this._extensionUri],
         };
 
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, false);
 
         // Handle messages from the webview
         webviewView.webview.onDidReceiveMessage(async (message) => {
@@ -83,6 +85,28 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     if (this._graphData) {
                         this._graphData.layout = message.layout;
                         this._postGraphData();
+                    }
+                    break;
+                }
+                case 'openFullView': {
+                    await vscode.commands.executeCommand('knot.openFullStoryMap');
+                    break;
+                }
+                case 'updatePositions': {
+                    const { updates } = message;
+                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            try {
+                                const params: KnotUpdatePositionsParams = {
+                                    workspace_uri: workspaceFolders[0].uri.toString(),
+                                    updates: updates,
+                                };
+                                await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
+                            } catch (e) {
+                                console.error('[Knot] Failed to update passage positions:', e);
+                            }
+                        }
                     }
                     break;
                 }
@@ -115,13 +139,6 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             this._postGraphData();
         } catch (e) {
             console.error('[Knot] Failed to fetch story graph:', e);
-            // Notify the webview of the error so the user sees feedback
-            if (this._view) {
-                this._view.webview.postMessage({
-                    command: 'graphError',
-                    message: String(e),
-                });
-            }
         }
     }
 
@@ -135,20 +152,16 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** Generate HTML for the full-view (detached) webview panel. */
+    public getFullViewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+        return this._getHtmlForWebview(webview, true);
+    }
+
     /** Generate the HTML for the webview. */
-    private _getHtmlForWebview(webview: vscode.Webview): string {
-        // Cytoscape.js scripts are loaded from the extension's media/ directory.
-        // Load order matters: dagre must be available before cytoscape-dagre.
-        // For development, you can download them from:
-        //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js
-        //   https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js
-        //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape-dagre/2.5.0/cytoscape-dagre.min.js
-        // And place them in extensions/vscode/media/
+    private _getHtmlForWebview(webview: vscode.Webview, isFullView: boolean): string {
         const cytoscapeLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape.min.js'));
-        const dagreLibLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'dagre.min.js'));
         const dagreLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape-dagre.min.js'));
         const cytoscapeScript = cytoscapeLocal.toString();
-        const dagreLibScript = dagreLibLocal.toString();
         const dagreScript = dagreLocal.toString();
         const nonce = getNonce();
 
@@ -156,10 +169,10 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource};">    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource};">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Story Map</title>
     <script nonce="${nonce}" src="${cytoscapeScript}"></script>
-    <script nonce="${nonce}" src="${dagreLibScript}"></script>
     <script nonce="${nonce}" src="${dagreScript}"></script>
     <style>
         * {
@@ -336,12 +349,14 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     <div id="toolbar">
         <input type="text" id="searchInput" placeholder="Search passages..." />
         <select id="layoutSelect" title="Layout algorithm">
+            <option value="position">Position</option>
             <option value="dagre">Dagre</option>
             <option value="breadthfirst">Tree</option>
             <option value="cose">Force</option>
             <option value="circle">Circle</option>
         </select>
         <button id="fitBtn" title="Zoom to fit">&#x26F6; Fit</button>
+        <button id="fullViewBtn" title="Open in full view">&#x2922; Expand</button>
         <button id="refreshBtn" title="Refresh graph">&#x21BB;</button>
     </div>
 
@@ -355,6 +370,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 
     <div id="legend">
         <div class="legend-item"><span class="legend-dot" style="background:#4fc3f7"></span> Passage</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#66bb6a"></span> Start</div>
         <div class="legend-item"><span class="legend-dot" style="background:#ffb74d"></span> Special</div>
         <div class="legend-item"><span class="legend-dot" style="background:#ce93d8"></span> Metadata</div>
         <div class="legend-item"><span class="legend-dot" style="background:#666"></span> Unreachable</div>
@@ -366,6 +382,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         <span class="stat" id="statEdges">Edges: 0</span>
         <span class="stat" id="statBroken">Broken: 0</span>
         <span class="stat" id="statUnreachable">Unreachable: 0</span>
+        <span class="stat" id="statPositions">Positions: 0</span>
     </div>
 
     <script nonce="${nonce}">
@@ -387,9 +404,12 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             if (node.is_metadata) return COLORS.metadata;
             if (node.is_unreachable) return COLORS.unreachable;
             if (node.is_special) return COLORS.special;
-            // Check if it's the start passage
             if (node.id === 'Start' || node.label === 'Start') return COLORS.start;
             return COLORS.normal;
+        }
+
+        function hasPositions(nodes) {
+            return nodes.some(n => n.position_x != null && n.position_y != null);
         }
 
         function initCytoscape() {
@@ -454,6 +474,17 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                     {
+                        selector: 'edge.has_display_text',
+                        style: {
+                            'label': 'data(displayText)',
+                            'font-size': '8px',
+                            'text-rotation': 'autorotate',
+                            'text-outline-color': '#1e1e1e',
+                            'text-outline-width': '1px',
+                            'color': '#aaa',
+                        }
+                    },
+                    {
                         selector: 'node.highlighted',
                         style: {
                             'border-color': '#ffffff',
@@ -474,7 +505,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                 ],
-                layout: { name: 'cose' },
+                layout: { name: 'dagre', spacingFactor: 1.2 },
             });
 
             // Click handler — navigate to passage
@@ -487,6 +518,42 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         command: 'openPassage',
                         file: file,
                         line: line,
+                    });
+                }
+            });
+
+            // Drag-free handler — update passage positions when user finishes dragging
+            cy.on('dragfree', 'node', (evt) => {
+                const nodes = cy.nodes(':grabbed');  // nodes that were just dragged
+                const updates = [];
+                // If single node drag, evt.target gives us the node
+                // For safety, also check cy.$('.ui-draggable')
+                const draggedNode = evt.target;
+                if (draggedNode && draggedNode.data('id')) {
+                    const pos = draggedNode.position();
+                    const oldX = draggedNode.data('positionX');
+                    const oldY = draggedNode.data('positionY');
+                    // Round to reasonable precision (2 decimal places) to avoid
+                    // floating-point noise from small movements
+                    const newX = Math.round(pos.x * 100) / 100;
+                    const newY = Math.round(pos.y * 100) / 100;
+                    // Only send update if position actually changed
+                    if (oldX == null || oldY == null ||
+                        Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
+                        updates.push({
+                            passage_name: draggedNode.data('id'),
+                            position_x: newX,
+                            position_y: newY,
+                        });
+                        // Update cached position data on the node
+                        draggedNode.data('positionX', newX);
+                        draggedNode.data('positionY', newY);
+                    }
+                }
+                if (updates.length > 0) {
+                    vscode.postMessage({
+                        command: 'updatePositions',
+                        updates: updates,
                     });
                 }
             });
@@ -514,6 +581,9 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                 if (data.is_special) parts.push('Special');
                 if (data.is_metadata) parts.push('Metadata');
                 if (data.is_unreachable) parts.push('Unreachable');
+                if (data.positionX != null && data.positionY != null) {
+                    parts.push('Pos: (' + Math.round(data.positionX) + ', ' + Math.round(data.positionY) + ')');
+                }
                 meta.textContent = parts.join(' | ');
 
                 tooltip.style.display = 'block';
@@ -534,16 +604,16 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             const edges = Array.isArray(data?.edges) ? data.edges : [];
             currentData = { ...data, nodes, edges };
 
-
             cy.elements().remove();
 
             const elements = [];
+            const positionCount = nodes.filter(n => n.position_x != null && n.position_y != null).length;
 
-            // Add nodes
+            // Add nodes with position data if available
             for (const node of nodes) {
                 const color = getNodeColor(node);
                 const size = Math.max(40, Math.min(80, 30 + Math.max(node.out_degree, node.in_degree) * 5));
-                elements.push({
+                const el = {
                     data: {
                         id: node.id,
                         label: node.label,
@@ -559,26 +629,36 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         borderColor: node.is_unreachable ? '#444' : color,
                         width: node.is_metadata ? 30 : size,
                         height: node.is_metadata ? 30 : size * 0.6,
+                        positionX: node.position_x,
+                        positionY: node.position_y,
                     }
-                });
+                };
+                // If we have position data, set it as the initial position
+                if (node.position_x != null && node.position_y != null) {
+                    el.position = { x: node.position_x, y: node.position_y };
+                }
+                elements.push(el);
             }
 
             // Add edges
             for (const edge of edges) {
-                elements.push({
+                const el = {
                     data: {
                         id: edge.source + '->' + edge.target,
                         source: edge.source,
                         target: edge.target,
                         is_broken: edge.is_broken,
+                        displayText: edge.display_text || null,
                     }
-                });
+                };
+                elements.push(el);
             }
 
             cy.add(elements);
 
-            // Apply layout
-            applyLayout(currentData.layout || 'dagre');
+            // Apply layout — use position layout if positions are available
+            const layoutName = currentData.layout || (positionCount > 0 ? 'position' : 'dagre');
+            applyLayout(layoutName);
 
             // Update stats
             const brokenCount = edges.filter(e => e.is_broken).length;
@@ -587,27 +667,54 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             document.getElementById('statEdges').textContent = 'Edges: ' + edges.length;
             document.getElementById('statBroken').textContent = 'Broken: ' + brokenCount;
             document.getElementById('statUnreachable').textContent = 'Unreachable: ' + unreachableCount;
-        }
+            document.getElementById('statPositions').textContent = 'Positions: ' + positionCount;
 
-        // Check whether the dagre layout extension is available.
-        // cytoscape-dagre requires the dagre library as a global;
-        // if dagre.min.js failed to load the extension won't register.
-        function isDagreAvailable() {
-            try {
-                // cytoscape-dagre registers itself as 'dagre' layout
-                return typeof cytoscapeDagre !== 'undefined' || typeof window.dagre !== 'undefined';
-            } catch (_) {
-                return false;
+            // Update layout selector to match
+            const layoutSelect = document.getElementById('layoutSelect');
+            if (positionCount > 0 && layoutSelect.value !== layoutName) {
+                layoutSelect.value = layoutName;
+            }
+            // Disable position option if no positions available
+            const positionOption = layoutSelect.querySelector('option[value="position"]');
+            if (positionOption) {
+                positionOption.disabled = positionCount === 0;
             }
         }
 
         function applyLayout(layoutName) {
             if (!cy) return;
 
-            // Fall back from dagre to cose if the dagre extension is not available
-            if ((layoutName === 'dagre') && !isDagreAvailable()) {
-                console.warn('[Knot Story Map] dagre layout unavailable – falling back to cose');
-                layoutName = 'cose';
+            // "position" layout: use the stored position data
+            if (layoutName === 'position') {
+                // Position each node at its stored (x,y) from the passage position property
+                cy.nodes().forEach(node => {
+                    const px = node.data('positionX');
+                    const py = node.data('positionY');
+                    if (px != null && py != null) {
+                        node.position({ x: px, y: py });
+                    }
+                });
+                // For nodes without position, arrange them in a fallback grid
+                const nodesWithoutPos = cy.nodes().filter(n => n.data('positionX') == null || n.data('positionY') == null);
+                if (nodesWithoutPos.length > 0) {
+                    // Find bounding box of positioned nodes
+                    const positionedNodes = cy.nodes().filter(n => n.data('positionX') != null && n.data('positionY') != null);
+                    let startX = 0, startY = 0;
+                    if (positionedNodes.length > 0) {
+                        const bb = positionedNodes.boundingBox();
+                        startX = bb.x2 + 100;
+                        startY = bb.y1;
+                    }
+                    // Place unpositioned nodes in a grid below/right
+                    const cols = Math.ceil(Math.sqrt(nodesWithoutPos.length));
+                    nodesWithoutPos.forEach((node, i) => {
+                        const col = i % cols;
+                        const row = Math.floor(i / cols);
+                        node.position({ x: startX + col * 120, y: startY + row * 80 });
+                    });
+                }
+                cy.fit(undefined, 20);
+                return;
             }
 
             let layoutOpts;
@@ -650,22 +757,10 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     };
                     break;
                 default:
-                    layoutOpts = { name: 'cose', animate: true };
+                    layoutOpts = { name: 'dagre', spacingFactor: 1.2, animate: true };
             }
 
-            try {
-                cy.layout(layoutOpts).run();
-            } catch (e) {
-                console.error('[Knot Story Map] Layout failed:', e);
-                // Fall back to cose if the requested layout fails
-                if (layoutName !== 'cose') {
-                    try {
-                        cy.layout({ name: 'cose', animate: true }).run();
-                    } catch (e2) {
-                        console.error('[Knot Story Map] Fallback layout also failed:', e2);
-                    }
-                }
-            }
+            cy.layout(layoutOpts).run();
         }
 
         function filterGraph(query) {
@@ -715,6 +810,10 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             }
         });
 
+        document.getElementById('fullViewBtn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'openFullView' });
+        });
+
         document.getElementById('refreshBtn').addEventListener('click', () => {
             vscode.postMessage({ command: 'refreshGraph' });
         });
@@ -725,9 +824,6 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             switch (message.command) {
                 case 'updateGraph':
                     buildGraph(message.data);
-                    break;
-                case 'graphError':
-                    console.error('[Knot Story Map] Graph error from server:', message.message);
                     break;
             }
         });
