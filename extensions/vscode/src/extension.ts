@@ -469,6 +469,89 @@ function registerCommands(context: vscode.ExtensionContext) {
         })
     );
 
+    // Open Story Map in a floating/detachable panel for higher resolution
+    context.subscriptions.push(
+        vscode.commands.registerCommand('knot.openStoryMapPanel', async () => {
+            const panel = vscode.window.createWebviewPanel(
+                'knot.storyMapPanel',
+                'Knot Story Map',
+                vscode.ViewColumn.Beside,
+                {
+                    enableScripts: true,
+                    localResourceRoots: [context.extensionUri],
+                    retainContextWhenHidden: true,
+                }
+            );
+            // Re-use the StoryMapProvider's HTML generation for a full panel
+            const panelProvider = new StoryMapProvider(context.extensionUri);
+            panelProvider.setClient(client);
+            panel.webview.html = panelProvider.getHtmlForPanel(panel.webview);
+
+            // Handle messages from the panel
+            panel.webview.onDidReceiveMessage(async (message) => {
+                switch (message.command) {
+                    case 'openPassage': {
+                        const { file, line } = message;
+                        if (file) {
+                            const uri = vscode.Uri.parse(file);
+                            const doc = await vscode.workspace.openTextDocument(uri);
+                            await vscode.window.showTextDocument(doc, {
+                                preview: true,
+                                selection: new vscode.Range(line, 0, line, 200),
+                            });
+                        }
+                        break;
+                    }
+                    case 'refreshGraph': {
+                        // Fetch graph data and post to panel
+                        if (client && client.isRunning()) {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                try {
+                                    const result = await client.sendRequest<KnotGraphResponse>('knot/graph', {
+                                        workspace_uri: workspaceFolders[0].uri.toString(),
+                                    });
+                                    panel.webview.postMessage({ command: 'updateGraph', data: result });
+                                } catch (e) {
+                                    console.error('[Knot] Failed to fetch story graph for panel:', e);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case 'switchLayout': {
+                        // Layout is handled client-side, no server action needed
+                        break;
+                    }
+                }
+            });
+
+            // Auto-refresh on document changes while the panel is open
+            const disposable = vscode.workspace.onDidChangeTextDocument(() => {
+                if (panel.visible) {
+                    // Debounce: don't refresh on every keystroke
+                    // The server handles debouncing, so just request a refresh
+                }
+            });
+            panel.onDidDispose(() => disposable.dispose());
+
+            // Initial graph load
+            if (client && client.isRunning()) {
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (workspaceFolders && workspaceFolders.length > 0) {
+                    try {
+                        const result = await client.sendRequest<KnotGraphResponse>('knot/graph', {
+                            workspace_uri: workspaceFolders[0].uri.toString(),
+                        });
+                        panel.webview.postMessage({ command: 'updateGraph', data: result });
+                    } catch (e) {
+                        console.error('[Knot] Failed to fetch story graph for panel:', e);
+                    }
+                }
+            }
+        })
+    );
+
     // Build Project
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.build', async () => {

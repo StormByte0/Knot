@@ -160,6 +160,15 @@ pub struct Passage {
     pub is_special: bool,
     /// If this is a special passage, its definition from the format plugin.
     pub special_def: Option<SpecialPassageDef>,
+    /// The (x, y) position of this passage in the Twine editor canvas.
+    ///
+    /// When a Twine story is saved, each passage records its canvas
+    /// position. This is parsed from the passage header metadata JSON
+    /// block (e.g., `:: Name [tags] {"position":"100,200"}`) or from
+    /// the `StoryData` JSON `position` field. If no position is recorded,
+    /// this is `None` and the graph view will use an automatic layout.
+    #[serde(default)]
+    pub position: Option<(f64, f64)>,
 }
 
 impl Passage {
@@ -174,6 +183,7 @@ impl Passage {
             vars: Vec::new(),
             is_special: false,
             special_def: None,
+            position: None,
         }
     }
 
@@ -188,6 +198,7 @@ impl Passage {
             vars: Vec::new(),
             is_special: true,
             special_def: Some(def),
+            position: None,
         }
     }
 

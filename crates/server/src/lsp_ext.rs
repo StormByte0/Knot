@@ -52,6 +52,12 @@ pub struct KnotGraphNode {
     pub is_metadata: bool,
     /// Whether this passage is unreachable from the start passage.
     pub is_unreachable: bool,
+    /// The x-coordinate of the passage in the Twine visual editor, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_x: Option<f64>,
+    /// The y-coordinate of the passage in the Twine visual editor, if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position_y: Option<f64>,
 }
 
 /// A directed edge (link) between two passages.
@@ -695,4 +701,44 @@ pub struct KnotReindexResponse {
     pub files_indexed: u32,
     /// Error message if re-indexing failed.
     pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/updatePositions — update passage position metadata in source files
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/updatePositions` — update the position metadata for passages
+/// that were moved in the Story Map graph view.
+///
+/// The server applies WorkspaceEdit operations to update the `<x,y>` position
+/// metadata in the passage headers. This preserves compatibility with Twine
+/// and other Twee editors — no custom metadata format is introduced.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotUpdatePositionsParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// Position updates: passage name → (new_x, new_y).
+    pub updates: Vec<KnotPositionUpdate>,
+}
+
+/// A single passage position update.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotPositionUpdate {
+    /// The passage name.
+    pub passage_name: String,
+    /// New x coordinate.
+    pub position_x: f64,
+    /// New y coordinate.
+    pub position_y: f64,
+}
+
+/// Response: `knot/updatePositions`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotUpdatePositionsResponse {
+    /// Whether all updates were applied successfully.
+    pub success: bool,
+    /// Number of passages updated.
+    pub updated_count: u32,
+    /// Errors for passages that couldn't be updated.
+    pub errors: Vec<String>,
 }

@@ -782,8 +782,9 @@ mod tests {
         tags.insert("Forest".to_string(), vec!["outdoor".to_string()]);
 
         let unreachable = std::collections::HashSet::new();
+        let positions = std::collections::HashMap::new();
 
-        let export = graph.export_graph_with_metadata(&tags, &unreachable);
+        let export = graph.export_graph_with_metadata(&tags, &unreachable, &positions);
 
         // Verify nodes — 4 real nodes (Start, Forest, StoryInit, StoryData).
         // MissingPassage is a placeholder node (created by get_or_create_node for
