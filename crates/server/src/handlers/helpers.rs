@@ -1027,6 +1027,38 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
 ///
 /// Returns a list of `FormatVariableDiagnostic` that can be passed to
 /// `AnalysisEngine::analyze_with_format_diagnostics()`.
+
+/// Supplement the core engine's special-passage initializer seed set with
+/// variables from the format plugin's variable registry.
+///
+/// The core's `collect_special_passage_initializers()` only scans passages
+/// that are in the indexed workspace (`passage_data`). If a special passage
+/// (e.g., `StoryInit`, `Story JavaScript`) is in an unindexed file, its
+/// variable initializers won't appear in `passage_data`, causing false
+/// "uninitialized variable" diagnostics.
+///
+/// This function queries the format plugin's `special_passage_seed_variables()`,
+/// which uses the plugin's variable registry (built from all parsed documents)
+/// to find variables with `seeded_by_special = true`. These are merged into
+/// the core's seed set to close the gap.
+pub(crate) fn supplement_seed_with_format_specials(
+    core_seed: knot_core::analysis::InitSet,
+    workspace: &Workspace,
+    registry: &fmt_plugin::FormatRegistry,
+    format: StoryFormat,
+) -> knot_core::analysis::InitSet {
+    if let Some(plugin) = registry.get(&format) {
+        let format_seeds = plugin.special_passage_seed_variables(workspace);
+        let mut merged = core_seed;
+        for var_name in format_seeds {
+            merged.insert(var_name);
+        }
+        merged
+    } else {
+        core_seed
+    }
+}
+
 pub(crate) fn compute_format_variable_diagnostics(
     workspace: &Workspace,
     registry: &fmt_plugin::FormatRegistry,
@@ -1658,31 +1690,6 @@ pub(crate) fn build_related_information_for_push(
             // Point to where the variable is first read
             let var_name = extract_variable_name(_message);
             find_variable_read_locations(open_documents, passage_name, var_name.as_deref())
-        }
-        _ => None,
-    }
-}
-
-/// Build related information for pull diagnostics (diagnostic method).
-pub(crate) fn build_related_information(
-    inner: &crate::state::ServerStateInner,
-    kind: &DiagnosticKind,
-    passage_name: &str,
-    _message: &str,
-) -> Option<Vec<DiagnosticRelatedInformation>> {
-    match kind {
-        DiagnosticKind::BrokenLink => {
-            find_link_locations(&inner.open_documents, passage_name)
-        }
-        DiagnosticKind::UnreachablePassage => {
-            find_definition_location(&inner.open_documents, passage_name)
-        }
-        DiagnosticKind::DuplicatePassageName => {
-            find_all_definition_locations(&inner.open_documents, passage_name)
-        }
-        DiagnosticKind::UninitializedVariable => {
-            let var_name = extract_variable_name(_message);
-            find_variable_read_locations(&inner.open_documents, passage_name, var_name.as_deref())
         }
         _ => None,
     }

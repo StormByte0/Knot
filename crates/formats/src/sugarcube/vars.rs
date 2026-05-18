@@ -1601,25 +1601,33 @@ mod tests {
 /// `VariableTreeNode` to LSP wire types.
 /// Compute a 0-based line number from a byte offset within a file.
 ///
-/// Given a file URI and a byte offset, this function counts the number of
-/// newline characters before the offset to determine the line number.
+/// Given a `SourceTextProvider` and a byte offset, this function counts the
+/// number of newline characters before the offset to determine the line number.
 ///
-/// TODO: The Workspace currently does not store the source text of documents,
-/// so we cannot count newlines directly. Future work should either:
-/// (a) Store source text in the Workspace/Document, or
-/// (b) Pass source text through the format plugin API, or
-/// (c) Use passage span information to compute line numbers from the parser.
-/// For now, returns 0 (which navigates to the passage header line).
+/// If the source text is not available (e.g., the file was not indexed or is
+/// not in the open_documents cache), returns 0 (which navigates to the passage
+/// header line).
 fn compute_line_from_offset(
-    _workspace: &knot_core::Workspace,
-    _file_uri: &str,
-    _byte_offset: usize,
+    source_text: &dyn crate::plugin::SourceTextProvider,
+    file_uri: &str,
+    byte_offset: usize,
 ) -> u32 {
-    0
+    if let Some(text) = source_text.get_source_text(file_uri) {
+        let safe_offset = byte_offset.min(text.len());
+        let text_before = &text[..safe_offset];
+        // Count newline characters to get the 0-based line number.
+        // Each '\n' increments the line counter. The first line is line 0.
+        let line = text_before.bytes().filter(|&b| b == b'\n').count() as u32;
+        line
+    } else {
+        // Fallback: no source text available, return 0 (passage header)
+        0
+    }
 }
 
 pub(crate) fn build_variable_tree(
     workspace: &knot_core::Workspace,
+    source_text: &dyn crate::plugin::SourceTextProvider,
 ) -> Vec<crate::types::VariableTreeNode> {
     use crate::types::{VariableTreeNode, VariableUsageLocation};
 
@@ -1636,9 +1644,7 @@ pub(crate) fn build_variable_tree(
         let mut written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.write_locations {
             if matches!(loc.kind, VarAccessKind::Assign) {
-                // TODO: Compute line number from loc.span byte offset within
-                // the source document. For now, default to 0 (passage header).
-                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                let line = compute_line_from_offset(source_text, &loc.file_uri, loc.span.start);
                 written_in.push(VariableUsageLocation {
                     passage_name: loc.passage_name.clone(),
                     file_uri: loc.file_uri.clone(),
@@ -1651,7 +1657,7 @@ pub(crate) fn build_variable_tree(
         let mut read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.read_locations {
             if matches!(loc.kind, VarAccessKind::Read) {
-                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                let line = compute_line_from_offset(source_text, &loc.file_uri, loc.span.start);
                 read_in.push(VariableUsageLocation {
                     passage_name: loc.passage_name.clone(),
                     file_uri: loc.file_uri.clone(),
@@ -1669,6 +1675,7 @@ pub(crate) fn build_variable_tree(
             &state_var.known_properties,
             &state_var.write_locations,
             &state_var.read_locations,
+            source_text,
         );
 
         variables.push(VariableTreeNode {
@@ -1705,6 +1712,7 @@ fn build_property_tree(
     known_properties: &HashSet<String>,
     write_locations: &[VarLocation],
     read_locations: &[VarLocation],
+    source_text: &dyn crate::plugin::SourceTextProvider,
 ) -> Vec<crate::types::VariablePropertyNode> {
     use crate::types::{VariablePropertyNode, VariableUsageLocation};
 
@@ -1745,12 +1753,12 @@ fn build_property_tree(
             match &loc.kind {
                 VarAccessKind::PropertyWrite { path } => {
                     if path == &prop_name {
+                        let line = compute_line_from_offset(source_text, &loc.file_uri, loc.span.start);
                         prop_written_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
                             is_write: true,
-                            // TODO: Compute line from loc.span byte offset.
-                            line: 0,
+                            line,
                         });
                     }
                 }
@@ -1764,12 +1772,12 @@ fn build_property_tree(
             match &loc.kind {
                 VarAccessKind::PropertyRead { path } => {
                     if path == &prop_name {
+                        let line = compute_line_from_offset(source_text, &loc.file_uri, loc.span.start);
                         prop_read_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
                             is_write: false,
-                            // TODO: Compute line from loc.span byte offset.
-                            line: 0,
+                            line,
                         });
                     }
                 }
@@ -1826,15 +1834,35 @@ fn build_property_tree(
                 &sub_set,
                 &sub_writes,
                 &sub_reads,
+                source_text,
             )
         };
+
+        // Compute line from the first write/read location's span
+        let line = prop_written_in.first()
+            .or(prop_read_in.first())
+            .map(|l| l.line)
+            .unwrap_or_else(|| {
+                // Fallback: compute from the first location's span directly
+                write_locations.iter()
+                    .chain(read_locations.iter())
+                    .filter_map(|loc| {
+                        match &loc.kind {
+                            VarAccessKind::PropertyWrite { path } if path == &prop_name => Some(loc),
+                            VarAccessKind::PropertyRead { path } if path == &prop_name => Some(loc),
+                            _ => None,
+                        }
+                    })
+                    .next()
+                    .map(|loc| compute_line_from_offset(source_text, &loc.file_uri, loc.span.start))
+                    .unwrap_or(0)
+            });
 
         result.push(VariablePropertyNode {
             name: prop_name,
             full_name,
             state_path,
-            // TODO: Compute line from the first write/read location's span.
-            line: 0,
+            line,
             written_in: prop_written_in,
             read_in: prop_read_in,
             properties: sub_properties,
