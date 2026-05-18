@@ -102,9 +102,9 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
 
     // Check for JSON metadata block at the end: `{"position":"100,200"}`
     // The metadata block must be the last thing on the line and start with `{`.
-    let (rest_before_json, json_str) = if let Some(brace_start) = rest.rfind('{') {
+    let (rest_before_json, json_str): (&str, Option<&str>) = if let Some(brace_start) = rest.rfind('{') {
         if rest.trim_end().ends_with('}') {
-            let before = &rest[..brace_start].trim_end();
+            let before = rest[..brace_start].trim_end();
             let json = &rest[brace_start..];
             (before, Some(json))
         } else {

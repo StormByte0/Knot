@@ -177,8 +177,8 @@ impl ServerState {
                 is_special: n.is_special,
                 is_metadata: n.is_metadata,
                 is_unreachable: n.is_unreachable,
-                position_x: n.position_x,
-                position_y: n.position_y,
+                position_x: n.position.map(|(x, _)| x),
+                position_y: n.position.map(|(_, y)| y),
             })
             .collect();
 
@@ -397,7 +397,8 @@ impl ServerState {
         // The server only does a mechanical translation to LSP wire types.
         let plugin = inner.format_registry.get(&format);
         let tree_nodes = if let Some(p) = plugin {
-            p.build_variable_tree(workspace)
+            let source_text = crate::state::DocumentCache(&inner.open_documents);
+            p.build_variable_tree(workspace, &source_text)
         } else {
             Vec::new()
         };

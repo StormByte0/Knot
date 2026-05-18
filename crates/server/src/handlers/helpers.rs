@@ -1939,6 +1939,33 @@ pub(crate) fn find_variable_read_locations(
 }
 
 // ===========================================================================
+// Special passage seed supplementation
+// ===========================================================================
+
+/// Supplement the core seed set with variables initialized by format-specific
+/// special passages (e.g., SugarCube's `StoryInit`).
+///
+/// The core `AnalysisEngine::collect_special_passage_initializers()` only finds
+/// variables that are directly assigned in special passages discovered during
+/// workspace indexing. However, the format plugin may know about additional
+/// variables that are implicitly seeded (e.g., via `State.variables` assignments
+/// in special passages that the core dataflow doesn't track as "persistent
+/// inits"). This function closes that gap by querying the format plugin's
+/// `special_passage_seed_variables()` and merging the results into the seed set.
+pub(crate) fn supplement_seed_with_format_specials(
+    mut core_seed: knot_core::analysis::InitSet,
+    workspace: &Workspace,
+    registry: &fmt_plugin::FormatRegistry,
+    format: StoryFormat,
+) -> knot_core::analysis::InitSet {
+    if let Some(plugin) = registry.get(&format) {
+        let format_seeds = plugin.special_passage_seed_variables(workspace);
+        core_seed.extend(format_seeds);
+    }
+    core_seed
+}
+
+// ===========================================================================
 // Other helper functions
 // ===========================================================================
 

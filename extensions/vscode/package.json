@@ -2,7 +2,7 @@
   "name": "knot",
   "displayName": "Knot — Twine IDE",
   "description": "Next-generation IDE for Twine and Twee projects",
-  "version": "0.3.0",
+  "version": "2.0.0",
   "publisher": "stormbyte",
   "license": "MIT",
   "engines": {
@@ -52,12 +52,6 @@
       {
         "command": "knot.openStoryMap",
         "title": "Knot: Open Story Map",
-        "category": "Knot",
-        "icon": "$(graph)"
-      },
-      {
-        "command": "knot.openStoryMapPanel",
-        "title": "Knot: Open Story Map (Full Panel)",
         "category": "Knot",
         "icon": "$(graph)"
       },
@@ -184,11 +178,6 @@
       "view/title": [
         {
           "command": "knot.openStoryMap",
-          "when": "view == knot.storyMap",
-          "group": "navigation"
-        },
-        {
-          "command": "knot.openStoryMapPanel",
           "when": "view == knot.storyMap",
           "group": "navigation"
         }
@@ -434,7 +423,6 @@
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "dagre": "^0.8.5",
     "vscode-languageclient": "^9.0.1"
   },
   "repository": {
