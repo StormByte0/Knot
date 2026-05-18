@@ -115,6 +115,13 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             this._postGraphData();
         } catch (e) {
             console.error('[Knot] Failed to fetch story graph:', e);
+            // Notify the webview of the error so the user sees feedback
+            if (this._view) {
+                this._view.webview.postMessage({
+                    command: 'graphError',
+                    message: String(e),
+                });
+            }
         }
     }
 
@@ -131,14 +138,17 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     /** Generate the HTML for the webview. */
     private _getHtmlForWebview(webview: vscode.Webview): string {
         // Cytoscape.js scripts are loaded from the extension's media/ directory.
-        // If the files are not bundled, the webview will fail to load them.
+        // Load order matters: dagre must be available before cytoscape-dagre.
         // For development, you can download them from:
         //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js
+        //   https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js
         //   https://cdnjs.cloudflare.com/ajax/libs/cytoscape-dagre/2.5.0/cytoscape-dagre.min.js
         // And place them in extensions/vscode/media/
         const cytoscapeLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape.min.js'));
+        const dagreLibLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'dagre.min.js'));
         const dagreLocal = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape-dagre.min.js'));
         const cytoscapeScript = cytoscapeLocal.toString();
+        const dagreLibScript = dagreLibLocal.toString();
         const dagreScript = dagreLocal.toString();
         const nonce = getNonce();
 
@@ -149,6 +159,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src ${webview.cspSource} 'nonce-${nonce}'; img-src ${webview.cspSource} data:; connect-src ${webview.cspSource};">    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knot Story Map</title>
     <script nonce="${nonce}" src="${cytoscapeScript}"></script>
+    <script nonce="${nonce}" src="${dagreLibScript}"></script>
     <script nonce="${nonce}" src="${dagreScript}"></script>
     <style>
         * {
@@ -463,7 +474,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                 ],
-                layout: { name: 'dagre', spacingFactor: 1.2 },
+                layout: { name: 'cose' },
             });
 
             // Click handler — navigate to passage
@@ -578,8 +589,26 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             document.getElementById('statUnreachable').textContent = 'Unreachable: ' + unreachableCount;
         }
 
+        // Check whether the dagre layout extension is available.
+        // cytoscape-dagre requires the dagre library as a global;
+        // if dagre.min.js failed to load the extension won't register.
+        function isDagreAvailable() {
+            try {
+                // cytoscape-dagre registers itself as 'dagre' layout
+                return typeof cytoscapeDagre !== 'undefined' || typeof window.dagre !== 'undefined';
+            } catch (_) {
+                return false;
+            }
+        }
+
         function applyLayout(layoutName) {
             if (!cy) return;
+
+            // Fall back from dagre to cose if the dagre extension is not available
+            if ((layoutName === 'dagre') && !isDagreAvailable()) {
+                console.warn('[Knot Story Map] dagre layout unavailable – falling back to cose');
+                layoutName = 'cose';
+            }
 
             let layoutOpts;
             switch (layoutName) {
@@ -621,10 +650,22 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     };
                     break;
                 default:
-                    layoutOpts = { name: 'dagre', spacingFactor: 1.2, animate: true };
+                    layoutOpts = { name: 'cose', animate: true };
             }
 
-            cy.layout(layoutOpts).run();
+            try {
+                cy.layout(layoutOpts).run();
+            } catch (e) {
+                console.error('[Knot Story Map] Layout failed:', e);
+                // Fall back to cose if the requested layout fails
+                if (layoutName !== 'cose') {
+                    try {
+                        cy.layout({ name: 'cose', animate: true }).run();
+                    } catch (e2) {
+                        console.error('[Knot Story Map] Fallback layout also failed:', e2);
+                    }
+                }
+            }
         }
 
         function filterGraph(query) {
@@ -684,6 +725,9 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             switch (message.command) {
                 case 'updateGraph':
                     buildGraph(message.data);
+                    break;
+                case 'graphError':
+                    console.error('[Knot Story Map] Graph error from server:', message.message);
                     break;
             }
         });

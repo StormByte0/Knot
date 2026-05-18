@@ -26,6 +26,39 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
+// ---------------------------------------------------------------------------
+// SourceTextProvider — allows format plugins to resolve byte offsets to lines
+// ---------------------------------------------------------------------------
+
+/// A trait that provides source text for documents by URI.
+///
+/// The server implements this using its `open_documents` cache, making
+/// document text available to format plugins for byte-offset → line-number
+/// resolution. Without this, format plugins could only return `line: 0`
+/// for variable usage locations because the `Workspace` does not store
+/// source text.
+///
+/// This is passed through `build_variable_tree()` so that variable usage
+/// locations in the variable flow UI can navigate to exact source lines
+/// instead of just the passage header.
+pub trait SourceTextProvider {
+    /// Look up the source text of a document by its URI string.
+    /// Returns `None` if the document is not available (e.g., not yet indexed).
+    fn get_source_text(&self, file_uri: &str) -> Option<&str>;
+}
+
+/// A no-op `SourceTextProvider` that always returns `None`.
+///
+/// Used when the caller doesn't have source text available (e.g., during
+/// testing or when the format plugin is used outside the LSP server).
+pub struct NoSourceText;
+
+impl SourceTextProvider for NoSourceText {
+    fn get_source_text(&self, _file_uri: &str) -> Option<&str> {
+        None
+    }
+}
+
 /// A semantic token produced by a format plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticToken {
@@ -447,6 +480,30 @@ pub trait FormatPlugin: Send + Sync {
         Vec::new()
     }
 
+    /// Return the set of variable names that are initialized by special
+    /// passages (e.g., `StoryInit`, `Story JavaScript`, `PassageDone`).
+    ///
+    /// This supplements the core engine's `collect_special_passage_initializers()`
+    /// which only scans passages in the indexed workspace. If a special passage
+    /// is defined in an unindexed file, its initializers won't appear in
+    /// `passage_data`. By also querying the format plugin's variable registry,
+    /// which builds `seeded_by_special` from ALL parsed documents, we close
+    /// this gap and avoid false "uninitialized variable" diagnostics for
+    /// variables that are actually seeded at game start.
+    ///
+    /// The default implementation uses `build_state_variable_registry()` and
+    /// filters for variables where `seeded_by_special` is true.
+    fn special_passage_seed_variables(
+        &self,
+        workspace: &knot_core::Workspace,
+    ) -> HashSet<String> {
+        self.build_state_variable_registry(workspace)
+            .into_iter()
+            .filter(|(_, sv)| sv.seeded_by_special)
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Variable tree (format-agnostic UI representation)
     // -----------------------------------------------------------------------
@@ -472,9 +529,14 @@ pub trait FormatPlugin: Send + Sync {
     /// format-specific logic lives here, in the format plugin.
     ///
     /// The default implementation returns an empty list (no variables).
+    ///
+    /// The `source_text` parameter provides access to document source text
+    /// for computing accurate line numbers from byte offsets. Without it,
+    /// all usage locations would report `line: 0` (passage header).
     fn build_variable_tree(
         &self,
         _workspace: &knot_core::Workspace,
+        _source_text: &dyn SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
         Vec::new()
     }

@@ -374,7 +374,11 @@ pub(crate) async fn inlay_hint(
         .unwrap_or("Start");
 
     let passage_data = AnalysisEngine::collect_passage_data(&inner.workspace);
-    let seed_init = AnalysisEngine::collect_special_passage_initializers(&inner.workspace, &passage_data);
+    let core_seed = AnalysisEngine::collect_special_passage_initializers(&inner.workspace, &passage_data);
+    let format = inner.workspace.resolve_format();
+    let seed_init = helpers::supplement_seed_with_format_specials(
+        core_seed, &inner.workspace, &inner.format_registry, format
+    );
     let flow_states = AnalysisEngine::run_dataflow_from_engine(&inner.workspace, start_passage, &passage_data, &seed_init);
 
     let mut hints = Vec::new();

@@ -53,7 +53,7 @@ pub struct AnalysisEngine;
 
 /// Per-passage dataflow state: the set of variables that are definitely
 /// initialized at a given program point.
-type InitSet = HashSet<String>;
+pub type InitSet = HashSet<String>;
 
 /// A variable diagnostic produced by a format plugin, converted for use
 /// by the core analysis engine. This struct bridges the format-specific
@@ -601,11 +601,10 @@ impl AnalysisEngine {
             }
         }
 
-        // TODO: Also check for special passages defined in format plugins
-        // that may not be in passage_data (e.g., if they're in unindexed files).
-        // This would require inspecting workspace.format_registry via the
-        // server's FormatRegistry, which is not accessible from the core crate.
-        // When this is implemented, the _workspace parameter will be used.
+        // NOTE: The server supplements this seed set with format plugin's
+        // `special_passage_seed_variables()` via `supplement_seed_with_format_specials()`.
+        // This closes the gap for special passages in unindexed files.
+        // When this is used, the _workspace parameter will be needed.
         seed
     }
 

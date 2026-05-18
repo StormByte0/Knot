@@ -18,6 +18,7 @@ pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;
 pub use analysis::FormatVariableDiagnostic;
+pub use analysis::InitSet;
 
 #[cfg(test)]
 mod analysis_tests;

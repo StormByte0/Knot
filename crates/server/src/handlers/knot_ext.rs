@@ -377,7 +377,7 @@ impl ServerState {
         // The server only does a mechanical translation to LSP wire types.
         let plugin = inner.format_registry.get(&format);
         let tree_nodes = if let Some(p) = plugin {
-            p.build_variable_tree(workspace)
+            p.build_variable_tree(workspace, &inner.open_documents)
         } else {
             Vec::new()
         };
@@ -490,7 +490,11 @@ impl ServerState {
 
         // Compute initialized-at-entry from dataflow
         let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
+        let core_seed = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
+        let debug_format = workspace.resolve_format();
+        let seed_init = helpers::supplement_seed_with_format_specials(
+            core_seed, workspace, &inner.format_registry, debug_format
+        );
         let flow_states = AnalysisEngine::run_dataflow_from_engine(workspace, start_passage, &passage_data, &seed_init);
         let initialized_at_entry: Vec<String> = flow_states
             .get(&params.passage_name)
@@ -1141,7 +1145,10 @@ impl ServerState {
             .unwrap_or("Start");
 
         let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
+        let core_seed = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
+        let seed_init = helpers::supplement_seed_with_format_specials(
+            core_seed, workspace, &inner.format_registry, format
+        );
         let flow_states = AnalysisEngine::run_dataflow_from_engine(workspace, start_passage, &passage_data, &seed_init);
 
         // Get passage info

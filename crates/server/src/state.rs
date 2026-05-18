@@ -5,11 +5,28 @@
 
 use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
-use knot_formats::plugin::{FormatDiagnostic, FormatRegistry};
+use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tower_lsp::Client;
 use url::Url;
+
+// ---------------------------------------------------------------------------
+// SourceTextProvider implementation for the server's open_documents cache
+// ---------------------------------------------------------------------------
+
+/// Implement `SourceTextProvider` for the server's document cache so that
+/// format plugins can resolve byte offsets to line numbers.
+impl SourceTextProvider for HashMap<Url, String> {
+    fn get_source_text(&self, file_uri: &str) -> Option<&str> {
+        // Try to parse the URI string and look it up directly
+        if let Ok(uri) = Url::parse(file_uri) {
+            self.get(&uri).map(|s| s.as_str())
+        } else {
+            None
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Inner mutable state
