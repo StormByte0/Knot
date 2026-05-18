@@ -1,17 +1,18 @@
 //! Story Map webview provider for the Knot extension.
 //!
 //! This module implements a VS Code webview panel that renders an interactive
-//! passage graph using Cytoscape.js. Features include:
+//! passage graph using Cytoscape.js, inspired by the Twine 2 story editor:
 //!
-//! - Position-based layout (using Twee passage position property)
-//! - Force-directed and dagre (hierarchical) layout as fallbacks
+//! - Dot grid background (panning canvas feel)
+//! - Origin at top-left (0,0), start passage near origin
+//! - Position-based layout using Twee passage `<x,y>` metadata
+//! - Automatic dagre layout for passages without position data
 //! - Click-to-navigate (clicking a node opens the passage in the editor)
-//! - Color-coded nodes (normal, special, metadata, unreachable, broken)
+//! - Color-coded nodes (normal, special, metadata, unreachable)
 //! - Red dashed edges for broken links
+//! - Drag-to-reposition with position write-back (Twine-compatible `<x,y>`)
 //! - Search/filter passages by name or tag
-//! - Real-time graph refresh when documents change
 //! - Zoom-to-fit and layout switching controls
-//! - Open in Full View (detachable/floating window)
 
 import * as vscode from 'vscode';
 import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
@@ -70,7 +71,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     if (file) {
                         const uri = vscode.Uri.parse(file);
                         const doc = await vscode.workspace.openTextDocument(uri);
-                        const editor = await vscode.window.showTextDocument(doc, {
+                        await vscode.window.showTextDocument(doc, {
                             preview: true,
                             selection: new vscode.Range(line, 0, line, 200),
                         });
@@ -81,15 +82,8 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     await this.refreshGraph();
                     break;
                 }
-                case 'switchLayout': {
-                    if (this._graphData) {
-                        this._graphData.layout = message.layout;
-                        this._postGraphData();
-                    }
-                    break;
-                }
                 case 'openFullView': {
-                    await vscode.commands.executeCommand('knot.openFullStoryMap');
+                    await vscode.commands.executeCommand('knot.openStoryMap');
                     break;
                 }
                 case 'updatePositions': {
@@ -175,11 +169,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     <script nonce="${nonce}" src="${cytoscapeScript}"></script>
     <script nonce="${nonce}" src="${dagreScript}"></script>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
             --bg: var(--vscode-editor-background, #1e1e1e);
@@ -189,7 +179,10 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             --muted: var(--vscode-descriptionForeground, #8b8b8b);
             --card: var(--vscode-sideBar-background, #252526);
             --error: var(--vscode-errorForeground, #f14c4c);
-            --warning: var(--vscode-editorWarning-foreground, #cca700);
+            --grid-dot: rgba(255,255,255,0.07);
+            --node-bg: #2d2d30;
+            --node-border: #3e3e42;
+            --node-selected: var(--accent);
         }
 
         body {
@@ -203,84 +196,74 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             overflow: hidden;
         }
 
-        /* Toolbar */
+        /* ── Toolbar ─────────────────────────────────────────── */
         #toolbar {
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding: 6px 8px;
+            gap: 4px;
+            padding: 4px 6px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
             flex-shrink: 0;
+            z-index: 10;
         }
 
         #toolbar input {
             flex: 1;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--fg);
-            padding: 4px 8px;
-            border-radius: 3px;
-            font-size: 12px;
-            outline: none;
-        }
-
-        #toolbar input:focus {
-            border-color: var(--accent);
-        }
-
-        #toolbar button {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--fg);
-            padding: 3px 8px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 12px;
-            white-space: nowrap;
-        }
-
-        #toolbar button:hover {
-            background: var(--accent);
-            color: white;
-        }
-
-        #toolbar select {
+            min-width: 60px;
             background: var(--bg);
             border: 1px solid var(--border);
             color: var(--fg);
             padding: 3px 6px;
             border-radius: 3px;
-            font-size: 12px;
+            font-size: 11px;
+            outline: none;
+        }
+        #toolbar input:focus { border-color: var(--accent); }
+
+        #toolbar button {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            padding: 2px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            white-space: nowrap;
+            line-height: 1.4;
+        }
+        #toolbar button:hover { background: var(--accent); color: #fff; }
+
+        #toolbar select {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 11px;
             outline: none;
         }
 
-        /* Graph container */
+        /* ── Graph canvas ────────────────────────────────────── */
         #cy {
             flex: 1;
             min-height: 0;
         }
 
-        /* Status bar at bottom */
+        /* ── Status bar ──────────────────────────────────────── */
         #statusBar {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 4px 8px;
+            gap: 10px;
+            padding: 3px 8px;
             background: var(--card);
             border-top: 1px solid var(--border);
-            font-size: 11px;
+            font-size: 10px;
             color: var(--muted);
             flex-shrink: 0;
         }
 
-        #statusBar .stat {
-            display: flex;
-            align-items: center;
-            gap: 3px;
-        }
-
-        /* Tooltip */
+        /* ── Tooltip ─────────────────────────────────────────── */
         #tooltip {
             position: absolute;
             display: none;
@@ -293,71 +276,48 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             pointer-events: none;
             z-index: 999;
             max-width: 280px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
         }
-
-        #tooltip .tt-name {
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-
+        #tooltip .tt-name { font-weight: 600; margin-bottom: 3px; }
         #tooltip .tt-tag {
             display: inline-block;
             background: var(--accent);
-            color: white;
+            color: #fff;
             padding: 1px 5px;
             border-radius: 3px;
-            font-size: 10px;
-            margin-right: 3px;
+            font-size: 9px;
+            margin-right: 2px;
             margin-top: 2px;
         }
+        #tooltip .tt-meta { color: var(--muted); font-size: 10px; margin-top: 3px; }
 
-        #tooltip .tt-meta {
-            color: var(--muted);
-            font-size: 11px;
-            margin-top: 4px;
-        }
-
-        /* Legend */
+        /* ── Legend ───────────────────────────────────────────── */
         #legend {
             position: absolute;
-            bottom: 36px;
+            bottom: 32px;
             right: 8px;
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 4px;
-            padding: 8px;
-            font-size: 11px;
+            padding: 6px 8px;
+            font-size: 10px;
+            opacity: 0.85;
         }
-
-        #legend .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin: 2px 0;
-        }
-
-        #legend .legend-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
+        #legend:hover { opacity: 1; }
+        #legend .legend-item { display: flex; align-items: center; gap: 5px; margin: 1px 0; }
+        #legend .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     </style>
 </head>
 <body>
     <div id="toolbar">
-        <input type="text" id="searchInput" placeholder="Search passages..." />
-        <select id="layoutSelect" title="Layout algorithm">
-            <option value="position">Position</option>
-            <option value="dagre">Dagre</option>
-            <option value="breadthfirst">Tree</option>
+        <input type="text" id="searchInput" placeholder="Filter passages..." />
+        <select id="layoutSelect" title="Layout">
+            <option value="position">Saved</option>
+            <option value="dagre">Flow</option>
             <option value="cose">Force</option>
-            <option value="circle">Circle</option>
         </select>
-        <button id="fitBtn" title="Zoom to fit">&#x26F6; Fit</button>
-        <button id="fullViewBtn" title="Open in full view">&#x2922; Expand</button>
-        <button id="refreshBtn" title="Refresh graph">&#x21BB;</button>
+        <button id="fitBtn" title="Zoom to fit">Fit</button>
+        <button id="refreshBtn" title="Refresh">&#x21BB;</button>
     </div>
 
     <div id="cy"></div>
@@ -373,16 +333,14 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         <div class="legend-item"><span class="legend-dot" style="background:#66bb6a"></span> Start</div>
         <div class="legend-item"><span class="legend-dot" style="background:#ffb74d"></span> Special</div>
         <div class="legend-item"><span class="legend-dot" style="background:#ce93d8"></span> Metadata</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#666"></span> Unreachable</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#555"></span> Unreachable</div>
         <div class="legend-item"><span class="legend-dot" style="background:transparent; border:2px dashed #f14c4c"></span> Broken link</div>
     </div>
 
     <div id="statusBar">
-        <span class="stat" id="statNodes">Nodes: 0</span>
-        <span class="stat" id="statEdges">Edges: 0</span>
-        <span class="stat" id="statBroken">Broken: 0</span>
-        <span class="stat" id="statUnreachable">Unreachable: 0</span>
-        <span class="stat" id="statPositions">Positions: 0</span>
+        <span id="statNodes">0 passages</span>
+        <span id="statEdges">0 links</span>
+        <span id="statBroken">0 broken</span>
     </div>
 
     <script nonce="${nonce}">
@@ -390,28 +348,61 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         let cy = null;
         let currentData = null;
 
-        // Color palette for different node types
+        /* ── Twine-inspired color palette ──────────────────── */
         const COLORS = {
-            normal: '#4fc3f7',       // Light blue
-            special: '#ffb74d',      // Orange
-            metadata: '#ce93d8',     // Purple
-            unreachable: '#666666',  // Gray
-            broken: '#f14c4c',       // Red
-            start: '#66bb6a',        // Green
+            normal:    '#4fc3f7',
+            start:     '#66bb6a',
+            special:   '#ffb74d',
+            metadata:  '#ce93d8',
+            unreachable:'#555555',
+            broken:    '#f14c4c',
         };
 
-        function getNodeColor(node) {
-            if (node.is_metadata) return COLORS.metadata;
-            if (node.is_unreachable) return COLORS.unreachable;
-            if (node.is_special) return COLORS.special;
-            if (node.id === 'Start' || node.label === 'Start') return COLORS.start;
+        function getNodeColor(data) {
+            if (data.is_metadata)   return COLORS.metadata;
+            if (data.is_unreachable) return COLORS.unreachable;
+            if (data.is_special)    return COLORS.special;
+            if (data.is_start)      return COLORS.start;
             return COLORS.normal;
         }
 
-        function hasPositions(nodes) {
-            return nodes.some(n => n.position_x != null && n.position_y != null);
+        /* ── Grid background renderer ──────────────────────── */
+        function drawGrid() {
+            const container = document.getElementById('cy');
+            if (!container) return;
+            // Remove old grid canvas if present
+            const old = document.getElementById('gridCanvas');
+            if (old) old.remove();
+
+            const canvas = document.createElement('canvas');
+            canvas.id = 'gridCanvas';
+            canvas.style.position = 'absolute';
+            canvas.style.top = '0';
+            canvas.style.left = '0';
+            canvas.style.width = '100%';
+            canvas.style.height = '100%';
+            canvas.style.pointerEvents = 'none';
+            canvas.style.zIndex = '0';
+            container.insertBefore(canvas, container.firstChild);
+
+            const rect = container.getBoundingClientRect();
+            canvas.width = rect.width;
+            canvas.height = rect.height;
+            const ctx = canvas.getContext('2d');
+
+            // Twine-style dot grid
+            const spacing = 20;
+            ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid-dot').trim() || 'rgba(255,255,255,0.07)';
+            for (let x = spacing; x < rect.width; x += spacing) {
+                for (let y = spacing; y < rect.height; y += spacing) {
+                    ctx.beginPath();
+                    ctx.arc(x, y, 1, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
         }
 
+        /* ── Initialize Cytoscape ──────────────────────────── */
         function initCytoscape() {
             cy = cytoscape({
                 container: document.getElementById('cy'),
@@ -420,15 +411,15 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         selector: 'node',
                         style: {
                             'label': 'data(label)',
-                            'background-color': 'data(color)',
-                            'color': '#d4d4d4',
+                            'background-color': 'data(bgColor)',
+                            'color': '#e0e0e0',
                             'text-valign': 'center',
                             'text-halign': 'center',
-                            'font-size': '10px',
+                            'font-size': '11px',
                             'text-wrap': 'ellipsis',
-                            'text-max-width': '80px',
-                            'width': 'data(width)',
-                            'height': 'data(height)',
+                            'text-max-width': '90px',
+                            'width': 'data(w)',
+                            'height': 'data(h)',
                             'shape': 'round-rectangle',
                             'text-outline-color': '#1e1e1e',
                             'text-outline-width': '2px',
@@ -438,166 +429,119 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                         }
                     },
                     {
-                        selector: 'node:active',
-                        style: {
-                            'overlay-opacity': 0.1,
-                        }
-                    },
-                    {
-                        selector: 'node[is_metadata = true]',
-                        style: {
-                            'shape': 'diamond',
-                            'width': 30,
-                            'height': 30,
-                            'font-size': '8px',
-                        }
-                    },
-                    {
                         selector: 'edge',
                         style: {
                             'width': 1.5,
                             'line-color': '#555',
                             'target-arrow-color': '#555',
                             'target-arrow-shape': 'triangle',
-                            'arrow-scale': 0.8,
+                            'arrow-scale': 0.7,
                             'curve-style': 'bezier',
-                            'opacity': 0.7,
+                            'opacity': 0.6,
                         }
                     },
                     {
-                        selector: 'edge[is_broken = true]',
+                        selector: 'edge.is_broken',
                         style: {
                             'line-color': COLORS.broken,
                             'target-arrow-color': COLORS.broken,
                             'line-style': 'dashed',
-                            'opacity': 0.9,
+                            'opacity': 0.85,
                         }
                     },
                     {
-                        selector: 'edge.has_display_text',
+                        selector: 'edge.has_label',
                         style: {
                             'label': 'data(displayText)',
                             'font-size': '8px',
                             'text-rotation': 'autorotate',
                             'text-outline-color': '#1e1e1e',
                             'text-outline-width': '1px',
-                            'color': '#aaa',
+                            'color': '#999',
                         }
                     },
                     {
                         selector: 'node.highlighted',
-                        style: {
-                            'border-color': '#ffffff',
-                            'border-width': '3px',
-                            'z-index': 999,
-                        }
+                        style: { 'border-color': '#fff', 'border-width': '3px', 'z-index': 999 }
                     },
                     {
                         selector: 'node.dimmed',
-                        style: {
-                            'opacity': 0.25,
-                        }
+                        style: { 'opacity': 0.2 }
                     },
                     {
                         selector: 'edge.dimmed',
-                        style: {
-                            'opacity': 0.1,
-                        }
+                        style: { 'opacity': 0.08 }
                     },
                 ],
-                layout: { name: 'dagre', spacingFactor: 1.2 },
+                // Start with no layout — buildGraph will apply one
+                layout: { name: 'null' },
             });
 
-            // Click handler — navigate to passage
+            // Click → open passage
             cy.on('tap', 'node', (evt) => {
                 const node = evt.target;
                 const file = node.data('file');
                 const line = node.data('line') || 0;
                 if (file) {
-                    vscode.postMessage({
-                        command: 'openPassage',
-                        file: file,
-                        line: line,
-                    });
+                    vscode.postMessage({ command: 'openPassage', file, line });
                 }
             });
 
-            // Drag-free handler — update passage positions when user finishes dragging
+            // Drag end → write back position
             cy.on('dragfree', 'node', (evt) => {
-                const nodes = cy.nodes(':grabbed');  // nodes that were just dragged
-                const updates = [];
-                // If single node drag, evt.target gives us the node
-                // For safety, also check cy.$('.ui-draggable')
-                const draggedNode = evt.target;
-                if (draggedNode && draggedNode.data('id')) {
-                    const pos = draggedNode.position();
-                    const oldX = draggedNode.data('positionX');
-                    const oldY = draggedNode.data('positionY');
-                    // Round to reasonable precision (2 decimal places) to avoid
-                    // floating-point noise from small movements
-                    const newX = Math.round(pos.x * 100) / 100;
-                    const newY = Math.round(pos.y * 100) / 100;
-                    // Only send update if position actually changed
-                    if (oldX == null || oldY == null ||
-                        Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
-                        updates.push({
-                            passage_name: draggedNode.data('id'),
-                            position_x: newX,
-                            position_y: newY,
-                        });
-                        // Update cached position data on the node
-                        draggedNode.data('positionX', newX);
-                        draggedNode.data('positionY', newY);
-                    }
-                }
-                if (updates.length > 0) {
+                const dragged = evt.target;
+                if (!dragged || !dragged.data('id')) return;
+                const pos = dragged.position();
+                const oldX = dragged.data('posX');
+                const oldY = dragged.data('posY');
+                const newX = Math.round(pos.x * 100) / 100;
+                const newY = Math.round(pos.y * 100) / 100;
+                if (oldX == null || oldY == null ||
+                    Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
+                    dragged.data('posX', newX);
+                    dragged.data('posY', newY);
                     vscode.postMessage({
                         command: 'updatePositions',
-                        updates: updates,
+                        updates: [{ passage_name: dragged.data('id'), position_x: newX, position_y: newY }],
                     });
                 }
             });
 
-            // Hover handler — show tooltip
+            // Tooltip
             cy.on('mouseover', 'node', (evt) => {
-                const node = evt.target;
-                const data = node.data();
-                const tooltip = document.getElementById('tooltip');
-                tooltip.querySelector('.tt-name').textContent = data.label;
-                const tagsDiv = tooltip.querySelector('.tt-tags');
+                const d = evt.target.data();
+                const tip = document.getElementById('tooltip');
+                tip.querySelector('.tt-name').textContent = d.label;
+                const tagsDiv = tip.querySelector('.tt-tags');
                 tagsDiv.innerHTML = '';
-                if (data.tags && data.tags.length > 0) {
-                    data.tags.forEach(t => {
-                        const span = document.createElement('span');
-                        span.className = 'tt-tag';
-                        span.textContent = t;
-                        tagsDiv.appendChild(span);
-                    });
-                }
-                const meta = tooltip.querySelector('.tt-meta');
+                (d.tags || []).forEach(t => {
+                    const s = document.createElement('span');
+                    s.className = 'tt-tag'; s.textContent = t;
+                    tagsDiv.appendChild(s);
+                });
                 const parts = [];
-                if (data.in_degree > 0) parts.push('In: ' + data.in_degree);
-                if (data.out_degree > 0) parts.push('Out: ' + data.out_degree);
-                if (data.is_special) parts.push('Special');
-                if (data.is_metadata) parts.push('Metadata');
-                if (data.is_unreachable) parts.push('Unreachable');
-                if (data.positionX != null && data.positionY != null) {
-                    parts.push('Pos: (' + Math.round(data.positionX) + ', ' + Math.round(data.positionY) + ')');
-                }
-                meta.textContent = parts.join(' | ');
-
-                tooltip.style.display = 'block';
+                if (d.in_degree > 0)  parts.push('In: ' + d.in_degree);
+                if (d.out_degree > 0) parts.push('Out: ' + d.out_degree);
+                if (d.is_special)    parts.push('Special');
+                if (d.is_metadata)   parts.push('Metadata');
+                if (d.is_unreachable) parts.push('Unreachable');
+                if (d.posX != null && d.posY != null) parts.push('(' + Math.round(d.posX) + ', ' + Math.round(d.posY) + ')');
+                tip.querySelector('.tt-meta').textContent = parts.join(' | ');
+                tip.style.display = 'block';
             });
-
             cy.on('mouseout', 'node', () => {
                 document.getElementById('tooltip').style.display = 'none';
             });
-
             cy.on('tapdrag', () => {
                 document.getElementById('tooltip').style.display = 'none';
             });
+
+            // Redraw grid on resize
+            const ro = new ResizeObserver(() => drawGrid());
+            ro.observe(document.getElementById('cy'));
         }
 
+        /* ── Build the graph from server data ──────────────── */
         function buildGraph(data) {
             if (!cy) return;
             const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
@@ -607,225 +551,246 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             cy.elements().remove();
 
             const elements = [];
-            const positionCount = nodes.filter(n => n.position_x != null && n.position_y != null).length;
+            const positionedIds = new Set();
+            const unpositioned = [];
 
-            // Add nodes with position data if available
-            for (const node of nodes) {
-                const color = getNodeColor(node);
-                const size = Math.max(40, Math.min(80, 30 + Math.max(node.out_degree, node.in_degree) * 5));
+            // Determine start passage name
+            let startName = 'Start';
+            // The start passage is the one with in_degree 0 and is not special/metadata
+            // or just the one named "Start" — we mark it for the green color
+
+            /* ── Nodes ────────────────────────────────────── */
+            for (const n of nodes) {
+                const isStart = (n.id === 'Start' || n.label === 'Start');
+                const color = getNodeColor({ ...n, is_start: isStart });
+                const size = Math.max(50, Math.min(100, 40 + Math.max(n.out_degree || 0, n.in_degree || 0) * 6));
+                const hasPos = n.position_x != null && n.position_y != null;
+
                 const el = {
                     data: {
-                        id: node.id,
-                        label: node.label,
-                        file: node.file,
-                        line: node.line,
-                        tags: node.tags,
-                        out_degree: node.out_degree,
-                        in_degree: node.in_degree,
-                        is_special: node.is_special,
-                        is_metadata: node.is_metadata,
-                        is_unreachable: node.is_unreachable,
-                        color: color,
-                        borderColor: node.is_unreachable ? '#444' : color,
-                        width: node.is_metadata ? 30 : size,
-                        height: node.is_metadata ? 30 : size * 0.6,
-                        positionX: node.position_x,
-                        positionY: node.position_y,
+                        id: n.id,
+                        label: n.label,
+                        file: n.file,
+                        line: n.line,
+                        tags: n.tags || [],
+                        out_degree: n.out_degree || 0,
+                        in_degree: n.in_degree || 0,
+                        is_special: !!n.is_special,
+                        is_metadata: !!n.is_metadata,
+                        is_unreachable: !!n.is_unreachable,
+                        is_start: isStart,
+                        bgColor: n.is_unreachable ? '#2a2a2a' : '#2d2d30',
+                        borderColor: color,
+                        w: n.is_metadata ? 40 : size,
+                        h: n.is_metadata ? 40 : size * 0.55,
+                        posX: n.position_x,
+                        posY: n.position_y,
                     }
                 };
-                // If we have position data, set it as the initial position
-                if (node.position_x != null && node.position_y != null) {
-                    el.position = { x: node.position_x, y: node.position_y };
+
+                if (hasPos) {
+                    // Use saved position — Twine-compatible coordinates
+                    el.position = { x: n.position_x, y: n.position_y };
+                    positionedIds.add(n.id);
+                } else {
+                    unpositioned.push(n);
                 }
+
                 elements.push(el);
             }
 
-            // Add edges
-            for (const edge of edges) {
+            /* ── Edges ────────────────────────────────────── */
+            for (const e of edges) {
                 const el = {
                     data: {
-                        id: edge.source + '->' + edge.target,
-                        source: edge.source,
-                        target: edge.target,
-                        is_broken: edge.is_broken,
-                        displayText: edge.display_text || null,
-                    }
+                        id: e.source + '->' + e.target,
+                        source: e.source,
+                        target: e.target,
+                        displayText: e.display_text || null,
+                    },
+                    classes: [
+                        e.is_broken ? 'is_broken' : '',
+                        e.display_text ? 'has_label' : '',
+                    ].filter(Boolean).join(' '),
                 };
                 elements.push(el);
             }
 
             cy.add(elements);
 
-            // Apply layout — use position layout if positions are available
-            const layoutName = currentData.layout || (positionCount > 0 ? 'position' : 'dagre');
-            applyLayout(layoutName);
-
-            // Update stats
-            const brokenCount = edges.filter(e => e.is_broken).length;
-            const unreachableCount = nodes.filter(n => n.is_unreachable).length;
-            document.getElementById('statNodes').textContent = 'Nodes: ' + nodes.length;
-            document.getElementById('statEdges').textContent = 'Edges: ' + edges.length;
-            document.getElementById('statBroken').textContent = 'Broken: ' + brokenCount;
-            document.getElementById('statUnreachable').textContent = 'Unreachable: ' + unreachableCount;
-            document.getElementById('statPositions').textContent = 'Positions: ' + positionCount;
-
-            // Update layout selector to match
+            /* ── Layout ───────────────────────────────────── */
+            // Strategy (Twine-like):
+            //   1. If ANY nodes have saved positions, use "Saved" layout
+            //      (positioned nodes at their coords, unpositioned get dagre'd)
+            //   2. If NO nodes have positions, use dagre for everything
+            const hasAnyPositions = positionedIds.size > 0;
             const layoutSelect = document.getElementById('layoutSelect');
-            if (positionCount > 0 && layoutSelect.value !== layoutName) {
-                layoutSelect.value = layoutName;
-            }
-            // Disable position option if no positions available
-            const positionOption = layoutSelect.querySelector('option[value="position"]');
-            if (positionOption) {
-                positionOption.disabled = positionCount === 0;
-            }
+            const chosenLayout = currentData.layout || (hasAnyPositions ? 'position' : 'dagre');
+
+            // Disable "Saved" option when no positions exist
+            const savedOpt = layoutSelect.querySelector('option[value="position"]');
+            if (savedOpt) savedOpt.disabled = !hasAnyPositions;
+
+            if (chosenLayout !== layoutSelect.value) layoutSelect.value = chosenLayout;
+            applyLayout(chosenLayout);
+
+            /* ── Stats ────────────────────────────────────── */
+            const brokenCount = edges.filter(e => e.is_broken).length;
+            document.getElementById('statNodes').textContent = nodes.length + ' passages';
+            document.getElementById('statEdges').textContent = edges.length + ' links';
+            document.getElementById('statBroken').textContent = brokenCount + ' broken';
+
+            drawGrid();
         }
 
-        function applyLayout(layoutName) {
-            if (!cy) return;
+        /* ── Apply layout ──────────────────────────────────── */
+        function applyLayout(name) {
+            if (!cy || cy.nodes().length === 0) return;
 
-            // "position" layout: use the stored position data
-            if (layoutName === 'position') {
-                // Position each node at its stored (x,y) from the passage position property
-                cy.nodes().forEach(node => {
-                    const px = node.data('positionX');
-                    const py = node.data('positionY');
+            if (name === 'position') {
+                // ── Saved layout: positioned nodes stay, unpositioned get auto-arranged
+                // First place all positioned nodes at their saved coordinates
+                cy.nodes().forEach(n => {
+                    const px = n.data('posX');
+                    const py = n.data('posY');
                     if (px != null && py != null) {
-                        node.position({ x: px, y: py });
+                        n.position({ x: px, y: py });
                     }
                 });
-                // For nodes without position, arrange them in a fallback grid
-                const nodesWithoutPos = cy.nodes().filter(n => n.data('positionX') == null || n.data('positionY') == null);
-                if (nodesWithoutPos.length > 0) {
-                    // Find bounding box of positioned nodes
-                    const positionedNodes = cy.nodes().filter(n => n.data('positionX') != null && n.data('positionY') != null);
-                    let startX = 0, startY = 0;
-                    if (positionedNodes.length > 0) {
-                        const bb = positionedNodes.boundingBox();
-                        startX = bb.x2 + 100;
-                        startY = bb.y1;
-                    }
-                    // Place unpositioned nodes in a grid below/right
-                    const cols = Math.ceil(Math.sqrt(nodesWithoutPos.length));
-                    nodesWithoutPos.forEach((node, i) => {
-                        const col = i % cols;
-                        const row = Math.floor(i / cols);
-                        node.position({ x: startX + col * 120, y: startY + row * 80 });
+
+                // For unpositioned nodes, run a sub-graph dagre layout
+                // that respects existing positioned nodes as fixed anchors
+                const unpos = cy.nodes().filter(n => n.data('posX') == null || n.data('posY') == null);
+                if (unpos.length > 0 && unpos.length < cy.nodes().length) {
+                    // Place unpositioned nodes relative to their connected positioned neighbors.
+                    // We use a BFS from positioned nodes through edges to compute offset positions.
+                    const fixed = cy.nodes().filter(n => n.data('posX') != null && n.data('posY') != null);
+                    const bb = fixed.boundingBox();
+                    const offsetX = bb.x2 + 150;
+                    const offsetY = bb.y1;
+
+                    // Run dagre only on unpositioned nodes + their internal edges
+                    const subNodes = unpos;
+                    const subEdgeIds = new Set();
+                    subNodes.forEach(n => subEdgeIds.add(n.id()));
+
+                    // Build a temporary sub-cytoscape for dagre layout
+                    const subElements = [];
+                    subNodes.forEach(n => {
+                        subElements.push({ data: { id: n.id(), label: n.data('label') } });
                     });
+                    // Edges between unpositioned nodes
+                    cy.edges().forEach(e => {
+                        if (subEdgeIds.has(e.data('source')) && subEdgeIds.has(e.data('target'))) {
+                            subElements.push({ data: { id: e.id(), source: e.data('source'), target: e.data('target') } });
+                        }
+                    });
+
+                    if (subElements.length > 1) {
+                        const subCy = cytoscape({
+                            container: undefined,  // headless
+                            elements: subElements,
+                            layout: { name: 'null' },
+                        });
+                        subCy.layout({
+                            name: 'dagre',
+                            rankDir: 'TB',
+                            spacingFactor: 1.0,
+                            nodeSep: 50,
+                            rankSep: 70,
+                            animate: false,
+                        }).run();
+
+                        // Map sub-graph positions back, offset by the bounding box
+                        subCy.nodes().forEach(sn => {
+                            const mainNode = cy.getElementById(sn.id());
+                            if (mainNode.length > 0) {
+                                mainNode.position({
+                                    x: sn.position().x + offsetX,
+                                    y: sn.position().y + offsetY,
+                                });
+                            }
+                        });
+                    } else {
+                        // Just one unpositioned node — place it
+                        unpos.forEach(n => n.position({ x: offsetX, y: offsetY }));
+                    }
+                } else if (unpos.length === cy.nodes().length) {
+                    // ALL nodes unpositioned — fall through to dagre
+                    applyLayout('dagre');
+                    return;
                 }
-                cy.fit(undefined, 20);
+
+                cy.fit(undefined, 30);
                 return;
             }
 
-            let layoutOpts;
-            switch (layoutName) {
+            // ── Algorithmic layouts ──────────────────────────
+            let opts;
+            switch (name) {
                 case 'dagre':
-                    layoutOpts = {
+                    opts = {
                         name: 'dagre',
                         rankDir: 'TB',
-                        spacingFactor: 1.2,
-                        nodeSep: 40,
-                        rankSep: 60,
-                        animate: true,
-                        animationDuration: 300,
-                    };
-                    break;
-                case 'breadthfirst':
-                    layoutOpts = {
-                        name: 'breadthfirst',
-                        directed: true,
-                        spacingFactor: 1.5,
+                        spacingFactor: 1.0,
+                        nodeSep: 50,
+                        rankSep: 70,
                         animate: true,
                         animationDuration: 300,
                     };
                     break;
                 case 'cose':
-                    layoutOpts = {
+                    opts = {
                         name: 'cose',
                         animate: true,
-                        animationDuration: 500,
-                        nodeRepulsion: 8000,
-                        idealEdgeLength: 100,
-                        gravity: 0.3,
-                    };
-                    break;
-                case 'circle':
-                    layoutOpts = {
-                        name: 'circle',
-                        animate: true,
-                        animationDuration: 300,
+                        animationDuration: 400,
+                        nodeRepulsion: 10000,
+                        idealEdgeLength: 120,
+                        gravity: 0.2,
                     };
                     break;
                 default:
-                    layoutOpts = { name: 'dagre', spacingFactor: 1.2, animate: true };
+                    opts = { name: 'dagre', spacingFactor: 1.0, animate: true };
             }
-
-            cy.layout(layoutOpts).run();
+            cy.layout(opts).run();
         }
 
+        /* ── Filter / search ───────────────────────────────── */
         function filterGraph(query) {
             if (!cy || !currentData) return;
             const q = query.toLowerCase().trim();
-
             if (q === '') {
-                cy.elements().removeClass('dimmed');
-                cy.elements().removeClass('highlighted');
+                cy.elements().removeClass('dimmed highlighted');
                 return;
             }
-
             cy.nodes().addClass('dimmed');
             cy.edges().addClass('dimmed');
-
-            const matched = cy.nodes().filter((node) => {
-                const label = (node.data('label') || '').toLowerCase();
-                const tags = (node.data('tags') || []);
+            const matched = cy.nodes().filter(n => {
+                const label = (n.data('label') || '').toLowerCase();
+                const tags = n.data('tags') || [];
                 return label.includes(q) || tags.some(t => t.toLowerCase().includes(q));
             });
-
-            matched.removeClass('dimmed');
-            matched.addClass('highlighted');
+            matched.removeClass('dimmed').addClass('highlighted');
             matched.neighborhood('edge').removeClass('dimmed');
             matched.neighborhood('node').removeClass('dimmed');
         }
 
-        // Initialize
+        /* ── Boot ──────────────────────────────────────────── */
         initCytoscape();
 
-        // Toolbar event handlers
-        document.getElementById('searchInput').addEventListener('input', (e) => {
-            filterGraph(e.target.value);
+        document.getElementById('searchInput').addEventListener('input', e => filterGraph(e.target.value));
+        document.getElementById('layoutSelect').addEventListener('change', e => {
+            if (currentData) currentData.layout = e.target.value;
+            applyLayout(e.target.value);
         });
-
-        document.getElementById('layoutSelect').addEventListener('change', (e) => {
-            const layout = e.target.value;
-            if (currentData) {
-                currentData.layout = layout;
-            }
-            applyLayout(layout);
-        });
-
-        document.getElementById('fitBtn').addEventListener('click', () => {
-            if (cy) {
-                cy.fit(undefined, 20);
-            }
-        });
-
-        document.getElementById('fullViewBtn').addEventListener('click', () => {
-            vscode.postMessage({ command: 'openFullView' });
-        });
-
+        document.getElementById('fitBtn').addEventListener('click', () => { if (cy) cy.fit(undefined, 30); });
         document.getElementById('refreshBtn').addEventListener('click', () => {
             vscode.postMessage({ command: 'refreshGraph' });
         });
 
-        // Listen for messages from the extension
-        window.addEventListener('message', (event) => {
-            const message = event.data;
-            switch (message.command) {
-                case 'updateGraph':
-                    buildGraph(message.data);
-                    break;
-            }
+        window.addEventListener('message', event => {
+            const msg = event.data;
+            if (msg.command === 'updateGraph') buildGraph(msg.data);
         });
     </script>
 </body>

@@ -519,9 +519,9 @@ impl FormatPlugin for SugarCubePlugin {
     fn build_variable_tree(
         &self,
         workspace: &knot_core::Workspace,
-        source_text: &dyn crate::plugin::SourceTextProvider,
+        _source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
-        vars::build_variable_tree(workspace, source_text)
+        vars::build_variable_tree(workspace)
     }
 }
 

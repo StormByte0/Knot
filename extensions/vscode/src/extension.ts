@@ -22,7 +22,7 @@ import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse } from './types';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -459,19 +459,9 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
 // ---------------------------------------------------------------------------
 
 function registerCommands(context: vscode.ExtensionContext) {
-    // Open Story Map (focuses the sidebar panel)
+    // Open Story Map — opens a full-view webview panel (detachable, higher resolution)
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.openStoryMap', async () => {
-            // Focus the Story Map view in the sidebar
-            await vscode.commands.executeCommand('knot.storyMap.focus');
-            // Trigger a graph refresh
-            refreshStoryMap();
-        })
-    );
-
-    // Open Story Map in a floating/detachable panel for higher resolution
-    context.subscriptions.push(
-        vscode.commands.registerCommand('knot.openStoryMapPanel', async () => {
             const panel = vscode.window.createWebviewPanel(
                 'knot.storyMapPanel',
                 'Knot Story Map',
@@ -482,10 +472,9 @@ function registerCommands(context: vscode.ExtensionContext) {
                     retainContextWhenHidden: true,
                 }
             );
-            // Re-use the StoryMapProvider's HTML generation for a full panel
             const panelProvider = new StoryMapProvider(context.extensionUri);
             panelProvider.setClient(client);
-            panel.webview.html = panelProvider.getHtmlForPanel(panel.webview);
+            panel.webview.html = panelProvider.getFullViewHtml(panel.webview, context.extensionUri);
 
             // Handle messages from the panel
             panel.webview.onDidReceiveMessage(async (message) => {
@@ -503,7 +492,6 @@ function registerCommands(context: vscode.ExtensionContext) {
                         break;
                     }
                     case 'refreshGraph': {
-                        // Fetch graph data and post to panel
                         if (client && client.isRunning()) {
                             const workspaceFolders = vscode.workspace.workspaceFolders;
                             if (workspaceFolders && workspaceFolders.length > 0) {
@@ -519,21 +507,25 @@ function registerCommands(context: vscode.ExtensionContext) {
                         }
                         break;
                     }
-                    case 'switchLayout': {
-                        // Layout is handled client-side, no server action needed
+                    case 'updatePositions': {
+                        const { updates } = message;
+                        if (client && client.isRunning() && updates && updates.length > 0) {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                try {
+                                    await client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', {
+                                        workspace_uri: workspaceFolders[0].uri.toString(),
+                                        updates: updates,
+                                    });
+                                } catch (e) {
+                                    console.error('[Knot] Failed to update passage positions:', e);
+                                }
+                            }
+                        }
                         break;
                     }
                 }
             });
-
-            // Auto-refresh on document changes while the panel is open
-            const disposable = vscode.workspace.onDidChangeTextDocument(() => {
-                if (panel.visible) {
-                    // Debounce: don't refresh on every keystroke
-                    // The server handles debouncing, so just request a refresh
-                }
-            });
-            panel.onDidDispose(() => disposable.dispose());
 
             // Initial graph load
             if (client && client.isRunning()) {
