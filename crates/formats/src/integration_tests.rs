@@ -459,24 +459,32 @@ fn graph_surgery_with_snowman_parse() {
 
 #[test]
 fn sugarcube_full_variable_tracking() {
-    assert!(StoryFormat::SugarCube.supports_full_variable_tracking());
-    assert!(!StoryFormat::SugarCube.supports_partial_variable_tracking());
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    assert!(plugin.supports_full_variable_tracking());
+    assert!(!plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn snowman_full_variable_tracking() {
-    assert!(StoryFormat::Snowman.supports_full_variable_tracking());
-    assert!(!StoryFormat::Snowman.supports_partial_variable_tracking());
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::Snowman).unwrap();
+    assert!(plugin.supports_full_variable_tracking());
+    assert!(!plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn harlowe_partial_variable_tracking() {
-    assert!(!StoryFormat::Harlowe.supports_full_variable_tracking());
-    assert!(StoryFormat::Harlowe.supports_partial_variable_tracking());
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::Harlowe).unwrap();
+    assert!(!plugin.supports_full_variable_tracking());
+    assert!(plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn chapbook_no_variable_tracking() {
-    assert!(!StoryFormat::Chapbook.supports_full_variable_tracking());
-    assert!(!StoryFormat::Chapbook.supports_partial_variable_tracking());
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::Chapbook).unwrap();
+    assert!(!plugin.supports_full_variable_tracking());
+    assert!(!plugin.supports_partial_variable_tracking());
 }

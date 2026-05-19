@@ -386,7 +386,11 @@ impl ServerState {
         let format = workspace.resolve_format();
 
         // Only provide variable flow for formats that support it
-        if !format.supports_full_variable_tracking() && !format.supports_partial_variable_tracking() {
+        let plugin = inner.format_registry.get(&format);
+        let supports_tracking = plugin.as_ref().map_or(false, |p| {
+            p.supports_full_variable_tracking() || p.supports_partial_variable_tracking()
+        });
+        if !supports_tracking {
             return Ok(KnotVariableFlowResponse {
                 variables: Vec::new(),
             });
@@ -395,7 +399,6 @@ impl ServerState {
         // Delegate tree construction to the format plugin.
         // The plugin returns format-agnostic VariableTreeNode instances.
         // The server only does a mechanical translation to LSP wire types.
-        let plugin = inner.format_registry.get(&format);
         let tree_nodes = if let Some(p) = plugin {
             let source_text = crate::state::DocumentCache(&inner.open_documents);
             p.build_variable_tree(workspace, &source_text)
@@ -1148,7 +1151,11 @@ impl ServerState {
         let format = workspace.resolve_format();
 
         // Only provide variable watch for formats that support it
-        if !format.supports_full_variable_tracking() && !format.supports_partial_variable_tracking() {
+        let plugin = inner.format_registry.get(&format);
+        let supports_tracking = plugin.as_ref().map_or(false, |p| {
+            p.supports_full_variable_tracking() || p.supports_partial_variable_tracking()
+        });
+        if !supports_tracking {
             return Ok(KnotWatchVariablesResponse {
                 at_passage: params.at_passage,
                 initialized_at_entry: Vec::new(),

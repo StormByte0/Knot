@@ -87,6 +87,22 @@ pub(crate) static RE_STORY_GET: Lazy<Regex> =
 pub(crate) static RE_STORY_PASSAGE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
 
+/// Story.has() — implicit passage reference (checks if passage exists)
+pub(crate) static RE_STORY_HAS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Story\s*\.\s*has\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// UI.goto() — implicit passage reference (navigates to passage)
+pub(crate) static RE_UI_GOTO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"UI\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// UI.include() — implicit passage reference (includes passage content)
+pub(crate) static RE_UI_INCLUDE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// <<script>>...<</script>> — script block (for finding JS contexts)
+pub(crate) static RE_SCRIPT_BLOCK: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?s)<<script>>.*?<</script>>").unwrap());
+
 // ---------------------------------------------------------------------------
 // Navigation macro patterns
 // ---------------------------------------------------------------------------

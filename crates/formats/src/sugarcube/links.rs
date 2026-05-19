@@ -2,8 +2,8 @@
 //!
 //! Contains regexes and functions for extracting passage links from
 //! `[[...]]` syntax, implicit passage references (data-passage, Engine.play,
-//! etc.), and macro passage references (<<goto>>, <<link>>, <<include>>,
-//! <<button>>, etc.).
+//! UI.goto, UI.include, Story.get, Story.has, etc.), and macro passage
+//! references (<<goto>>, <<link>>, <<include>>, <<button>>, etc.).
 
 use knot_core::passage::Link;
 use once_cell::sync::Lazy;
@@ -47,6 +47,18 @@ pub(crate) static RE_STORY_GET: Lazy<Regex> =
 /// Story.passage() — implicit passage reference
 pub(crate) static RE_STORY_PASSAGE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// Story.has() — implicit passage reference (checks if passage exists)
+pub(crate) static RE_STORY_HAS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"Story\s*\.\s*has\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// UI.goto() — implicit passage reference (navigates to passage)
+pub(crate) static RE_UI_GOTO: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"UI\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
+
+/// UI.include() — implicit passage reference (includes passage content)
+pub(crate) static RE_UI_INCLUDE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// <<name ...>> — any open macro (used by extract_macro_passage_refs)
 pub(crate) static RE_MACRO: Lazy<Regex> =
@@ -122,7 +134,8 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
 /// Extract implicit passage references from raw text/HTML/JS.
 ///
 /// Detects patterns like `data-passage="..."`, `Engine.play("...")`,
-/// `Story.get("...")` that reference passages but aren't standard
+/// `Story.get("...")`, `Story.has("...")`, `UI.goto("...")`,
+/// `UI.include("...")` that reference passages but aren't standard
 /// `[[links]]` or `<<macro>>` passage-args.
 pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
@@ -134,6 +147,9 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
         &RE_ENGINE_GOTO,
         &RE_STORY_GET,
         &RE_STORY_PASSAGE,
+        &RE_STORY_HAS,
+        &RE_UI_GOTO,
+        &RE_UI_INCLUDE,
     ];
 
     for re in patterns {
@@ -293,5 +309,65 @@ mod tests {
         let links = extract_macro_passage_refs(body, 0);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "Forest");
+    }
+
+    // ── New implicit passage reference patterns ────────────────────────
+
+    #[test]
+    fn test_extract_implicit_story_has() {
+        let body = r#"Story.has("Forest")"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    #[test]
+    fn test_extract_implicit_ui_goto() {
+        let body = r#"UI.goto("Village")"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Village");
+    }
+
+    #[test]
+    fn test_extract_implicit_ui_include() {
+        let body = r#"UI.include("Sidebar")"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Sidebar");
+    }
+
+    #[test]
+    fn test_extract_implicit_ui_goto_with_whitespace() {
+        let body = r#"UI . goto ( "Village" )"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Village");
+    }
+
+    #[test]
+    fn test_extract_implicit_single_quotes() {
+        let body = r#"UI.goto('Forest')"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    #[test]
+    fn test_all_implicit_patterns_together() {
+        let body = r#"Engine.play("A"); Engine.goto("B"); Story.get("C");
+            Story.passage("D"); Story.has("E"); UI.goto("F"); UI.include("G");
+            data-passage="H""#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 8);
+        let targets: Vec<&str> = links.iter().map(|l| l.target.as_str()).collect();
+        assert!(targets.contains(&"A"));
+        assert!(targets.contains(&"B"));
+        assert!(targets.contains(&"C"));
+        assert!(targets.contains(&"D"));
+        assert!(targets.contains(&"E"));
+        assert!(targets.contains(&"F"));
+        assert!(targets.contains(&"G"));
+        assert!(targets.contains(&"H"));
     }
 }

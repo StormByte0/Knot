@@ -22,11 +22,19 @@ impl StoryFormat {
     }
 
     /// Whether cross-passage variable tracking is fully supported.
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use FormatPlugin::supports_full_variable_tracking() instead"
+    )]
     pub fn supports_full_variable_tracking(&self) -> bool {
         matches!(self, StoryFormat::SugarCube | StoryFormat::Snowman)
     }
 
     /// Whether variable tracking is partially supported.
+    #[deprecated(
+        since = "2.0.0",
+        note = "Use FormatPlugin::supports_partial_variable_tracking() instead"
+    )]
     pub fn supports_partial_variable_tracking(&self) -> bool {
         matches!(self, StoryFormat::Harlowe)
     }

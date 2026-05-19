@@ -1002,6 +1002,14 @@ impl FormatPlugin for SnowmanPlugin {
     fn display_name(&self) -> &str {
         "Snowman 2"
     }
+
+    // -------------------------------------------------------------------
+    // Variable tracking capability
+    // -------------------------------------------------------------------
+
+    fn supports_full_variable_tracking(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

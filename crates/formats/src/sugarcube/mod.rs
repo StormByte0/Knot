@@ -25,6 +25,7 @@ pub mod comments;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use url::Url;
 
 use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin, ParseResult};
@@ -101,21 +102,51 @@ impl FormatPlugin for SugarCubePlugin {
             if is_script {
                 // Script passages: only extract implicit passage refs and
                 // JS variable aliasing (Engine.play, State.variables, etc.)
-                passage.links = links::extract_implicit_passage_refs(body, body_offset);
+                //
+                // In script passages, // line comments are valid everywhere,
+                // so we use find_all_comment_spans() with is_script_passage=true.
+                //
+                // Comment spans are body-relative; shift by body_offset to
+                // match the document-absolute coordinates of link/var spans.
+                let comment_spans: Vec<Range<usize>> = comments::find_all_comment_spans(body, true)
+                    .into_iter()
+                    .map(|s| (s.start + body_offset)..(s.end + body_offset))
+                    .collect();
+
+                let mut raw_links = links::extract_implicit_passage_refs(body, body_offset);
+                // Filter links inside comments (including // line comments)
+                raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
+                passage.links = raw_links;
+
                 passage.vars = vars::extract_vars(body, body_offset);
+                // Filter vars inside comments
+                passage.vars.retain(|var| !comments::is_in_comment(&comment_spans, &var.span));
+
                 passage.body = vec![knot_core::passage::Block::Text {
                     content: body.to_string(),
                     span: body_offset..body_offset + body.len(),
                 }];
 
-                // Semantic tokens: mark entire body as a script block
+                // Semantic tokens: header + PassageRef tokens for implicit refs
                 tokens.extend(tokens::header_tokens(header));
+
+                // PassageRef tokens for implicit passage references in script code
+                let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
+                ref_tokens.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(ref_tokens);
 
                 // Validation: skip SugarCube-specific bracket checks
                 // (no [[/]] or <</>> validation on JS content)
             } else if is_stylesheet {
                 // Stylesheet passages: no link extraction, no variable
                 // extraction — just store as a raw text block
+                //
+                // CSS only supports /* */ comments, which are already
+                // covered by find_block_comment_spans(). We don't need
+                // // line comment detection in stylesheets.
                 passage.body = vec![knot_core::passage::Block::Text {
                     content: body.to_string(),
                     span: body_offset..body_offset + body.len(),
@@ -128,9 +159,19 @@ impl FormatPlugin for SugarCubePlugin {
             } else {
                 // Normal Twine passage: full SugarCube parsing
 
-                // Find block comment spans so we can filter out matches
-                // that fall within /* ... */ comments
-                let comment_spans = comments::find_comment_spans(body);
+                // Find all comment spans (block + line comments within
+                // <<script>> blocks). This detects:
+                // - /* ... */ (C-style block comments)
+                // - /% ... %/ (Twine-style block comments)
+                // - <!-- ... --> (HTML block comments)
+                // - // ... (line comments inside <<script>> blocks)
+                //
+                // Comment spans are body-relative; shift by body_offset to
+                // match the document-absolute coordinates of link/var spans.
+                let comment_spans: Vec<Range<usize>> = comments::find_all_comment_spans(body, false)
+                    .into_iter()
+                    .map(|s| (s.start + body_offset)..(s.end + body_offset))
+                    .collect();
 
                 // Extract body elements, filtering out comment-embedded matches
                 let mut raw_links = links::extract_links(body, body_offset);
@@ -172,6 +213,24 @@ impl FormatPlugin for SugarCubePlugin {
                 });
                 tokens.extend(body_tokens);
 
+                // PassageRef tokens for implicit passage references
+                // (Engine.play, data-passage, etc.)
+                let mut implicit_ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
+                implicit_ref_tokens.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(implicit_ref_tokens);
+
+                // PassageRef tokens for macro passage references
+                // (<<goto "name">>, <<link "label" "name">>, etc.)
+                let mut macro_ref_tokens = tokens::macro_passage_ref_tokens(body, body_offset);
+                macro_ref_tokens.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(macro_ref_tokens);
+
                 // Validation diagnostics (filter comment-embedded ranges)
                 let body_diags = validation::validate(body, body_offset);
                 let filtered_diags: Vec<_> = body_diags.into_iter().filter(|d| {
@@ -212,8 +271,16 @@ impl FormatPlugin for SugarCubePlugin {
         let is_stylesheet = passage.is_stylesheet_passage();
 
         if is_script {
-            passage.links = links::extract_implicit_passage_refs(passage_text, 0);
+            // Script passages: // line comments are valid everywhere
+            let comment_spans = comments::find_all_comment_spans(passage_text, true);
+
+            let mut raw_links = links::extract_implicit_passage_refs(passage_text, 0);
+            raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
+            passage.links = raw_links;
+
             passage.vars = vars::extract_vars(passage_text, 0);
+            passage.vars.retain(|var| !comments::is_in_comment(&comment_spans, &var.span));
+
             passage.body = vec![knot_core::passage::Block::Text {
                 content: passage_text.to_string(),
                 span: 0..passage_text.len(),
@@ -224,7 +291,7 @@ impl FormatPlugin for SugarCubePlugin {
                 span: 0..passage_text.len(),
             }];
         } else {
-            let comment_spans = comments::find_comment_spans(passage_text);
+            let comment_spans = comments::find_all_comment_spans(passage_text, false);
 
             passage.links = links::extract_links(passage_text, 0);
             passage.links.extend(links::extract_implicit_passage_refs(passage_text, 0));
@@ -468,6 +535,14 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn stylesheet_tags(&self) -> Vec<&'static str> {
         macros::stylesheet_tags()
+    }
+
+    // -------------------------------------------------------------------
+    // Variable tracking capability
+    // -------------------------------------------------------------------
+
+    fn supports_full_variable_tracking(&self) -> bool {
+        true
     }
 
     // -------------------------------------------------------------------
@@ -844,5 +919,133 @@ mod tests {
         assert!(names.contains(&"PassageFooter"));
         assert!(names.contains(&"Story JavaScript"));
         assert!(names.contains(&"Story Stylesheet"));
+    }
+
+    // ── Comment filtering tests ───────────────────────────────────────
+
+    #[test]
+    fn twine_comment_skips_links() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n/% [[HiddenLink]] %/ visible [[RealLink]]\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            !links.iter().any(|l| l.target == "HiddenLink"),
+            "Links inside /% %/ comments should be filtered out"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "RealLink"),
+            "Links outside /% %/ comments should be detected"
+        );
+    }
+
+    #[test]
+    fn html_comment_skips_links() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<!-- [[HiddenLink]] --> visible [[RealLink]]\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            !links.iter().any(|l| l.target == "HiddenLink"),
+            "Links inside <!-- --> comments should be filtered out"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "RealLink"),
+            "Links outside <!-- --> comments should be detected"
+        );
+    }
+
+    #[test]
+    fn line_comment_skips_refs_in_script_block() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>\n// Engine.play(\"Hidden\");\nEngine.play(\"Visible\");\n<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            !links.iter().any(|l| l.target == "Hidden"),
+            "Engine.play inside // line comment should be filtered out"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Visible"),
+            "Engine.play outside line comment should be detected"
+        );
+    }
+
+    #[test]
+    fn line_comment_in_script_passage() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Story JavaScript [script]\n// Engine.play(\"Hidden\");\nEngine.play(\"Visible\");\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            !links.iter().any(|l| l.target == "Hidden"),
+            "Engine.play inside // line comment in script passage should be filtered out"
+        );
+        assert!(
+            links.iter().any(|l| l.target == "Visible"),
+            "Engine.play outside line comment in script passage should be detected"
+        );
+    }
+
+    #[test]
+    fn twine_comment_skips_vars() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n/% <<set $hidden to 5>> %/ <<set $visible to 10>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let vars = &result.passages[0].vars;
+        assert!(
+            !vars.iter().any(|v| v.name == "$hidden"),
+            "Variables inside /% %/ comments should be filtered out"
+        );
+        assert!(
+            vars.iter().any(|v| v.name == "$visible"),
+            "Variables outside /% %/ comments should be detected"
+        );
+    }
+
+    // ── New implicit passage reference tests ──────────────────────────
+
+    #[test]
+    fn implicit_passage_ref_ui_goto() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>UI.goto(\"Forest\");<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Forest"),
+            "Should detect UI.goto() implicit reference"
+        );
+    }
+
+    #[test]
+    fn implicit_passage_ref_ui_include() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>UI.include(\"Sidebar\");<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Sidebar"),
+            "Should detect UI.include() implicit reference"
+        );
+    }
+
+    #[test]
+    fn implicit_passage_ref_story_has() {
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<script>>Story.has(\"Forest\");<</script>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        let links = &result.passages[0].links;
+        assert!(
+            links.iter().any(|l| l.target == "Forest"),
+            "Should detect Story.has() implicit reference"
+        );
     }
 }

@@ -1344,6 +1344,18 @@ pub fn implicit_passage_patterns() -> Vec<ImplicitPassagePattern> {
             pattern: r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["'"#,
             description: "Story.passage() call",
         },
+        ImplicitPassagePattern {
+            pattern: r#"Story\s*\.\s*has\s*\(\s*["']([^"']+)["'"#,
+            description: "Story.has() call",
+        },
+        ImplicitPassagePattern {
+            pattern: r#"UI\s*\.\s*goto\s*\(\s*["']([^"']+)["'"#,
+            description: "UI.goto() call",
+        },
+        ImplicitPassagePattern {
+            pattern: r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["'"#,
+            description: "UI.include() call",
+        },
     ]
 }
 

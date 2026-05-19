@@ -2,37 +2,89 @@
 //!
 //! Produces semantic tokens for macro invocations, variable references,
 //! passage links, and passage headers for use in LSP semantic highlighting.
+//!
+//! ## Hybrid highlighting strategy
+//!
+//! This module emits semantic tokens ONLY for Knot-specific constructs
+//! that the TextMate grammar cannot handle (passage refs, variable
+//! definitions/deprecation, macro names). The TextMate grammar provides
+//! base highlighting for everything else: JS/CSS/HTML syntax inside
+//! `<<script>>`/`<<style>>`/`[script]`/`[stylesheet]` passages, SugarCube
+//! keywords, punctuation, link brackets, and parameter text.
+//!
+//! Semantic tokens "punch through" TextMate only where emitted. Uncovered
+//! characters keep their TextMate scopes. This avoids reimplementing
+//! JS/CSS/HTML tokenization in the LSP server.
+//!
+//! ## Token overlap avoidance
+//!
+//! Macro tokens cover ONLY the macro name (not `<<args>>`), so they
+//! don't override TextMate punctuation/parameter highlighting and don't
+//! overlap with `PassageRef` tokens inside macro arguments.
+//!
+//! ## Link highlighting
+//!
+//! For `[[links]]`, only the **passage name** is highlighted as a `Link` token,
+//! not the surrounding `[[` and `]]` brackets or the display text:
+//!
+//! - `[[Target]]`           → highlight "Target"
+//! - `[[Display->Target]]`  → highlight "Target" (the passage name after `->`)
+//! - `[[Display|Target]]`   → highlight "Target" (the passage name after `|`)
+//!
+//! For implicit passage references (e.g., `Engine.play("name")`,
+//! `data-passage="name"`), only the **passage name string** is highlighted
+//! as a `PassageRef` token, not the surrounding API call syntax.
+//!
+//! For macro passage references (e.g., `<<goto "name">>`, `<<link "label" "name">>`)
+//! the macro NAME gets a `Macro` token, and the passage name string inside
+//! gets a `PassageRef` token. The `<<`, `>>`, and other arguments are left
+//! to the TextMate grammar.
 
 use std::ops::Range;
 
 use crate::plugin::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
-use super::links::{RE_LINK_ARROW, RE_LINK_PIPE, RE_LINK_SIMPLE};
+use super::links::{
+    RE_LINK_ARROW, RE_LINK_PIPE, RE_LINK_SIMPLE,
+    RE_DATA_PASSAGE, RE_ENGINE_PLAY, RE_ENGINE_GOTO,
+    RE_STORY_GET, RE_STORY_PASSAGE, RE_STORY_HAS,
+    RE_UI_GOTO, RE_UI_INCLUDE,
+};
 use super::vars::{RE_SET_MACRO, RE_VAR};
 use super::blocks::{RE_MACRO, RE_MACRO_CLOSE};
 use super::lexer::ParsedHeader;
+use super::macros;
 
 /// Generate semantic tokens for a passage body.
 pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
-    // Macro tokens
+    // Macro tokens — highlight only the macro NAME, not the entire
+    // <<name args>> span. This avoids:
+    //   1. Overriding TextMate punctuation/parameter highlighting for
+    //      <<, >>, and argument text (semantic tokens punch through TextMate)
+    //   2. Overlapping with PassageRef tokens inside macro arguments
+    //
+    // The TextMate grammar provides punctuation and parameter scopes for
+    // the parts we don't emit tokens for, so they still get colored.
     for caps in RE_MACRO.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        tokens.push(SemanticToken {
-            start: body_offset + m.start(),
-            length: m.end() - m.start(),
-            token_type: SemanticTokenType::Macro,
-            modifier: None,
-        });
+        if let Some(name_match) = caps.get(1) {
+            tokens.push(SemanticToken {
+                start: body_offset + name_match.start(),
+                length: name_match.end() - name_match.start(),
+                token_type: SemanticTokenType::Macro,
+                modifier: None,
+            });
+        }
     }
     for caps in RE_MACRO_CLOSE.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        tokens.push(SemanticToken {
-            start: body_offset + m.start(),
-            length: m.end() - m.start(),
-            token_type: SemanticTokenType::Macro,
-            modifier: None,
-        });
+        if let Some(name_match) = caps.get(1) {
+            tokens.push(SemanticToken {
+                start: body_offset + name_match.start(),
+                length: name_match.end() - name_match.start(),
+                token_type: SemanticTokenType::Macro,
+                modifier: None,
+            });
+        }
     }
 
     // Variable tokens
@@ -68,36 +120,178 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
         }
     }
 
-    // Link tokens
+    // ── Link tokens: only highlight the passage name ────────────────────
+    //
+    // For [[Target]], highlight just "Target" (capture group 1).
+    // For [[Display->Target]], highlight just "Target" (capture group 2).
+    // For [[Display|Target]], highlight just "Target" (capture group 2).
+
     for caps in RE_LINK_ARROW.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        tokens.push(SemanticToken {
-            start: body_offset + m.start(),
-            length: m.end() - m.start(),
-            token_type: SemanticTokenType::Link,
-            modifier: None,
-        });
+        // Capture group 2 is the target passage name after ->
+        if let Some(target) = caps.get(2) {
+            tokens.push(SemanticToken {
+                start: body_offset + target.start(),
+                length: target.end() - target.start(),
+                token_type: SemanticTokenType::Link,
+                modifier: None,
+            });
+        }
     }
     for caps in RE_LINK_PIPE.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        tokens.push(SemanticToken {
-            start: body_offset + m.start(),
-            length: m.end() - m.start(),
-            token_type: SemanticTokenType::Link,
-            modifier: None,
-        });
+        // Capture group 2 is the target passage name after |
+        if let Some(target) = caps.get(2) {
+            tokens.push(SemanticToken {
+                start: body_offset + target.start(),
+                length: target.end() - target.start(),
+                token_type: SemanticTokenType::Link,
+                modifier: None,
+            });
+        }
     }
     for caps in RE_LINK_SIMPLE.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        tokens.push(SemanticToken {
-            start: body_offset + m.start(),
-            length: m.end() - m.start(),
-            token_type: SemanticTokenType::Link,
-            modifier: None,
-        });
+        // Capture group 1 is the passage name
+        if let Some(target) = caps.get(1) {
+            tokens.push(SemanticToken {
+                start: body_offset + target.start(),
+                length: target.end() - target.start(),
+                token_type: SemanticTokenType::Link,
+                modifier: None,
+            });
+        }
     }
 
     tokens
+}
+
+/// Generate PassageRef semantic tokens for implicit passage references
+/// in script passages (Engine.play, data-passage, etc.).
+///
+/// Unlike the `Link` type which highlights the passage name in `[[...]]`,
+/// `PassageRef` highlights the passage name string inside API calls and
+/// HTML attributes. Only the quoted passage name itself is highlighted,
+/// not the surrounding syntax.
+pub(crate) fn script_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+
+    let patterns: &[&regex::Regex] = &[
+        &RE_DATA_PASSAGE,
+        &RE_ENGINE_PLAY,
+        &RE_ENGINE_GOTO,
+        &RE_STORY_GET,
+        &RE_STORY_PASSAGE,
+        &RE_STORY_HAS,
+        &RE_UI_GOTO,
+        &RE_UI_INCLUDE,
+    ];
+
+    for re in patterns {
+        for caps in re.captures_iter(body) {
+            // Capture group 1 is always the passage name string
+            if let Some(name_match) = caps.get(1) {
+                let name = name_match.as_str().trim();
+                if !name.is_empty() {
+                    tokens.push(SemanticToken {
+                        start: body_offset + name_match.start(),
+                        length: name_match.end() - name_match.start(),
+                        token_type: SemanticTokenType::PassageRef,
+                        modifier: None,
+                    });
+                }
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Generate PassageRef semantic tokens for macro passage references
+/// (e.g., `<<goto "Passage">>`, `<<link "Label" "Passage">>`).
+///
+/// Only the passage name string is highlighted as PassageRef, not the
+/// macro brackets or other arguments. The macro itself is already
+/// highlighted by the `Macro` token from `body_tokens()`.
+pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let passage_arg_macros = macros::passage_arg_macro_names();
+
+    for caps in RE_MACRO.captures_iter(body) {
+        let macro_name = caps.get(1).unwrap().as_str();
+
+        if !passage_arg_macros.contains(macro_name) {
+            continue;
+        }
+
+        let args_str = caps.get(2).map(|a| a.as_str()).unwrap_or("");
+        let full_match = caps.get(0).unwrap();
+
+        // Parse quoted string arguments
+        let string_args = parse_quoted_args_with_spans(args_str);
+
+        if string_args.is_empty() {
+            continue;
+        }
+
+        // Determine which argument is the passage reference
+        let arg_count = string_args.len();
+        let passage_idx = macros::get_passage_arg_index(macro_name, arg_count);
+
+        if passage_idx < 0 {
+            continue;
+        }
+
+        let idx = passage_idx as usize;
+        if idx < string_args.len() {
+            let (content, rel_start, rel_end) = &string_args[idx];
+            if !content.is_empty() {
+                // rel_start/rel_end are relative to args_str, which starts at
+                // the offset of the args within the macro match.
+                let args_offset_in_body = full_match.start() + full_match.as_str().find(args_str).unwrap_or(0);
+                tokens.push(SemanticToken {
+                    start: body_offset + args_offset_in_body + *rel_start,
+                    length: rel_end - rel_start,
+                    token_type: SemanticTokenType::PassageRef,
+                    modifier: None,
+                });
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Parse quoted string arguments from a macro's argument string, returning
+/// both the content and the byte span (relative to the args string) of each
+/// quoted argument (excluding the quote characters).
+fn parse_quoted_args_with_spans(args: &str) -> Vec<(String, usize, usize)> {
+    let mut result = Vec::new();
+    let mut chars = args.char_indices().peekable();
+
+    while let Some(&(_pos, c)) = chars.peek() {
+        if c == '"' || c == '\'' {
+            let quote = c;
+            chars.next(); // consume opening quote
+            let content_start = chars.peek().map(|&(i, _)| i).unwrap_or(args.len());
+            let mut content = String::new();
+            let mut content_end = content_start;
+            while let Some(&(i, cc)) = chars.peek() {
+                if cc == quote {
+                    content_end = i;
+                    chars.next(); // consume closing quote
+                    break;
+                }
+                content.push(cc);
+                content_end = i + cc.len_utf8();
+                chars.next();
+            }
+            if !content.is_empty() {
+                result.push((content, content_start, content_end));
+            }
+        } else {
+            chars.next(); // skip non-quote characters
+        }
+    }
+
+    result
 }
 
 /// Generate semantic tokens for passage headers.
