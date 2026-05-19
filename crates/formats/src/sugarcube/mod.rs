@@ -80,8 +80,8 @@ impl FormatPlugin for SugarCubePlugin {
             let special_defs = special_passages::special_passage_defs();
             let special_def = special_defs.iter().find(|d| d.name == header.name).cloned();
 
-            let mut passage = if let Some(def) = special_def {
-                Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def)
+            let mut passage = if let Some(ref def) = special_def {
+                Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
             } else {
                 Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
             };
@@ -129,7 +129,7 @@ impl FormatPlugin for SugarCubePlugin {
                 }];
 
                 // Semantic tokens: header + PassageRef tokens for implicit refs
-                tokens.extend(tokens::header_tokens(header));
+                tokens.extend(tokens::header_tokens(header, true));
 
                 // PassageRef tokens for implicit passage references in script code
                 let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
@@ -153,8 +153,13 @@ impl FormatPlugin for SugarCubePlugin {
                     span: body_offset..body_offset + body.len(),
                 }];
 
-                // Semantic tokens: mark entire body as a stylesheet block
-                tokens.extend(tokens::header_tokens(header));
+                // Semantic tokens: header (SpecialPassage type) + body fallback
+                tokens.extend(tokens::header_tokens(header, true));
+
+                // Emit a String-type semantic token for the CSS body as a
+                // fallback when the TextMate grammar doesn't activate CSS
+                // scopes for stylesheet passages.
+                tokens.extend(tokens::stylesheet_body_tokens(body, body_offset));
 
                 // No validation on CSS content
             } else if is_interface {
@@ -176,9 +181,14 @@ impl FormatPlugin for SugarCubePlugin {
                     span: body_offset..body_offset + body.len(),
                 }];
 
-                tokens.extend(tokens::header_tokens(header));
+                // Semantic tokens: header (SpecialPassage type) + body fallback
+                tokens.extend(tokens::header_tokens(header, true));
 
-                // PassageRef tokens for implicit references in HTML
+                // Emit a String-type semantic token for the HTML body as a
+                // fallback when the TextMate grammar doesn't activate HTML
+                // scopes for StoryInterface passages.
+                tokens.extend(tokens::interface_body_tokens(body, body_offset));
+
                 let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
                 ref_tokens.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
@@ -231,8 +241,10 @@ impl FormatPlugin for SugarCubePlugin {
                 let macros = blocks::extract_macros(body, body_offset);
                 passage.body = blocks::build_body_blocks(body, body_offset, &macros);
 
-                // Semantic tokens for header.
-                tokens.extend(tokens::header_tokens(header));
+                // Semantic tokens for header. Use SpecialPassage type if this
+                // is a format-defined special passage (e.g., StoryInit,
+                // StoryCaption) even though it gets normal SugarCube parsing.
+                tokens.extend(tokens::header_tokens(header, special_def.is_some()));
 
                 // Semantic tokens for body (filter comment-embedded tokens)
                 let mut body_tokens = tokens::body_tokens(body, body_offset);
@@ -382,6 +394,10 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn block_macro_names(&self) -> HashSet<&'static str> {
         macros::block_macro_names()
+    }
+
+    fn folding_modifier_names(&self) -> HashSet<&'static str> {
+        macros::folding_modifier_names()
     }
 
     fn passage_arg_macro_names(&self) -> HashSet<&'static str> {
@@ -1109,5 +1125,129 @@ mod tests {
             links.iter().any(|l| l.target == "Forest"),
             "Should detect Story.has() implicit reference"
         );
+    }
+
+    // ── Macro block ordering and > in condition tests ────────────────
+
+    #[test]
+    fn extract_macros_sorted_by_position() {
+        // Verify that extract_macros returns blocks in source order,
+        // not open-then-close order. This is critical for build_body_blocks()
+        // which assumes sorted input.
+        use super::blocks;
+        let body = "<<if $x>>yes<</if>>";
+        let macros = blocks::extract_macros(body, 0);
+
+        // Should be: open "if", close "/if" — in source order
+        assert_eq!(macros.len(), 2, "Should find 2 macros");
+        match &macros[0] {
+            knot_core::passage::Block::Macro { name, .. } => {
+                assert_eq!(name, "if", "First macro should be open 'if'");
+            }
+            _ => panic!("Expected Macro block"),
+        }
+        match &macros[1] {
+            knot_core::passage::Block::Macro { name, .. } => {
+                assert_eq!(name, "/if", "Second macro should be close '/if'");
+            }
+            _ => panic!("Expected Macro block"),
+        }
+    }
+
+    #[test]
+    fn extract_macros_nested_sorted() {
+        // Nested macros with close tags between open tags — must be sorted
+        // Source order: <<if>>, <<if>>, <</if>>, <<else>>, <</if>>
+        use super::blocks;
+        let body = "<<if $a>><<if $b>>yes<</if>><<else>>no<</if>>";
+        let macros = blocks::extract_macros(body, 0);
+
+        assert_eq!(macros.len(), 5, "Should find 5 macros");
+
+        // Verify source order: open if, open if, close if, open else, close if
+        let names: Vec<&str> = macros.iter().filter_map(|m| match m {
+            knot_core::passage::Block::Macro { name, .. } => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(names, &["if", "if", "/if", "else", "/if"],
+            "Macros must be in source order, not open-then-close order");
+
+        // Verify spans are monotonically increasing
+        let spans: Vec<usize> = macros.iter().filter_map(|m| match m {
+            knot_core::passage::Block::Macro { span, .. } => Some(span.start),
+            _ => None,
+        }).collect();
+        for i in 1..spans.len() {
+            assert!(spans[i] > spans[i - 1],
+                "Macro spans must be in increasing order: {:?} at index {}", spans, i);
+        }
+    }
+
+    #[test]
+    fn gt_in_condition_exhaustive() {
+        // Exhaustive test for > in macro conditions — multiple patterns
+        let plugin = SugarCubePlugin::new();
+
+        let test_cases = vec![
+            // (description, source)
+            ("simple gt", ":: Start\n<<if $x > 0>>yes<</if>>\n"),
+            ("gt with else", ":: Start\n<<if $x > 0>>yes<<else>>no<</if>>\n"),
+            ("nested gt", ":: Start\n<<if $a > 1>>\n  <<if $b > 2>>inner<</if>>\n<<else>>\n  outer\n<</if>>\n"),
+            ("gt with print shorthand", ":: Start\n<<if _parts.length > 0>>\n  <<= _parts[0] >>\n  <<if _parts.length > 1>> +<<= _parts.length - 1 >><</if>>\n<<else>>\n  &mdash;\n<</if>>\n"),
+            ("multiple gt conditions", ":: Start\n<<if $x > 0>><<elseif $x > -1>>zero<<else>>neg<</if>>\n"),
+            ("gte operator", ":: Start\n<<if $x >= 0>>yes<</if>>\n"),
+        ];
+
+        for (desc, src) in test_cases {
+            let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+            assert!(
+                !result.diagnostics.iter().any(|d| d.code == "sc-container-structure"),
+                "[{}] <<else>>/<<elseif>> should NOT be flagged — > in condition should not break delimiter parsing. Diagnostics: {:?}",
+                desc,
+                result.diagnostics.iter().map(|d| (d.code.clone(), d.message.clone())).collect::<Vec<_>>()
+            );
+
+            assert!(
+                !result.diagnostics.iter().any(|d| d.code == "sc-unclosed-macro"),
+                "[{}] > in condition should not produce unclosed-macro warnings. Diagnostics: {:?}",
+                desc,
+                result.diagnostics.iter().map(|d| (d.code.clone(), d.message.clone())).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn body_blocks_correct_order_with_close_tags() {
+        // Verify that body blocks are in correct source order even when
+        // close tags appear between open tags. This tests the sorting fix
+        // in extract_macros().
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<if $a>>\n  <<if $b>>inner<</if>>\n<<else>>no\n<</if>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert_eq!(result.passages.len(), 1);
+        let passage = &result.passages[0];
+
+        // Collect macro names and their spans from body blocks
+        let macro_info: Vec<(&str, usize)> = passage.body.iter().filter_map(|b| match b {
+            knot_core::passage::Block::Macro { name, span, .. } => Some((name.as_str(), span.start)),
+            _ => None,
+        }).collect();
+
+        // Macros should appear in source order:
+        // 1. open "if" (outer)
+        // 2. open "if" (inner)
+        // 3. close "/if" (inner)
+        // 4. open "else"
+        // 5. close "/if" (outer)
+        assert!(macro_info.len() >= 5,
+            "Expected at least 5 macro blocks, got {}: {:?}", macro_info.len(), macro_info);
+
+        // Verify spans are in increasing order
+        for i in 1..macro_info.len() {
+            assert!(macro_info[i].1 > macro_info[i - 1].1,
+                "Body blocks must be in source order: {:?}", macro_info);
+        }
     }
 }

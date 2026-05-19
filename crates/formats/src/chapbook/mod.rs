@@ -801,8 +801,8 @@ impl FormatPlugin for ChapbookPlugin {
                 }
             });
 
-            let mut passage = if let Some(def) = special_def {
-                Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def)
+            let mut passage = if let Some(ref def) = special_def {
+                Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
             } else {
                 Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
             };
@@ -839,11 +839,16 @@ impl FormatPlugin for ChapbookPlugin {
             // Build block model from segments
             passage.body = self.build_blocks(body, body_offset, &segments);
 
-            // Semantic tokens for header.
+            // Semantic tokens for header. Use SpecialPassage type for special passages.
+            let header_type = if special_def.is_some() {
+                SemanticTokenType::SpecialPassage
+            } else {
+                SemanticTokenType::PassageHeader
+            };
             tokens.push(SemanticToken {
                 start: header.header_start,
                 length: 2,
-                token_type: SemanticTokenType::PassageHeader,
+                token_type: header_type.clone(),
                 modifier: None,
             });
 

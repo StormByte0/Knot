@@ -5,13 +5,16 @@
         {
             "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats. Matches both 'Story JavaScript' and 'StoryJavascript', with or without [script] tag.",
             "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s*[Ss]tory\\s+[Jj]ava[Ss]cript(?:\\s+\\[script\\])?\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s*([Ss]tory\\s+[Jj]ava[Ss]cript)(?:\\s+\\[script\\])?\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": {
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
+                    "name": "entity.name.passage.special.twee"
+                },
+                "3": {
                     "name": "meta.passage.metadata.twee"
                 }
             },
@@ -31,7 +34,7 @@
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
-                    "name": "entity.name.passage.twee"
+                    "name": "entity.name.passage.special.twee"
                 },
                 "3": {
                     "name": "meta.passage.metadata.twee"
@@ -46,13 +49,16 @@
         {
             "comment": "Story Stylesheet special passage — entire body is CSS. Shared across all Twine formats.",
             "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+[Ss]tory\\s?[Ss]tylesheet(?:\\s+\\[stylesheet\\])?\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+([Ss]tory\\s?[Ss]tylesheet)(?:\\s+\\[stylesheet\\])?\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": {
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
+                    "name": "entity.name.passage.special.twee"
+                },
+                "3": {
                     "name": "meta.passage.metadata.twee"
                 }
             },
@@ -72,7 +78,7 @@
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
-                    "name": "entity.name.passage.twee"
+                    "name": "entity.name.passage.special.twee"
                 },
                 "3": {
                     "name": "meta.passage.metadata.twee"
@@ -81,6 +87,28 @@
             "patterns": [
                 {
                     "include": "source.css"
+                }
+            ]
+        },
+        {
+            "comment": "StoryInterface special passage — entire body is HTML. SugarCube-specific but placed in base grammar for priority over generic header pattern.",
+            "contentName": "text.html.embedded.twee",
+            "begin": "^(::)\\s+([Ss]tory[Ii]nterface)\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "entity.name.passage.special.twee"
+                },
+                "3": {
+                    "name": "meta.passage.metadata.twee"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "text.html.basic"
                 }
             ]
         },

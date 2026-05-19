@@ -127,6 +127,7 @@ pub(crate) async fn initialize(
                             lsp_types::SemanticTokenType::KEYWORD,     // 8 keyword
                             lsp_types::SemanticTokenType::KEYWORD,     // 9 boolean
                             lsp_types::SemanticTokenType::TYPE,        // 10 passage ref
+                            lsp_types::SemanticTokenType::CLASS,       // 11 special passage header
                         ],
                         token_modifiers: vec![
                             lsp_types::SemanticTokenModifier::DEFINITION,  // 0

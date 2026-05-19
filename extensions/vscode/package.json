@@ -423,6 +423,25 @@
         }
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "twee",
+        "scopes": {
+          "passageHeader": ["entity.name.section.passage.twee"],
+          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
+          "link": ["markup.underline.link.passage.twee"],
+          "macro": ["support.function.macro.twee"],
+          "variable": ["variable.other.readwrite.twee"],
+          "string": ["string.unquoted.twee"],
+          "number": ["constant.numeric.twee"],
+          "comment": ["comment.block.twee"],
+          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
+          "keyword": ["keyword.control.twee"],
+          "boolean": ["constant.language.boolean.twee"],
+          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+        }
+      }
+    ],
     "configurationDefaults": {
       "[twee]": {
         "editor.wordWrap": "on",

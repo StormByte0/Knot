@@ -91,6 +91,8 @@ pub enum SemanticTokenType {
     Comment,
     /// A passage header (:: PassageName).
     PassageHeader,
+    /// A special passage header (:: StoryInit, :: StoryCaption, etc.).
+    SpecialPassageHeader,
     /// A tag in a passage header.
     Tag,
     /// A keyword specific to the format.

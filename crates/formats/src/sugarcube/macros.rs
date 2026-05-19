@@ -1224,6 +1224,14 @@ pub fn block_macro_names() -> HashSet<&'static str> {
     .collect()
 }
 
+/// Block macro names that are structural modifiers (no close tag of their own).
+///
+/// These are part of a parent block and are folded together with it.
+/// They should NOT be pushed onto the folding-range stack.
+pub fn folding_modifier_names() -> HashSet<&'static str> {
+    ["else", "elseif", "case", "default"].into_iter().collect()
+}
+
 /// Macros whose arguments include a passage-name reference.
 pub fn passage_arg_macro_names() -> HashSet<&'static str> {
     builtin_macros()

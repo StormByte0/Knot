@@ -50,11 +50,14 @@ use super::links::{
     RE_UI_GOTO, RE_UI_INCLUDE,
 };
 use super::vars::{RE_SET_MACRO, RE_VAR};
-use super::blocks::{RE_MACRO, RE_MACRO_CLOSE};
+use super::blocks;
 use super::lexer::ParsedHeader;
 use super::macros;
 
 /// Generate semantic tokens for a passage body.
+///
+/// Uses the string-aware macro scanner from `blocks.rs` instead of regex
+/// to correctly handle `>` and `>>` inside macro conditions.
 pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
@@ -66,25 +69,14 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
     //
     // The TextMate grammar provides punctuation and parameter scopes for
     // the parts we don't emit tokens for, so they still get colored.
-    for caps in RE_MACRO.captures_iter(body) {
-        if let Some(name_match) = caps.get(1) {
-            tokens.push(SemanticToken {
-                start: body_offset + name_match.start(),
-                length: name_match.end() - name_match.start(),
-                token_type: SemanticTokenType::Macro,
-                modifier: None,
-            });
-        }
-    }
-    for caps in RE_MACRO_CLOSE.captures_iter(body) {
-        if let Some(name_match) = caps.get(1) {
-            tokens.push(SemanticToken {
-                start: body_offset + name_match.start(),
-                length: name_match.end() - name_match.start(),
-                token_type: SemanticTokenType::Macro,
-                modifier: None,
-            });
-        }
+    let parsed_macros = blocks::scan_macros(body);
+    for m in &parsed_macros {
+        tokens.push(SemanticToken {
+            start: body_offset + m.name_start,
+            length: m.name_len,
+            token_type: SemanticTokenType::Macro,
+            modifier: None,
+        });
     }
 
     // Variable tokens
@@ -210,19 +202,30 @@ pub(crate) fn script_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<S
 /// Only the passage name string is highlighted as PassageRef, not the
 /// macro brackets or other arguments. The macro itself is already
 /// highlighted by the `Macro` token from `body_tokens()`.
+///
+/// Uses the string-aware macro scanner from `blocks.rs` instead of regex
+/// to correctly handle `>` and `>>` inside macro conditions.
 pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let passage_arg_macros = macros::passage_arg_macro_names();
 
-    for caps in RE_MACRO.captures_iter(body) {
-        let macro_name = caps.get(1).unwrap().as_str();
+    let parsed_macros = blocks::scan_macros(body);
+    for m in &parsed_macros {
+        // Skip close tags
+        if m.name.starts_with('/') {
+            continue;
+        }
+
+        let macro_name = m.name.as_str();
 
         if !passage_arg_macros.contains(macro_name) {
             continue;
         }
 
-        let args_str = caps.get(2).map(|a| a.as_str()).unwrap_or("");
-        let full_match = caps.get(0).unwrap();
+        let args_str = m.args.as_str();
+        if args_str.is_empty() {
+            continue;
+        }
 
         // Parse quoted string arguments
         let string_args = parse_quoted_args_with_spans(args_str);
@@ -244,8 +247,17 @@ pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<Se
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
                 // rel_start/rel_end are relative to args_str, which starts at
-                // the offset of the args within the macro match.
-                let args_offset_in_body = full_match.start() + full_match.as_str().find(args_str).unwrap_or(0);
+                // name_end in the body. We need to find where args_str starts
+                // in the body relative to the macro match.
+                //
+                // args_str = body[name_end..closing_gt_start].trim()
+                // The trim might remove leading whitespace, so we need to find
+                // the actual start of the trimmed args in the body.
+                let name_end_in_body = m.name_start + m.name_len;
+                let body_after_name = &body[name_end_in_body..m.end.saturating_sub(2)]; // before >>
+                let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+                let args_offset_in_body = name_end_in_body + trimmed_start;
+
                 tokens.push(SemanticToken {
                     start: body_offset + args_offset_in_body + *rel_start,
                     length: rel_end - rel_start,
@@ -294,15 +306,65 @@ fn parse_quoted_args_with_spans(args: &str) -> Vec<(String, usize, usize)> {
     result
 }
 
+/// Generate semantic tokens for the body of stylesheet passages.
+///
+/// Emits a `String`-type token covering the entire CSS body. This serves
+/// as a fallback when the TextMate grammar doesn't activate CSS scopes
+/// for stylesheet passages (e.g., "Story Stylesheet" or [stylesheet] tagged).
+/// The `String` type maps to the LSP `STRING` semantic token type, which
+/// most themes color distinctly from plain text.
+///
+/// Note: If the TextMate grammar DOES provide CSS scopes, those will be
+/// overridden by this semantic token. However, since the user reports CSS
+/// is currently highlighted as plain text, this is a net improvement.
+pub(crate) fn stylesheet_body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    if body.trim().is_empty() {
+        return Vec::new();
+    }
+    vec![SemanticToken {
+        start: body_offset,
+        length: body.len(),
+        token_type: SemanticTokenType::String,
+        modifier: None,
+    }]
+}
+
+/// Generate semantic tokens for the body of StoryInterface passages.
+///
+/// Emits a `String`-type token covering the entire HTML body. This serves
+/// as a fallback when the TextMate grammar doesn't activate HTML scopes
+/// for StoryInterface passages.
+pub(crate) fn interface_body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    if body.trim().is_empty() {
+        return Vec::new();
+    }
+    vec![SemanticToken {
+        start: body_offset,
+        length: body.len(),
+        token_type: SemanticTokenType::String,
+        modifier: None,
+    }]
+}
+
 /// Generate semantic tokens for passage headers.
-pub(crate) fn header_tokens(header: &ParsedHeader) -> Vec<SemanticToken> {
+///
+/// If `is_special` is true, the passage header tokens use the `SpecialPassage`
+/// type instead of `PassageHeader`, giving special passages distinct visual
+/// highlighting in the editor.
+pub(crate) fn header_tokens(header: &ParsedHeader, is_special: bool) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
+
+    let header_type = if is_special {
+        SemanticTokenType::SpecialPassage
+    } else {
+        SemanticTokenType::PassageHeader
+    };
 
     // The `::` prefix is always 2 bytes.
     tokens.push(SemanticToken {
         start: header.header_start,
         length: 2,
-        token_type: SemanticTokenType::PassageHeader,
+        token_type: header_type.clone(),
         modifier: None,
     });
 
@@ -311,7 +373,7 @@ pub(crate) fn header_tokens(header: &ParsedHeader) -> Vec<SemanticToken> {
     tokens.push(SemanticToken {
         start: header.name_start,
         length: header.name.len(),
-        token_type: SemanticTokenType::PassageHeader,
+        token_type: header_type,
         modifier: None,
     });
 

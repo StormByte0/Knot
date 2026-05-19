@@ -580,6 +580,15 @@ pub(crate) fn rebuild_graph(
     // - `Startup` passages: implicit edge from the start passage
     // - `PassageReady` passages: implicit edges from all navigable passages
     // - `Chrome` passages: implicit edges from all navigable passages
+    // - `Custom` passages (e.g., Story JavaScript, Story Stylesheet):
+    //   implicit edge from the start passage — the story engine invokes
+    //   these at startup or during rendering, so they always have a
+    //   builtin reference from the engine.
+    // - `Metadata` passages: no implicit edges (they are data, not code)
+    //
+    // This ensures that special passages never show as "unreachable" or
+    // "no incoming links" since the story engine always references them
+    // through builtin mechanisms, not through explicit [[links]].
     //
     // This replaces the previous hardcoded SugarCube passage names and
     // ensures format isolation: the server never hardcodes format-specific
@@ -603,16 +612,21 @@ pub(crate) fn rebuild_graph(
         for def in &special_defs {
             let special_name = def.name.as_str();
 
+            // Only add edges if the special passage actually exists in the workspace
+            if !graph.contains_passage(special_name) {
+                continue;
+            }
+
             match &def.behavior {
                 SpecialPassageBehavior::Startup => {
                     // Startup passages: implicit edge from start passage
-                    if graph.contains_passage(special_name) && graph.contains_passage(start_passage) {
+                    if graph.contains_passage(start_passage) {
                         let already_exists = graph.outgoing_neighbors(start_passage)
                             .iter()
                             .any(|n| n == special_name);
                         if !already_exists {
                             let edge = PassageEdge {
-                                display_text: Some(format!("(implicit: {})", special_name)),
+                                display_text: Some(format!("(builtin: {})", special_name)),
                                 is_broken: false,
                             };
                             graph.add_edge(start_passage, special_name, edge);
@@ -621,23 +635,41 @@ pub(crate) fn rebuild_graph(
                 }
                 SpecialPassageBehavior::PassageReady | SpecialPassageBehavior::Chrome => {
                     // Per-navigation passages: implicit edges from all navigable passages
-                    if graph.contains_passage(special_name) {
-                        for nav_passage in &navigable_passages {
-                            let already_exists = graph.outgoing_neighbors(nav_passage)
-                                .iter()
-                                .any(|n| n == special_name);
-                            if !already_exists {
-                                let edge = PassageEdge {
-                                    display_text: Some(format!("(implicit: {})", special_name)),
-                                    is_broken: false,
-                                };
-                                graph.add_edge(nav_passage, special_name, edge);
-                            }
+                    for nav_passage in &navigable_passages {
+                        let already_exists = graph.outgoing_neighbors(nav_passage)
+                            .iter()
+                            .any(|n| n == special_name);
+                        if !already_exists {
+                            let edge = PassageEdge {
+                                display_text: Some(format!("(builtin: {})", special_name)),
+                                is_broken: false,
+                            };
+                            graph.add_edge(nav_passage, special_name, edge);
                         }
                     }
                 }
-                SpecialPassageBehavior::Metadata | SpecialPassageBehavior::Custom(_) => {
-                    // Metadata and custom passages don't get implicit edges
+                SpecialPassageBehavior::Custom(_) => {
+                    // Custom special passages (e.g., Story JavaScript,
+                    // Story Stylesheet, StoryInterface, PassageDone) are
+                    // invoked by the story engine at specific lifecycle
+                    // points. Add an implicit edge from the start passage
+                    // to establish that the engine references them.
+                    if graph.contains_passage(start_passage) {
+                        let already_exists = graph.outgoing_neighbors(start_passage)
+                            .iter()
+                            .any(|n| n == special_name);
+                        if !already_exists {
+                            let edge = PassageEdge {
+                                display_text: Some(format!("(builtin: {})", special_name)),
+                                is_broken: false,
+                            };
+                            graph.add_edge(start_passage, special_name, edge);
+                        }
+                    }
+                }
+                SpecialPassageBehavior::Metadata => {
+                    // Metadata passages (StoryData, StoryTitle) don't get
+                    // implicit edges — they are data containers, not code.
                 }
             }
         }
