@@ -45,7 +45,12 @@
       {
         "language": "twee",
         "scopeName": "source.twee",
-        "path": "./syntaxes/twee.tmLanguage.json"
+        "path": "./syntaxes/twee.tmLanguage.json",
+        "embeddedLanguages": {
+          "source.js.embedded.twee": "javascript",
+          "source.css.embedded.twee": "css",
+          "text.html.embedded.twee": "html"
+        }
       }
     ],
     "commands": [

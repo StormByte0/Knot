@@ -1262,6 +1262,14 @@ impl FormatPlugin for HarlowePlugin {
     fn display_name(&self) -> &str {
         "Harlowe 3"
     }
+
+    // -------------------------------------------------------------------
+    // Variable tracking capability
+    // -------------------------------------------------------------------
+
+    fn supports_partial_variable_tracking(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

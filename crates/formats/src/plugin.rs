@@ -95,6 +95,11 @@ pub enum SemanticTokenType {
     Tag,
     /// A keyword specific to the format.
     Keyword,
+    /// A passage reference within a macro or API call (e.g., the passage
+    /// name string in `<<goto "Forest">>`, `Engine.play("Forest")`,
+    /// `data-passage="Forest"`). Only the passage name itself is highlighted,
+    /// not the surrounding syntax.
+    PassageRef,
 }
 
 /// Modifiers for semantic tokens.
@@ -396,6 +401,36 @@ pub trait FormatPlugin: Send + Sync {
     /// Returns the operator precedence table for this format.
     fn operator_precedence(&self) -> Vec<(&'static str, u8)> {
         Vec::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Variable tracking capability (optional)
+    // -----------------------------------------------------------------------
+
+    /// Whether cross-passage variable tracking is fully supported.
+    ///
+    /// Formats that return `true` have a complete variable dataflow model
+    /// that supports cross-passage tracking of variable initialization,
+    /// reads, and writes. The variable flow UI and diagnostics are fully
+    /// available for these formats.
+    ///
+    /// The default implementation returns `false`. SugarCube and Snowman
+    /// override this to return `true`.
+    fn supports_full_variable_tracking(&self) -> bool {
+        false
+    }
+
+    /// Whether variable tracking is partially supported.
+    ///
+    /// Formats that return `true` support some variable tracking but lack
+    /// a complete cross-passage dataflow model. Variable highlighting and
+    /// per-passage extraction work, but cross-passage diagnostics may be
+    /// limited.
+    ///
+    /// The default implementation returns `false`. Harlowe overrides this
+    /// to return `true`.
+    fn supports_partial_variable_tracking(&self) -> bool {
+        false
     }
 
     // -----------------------------------------------------------------------
