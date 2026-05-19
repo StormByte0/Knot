@@ -1015,6 +1015,137 @@ impl FormatPlugin for SnowmanPlugin {
     fn supports_full_variable_tracking(&self) -> bool {
         true
     }
+
+    // -------------------------------------------------------------------
+    // Syntax detection (format-aware handler dispatch)
+    // -------------------------------------------------------------------
+
+    fn find_macro_at_position(
+        &self,
+        line: &str,
+        byte_pos: usize,
+    ) -> Option<crate::plugin::MacroAtPosition> {
+        use crate::plugin::MacroAtPosition;
+
+        // Snowman uses ERB-style templates:
+        //   <%= expression %>  — inline expression (output)
+        //   <% code %>         — code block (no output)
+        // Detect these at position.
+
+        // Check for <%= ... %> (expression)
+        let re_expr = regex::Regex::new(r"<%=\s*").unwrap();
+        if let Some(m) = re_expr.find(line) {
+            let start = m.start();
+            if byte_pos >= start {
+                // Find closing %>
+                if let Some(end_offset) = line[start..].find("%>") {
+                    let end = start + end_offset + 2;
+                    if byte_pos <= end {
+                        let content = &line[m.end()..start + end_offset];
+                        let name = content.split_whitespace().next().unwrap_or(content);
+                        let name_start = m.end();
+                        let name_end = name_start + name.len();
+                        return Some(MacroAtPosition {
+                            name: name.to_string(),
+                            full_range: start..end,
+                            name_range: name_start..name_end,
+                            is_unclosed: false,
+                        });
+                    }
+                } else if byte_pos >= start {
+                    // Unclosed expression
+                    let content = &line[m.end()..];
+                    let name = content.split_whitespace().next().unwrap_or(content);
+                    let name_start = m.end();
+                    let name_end = name_start + name.len();
+                    return Some(MacroAtPosition {
+                        name: name.to_string(),
+                        full_range: start..line.len(),
+                        name_range: name_start..name_end,
+                        is_unclosed: true,
+                    });
+                }
+            }
+        }
+
+        // Check for <% ... %> (code block)
+        let re_code = regex::Regex::new(r"<%(?!=)\s*").unwrap();
+        if let Some(m) = re_code.find(line) {
+            let start = m.start();
+            if byte_pos >= start {
+                if let Some(end_offset) = line[start..].find("%>") {
+                    let end = start + end_offset + 2;
+                    if byte_pos <= end {
+                        let content = &line[m.end()..start + end_offset];
+                        let name = content.split_whitespace().next().unwrap_or("script");
+                        let name_start = m.end();
+                        let name_end = name_start + name.len();
+                        return Some(MacroAtPosition {
+                            name: name.to_string(),
+                            full_range: start..end,
+                            name_range: name_start..name_end,
+                            is_unclosed: false,
+                        });
+                    }
+                } else if byte_pos >= start {
+                    let content = &line[m.end()..];
+                    let name = content.split_whitespace().next().unwrap_or("script");
+                    let name_start = m.end();
+                    let name_end = name_start + name.len();
+                    return Some(MacroAtPosition {
+                        name: name.to_string(),
+                        full_range: start..line.len(),
+                        name_range: name_start..name_end,
+                        is_unclosed: true,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    fn scan_line_for_macro_events(
+        &self,
+        _line: &str,
+        _line_idx: u32,
+    ) -> Vec<crate::plugin::MacroBlockEvent> {
+        // Snowman uses ERB-style blocks (<% %>) which are inline — they
+        // don't have open/close pairs like SugarCube or Chapbook blocks.
+        Vec::new()
+    }
+
+    fn format_macro_label(&self, name: &str) -> String {
+        format!("<%= {} %>", name)
+    }
+
+    fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        if params.is_empty() {
+            format!("<%= {} %>", name)
+        } else {
+            format!("<%= {}({}) %>", name, params)
+        }
+    }
+
+    fn format_close_macro_label(&self, _name: &str) -> String {
+        String::new() // Snowman has no close tags
+    }
+
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        if has_body {
+            format!("<% {} %>\n$2\n<% }} %>", name)
+        } else {
+            format!("<%= {} %>", name)
+        }
+    }
+
+    fn detect_close_tag_context(&self, _before_cursor: &str) -> Option<String> {
+        None // Snowman has no close tags
+    }
+
+    fn has_block_macros_with_close_tags(&self) -> bool {
+        false // Snowman uses ERB-style inline blocks
+    }
 }
 
 // ---------------------------------------------------------------------------

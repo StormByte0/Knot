@@ -1278,6 +1278,91 @@ impl FormatPlugin for HarlowePlugin {
     fn supports_partial_variable_tracking(&self) -> bool {
         true
     }
+
+    // -------------------------------------------------------------------
+    // Syntax detection (format-aware handler dispatch)
+    // -------------------------------------------------------------------
+
+    fn find_macro_at_position(
+        &self,
+        line: &str,
+        byte_pos: usize,
+    ) -> Option<crate::plugin::MacroAtPosition> {
+        use crate::plugin::MacroAtPosition;
+
+        // Harlowe uses (name:args) syntax.
+        // Scan for opening ( followed by identifier: pattern.
+        let re = regex::Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*):").unwrap();
+        for caps in re.captures_iter(line) {
+            let full_match = caps.get(0).unwrap();
+            let name_match = caps.get(1).unwrap();
+
+            // Find the closing ) for this macro — scan forward from the opening (
+            let open_paren = full_match.start();
+            let name_start = name_match.start();
+            let name_end = name_match.end();
+
+            // Simple approach: find closing paren. Harlowe macros can be
+            // nested, but for position detection we just need the first
+            // matching close paren.
+            let close_paren = line[open_paren..].find(')').map(|p| open_paren + p + 1).unwrap_or(line.len());
+
+            if byte_pos >= open_paren && byte_pos <= close_paren {
+                return Some(MacroAtPosition {
+                    name: name_match.as_str().to_string(),
+                    full_range: open_paren..close_paren,
+                    name_range: name_start..name_end,
+                    is_unclosed: close_paren == line.len(),
+                });
+            }
+        }
+        None
+    }
+
+    fn scan_line_for_macro_events(
+        &self,
+        _line: &str,
+        _line_idx: u32,
+    ) -> Vec<crate::plugin::MacroBlockEvent> {
+        // Harlowe doesn't have block macros with close tags in the same
+        // way SugarCube does. Harlowe uses hooks [text]<changer| and
+        // |changer>[text] for block-like structure. For now, we don't
+        // report macro block events since there are no close tags to pair.
+        // Hook-based folding could be added later.
+        Vec::new()
+    }
+
+    fn format_macro_label(&self, name: &str) -> String {
+        format!("({}:)", name)
+    }
+
+    fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        if params.is_empty() {
+            format!("({}:)", name)
+        } else {
+            format!("({}: {})", name, params)
+        }
+    }
+
+    fn format_close_macro_label(&self, _name: &str) -> String {
+        String::new() // Harlowe has no close tags
+    }
+
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        if has_body {
+            format!("({}: $1)\n$2\n(/{}:)", name, name)
+        } else {
+            format!("({}: $1)", name)
+        }
+    }
+
+    fn detect_close_tag_context(&self, _before_cursor: &str) -> Option<String> {
+        None // Harlowe has no close tags
+    }
+
+    fn has_block_macros_with_close_tags(&self) -> bool {
+        false // Harlowe uses hooks, not close tags
+    }
 }
 
 // ---------------------------------------------------------------------------

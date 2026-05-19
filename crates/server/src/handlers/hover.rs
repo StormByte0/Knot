@@ -7,6 +7,13 @@
 //! - Link hover with passage info
 //! - Passage header hover with metadata
 //! - Global object hover (e.g., State, Engine, Story for SugarCube)
+//!
+//! ## Format Isolation
+//!
+//! Macro detection is delegated to `FormatPlugin::find_macro_at_position()`,
+//! which returns format-agnostic byte ranges. The handler converts these to
+//! UTF-16 LSP positions. No hardcoded delimiters (`<<>>`, `(:)`, etc.) appear
+//! in this file — all syntax-specific logic lives in the format plugin.
 
 use crate::handlers::helpers;
 use crate::state::ServerState;
@@ -34,7 +41,7 @@ pub(crate) async fn hover(
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
 
-    // 1. Try macro hover — check if cursor is inside <<...>>
+    // 1. Try macro hover — delegate syntax detection to the format plugin
     if let Some(plugin) = plugin {
         if let Some(hover) = try_macro_hover(line, line_idx, char_pos, plugin) {
             return Ok(Some(hover));
@@ -119,98 +126,98 @@ pub(crate) async fn hover(
 // Private hover helpers
 // ===========================================================================
 
-/// Try to show hover info for a macro when cursor is inside `<<...>>`.
+/// Try to show hover info for a macro at the cursor position.
+///
+/// Uses `FormatPlugin::find_macro_at_position()` for format-agnostic syntax
+/// detection. The plugin returns byte ranges; this function converts them
+/// to UTF-16 LSP positions.
 fn try_macro_hover(
     line: &str,
     line_idx: usize,
     char_pos: usize,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
-    let mut search_from = 0;
-    while let Some(rel_start) = line[search_from..].find("<<") {
-        let abs_start = search_from + rel_start;
-        if let Some(rel_end) = line[abs_start..].find(">>") {
-            let abs_end = abs_start + rel_end + 2;
+    // Convert UTF-16 char_pos (from LSP) to byte offset for the plugin
+    let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
 
-            // Convert byte-based abs_start/abs_end to UTF-16 code unit offsets
-            // for the LSP range.  char_pos arrives as UTF-16 from the client,
-            // so we must compare against UTF-16 offsets as well.
-            let utf16_start = helpers::utf16_len_up_to(line, abs_start);
-            let utf16_end = helpers::utf16_len_up_to(line, abs_end);
-            let utf16_pos = char_pos; // already UTF-16 from the client
+    // Delegate syntax detection to the format plugin
+    let macro_info = plugin.find_macro_at_position(line, byte_pos)?;
 
-            if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
-                let content = &line[abs_start + 2..abs_end - 2];
-                let macro_name = content.split_whitespace().next().unwrap_or(content).trim();
+    if let Some(mdef) = plugin.find_macro(&macro_info.name) {
+        // Use the format plugin's label formatting — no hardcoded <<>>
+        let mut hover_text = format!(
+            "**Macro** `{}`\n\n{}",
+            plugin.format_macro_label(mdef.name),
+            mdef.description
+        );
 
-                if let Some(mdef) = plugin.find_macro(macro_name) {
-                    let mut hover_text = format!(
-                        "**Macro** `<<{}>>`\n\n{}",
-                        mdef.name, mdef.description
-                    );
+        // Add deprecation warning
+        if mdef.deprecated {
+            if let Some(msg) = mdef.deprecation_message {
+                hover_text.push_str(&format!("\n\n⚠ **Deprecated**: {}", msg));
+            }
+        }
 
-                    // Add deprecation warning
-                    if mdef.deprecated {
-                        if let Some(msg) = mdef.deprecation_message {
-                            hover_text.push_str(&format!("\n\n⚠ **Deprecated**: {}", msg));
-                        }
-                    }
-
-                    // Add parameter info
-                    if let Some(args) = mdef.args {
-                        if !args.is_empty() {
-                            hover_text.push_str("\n\n**Parameters:**\n");
-                            for arg in args {
-                                let req = if arg.is_required { " (required)" } else { " (optional)" };
-                                let kind_str = match arg.kind {
-                                    MacroArgKind::Expression => "expression",
-                                    MacroArgKind::String => "string",
-                                    MacroArgKind::Selector => "selector",
-                                    MacroArgKind::Variable => "variable",
-                                };
-                                let flags = if arg.is_passage_ref { " 🔗" } else { "" };
-                                hover_text.push_str(&format!(
-                                    "- `{}{}`: {}{}\n",
-                                    arg.label, req, kind_str, flags
-                                ));
-                            }
-                        }
-                    }
-
-                    // Add container constraint info
-                    if let Some(parent) = mdef.container {
-                        hover_text.push_str(&format!("\nMust be inside `<<{}>>`.", parent));
-                    }
-                    if let Some(parents) = mdef.container_any_of {
-                        hover_text.push_str(&format!(
-                            "\nMust be inside one of: {}.",
-                            parents.iter().map(|p| format!("`<<{}>>`", p)).collect::<Vec<_>>().join(", ")
-                        ));
-                    }
-
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: hover_text,
-                        }),
-                        range: Some(Range {
-                            start: Position {
-                                line: line_idx as u32,
-                                character: utf16_start,
-                            },
-                            end: Position {
-                                line: line_idx as u32,
-                                character: utf16_end,
-                            },
-                        }),
-                    });
+        // Add parameter info
+        if let Some(args) = mdef.args {
+            if !args.is_empty() {
+                hover_text.push_str("\n\n**Parameters:**\n");
+                for arg in args {
+                    let req = if arg.is_required { " (required)" } else { " (optional)" };
+                    let kind_str = match arg.kind {
+                        MacroArgKind::Expression => "expression",
+                        MacroArgKind::String => "string",
+                        MacroArgKind::Selector => "selector",
+                        MacroArgKind::Variable => "variable",
+                    };
+                    let flags = if arg.is_passage_ref { " 🔗" } else { "" };
+                    hover_text.push_str(&format!(
+                        "- `{}{}`: {}{}\n",
+                        arg.label, req, kind_str, flags
+                    ));
                 }
             }
-            search_from = abs_end;
-        } else {
-            break;
         }
+
+        // Add container constraint info — use format-specific labels
+        if let Some(parent) = mdef.container {
+            hover_text.push_str(&format!(
+                "\nMust be inside `{}`.",
+                plugin.format_macro_label(parent)
+            ));
+        }
+        if let Some(parents) = mdef.container_any_of {
+            hover_text.push_str(&format!(
+                "\nMust be inside one of: {}.",
+                parents.iter()
+                    .map(|p| format!("`{}`", plugin.format_macro_label(p)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
+        // Convert byte ranges from the plugin to UTF-16 LSP positions
+        let utf16_start = helpers::utf16_len_up_to(line, macro_info.full_range.start);
+        let utf16_end = helpers::utf16_len_up_to(line, macro_info.full_range.end);
+
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_text,
+            }),
+            range: Some(Range {
+                start: Position {
+                    line: line_idx as u32,
+                    character: utf16_start,
+                },
+                end: Position {
+                    line: line_idx as u32,
+                    character: utf16_end,
+                },
+            }),
+        });
     }
+
     None
 }
 
@@ -253,8 +260,6 @@ fn try_variable_hover(
         let byte_end: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
 
         // Convert byte positions to UTF-16 code unit offsets for LSP.
-        // char_pos arrives as UTF-16 from the client, so we must compare
-        // against UTF-16 offsets as well.
         let utf16_start = helpers::utf16_len_up_to(line, byte_start);
         let utf16_end = helpers::utf16_len_up_to(line, byte_end);
         let utf16_pos = char_pos; // already UTF-16 from the client
@@ -331,8 +336,6 @@ fn try_global_hover(
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
     // Extract the word at the cursor position.
-    // char_pos is in UTF-16 code units (from LSP). Convert to a
-    // Unicode-scalar-value index so we can index into `chars[]`.
     let chars: Vec<char> = line.chars().collect();
     let utf16_to_char_idx = |utf16_offset: usize| -> usize {
         let mut utf16_count = 0usize;
@@ -375,7 +378,6 @@ fn try_global_hover(
         let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
         let byte_end: usize = chars[..end].iter().map(|c| c.len_utf8()).sum();
 
-        // Convert byte positions to UTF-16 code unit offsets for LSP
         let utf16_start = helpers::utf16_len_up_to(line, byte_start);
         let utf16_end = helpers::utf16_len_up_to(line, byte_end);
 
@@ -401,9 +403,6 @@ fn try_global_hover(
 }
 
 /// Try to show hover info for a passage link when cursor is inside [[...]].
-///
-/// All byte offsets from string slicing are converted to UTF-16 code unit
-/// offsets for LSP positions, as required by the specification.
 fn try_link_hover(
     line: &str,
     line_idx: usize,
@@ -418,15 +417,13 @@ fn try_link_hover(
             let content_start = abs_start + 2;
             let content_end = abs_start + rel_end;
 
-            // Convert byte offsets to UTF-16 code unit offsets for LSP
             let utf16_start = helpers::utf16_len_up_to(line, abs_start);
             let utf16_end = helpers::utf16_len_up_to(line, abs_end);
-            let utf16_pos = char_pos; // already UTF-16 from the client
+            let utf16_pos = char_pos;
 
             if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
                 let link_text = &line[content_start..content_end];
 
-                // Extract target: handle arrow (->) and pipe (|) syntax
                 let target = if let Some(arrow) = link_text.find("->") {
                     &link_text[arrow + 2..]
                 } else if let Some(pipe) = link_text.find('|') {
@@ -448,7 +445,6 @@ fn try_link_hover(
                             if passage.tags.is_empty() { "none".to_string() } else { passage.tags.join(", ") }
                         );
 
-                        // Add variable info for the target passage
                         if !passage.vars.is_empty() {
                             let writes: Vec<&str> = passage.persistent_variable_inits().map(|v| v.name.as_str()).collect();
                             let reads: Vec<&str> = passage.persistent_variable_reads().map(|v| v.name.as_str()).collect();
@@ -477,7 +473,6 @@ fn try_link_hover(
                             }),
                         });
                     } else {
-                        // Broken link
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,

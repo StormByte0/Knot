@@ -340,3 +340,9 @@ export interface KnotBuildOutput {
     line: string;
     is_error: boolean;
 }
+
+/** Notification: knot/formatDetected */
+export interface KnotFormatDetectedParams {
+    format: string;
+    document_uris: string[];
+}

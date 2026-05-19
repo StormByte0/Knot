@@ -35,7 +35,7 @@ pub mod harlowe;
 pub mod chapbook;
 pub mod snowman;
 
-pub use plugin::{FormatPlugin, ParseResult, SemanticToken, FormatDiagnostic, SourceTextProvider, NoSourceText};
+pub use plugin::{FormatPlugin, ParseResult, SemanticToken, FormatDiagnostic, SourceTextProvider, NoSourceText, MacroAtPosition, MacroBlockEvent};
 pub use types::{
     MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,

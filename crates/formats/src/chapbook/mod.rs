@@ -922,6 +922,153 @@ impl FormatPlugin for ChapbookPlugin {
     fn display_name(&self) -> &str {
         "Chapbook"
     }
+
+    // -------------------------------------------------------------------
+    // Syntax detection (format-aware handler dispatch)
+    // -------------------------------------------------------------------
+
+    fn find_macro_at_position(
+        &self,
+        line: &str,
+        byte_pos: usize,
+    ) -> Option<crate::plugin::MacroAtPosition> {
+        use crate::plugin::MacroAtPosition;
+
+        // Chapbook uses [modifier]...[/modifier] blocks and {expression} inline.
+        // Detect [modifier] at position.
+        let re = regex::Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
+        for caps in re.captures_iter(line) {
+            let full_match = caps.get(0).unwrap();
+            let name_match = caps.get(1).unwrap();
+            let bracket_start = full_match.start();
+            let bracket_end = full_match.end();
+            let name_start = name_match.start();
+            let name_end = name_match.end();
+
+            if byte_pos >= bracket_start && byte_pos <= bracket_end {
+                return Some(MacroAtPosition {
+                    name: name_match.as_str().to_string(),
+                    full_range: bracket_start..bracket_end,
+                    name_range: name_start..name_end,
+                    is_unclosed: false,
+                });
+            }
+        }
+
+        // Also detect {expression} inline
+        if let Some(start) = line[..byte_pos.min(line.len())].rfind('{') {
+            if let Some(end) = line[start..].find('}') {
+                let brace_end = start + end + 1;
+                if byte_pos >= start && byte_pos <= brace_end {
+                    let content = &line[start + 1..start + end];
+                    let name = content.split_whitespace().next().unwrap_or(content);
+                    let name_start = start + 1;
+                    let name_end = name_start + name.len();
+                    return Some(MacroAtPosition {
+                        name: name.to_string(),
+                        full_range: start..brace_end,
+                        name_range: name_start..name_end,
+                        is_unclosed: false,
+                    });
+                }
+            } else if byte_pos >= start {
+                // Unclosed expression
+                let content = &line[start + 1..];
+                let name = content.split_whitespace().next().unwrap_or(content);
+                let name_start = start + 1;
+                let name_end = name_start + name.len();
+                return Some(MacroAtPosition {
+                    name: name.to_string(),
+                    full_range: start..line.len(),
+                    name_range: name_start..name_end,
+                    is_unclosed: true,
+                });
+            }
+        }
+        None
+    }
+
+    fn scan_line_for_macro_events(
+        &self,
+        line: &str,
+        line_idx: u32,
+    ) -> Vec<crate::plugin::MacroBlockEvent> {
+        use crate::plugin::MacroBlockEvent;
+
+        let mut events = Vec::new();
+
+        // Open blocks: [modifier]
+        let re_open = regex::Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
+        for caps in re_open.captures_iter(line) {
+            if let Some(name_match) = caps.get(1) {
+                let name = name_match.as_str();
+                // Only certain Chapbook modifiers are "block" modifiers
+                if matches!(name, "javascript" | "insert" | "replace" | "append" | "prepend" | "continue") {
+                    events.push(MacroBlockEvent {
+                        name: name.to_string(),
+                        line: line_idx,
+                        is_open: true,
+                    });
+                }
+            }
+        }
+
+        // Close blocks: [/modifier]
+        let re_close = regex::Regex::new(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
+        for caps in re_close.captures_iter(line) {
+            if let Some(name_match) = caps.get(1) {
+                events.push(MacroBlockEvent {
+                    name: name_match.as_str().to_string(),
+                    line: line_idx,
+                    is_open: false,
+                });
+            }
+        }
+
+        events
+    }
+
+    fn format_macro_label(&self, name: &str) -> String {
+        format!("[{}]", name)
+    }
+
+    fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        if params.is_empty() {
+            format!("[{}]", name)
+        } else {
+            format!("[{} {}]", name, params)
+        }
+    }
+
+    fn format_close_macro_label(&self, name: &str) -> String {
+        format!("[/{}]", name)
+    }
+
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        if has_body {
+            format!("[{}] $1\n$2\n[/{}]", name, name)
+        } else {
+            format!("[{}] $1", name)
+        }
+    }
+
+    fn detect_close_tag_context(&self, before_cursor: &str) -> Option<String> {
+        // Check for `[/` prefix — Chapbook close-block context
+        if let Some(pos) = before_cursor.rfind("[/") {
+            let after = &before_cursor[pos + 2..];
+            if after.is_empty() || after.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                return Some(after.to_string());
+            }
+        }
+        if before_cursor.ends_with('[') {
+            return Some(String::new());
+        }
+        None
+    }
+
+    fn has_block_macros_with_close_tags(&self) -> bool {
+        true // Chapbook has [javascript]...[/javascript] etc.
+    }
 }
 
 #[cfg(test)]

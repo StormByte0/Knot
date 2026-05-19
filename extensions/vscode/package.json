@@ -39,6 +39,34 @@
           "Twine"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "twee-sugarcube",
+        "extensions": [],
+        "aliases": [
+          "Twee (SugarCube)"
+        ]
+      },
+      {
+        "id": "twee-harlowe",
+        "extensions": [],
+        "aliases": [
+          "Twee (Harlowe)"
+        ]
+      },
+      {
+        "id": "twee-chapbook",
+        "extensions": [],
+        "aliases": [
+          "Twee (Chapbook)"
+        ]
+      },
+      {
+        "id": "twee-snowman",
+        "extensions": [],
+        "aliases": [
+          "Twee (Snowman)"
+        ]
       }
     ],
     "grammars": [
@@ -53,9 +81,9 @@
         }
       },
       {
+        "language": "twee-sugarcube",
         "scopeName": "source.sugarcube.twee",
         "path": "./syntaxes/sugarcube.tmLanguage.json",
-        "injectTo": ["source.twee"],
         "embeddedLanguages": {
           "source.js.embedded.twee": "javascript",
           "source.css.embedded.twee": "css",
@@ -63,22 +91,26 @@
         }
       },
       {
+        "language": "twee-harlowe",
         "scopeName": "source.harlowe.twee",
         "path": "./syntaxes/harlowe.tmLanguage.json",
-        "injectTo": ["source.twee"]
+        "embeddedLanguages": {
+          "source.js.embedded.twee": "javascript",
+          "source.css.embedded.twee": "css"
+        }
       },
       {
+        "language": "twee-chapbook",
         "scopeName": "source.chapbook.twee",
         "path": "./syntaxes/chapbook.tmLanguage.json",
-        "injectTo": ["source.twee"],
         "embeddedLanguages": {
           "source.js.embedded.twee": "javascript"
         }
       },
       {
+        "language": "twee-snowman",
         "scopeName": "source.snowman.twee",
         "path": "./syntaxes/snowman.tmLanguage.json",
-        "injectTo": ["source.twee"],
         "embeddedLanguages": {
           "source.js.embedded.twee": "javascript"
         }
@@ -440,10 +472,138 @@
           "boolean": ["constant.language.boolean.twee"],
           "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
         }
+      },
+      {
+        "language": "twee-sugarcube",
+        "scopes": {
+          "passageHeader": ["entity.name.section.passage.twee"],
+          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
+          "link": ["markup.underline.link.passage.twee"],
+          "macro": ["keyword.control.macro.sugarcube"],
+          "variable": ["variable.other.sugarcube.temp", "variable.other.story.twee"],
+          "string": ["string.unquoted.twee"],
+          "number": ["constant.numeric.twee"],
+          "comment": ["comment.block.twee"],
+          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
+          "keyword": ["keyword.control.twee"],
+          "boolean": ["constant.language.boolean.twee"],
+          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+        }
+      },
+      {
+        "language": "twee-harlowe",
+        "scopes": {
+          "passageHeader": ["entity.name.section.passage.twee"],
+          "specialPassage": ["entity.name.section.special-passage.twee"],
+          "link": ["markup.underline.link.passage.twee"],
+          "macro": ["keyword.control.macro.harlowe"],
+          "variable": ["variable.other.story.twee"],
+          "string": ["string.unquoted.twee"],
+          "number": ["constant.numeric.twee"],
+          "comment": ["comment.block.twee"],
+          "tag": ["meta.decorator.tag.twee"],
+          "keyword": ["keyword.control.twee"],
+          "boolean": ["constant.language.boolean.twee"],
+          "passageRef": ["support.function.passage-ref.twee"]
+        }
+      },
+      {
+        "language": "twee-chapbook",
+        "scopes": {
+          "passageHeader": ["entity.name.section.passage.twee"],
+          "specialPassage": ["entity.name.section.special-passage.twee"],
+          "link": ["markup.underline.link.passage.twee"],
+          "macro": ["keyword.control.macro.chapbook"],
+          "variable": ["variable.other.story.twee"],
+          "string": ["string.unquoted.twee"],
+          "number": ["constant.numeric.twee"],
+          "comment": ["comment.block.twee"],
+          "tag": ["meta.decorator.tag.twee"],
+          "keyword": ["keyword.control.twee"],
+          "boolean": ["constant.language.boolean.twee"],
+          "passageRef": ["support.function.passage-ref.twee"]
+        }
+      },
+      {
+        "language": "twee-snowman",
+        "scopes": {
+          "passageHeader": ["entity.name.section.passage.twee"],
+          "specialPassage": ["entity.name.section.special-passage.twee"],
+          "link": ["markup.underline.link.passage.twee"],
+          "macro": ["support.class.sugarcube"],
+          "variable": ["variable.other.story.twee"],
+          "string": ["string.unquoted.twee"],
+          "number": ["constant.numeric.twee"],
+          "comment": ["comment.block.twee"],
+          "tag": ["meta.decorator.tag.twee"],
+          "keyword": ["keyword.control.twee"],
+          "boolean": ["constant.language.boolean.twee"],
+          "passageRef": ["support.function.passage-ref.twee"]
+        }
       }
     ],
     "configurationDefaults": {
       "[twee]": {
+        "editor.wordWrap": "on",
+        "editor.wordBasedSuggestions": "off",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.acceptSuggestionOnEnter": "on",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.bracketPairColorization.enabled": true
+      },
+      "[twee-sugarcube]": {
+        "editor.wordWrap": "on",
+        "editor.wordBasedSuggestions": "off",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.acceptSuggestionOnEnter": "on",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.bracketPairColorization.enabled": true
+      },
+      "[twee-harlowe]": {
+        "editor.wordWrap": "on",
+        "editor.wordBasedSuggestions": "off",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.acceptSuggestionOnEnter": "on",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.bracketPairColorization.enabled": true
+      },
+      "[twee-chapbook]": {
+        "editor.wordWrap": "on",
+        "editor.wordBasedSuggestions": "off",
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": true
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.acceptSuggestionOnEnter": "on",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true,
+        "editor.bracketPairColorization.enabled": true
+      },
+      "[twee-snowman]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
         "editor.quickSuggestions": {

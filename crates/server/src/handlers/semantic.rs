@@ -24,6 +24,7 @@ pub(crate) const ST_KEYWORD: u32 = 8;
 pub(crate) const ST_BOOLEAN: u32 = 9;
 pub(crate) const ST_PASSAGE_REF: u32 = 10;
 pub(crate) const ST_SPECIAL_PASSAGE_HEADER: u32 = 11;
+pub(crate) const ST_SPECIAL_PASSAGE: u32 = 12;
 
 /// Token-modifier indices.
 pub(crate) const SM_DEFINITION: u32 = 1 << 0;
@@ -97,6 +98,7 @@ fn map_token_type(tt: &fmt_plugin::SemanticTokenType) -> u32 {
         fmt_plugin::SemanticTokenType::Tag => ST_TAG,
         fmt_plugin::SemanticTokenType::Keyword => ST_KEYWORD,
         fmt_plugin::SemanticTokenType::PassageRef => ST_PASSAGE_REF,
+        fmt_plugin::SemanticTokenType::SpecialPassage => ST_SPECIAL_PASSAGE,
     }
 }
 
