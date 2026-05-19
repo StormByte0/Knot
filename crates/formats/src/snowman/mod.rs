@@ -898,11 +898,11 @@ impl FormatPlugin for SnowmanPlugin {
             let is_header_tagged = header.tags.iter().any(|t| t == "header");
             let is_footer_tagged = header.tags.iter().any(|t| t == "footer");
 
-            let mut passage = if let Some(def) = special_def {
+            let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
                     header.name.clone(),
                     header.header_start..body_offset + body.len(),
-                    def,
+                    def.clone(),
                 )
             } else if is_header_tagged {
                 Passage::new_special(
@@ -940,11 +940,16 @@ impl FormatPlugin for SnowmanPlugin {
             let segments = self.parse_template_segments(body, body_offset);
             passage.body = self.build_blocks(&segments);
 
-            // Header token.
+            // Header token. Use SpecialPassage type for special passages.
+            let header_type = if special_def.is_some() {
+                SemanticTokenType::SpecialPassage
+            } else {
+                SemanticTokenType::PassageHeader
+            };
             tokens.push(SemanticToken {
                 start: header.header_start,
                 length: 2,
-                token_type: SemanticTokenType::PassageHeader,
+                token_type: header_type,
                 modifier: None,
             });
 

@@ -4,6 +4,15 @@
 use crate::handlers::helpers;
 use crate::state::ServerState;
 use lsp_types::*;
+use regex::Regex;
+use std::sync::LazyLock;
+
+static RE_MACRO_OPEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap()
+});
+static RE_MACRO_CLOSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap()
+});
 
 pub(crate) async fn folding_range(
     state: &ServerState,
@@ -19,6 +28,7 @@ pub(crate) async fn folding_range(
     let mut ranges = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
 
+    // ── Passage body folding ──────────────────────────────────────
     for (line_idx, line) in lines.iter().enumerate() {
         if line.starts_with("::") {
             // Find the end of this passage (next :: or end of file)
@@ -37,6 +47,51 @@ pub(crate) async fn folding_range(
                     kind: Some(FoldingRangeKind::Region),
                     collapsed_text: None,
                 });
+            }
+        }
+    }
+
+    // ── Macro block folding ──────────────────────────────────────
+    // Use the format plugin to find which macro names are block macros,
+    // then detect open/close pairs for folding ranges.
+    let format = inner.workspace.resolve_format();
+    if let Some(plugin) = inner.format_registry.get(&format) {
+        let block_names = plugin.block_macro_names();
+
+        // Collect macro open/close events with line numbers
+        let mut open_stack: Vec<(String, u32)> = Vec::new(); // (name, start_line)
+
+        for (line_idx, line) in lines.iter().enumerate() {
+            // Check for open macros: <<name ...>>
+            for caps in RE_MACRO_OPEN.captures_iter(line) {
+                if let Some(name_match) = caps.get(1) {
+                    let name = name_match.as_str();
+                    if block_names.contains(name) {
+                        open_stack.push((name.to_string(), line_idx as u32));
+                    }
+                }
+            }
+
+            // Check for close macros: <</name>>
+            for caps in RE_MACRO_CLOSE.captures_iter(line) {
+                if let Some(name_match) = caps.get(1) {
+                    let close_name = name_match.as_str();
+                    // Find matching open tag on stack (search backward)
+                    if let Some(pos) = open_stack.iter().rposition(|(n, _)| n == close_name) {
+                        let (_, start_line) = open_stack.remove(pos);
+                        let end_line = line_idx as u32;
+                        if end_line > start_line + 1 {
+                            ranges.push(FoldingRange {
+                                start_line,
+                                start_character: None,
+                                end_line,
+                                end_character: None,
+                                kind: Some(FoldingRangeKind::Region),
+                                collapsed_text: None,
+                            });
+                        }
+                    }
+                }
             }
         }
     }

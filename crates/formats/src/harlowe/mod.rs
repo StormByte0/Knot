@@ -841,14 +841,22 @@ impl HarlowePlugin {
     }
 
     /// Generate semantic tokens for passage headers.
-    fn header_tokens(&self, header: &ParsedHeader) -> Vec<SemanticToken> {
+    /// If `is_special` is true, uses `SpecialPassage` token type for
+    /// distinct highlighting of format-defined special passages.
+    fn header_tokens(&self, header: &ParsedHeader, is_special: bool) -> Vec<SemanticToken> {
         let mut tokens = Vec::new();
+
+        let header_type = if is_special {
+            SemanticTokenType::SpecialPassage
+        } else {
+            SemanticTokenType::PassageHeader
+        };
 
         // The `::` prefix is always 2 bytes.
         tokens.push(SemanticToken {
             start: header.header_start,
             length: 2,
-            token_type: SemanticTokenType::PassageHeader,
+            token_type: header_type.clone(),
             modifier: None,
         });
 
@@ -857,7 +865,7 @@ impl HarlowePlugin {
         tokens.push(SemanticToken {
             start: name_offset,
             length: header.name.len(),
-            token_type: SemanticTokenType::PassageHeader,
+            token_type: header_type,
             modifier: None,
         });
 
@@ -1192,11 +1200,11 @@ impl FormatPlugin for HarlowePlugin {
                     })
                 });
 
-            let mut passage = if let Some(def) = special_def {
+            let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
                     header.name.clone(),
                     header.header_start..body_offset + body.len(),
-                    def,
+                    def.clone(),
                 )
             } else {
                 Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
@@ -1209,8 +1217,8 @@ impl FormatPlugin for HarlowePlugin {
             passage.vars = self.extract_vars(body, body_offset);
             passage.body = self.extract_blocks(body, body_offset);
 
-            // Semantic tokens for header.
-            tokens.extend(self.header_tokens(header));
+            // Semantic tokens for header. Use SpecialPassage type for special passages.
+            tokens.extend(self.header_tokens(header, special_def.is_some()));
 
             // Semantic tokens for body.
             tokens.extend(self.body_tokens(body, body_offset));

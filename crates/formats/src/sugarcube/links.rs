@@ -64,14 +64,11 @@ pub(crate) static RE_UI_GOTO: Lazy<Regex> =
 pub(crate) static RE_UI_INCLUDE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
 
-/// <<name ...>> — any open macro (used by extract_macro_passage_refs)
-///
-/// Uses `(?:[^>]|>[^>])*?` instead of `[^>]*?` so that single `>`
-/// characters inside macro conditions are matched correctly.
-/// For example, `<<if _parts.length > 0>>` is matched as one macro.
-pub(crate) static RE_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap());
-
+// ---------------------------------------------------------------------------
+// NOTE: Macro passage reference extraction now uses the string-aware scanner
+// from blocks.rs instead of regex. The RE_MACRO pattern is kept in
+// regexes.rs for backward compatibility but should not be used for
+// new code that needs to handle > in macro conditions.
 // ---------------------------------------------------------------------------
 // Link extraction functions
 // ---------------------------------------------------------------------------
@@ -197,6 +194,9 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
 
 /// Extract passage references from macro invocations.
 ///
+/// Uses the **string-aware macro scanner** from `blocks.rs` instead of regex
+/// to correctly handle `>` and `>>` inside macro conditions.
+///
 /// Uses the builtin macro catalog's `is_passage_ref` flags on argument
 /// definitions to determine which arguments are passage references.
 /// For macros in `passage_arg_macro_names()`, extracts the passage name
@@ -210,22 +210,27 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
     let mut links = Vec::new();
     let passage_arg_macros = macros::passage_arg_macro_names();
 
-    for caps in RE_MACRO.captures_iter(body) {
-        let full_match = caps.get(0).unwrap();
-        let macro_name = caps.get(1).unwrap().as_str();
+    let parsed_macros = super::blocks::scan_macros(body);
+
+    for m in &parsed_macros {
+        // Skip close tags
+        if m.name.starts_with('/') {
+            continue;
+        }
+
+        let macro_name = m.name.as_str();
 
         // Only process macros that have passage-ref arguments
         if !passage_arg_macros.contains(macro_name) {
             continue;
         }
 
-        let args_str = caps.get(2).map(|a| a.as_str()).unwrap_or("");
+        let args_str = m.args.as_str();
+        if args_str.is_empty() {
+            continue;
+        }
 
         // Parse quoted string arguments from the args string.
-        // In SugarCube, macro args are split at spaces. The first element
-        // is the macro name. The last string arg is always the target
-        // (required passage name). If there are more than one string arg,
-        // the second one is the label.
         let string_args = parse_quoted_args(args_str);
 
         if string_args.is_empty() {
@@ -244,11 +249,13 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
         if idx < string_args.len() {
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
-                // Narrow the link span to just the quoted passage name string,
-                // not the entire <<macro args>> span. This makes diagnostics
-                // and go-to-definition highlight only the passage name.
-                let args_offset_in_body = full_match.start()
-                    + full_match.as_str().find(args_str).unwrap_or(0);
+                // Compute the args offset in the body.
+                // The args string is trimmed from body[name_end..closing_gt_start].
+                let name_end_in_body = m.name_start + m.name_len;
+                let body_after_name = &body[name_end_in_body..m.end.saturating_sub(2)];
+                let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+                let args_offset_in_body = name_end_in_body + trimmed_start;
+
                 links.push(Link {
                     display_text: None,
                     target: content.clone(),

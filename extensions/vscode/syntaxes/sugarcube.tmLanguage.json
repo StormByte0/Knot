@@ -4,6 +4,30 @@
     "injectTo": ["source.twee"],
     "patterns": [
         {
+            "comment": "Story JavaScript special passage — entire body is JavaScript (SugarCube-specific name)",
+            "contentName": "source.js.embedded.twee",
+            "begin": "^(::)\\s+[Ss]tory\\s+[Jj]ava[Ss]cript\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.passage.twee" },
+                "2": { "name": "entity.name.passage.special.sugarcube" },
+                "3": { "name": "meta.passage.metadata.twee" }
+            },
+            "patterns": [{ "include": "source.js" }]
+        },
+        {
+            "comment": "Story Stylesheet special passage — entire body is CSS (SugarCube-specific name)",
+            "contentName": "source.css.embedded.twee",
+            "begin": "^(::)\\s+[Ss]tory\\s+[Ss]tylesheet\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.passage.twee" },
+                "2": { "name": "entity.name.passage.special.sugarcube" },
+                "3": { "name": "meta.passage.metadata.twee" }
+            },
+            "patterns": [{ "include": "source.css" }]
+        },
+        {
             "comment": "Script passage: :: Name [script] — entire body is JavaScript (SugarCube-specific tag)",
             "contentName": "source.js.embedded.twee",
             "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*(\\{.*\\})?\\s*$",
@@ -13,7 +37,7 @@
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
-                    "name": "entity.name.passage.twee"
+                    "name": "entity.name.passage.special.sugarcube"
                 },
                 "3": {
                     "name": "meta.passage.metadata.twee"
@@ -35,7 +59,7 @@
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
-                    "name": "entity.name.passage.twee"
+                    "name": "entity.name.passage.special.sugarcube"
                 },
                 "3": {
                     "name": "meta.passage.metadata.twee"

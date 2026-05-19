@@ -13,9 +13,15 @@
 //! This gives proper nesting context for structural validation — e.g., `<<else>>`
 //! inside `<<if>>` is correctly recognized as valid because `<<if>>` is on the
 //! stack (its `<</if>>` hasn't been encountered yet).
+//!
+//! ## Macro parsing strategy
+//!
+//! Macro detection uses the **string-aware character scanner** from `blocks.rs`
+//! instead of regex. This correctly handles `>` and `>>` inside macro
+//! conditions (e.g., `<<if _parts.length > 0>>`) and inside quoted strings.
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity};
-use super::blocks::{RE_MACRO, RE_MACRO_CLOSE};
+use super::blocks;
 use super::macros;
 
 /// Comprehensive validation: check for common SugarCube errors.
@@ -44,11 +50,11 @@ pub(crate) fn validate(body: &str, body_offset: usize) -> Vec<FormatDiagnostic> 
 /// Check for unclosed `<<` / `>>` macro bracket pairs.
 ///
 /// This function is string-aware: it tracks whether we're inside a quoted
-/// string so that `>` characters inside conditions like `<<if x > 0>>`
+/// string so that `>>` characters inside conditions like `<<if x > 0>>`
 /// are not falsely detected as macro closers. A `>>` is only treated as
 /// a macro close if:
 /// - It's not inside a single- or double-quoted string
-/// - It's not the `>>` at the end of a macro that contains a `>` in its condition
+/// - It's not part of a `>>>` (JS unsigned right shift operator)
 fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut depth = 0i32;
     let mut open_pos: Option<usize> = None;
@@ -196,6 +202,7 @@ fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<
 #[derive(Debug)]
 struct MacroEvent {
     /// Byte offset of the event within the body.
+    #[allow(dead_code)]
     offset: usize,
     /// Macro name (without `/` prefix for close tags).
     name: String,
@@ -207,6 +214,9 @@ struct MacroEvent {
 }
 
 /// Block-aware structural validation.
+///
+/// Uses the **string-aware macro scanner** from `blocks.rs` to correctly
+/// parse macros even when `>` or `>>` appear inside conditions.
 ///
 /// Processes ALL macro events (open + close) in source order, maintaining
 /// a stack. When a close tag is encountered, searches the stack backward
@@ -220,37 +230,23 @@ fn validate_macro_structure(body: &str, body_offset: usize, diagnostics: &mut Ve
     let deprecated = macros::deprecated_macros();
     let known_macros = macros::known_macro_names();
 
-    // ── Collect all macro events in source order ──────────────────────
-    let mut events: Vec<MacroEvent> = Vec::new();
+    // ── Collect all macro events using the string-aware scanner ───────
+    let parsed = blocks::scan_macros(body);
+    let events: Vec<MacroEvent> = parsed
+        .into_iter()
+        .map(|m| {
+            let is_open = !m.name.starts_with('/');
+            MacroEvent {
+                offset: m.start,
+                name: m.name,
+                is_open,
+                span_start: body_offset + m.start,
+                span_end: body_offset + m.end,
+            }
+        })
+        .collect();
 
-    // Open macros: <<name ...>> or <<name>>
-    for caps in RE_MACRO.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        let name = caps.get(1).unwrap().as_str().to_string();
-        events.push(MacroEvent {
-            offset: m.start(),
-            name,
-            is_open: true,
-            span_start: body_offset + m.start(),
-            span_end: body_offset + m.end(),
-        });
-    }
-
-    // Close macros: <</name>>
-    for caps in RE_MACRO_CLOSE.captures_iter(body) {
-        let m = caps.get(0).unwrap();
-        let name = caps.get(1).unwrap().as_str().to_string();
-        events.push(MacroEvent {
-            offset: m.start(),
-            name,
-            is_open: false,
-            span_start: body_offset + m.start(),
-            span_end: body_offset + m.end(),
-        });
-    }
-
-    // Sort by source position
-    events.sort_by_key(|e| e.offset);
+    // Events are already in source order from the scanner
 
     // ── Process events in source order ────────────────────────────────
     // Stack entries: (name, span_start)
@@ -309,8 +305,10 @@ fn validate_macro_structure(body: &str, body_offset: usize, diagnostics: &mut Ve
             }
         } else {
             // Close macro: find and pop the matching open tag from the stack
+            // Strip the leading `/` to get the base name
+            let base_name = event.name.strip_prefix('/').unwrap_or(&event.name);
             // Search backward for the matching name
-            if let Some(idx) = open_stack.iter().rposition(|(name, _)| *name == event.name) {
+            if let Some(idx) = open_stack.iter().rposition(|(name, _)| *name == base_name) {
                 open_stack.remove(idx);
             }
             // If no matching open tag found, we don't report an error here
