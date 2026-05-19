@@ -1,8 +1,10 @@
 {
     "scopeName": "source.harlowe.twee",
     "name": "Harlowe (Twee)",
-    "injectTo": ["source.twee"],
     "patterns": [
+        {
+            "include": "source.twee"
+        },
         {
             "comment": "Harlowe macro/command: (name:args) — parenthetical command syntax",
             "comment": "Matches the opening (name: and delegates to finding the closing )",

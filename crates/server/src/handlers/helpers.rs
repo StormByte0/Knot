@@ -420,8 +420,11 @@ pub(crate) async fn index_workspace(
     // After all files are loaded, rebuild the graph and run analysis
     let mut inner = inner.write().await;
     let format = inner.workspace.resolve_format();
-    inner.workspace.graph = rebuild_graph(&inner.workspace, &inner.format_registry, format);
+    inner.workspace.graph = rebuild_graph(&inner.workspace, &inner.format_registry, format.clone());
     inner.workspace.mark_indexed();
+
+    // Notify the client of the detected format so it can switch language IDs
+    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
     let diagnostics = analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     let open_docs = inner.open_documents.clone();
@@ -430,6 +433,11 @@ pub(crate) async fn index_workspace(
     drop(inner);
 
     publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+    // Always send formatDetected after initial indexing so the client
+    // can set language IDs even when the format hasn't "changed" (it
+    // may be the first time the client hears about it).
+    send_format_detected(client, format, doc_uris).await;
 
     Ok(())
 }
@@ -482,6 +490,29 @@ async fn send_index_progress(client: &tower_lsp::Client, total_files: u32, parse
     };
     client
         .send_notification::<KnotIndexProgressNotification>(progress)
+        .await;
+}
+
+/// Send a `knot/formatDetected` notification to the client.
+///
+/// Called when the story format is first detected or changes (e.g., after
+/// StoryData is found). The client uses this to switch document language IDs,
+/// which activates the correct TextMate grammar for the detected format.
+pub(crate) async fn send_format_detected(
+    client: &tower_lsp::Client,
+    format: StoryFormat,
+    document_uris: Vec<String>,
+) {
+    tracing::info!(
+        format = %format,
+        document_count = document_uris.len(),
+        "Sending knot/formatDetected notification"
+    );
+    client
+        .send_notification::<FormatDetectedNotification>(FormatDetectedParams {
+            format: format.to_string(),
+            document_uris,
+        })
         .await;
 }
 

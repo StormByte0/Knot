@@ -128,11 +128,11 @@ pub(crate) async fn completion(
         Some("<") => {
             if let Some(plugin) = plugin {
                 if !plugin.builtin_macros().is_empty() {
-                    // Check if we're inside a macro-open context
-                    let in_macro_context = before_cursor.ends_with("<<")
-                        || before_cursor.rfind("<<").map_or(false, |pos| {
-                            !before_cursor[pos..].contains(">>")
-                        });
+                    // Check if we're inside a macro-open context using the format plugin.
+                    // The format plugin knows its own opening delimiter patterns.
+                    let in_macro_context = plugin.find_macro_at_position(line_text, byte_pos).is_some()
+                        || before_cursor.ends_with("<") // partial open delimiter
+                        || plugin.detect_close_tag_context(before_cursor).is_some();
 
                     if in_macro_context {
                         items = build_macro_completions(plugin);
@@ -269,8 +269,9 @@ pub(crate) async fn completion_resolve(
                 if let Some(plugin) = plugin {
                     if let Some(mdef) = plugin.find_macro(name) {
                         let mut doc_markdown = format!(
-                            "**<<{}>>**\n\n{}",
-                            mdef.name, mdef.description
+                            "**{}**\n\n{}",
+                            plugin.format_macro_label(mdef.name),
+                            mdef.description
                         );
                         if mdef.deprecated {
                             if let Some(msg) = mdef.deprecation_message {
@@ -327,14 +328,14 @@ fn build_macro_completions(plugin: &dyn FormatPlugin) -> Vec<CompletionItem> {
         let category = mdef.category.to_string();
 
         items.push(CompletionItem {
-            label: format!("<<{}>>", mdef.name),
+            label: plugin.format_macro_label(mdef.name),
             kind: Some(CompletionItemKind::FUNCTION),
             detail: Some(format!("[{}] {}", category, mdef.description)),
             sort_text: Some(format!("2_{:06}_{}", 0, mdef.name)),
             filter_text: Some(mdef.name.to_string()),
             insert_text: Some(snippet),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
-            commit_characters: Some(vec![">".to_string()]),
+            commit_characters: None,
             tags: if mdef.deprecated {
                 Some(vec![CompletionItemTag::DEPRECATED])
             } else {
@@ -349,56 +350,44 @@ fn build_macro_completions(plugin: &dyn FormatPlugin) -> Vec<CompletionItem> {
     items
 }
 
-/// Try close-tag completion when the user types `<</`.
+/// Try close-tag completion when the user types a format-specific close delimiter.
 ///
-/// Analyzes the text before the cursor to find unclosed block macros,
-/// then offers matching close tags ordered by nesting depth.
+/// Uses the format plugin to detect close-tag context and scan for macro
+/// events, so no hardcoded SugarCube `<<>>` patterns are used.
 fn try_close_tag_completion(
     before_cursor: &str,
     _workspace: &knot_core::Workspace,
     plugin: &dyn FormatPlugin,
 ) -> Option<Vec<CompletionItem>> {
-    // Check if we're in a close-tag context: `<</`
-    let close_match = before_cursor.rfind("<</");
-    if close_match.is_none() {
-        // Also check for `<< /` pattern
-        if !before_cursor.ends_with("<<") {
-            return None;
-        }
-    }
+    // Use the format plugin to detect close-tag context
+    let partial = plugin.detect_close_tag_context(before_cursor)?;
 
-    // Collect open/close macro events to determine the stack
+    // Collect macro block events from the text before cursor to determine
+    // the stack of unclosed block macros
     let block_names = plugin.block_macro_names();
-    let mut events: Vec<(usize, &str, bool)> = Vec::new(); // (pos, name, is_open)
 
-    // Open macros: <<name ...>> or <<name>>
-    let open_re = regex::Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s[^>]*)?>>").ok()?;
-    for caps in open_re.captures_iter(before_cursor) {
-        let m = caps.get(0)?;
-        let name = caps.get(1)?.as_str();
-        if block_names.contains(name) {
-            events.push((m.start(), name, true));
+    // Only proceed if there are block macros
+    if block_names.is_empty() {
+        return None;
+    }
+
+    // Build open/close event history by scanning lines
+    let lines: Vec<&str> = before_cursor.lines().collect();
+    let mut events: Vec<(String, bool)> = Vec::new(); // (name, is_open)
+
+    // We need to scan each line for macro events using the plugin
+    for (line_idx, line) in lines.iter().enumerate() {
+        for event in plugin.scan_line_for_macro_events(line, line_idx as u32) {
+            events.push((event.name, event.is_open));
         }
     }
-
-    // Close macros: <</name>>
-    let close_re = regex::Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").ok()?;
-    for caps in close_re.captures_iter(before_cursor) {
-        let m = caps.get(0)?;
-        let name = caps.get(1)?.as_str();
-        events.push((m.start(), name, false));
-    }
-
-    // Sort by position
-    events.sort_by_key(|(pos, _, _)| *pos);
 
     // Build the stack of unclosed open tags
-    let mut open_stack: Vec<&str> = Vec::new();
-    for (_, name, is_open) in &events {
+    let mut open_stack: Vec<String> = Vec::new();
+    for (name, is_open) in &events {
         if *is_open {
-            open_stack.push(name);
+            open_stack.push(name.clone());
         } else {
-            // Find and remove the matching open tag from the stack (innermost first)
             for i in (0..open_stack.len()).rev() {
                 if open_stack[i] == *name {
                     open_stack.remove(i);
@@ -408,29 +397,22 @@ fn try_close_tag_completion(
         }
     }
 
-    // Determine what partial text the user has typed after <</
-    let partial = if let Some(pos) = close_match {
-        &before_cursor[pos + 3..]
-    } else {
-        ""
-    };
-
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     // Offer close tags for unclosed macros (innermost first)
-    for (depth, &name) in open_stack.iter().rev().enumerate() {
-        if seen.contains(name) || (!partial.is_empty() && !name.starts_with(partial)) {
+    for (depth, name) in open_stack.iter().rev().enumerate() {
+        if seen.contains(name.as_str()) || (!partial.is_empty() && !name.starts_with(&partial)) {
             continue;
         }
-        seen.insert(name);
+        seen.insert(name.clone());
         items.push(CompletionItem {
-            label: format!("</{}>>", name),
-            filter_text: Some(name.to_string()),
-            insert_text: Some(format!("{}>>", name)),
+            label: plugin.format_close_macro_label(name),
+            filter_text: Some(name.clone()),
+            insert_text: Some(plugin.format_close_macro_label(name)),
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
             kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(format!("Close <<{}>>", name)),
+            detail: Some(format!("Close {}", plugin.format_macro_label(name))),
             sort_text: Some(format!("0_{:04}_{}", depth, name)),
             ..Default::default()
         });
@@ -439,16 +421,16 @@ fn try_close_tag_completion(
     // If no unclosed macros found, offer all block macro close tags as fallback
     if items.is_empty() {
         for name in &block_names {
-            if !partial.is_empty() && !name.starts_with(partial) {
+            if !partial.is_empty() && !name.starts_with(&partial) {
                 continue;
             }
             items.push(CompletionItem {
-                label: format!("</{}>>", name),
+                label: plugin.format_close_macro_label(name),
                 filter_text: Some(name.to_string()),
-                insert_text: Some(format!("{}>>", name)),
+                insert_text: Some(plugin.format_close_macro_label(name)),
                 insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
                 kind: Some(CompletionItemKind::FUNCTION),
-                detail: Some(format!("Close <<{}>>", name)),
+                detail: Some(format!("Close {}", plugin.format_macro_label(name))),
                 sort_text: Some(format!("1_{}", name)),
                 ..Default::default()
             });
@@ -464,30 +446,50 @@ fn try_close_tag_completion(
 
 /// Try passage name completion inside quotes within a passage-arg macro.
 ///
-/// Detects contexts like `<<goto "...` or `<<link "label" "...` and offers
-/// passage name completions.
+/// Detects format-specific macro contexts using the format plugin instead of
+/// hardcoding SugarCube `<<>>` delimiters. Works with SugarCube `<<goto "...`,
+/// Harlowe `(goto: "...`, and other format-specific syntax.
 fn try_passage_in_quote_completion(
     before_cursor: &str,
     workspace: &knot_core::Workspace,
     plugin: &dyn FormatPlugin,
 ) -> Option<Vec<CompletionItem>> {
-    // Find the most recent `<<` that hasn't been closed with `>>`
-    let last_open = before_cursor.rfind("<<")?;
-    let after_open = &before_cursor[last_open + 2..];
-
-    // Must not contain >> (already closed)
-    if after_open.contains(">>") {
-        return None;
-    }
-
-    // Extract the macro name
-    let macro_name = after_open.split_whitespace().next()?;
-
-    // Check if this macro has passage-ref args
+    // Only proceed if the format has passage-arg macros
     let passage_arg_names = plugin.passage_arg_macro_names();
-    if !passage_arg_names.contains(macro_name) {
+    if passage_arg_names.is_empty() {
         return None;
     }
+
+    // Find the most recent macro open context by looking for the format's
+    // open delimiter pattern. We try each known passage-arg macro name.
+    let mut best_match: Option<(&str, usize)> = None;
+    for &macro_name in &passage_arg_names {
+        // Build the opening pattern for this format
+        let open_pattern = plugin.format_macro_label(macro_name);
+        // Strip the closing delimiter to get the open prefix
+        // e.g., "<<goto>>" -> "<<goto", "(goto:)" -> "(goto:"
+        let open_prefix = open_pattern
+            .trim_end_matches('>')
+            .trim_end_matches(')')
+            .trim_end_matches(']')
+            .trim_end_matches('}');
+
+        if let Some(pos) = before_cursor.rfind(open_prefix) {
+            match best_match {
+                None => best_match = Some((macro_name, pos)),
+                Some((_, prev_pos)) if pos > prev_pos => best_match = Some((macro_name, pos)),
+                _ => {}
+            }
+        }
+    }
+
+    let (macro_name, open_pos) = best_match?;
+    let after_open = &before_cursor[open_pos..];
+
+    // Must not contain the closing delimiter (already closed)
+    if after_open.contains(">>") { return None; }
+    if after_open.contains("))") { return None; }
+    if after_open.contains("]]") { return None; }
 
     // Count the number of quoted strings so far to determine which arg we're in
     let arg_count = after_open.matches('"').count() / 2;
@@ -498,7 +500,7 @@ fn try_passage_in_quote_completion(
     }
 
     // Check if the current arg position is the passage ref position
-    let current_arg = arg_count; // 0-indexed arg we're completing
+    let current_arg = arg_count;
     let passage_idx = plugin.get_passage_arg_index(macro_name, current_arg + 1);
 
     if passage_idx < 0 || passage_idx as usize != current_arg {

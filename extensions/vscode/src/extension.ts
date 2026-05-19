@@ -229,6 +229,48 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // Register custom notification handler for knot/formatDetected
+    // When the server detects the story format, switch document language IDs
+    // to activate the correct TextMate grammar for syntax highlighting.
+    client.onNotification(
+        { method: 'knot/formatDetected' },
+        (params: { format: string; document_uris: string[] }) => {
+            // Map format names from the server to VS Code language IDs
+            const formatToLanguageId: Record<string, string> = {
+                'SugarCube': 'twee-sugarcube',
+                'Harlowe': 'twee-harlowe',
+                'Chapbook': 'twee-chapbook',
+                'Snowman': 'twee-snowman',
+            };
+
+            const languageId = formatToLanguageId[params.format];
+            if (!languageId) {
+                console.warn(`[Knot] Unknown format: ${params.format}, keeping base 'twee' language`);
+                return;
+            }
+
+            for (const docUri of params.document_uris) {
+                try {
+                    const uri = vscode.Uri.parse(docUri);
+                    // Find the document in the visible editors or workspace
+                    const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+                    if (doc && doc.languageId !== languageId) {
+                        vscode.languages.setTextDocumentLanguage(doc, languageId).then(
+                            () => {
+                                console.log(`[Knot] Switched ${docUri} to language: ${languageId}`);
+                            },
+                            (err: unknown) => {
+                                console.warn(`[Knot] Failed to switch language for ${docUri}: ${err}`);
+                            }
+                        );
+                    }
+                } catch (e) {
+                    console.warn(`[Knot] Error processing format notification for ${docUri}: ${e}`);
+                }
+            }
+        }
+    );
+
     // Register the Story Map webview provider (sidebar panel)
     storyMapProvider = new StoryMapProvider(context.extensionUri);
     context.subscriptions.push(

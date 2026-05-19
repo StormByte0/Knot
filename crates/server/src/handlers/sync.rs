@@ -4,7 +4,7 @@
 use crate::handlers::helpers;
 use crate::state::ServerState;
 use knot_core::editing::graph_surgery;
-use knot_core::passage::Passage;
+use knot_core::passage::{Passage, StoryFormat};
 use lsp_types::*;
 use url::Url;
 
@@ -39,6 +39,9 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     inner.editor_open_docs.insert(uri.clone());
     inner.open_documents.insert(uri.clone(), text.clone());
 
+    // Capture format before StoryData extraction so we can detect changes
+    let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
+
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
         helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format, version);
@@ -62,8 +65,12 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
             .unwrap_or_default(),
         "did_open: passages defined"
     );
-    let format = inner.workspace.resolve_format();
-    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
+    let format_after = inner.workspace.resolve_format();
+    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
+
+    // If the format changed (or was first detected), notify the client
+    let should_notify = format_before != Some(format_after.clone());
+    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
     let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     let open_docs = inner.open_documents.clone();
@@ -72,6 +79,10 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     drop(inner);
 
     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+    if should_notify {
+        helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+    }
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -142,6 +153,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     };
 
     // Check for StoryData changes
+    let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
     helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
     inner.workspace.insert_document(doc);
@@ -190,12 +202,22 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
             "did_change: full workspace passage definitions"
         );
     }
+
+    // Check if format changed after StoryData extraction
+    let format_after = inner.workspace.resolve_format();
+    let should_notify = format_before != Some(format_after.clone());
+    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
+
     let open_docs = inner.open_documents.clone();
     let fmt_diags = inner.format_diagnostics.clone();
     let config = inner.workspace.config.clone();
     drop(inner);
 
     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+    if should_notify {
+        helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+    }
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
@@ -369,7 +391,11 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             }
                         }
 
-                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after);
+                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
+
+                        // Collect doc URIs before dropping the lock
+                        let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
+                        let should_notify = format_before != format_after;
 
                         let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                         let open_docs = inner.open_documents.clone();
@@ -378,6 +404,11 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         drop(inner);
 
                         helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+                        // Notify client if format changed after file creation
+                        if should_notify {
+                            helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+                        }
                     }
             }
             FileChangeType::DELETED => {
@@ -418,6 +449,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     && let Ok(path) = uri.to_file_path()
                         && let Ok(text) = std::fs::read_to_string(&path) {
                             let mut inner = state.inner.write().await;
+
+                            // Capture format before StoryData extraction
+                            let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
+
                             let format = inner.workspace.resolve_format();
                             let (doc, parse_result) =
                                 helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
@@ -426,7 +461,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                             helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                             inner.workspace.insert_document(doc);
-                            inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
+
+                            let format_after = inner.workspace.resolve_format();
+                            inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
+
+                            // Check if format changed
+                            let should_notify = format_before != Some(format_after.clone());
+                            let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
                             let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                             let open_docs = inner.open_documents.clone();
@@ -435,6 +476,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             drop(inner);
 
                             helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+                            if should_notify {
+                                helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+                            }
                         }
             }
             _ => {}

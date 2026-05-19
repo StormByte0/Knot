@@ -1,8 +1,10 @@
 {
     "scopeName": "source.sugarcube.twee",
     "name": "SugarCube (Twee)",
-    "injectTo": ["source.twee"],
     "patterns": [
+        {
+            "include": "source.twee"
+        },
         {
             "comment": "Story JavaScript special passage — entire body is JavaScript (SugarCube-specific name)",
             "contentName": "source.js.embedded.twee",

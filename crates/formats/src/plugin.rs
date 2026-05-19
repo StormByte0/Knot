@@ -102,6 +102,10 @@ pub enum SemanticTokenType {
     /// `data-passage="Forest"`). Only the passage name itself is highlighted,
     /// not the surrounding syntax.
     PassageRef,
+    /// A special passage header or body (e.g., StoryInit, StoryCaption,
+    /// Story Stylesheet). Used for distinct visual highlighting of format-
+    /// defined special passages in the editor.
+    SpecialPassage,
 }
 
 /// Modifiers for semantic tokens.
@@ -150,6 +154,51 @@ pub struct ParseResult {
     pub diagnostics: Vec<FormatDiagnostic>,
     /// Whether the parse was fully successful (no errors).
     pub is_complete: bool,
+}
+
+// ===========================================================================
+// Syntax-detection types (used by handlers for format-aware dispatch)
+// ===========================================================================
+
+/// Information about a macro invocation found at a given cursor position.
+///
+/// Returned by `FormatPlugin::find_macro_at_position()` so that handlers
+/// (hover, completion, signature_help) can detect and locate macros using
+/// format-specific syntax without hardcoding delimiters like `<<>>`.
+///
+/// All byte offsets are relative to the start of the line.
+#[derive(Debug, Clone)]
+pub struct MacroAtPosition {
+    /// The macro/command name (e.g., "set", "if", "link" in SugarCube;
+    /// "set:", "if:", "link:" in Harlowe — without delimiters).
+    pub name: String,
+    /// Byte range of the entire macro construct, including delimiters
+    /// (e.g., `<<if $x gt 0>>` or `(set: $x to 5)`).
+    pub full_range: std::ops::Range<usize>,
+    /// Byte range of just the name portion, excluding delimiters
+    /// (e.g., just `if` or just `set`).
+    pub name_range: std::ops::Range<usize>,
+    /// Whether the macro construct is unclosed (cursor is inside an
+    /// incomplete macro). This happens during live editing when the user
+    /// has typed `<<if $x` but hasn't typed `>>` yet.
+    pub is_unclosed: bool,
+}
+
+/// A macro block event detected on a single line of source text.
+///
+/// Returned by `FormatPlugin::scan_line_for_macro_events()` so that
+/// the folding-range handler can detect open/close pairs using
+/// format-specific syntax. The handler pairs these events into
+/// folding ranges; the format plugin only reports what it sees.
+#[derive(Debug, Clone)]
+pub struct MacroBlockEvent {
+    /// The macro name (e.g., "if", "for", "link").
+    pub name: String,
+    /// 0-based line number where this event occurs.
+    pub line: u32,
+    /// Whether this is an opening event (`<<if>>`, `(if:)`)
+    /// or a closing event (`<</if>>`).
+    pub is_open: bool,
 }
 
 // ===========================================================================
@@ -217,6 +266,17 @@ pub trait FormatPlugin: Send + Sync {
         HashSet::new()
     }
 
+    /// Returns the set of macro names that modify block structure for folding
+    /// (e.g., "else", "elseif" in SugarCube). These are not block openers
+    /// (they don't get their own close tag) but they create folding
+    /// subdivisions within a block macro.
+    ///
+    /// Used by the folding range handler to detect intermediate modifiers
+    /// that should split a macro block into sub-folds.
+    fn folding_modifier_names(&self) -> HashSet<&'static str> {
+        HashSet::new()
+    }
+
     /// Returns the set of macro names that accept passage name arguments.
     ///
     /// Used by passage-in-quote completion and link extraction.
@@ -259,15 +319,6 @@ pub trait FormatPlugin: Send + Sync {
         None
     }
 
-    /// Build an insertion snippet for a macro.
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        if has_body {
-            format!("{} $1>>\n$2\n<</{}>>", name, name)
-        } else {
-            format!("{} $1>>", name)
-        }
-    }
-
     /// Returns the structural parent constraints: maps child macro name →
     /// set of valid parent macro names.
     ///
@@ -281,6 +332,134 @@ pub trait FormatPlugin: Send + Sync {
     /// Returns -1 if no passage-ref arg at that position.
     fn get_passage_arg_index(&self, _macro_name: &str, _arg_count: usize) -> i32 {
         -1
+    }
+
+    // -----------------------------------------------------------------------
+    // Syntax detection (optional — format-aware handler dispatch)
+    //
+    // These methods replace hardcoded SugarCube <<>> detection in handlers.
+    // Every handler that searches for macro syntax MUST use these methods
+    // instead of hardcoding delimiters. This is the format-isolation
+    // guarantee for the handler layer.
+    // -----------------------------------------------------------------------
+
+    /// Find the macro invocation at the given cursor position on a line.
+    ///
+    /// Returns `Some(MacroAtPosition)` if the cursor (at byte offset
+    /// `byte_pos` within `line`) is inside a macro construct, along with
+    /// the macro name and byte ranges needed for hover, completion, and
+    /// signature-help responses.
+    ///
+    /// The `byte_pos` parameter is a byte offset into `line`. The handler
+    /// must convert the LSP UTF-16 position to a byte offset before calling
+    /// this method, using `helpers::utf16_to_byte_offset()`.
+    ///
+    /// The returned `full_range` and `name_range` are also byte offsets
+    /// into `line`. The handler must convert these to UTF-16 for LSP
+    /// responses using `helpers::utf16_len_up_to()`.
+    ///
+    /// - SugarCube: searches for `<<name ...>>` and `<</name>>`
+    /// - Harlowe:   searches for `(name:...)`
+    /// - Chapbook:  searches for `[name]...[/name]` special blocks
+    /// - Snowman:   searches for `<%= ... %>` and `<% ... %>`
+    ///
+    /// The default implementation returns `None` (no macro detection),
+    /// which is appropriate for formats that don't have macros.
+    fn find_macro_at_position(
+        &self,
+        _line: &str,
+        _byte_pos: usize,
+    ) -> Option<MacroAtPosition> {
+        None
+    }
+
+    /// Scan a single line for macro block open/close events.
+    ///
+    /// Used by the folding-range handler to detect macro block structure.
+    /// The handler collects events across all lines, then pairs them into
+    /// folding ranges using a stack-based algorithm. The format plugin
+    /// only reports what it sees on each line — the pairing logic is
+    /// format-agnostic.
+    ///
+    /// - SugarCube: detects `<<name>>` (open) and `<</name>>` (close)
+    /// - Harlowe:   detects `(name:)` (open, if block) — no close tags
+    /// - Chapbook:  detects `[name]` (open) and `[/name]` (close)
+    /// - Snowman:   no block macro structure
+    ///
+    /// The default implementation returns an empty vector.
+    fn scan_line_for_macro_events(
+        &self,
+        _line: &str,
+        _line_idx: u32,
+    ) -> Vec<MacroBlockEvent> {
+        Vec::new()
+    }
+
+    /// Format a macro name for display in hover text, completion labels,
+    /// and documentation.
+    ///
+    /// - SugarCube: `<<name>>`
+    /// - Harlowe:   `(name:)`
+    /// - Chapbook:  `[name]`
+    /// - Snowman:   `<%= name %>` (rarely applicable)
+    fn format_macro_label(&self, name: &str) -> String {
+        format!("<<{}>>", name)
+    }
+
+    /// Format a macro signature for display (name + parameter list).
+    ///
+    /// Used by signature-help to show the full call syntax.
+    /// - SugarCube: `<<name params>>`
+    /// - Harlowe:   `(name: params)`
+    fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        if params.is_empty() {
+            format!("<<{}>>", name)
+        } else {
+            format!("<<{} {}>>", name, params)
+        }
+    }
+
+    /// Format a closing macro tag for display.
+    ///
+    /// - SugarCube: `<</name>>`
+    /// - Harlowe:   not applicable (returns empty string by default)
+    fn format_close_macro_label(&self, name: &str) -> String {
+        format!("<</{}>>", name)
+    }
+
+    /// Build an insertion snippet for a macro.
+    ///
+    /// Override this in format plugins that use different delimiter syntax.
+    /// The default implementation produces SugarCube-style snippets.
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        if has_body {
+            format!("{} $1>>\n$2\n<</{}>>", name, name)
+        } else {
+            format!("{} $1>>", name)
+        }
+    }
+
+    /// Detect close-tag context and return the partial name typed so far.
+    ///
+    /// Used by close-tag completion. Returns `Some(partial_name)` when the
+    /// cursor is in a close-tag context (e.g., after `<</` in SugarCube).
+    ///
+    /// - SugarCube: detects `<</` prefix and extracts the partial name
+    /// - Harlowe:   not applicable (no close tags)
+    fn detect_close_tag_context(
+        &self,
+        _before_cursor: &str,
+    ) -> Option<String> {
+        None
+    }
+
+    /// Whether this format has block macros with close tags.
+    ///
+    /// Handlers use this to decide whether to offer close-tag completion
+    /// and macro-block folding. Formats without close tags (Harlowe, Snowman)
+    /// return `false`.
+    fn has_block_macros_with_close_tags(&self) -> bool {
+        true // SugarCube default
     }
 
     // -----------------------------------------------------------------------

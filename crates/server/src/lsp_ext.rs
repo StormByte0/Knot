@@ -208,6 +208,33 @@ impl Notification for KnotIndexProgressNotification {
 }
 
 // ---------------------------------------------------------------------------
+// knot/formatDetected — notification sent when story format is detected
+// ---------------------------------------------------------------------------
+
+/// Notification: `knot/formatDetected` — story format detected.
+///
+/// Sent by the server when the story format is first detected or changes.
+/// The client should use this to switch document language IDs via
+/// `vscode.languages.setTextDocumentLanguage()`, which activates the
+/// correct TextMate grammar for the detected format (e.g., SugarCube,
+/// Harlowe, Chapbook, Snowman).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FormatDetectedParams {
+    /// The detected story format name (e.g., "SugarCube", "Harlowe", "Chapbook", "Snowman").
+    pub format: String,
+    /// URIs of all twee documents in the workspace that should be updated.
+    pub document_uris: Vec<String>,
+}
+
+/// The LSP notification type for `knot/formatDetected`.
+pub struct FormatDetectedNotification;
+
+impl Notification for FormatDetectedNotification {
+    type Params = FormatDetectedParams;
+    const METHOD: &'static str = "knot/formatDetected";
+}
+
+// ---------------------------------------------------------------------------
 // knot/build — trigger compilation
 // ---------------------------------------------------------------------------
 

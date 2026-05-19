@@ -428,16 +428,174 @@ impl FormatPlugin for SugarCubePlugin {
         macros::find_macro(name)
     }
 
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        macros::build_macro_snippet(name, has_body)
-    }
-
     fn macro_parent_constraints(&self) -> HashMap<&'static str, HashSet<&'static str>> {
         macros::macro_parent_constraints()
     }
 
     fn get_passage_arg_index(&self, macro_name: &str, arg_count: usize) -> i32 {
         macros::get_passage_arg_index(macro_name, arg_count)
+    }
+
+    // -------------------------------------------------------------------
+    // Syntax detection (format-aware handler dispatch)
+    // -------------------------------------------------------------------
+
+    fn find_macro_at_position(
+        &self,
+        line: &str,
+        byte_pos: usize,
+    ) -> Option<crate::plugin::MacroAtPosition> {
+        use crate::plugin::MacroAtPosition;
+
+        // Search for `<<name ...>>` constructs on this line.
+        // byte_pos is a UTF-16 code unit offset (from LSP). We convert
+        // to a byte offset for string comparison, then return byte ranges
+        // that the handler converts back to UTF-16 for LSP responses.
+        let mut search_from = 0;
+        while let Some(rel_start) = line[search_from..].find("<<") {
+            let abs_start = search_from + rel_start;
+
+            // Check for close-tag: <</name>>
+            if line[abs_start..].starts_with("<</") {
+                if let Some(rel_end) = line[abs_start..].find(">>") {
+                    let abs_end = abs_start + rel_end + 2;
+
+                    if byte_pos >= abs_start && byte_pos <= abs_end {
+                        let inner = &line[abs_start + 3..abs_end - 2];
+                        let name = inner.split_whitespace().next().unwrap_or(inner).trim();
+                        let name_byte_start = abs_start + 3;
+                        let name_byte_end = name_byte_start + name.len();
+                        return Some(MacroAtPosition {
+                            name: name.to_string(),
+                            full_range: abs_start..abs_end,
+                            name_range: name_byte_start..name_byte_end,
+                            is_unclosed: false,
+                        });
+                    }
+                    search_from = abs_end;
+                    continue;
+                }
+            }
+
+            // Open tag: <<name args>>
+            if let Some(rel_end) = line[abs_start..].find(">>") {
+                let abs_end = abs_start + rel_end + 2;
+
+                if byte_pos >= abs_start && byte_pos <= abs_end {
+                    let content_start = abs_start + 2;
+                    let content_end = abs_end - 2;
+                    let content = &line[content_start..content_end];
+                    let macro_name = content.split_whitespace().next().unwrap_or(content).trim();
+                    let name_byte_start = content_start;
+                    let name_byte_end = content_start + macro_name.len();
+                    return Some(MacroAtPosition {
+                        name: macro_name.to_string(),
+                        full_range: abs_start..abs_end,
+                        name_range: name_byte_start..name_byte_end,
+                        is_unclosed: false,
+                    });
+                }
+                search_from = abs_end;
+            } else {
+                // Unclosed macro — cursor might be inside
+                if byte_pos >= abs_start {
+                    let content_start = abs_start + 2;
+                    let content = &line[content_start..];
+                    let macro_name = content.split_whitespace().next().unwrap_or(content).trim();
+                    let name_byte_start = content_start;
+                    let name_byte_end = content_start + macro_name.len();
+                    return Some(MacroAtPosition {
+                        name: macro_name.to_string(),
+                        full_range: abs_start..line.len(),
+                        name_range: name_byte_start..name_byte_end,
+                        is_unclosed: true,
+                    });
+                }
+                break;
+            }
+        }
+        None
+    }
+
+    fn scan_line_for_macro_events(
+        &self,
+        line: &str,
+        line_idx: u32,
+    ) -> Vec<crate::plugin::MacroBlockEvent> {
+        use crate::plugin::MacroBlockEvent;
+
+        let block_names = self.block_macro_names();
+        let mut events = Vec::new();
+
+        // Open macros: <<name ...>> — use the same regex as the TextMate grammar
+        let re_open = regex::Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap();
+        for caps in re_open.captures_iter(line) {
+            if let Some(name_match) = caps.get(1) {
+                let name = name_match.as_str();
+                if block_names.contains(name) {
+                    events.push(MacroBlockEvent {
+                        name: name.to_string(),
+                        line: line_idx,
+                        is_open: true,
+                    });
+                }
+            }
+        }
+
+        // Close macros: <</name>>
+        let re_close = regex::Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap();
+        for caps in re_close.captures_iter(line) {
+            if let Some(name_match) = caps.get(1) {
+                let name = name_match.as_str();
+                events.push(MacroBlockEvent {
+                    name: name.to_string(),
+                    line: line_idx,
+                    is_open: false,
+                });
+            }
+        }
+
+        events
+    }
+
+    fn format_macro_label(&self, name: &str) -> String {
+        format!("<<{}>>", name)
+    }
+
+    fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        if params.is_empty() {
+            format!("<<{}>>", name)
+        } else {
+            format!("<<{} {}>>", name, params)
+        }
+    }
+
+    fn format_close_macro_label(&self, name: &str) -> String {
+        format!("<</{}>>", name)
+    }
+
+    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        macros::build_macro_snippet(name, has_body)
+    }
+
+    fn detect_close_tag_context(&self, before_cursor: &str) -> Option<String> {
+        // Check for `<</` prefix — SugarCube close-tag context
+        if let Some(pos) = before_cursor.rfind("<</") {
+            let partial = &before_cursor[pos + 3..];
+            // Partial should be alphanumeric (the partial macro name)
+            if partial.is_empty() || partial.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                return Some(partial.to_string());
+            }
+        }
+        // Also check for `<<` at the end (user just typed the open)
+        if before_cursor.ends_with("<<") {
+            return Some(String::new());
+        }
+        None
+    }
+
+    fn has_block_macros_with_close_tags(&self) -> bool {
+        true // SugarCube has <<if>>...<</if>> block structure
     }
 
     // -------------------------------------------------------------------

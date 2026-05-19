@@ -1,8 +1,10 @@
 {
     "scopeName": "source.snowman.twee",
     "name": "Snowman (Twee)",
-    "injectTo": ["source.twee"],
     "patterns": [
+        {
+            "include": "source.twee"
+        },
         {
             "comment": "Snowman expression output: <%= expr %>",
             "contentName": "source.js.embedded.twee",

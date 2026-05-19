@@ -1,8 +1,10 @@
 {
     "scopeName": "source.chapbook.twee",
     "name": "Chapbook (Twee)",
-    "injectTo": ["source.twee"],
     "patterns": [
+        {
+            "include": "source.twee"
+        },
         {
             "comment": "Chapbook [javascript] block — content is JavaScript",
             "contentName": "source.js.embedded.twee",
