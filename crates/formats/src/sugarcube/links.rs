@@ -65,8 +65,12 @@ pub(crate) static RE_UI_INCLUDE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// <<name ...>> — any open macro (used by extract_macro_passage_refs)
+///
+/// Uses `(?:[^>]|>[^>])*?` instead of `[^>]*?` so that single `>`
+/// characters inside macro conditions are matched correctly.
+/// For example, `<<if _parts.length > 0>>` is matched as one macro.
 pub(crate) static RE_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap());
+    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap());
 
 // ---------------------------------------------------------------------------
 // Link extraction functions

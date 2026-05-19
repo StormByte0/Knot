@@ -161,6 +161,9 @@
                     "include": "#sugarcube-keywords"
                 },
                 {
+                    "include": "#sugarcube-json"
+                },
+                {
                     "include": "source.js"
                 }
             ]
@@ -413,6 +416,42 @@
                     "comment": "SugarCube comparison and logic keywords",
                     "name": "keyword.operator.comparison.sugarcube",
                     "match": "(?<!\\w)(is|eq|neq|gt|gte|lt|lte|and|or|not|isnot)(?!\\w)"
+                }
+            ]
+        },
+        "sugarcube-json": {
+            "comment": "JSON object/array structural highlighting inside macros. Matches {...} and [...] patterns and provides key highlighting for object properties.",
+            "patterns": [
+                {
+                    "comment": "JSON object with property key highlighting",
+                    "name": "meta.objectliteral.json.sugarcube",
+                    "begin": "(?=\\{)",
+                    "end": "(?<=\\})",
+                    "patterns": [
+                        {
+                            "comment": "JSON property key (string key followed by colon)",
+                            "match": "(?:\"|')([^\"']+)(?:\"|')\\s*:",
+                            "captures": {
+                                "1": {
+                                    "name": "meta.object-literal.key.json.sugarcube"
+                                }
+                            }
+                        },
+                        {
+                            "include": "source.json"
+                        }
+                    ]
+                },
+                {
+                    "comment": "JSON array",
+                    "name": "meta.arrayliteral.json.sugarcube",
+                    "begin": "(?=\\[(?!\\[))",
+                    "end": "(?<=\\])",
+                    "patterns": [
+                        {
+                            "include": "source.json"
+                        }
+                    ]
                 }
             ]
         }

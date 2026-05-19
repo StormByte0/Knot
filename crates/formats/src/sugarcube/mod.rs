@@ -836,6 +836,27 @@ mod tests {
     }
 
     #[test]
+    fn gt_in_condition_else_not_flagged() {
+        // The critical bug: <<if _parts.length > 0>> should NOT cause
+        // <<else>> to be flagged as a structural error. The `>` in the
+        // condition must not break macro delimiter parsing.
+        let plugin = SugarCubePlugin::new();
+        let src = ":: Start\n<<if _parts.length > 0>>\n  <<= _parts[0] >>\n  <<if _parts.length > 1>> +<<= _parts.length - 1 >><</if>>\n<<else>>\n  &mdash;\n<</if>>\n";
+        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "sc-container-structure"),
+            "<<else>> inside <<if _parts.length > 0>> should NOT be flagged — the > in the condition should not break delimiter parsing"
+        );
+
+        // Also verify no unclosed-macro diagnostics from the > in condition
+        assert!(
+            !result.diagnostics.iter().any(|d| d.code == "sc-unclosed-macro"),
+            "<<if _parts.length > 0>> should not produce unclosed-macro warnings"
+        );
+    }
+
+    #[test]
     fn deprecated_macro_warning() {
         let plugin = SugarCubePlugin::new();
         let src = ":: Start\n<<click \"label\" \"target\">>Click<</click>>\n";
