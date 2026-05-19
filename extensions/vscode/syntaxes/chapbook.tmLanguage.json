@@ -1,0 +1,88 @@
+{
+    "scopeName": "source.chapbook.twee",
+    "name": "Chapbook (Twee)",
+    "injectTo": ["source.twee"],
+    "patterns": [
+        {
+            "comment": "Chapbook [javascript] block — content is JavaScript",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(\\[javascript\\])",
+            "end": "(\\[/javascript\\])",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.control.block.chapbook"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "keyword.control.block.chapbook"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Chapbook [modify] block — key-value state modifications",
+            "contentName": "meta.block.modify.chapbook",
+            "begin": "(\\[modify\\])",
+            "end": "(\\[/modify\\])",
+            "beginCaptures": {
+                "1": {
+                    "name": "keyword.control.block.chapbook"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "keyword.control.block.chapbook"
+                }
+            },
+            "patterns": [
+                {
+                    "comment": "Key-value line inside [modify]",
+                    "match": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*(.*)$",
+                    "captures": {
+                        "1": {
+                            "name": "variable.other.property.chapbook"
+                        },
+                        "2": {
+                            "name": "punctuation.separator.key-value.chapbook"
+                        },
+                        "3": {
+                            "name": "string.unquoted.value.chapbook"
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "comment": "Chapbook insert: {{expression}}",
+            "match": "(\\{\\{)(.*?)(\\}\\})",
+            "captures": {
+                "1": {
+                    "name": "punctuation.definition.insert.begin.chapbook"
+                },
+                "2": {
+                    "name": "source.js.embedded.twee"
+                },
+                "3": {
+                    "name": "punctuation.definition.insert.end.chapbook"
+                }
+            }
+        },
+        {
+            "comment": "Chapbook state variable: state.varName",
+            "match": "\\b(state)\\.(\\.)?([A-Za-z_][A-Za-z0-9_]*)",
+            "captures": {
+                "1": {
+                    "name": "variable.language.state.chapbook"
+                },
+                "3": {
+                    "name": "variable.other.property.chapbook"
+                }
+            }
+        }
+    ]
+}

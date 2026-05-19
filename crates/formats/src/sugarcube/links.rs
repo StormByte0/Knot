@@ -17,6 +17,10 @@ use super::macros;
 // ---------------------------------------------------------------------------
 
 /// [[Target]] — simple passage link
+///
+/// NOTE: This regex can match JavaScript bracket notation like `obj[[key]]`
+/// which is NOT a Twine link. The `extract_links()` function filters out
+/// these false positives by checking the character before the match.
 pub(crate) static RE_LINK_SIMPLE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
 
@@ -78,6 +82,10 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
     // Arrow-style links: [[Display->Target]]
     for caps in RE_LINK_ARROW.captures_iter(body) {
         let m = caps.get(0).unwrap();
+        // Skip JS bracket notation false positives
+        if is_js_bracket_context(body, m.start()) {
+            continue;
+        }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
         links.push(Link {
@@ -90,6 +98,10 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
     // Pipe-style links: [[Display|Target]]
     for caps in RE_LINK_PIPE.captures_iter(body) {
         let m = caps.get(0).unwrap();
+        // Skip JS bracket notation false positives
+        if is_js_bracket_context(body, m.start()) {
+            continue;
+        }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
         links.push(Link {
@@ -114,18 +126,26 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
     for caps in RE_LINK_SIMPLE.captures_iter(body) {
         let m = caps.get(0).unwrap();
         let span = m.start()..m.end();
-        // Only include if not overlapped by an arrow/pipe link.
+
+        // Filter: skip sub-spans of arrow/pipe links
         let overlaps = arrow_pipe_spans.iter().any(|s| {
             span.start >= s.start && span.end <= s.end
         });
-        if !overlaps {
-            let target = caps.get(1).unwrap().as_str().trim().to_string();
-            links.push(Link {
-                display_text: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-            });
+        if overlaps {
+            continue;
         }
+
+        // Filter: skip JavaScript bracket notation false positives.
+        if is_js_bracket_context(body, m.start()) {
+            continue;
+        }
+
+        let target = caps.get(1).unwrap().as_str().trim().to_string();
+        links.push(Link {
+            display_text: None,
+            target,
+            span: body_offset + m.start()..body_offset + m.end(),
+        });
     }
 
     links
@@ -218,12 +238,18 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
 
         let idx = passage_idx as usize;
         if idx < string_args.len() {
-            let target = string_args[idx].clone();
-            if !target.is_empty() {
+            let (content, rel_start, rel_end) = &string_args[idx];
+            if !content.is_empty() {
+                // Narrow the link span to just the quoted passage name string,
+                // not the entire <<macro args>> span. This makes diagnostics
+                // and go-to-definition highlight only the passage name.
+                let args_offset_in_body = full_match.start()
+                    + full_match.as_str().find(args_str).unwrap_or(0);
                 links.push(Link {
                     display_text: None,
-                    target,
-                    span: body_offset + full_match.start()..body_offset + full_match.end(),
+                    target: content.clone(),
+                    span: body_offset + args_offset_in_body + *rel_start
+                        ..body_offset + args_offset_in_body + *rel_end,
                 });
             }
         }
@@ -239,25 +265,33 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
 /// - `<<goto "PassageName">>` → ["PassageName"]
 /// - `<<link "Label" "PassageName">>` → ["Label", "PassageName"]
 /// - `<<include 'Some Passage'>>` → ["Some Passage"]
-fn parse_quoted_args(args: &str) -> Vec<String> {
+///
+/// Returns tuples of (content, rel_start, rel_end) where rel_start/rel_end
+/// are byte offsets relative to the args string, covering the content
+/// INSIDE the quotes (not including the quote characters themselves).
+fn parse_quoted_args(args: &str) -> Vec<(String, usize, usize)> {
     let mut result = Vec::new();
-    let mut chars = args.chars().peekable();
+    let mut chars = args.char_indices().peekable();
 
-    while let Some(&c) = chars.peek() {
+    while let Some(&(_pos, c)) = chars.peek() {
         if c == '"' || c == '\'' {
             let quote = c;
             chars.next(); // consume opening quote
+            let content_start = chars.peek().map(|&(i, _)| i).unwrap_or(args.len());
             let mut content = String::new();
-            while let Some(&cc) = chars.peek() {
+            let mut content_end = content_start;
+            while let Some(&(i, cc)) = chars.peek() {
                 if cc == quote {
+                    content_end = i;
                     chars.next(); // consume closing quote
                     break;
                 }
                 content.push(cc);
+                content_end = i + cc.len_utf8();
                 chars.next();
             }
             if !content.is_empty() {
-                result.push(content);
+                result.push((content, content_start, content_end));
             }
         } else {
             chars.next(); // skip non-quote characters
@@ -267,16 +301,55 @@ fn parse_quoted_args(args: &str) -> Vec<String> {
     result
 }
 
+/// Check whether a `[[` at the given position in `text` is a JavaScript
+/// bracket notation context rather than a genuine Twine link.
+///
+/// Returns `true` if the character immediately before position `pos` is
+/// one that indicates JS computed property access (`obj[[key]]`):
+/// - `[` — chained bracket access: `arr[i][[key]]`
+/// - `]` — post-index bracket: `arr[0][[key]]`
+/// - `)` — function result access: `func()[[key]]`
+/// - `}` — object literal result: `{}[[key]]`
+/// - alphanumeric — variable access without space: `cursor[[key]]`
+/// - `_` — identifier continuation: `variable_name[[key]]`
+/// - `$` — SugarCube variable: `$var[[key]]`
+fn is_js_bracket_context(text: &str, pos: usize) -> bool {
+    if pos == 0 {
+        return false;
+    }
+    let prev = text.as_bytes()[pos - 1];
+    prev == b'['
+        || prev == b']'
+        || prev == b')'
+        || prev == b'}'
+        || prev.is_ascii_alphanumeric()
+        || prev == b'_'
+        || prev == b'$'
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_quoted_args() {
-        assert_eq!(parse_quoted_args(r#""Forest""#), vec!["Forest"]);
-        assert_eq!(parse_quoted_args(r#""Label" "Forest""#), vec!["Label", "Forest"]);
-        assert_eq!(parse_quoted_args(r#"'Single'"#), vec!["Single"]);
-        assert_eq!(parse_quoted_args(r#""Multi Word" "Other""#), vec!["Multi Word", "Other"]);
+        let args = parse_quoted_args(r#""Forest""#);
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].0, "Forest");
+
+        let args = parse_quoted_args(r#""Label" "Forest""#);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].0, "Label");
+        assert_eq!(args[1].0, "Forest");
+
+        let args = parse_quoted_args(r#"'Single'"#);
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].0, "Single");
+
+        let args = parse_quoted_args(r#""Multi Word" "Other""#);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].0, "Multi Word");
+        assert_eq!(args[1].0, "Other");
     }
 
     #[test]

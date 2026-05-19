@@ -3,85 +3,74 @@
     "name": "Twee",
     "patterns": [
         {
-            "comment": "Script passage: :: Name [script] — entire body is JavaScript",
+            "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats.",
             "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*$",
-            "end": "^(?=\\s*::)",
+            "begin": "^(::)\\s+[Ss]tory\\s?[Jj]ava[Ss]cript(?:\\s+\\[script\\])?\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.passage.twee" },
-                "2": { "name": "entity.name.passage.twee" }
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "meta.passage.metadata.twee"
+                }
             },
             "patterns": [
-                { "include": "source.js" }
+                {
+                    "include": "source.js"
+                }
             ]
         },
         {
-            "comment": "Stylesheet passage: :: Name [stylesheet] — entire body is CSS",
+            "comment": "Story Stylesheet special passage — entire body is CSS. Shared across all Twine formats.",
             "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[stylesheet\\]\\s*$",
-            "end": "^(?=\\s*::)",
+            "begin": "^(::)\\s+[Ss]tory\\s?[Ss]tylesheet(?:\\s+\\[stylesheet\\])?\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.passage.twee" },
-                "2": { "name": "entity.name.passage.twee" }
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "meta.passage.metadata.twee"
+                }
             },
             "patterns": [
-                { "include": "source.css" }
-            ]
-        },
-        {
-            "comment": "Story JavaScript special passage — entire body is JavaScript",
-            "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+Story\\s?JavaScript\\s*$",
-            "end": "^(?=\\s*::)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.passage.twee" }
-            },
-            "patterns": [
-                { "include": "source.js" }
-            ]
-        },
-        {
-            "comment": "Story Stylesheet special passage — entire body is CSS",
-            "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+Story\\s?Stylesheet\\s*$",
-            "end": "^(?=\\s*::)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.passage.twee" }
-            },
-            "patterns": [
-                { "include": "source.css" }
-            ]
-        },
-        {
-            "comment": "StoryInterface special passage — entire body is HTML",
-            "contentName": "text.html.embedded.twee",
-            "begin": "^(::)\\s+StoryInterface\\s*$",
-            "end": "^(?=\\s*::)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.passage.twee" }
-            },
-            "patterns": [
-                { "include": "text.html.basic" }
+                {
+                    "include": "source.css"
+                }
             ]
         },
         {
             "comment": "Passage header: :: Name [tags] {metadata}",
             "name": "meta.passage.header.twee",
-            "match": "^(::)\\s+(.*?)(\\s+\\[([^\\]]*)\\])?\\s*$",
+            "match": "^(::)\\s+(.*?)(\\s+\\[([^\\]]*)\\])?\\s*(\\{.*\\})?\\s*$",
             "captures": {
-                "1": { "name": "punctuation.definition.passage.twee" },
-                "2": { "name": "entity.name.passage.twee" },
-                "3": { "name": "meta.tag.twee" },
-                "4": { "name": "entity.other.attribute-name.tag.twee" }
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "entity.name.passage.twee"
+                },
+                "3": {
+                    "name": "meta.tag.twee"
+                },
+                "4": {
+                    "name": "entity.other.attribute-name.tag.twee"
+                },
+                "5": {
+                    "name": "meta.passage.metadata.twee"
+                }
             }
         },
         {
-            "comment": "SugarCube block comment: /* ... */",
-            "name": "comment.block.sugarcube",
+            "comment": "Block comment: /* ... */",
+            "name": "comment.block.twee",
             "begin": "/\\*",
             "end": "\\*/",
             "captures": {
-                "0": { "name": "punctuation.definition.comment.sugarcube" }
+                "0": {
+                    "name": "punctuation.definition.comment.twee"
+                }
             }
         },
         {
@@ -90,7 +79,9 @@
             "begin": "/%",
             "end": "%/",
             "captures": {
-                "0": { "name": "punctuation.definition.comment.twine" }
+                "0": {
+                    "name": "punctuation.definition.comment.twine"
+                }
             }
         },
         {
@@ -99,215 +90,87 @@
             "begin": "<!--",
             "end": "-->",
             "captures": {
-                "0": { "name": "punctuation.definition.comment.html" }
+                "0": {
+                    "name": "punctuation.definition.comment.html"
+                }
             }
         },
         {
-            "comment": "Script block: <<script>> ... <</script>> — content is JavaScript",
-            "contentName": "source.js.embedded.twee",
-            "begin": "(<<)(script)(?:\\s+([^>]*?))?(>>)",
-            "end": "(<</)(script)(>>)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "patterns": [
-                { "include": "source.js" }
-            ]
-        },
-        {
-            "comment": "Style block: <<style>> ... <</style>> — content is CSS",
-            "contentName": "source.css.embedded.twee",
-            "begin": "(<<)(style)(?:\\s+([^>]*?))?(>>)",
-            "end": "(<</)(style)(>>)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "patterns": [
-                { "include": "source.css" }
-            ]
-        },
-        {
-            "comment": "Run macro: <<run jsExpression>> — inline JavaScript (no output)",
-            "contentName": "source.js.embedded.twee",
-            "begin": "(<<)(run)\\s+",
-            "end": "(>>)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "patterns": [
-                { "include": "source.js" }
-            ]
-        },
-        {
-            "comment": "Inline expression: <<= jsExpression>> — inline JavaScript (outputs result)",
-            "contentName": "source.js.embedded.twee",
-            "begin": "(<<)(=)\\s+",
-            "end": "(>>)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "patterns": [
-                { "include": "source.js" }
-            ]
-        },
-        {
-            "comment": "Print macro: <<print jsExpression>> — inline JavaScript (outputs result, deprecated in favor of <<=)",
-            "contentName": "source.js.embedded.twee",
-            "begin": "(<<)(print)\\s+",
-            "end": "(>>)",
-            "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
-            },
-            "patterns": [
-                { "include": "source.js" }
-            ]
-        },
-        {
-            "comment": "SugarCube closing macro tag: <</name>>",
-            "name": "keyword.control.macro.close.sugarcube",
-            "match": "(<</)([A-Za-z_][A-Za-z0-9_]*)(>>)",
-            "captures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
-            }
-        },
-        {
-            "comment": "SugarCube open macro tag: <<name args>>",
-            "name": "meta.macro.sugarcube",
-            "match": "(<<)([A-Za-z_][A-Za-z0-9_]*)(?:\\s+([^>]*?))?(>>)",
-            "captures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
-            }
-        },
-        {
-            "comment": "Arrow-style passage link: [[Display->Target]]",
+            "comment": "Arrow-style passage link: [[Display->Target]] (common to most Twine formats)",
             "match": "(\\[\\[)([^\\]]+?)(->)([^\\]]+?)(\\]\\])",
             "captures": {
-                "1": { "name": "punctuation.definition.link.begin.twee" },
-                "2": { "name": "string.other.link.display.twee" },
-                "3": { "name": "punctuation.separator.link.arrow.twee" },
-                "4": { "name": "markup.underline.link.target.twee" },
-                "5": { "name": "punctuation.definition.link.end.twee" }
+                "1": {
+                    "name": "punctuation.definition.link.begin.twee"
+                },
+                "2": {
+                    "name": "string.other.link.display.twee"
+                },
+                "3": {
+                    "name": "punctuation.separator.link.arrow.twee"
+                },
+                "4": {
+                    "name": "markup.underline.link.target.twee"
+                },
+                "5": {
+                    "name": "punctuation.definition.link.end.twee"
+                }
             }
         },
         {
-            "comment": "Pipe-style passage link: [[Display|Target]]",
+            "comment": "Pipe-style passage link: [[Display|Target]] (common to most Twine formats)",
             "match": "(\\[\\[)([^\\]]+?)(\\|)([^\\]]+?)(\\]\\])",
             "captures": {
-                "1": { "name": "punctuation.definition.link.begin.twee" },
-                "2": { "name": "string.other.link.display.twee" },
-                "3": { "name": "punctuation.separator.link.pipe.twee" },
-                "4": { "name": "markup.underline.link.target.twee" },
-                "5": { "name": "punctuation.definition.link.end.twee" }
+                "1": {
+                    "name": "punctuation.definition.link.begin.twee"
+                },
+                "2": {
+                    "name": "string.other.link.display.twee"
+                },
+                "3": {
+                    "name": "punctuation.separator.link.pipe.twee"
+                },
+                "4": {
+                    "name": "markup.underline.link.target.twee"
+                },
+                "5": {
+                    "name": "punctuation.definition.link.end.twee"
+                }
             }
         },
         {
-            "comment": "Simple passage link: [[Target]]",
+            "comment": "Simple passage link: [[Target]] (common to all Twine formats)",
             "match": "(\\[\\[)([^\\]|>-]+?)(\\]\\])",
             "captures": {
-                "1": { "name": "punctuation.definition.link.begin.twee" },
-                "2": { "name": "markup.underline.link.target.twee" },
-                "3": { "name": "punctuation.definition.link.end.twee" }
+                "1": {
+                    "name": "punctuation.definition.link.begin.twee"
+                },
+                "2": {
+                    "name": "markup.underline.link.target.twee"
+                },
+                "3": {
+                    "name": "punctuation.definition.link.end.twee"
+                }
             }
         },
         {
-            "comment": "SugarCube story variable: $varName",
-            "name": "variable.other.sugarcube.story",
-            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
-        },
-        {
-            "comment": "SugarCube temporary variable: _varName (must not match identifiers like foo_bar)",
-            "name": "variable.other.sugarcube.temp",
-            "match": "(?<!\\w)_[A-Za-z_][A-Za-z0-9_]*(?!\\w)"
-        },
-        {
-            "comment": "SugarCube boolean literals",
-            "name": "constant.language.boolean.sugarcube",
-            "match": "(?<!\\w)(true|false)(?!\\w)"
-        },
-        {
-            "comment": "SugarCube keywords: macro control flow",
-            "name": "keyword.control.sugarcube",
-            "match": "(?<!\\w)(to|is|eq|neq|gt|gte|lt|lte|and|or|not|isnot)(?!\\w)"
-        },
-        {
-            "comment": "HTML attribute: data-passage=\"value\"",
+            "comment": "HTML attribute: data-passage=\"value\" (used across all Twine formats)",
             "match": "(data-passage)\\s*(=)\\s*(\"[^\"]*\"|'[^']*')",
             "captures": {
-                "1": { "name": "entity.other.attribute-name.html.twee" },
-                "2": { "name": "punctuation.separator.key-value.html.twee" },
-                "3": { "name": "string.quoted.html.twee markup.underline.link.passageref.twee" }
+                "1": {
+                    "name": "entity.other.attribute-name.html.twee"
+                },
+                "2": {
+                    "name": "punctuation.separator.key-value.html.twee"
+                },
+                "3": {
+                    "name": "string.quoted.html.twee markup.underline.link.passageref.twee"
+                }
             }
         },
         {
-            "comment": "Implicit passage reference: Engine.play/goto(\"name\")",
-            "match": "\\b(Engine)\\s*(\\.)\\s*(play|goto)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
-            "captures": {
-                "1": { "name": "support.class.sugarcube" },
-                "2": { "name": "punctuation.accessor.js" },
-                "3": { "name": "support.function.sugarcube" },
-                "4": { "name": "punctuation.section.parens.begin.js" },
-                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
-            }
-        },
-        {
-            "comment": "Implicit passage reference: Story.get/passage/has(\"name\")",
-            "match": "\\b(Story)\\s*(\\.)\\s*(get|passage|has)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
-            "captures": {
-                "1": { "name": "support.class.sugarcube" },
-                "2": { "name": "punctuation.accessor.js" },
-                "3": { "name": "support.function.sugarcube" },
-                "4": { "name": "punctuation.section.parens.begin.js" },
-                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
-            }
-        },
-        {
-            "comment": "Implicit passage reference: UI.goto/include(\"name\")",
-            "match": "\\b(UI)\\s*(\\.)\\s*(goto|include)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
-            "captures": {
-                "1": { "name": "support.class.sugarcube" },
-                "2": { "name": "punctuation.accessor.js" },
-                "3": { "name": "support.function.sugarcube" },
-                "4": { "name": "punctuation.section.parens.begin.js" },
-                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
-            }
-        },
-        {
-            "comment": "SugarCube global objects: State, Engine, Story, UI, Setup, settings, Dialog, etc.",
-            "name": "support.class.sugarcube",
-            "match": "(?<!\\w)(State|Engine|Story|UI|Setup|settings|Dialog|Macro|Config|Passage|Save|SimpleAI)(?!\\w)"
+            "comment": "Story variable: $varName (used by SugarCube and Harlowe)",
+            "name": "variable.other.story.twee",
+            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
         }
     ]
 }

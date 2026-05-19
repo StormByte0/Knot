@@ -1,0 +1,119 @@
+{
+    "scopeName": "source.harlowe.twee",
+    "name": "Harlowe (Twee)",
+    "injectTo": ["source.twee"],
+    "patterns": [
+        {
+            "comment": "Harlowe macro/command: (name:args) — parenthetical command syntax",
+            "comment": "Matches the opening (name: and delegates to finding the closing )",
+            "contentName": "meta.harlowe.macro",
+            "begin": "(\\()([A-Za-z_][A-Za-z0-9_]*)(:)",
+            "end": "(\\))",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.macro.begin.harlowe"
+                },
+                "2": {
+                    "name": "keyword.control.macro.harlowe"
+                },
+                "3": {
+                    "name": "punctuation.separator.macro.harlowe"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "punctuation.definition.macro.end.harlowe"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Harlowe hook attachment: [text]<changer| — changer attached after hook",
+            "match": "(\\[)([^\\]]*?)(\\])<([A-Za-z_][A-Za-z0-9_]*)\\|",
+            "captures": {
+                "1": {
+                    "name": "punctuation.definition.hook.begin.harlowe"
+                },
+                "2": {
+                    "name": "string.other.hook.content.harlowe"
+                },
+                "3": {
+                    "name": "punctuation.definition.hook.end.harlowe"
+                },
+                "4": {
+                    "name": "entity.name.hook.changer.harlowe"
+                }
+            }
+        },
+        {
+            "comment": "Harlowe hook reference: |changer>[text] — changer before hook",
+            "match": "\\|([A-Za-z_][A-Za-z0-9_]*)>(\\[)([^\\]]*?)(\\])",
+            "captures": {
+                "1": {
+                    "name": "entity.name.hook.changer.harlowe"
+                },
+                "2": {
+                    "name": "punctuation.definition.hook.begin.harlowe"
+                },
+                "3": {
+                    "name": "string.other.hook.content.harlowe"
+                },
+                "4": {
+                    "name": "punctuation.definition.hook.end.harlowe"
+                }
+            }
+        },
+        {
+            "comment": "Harlowe named hook: [hookname] — single alphanumeric identifier, no spaces",
+            "match": "(?<!\\[)\\[([A-Za-z_][A-Za-z0-9_-]*)\\](?!\\])",
+            "captures": {
+                "1": {
+                    "name": "entity.name.hook.harlowe"
+                }
+            }
+        },
+        {
+            "comment": "Harlowe collapsing whitespace markup: {text}",
+            "match": "(\\{)([^{}]*)(\\})",
+            "captures": {
+                "1": {
+                    "name": "punctuation.definition.collapse.begin.harlowe"
+                },
+                "2": {
+                    "name": "meta.collapse.content.harlowe"
+                },
+                "3": {
+                    "name": "punctuation.definition.collapse.end.harlowe"
+                }
+            }
+        },
+        {
+            "comment": "Harlowe changer link: (link:\"text\")[[Target]]",
+            "match": "(\\(link:\\s*)(\"[^\"]+\")(\\s*\\))(\\[\\[)([^\\]|>-]+?)(\\]\\])",
+            "captures": {
+                "1": {
+                    "name": "keyword.control.macro.harlowe"
+                },
+                "2": {
+                    "name": "string.quoted.double.harlowe"
+                },
+                "3": {
+                    "name": "punctuation.definition.macro.end.harlowe"
+                },
+                "4": {
+                    "name": "punctuation.definition.link.begin.twee"
+                },
+                "5": {
+                    "name": "markup.underline.link.target.twee"
+                },
+                "6": {
+                    "name": "punctuation.definition.link.end.twee"
+                }
+            }
+        }
+    ]
+}

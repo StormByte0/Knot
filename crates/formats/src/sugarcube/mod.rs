@@ -98,6 +98,7 @@ impl FormatPlugin for SugarCubePlugin {
             // Stylesheet passages: tagged [stylesheet] or named "Story Stylesheet"
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
+            let is_interface = passage.is_interface_passage();
 
             if is_script {
                 // Script passages: only extract implicit passage refs and
@@ -156,6 +157,34 @@ impl FormatPlugin for SugarCubePlugin {
                 tokens.extend(tokens::header_tokens(header));
 
                 // No validation on CSS content
+            } else if is_interface {
+                // StoryInterface passage: HTML content, no SugarCube
+                // link/variable extraction. Only extract implicit passage
+                // refs from data-passage attributes and JS API calls
+                // that may appear in inline <script> tags.
+                let comment_spans: Vec<Range<usize>> = comments::find_all_comment_spans(body, false)
+                    .into_iter()
+                    .map(|s| (s.start + body_offset)..(s.end + body_offset))
+                    .collect();
+
+                let mut raw_links = links::extract_implicit_passage_refs(body, body_offset);
+                raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
+                passage.links = raw_links;
+
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
+
+                tokens.extend(tokens::header_tokens(header));
+
+                // PassageRef tokens for implicit references in HTML
+                let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
+                ref_tokens.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(ref_tokens);
             } else {
                 // Normal Twine passage: full SugarCube parsing
 
@@ -269,6 +298,7 @@ impl FormatPlugin for SugarCubePlugin {
         // Context-aware: skip SugarCube regex on script/stylesheet passages
         let is_script = passage.is_script_passage();
         let is_stylesheet = passage.is_stylesheet_passage();
+        let is_interface = passage.is_interface_passage();
 
         if is_script {
             // Script passages: // line comments are valid everywhere
@@ -286,6 +316,17 @@ impl FormatPlugin for SugarCubePlugin {
                 span: 0..passage_text.len(),
             }];
         } else if is_stylesheet {
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else if is_interface {
+            // StoryInterface: HTML content, only implicit refs
+            let comment_spans = comments::find_all_comment_spans(passage_text, false);
+            let mut raw_links = links::extract_implicit_passage_refs(passage_text, 0);
+            raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
+            passage.links = raw_links;
+
             passage.body = vec![knot_core::passage::Block::Text {
                 content: passage_text.to_string(),
                 span: 0..passage_text.len(),

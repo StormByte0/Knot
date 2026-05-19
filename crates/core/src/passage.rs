@@ -279,17 +279,52 @@ impl Passage {
     /// Format plugins determine script passages via their `script_tags()` method.
     /// This convenience method checks for the common `script` tag and
     /// well-known system passage names.
+    ///
+    /// Handles spelling variants: "Story JavaScript", "StoryJavascript",
+    /// "StoryJavascript" (case-insensitive, with or without space).
     pub fn is_script_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
-            || self.name == "Story JavaScript"
+            || is_story_javascript(&self.name)
     }
 
     /// Whether this passage is a stylesheet passage (contains CSS).
     /// Format plugins determine stylesheet passages via their `stylesheet_tags()` method.
     /// This convenience method checks for the common `stylesheet` tag and
     /// well-known system passage names.
+    ///
+    /// Handles spelling variants: "Story Stylesheet", "StoryStylesheet",
+    /// "Story stylesheet" (case-insensitive, with or without space).
     pub fn is_stylesheet_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"))
-            || self.name == "Story Stylesheet"
+            || is_story_stylesheet(&self.name)
     }
+
+    /// Whether this passage is an interface passage (contains HTML).
+    /// Only the "StoryInterface" special passage qualifies.
+    pub fn is_interface_passage(&self) -> bool {
+        self.name.eq_ignore_ascii_case("StoryInterface")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Free helper functions for special passage name matching
+// ---------------------------------------------------------------------------
+
+/// Check if a passage name matches "Story JavaScript" (case-insensitive,
+/// with or without the space between "Story" and "JavaScript").
+///
+/// Matches: "Story JavaScript", "StoryJavascript", "Storyjavascript",
+/// "story javascript", "storyJavaScript", etc.
+fn is_story_javascript(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "story javascript" || lower == "storyjavascript"
+}
+
+/// Check if a passage name matches "Story Stylesheet" (case-insensitive,
+/// with or without the space between "Story" and "Stylesheet").
+///
+/// Matches: "Story Stylesheet", "StoryStylesheet", "story stylesheet", etc.
+fn is_story_stylesheet(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "story stylesheet" || lower == "storystylesheet"
 }
