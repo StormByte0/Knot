@@ -8,8 +8,13 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// <<name ...>> — any open macro
+///
+/// Uses `(?:[^>]|>[^>])*?` instead of `[^>]*?` so that single `>`
+/// characters inside macro conditions are matched correctly.
+/// For example, `<<if _parts.length > 0>>` is matched as one macro
+/// rather than breaking at the `>` in the condition.
 pub(crate) static RE_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+([^>]*?))?>>").unwrap());
+    Lazy::new(|| Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap());
 
 /// <</name>> — closing macro tag
 pub(crate) static RE_MACRO_CLOSE: Lazy<Regex> =

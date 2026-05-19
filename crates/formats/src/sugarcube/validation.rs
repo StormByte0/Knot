@@ -42,13 +42,44 @@ pub(crate) fn validate(body: &str, body_offset: usize) -> Vec<FormatDiagnostic> 
 }
 
 /// Check for unclosed `<<` / `>>` macro bracket pairs.
+///
+/// This function is string-aware: it tracks whether we're inside a quoted
+/// string so that `>` characters inside conditions like `<<if x > 0>>`
+/// are not falsely detected as macro closers. A `>>` is only treated as
+/// a macro close if:
+/// - It's not inside a single- or double-quoted string
+/// - It's not the `>>` at the end of a macro that contains a `>` in its condition
 fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut depth = 0i32;
     let mut open_pos: Option<usize> = None;
     let bytes = body.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'<' && bytes[i + 1] == b'<' {
+    let mut in_string: Option<u8> = None; // Some(b'"') or Some(b'\'')
+
+    while i < len {
+        // Handle string literals — skip their contents
+        if let Some(quote) = in_string {
+            if bytes[i] == b'\\' && i + 1 < len {
+                i += 2; // skip escaped char
+                continue;
+            }
+            if bytes[i] == quote {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Enter string
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+
+        // Check for `<<`
+        if i + 1 < len && bytes[i] == b'<' && bytes[i + 1] == b'<' {
             if depth == 0 {
                 open_pos = Some(i);
             }
@@ -56,7 +87,14 @@ fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec
             i += 2;
             continue;
         }
-        if i + 1 < bytes.len() && bytes[i] == b'>' && bytes[i + 1] == b'>' {
+
+        // Check for `>>` — but only if NOT followed by another `>` (avoid `>>>`)
+        if i + 1 < len && bytes[i] == b'>' && bytes[i + 1] == b'>' {
+            // Check for `>>>` (JS unsigned right shift) — not a macro close
+            if i + 2 < len && bytes[i + 2] == b'>' {
+                i += 2;
+                continue;
+            }
             depth -= 1;
             if depth < 0 {
                 diagnostics.push(FormatDiagnostic {
@@ -70,6 +108,7 @@ fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec
             i += 2;
             continue;
         }
+
         i += 1;
     }
 
@@ -85,13 +124,39 @@ fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec
 }
 
 /// Check for unclosed `[[` / `]]` link bracket pairs.
+///
+/// String-aware: skips `]]` inside quoted strings to avoid false positives
+/// from JS bracket notation like `cursor[parts[i]]`.
 fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut link_depth = 0i32;
     let mut link_open: Option<usize> = None;
     let bytes = body.as_bytes();
+    let len = bytes.len();
     let mut j = 0;
-    while j < bytes.len() {
-        if j + 1 < bytes.len() && bytes[j] == b'[' && bytes[j + 1] == b'[' {
+    let mut in_string: Option<u8> = None;
+
+    while j < len {
+        // Handle string literals — skip their contents
+        if let Some(quote) = in_string {
+            if bytes[j] == b'\\' && j + 1 < len {
+                j += 2;
+                continue;
+            }
+            if bytes[j] == quote {
+                in_string = None;
+            }
+            j += 1;
+            continue;
+        }
+
+        // Enter string
+        if bytes[j] == b'"' || bytes[j] == b'\'' {
+            in_string = Some(bytes[j]);
+            j += 1;
+            continue;
+        }
+
+        if j + 1 < len && bytes[j] == b'[' && bytes[j + 1] == b'[' {
             if link_depth == 0 {
                 link_open = Some(j);
             }
@@ -99,7 +164,7 @@ fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<
             j += 2;
             continue;
         }
-        if j + 1 < bytes.len() && bytes[j] == b']' && bytes[j + 1] == b']' {
+        if j + 1 < len && bytes[j] == b']' && bytes[j + 1] == b']' {
             link_depth -= 1;
             if link_depth < 0 {
                 diagnostics.push(FormatDiagnostic {

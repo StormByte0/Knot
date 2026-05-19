@@ -3,15 +3,37 @@
     "name": "Twee",
     "patterns": [
         {
-            "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats.",
+            "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats. Matches both 'Story JavaScript' and 'StoryJavascript', with or without [script] tag.",
             "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+[Ss]tory\\s?[Jj]ava[Ss]cript(?:\\s+\\[script\\])?\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s*[Ss]tory\\s+[Jj]ava[Ss]cript(?:\\s+\\[script\\])?\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": {
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
+                    "name": "meta.passage.metadata.twee"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Any passage with [script] tag — entire body is JavaScript. Covers user-named script passages like ':: MyCode [script]'.",
+            "contentName": "source.js.embedded.twee",
+            "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "entity.name.passage.twee"
+                },
+                "3": {
                     "name": "meta.passage.metadata.twee"
                 }
             },
@@ -31,6 +53,28 @@
                     "name": "punctuation.definition.passage.twee"
                 },
                 "2": {
+                    "name": "meta.passage.metadata.twee"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.css"
+                }
+            ]
+        },
+        {
+            "comment": "Any passage with [stylesheet] tag — entire body is CSS. Covers user-named stylesheet passages like ':: MyStyle [stylesheet]'.",
+            "contentName": "source.css.embedded.twee",
+            "begin": "^(::)\\s+(.*?)\\s+\\[stylesheet\\]\\s*(\\{.*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.passage.twee"
+                },
+                "2": {
+                    "name": "entity.name.passage.twee"
+                },
+                "3": {
                     "name": "meta.passage.metadata.twee"
                 }
             },
