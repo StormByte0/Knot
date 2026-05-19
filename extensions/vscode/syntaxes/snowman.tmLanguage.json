@@ -1,0 +1,100 @@
+{
+    "scopeName": "source.snowman.twee",
+    "name": "Snowman (Twee)",
+    "injectTo": ["source.twee"],
+    "patterns": [
+        {
+            "comment": "Snowman expression output: <%= expr %>",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<%=)",
+            "end": "(%>)",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.begin.snowman"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.end.snowman"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Snowman unescaped expression output: <%- expr %>",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<%-)",
+            "end": "(%>)",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.begin.snowman"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.end.snowman"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Snowman script block: <% code %>",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<%)",
+            "end": "(%>)",
+            "beginCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.begin.snowman"
+                }
+            },
+            "endCaptures": {
+                "1": {
+                    "name": "punctuation.definition.template.end.snowman"
+                }
+            },
+            "patterns": [
+                {
+                    "include": "source.js"
+                }
+            ]
+        },
+        {
+            "comment": "Snowman state variable: s.varName",
+            "match": "\\b(s)\\.([A-Za-z_][A-Za-z0-9_]*)",
+            "captures": {
+                "1": {
+                    "name": "variable.language.state.snowman"
+                },
+                "2": {
+                    "name": "variable.other.property.snowman"
+                }
+            }
+        },
+        {
+            "comment": "Snowman state variable (long form): window.story.state.varName",
+            "match": "\\b(window)\\.(story)\\.(state)\\.([A-Za-z_][A-Za-z0-9_]*)",
+            "captures": {
+                "1": {
+                    "name": "support.class.snowman"
+                },
+                "2": {
+                    "name": "support.class.snowman"
+                },
+                "3": {
+                    "name": "variable.language.state.snowman"
+                },
+                "4": {
+                    "name": "variable.other.property.snowman"
+                }
+            }
+        }
+    ]
+}

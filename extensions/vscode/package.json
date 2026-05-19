@@ -51,6 +51,37 @@
           "source.css.embedded.twee": "css",
           "text.html.embedded.twee": "html"
         }
+      },
+      {
+        "scopeName": "source.sugarcube.twee",
+        "path": "./syntaxes/sugarcube.tmLanguage.json",
+        "injectTo": ["source.twee"],
+        "embeddedLanguages": {
+          "source.js.embedded.twee": "javascript",
+          "source.css.embedded.twee": "css",
+          "text.html.embedded.twee": "html"
+        }
+      },
+      {
+        "scopeName": "source.harlowe.twee",
+        "path": "./syntaxes/harlowe.tmLanguage.json",
+        "injectTo": ["source.twee"]
+      },
+      {
+        "scopeName": "source.chapbook.twee",
+        "path": "./syntaxes/chapbook.tmLanguage.json",
+        "injectTo": ["source.twee"],
+        "embeddedLanguages": {
+          "source.js.embedded.twee": "javascript"
+        }
+      },
+      {
+        "scopeName": "source.snowman.twee",
+        "path": "./syntaxes/snowman.tmLanguage.json",
+        "injectTo": ["source.twee"],
+        "embeddedLanguages": {
+          "source.js.embedded.twee": "javascript"
+        }
       }
     ],
     "commands": [
