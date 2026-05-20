@@ -95,25 +95,8 @@ impl AnalysisEngine {
             .map(|m| m.start_passage.as_str())
             .unwrap_or("Start");
 
-        // Broken link detection — filter out broken links that originate
-        // from script or stylesheet passages. These passages contain
-        // JavaScript or CSS code, and any apparent "links" are false
-        // positives from code patterns (e.g., `Use::` in JS, `::` in CSS
-        // selectors) rather than genuine Twine passage links.
-        let broken_links: Vec<GraphDiagnostic> = workspace
-            .graph
-            .detect_broken_links()
-            .into_iter()
-            .filter(|diag| {
-                // Find the passage in the workspace to check its type
-                if let Some((_, passage)) = workspace.find_passage(&diag.passage_name) {
-                    !passage.is_script_passage() && !passage.is_stylesheet_passage()
-                } else {
-                    true // Keep diagnostics for unknown passages
-                }
-            })
-            .collect();
-        diagnostics.extend(broken_links);
+        // Broken link detection
+        diagnostics.extend(workspace.graph.detect_broken_links());
 
         // Unreachable passage detection
         diagnostics.extend(workspace.graph.detect_unreachable(start_passage));
@@ -407,12 +390,6 @@ impl AnalysisEngine {
         for doc in workspace.documents() {
             for passage in &doc.passages {
                 if passage.is_metadata() || passage.is_special {
-                    continue;
-                }
-                // Script and stylesheet passages are system passages invoked
-                // by the story engine, not through narrative links. They
-                // should never be flagged as orphaned.
-                if passage.is_script_passage() || passage.is_stylesheet_passage() {
                     continue;
                 }
 

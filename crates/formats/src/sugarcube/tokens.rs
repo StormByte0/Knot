@@ -310,7 +310,7 @@ fn parse_quoted_args_with_spans(args: &str) -> Vec<(String, usize, usize)> {
 ///
 /// Emits a `String`-type token covering the entire CSS body. This serves
 /// as a fallback when the TextMate grammar doesn't activate CSS scopes
-/// for stylesheet passages (e.g., "Story Stylesheet" or [stylesheet] tagged).
+/// for stylesheet passages (tagged [stylesheet]).
 /// The `String` type maps to the LSP `STRING` semantic token type, which
 /// most themes color distinctly from plain text.
 ///

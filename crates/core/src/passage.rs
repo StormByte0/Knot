@@ -276,55 +276,56 @@ impl Passage {
     }
 
     /// Whether this passage is a script passage (contains JavaScript).
-    /// Format plugins determine script passages via their `script_tags()` method.
-    /// This convenience method checks for the common `script` tag and
-    /// well-known system passage names.
     ///
-    /// Handles spelling variants: "Story JavaScript", "StoryJavascript",
-    /// "StoryJavascript" (case-insensitive, with or without space).
+    /// Script passages are identified by their **tag** `[script]`, not by
+    /// their passage name. In SugarCube/Twine 2, "Story JavaScript" is a
+    /// Twine editor concept — the engine loads it via `<script>` elements
+    /// in the compiled HTML, not as a named passage. In Twee source files,
+    /// any passage tagged `[script]` is treated as JavaScript (e.g.,
+    /// `:: MyScript[script]`).
+    ///
+    /// The tag comparison is case-insensitive to match Twine's behavior
+    /// (Twine normalizes tags to lowercase). The passage name is **not**
+    /// checked because SugarCube is case-sensitive about passage names —
+    /// there is no canonical "Story JavaScript" passage in the engine.
     pub fn is_script_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
-            || is_story_javascript(&self.name)
     }
 
     /// Whether this passage is a stylesheet passage (contains CSS).
-    /// Format plugins determine stylesheet passages via their `stylesheet_tags()` method.
-    /// This convenience method checks for the common `stylesheet` tag and
-    /// well-known system passage names.
     ///
-    /// Handles spelling variants: "Story Stylesheet", "StoryStylesheet",
-    /// "Story stylesheet" (case-insensitive, with or without space).
+    /// Stylesheet passages are identified by their **tag** `[stylesheet]`,
+    /// not by their passage name. Same reasoning as `is_script_passage()` —
+    /// "Story Stylesheet" is a Twine editor concept, not a SugarCube
+    /// engine passage name. In Twee source files, any passage tagged
+    /// `[stylesheet]` is treated as CSS (e.g., `:: MyCSS[stylesheet]`).
+    ///
+    /// The tag comparison is case-insensitive to match Twine's behavior.
     pub fn is_stylesheet_passage(&self) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"))
-            || is_story_stylesheet(&self.name)
     }
 
     /// Whether this passage is an interface passage (contains HTML).
-    /// Only the "StoryInterface" special passage qualifies.
+    ///
+    /// Only the exact passage name "StoryInterface" qualifies. SugarCube
+    /// is case-sensitive about passage names, so this uses exact matching
+    /// (not case-insensitive).
     pub fn is_interface_passage(&self) -> bool {
-        self.name.eq_ignore_ascii_case("StoryInterface")
+        self.name == "StoryInterface"
     }
 }
 
-// ---------------------------------------------------------------------------
-// Free helper functions for special passage name matching
-// ---------------------------------------------------------------------------
-
-/// Check if a passage name matches "Story JavaScript" (case-insensitive,
-/// with or without the space between "Story" and "JavaScript").
-///
-/// Matches: "Story JavaScript", "StoryJavascript", "Storyjavascript",
-/// "story javascript", "storyJavaScript", etc.
-fn is_story_javascript(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "story javascript" || lower == "storyjavascript"
-}
-
-/// Check if a passage name matches "Story Stylesheet" (case-insensitive,
-/// with or without the space between "Story" and "Stylesheet").
-///
-/// Matches: "Story Stylesheet", "StoryStylesheet", "story stylesheet", etc.
-fn is_story_stylesheet(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "story stylesheet" || lower == "storystylesheet"
-}
+// NOTE: The `is_story_javascript()` and `is_story_stylesheet()` helper
+// functions have been removed. These previously matched passage names
+// case-insensitively with optional whitespace (e.g., "Story JavaScript",
+// "StoryJavascript", "story javascript"). This was incorrect because:
+//
+// 1. SugarCube is case-sensitive — passage names must match exactly.
+// 2. "Story JavaScript" and "Story Stylesheet" are Twine 2 editor
+//    concepts, not SugarCube engine passage names. In the compiled HTML,
+//    they become `<script>`/`<style>` elements, not named passages.
+// 3. In Twee source files, script/stylesheet passages are identified by
+//    their [script]/[stylesheet] tags, not by their passage name.
+//
+// Script/stylesheet detection is now handled entirely by tag matching
+// in `is_script_passage()` and `is_stylesheet_passage()`.

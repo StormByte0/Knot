@@ -1072,8 +1072,8 @@ fn parse_var_name(name: &str) -> (String, String, Option<String>) {
 /// 1. **Availability computation**: For each variable, find all passages that
 ///    write it. BFS forward from each write passage through the graph. Any
 ///    passage reachable from a write passage "has access" to that variable.
-///    Variables seeded by special passages (StoryInit, Story JavaScript) are
-///    considered available everywhere.
+///    Variables seeded by special passages (StoryInit) and script-tagged
+///    passages are considered available everywhere.
 ///
 /// 2. **Diagnostics**: If a variable is read in a passage that is NOT reachable
 ///    from any write passage (and not seeded by special), emit a
@@ -1347,7 +1347,7 @@ fn bfs_reachable(workspace: &knot_core::Workspace, start: &str) -> HashSet<Strin
 }
 
 /// Check if a passage runs before the start passage in the SugarCube lifecycle.
-/// These passages (StoryInit, Story JavaScript) contribute variables that are
+/// These passages (StoryInit, script-tagged passages) contribute variables that are
 /// available from the very beginning of the game.
 fn is_pre_start_passage(workspace: &knot_core::Workspace, passage_name: &str) -> bool {
     // Find the passage in the workspace
@@ -1355,13 +1355,18 @@ fn is_pre_start_passage(workspace: &knot_core::Workspace, passage_name: &str) ->
         if let Some(passage) = doc.passages.iter().find(|p| p.name == passage_name) {
             if passage.is_special {
                 if let Some(ref def) = passage.special_def {
-                    // Startup passages (StoryInit) and Story JavaScript run
-                    // before the start passage
+                    // Startup passages (StoryInit) run before the start passage
                     return matches!(
                         def.behavior,
                         knot_core::passage::SpecialPassageBehavior::Startup
-                    ) || passage_name == "Story JavaScript";
+                    );
                 }
+            }
+            // Script-tagged passages also run before the start passage
+            // (Twine compiles their JavaScript into <script> elements that
+            // execute at story load time). Use tag-based detection, not name.
+            if passage.is_script_passage() {
+                return true;
             }
             return false;
         }

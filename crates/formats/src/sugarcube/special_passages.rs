@@ -1,9 +1,34 @@
 //! Special passage definitions for SugarCube.
 //!
-//! Contains the comprehensive list of SugarCube special passage definitions,
+//! Contains the comprehensive list of SugarCube 2.x special passage definitions,
 //! including lifecycle passages (StoryInit, PassageReady), chrome passages
-//! (StoryCaption, StoryBanner, etc.), metadata passages, and system passages
-//! (Story JavaScript, Story Stylesheet).
+//! (StoryCaption, StoryBanner, etc.), and metadata passages.
+//!
+//! ## Script & Stylesheet Passages
+//!
+//! "Story JavaScript" and "Story Stylesheet" are **not** SugarCube engine
+//! special passage names. They are Twine 2 editor/compiler concepts. In the
+//! compiled HTML, they become `<script>` and `<style>` children of
+//! `<tw-storydata>`, not named passages in SugarCube's passage store.
+//!
+//! SugarCube loads them internally as `tw-user-script-0` and
+//! `tw-user-style-0` — they never appear as passage names in the engine.
+//!
+//! In Twee source files, script and stylesheet passages are identified by
+//! their **tags** (`[script]` or `[stylesheet]`), not by their passage name.
+//! The passage name can be anything (e.g., `:: MyScript[script]` works fine).
+//!
+//! Therefore, we do NOT include "Story JavaScript" or "Story Stylesheet"
+//! in the special passage definitions. The `is_script_passage()` and
+//! `is_stylesheet_passage()` methods on `Passage` handle tag-based detection
+//! instead.
+//!
+//! ## Case Sensitivity
+//!
+//! All SugarCube special passage names are **case-sensitive**. The spelling
+//! and capitalization must be exactly as shown (e.g., `StoryInit`, not
+//! `storyinit` or `Story Init`). The name comparison in this module uses
+//! exact string matching (`==`), which is correct.
 
 use knot_core::passage::{SpecialPassageBehavior, SpecialPassageDef};
 
@@ -12,6 +37,8 @@ use knot_core::passage::{SpecialPassageBehavior, SpecialPassageDef};
 /// These define the passages that have special meaning in SugarCube 2.x,
 /// including their behavior, whether they contribute variables, and their
 /// execution priority.
+///
+/// All names are case-sensitive — must match exactly as shown.
 pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
     vec![
         // ── Lifecycle passages ─────────────────────────────────────────
@@ -125,20 +152,9 @@ pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
             execution_priority: None,
         },
 
-        // ── System passages (script/stylesheet) ────────────────────────
-        SpecialPassageDef {
-            name: "Story JavaScript".into(),
-            behavior: SpecialPassageBehavior::Custom("StoryJavaScript".into()),
-            contributes_variables: true,
-            participates_in_graph: false,
-            execution_priority: Some(10),
-        },
-        SpecialPassageDef {
-            name: "Story Stylesheet".into(),
-            behavior: SpecialPassageBehavior::Custom("StoryStylesheet".into()),
-            contributes_variables: false,
-            participates_in_graph: false,
-            execution_priority: Some(11),
-        },
+        // NOTE: "Story JavaScript" and "Story Stylesheet" are NOT included
+        // here. See the module-level documentation for the reasoning.
+        // Script/stylesheet passages are detected via [script]/[stylesheet]
+        // tags in the passage header, not by passage name.
     ]
 }
