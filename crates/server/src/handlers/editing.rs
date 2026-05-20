@@ -85,15 +85,26 @@ pub(crate) async fn on_type_formatting(
         }
     }
 
-    // Auto-close << with >>
+    // Auto-close << with >> (SugarCube-specific)
+    // Only applies when the detected format uses `<<>>` macro delimiters.
+    // Harlowe uses `()`, Chapbook uses `[]`, Snowman uses `<% %>`.
     if ch == ">" && byte_pos >= 2 {
         let before = &line_text[..byte_pos];
         if before.ends_with("<<") {
-            let insert_pos = Position { line: position.line, character: position.character };
-            return Ok(Some(vec![TextEdit {
-                range: Range { start: insert_pos, end: insert_pos },
-                new_text: ">>".to_string(),
-            }]));
+            let format = inner.workspace.resolve_format();
+            let plugin = inner.format_registry.get(&format);
+            // Check if the format plugin uses angle-bracket delimiters
+            // by testing if its macro label contains `<<`
+            let uses_angle_brackets = plugin
+                .map(|p| p.format_macro_label("if").starts_with("<<"))
+                .unwrap_or(false);
+            if uses_angle_brackets {
+                let insert_pos = Position { line: position.line, character: position.character };
+                return Ok(Some(vec![TextEdit {
+                    range: Range { start: insert_pos, end: insert_pos },
+                    new_text: ">>".to_string(),
+                }]));
+            }
         }
     }
 

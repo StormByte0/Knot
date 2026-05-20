@@ -67,6 +67,7 @@ fn rebuild_graph(workspace: &mut Workspace) {
             is_special: *is_special,
             is_metadata: *is_metadata,
             is_placeholder: false,
+            layer: None,
         });
     }
 
@@ -79,6 +80,7 @@ fn rebuild_graph(workspace: &mut Workspace) {
                 PassageEdge {
                     display_text: display_text.clone(),
                     is_broken: !target_exists,
+                    is_upstream: false,
                 },
             );
         }

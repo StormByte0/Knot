@@ -603,8 +603,10 @@ fn try_variable_dot_completion(
         .rsplit(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
         .next()?;
 
-    // Must start with $ (SugarCube story variable)
-    if !var_name.starts_with('$') {
+    // Check if this looks like a variable reference with a dot.
+    // Use the format plugin's variable sigils instead of hardcoding `$`.
+    let sigils: Vec<char> = plugin.variable_sigils().iter().map(|s| s.sigil).collect();
+    if sigils.is_empty() || !sigils.iter().any(|s| var_name.starts_with(*s)) {
         return None;
     }
 

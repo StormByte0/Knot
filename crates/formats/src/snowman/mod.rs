@@ -12,7 +12,8 @@
 //! - **Block model**: Text, Macro (`<% %>`), Expression (`<%= %>`), Incomplete
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
+    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use std::ops::Range;
@@ -829,25 +830,12 @@ impl SnowmanPlugin {
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
             SpecialPassageDef {
-                name: "StoryTitle".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
-                name: "StoryData".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
                 name: "Script".into(),
                 behavior: SpecialPassageBehavior::Custom("SnowmanScript".into()),
                 contributes_variables: true,
                 participates_in_graph: false,
                 execution_priority: Some(0),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "Style".into(),
@@ -855,6 +843,7 @@ impl SnowmanPlugin {
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: None,
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
@@ -862,6 +851,7 @@ impl SnowmanPlugin {
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
@@ -869,6 +859,7 @@ impl SnowmanPlugin {
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
             },
         ]
     }
@@ -891,8 +882,14 @@ impl FormatPlugin for SnowmanPlugin {
             let body_offset = header.header_end + 1;
 
             // Determine if this is a special passage by name
-            let special_defs = Self::special_passage_defs();
-            let special_def = special_defs.iter().find(|d| d.name == header.name).cloned();
+            // Check format-specific defs first, then fall back to TwineCore/LegacyCore.
+            let format_defs = Self::special_passage_defs();
+            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
+                .or_else(|| {
+                    knot_core::passage::twine_core_special_passages().iter()
+                        .chain(knot_core::passage::legacy_core_special_passages().iter())
+                        .find(|d| d.name == header.name).cloned()
+                });
 
             // Check if this passage has header/footer tags
             let is_header_tagged = header.tags.iter().any(|t| t == "header");
@@ -914,6 +911,7 @@ impl FormatPlugin for SnowmanPlugin {
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(90),
+                        layer: SpecialPassageLayer::StoryFormat,
                     },
                 )
             } else if is_footer_tagged {
@@ -926,6 +924,7 @@ impl FormatPlugin for SnowmanPlugin {
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(110),
+                        layer: SpecialPassageLayer::StoryFormat,
                     },
                 )
             } else {
@@ -940,16 +939,23 @@ impl FormatPlugin for SnowmanPlugin {
             let segments = self.parse_template_segments(body, body_offset);
             passage.body = self.build_blocks(&segments);
 
-            // Header token. Use SpecialPassage type for special passages.
-            let header_type = if special_def.is_some() {
-                SemanticTokenType::SpecialPassage
+            // Header tokens. Use distinct types for `::` prefix vs passage name,
+            // and SpecialPassage variants for special passages.
+            let (prefix_type, name_type) = if special_def.is_some() {
+                (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
             } else {
-                SemanticTokenType::PassageHeader
+                (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
             };
             tokens.push(SemanticToken {
                 start: header.header_start,
                 length: 2,
-                token_type: header_type,
+                token_type: prefix_type,
+                modifier: None,
+            });
+            tokens.push(SemanticToken {
+                start: header.header_start + 2,
+                length: header.name.len(),
+                token_type: name_type,
                 modifier: None,
             });
 
@@ -981,8 +987,14 @@ impl FormatPlugin for SnowmanPlugin {
     }
 
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        let special_defs = Self::special_passage_defs();
-        let special_def = special_defs.iter().find(|d| d.name == passage_name).cloned();
+        // For incremental re-parse: we receive just the body text.
+        let format_defs = Self::special_passage_defs();
+        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
+            .or_else(|| {
+                knot_core::passage::twine_core_special_passages().iter()
+                    .chain(knot_core::passage::legacy_core_special_passages().iter())
+                    .find(|d| d.name == passage_name).cloned()
+            });
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
@@ -1145,6 +1157,13 @@ impl FormatPlugin for SnowmanPlugin {
 
     fn has_block_macros_with_close_tags(&self) -> bool {
         false // Snowman uses ERB-style inline blocks
+    }
+
+    fn variable_assignment_snippet(&self, var_name: &str, value: &str) -> Option<String> {
+        // Snowman uses ERB-style: <% s.var = value %>
+        // Strip the $ sigil if present (Snowman uses bare names in s.*)
+        let bare = var_name.trim_start_matches('$');
+        Some(format!("<% s.{} = {} %>", bare, value))
     }
 }
 

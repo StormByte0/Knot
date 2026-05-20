@@ -73,52 +73,90 @@ pub struct SemanticToken {
 }
 
 /// Types of semantic tokens a format plugin can produce.
+///
+/// Each variant maps to a distinct entry in the LSP semantic token legend,
+/// giving themes fine-grained control over how each construct is colored.
+/// The legend order is defined in `lifecycle.rs` and the mapping in
+/// `semantic.rs` — all three must stay in sync.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenType {
-    /// A macro invocation.
-    Macro,
-    /// A variable reference.
-    Variable,
-    /// A passage link.
+    // ── Passage structure ───────────────────────────────────────────
+    /// The `::` prefix on a regular (user-defined) passage header.
+    PassageHeader,
+    /// The passage name on a regular (user-defined) passage header.
+    /// Distinct from the `::` prefix so themes can color the name
+    /// differently from the prefix.
+    PassageName,
+    /// The passage name inside a `[[link]]` construct.
     Link,
-    /// A string literal.
-    String,
+    /// An implicit passage reference inside a macro or API call
+    /// (e.g., the passage name string in `<<goto "Forest">>`,
+    /// `Engine.play("Forest")`, `data-passage="Forest"`).
+    PassageRef,
+    /// The `::` prefix on a special passage header.
+    SpecialPassageHeader,
+    /// The passage name on a special passage header
+    /// (e.g., "StoryInit", "StoryCaption").
+    SpecialPassage,
+    /// A tag in a passage header `[tag1 tag2]`.
+    Tag,
+
+    // ── Code constructs ─────────────────────────────────────────────
+    /// A macro invocation name (e.g., `if`, `set`, `link` in SugarCube).
+    Macro,
+    /// A widget/function definition name.
+    Function,
+    /// A variable reference (e.g., `$storyVar`, `_tempVar`).
+    Variable,
+    /// A format-specific keyword (e.g., `to`, `is`, `eq`, `neq`, `gt`,
+    /// `lt`, `gte`, `lte`, `and`, `or`, `not`).
+    Keyword,
+    /// A boolean literal (`true`, `false`).
+    Boolean,
     /// A number literal.
     Number,
-    /// A boolean literal.
-    Boolean,
-    /// A comment.
+    /// A string literal.
+    String,
+    /// A comment (block or line).
     Comment,
-    /// A passage header (:: PassageName).
-    PassageHeader,
-    /// A special passage header (:: StoryInit, :: StoryCaption, etc.).
-    SpecialPassageHeader,
-    /// A tag in a passage header.
-    Tag,
-    /// A keyword specific to the format.
-    Keyword,
-    /// A passage reference within a macro or API call (e.g., the passage
-    /// name string in `<<goto "Forest">>`, `Engine.play("Forest")`,
-    /// `data-passage="Forest"`). Only the passage name itself is highlighted,
-    /// not the surrounding syntax.
-    PassageRef,
-    /// A special passage header or body (e.g., StoryInit, StoryCaption,
-    /// Story Stylesheet). Used for distinct visual highlighting of format-
-    /// defined special passages in the editor.
-    SpecialPassage,
+    /// A format-specific operator that is not a keyword
+    /// (e.g., `+=`, `-=`, assignment shorthand).
+    Operator,
+
+    // ── Object model ────────────────────────────────────────────────
+    /// A global object/namespace (e.g., `State`, `Engine`, `Story`,
+    /// `Dialog`, `settings` in SugarCube).
+    Namespace,
+    /// A property access on an object (e.g., `.variables` on `State`,
+    /// `.passage` on `Story`).
+    Property,
 }
 
 /// Modifiers for semantic tokens.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Each variant maps to a bit position in the LSP modifier bitset.
+/// The legend order is defined in `lifecycle.rs` and the mapping in
+/// `semantic.rs` — all three must stay in sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenModifier {
     /// This token is a definition (not just a reference).
+    /// LSP modifier: `definition`
     Definition,
-    /// This token is deprecated.
-    Deprecated,
-    /// This token is read-only.
+    /// This token is read-only (cannot be modified).
+    /// LSP modifier: `readonly`
     ReadOnly,
-    /// This token is a control flow keyword.
+    /// This token is deprecated.
+    /// LSP modifier: `deprecated`
+    Deprecated,
+    /// This token represents a control flow construct.
+    /// LSP modifier: `controlFlow`
     ControlFlow,
+    /// This token is part of the Twine-core layer.
+    /// LSP modifier: `static` (reused to indicate core/system scope)
+    TwineCore,
+    /// This token is part of the story-format layer.
+    /// LSP modifier: `async` (reused to indicate format scope)
+    StoryFormat,
 }
 
 /// A diagnostic produced by a format plugin during parsing.
@@ -241,8 +279,27 @@ pub trait FormatPlugin: Send + Sync {
     fn special_passages(&self) -> Vec<SpecialPassageDef>;
 
     /// Returns whether the given passage name is a known special passage.
+    ///
+    /// Checks against ALL special passages (TwineCore + LegacyCore + StoryFormat)
+    /// so that Twine-core passages like StoryTitle and StoryData are always
+    /// recognized regardless of the active format.
     fn is_special_passage(&self, name: &str) -> bool {
-        self.special_passages().iter().any(|d| d.name == name)
+        self.all_special_passages().iter().any(|d| d.name == name)
+    }
+
+    /// Returns ALL special passage definitions applicable to this format,
+    /// including Twine-core and legacy-core passages merged with the
+    /// format-specific ones.
+    ///
+    /// The default implementation merges `twine_core_special_passages()`,
+    /// `legacy_core_special_passages()`, and the format plugin's own
+    /// `special_passages()`. Format plugins should NOT override this
+    /// method — override `special_passages()` instead.
+    fn all_special_passages(&self) -> Vec<SpecialPassageDef> {
+        let mut all = knot_core::passage::twine_core_special_passages();
+        all.extend(knot_core::passage::legacy_core_special_passages());
+        all.extend(self.special_passages());
+        all
     }
 
     /// Returns the display name of this format plugin.
@@ -403,7 +460,9 @@ pub trait FormatPlugin: Send + Sync {
     /// - Chapbook:  `[name]`
     /// - Snowman:   `<%= name %>` (rarely applicable)
     fn format_macro_label(&self, name: &str) -> String {
-        format!("<<{}>>", name)
+        // Default: return the bare name. Format plugins MUST override this
+        // to add their own delimiters (e.g., <<name>>, (name:), [name]).
+        name.to_string()
     }
 
     /// Format a macro signature for display (name + parameter list).
@@ -412,10 +471,11 @@ pub trait FormatPlugin: Send + Sync {
     /// - SugarCube: `<<name params>>`
     /// - Harlowe:   `(name: params)`
     fn format_macro_signature_label(&self, name: &str, params: &str) -> String {
+        // Default: return the bare name + params. Format plugins MUST override.
         if params.is_empty() {
-            format!("<<{}>>", name)
+            name.to_string()
         } else {
-            format!("<<{} {}>>", name, params)
+            format!("{} {}", name, params)
         }
     }
 
@@ -423,8 +483,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// - SugarCube: `<</name>>`
     /// - Harlowe:   not applicable (returns empty string by default)
-    fn format_close_macro_label(&self, name: &str) -> String {
-        format!("<</{}>>", name)
+    fn format_close_macro_label(&self, _name: &str) -> String {
+        // Default: empty — formats without close tags should not produce one.
+        // SugarCube overrides this to return `<</name>>`.
+        String::new()
     }
 
     /// Build an insertion snippet for a macro.
@@ -432,10 +494,12 @@ pub trait FormatPlugin: Send + Sync {
     /// Override this in format plugins that use different delimiter syntax.
     /// The default implementation produces SugarCube-style snippets.
     fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+        // Default: bare name + placeholder. Format plugins MUST override this
+        // to add their own delimiters and body structure.
         if has_body {
-            format!("{} $1>>\n$2\n<</{}>>", name, name)
+            format!("{} $1\n$2\n", name)
         } else {
-            format!("{} $1>>", name)
+            format!("{} $1", name)
         }
     }
 
@@ -459,7 +523,7 @@ pub trait FormatPlugin: Send + Sync {
     /// and macro-block folding. Formats without close tags (Harlowe, Snowman)
     /// return `false`.
     fn has_block_macros_with_close_tags(&self) -> bool {
-        true // SugarCube default
+        false // Default: no close tags. SugarCube overrides to `true`.
     }
 
     // -----------------------------------------------------------------------
@@ -504,6 +568,23 @@ pub trait FormatPlugin: Send + Sync {
     /// (e.g., `to`, `=` for SugarCube).
     fn assignment_operators(&self) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// Returns the format-specific snippet for initializing a variable in the
+    /// startup passage.
+    ///
+    /// This is used by the "Initialize variable" code action to insert the
+    /// correct assignment syntax for the detected story format:
+    /// - SugarCube: `<<set $var to 0>>`
+    /// - Harlowe: `(set: $var to 0)`
+    /// - Chapbook: `{_var: 0}` (or equivalent)
+    /// - Snowman: `<% s.var = 0 %>` (or equivalent)
+    ///
+    /// The default implementation returns `None`, which signals that the
+    /// format does not support variable initialization via code actions.
+    /// Callers should fall back to a plain comment or skip the action.
+    fn variable_assignment_snippet(&self, _var_name: &str, _value: &str) -> Option<String> {
+        None
     }
 
     /// Returns the comparison operators this format uses.

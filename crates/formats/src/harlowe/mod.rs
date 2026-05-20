@@ -14,7 +14,8 @@
 //! - Complete special passage registry including tagged header/footer
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
+    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use std::ops::Range;
@@ -56,6 +57,9 @@ struct ParsedHeader {
     header_start: usize,
     /// Byte length of the header line (including trailing newline if present).
     header_len: usize,
+    /// Byte offset where the passage name starts (after `::` and any whitespace).
+    /// This is an absolute offset into the source text.
+    name_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +197,12 @@ impl HarlowePlugin {
     /// Parse a single `:: Name [tags]` header line.
     fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
         // Strip the leading `::` and optional whitespace.
-        let rest = line.strip_prefix("::")?;
-        let rest = rest.trim_start();
+        let after_colons = line.strip_prefix("::")?;
+        let whitespace_len = after_colons.len() - after_colons.trim_start().len();
+        let rest = after_colons.trim_start();
+
+        // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
+        let name_start = offset + 2 + whitespace_len;
 
         // Extract tags if present: `Name [tag1 tag2]`
         let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
@@ -222,6 +230,7 @@ impl HarlowePlugin {
             tags,
             header_start: offset,
             header_len: line.len(),
+            name_start,
         })
     }
 
@@ -841,42 +850,49 @@ impl HarlowePlugin {
     }
 
     /// Generate semantic tokens for passage headers.
-    /// If `is_special` is true, uses `SpecialPassage` token type for
-    /// distinct highlighting of format-defined special passages.
+    /// Uses `PassageName` for regular passage names (distinct from `::` prefix)
+    /// and `SpecialPassage`/`SpecialPassageHeader` for special passages.
     fn header_tokens(&self, header: &ParsedHeader, is_special: bool) -> Vec<SemanticToken> {
         let mut tokens = Vec::new();
 
-        let header_type = if is_special {
-            SemanticTokenType::SpecialPassage
+        let (prefix_type, name_type) = if is_special {
+            (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
         } else {
-            SemanticTokenType::PassageHeader
+            (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
         };
 
         // The `::` prefix is always 2 bytes.
         tokens.push(SemanticToken {
             start: header.header_start,
             length: 2,
-            token_type: header_type.clone(),
+            token_type: prefix_type,
             modifier: None,
         });
 
-        // Passage name starts after `:: ` (2 for :: + whitespace).
-        let name_offset = header.header_start + 2;
+        // Passage name — use name_start for accurate positioning.
         tokens.push(SemanticToken {
-            start: name_offset,
+            start: header.name_start,
             length: header.name.len(),
-            token_type: header_type,
+            token_type: name_type,
             modifier: None,
         });
 
-        // Tags
+        // Tags — compute positions relative to bracket start.
+        // Tags are space-separated inside `[tag1 tag2]` after the name.
+        let bracket_start = header.name_start + header.name.len();
+        let tags_inner_start = bracket_start + 1; // after `[`
+        let mut offset = tags_inner_start;
         for (i, tag) in header.tags.iter().enumerate() {
+            if i > 0 {
+                offset += 1; // space between tags
+            }
             tokens.push(SemanticToken {
-                start: name_offset + header.name.len() + 2 + i * (tag.len() + 1),
+                start: offset,
                 length: tag.len(),
                 token_type: SemanticTokenType::Tag,
                 modifier: None,
             });
+            offset += tag.len();
         }
 
         tokens
@@ -1085,53 +1101,44 @@ impl HarlowePlugin {
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
             SpecialPassageDef {
-                name: "StoryTitle".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
-                name: "StoryData".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
                 name: "startup".into(),
                 behavior: SpecialPassageBehavior::Startup,
                 contributes_variables: true,
                 participates_in_graph: false,
                 execution_priority: Some(0),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "header".into(),
-                behavior: SpecialPassageBehavior::Chrome,
-                contributes_variables: false,
-                participates_in_graph: false,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
                 execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "footer".into(),
-                behavior: SpecialPassageBehavior::Chrome,
-                contributes_variables: false,
-                participates_in_graph: false,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
                 execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
-                behavior: SpecialPassageBehavior::Chrome,
-                contributes_variables: false,
-                participates_in_graph: false,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
                 execution_priority: Some(91),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
-                behavior: SpecialPassageBehavior::Chrome,
-                contributes_variables: false,
-                participates_in_graph: false,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
                 execution_priority: Some(111),
+                layer: SpecialPassageLayer::StoryFormat,
             },
         ]
     }
@@ -1141,10 +1148,10 @@ impl HarlowePlugin {
     /// header/footer: a passage tagged `header` or `footer`).
     fn has_tag_behavior(tags: &[String]) -> Option<SpecialPassageBehavior> {
         if tags.iter().any(|t| t == "header") {
-            return Some(SpecialPassageBehavior::Chrome);
+            return Some(SpecialPassageBehavior::ChromeInterceptor);
         }
         if tags.iter().any(|t| t == "footer") {
-            return Some(SpecialPassageBehavior::Chrome);
+            return Some(SpecialPassageBehavior::ChromeInterceptor);
         }
         if tags.iter().any(|t| t == "startup") {
             return Some(SpecialPassageBehavior::Startup);
@@ -1170,18 +1177,23 @@ impl FormatPlugin for HarlowePlugin {
             let body_offset = header.header_start + header.header_len;
 
             // Determine if this is a special passage.
-            let special_defs = Self::special_passage_defs();
-            let special_def = special_defs
+            let format_defs = Self::special_passage_defs();
+            let special_def = format_defs
                 .iter()
                 .find(|d| d.name == header.name)
                 .cloned()
+                .or_else(|| {
+                    knot_core::passage::twine_core_special_passages().iter()
+                        .chain(knot_core::passage::legacy_core_special_passages().iter())
+                        .find(|d| d.name == header.name).cloned()
+                })
                 .or_else(|| {
                     // Tag-based special behavior
                     Self::has_tag_behavior(&header.tags).map(|behavior| {
                         let is_startup = behavior == SpecialPassageBehavior::Startup;
                         let priority = match &behavior {
                             SpecialPassageBehavior::Startup => Some(0),
-                            SpecialPassageBehavior::Chrome => {
+                            SpecialPassageBehavior::ChromeInterceptor => {
                                 if header.tags.iter().any(|t| t == "header") {
                                     Some(92)
                                 } else {
@@ -1196,6 +1208,7 @@ impl FormatPlugin for HarlowePlugin {
                             contributes_variables: is_startup,
                             participates_in_graph: false,
                             execution_priority: priority,
+                            layer: SpecialPassageLayer::StoryFormat,
                         }
                     })
                 });
@@ -1244,11 +1257,16 @@ impl FormatPlugin for HarlowePlugin {
     }
 
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        let special_defs = Self::special_passage_defs();
-        let special_def = special_defs
+        let format_defs = Self::special_passage_defs();
+        let special_def = format_defs
             .iter()
             .find(|d| d.name == passage_name)
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                knot_core::passage::twine_core_special_passages().iter()
+                    .chain(knot_core::passage::legacy_core_special_passages().iter())
+                    .find(|d| d.name == passage_name).cloned()
+            });
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
@@ -1362,6 +1380,10 @@ impl FormatPlugin for HarlowePlugin {
 
     fn has_block_macros_with_close_tags(&self) -> bool {
         false // Harlowe uses hooks, not close tags
+    }
+
+    fn variable_assignment_snippet(&self, var_name: &str, value: &str) -> Option<String> {
+        Some(format!("(set: {} to {})", var_name, value))
     }
 }
 

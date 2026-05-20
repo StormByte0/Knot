@@ -77,8 +77,14 @@ impl FormatPlugin for SugarCubePlugin {
             let body_offset = header.header_start + header.header_len;
 
             // Determine if this is a special passage.
-            let special_defs = special_passages::special_passage_defs();
-            let special_def = special_defs.iter().find(|d| d.name == header.name).cloned();
+            // Check format-specific defs first, then fall back to TwineCore/LegacyCore.
+            let format_defs = special_passages::special_passage_defs();
+            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
+                .or_else(|| {
+                    knot_core::passage::twine_core_special_passages().iter()
+                        .chain(knot_core::passage::legacy_core_special_passages().iter())
+                        .find(|d| d.name == header.name).cloned()
+                });
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
@@ -129,7 +135,11 @@ impl FormatPlugin for SugarCubePlugin {
                 }];
 
                 // Semantic tokens: header + PassageRef tokens for implicit refs
-                tokens.extend(tokens::header_tokens(header, true));
+                let layer = special_def.as_ref().map(|d| d.layer);
+                tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
+                    is_special: true,
+                    layer,
+                }));
 
                 // PassageRef tokens for implicit passage references in script code
                 let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
@@ -153,13 +163,16 @@ impl FormatPlugin for SugarCubePlugin {
                     span: body_offset..body_offset + body.len(),
                 }];
 
-                // Semantic tokens: header (SpecialPassage type) + body fallback
-                tokens.extend(tokens::header_tokens(header, true));
+                // Semantic tokens: header (SpecialPassage type)
+                let layer = special_def.as_ref().map(|d| d.layer);
+                tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
+                    is_special: true,
+                    layer,
+                }));
 
-                // Emit a String-type semantic token for the CSS body as a
-                // fallback when the TextMate grammar doesn't activate CSS
-                // scopes for stylesheet passages.
-                tokens.extend(tokens::stylesheet_body_tokens(body, body_offset));
+                // No blanket body tokens for stylesheets — let TextMate
+                // handle CSS highlighting. A blanket `String` token would
+                // override TextMate scopes, making the body one uniform color.
 
                 // No validation on CSS content
             } else if is_interface {
@@ -181,12 +194,16 @@ impl FormatPlugin for SugarCubePlugin {
                     span: body_offset..body_offset + body.len(),
                 }];
 
-                // Semantic tokens: header (SpecialPassage type) + body fallback
-                tokens.extend(tokens::header_tokens(header, true));
+                // Semantic tokens: header (SpecialPassage type)
+                let layer = special_def.as_ref().map(|d| d.layer);
+                tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
+                    is_special: true,
+                    layer,
+                }));
 
-                // Emit a String-type semantic token for the HTML body as a
-                // fallback when the TextMate grammar doesn't activate HTML
-                // scopes for StoryInterface passages.
+                // StoryInterface body tokens: emit PassageRef tokens for
+                // data-passage attributes, but no blanket String token
+                // (let TextMate handle HTML highlighting).
                 tokens.extend(tokens::interface_body_tokens(body, body_offset));
 
                 let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
@@ -244,7 +261,11 @@ impl FormatPlugin for SugarCubePlugin {
                 // Semantic tokens for header. Use SpecialPassage type if this
                 // is a format-defined special passage (e.g., StoryInit,
                 // StoryCaption) even though it gets normal SugarCube parsing.
-                tokens.extend(tokens::header_tokens(header, special_def.is_some()));
+                let layer = special_def.as_ref().map(|d| d.layer);
+                tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
+                    is_special: special_def.is_some(),
+                    layer,
+                }));
 
                 // Semantic tokens for body (filter comment-embedded tokens)
                 let mut body_tokens = tokens::body_tokens(body, body_offset);
@@ -298,8 +319,13 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
         // For incremental re-parse: we receive just the body text.
-        let special_defs = special_passages::special_passage_defs();
-        let special_def = special_defs.iter().find(|d| d.name == passage_name).cloned();
+        let format_defs = special_passages::special_passage_defs();
+        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
+            .or_else(|| {
+                knot_core::passage::twine_core_special_passages().iter()
+                    .chain(knot_core::passage::legacy_core_special_passages().iter())
+                    .find(|d| d.name == passage_name).cloned()
+            });
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
@@ -628,6 +654,10 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn assignment_operators(&self) -> Vec<&'static str> {
         macros::assignment_operators()
+    }
+
+    fn variable_assignment_snippet(&self, var_name: &str, value: &str) -> Option<String> {
+        Some(format!("<<set {} to {}>>", var_name, value))
     }
 
     fn comparison_operators(&self) -> Vec<&'static str> {
@@ -1134,27 +1164,41 @@ mod tests {
 
     #[test]
     fn special_passage_defs_complete() {
-        let defs = special_passages::special_passage_defs();
-        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        // SugarCube's own special passage definitions (StoryFormat layer only)
+        let sc_defs = special_passages::special_passage_defs();
+        let sc_names: Vec<&str> = sc_defs.iter().map(|d| d.name.as_str()).collect();
 
-        // All expected special passages
-        assert!(names.contains(&"StoryInit"));
-        assert!(names.contains(&"StoryTitle"));
-        assert!(names.contains(&"StoryData"));
-        assert!(names.contains(&"StoryCaption"));
-        assert!(names.contains(&"StoryMenu"));
-        assert!(names.contains(&"StoryBanner"));
-        assert!(names.contains(&"StorySubtitle"));
-        assert!(names.contains(&"StoryAuthor"));
-        assert!(names.contains(&"StoryDisplayTitle"));
-        assert!(names.contains(&"StoryShare"));
-        assert!(names.contains(&"StoryInterface"));
-        assert!(names.contains(&"PassageReady"));
-        assert!(names.contains(&"PassageDone"));
-        assert!(names.contains(&"PassageHeader"));
-        assert!(names.contains(&"PassageFooter"));
-        assert!(names.contains(&"Story JavaScript"));
-        assert!(names.contains(&"Story Stylesheet"));
+        // StoryFormat-layer passages owned by SugarCube
+        assert!(sc_names.contains(&"StoryInit"));
+        assert!(sc_names.contains(&"StoryCaption"));
+        assert!(sc_names.contains(&"StoryMenu"));
+        assert!(sc_names.contains(&"StoryBanner"));
+        assert!(sc_names.contains(&"StorySubtitle"));
+        assert!(sc_names.contains(&"StoryAuthor"));
+        assert!(sc_names.contains(&"StoryDisplayTitle"));
+        assert!(sc_names.contains(&"StoryShare"));
+        assert!(sc_names.contains(&"StoryInterface"));
+        assert!(sc_names.contains(&"PassageReady"));
+        assert!(sc_names.contains(&"PassageDone"));
+        assert!(sc_names.contains(&"PassageHeader"));
+        assert!(sc_names.contains(&"PassageFooter"));
+
+        // TwineCore passages should NOT be in SugarCube's own list
+        assert!(!sc_names.contains(&"StoryTitle"), "StoryTitle is TwineCore, not SugarCube");
+        assert!(!sc_names.contains(&"StoryData"), "StoryData is TwineCore, not SugarCube");
+        assert!(!sc_names.contains(&"Story JavaScript"), "Story JavaScript is TwineCore, not SugarCube");
+        assert!(!sc_names.contains(&"Story Stylesheet"), "Story Stylesheet is TwineCore, not SugarCube");
+
+        // But they should be available through all_special_passages()
+        let plugin = SugarCubePlugin::new();
+        let all_defs = plugin.all_special_passages();
+        let all_names: Vec<&str> = all_defs.iter().map(|d| d.name.as_str()).collect();
+
+        assert!(all_names.contains(&"StoryTitle"), "StoryTitle should be in merged registry");
+        assert!(all_names.contains(&"StoryData"), "StoryData should be in merged registry");
+        assert!(all_names.contains(&"Story JavaScript"), "Story JavaScript should be in merged registry");
+        assert!(all_names.contains(&"Story Stylesheet"), "Story Stylesheet should be in merged registry");
+        assert!(all_names.contains(&"StoryInit"), "StoryInit should be in merged registry");
     }
 
     // ── Comment filtering tests ───────────────────────────────────────

@@ -12,25 +12,35 @@ use lsp_types::*;
 // ---------------------------------------------------------------------------
 
 /// Token-type indices — must match the order in the legend we advertise.
-pub(crate) const ST_PASSAGE_HEADER: u32 = 0;
-pub(crate) const ST_LINK: u32 = 1;
-pub(crate) const ST_MACRO: u32 = 2;
-pub(crate) const ST_VARIABLE: u32 = 3;
-pub(crate) const ST_STRING: u32 = 4;
-pub(crate) const ST_NUMBER: u32 = 5;
-pub(crate) const ST_COMMENT: u32 = 6;
-pub(crate) const ST_TAG: u32 = 7;
-pub(crate) const ST_KEYWORD: u32 = 8;
-pub(crate) const ST_BOOLEAN: u32 = 9;
-pub(crate) const ST_PASSAGE_REF: u32 = 10;
-pub(crate) const ST_SPECIAL_PASSAGE_HEADER: u32 = 11;
-pub(crate) const ST_SPECIAL_PASSAGE: u32 = 12;
+///
+/// The legend is defined in `lifecycle.rs::initialize()` and the enum
+/// variants in `plugin.rs::SemanticTokenType` — all three must stay in sync.
+pub(crate) const ST_PASSAGE_HEADER: u32 = 0;   // :: prefix on regular passages
+pub(crate) const ST_PASSAGE_NAME: u32 = 1;     // passage name on regular passages
+pub(crate) const ST_LINK: u32 = 2;             // passage name in [[links]]
+pub(crate) const ST_PASSAGE_REF: u32 = 3;      // implicit passage refs
+pub(crate) const ST_SPECIAL_PASSAGE_HEADER: u32 = 4; // :: prefix on special passages
+pub(crate) const ST_SPECIAL_PASSAGE: u32 = 5;  // passage name on special passages
+pub(crate) const ST_TAG: u32 = 6;              // passage tags
+pub(crate) const ST_MACRO: u32 = 7;            // macro name
+pub(crate) const ST_FUNCTION: u32 = 8;         // widget/function definition
+pub(crate) const ST_VARIABLE: u32 = 9;         // $variable
+pub(crate) const ST_KEYWORD: u32 = 10;         // format keywords
+pub(crate) const ST_BOOLEAN: u32 = 11;         // true/false
+pub(crate) const ST_NUMBER: u32 = 12;          // numeric literals
+pub(crate) const ST_STRING: u32 = 13;          // string literals
+pub(crate) const ST_COMMENT: u32 = 14;         // comments
+pub(crate) const ST_OPERATOR: u32 = 15;        // format-specific operators
+pub(crate) const ST_NAMESPACE: u32 = 16;       // global objects (State, Engine)
+pub(crate) const ST_PROPERTY: u32 = 17;        // object properties
 
-/// Token-modifier indices.
-pub(crate) const SM_DEFINITION: u32 = 1 << 0;
-pub(crate) const SM_READONLY: u32 = 1 << 1;
-pub(crate) const SM_DEPRECATED: u32 = 1 << 2;
-pub(crate) const SM_CONTROLFLOW: u32 = 1 << 3;
+/// Token-modifier indices — must match the legend modifier order.
+pub(crate) const SM_DEFINITION: u32 = 1 << 0;   // bit 0
+pub(crate) const SM_READONLY: u32 = 1 << 1;     // bit 1
+pub(crate) const SM_DEPRECATED: u32 = 1 << 2;   // bit 2
+pub(crate) const SM_CONTROLFLOW: u32 = 1 << 3;  // bit 3
+pub(crate) const SM_TWINECORE: u32 = 1 << 4;    // bit 4 (maps to `static` in legend)
+pub(crate) const SM_STORYFORMAT: u32 = 1 << 5;  // bit 5 (maps to `async` in legend)
 
 // ---------------------------------------------------------------------------
 // Semantic token encoding helpers
@@ -86,19 +96,27 @@ fn convert_semantic_tokens(
 /// Map a `knot_formats::plugin::SemanticTokenType` to the LSP legend index.
 fn map_token_type(tt: &fmt_plugin::SemanticTokenType) -> u32 {
     match tt {
+        // Passage structure
         fmt_plugin::SemanticTokenType::PassageHeader => ST_PASSAGE_HEADER,
-        fmt_plugin::SemanticTokenType::SpecialPassageHeader => ST_SPECIAL_PASSAGE_HEADER,
+        fmt_plugin::SemanticTokenType::PassageName => ST_PASSAGE_NAME,
         fmt_plugin::SemanticTokenType::Link => ST_LINK,
-        fmt_plugin::SemanticTokenType::Macro => ST_MACRO,
-        fmt_plugin::SemanticTokenType::Variable => ST_VARIABLE,
-        fmt_plugin::SemanticTokenType::String => ST_STRING,
-        fmt_plugin::SemanticTokenType::Number => ST_NUMBER,
-        fmt_plugin::SemanticTokenType::Boolean => ST_BOOLEAN,
-        fmt_plugin::SemanticTokenType::Comment => ST_COMMENT,
-        fmt_plugin::SemanticTokenType::Tag => ST_TAG,
-        fmt_plugin::SemanticTokenType::Keyword => ST_KEYWORD,
         fmt_plugin::SemanticTokenType::PassageRef => ST_PASSAGE_REF,
+        fmt_plugin::SemanticTokenType::SpecialPassageHeader => ST_SPECIAL_PASSAGE_HEADER,
         fmt_plugin::SemanticTokenType::SpecialPassage => ST_SPECIAL_PASSAGE,
+        fmt_plugin::SemanticTokenType::Tag => ST_TAG,
+        // Code constructs
+        fmt_plugin::SemanticTokenType::Macro => ST_MACRO,
+        fmt_plugin::SemanticTokenType::Function => ST_FUNCTION,
+        fmt_plugin::SemanticTokenType::Variable => ST_VARIABLE,
+        fmt_plugin::SemanticTokenType::Keyword => ST_KEYWORD,
+        fmt_plugin::SemanticTokenType::Boolean => ST_BOOLEAN,
+        fmt_plugin::SemanticTokenType::Number => ST_NUMBER,
+        fmt_plugin::SemanticTokenType::String => ST_STRING,
+        fmt_plugin::SemanticTokenType::Comment => ST_COMMENT,
+        fmt_plugin::SemanticTokenType::Operator => ST_OPERATOR,
+        // Object model
+        fmt_plugin::SemanticTokenType::Namespace => ST_NAMESPACE,
+        fmt_plugin::SemanticTokenType::Property => ST_PROPERTY,
     }
 }
 
@@ -109,6 +127,8 @@ fn map_token_modifier(modifier: &Option<fmt_plugin::SemanticTokenModifier>) -> u
         Some(fmt_plugin::SemanticTokenModifier::ReadOnly) => SM_READONLY,
         Some(fmt_plugin::SemanticTokenModifier::Deprecated) => SM_DEPRECATED,
         Some(fmt_plugin::SemanticTokenModifier::ControlFlow) => SM_CONTROLFLOW,
+        Some(fmt_plugin::SemanticTokenModifier::TwineCore) => SM_TWINECORE,
+        Some(fmt_plugin::SemanticTokenModifier::StoryFormat) => SM_STORYFORMAT,
         None => 0,
     }
 }
