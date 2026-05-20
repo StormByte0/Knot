@@ -275,31 +275,127 @@ pub trait FormatPlugin: Send + Sync {
     /// The `passage_text` is the body text of the passage (after the header line).
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage>;
 
-    /// Returns the special passage definitions for this format.
+    /// Returns the name-matched special passage definitions for this format.
+    ///
+    /// These are passages identified by their exact passage name
+    /// (e.g., SugarCube's "StoryInit", "PassageHeader"). Format plugins
+    /// should NOT include Twine-core passages (StoryTitle, StoryData, Start)
+    /// or core tags (script, stylesheet) — those are always provided by
+    /// `twine_core_special_passages()`.
     fn special_passages(&self) -> Vec<SpecialPassageDef>;
+
+    /// Returns the tag-matched special passage definitions for this format.
+    ///
+    /// These are passages identified by their TAG (e.g., SugarCube's
+    /// `[init]`, `[widget]`, `[nobr]`; Harlowe's `[header]`, `[footer]`,
+    /// `[startup]`). The passage name is user-defined and irrelevant for
+    /// matching. Multiple passages can share the same tag.
+    ///
+    /// Format plugins should NOT include core tags (`script`, `stylesheet`)
+    /// — those are always provided by `twine_core_special_passages()`.
+    ///
+    /// The default implementation returns an empty list. Format plugins
+    /// that have tag-matched special passages should override this method.
+    fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
+        Vec::new()
+    }
 
     /// Returns whether the given passage name is a known special passage.
     ///
-    /// Checks against ALL special passages (TwineCore + LegacyCore + StoryFormat)
-    /// so that Twine-core passages like StoryTitle and StoryData are always
-    /// recognized regardless of the active format.
+    /// Checks against ALL name-matched special passages
+    /// (TwineCore + LegacyCore + StoryFormat) so that Twine-core passages
+    /// like StoryTitle and StoryData are always recognized regardless of
+    /// the active format.
+    ///
+    /// **Note**: This only checks NAME-matched passages. To check if a
+    /// passage matches a TAG-matched definition, use
+    /// `classify_passage()` or check `tag_matched_special_passages()`.
     fn is_special_passage(&self, name: &str) -> bool {
-        self.all_special_passages().iter().any(|d| d.name == name)
+        self.all_name_matched_passages().iter().any(|d| d.name == name)
     }
 
-    /// Returns ALL special passage definitions applicable to this format,
-    /// including Twine-core and legacy-core passages merged with the
-    /// format-specific ones.
+    /// Returns ALL name-matched special passage definitions applicable to
+    /// this format, including Twine-core and legacy-core passages merged
+    /// with the format-specific ones.
     ///
     /// The default implementation merges `twine_core_special_passages()`,
     /// `legacy_core_special_passages()`, and the format plugin's own
     /// `special_passages()`. Format plugins should NOT override this
     /// method — override `special_passages()` instead.
-    fn all_special_passages(&self) -> Vec<SpecialPassageDef> {
+    fn all_name_matched_passages(&self) -> Vec<SpecialPassageDef> {
         let mut all = knot_core::passage::twine_core_special_passages();
         all.extend(knot_core::passage::legacy_core_special_passages());
         all.extend(self.special_passages());
         all
+    }
+
+    /// Returns ALL special passage definitions (both name-matched and
+    /// tag-matched) applicable to this format.
+    ///
+    /// This is the union of `all_name_matched_passages()` and
+    /// `tag_matched_special_passages()`. Used by handlers that need
+    /// the complete set of special passage definitions.
+    fn all_special_passages(&self) -> Vec<SpecialPassageDef> {
+        let mut all = self.all_name_matched_passages();
+        all.extend(self.tag_matched_special_passages());
+        all
+    }
+
+    /// Classify a passage against all known special passage definitions.
+    ///
+    /// This is the primary classification entry point. It checks tags
+    /// FIRST (per the Twee 3 spec, tag-based matching is the primary
+    /// mechanism for code passages), then falls back to name matching.
+    ///
+    /// The priority order is:
+    /// 1. Tag-matched format-specific definitions (e.g., [init], [widget])
+    /// 2. Tag-matched core definitions (e.g., [script], [stylesheet])
+    /// 3. Name-matched format-specific definitions (e.g., StoryInit, PassageHeader)
+    /// 4. Name-matched core definitions (e.g., StoryTitle, StoryData)
+    /// 5. Name-matched legacy definitions (e.g., "script", "stylesheet" as names)
+    ///
+    /// Returns `Some(SpecialPassageDef)` if the passage matches a known
+    /// definition, or `None` if it is a regular user-defined passage.
+    ///
+    /// **Format isolation**: This method delegates to the format plugin
+    /// for both name-matched and tag-matched definitions, ensuring that
+    /// format-specific logic (e.g., Harlowe's [header] tag vs SugarCube's
+    /// PassageHeader name) is handled correctly.
+    fn classify_passage(
+        &self,
+        passage_name: &str,
+        passage_tags: &[String],
+    ) -> Option<SpecialPassageDef> {
+        let all_defs = self.all_special_passages();
+
+        // ── Step 1: Tag-matched definitions (check FIRST) ─────────────
+        // Per the Twee 3 spec, [script] and [stylesheet] are TAGS, not
+        // names. Multiple passages can share the same tag. The tag check
+        // is case-insensitive per the spec.
+        for tag in passage_tags {
+            for def in &all_defs {
+                if def.match_strategy == knot_core::passage::MatchStrategy::Tag
+                    && tag.eq_ignore_ascii_case(&def.name)
+                {
+                    // Clone the def but use the actual passage name
+                    // so the Passage struct records it correctly.
+                    let mut matched = def.clone();
+                    matched.name = passage_name.to_string();
+                    return Some(matched);
+                }
+            }
+        }
+
+        // ── Step 2: Name-matched definitions ───────────────────────────
+        for def in &all_defs {
+            if def.match_strategy == knot_core::passage::MatchStrategy::Name
+                && def.name == passage_name
+            {
+                return Some(def.clone());
+            }
+        }
+
+        None
     }
 
     /// Returns the display name of this format plugin.

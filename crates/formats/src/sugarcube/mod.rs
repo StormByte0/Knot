@@ -76,15 +76,11 @@ impl FormatPlugin for SugarCubePlugin {
         for (header, body) in &raw_passages {
             let body_offset = header.header_start + header.header_len;
 
-            // Determine if this is a special passage.
-            // Check format-specific defs first, then fall back to TwineCore/LegacyCore.
-            let format_defs = special_passages::special_passage_defs();
-            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
-                .or_else(|| {
-                    knot_core::passage::twine_core_special_passages().iter()
-                        .chain(knot_core::passage::legacy_core_special_passages().iter())
-                        .find(|d| d.name == header.name).cloned()
-                });
+            // Determine if this is a special passage using the unified
+            // classification system. Tags are checked FIRST (per the
+            // Twee 3 spec), then names. This replaces the old manual
+            // three-stage lookup (format defs → core defs → tag fallback).
+            let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
@@ -261,9 +257,14 @@ impl FormatPlugin for SugarCubePlugin {
                 // Semantic tokens for header. Use SpecialPassage type if this
                 // is a format-defined special passage (e.g., StoryInit,
                 // StoryCaption) even though it gets normal SugarCube parsing.
+                // FIX: Also check is_script_passage()/is_stylesheet_passage()
+                // for tag-classified passages that didn't match by name.
+                let is_special_for_tokens = special_def.is_some()
+                    || passage.is_script_passage()
+                    || passage.is_stylesheet_passage();
                 let layer = special_def.as_ref().map(|d| d.layer);
                 tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
-                    is_special: special_def.is_some(),
+                    is_special: is_special_for_tokens,
                     layer,
                 }));
 
@@ -319,13 +320,11 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
         // For incremental re-parse: we receive just the body text.
-        let format_defs = special_passages::special_passage_defs();
-        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
-            .or_else(|| {
-                knot_core::passage::twine_core_special_passages().iter()
-                    .chain(knot_core::passage::legacy_core_special_passages().iter())
-                    .find(|d| d.name == passage_name).cloned()
-            });
+        // Tags are not available here, so we can only do name-matching.
+        // Tag-based detection will be applied later when the full passage
+        // is re-parsed in context. The is_script_passage() and
+        // is_stylesheet_passage() checks below handle the common case.
+        let special_def = self.classify_passage(passage_name, &[]);
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
@@ -403,7 +402,11 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
-        special_passages::special_passage_defs()
+        special_passages::name_matched_special_passages()
+    }
+
+    fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
+        special_passages::tag_matched_special_passages()
     }
 
     fn display_name(&self) -> &str {

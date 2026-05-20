@@ -12,7 +12,7 @@
 //! - **Block model**: Text, Macro (`<% %>`), Expression (`<%= %>`), Incomplete
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
     StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
@@ -831,35 +831,43 @@ impl SnowmanPlugin {
         vec![
             SpecialPassageDef {
                 name: "Script".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Custom("SnowmanScript".into()),
                 contributes_variables: true,
                 participates_in_graph: false,
                 execution_priority: Some(0),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "Style".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Custom("SnowmanStyle".into()),
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: None,
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Chrome,
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(90),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Chrome,
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(110),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
         ]
     }
@@ -907,11 +915,13 @@ impl FormatPlugin for SnowmanPlugin {
                     header.header_start..body_offset + body.len(),
                     SpecialPassageDef {
                         name: "PassageHeader".into(),
+                        match_strategy: MatchStrategy::Name,
                         behavior: SpecialPassageBehavior::Chrome,
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(90),
                         layer: SpecialPassageLayer::StoryFormat,
+                        scaffold: None,
                     },
                 )
             } else if is_footer_tagged {
@@ -920,11 +930,13 @@ impl FormatPlugin for SnowmanPlugin {
                     header.header_start..body_offset + body.len(),
                     SpecialPassageDef {
                         name: "PassageFooter".into(),
+                        match_strategy: MatchStrategy::Name,
                         behavior: SpecialPassageBehavior::Chrome,
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(110),
                         layer: SpecialPassageLayer::StoryFormat,
+                        scaffold: None,
                     },
                 )
             } else {

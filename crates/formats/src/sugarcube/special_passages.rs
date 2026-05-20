@@ -1,73 +1,101 @@
-//! Special passage definitions for SugarCube.
+//! Special passage and tag definitions for SugarCube.
 //!
 //! Contains the comprehensive list of SugarCube 2.x special passage definitions,
-//! including lifecycle passages (StoryInit, PassageReady), chrome passages
-//! (StoryCaption, StoryBanner, etc.).
+//! organized by matching strategy:
 //!
-//! **Note:** StoryTitle and StoryData are NOT defined here — they are
-//! Twine-core passages defined in `knot_core::passage::twine_core_special_passages()`.
+//! - **Name-matched** code passages (StoryInit, PassageHeader, etc.)
+//! - **Tag-matched** code tags ([init], [widget]) and special tags ([nobr])
+//!
+//! **Note:** StoryTitle, StoryData, Start, [script], and [stylesheet] are NOT
+//! defined here — they are Twine-core passages defined in
+//! `knot_core::passage::twine_core_special_passages()`.
+//!
+//! ## Format Isolation
+//!
+//! SugarCube's code passages (StoryInit, PassageHeader, etc.) are **name-matched**
+//! — the passage NAME must exactly match. This differs from Harlowe, where
+//! equivalent functionality is **tag-matched** (e.g., [header], [footer],
+//! [startup]). The `MatchStrategy` field on each `SpecialPassageDef` encodes
+//! this distinction so the classification system handles both correctly.
 //!
 //! ## Script & Stylesheet Passages
 //!
-//! "Story JavaScript" and "Story Stylesheet" are **not** SugarCube engine
-//! special passage names. They are Twine 2 editor/compiler concepts. In the
-//! compiled HTML, they become `<script>` and `<style>` children of
-//! `<tw-storydata>`, not named passages in SugarCube's passage store.
+//! [script] and [stylesheet] are **core** special tags defined by the Twee 3
+//! specification, not SugarCube-specific tags. SugarCube AUGMENTS them with
+//! additional behaviors (e.g., "cannot be navigated to"), but does not own them.
+//! The augmentation is handled by the classification system, which merges core
+//! tag definitions with format-specific behaviors.
 //!
-//! SugarCube loads them internally as `tw-user-script-0` and
-//! `tw-user-style-0` — they never appear as passage names in the engine.
+//! ## SugarCube-Specific Tags
 //!
-//! In Twee source files, script and stylesheet passages are identified by
-//! their **tags** (`[script]` or `[stylesheet]`), not by their passage name.
-//! The passage name can be anything (e.g., `:: MyScript[script]` works fine).
+//! SugarCube defines additional code tags and special tags beyond the core:
 //!
-//! Therefore, we do NOT include "Story JavaScript" or "Story Stylesheet"
-//! in the special passage definitions. The `is_script_passage()` and
-//! `is_stylesheet_passage()` methods on `Passage` handle tag-based detection
-//! instead.
+//! - `[init]` — Initialization tag (SugarCube 2.36+). Equivalent to StoryInit
+//!   but tag-based, intended for add-ons/libraries.
+//! - `[widget]` — Widget definition tag. Passages tagged [widget] define
+//!   reusable macros.
+//! - `[nobr]` — Special tag that strips line breaks from passage output.
+//!
+//! These are registered here as tag-matched definitions so the LSP recognizes
+//! them and applies the correct behaviors (suppress navigation, suppress
+//! diagnostics, etc.).
 //!
 //! ## Case Sensitivity
 //!
-//! All SugarCube special passage names are **case-sensitive**. The spelling
+//! All SugarCube name-matched passage names are **case-sensitive**. The spelling
 //! and capitalization must be exactly as shown (e.g., `StoryInit`, not
-//! `storyinit` or `Story Init`). The name comparison in this module uses
-//! exact string matching (`==`), which is correct.
+//! `storyinit` or `Story Init`). Tag matching is case-insensitive per the
+//! Twee 3 spec.
 
-use knot_core::passage::{SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer};
+use knot_core::passage::{
+    MatchStrategy, ScaffoldInfo, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+};
 
-/// SugarCube special passage definitions.
+/// SugarCube name-matched special passage definitions.
 ///
-/// These define the passages that have special meaning in SugarCube 2.x,
-/// including their behavior, whether they contribute variables, and their
-/// execution priority.
-///
+/// These are code passages identified by their exact passage name.
 /// All names are case-sensitive — must match exactly as shown.
-pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
+///
+/// **Format isolation**: These definitions are SugarCube-specific.
+/// Harlowe achieves the same functional results through tag-matched
+/// passages (e.g., [header] instead of PassageHeader, [startup]
+/// instead of StoryInit).
+pub(crate) fn name_matched_special_passages() -> Vec<SpecialPassageDef> {
     vec![
         // ── Lifecycle passages ─────────────────────────────────────────
         SpecialPassageDef {
             name: "StoryInit".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Startup,
             contributes_variables: true,
             participates_in_graph: false,
             execution_priority: Some(0),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "_format_special_passages.twee".into(),
+                default_passage_name: "StoryInit".into(),
+                default_content: String::new(),
+            }),
         },
         SpecialPassageDef {
             name: "PassageReady".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::PassageReady,
             contributes_variables: true,
             participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(50),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "PassageDone".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Custom("PassageDone".into()),
             contributes_variables: true,
             participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(200),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
 
         // ── Chrome interceptor passages ────────────────────────────────
@@ -80,91 +108,175 @@ pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
         // into every passage's entry state during dataflow analysis.
         SpecialPassageDef {
             name: "PassageHeader".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::ChromeInterceptor,
             contributes_variables: true, // Can set/modify variables visible in passage body
             participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(90),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "PassageFooter".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::ChromeInterceptor,
             contributes_variables: true, // Can set/modify variables visible in next passage
             participates_in_graph: true, // Invoked on every navigation
             execution_priority: Some(110),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryCaption".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(100),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryMenu".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(101),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryBanner".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: true, // Updated on every navigation
             execution_priority: Some(102),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StorySubtitle".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: Some(103),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryAuthor".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: Some(104),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryDisplayTitle".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: Some(105),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryShare".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Chrome,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: Some(106),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "StoryInterface".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::StructureTemplate,
             contributes_variables: false,
             participates_in_graph: true, // Contains data-passage refs to user passages
             execution_priority: Some(107),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        },
+    ]
+}
+
+/// SugarCube tag-matched special passage definitions.
+///
+/// These are code tags and special tags identified by their tag name
+/// in the passage header (e.g., `:: MyWidget [widget]`).
+/// Tag matching is case-insensitive per the Twee 3 spec.
+///
+/// **Format isolation**: These tags are SugarCube-specific.
+/// Harlowe uses different tag names for different purposes
+/// (e.g., [header], [footer], [startup] instead of [init], [widget]).
+///
+/// ## Core Tags NOT Repeated Here
+///
+/// [script] and [stylesheet] are **core** tags defined by the Twee 3
+/// specification. They are NOT repeated here. SugarCube augments them
+/// with additional behaviors (e.g., "cannot be navigated to"), but the
+/// core definitions live in `twine_core_special_passages()`.
+pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
+    vec![
+        // ── Code tags ──────────────────────────────────────────────────
+        // [init] — SugarCube 2.36+. Registers the passage as an
+        // initialization passage for pre-story-start tasks. Primarily
+        // intended for add-ons/libraries; normal projects should use
+        // the StoryInit named passage.
+        SpecialPassageDef {
+            name: "init".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::Startup,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(0), // Same priority as StoryInit
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        },
+        // [widget] — Widget definition tag. Passages tagged [widget]
+        // define reusable custom macros. They cannot be navigated to.
+        SpecialPassageDef {
+            name: "widget".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::Custom("Widget".into()),
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         },
 
-        // NOTE: StoryTitle and StoryData have been moved to TwineCore
-        // (see `knot_core::passage::twine_core_special_passages()`).
-
-        // NOTE: "Story JavaScript" and "Story Stylesheet" are NOT included
-        // here. See the module-level documentation for the reasoning.
-        // Script/stylesheet passages are detected via [script]/[stylesheet]
-        // tags in the passage header, not by passage name.
+        // ── Special tags ───────────────────────────────────────────────
+        // [nobr] — Strips line breaks from the passage output.
+        // This is a rendering hint, not a code tag — passages with
+        // [nobr] CAN be navigated to normally.
+        SpecialPassageDef {
+            name: "nobr".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::Custom("NoBr".into()),
+            contributes_variables: false,
+            participates_in_graph: true, // Normal navigation passage with rendering hint
+            execution_priority: None,
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        },
     ]
+}
+
+/// Backwards-compatible accessor: returns name-matched passages only.
+///
+/// This is used by `FormatPlugin::special_passages()` which expects
+/// the legacy vec of name-matched definitions. The classification
+/// system separately queries `tag_matched_special_passages()`.
+pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
+    name_matched_special_passages()
 }
