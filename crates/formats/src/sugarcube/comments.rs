@@ -167,7 +167,7 @@ fn find_html_comment_spans(text: &str) -> Vec<Range<usize>> {
 /// * `script_block_spans` — If `Some`, only detect `//` line comments within
 ///   these byte ranges (representing `<<script>>...<</script>>` blocks).
 ///   If `None`, the entire text is treated as a script context (for passages
-///   tagged `[script]` or named "Story JavaScript").
+///   tagged `[script]`).
 pub(crate) fn find_line_comment_spans(
     text: &str,
     script_block_spans: Option<&[Range<usize>]>,
@@ -282,7 +282,7 @@ pub(crate) fn find_script_block_spans(body: &str) -> Vec<Range<usize>> {
 ///
 /// * `text` — The passage body text.
 /// * `is_script_passage` — Whether this passage is a JavaScript passage
-///   (tagged `[script]` or named "Story JavaScript"). In script passages,
+///   (tagged `[script]`). In script passages,
 ///   `//` line comments are valid everywhere.
 pub(crate) fn find_all_comment_spans(text: &str, is_script_passage: bool) -> Vec<Range<usize>> {
     let mut spans = find_block_comment_spans(text);

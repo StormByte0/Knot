@@ -295,8 +295,8 @@ pub struct StateVariable {
     /// `None` means availability hasn't been computed yet.
     pub first_available: Option<String>,
     /// Whether this variable is seeded by a special passage
-    /// (e.g., StoryInit, Story JavaScript). Variables seeded by special
-    /// passages are always available from the start of the game.
+    /// (e.g., StoryInit) or a script-tagged passage. Variables seeded by
+    /// special/script passages are always available from the start of the game.
     pub seeded_by_special: bool,
 }
 

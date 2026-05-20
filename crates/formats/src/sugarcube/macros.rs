@@ -1303,20 +1303,29 @@ pub fn dynamic_navigation_macros() -> HashSet<&'static str> {
 // ---------------------------------------------------------------------------
 
 /// Special/lifecycle passage names in SugarCube.
+///
+/// All names are case-sensitive — must match exactly as shown.
+/// "Story JavaScript" and "Story Stylesheet" are NOT included because they
+/// are Twine 2 editor concepts, not SugarCube engine passage names.
+/// Script/stylesheet passages are identified by [script]/[stylesheet] tags.
 pub fn special_passage_names() -> HashSet<&'static str> {
     [
         "StoryInit", "StoryCaption", "StoryBanner", "StorySubtitle",
         "StoryAuthor", "StoryMenu", "StoryDisplayTitle", "StoryShare",
         "StoryInterface",
         "PassageDone", "PassageHeader", "PassageFooter", "PassageReady",
+        "StoryTitle", "StoryData",
     ]
     .into_iter()
     .collect()
 }
 
 /// System passages that are always reachable regardless of link structure.
+///
+/// Only includes metadata passages (StoryData, StoryTitle) since they are
+/// data containers. Script/stylesheet passages are detected via tags, not names.
 pub fn system_passage_names() -> HashSet<&'static str> {
-    ["StoryData", "Story JavaScript", "Story Stylesheet"]
+    ["StoryData", "StoryTitle"]
         .into_iter()
         .collect()
 }
