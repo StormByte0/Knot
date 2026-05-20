@@ -7,7 +7,8 @@
 mod tests {
     use crate::graph::{DiagnosticKind, PassageEdge, PassageGraph, PassageNode};
     use crate::passage::{
-        Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
+        Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer, StoryFormat,
+        VarKind, VarOp,
     };
     use crate::document::Document;
     use crate::workspace::{StoryMetadata, Workspace};
@@ -59,6 +60,7 @@ mod tests {
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
         });
         p
     }
@@ -95,6 +97,7 @@ mod tests {
                 is_special: *is_special,
                 is_metadata: *is_metadata,
                 is_placeholder: false,
+                layer: None,
             });
         }
 
@@ -107,6 +110,7 @@ mod tests {
                     PassageEdge {
                         display_text: display_text.clone(),
                         is_broken: !target_exists,
+                        is_upstream: false,
                     },
                 );
             }
@@ -549,6 +553,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         graph.add_passage(start);
         graph.add_edge(
@@ -557,6 +562,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 is_broken: true,
+                is_upstream: false,
             },
         );
 
@@ -567,6 +573,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         graph.add_passage(forest);
         graph.recheck_broken_links();
@@ -587,6 +594,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
@@ -594,6 +602,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         graph.add_passage(start);
         graph.add_passage(forest);
@@ -603,6 +612,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 is_broken: false,
+                is_upstream: false,
             },
         );
 
@@ -619,6 +629,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 is_broken: true, // Forest no longer exists
+                is_upstream: false,
             },
         );
         graph.recheck_broken_links();
@@ -740,6 +751,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
@@ -747,6 +759,7 @@ mod tests {
             is_special: false,
             is_metadata: false,
             is_placeholder: false,
+            layer: None,
         };
         let story_init = PassageNode {
             name: "StoryInit".to_string(),
@@ -754,6 +767,7 @@ mod tests {
             is_special: true,
             is_metadata: false,
             is_placeholder: false,
+            layer: Some(SpecialPassageLayer::StoryFormat),
         };
         let story_data = PassageNode {
             name: "StoryData".to_string(),
@@ -761,6 +775,7 @@ mod tests {
             is_special: true,
             is_metadata: true,
             is_placeholder: false,
+            layer: Some(SpecialPassageLayer::TwineCore),
         };
 
         graph.add_passage(start);
@@ -771,10 +786,12 @@ mod tests {
         graph.add_edge("Start", "Forest", PassageEdge {
             display_text: Some("Go to forest".to_string()),
             is_broken: false,
+            is_upstream: false,
         });
         graph.add_edge("Start", "MissingPassage", PassageEdge {
             display_text: None,
             is_broken: true,
+            is_upstream: false,
         });
 
         let mut tags = std::collections::HashMap::new();
@@ -878,6 +895,7 @@ mod tests {
             contributes_variables: true,
             participates_in_graph: false,
             execution_priority: Some(0),
+            layer: SpecialPassageLayer::StoryFormat,
         });
         p.vars = vec![
             VarOp {

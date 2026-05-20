@@ -119,6 +119,45 @@ pub enum Block {
     Incomplete { content: String, span: Range<usize> },
 }
 
+/// The ownership layer of a special passage.
+///
+/// Special passages come from different sources and must be tracked
+/// separately to maintain format isolation:
+///
+/// - **TwineCore**: Editor/compiler constructs that exist regardless of the
+///   story format (StoryTitle, StoryData, StoryJavaScript, StoryStylesheet).
+///   These are defined by the Twine 2 specification, not by any format engine.
+///
+/// - **LegacyCore**: Twine 1 passage names that predate the format system
+///   ("stylesheet", "script"). Recognized for import/migration compatibility.
+///
+/// - **StoryFormat**: Format-specific special passages defined by the active
+///   format plugin (e.g., SugarCube's StoryInit, Harlowe's tagged headers).
+///   These are the format plugin's responsibility — the core never hardcodes
+///   format-specific passage names.
+///
+/// - **UserDefined**: User-created special passages (reserved for future use).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpecialPassageLayer {
+    /// Twine 2 editor/compiler constructs (StoryTitle, StoryData,
+    /// StoryJavaScript, StoryStylesheet). Format-agnostic.
+    TwineCore,
+    /// Twine 1 legacy passage names ("stylesheet", "script").
+    /// Recognized for import/migration compatibility.
+    LegacyCore,
+    /// Format-specific special passages (StoryInit, PassageHeader, etc.).
+    /// Defined by the active format plugin.
+    StoryFormat,
+    /// User-defined special passages (not yet implemented).
+    UserDefined,
+}
+
+impl Default for SpecialPassageLayer {
+    fn default() -> Self {
+        SpecialPassageLayer::StoryFormat
+    }
+}
+
 /// Behavior definition for a special passage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpecialPassageBehavior {
@@ -126,18 +165,82 @@ pub enum SpecialPassageBehavior {
     Startup,
     /// The passage runs each time any passage is rendered.
     PassageReady,
-    /// The passage provides UI chrome (excluded from reachability).
+    /// The passage provides UI chrome — rendered in the story interface
+    /// chrome area, not per-passage. Examples: StoryCaption, StoryBanner,
+    /// StoryMenu. These are excluded from reachability analysis and receive
+    /// no implicit graph edges. They may still have explicit links extracted
+    /// by the format plugin's parser (e.g., `[[links]]` inside StoryCaption),
+    /// but those are user-authored references, not structural edges.
     Chrome,
+    /// The passage is a **rendering interceptor** — prepended or appended
+    /// to every rendered passage body. Examples: PassageHeader (prepended),
+    /// PassageFooter (appended). These wrap every user-defined passage
+    /// during rendering but are NOT navigation targets. The graph does not
+    /// create O(N) edges from interceptors to every user passage; instead,
+    /// the analysis engine treats them as always-invoked at render time,
+    /// similar to how Startup passages are always invoked at launch time.
+    ///
+    /// Variable flow: ChromeInterceptor passages can contribute variables
+    /// and their variable context should be merged into every passage's
+    /// entry state during dataflow analysis (just as Startup's variables
+    /// are seeded into the start passage's entry state).
+    ChromeInterceptor,
+    /// The passage is a **structural template** that defines the HTML shell
+    /// for the entire story. Unlike Chrome passages which render content in
+    /// predefined slots, a StructureTemplate REPLACES the entire UI structure.
+    ///
+    /// Key characteristic: StructureTemplate passages can contain explicit
+    /// references to user-defined passages through `data-passage` attributes,
+    /// `Engine.play()` calls, or other format-specific navigation patterns.
+    /// These references are extracted by the format plugin's parser as links
+    /// and create graph edges, making the referenced passages reachable.
+    ///
+    /// Example (SugarCube StoryInterface):
+    /// ```html
+    /// <div id="story">
+    ///   <div id="passage" data-passage></div>
+    ///   <div id="sidebar">
+    ///     <div data-passage="SidebarStats"></div>
+    ///   </div>
+    /// </div>
+    /// ```
+    ///
+    /// Here `data-passage="SidebarStats"` creates an explicit edge from
+    /// StoryInterface → SidebarStats in the graph, ensuring SidebarStats
+    /// is not flagged as unreachable even though it has no `[[links]]`
+    /// pointing to it.
+    StructureTemplate,
     /// The passage provides metadata only.
     Metadata,
+    /// The passage contains global JavaScript injected at startup.
+    /// Twine-core concept: the compiled HTML includes this as a <script>
+    /// element, not as a named passage in the format engine. However, in
+    /// Twee source files, it appears as a tagged passage and the LSP needs
+    /// to recognize it. StoryJavaScript contributes variables because
+    /// SugarCube's State.variables and other format APIs are accessible
+    /// from this context.
+    ///
+    /// ScriptInjection passages can also contain explicit passage references
+    /// through `Engine.play()`, `Engine.goTo()`, or widget definitions that
+    /// reference user-defined passages. These are extracted by the format
+    /// plugin's `extract_implicit_passage_refs()` and create graph edges.
+    ScriptInjection,
+    /// The passage contains global CSS injected at startup.
+    /// Twine-core concept: analogous to ScriptInjection but for styles.
+    StyleInjection,
     /// Custom behavior defined by the format plugin.
     Custom(String),
 }
 
-/// Definition of a format-specific special passage.
+/// Definition of a special passage.
+///
+/// Special passages have different ownership layers (TwineCore, LegacyCore,
+/// StoryFormat, UserDefined) that determine where they are defined and how
+/// they are handled by the LSP server. See [`SpecialPassageLayer`] for
+/// the full taxonomy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecialPassageDef {
-    /// The canonical passage name (e.g., "StoryInit").
+    /// The canonical passage name (e.g., "StoryInit", "StoryTitle").
     pub name: String,
     /// The behavior of this special passage.
     pub behavior: SpecialPassageBehavior,
@@ -147,6 +250,129 @@ pub struct SpecialPassageDef {
     pub participates_in_graph: bool,
     /// Execution priority relative to other special passages (lower = earlier).
     pub execution_priority: Option<i32>,
+    /// The ownership layer of this special passage.
+    ///
+    /// This determines whether the passage is defined by Twine itself
+    /// (TwineCore/LegacyCore) or by the active story format (StoryFormat).
+    /// Format isolation requires that Twine-core passages are never mixed
+    /// into format plugin definitions, and vice versa.
+    #[serde(default)]
+    pub layer: SpecialPassageLayer,
+}
+
+// ---------------------------------------------------------------------------
+// Twine-core special passage definitions
+// ---------------------------------------------------------------------------
+
+/// Returns the Twine-core special passage definitions.
+///
+/// These are format-agnostic constructs defined by the Twine 2
+/// editor/compiler, not by any story format engine. Every story format
+/// must handle these passages — they are not optional.
+///
+/// ## Format Isolation
+///
+/// Format plugins must NOT include these passages in their own
+/// `special_passages()` lists. The server merges Twine-core definitions
+/// with format-specific ones when building the complete special passage
+/// registry. This ensures that:
+///
+/// 1. Twine-core passages are always recognized regardless of format.
+/// 2. Format plugins don't duplicate or misinterpret editor constructs.
+/// 3. Diagnostics and graph edges for core passages are consistent.
+///
+/// ## Story JavaScript vs Story Stylesheet
+///
+/// "Story JavaScript" and "Story Stylesheet" are Twine 2 editor concepts.
+/// In the compiled HTML, they become `<script>` and `<style>` children
+/// of `<tw-storydata>`, not named passages in any format's passage store.
+/// SugarCube loads them internally as `tw-user-script-0` and
+/// `tw-user-style-0` — they never appear as passage names in the engine.
+///
+/// However, in Twee source files, script/stylesheet passages ARE
+/// identified by their **tags** (`[script]` or `[stylesheet]`), not by
+/// their passage name. The passage name can be anything (e.g.,
+/// `:: MyScript[script]` works fine).
+///
+/// We include them here as TwineCore special passages because:
+/// - The LSP needs to recognize and highlight them.
+/// - Story JavaScript can contribute variables (SugarCube's `State.variables`,
+///   Harlowe's `State.variables`, etc. are all accessible from JS).
+/// - Graph analysis needs to know they exist at startup.
+pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
+    vec![
+        // ── Metadata passages ────────────────────────────────────────────
+        SpecialPassageDef {
+            name: "StoryTitle".into(),
+            behavior: SpecialPassageBehavior::Metadata,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+        },
+        SpecialPassageDef {
+            name: "StoryData".into(),
+            behavior: SpecialPassageBehavior::Metadata,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+        },
+
+        // ── Script injection ──────────────────────────────────────────────
+        // Story JavaScript is a Twine 2 editor concept. In Twee files, it's
+        // identified by the [script] tag, not the passage name. We include
+        // it here so the LSP can recognize tagged script passages as special
+        // and know they contribute variables to the story state.
+        SpecialPassageDef {
+            name: "Story JavaScript".into(),
+            behavior: SpecialPassageBehavior::ScriptInjection,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(-1), // Runs before StoryInit
+            layer: SpecialPassageLayer::TwineCore,
+        },
+
+        // ── Style injection ───────────────────────────────────────────────
+        // Story Stylesheet is a Twine 2 editor concept. In Twee files, it's
+        // identified by the [stylesheet] tag, not the passage name.
+        SpecialPassageDef {
+            name: "Story Stylesheet".into(),
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+        },
+    ]
+}
+
+/// Returns the Twine 1 legacy special passage definitions.
+///
+/// These predate the Twine 2 format system. They are recognized for
+/// import/migration compatibility (Twee imports, Twine archives, Tweego
+/// conversions). In Twine 1, "stylesheet" and "script" were passage
+/// NAMES (not tags), which is why they appear here as name-based
+/// definitions rather than tag-based detection.
+pub fn legacy_core_special_passages() -> Vec<SpecialPassageDef> {
+    vec![
+        SpecialPassageDef {
+            name: "stylesheet".into(),
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::LegacyCore,
+        },
+        SpecialPassageDef {
+            name: "script".into(),
+            behavior: SpecialPassageBehavior::ScriptInjection,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(-1),
+            layer: SpecialPassageLayer::LegacyCore,
+        },
+    ]
 }
 
 /// A passage — the fundamental unit of narrative structure in a Twine story.
@@ -271,8 +497,37 @@ impl Passage {
     }
 
     /// Whether this is a universal metadata passage (StoryData or StoryTitle).
+    ///
+    /// Uses the special passage definition's `layer` field when available,
+    /// falling back to name matching for passages without a definition.
     pub fn is_metadata(&self) -> bool {
-        self.name == "StoryData" || self.name == "StoryTitle"
+        if self.is_special {
+            self.special_def
+                .as_ref()
+                .map(|d| matches!(d.behavior, SpecialPassageBehavior::Metadata))
+                .unwrap_or(false)
+        } else {
+            self.name == "StoryData" || self.name == "StoryTitle"
+        }
+    }
+
+    /// Returns the ownership layer of this passage, if it is a special passage.
+    ///
+    /// Returns `None` for regular (non-special) passages.
+    pub fn special_layer(&self) -> Option<&SpecialPassageLayer> {
+        self.special_def.as_ref().map(|d| &d.layer)
+    }
+
+    /// Whether this passage is a Twine-core special passage.
+    ///
+    /// Twine-core passages (StoryTitle, StoryData, Story JavaScript,
+    /// Story Stylesheet) are defined by the Twine 2 editor/compiler,
+    /// not by any story format engine.
+    pub fn is_twine_core(&self) -> bool {
+        self.special_def
+            .as_ref()
+            .map(|d| matches!(d.layer, SpecialPassageLayer::TwineCore))
+            .unwrap_or(false)
     }
 
     /// Whether this passage is a script passage (contains JavaScript).

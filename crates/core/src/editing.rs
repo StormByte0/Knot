@@ -81,6 +81,7 @@ pub fn graph_surgery(
                 is_special: passage.is_special,
                 is_metadata: passage.is_metadata(),
                 is_placeholder: false,
+                layer: passage.special_def.as_ref().map(|d| d.layer.clone()),
             };
             graph.add_passage(node);
 
@@ -90,6 +91,7 @@ pub fn graph_surgery(
                 let edge = PassageEdge {
                     display_text: link.display_text.clone(),
                     is_broken: !target_exists,
+                    is_upstream: false,
                 };
                 graph.add_edge(&passage.name, &link.target, edge);
             }
@@ -101,6 +103,7 @@ pub fn graph_surgery(
                     let edge = PassageEdge {
                         display_text: display_text.clone(),
                         is_broken: !target_exists,
+                        is_upstream: false,
                     };
                     graph.add_edge(source, target, edge);
                 }

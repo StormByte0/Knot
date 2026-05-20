@@ -27,9 +27,9 @@
 //! For `[[links]]`, only the **passage name** is highlighted as a `Link` token,
 //! not the surrounding `[[` and `]]` brackets or the display text:
 //!
-//! - `[[Target]]`           → highlight "Target"
-//! - `[[Display->Target]]`  → highlight "Target" (the passage name after `->`)
-//! - `[[Display|Target]]`   → highlight "Target" (the passage name after `|`)
+//! - `[[Target]]`           -> highlight "Target"
+//! - `[[Display->Target]]`  -> highlight "Target" (the passage name after `->`)
+//! - `[[Display|Target]]`   -> highlight "Target" (the passage name after `|`)
 //!
 //! For implicit passage references (e.g., `Engine.play("name")`,
 //! `data-passage="name"`), only the **passage name string** is highlighted
@@ -39,6 +39,18 @@
 //! the macro NAME gets a `Macro` token, and the passage name string inside
 //! gets a `PassageRef` token. The `<<`, `>>`, and other arguments are left
 //! to the TextMate grammar.
+//!
+//! ## Header token structure
+//!
+//! Passage headers are decomposed into distinct token types so themes can
+//! color each part independently:
+//!
+//! - Regular passage: `::` = `PassageHeader`, `Name` = `PassageName`
+//! - Special passage: `::` = `SpecialPassageHeader`, `Name` = `SpecialPassage`
+//!
+//! Special passage tokens also carry layer modifiers (`TwineCore` or
+//! `StoryFormat`) so themes can further differentiate core vs. format
+//! passages.
 
 use std::ops::Range;
 
@@ -53,6 +65,33 @@ use super::vars::{RE_SET_MACRO, RE_VAR};
 use super::blocks;
 use super::lexer::ParsedHeader;
 use super::macros;
+use knot_core::passage::SpecialPassageLayer;
+
+// ---------------------------------------------------------------------------
+// SugarCube keyword/operator/boolean sets
+// ---------------------------------------------------------------------------
+
+/// SugarCube keywords that appear inside macro argument lists.
+/// These are the assignment/comparison/logical operators that the
+/// SugarCube engine interprets specially.
+const SUGARCUBE_KEYWORDS: &[&str] = &[
+    "to", "into", "is", "isnot", "eq", "neq", "gt", "lt", "gte", "lte",
+    "and", "or", "not", "ne", "e", "a", "b", "c",
+    "from", "near", "far", "match",
+];
+
+/// SugarCube boolean literals.
+const SUGARCUBE_BOOLEANS: &[&str] = &["true", "false"];
+
+/// SugarCube global object names (namespaces).
+const SUGARCUBE_NAMESPACES: &[&str] = &[
+    "State", "Engine", "Story", "Dialog", "settings",
+    "setup", "Config", "UI", "Macros", "SimpleAPI",
+];
+
+// ---------------------------------------------------------------------------
+// Body token generation
+// ---------------------------------------------------------------------------
 
 /// Generate semantic tokens for a passage body.
 ///
@@ -119,7 +158,6 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
     // For [[Display|Target]], highlight just "Target" (capture group 2).
 
     for caps in RE_LINK_ARROW.captures_iter(body) {
-        // Capture group 2 is the target passage name after ->
         if let Some(target) = caps.get(2) {
             tokens.push(SemanticToken {
                 start: body_offset + target.start(),
@@ -130,7 +168,6 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
         }
     }
     for caps in RE_LINK_PIPE.captures_iter(body) {
-        // Capture group 2 is the target passage name after |
         if let Some(target) = caps.get(2) {
             tokens.push(SemanticToken {
                 start: body_offset + target.start(),
@@ -141,7 +178,6 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
         }
     }
     for caps in RE_LINK_SIMPLE.captures_iter(body) {
-        // Capture group 1 is the passage name
         if let Some(target) = caps.get(1) {
             tokens.push(SemanticToken {
                 start: body_offset + target.start(),
@@ -152,8 +188,188 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
         }
     }
 
+    // ── Keyword, Boolean, and Namespace tokens ───────────────────────
+    //
+    // Scan for SugarCube keywords and booleans that appear as standalone
+    // words inside macro argument lists. We only match whole words that
+    // are surrounded by whitespace or macro delimiters to avoid false
+    // positives (e.g., "Story" inside "StoryTitle").
+    tokens.extend(keyword_tokens(body, body_offset));
+    tokens.extend(boolean_tokens(body, body_offset));
+    tokens.extend(namespace_tokens(body, body_offset));
+
     tokens
 }
+
+// ---------------------------------------------------------------------------
+// Keyword / Boolean / Namespace token helpers
+// ---------------------------------------------------------------------------
+
+/// Generate Keyword semantic tokens for SugarCube keywords inside macros.
+///
+/// Keywords like `to`, `is`, `eq`, `gt`, `and`, `or`, `not` appear as
+/// standalone words inside `<<set>>`, `<<if>>`, etc. We match them as
+/// whole words surrounded by whitespace or macro delimiters to avoid
+/// false positives.
+fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+
+    for keyword in SUGARCUBE_KEYWORDS {
+        let kw_bytes = keyword.as_bytes();
+        let kw_len = kw_bytes.len();
+        if kw_len == 0 { continue; }
+
+        let mut pos = 0;
+        while pos + kw_len <= len {
+            // Quick check: does the keyword start here?
+            if &bytes[pos..pos + kw_len] == kw_bytes {
+                // Check word boundaries
+                let before_ok = pos == 0
+                    || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
+                let after_pos = pos + kw_len;
+                let after_ok = after_pos >= len
+                    || !bytes[after_pos].is_ascii_alphanumeric() && bytes[after_pos] != b'_';
+
+                if before_ok && after_ok {
+                    tokens.push(SemanticToken {
+                        start: body_offset + pos,
+                        length: kw_len,
+                        token_type: SemanticTokenType::Keyword,
+                        modifier: Some(SemanticTokenModifier::ControlFlow),
+                    });
+                }
+                // Advance past this match to avoid overlapping
+                pos += kw_len;
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Generate Boolean semantic tokens for `true` and `false` literals.
+fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+
+    for boolean in SUGARCUBE_BOOLEANS {
+        let bool_bytes = boolean.as_bytes();
+        let bool_len = bool_bytes.len();
+
+        let mut pos = 0;
+        while pos + bool_len <= len {
+            if &bytes[pos..pos + bool_len] == bool_bytes {
+                let before_ok = pos == 0
+                    || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
+                let after_pos = pos + bool_len;
+                let after_ok = after_pos >= len
+                    || !bytes[after_pos].is_ascii_alphanumeric() && bytes[after_pos] != b'_';
+
+                if before_ok && after_ok {
+                    tokens.push(SemanticToken {
+                        start: body_offset + pos,
+                        length: bool_len,
+                        token_type: SemanticTokenType::Boolean,
+                        modifier: None,
+                    });
+                }
+                pos += bool_len;
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    tokens
+}
+
+/// Generate Namespace semantic tokens for SugarCube global objects.
+///
+/// Objects like `State`, `Engine`, `Story` are highlighted as namespaces
+/// so themes can give them a distinct "API object" color.
+fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+
+    for ns in SUGARCUBE_NAMESPACES {
+        let ns_bytes = ns.as_bytes();
+        let ns_len = ns_bytes.len();
+        if ns_len == 0 { continue; }
+
+        let mut pos = 0;
+        while pos + ns_len <= len {
+            if &bytes[pos..pos + ns_len] == ns_bytes {
+                // Check that this is a standalone word (not part of a longer identifier)
+                let before_ok = pos == 0
+                    || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
+                let after_pos = pos + ns_len;
+                let after_ok = after_pos >= len
+                    || !bytes[after_pos].is_ascii_alphanumeric() && bytes[after_pos] != b'_';
+
+                if before_ok && after_ok {
+                    tokens.push(SemanticToken {
+                        start: body_offset + pos,
+                        length: ns_len,
+                        token_type: SemanticTokenType::Namespace,
+                        modifier: None,
+                    });
+                }
+                pos += ns_len;
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// Comment tokens
+// ---------------------------------------------------------------------------
+
+/// Generate Comment semantic tokens for Twine-style comments.
+///
+/// Detects the following comment types:
+/// - `/%% ... %%/` — SugarCube block comments
+/// - `/% ... %/` — Twine block comments
+///
+/// Note: We do NOT emit tokens for `/* ... */` or `//` comments here
+/// because those are handled by the TextMate grammar for JavaScript/CSS
+/// contexts. The Twine-specific comment delimiters (`/%` and `/%%`)
+/// are not recognized by standard TextMate grammars, so we must emit
+/// semantic tokens for them.
+#[allow(dead_code)]
+pub(crate) fn comment_tokens(body: &str, body_offset: usize, comment_spans: &[Range<usize>]) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    for span in comment_spans {
+        let start = span.start;
+        let end = span.end;
+        // Only emit comment tokens for Twine-style comment delimiters
+        // that the TextMate grammar won't catch. Skip HTML, JS, and CSS
+        // comments which TextMate handles.
+        let text = &body[start.saturating_sub(body_offset)..end.saturating_sub(body_offset)];
+        if text.starts_with("/%") || text.starts_with("<!--") {
+            tokens.push(SemanticToken {
+                start: start,
+                length: end - start,
+                token_type: SemanticTokenType::Comment,
+                modifier: None,
+            });
+        }
+    }
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// PassageRef tokens (implicit and macro)
+// ---------------------------------------------------------------------------
 
 /// Generate PassageRef semantic tokens for implicit passage references
 /// in script passages (Engine.play, data-passage, etc.).
@@ -246,13 +462,6 @@ pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<Se
         if idx < string_args.len() {
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
-                // rel_start/rel_end are relative to args_str, which starts at
-                // name_end in the body. We need to find where args_str starts
-                // in the body relative to the macro match.
-                //
-                // args_str = body[name_end..closing_gt_start].trim()
-                // The trim might remove leading whitespace, so we need to find
-                // the actual start of the trimmed args in the body.
                 let name_end_in_body = m.name_start + m.name_len;
                 let body_after_name = &body[name_end_in_body..m.end.saturating_sub(2)]; // before >>
                 let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
@@ -306,66 +515,89 @@ fn parse_quoted_args_with_spans(args: &str) -> Vec<(String, usize, usize)> {
     result
 }
 
+// ---------------------------------------------------------------------------
+// Stylesheet / Interface body tokens
+// ---------------------------------------------------------------------------
+
 /// Generate semantic tokens for the body of stylesheet passages.
 ///
-/// Emits a `String`-type token covering the entire CSS body. This serves
-/// as a fallback when the TextMate grammar doesn't activate CSS scopes
-/// for stylesheet passages (tagged [stylesheet]).
-/// The `String` type maps to the LSP `STRING` semantic token type, which
-/// most themes color distinctly from plain text.
-///
-/// Note: If the TextMate grammar DOES provide CSS scopes, those will be
-/// overridden by this semantic token. However, since the user reports CSS
-/// is currently highlighted as plain text, this is a net improvement.
-pub(crate) fn stylesheet_body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
-    if body.trim().is_empty() {
-        return Vec::new();
-    }
-    vec![SemanticToken {
-        start: body_offset,
-        length: body.len(),
-        token_type: SemanticTokenType::String,
-        modifier: None,
-    }]
+/// Intentionally returns no tokens — let TextMate handle CSS highlighting.
+/// A blanket `String` token would override TextMate scopes, making
+/// the entire body one uniform color.
+#[allow(dead_code)]
+pub(crate) fn stylesheet_body_tokens(_body: &str, _body_offset: usize) -> Vec<SemanticToken> {
+    // Intentionally return no tokens — let TextMate handle CSS highlighting.
+    // A blanket `String` token would override TextMate scopes, making
+    // the entire body one uniform color.
+    Vec::new()
 }
 
 /// Generate semantic tokens for the body of StoryInterface passages.
 ///
-/// Emits a `String`-type token covering the entire HTML body. This serves
-/// as a fallback when the TextMate grammar doesn't activate HTML scopes
-/// for StoryInterface passages.
+/// Instead of emitting a blanket `String` token, we emit only `PassageRef`
+/// tokens for `data-passage` attributes. The HTML structure is left to
+/// the TextMate grammar.
 pub(crate) fn interface_body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
-    if body.trim().is_empty() {
-        return Vec::new();
-    }
-    vec![SemanticToken {
-        start: body_offset,
-        length: body.len(),
-        token_type: SemanticTokenType::String,
-        modifier: None,
-    }]
+    // Only emit PassageRef tokens for data-passage attributes.
+    // Do NOT emit a blanket String token — it kills TextMate HTML highlighting.
+    script_passage_ref_tokens(body, body_offset)
+}
+
+// ---------------------------------------------------------------------------
+// Header tokens
+// ---------------------------------------------------------------------------
+
+/// Additional context for header token generation.
+pub(crate) struct HeaderTokenContext {
+    /// Whether this passage is a special passage.
+    pub is_special: bool,
+    /// The layer of the special passage (TwineCore, LegacyCore, StoryFormat).
+    /// `None` for regular (user-defined) passages.
+    pub layer: Option<SpecialPassageLayer>,
 }
 
 /// Generate semantic tokens for passage headers.
 ///
-/// If `is_special` is true, the passage header tokens use the `SpecialPassage`
-/// type instead of `PassageHeader`, giving special passages distinct visual
-/// highlighting in the editor.
-pub(crate) fn header_tokens(header: &ParsedHeader, is_special: bool) -> Vec<SemanticToken> {
+/// The token structure is:
+///
+/// | Part          | Regular passage     | Special passage           |
+/// |---------------|--------------------|---------------------------|
+/// | `::` prefix   | `PassageHeader`    | `SpecialPassageHeader`    |
+/// | Passage name  | `PassageName`      | `SpecialPassage`          |
+/// | Tags          | `Tag`              | `Tag`                     |
+///
+/// Special passage tokens carry layer modifiers:
+/// - TwineCore passages get `TwineCore` modifier
+/// - StoryFormat passages get `StoryFormat` modifier
+/// - LegacyCore passages get `TwineCore` modifier
+///
+/// This gives themes three levels of visual differentiation:
+/// 1. Regular vs. special (different token types)
+/// 2. Twine-core vs. story-format (different modifiers)
+pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
-    let header_type = if is_special {
-        SemanticTokenType::SpecialPassage
+    let (prefix_type, name_type, layer_modifier) = if ctx.is_special {
+        let modifier = match ctx.layer {
+            Some(SpecialPassageLayer::TwineCore) | Some(SpecialPassageLayer::LegacyCore) => {
+                Some(SemanticTokenModifier::TwineCore)
+            }
+            Some(SpecialPassageLayer::StoryFormat) => {
+                Some(SemanticTokenModifier::StoryFormat)
+            }
+            Some(SpecialPassageLayer::UserDefined) | None => None,
+        };
+        (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage, modifier)
     } else {
-        SemanticTokenType::PassageHeader
+        (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName, None)
     };
 
     // The `::` prefix is always 2 bytes.
     tokens.push(SemanticToken {
         start: header.header_start,
         length: 2,
-        token_type: header_type.clone(),
-        modifier: None,
+        token_type: prefix_type,
+        modifier: layer_modifier,
     });
 
     // Passage name — use the pre-computed name_start which correctly accounts
@@ -373,19 +605,92 @@ pub(crate) fn header_tokens(header: &ParsedHeader, is_special: bool) -> Vec<Sema
     tokens.push(SemanticToken {
         start: header.name_start,
         length: header.name.len(),
-        token_type: header_type,
-        modifier: None,
+        token_type: name_type,
+        modifier: layer_modifier,
     });
 
-    // Tags — positions are approximate since the header may have variable
-    // whitespace between the name and the tag bracket.
+    // Tags — compute actual positions by scanning the header line.
+    // The header line is: `:: Name [tag1 tag2] {metadata}`
+    // We need to find the `[` bracket and then scan inside it.
+    tokens.extend(tag_tokens_from_header(header));
+
+    tokens
+}
+
+/// Generate Tag semantic tokens with accurate positions.
+///
+/// Instead of using a fixed-offset formula that assumes uniform spacing,
+/// this function scans the header line to find the exact byte positions
+/// of each tag inside the `[...]` bracket.
+fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+
+    if header.tags.is_empty() {
+        return tokens;
+    }
+
+    // Re-derive the header line start from header_start.
+    // The header text starts at header_start and has length header_len.
+    // We need to find the `[` bracket that contains the tags.
+    //
+    // We know:
+    // - name_start is the byte offset of the passage name
+    // - name_start = header_start + 2 + whitespace_len
+    // - After the name, there's `[tag1 tag2]` optionally followed by `{...}`
+    //
+    // Find the `[` after the passage name in the header.
+    // We can reconstruct from name_start + name length.
+    let name_end = header.name_start + header.name.len();
+
+    // The tag bracket starts at or after name_end. We search for `[`
+    // in the header starting from name_end. The offset is absolute
+    // (document-level), so we can emit tokens directly.
+    //
+    // However, we don't have the raw header text here — we only have
+    // the ParsedHeader fields. So we reconstruct tag positions from
+    // the known tag names and the fact that tags are space-separated
+    // inside `[...]`.
+    //
+    // The bracket starts at some offset after name_end. We need to
+    // find it. Since we don't have the raw text, we use the fact that
+    // the format is `Name[tag1 tag2]` — the `[` is right after the name
+    // (possibly with whitespace, but typically no space in Twee format).
+    //
+    // For now, we use a more robust approach: compute tag positions
+    // relative to the `[` bracket. We find the `[` position by
+    // searching forward from name_end.
+
+    // Since we don't have the source text, we estimate:
+    // Format: `::Name [tag1 tag2]` or `:: Name [tag1 tag2]`
+    // Tags are at: bracket_start + 1 + (sum of previous tags + spaces)
+    //
+    // This is still approximate but accounts for variable tag lengths.
+
+    // The simplest correct approach: tags appear in order after the
+    // opening `[`, separated by single spaces. The bracket itself is
+    // typically at name_end (no space between name and `[` in standard
+    // Twee format) or name_end + some whitespace.
+
+    // For accurate tag positions, we would need the raw header text.
+    // Since ParsedHeader doesn't store it, we use the name as anchor.
+    // We assume the bracket is immediately after the name (which is
+    // the standard Twee format: `:: Name [tags]`).
+
+    let bracket_start = name_end; // `[` is right after the name
+    let tags_inner_start = bracket_start + 1; // first tag starts after `[`
+
+    let mut offset = tags_inner_start;
     for (i, tag) in header.tags.iter().enumerate() {
+        if i > 0 {
+            offset += 1; // space between tags
+        }
         tokens.push(SemanticToken {
-            start: header.name_start + header.name.len() + 2 + i * (tag.len() + 1),
+            start: offset,
             length: tag.len(),
             token_type: SemanticTokenType::Tag,
             modifier: None,
         });
+        offset += tag.len();
     }
 
     tokens

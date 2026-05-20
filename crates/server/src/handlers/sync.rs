@@ -177,6 +177,79 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Update broken-link flags on all edges after surgery
     inner.workspace.graph.recheck_broken_links();
 
+    // Re-add upstream lifecycle edges for special passages after surgery.
+    // graph_surgery() strips implicit edges during incremental update,
+    // so we must re-establish the upstream chain from the format plugin's
+    // definitions.
+    //
+    // Graph isolation: we only add edges among special passages
+    // (TwineCore ScriptInjection → StoryFormat Startup) and the single
+    // bridge edge (Startup → Start passage). No edges from special
+    // passages to other user-defined passages.
+
+    // Extract start passage name before mutable borrow of graph
+    let start_passage_name: String = inner.workspace.metadata
+        .as_ref()
+        .map(|m| m.start_passage.clone())
+        .unwrap_or_else(|| "Start".into());
+
+    {
+        let special_defs = inner.format_registry.get(&format)
+            .map(|p| p.all_special_passages())
+            .unwrap_or_default();
+
+        let graph = &mut inner.workspace.graph;
+
+        // Collect special passages that exist in the graph
+        let mut twine_core_script: Vec<String> = Vec::new();
+        let mut story_format_startup: Vec<String> = Vec::new();
+
+        for def in &special_defs {
+            if !graph.contains_passage(&def.name) { continue; }
+            match (&def.layer, &def.behavior) {
+                (knot_core::passage::SpecialPassageLayer::TwineCore, knot_core::passage::SpecialPassageBehavior::ScriptInjection)
+                | (knot_core::passage::SpecialPassageLayer::LegacyCore, knot_core::passage::SpecialPassageBehavior::ScriptInjection) => {
+                    twine_core_script.push(def.name.clone());
+                }
+                (knot_core::passage::SpecialPassageLayer::StoryFormat, knot_core::passage::SpecialPassageBehavior::Startup) => {
+                    story_format_startup.push(def.name.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Upstream edge: TwineCore/LegacyCore ScriptInjection → StoryFormat Startup
+        for script_name in &twine_core_script {
+            for startup_name in &story_format_startup {
+                let exists = graph.outgoing_neighbors(script_name).iter().any(|n| n == startup_name);
+                if !exists {
+                    graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
+                        display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
+                        is_broken: false,
+                        is_upstream: true,
+                    });
+                }
+            }
+        }
+
+        // Bridge edge: StoryFormat Startup → Start passage
+        // This is the single edge from the special chain into the user-defined
+        // graph, representing the moment the engine begins normal navigation.
+        if !story_format_startup.is_empty() {
+            if graph.contains_passage(&start_passage_name) {
+                let bridge_source = story_format_startup.first().unwrap();
+                let exists = graph.outgoing_neighbors(bridge_source).iter().any(|n| *n == start_passage_name);
+                if !exists {
+                    graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
+                        display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
+                        is_broken: false,
+                        is_upstream: true,
+                    });
+                }
+            }
+        }
+    }
+
     let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     tracing::debug!(
         file = %uri,

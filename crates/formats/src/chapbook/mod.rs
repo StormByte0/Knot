@@ -23,7 +23,8 @@
 //! highlighting and completion.
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, StoryFormat, VarKind, VarOp,
+    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use url::Url;
@@ -721,25 +722,12 @@ impl ChapbookPlugin {
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
             SpecialPassageDef {
-                name: "StoryTitle".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
-                name: "StoryData".into(),
-                behavior: SpecialPassageBehavior::Metadata,
-                contributes_variables: false,
-                participates_in_graph: false,
-                execution_priority: None,
-            },
-            SpecialPassageDef {
                 name: "look".into(),
                 behavior: SpecialPassageBehavior::Custom("ChapbookLook".into()),
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: None,
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
@@ -747,6 +735,7 @@ impl ChapbookPlugin {
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
@@ -754,6 +743,7 @@ impl ChapbookPlugin {
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
             },
         ]
     }
@@ -775,8 +765,13 @@ impl FormatPlugin for ChapbookPlugin {
         for (header, body) in &raw_passages {
             let body_offset = header.header_start + header.header_len + 1; // +1 for newline after header
 
-            let special_defs = Self::special_passage_defs();
-            let special_def = special_defs.iter().find(|d| d.name == header.name).cloned();
+            let format_defs = Self::special_passage_defs();
+            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
+                .or_else(|| {
+                    knot_core::passage::twine_core_special_passages().iter()
+                        .chain(knot_core::passage::legacy_core_special_passages().iter())
+                        .find(|d| d.name == header.name).cloned()
+                });
 
             // Also check for tagged header/footer passages
             let special_def = special_def.or_else(|| {
@@ -787,6 +782,7 @@ impl FormatPlugin for ChapbookPlugin {
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(90),
+                        layer: SpecialPassageLayer::StoryFormat,
                     })
                 } else if header.tags.contains(&"footer".to_string()) {
                     Some(SpecialPassageDef {
@@ -795,6 +791,7 @@ impl FormatPlugin for ChapbookPlugin {
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(110),
+                        layer: SpecialPassageLayer::StoryFormat,
                     })
                 } else {
                     None
@@ -839,16 +836,24 @@ impl FormatPlugin for ChapbookPlugin {
             // Build block model from segments
             passage.body = self.build_blocks(body, body_offset, &segments);
 
-            // Semantic tokens for header. Use SpecialPassage type for special passages.
-            let header_type = if special_def.is_some() {
-                SemanticTokenType::SpecialPassage
+            // Semantic tokens for header.
+            // Use distinct token types for `::` prefix vs passage name,
+            // and SpecialPassage variants for special passages.
+            let (prefix_type, name_type) = if special_def.is_some() {
+                (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
             } else {
-                SemanticTokenType::PassageHeader
+                (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
             };
             tokens.push(SemanticToken {
                 start: header.header_start,
                 length: 2,
-                token_type: header_type.clone(),
+                token_type: prefix_type,
+                modifier: None,
+            });
+            tokens.push(SemanticToken {
+                start: header.header_start + 2,
+                length: header.name.len(),
+                token_type: name_type,
                 modifier: None,
             });
 
@@ -876,8 +881,13 @@ impl FormatPlugin for ChapbookPlugin {
     }
 
     fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        let special_defs = Self::special_passage_defs();
-        let special_def = special_defs.iter().find(|d| d.name == passage_name).cloned();
+        let format_defs = Self::special_passage_defs();
+        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
+            .or_else(|| {
+                knot_core::passage::twine_core_special_passages().iter()
+                    .chain(knot_core::passage::legacy_core_special_passages().iter())
+                    .find(|d| d.name == passage_name).cloned()
+            });
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
@@ -1068,6 +1078,13 @@ impl FormatPlugin for ChapbookPlugin {
 
     fn has_block_macros_with_close_tags(&self) -> bool {
         true // Chapbook has [javascript]...[/javascript] etc.
+    }
+
+    fn variable_assignment_snippet(&self, _var_name: &str, _value: &str) -> Option<String> {
+        // Chapbook uses insert() in script passages; inline assignment
+        // is done via [javascript] blocks. This is not straightforward
+        // to express as a one-liner, so we skip this for now.
+        None
     }
 }
 

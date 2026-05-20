@@ -16,7 +16,7 @@ pub(crate) async fn code_action(
     let format = inner.workspace.resolve_format();
     let startup_passage_name = inner.format_registry.get(&format)
         .and_then(|plugin| {
-            plugin.special_passages()
+            plugin.all_special_passages()
                 .into_iter()
                 .find(|def| {
                     def.contributes_variables
@@ -24,7 +24,7 @@ pub(crate) async fn code_action(
                 })
                 .map(|def| def.name)
         })
-        .unwrap_or_else(|| "StoryInit".to_string());
+        .unwrap_or_else(|| "Startup".to_string());
 
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 

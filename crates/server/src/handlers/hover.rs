@@ -89,10 +89,20 @@ pub(crate) async fn hover(
                     knot_core::passage::SpecialPassageBehavior::Startup => "Startup",
                     knot_core::passage::SpecialPassageBehavior::PassageReady => "PassageReady",
                     knot_core::passage::SpecialPassageBehavior::Chrome => "Chrome",
+                    knot_core::passage::SpecialPassageBehavior::ChromeInterceptor => "Chrome Interceptor",
+                    knot_core::passage::SpecialPassageBehavior::StructureTemplate => "Structure Template",
                     knot_core::passage::SpecialPassageBehavior::Metadata => "Metadata",
+                    knot_core::passage::SpecialPassageBehavior::ScriptInjection => "Script Injection",
+                    knot_core::passage::SpecialPassageBehavior::StyleInjection => "Style Injection",
                     knot_core::passage::SpecialPassageBehavior::Custom(s) => s,
                 };
-                format!("\n**Special passage** — {}", behavior)
+                let layer = match &def.layer {
+                    knot_core::passage::SpecialPassageLayer::TwineCore => " (Twine Core)",
+                    knot_core::passage::SpecialPassageLayer::LegacyCore => " (Legacy Core)",
+                    knot_core::passage::SpecialPassageLayer::StoryFormat => "",
+                    knot_core::passage::SpecialPassageLayer::UserDefined => " (User Defined)",
+                };
+                format!("\n**Special passage** — {}{}", behavior, layer)
             } else {
                 "\n**Special passage**".to_string()
             }
@@ -110,12 +120,19 @@ pub(crate) async fn hover(
             "**{}**{}\n\nLinks: {} | Variables: {} | Tags: {} | Incoming: {}",
             passage.name, special_info, links_count, vars_count, tags, incoming_detail
         );
+
+        // Compute an explicit hover range covering the full passage name.
+        // This is critical for passage names with spaces (e.g., "My Passage")
+        // because VS Code's default word-boundary detection splits on whitespace,
+        // causing the hover to appear for only the first word.
+        let hover_range = compute_passage_header_range(text, position);
+
         return Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value: hover_text,
             }),
-            range: None,
+            range: hover_range,
         }));
     }
 
@@ -498,4 +515,51 @@ fn try_link_hover(
         }
     }
     None
+}
+
+/// Compute the hover range for a passage header at the given position.
+///
+/// The range covers the full passage name (including spaces) from `::` to
+/// the end of the name, so that hovering over `:: My Passage Name` shows
+/// the hover popup for the entire name, not just the first word.
+///
+/// Returns `None` if the position is not on a `::` header line.
+fn compute_passage_header_range(text: &str, position: Position) -> Option<Range> {
+    let line_text = text.lines().nth(position.line as usize)?;
+
+    if !line_text.starts_with("::") {
+        return None;
+    }
+
+    // Parse the passage name from the header, accounting for whitespace
+    // between `::` and the name.
+    let after_colons = &line_text[2..];
+    let whitespace_len = after_colons.len() - after_colons.trim_start().len();
+    let rest = after_colons.trim_start();
+
+    // The name extends to the `[` bracket (for tags) or `{` (for metadata)
+    // or the end of the line.
+    let name_end = rest.find('[')
+        .or_else(|| rest.rfind('{'))
+        .unwrap_or(rest.len());
+    let name_text = rest[..name_end].trim_end();
+
+    // Compute the byte offset where the name starts and ends.
+    let name_byte_start = 2 + whitespace_len;
+    let name_byte_end = name_byte_start + name_text.len();
+
+    // Convert to UTF-16 for LSP.
+    let utf16_start = helpers::utf16_len_up_to(line_text, name_byte_start);
+    let utf16_end = helpers::utf16_len_up_to(line_text, name_byte_end);
+
+    Some(Range {
+        start: Position {
+            line: position.line,
+            character: utf16_start,
+        },
+        end: Position {
+            line: position.line,
+            character: utf16_end,
+        },
+    })
 }

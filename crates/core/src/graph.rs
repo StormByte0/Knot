@@ -8,7 +8,7 @@
 //! - Unreachable passage detection (BFS from entry point)
 //! - Variable flow analysis support
 
-use crate::passage::{VarKind, VarOp};
+use crate::passage::{SpecialPassageLayer, VarKind, VarOp};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -31,6 +31,20 @@ pub struct PassageNode {
     /// should be excluded from reachability analysis and graph exports.
     #[serde(default)]
     pub is_placeholder: bool,
+    /// The ownership layer of this passage, if it is a special passage.
+    ///
+    /// This enables graph isolation: special passages (TwineCore, LegacyCore,
+    /// StoryFormat) form their own upstream chain separate from user-defined
+    /// passages. The graph analysis uses this to:
+    ///
+    /// - Skip special passages in reachability/orphan analysis
+    /// - Build the upstream chain: TwineCore → StoryFormat (no edges to
+    ///   user-defined passages)
+    /// - Distinguish edge types in the story map visualization
+    ///
+    /// Returns `None` for regular (non-special) user-defined passages.
+    #[serde(default)]
+    pub layer: Option<SpecialPassageLayer>,
 }
 
 /// Edge data representing a link between passages.
@@ -40,6 +54,18 @@ pub struct PassageEdge {
     pub display_text: Option<String>,
     /// Whether this link is a broken link (target doesn't exist).
     pub is_broken: bool,
+    /// Whether this is an upstream lifecycle edge rather than a navigation edge.
+    ///
+    /// Upstream edges connect special passages in execution order
+    /// (TwineCore → StoryFormat) and are not user-navigable links.
+    /// They indicate that the source passage runs before the target
+    /// in the engine's lifecycle (e.g., StoryInit → Start means
+    /// StoryInit's variables are available when Start runs).
+    ///
+    /// The story map can render these differently (e.g., dashed lines)
+    /// to distinguish them from normal [[link]] navigation.
+    #[serde(default)]
+    pub is_upstream: bool,
 }
 
 /// Diagnostic produced by graph analysis.
@@ -203,6 +229,7 @@ impl PassageGraph {
                 is_special: false,
                 is_metadata: false,
                 is_placeholder: true,
+                layer: None,
             };
             let idx = self.graph.add_node(node.clone());
             self.name_to_idx.insert(node.name, idx);
@@ -243,13 +270,54 @@ impl PassageGraph {
 
     /// Detect unreachable passages using BFS from the start passage.
     /// Returns diagnostics for passages that cannot be reached.
+    ///
+    /// ## Special Passage Reachability
+    ///
+    /// Special passages themselves are always considered reachable (they're
+    /// invoked by the engine at specific lifecycle points). However, they
+    /// may contain explicit references to user-defined passages (e.g.,
+    /// `data-passage` in StoryInterface, `Engine.play()` in Story JavaScript,
+    /// `<<goto>>` in StoryInit). These referenced passages must be considered
+    /// reachable too, since the engine will navigate to them.
+    ///
+    /// To handle this, the BFS starts from the start passage AND from all
+    /// special passages that have `participates_in_graph: true` or that
+    /// are in the upstream chain (ScriptInjection, Startup). Passages
+    /// reachable from any of these entry points are considered reachable.
     pub fn detect_unreachable(&self, start_passage: &str) -> Vec<GraphDiagnostic> {
         let mut reachable = HashSet::new();
         let mut queue = VecDeque::new();
 
+        // Seed BFS from the start passage
         if let Some(&start_idx) = self.name_to_idx.get(start_passage) {
             reachable.insert(start_idx);
             queue.push_back(start_idx);
+        }
+
+        // Also seed BFS from special passages that have outgoing edges
+        // to user-defined passages. These passages are always invoked by
+        // the engine, so any passage they reference is reachable.
+        //
+        // This handles:
+        // - StoryInterface with data-passage="SidebarStats"
+        // - Story JavaScript with Engine.play("Forest")
+        // - StoryInit with <<goto "Somewhere">>
+        // - PassageHeader/PassageFooter with data-passage refs
+        for idx in self.graph.node_indices() {
+            let node = &self.graph[idx];
+            if node.is_special && !node.is_metadata && !node.is_placeholder {
+                // Check if this special passage has any outgoing edges
+                // to non-special passages
+                let has_user_refs = self
+                    .graph
+                    .neighbors_directed(idx, petgraph::Direction::Outgoing)
+                    .any(|neighbor| !self.graph[neighbor].is_special);
+                if has_user_refs {
+                    if reachable.insert(idx) {
+                        queue.push_back(idx);
+                    }
+                }
+            }
         }
 
         while let Some(current) = queue.pop_front() {
@@ -262,10 +330,6 @@ impl PassageGraph {
                 }
             }
         }
-
-        // Also mark passages reached through special passages that contribute_variables
-        // (e.g., StoryInit may set variables but isn't linked to directly)
-        // For now, metadata passages are excluded from reachability analysis.
 
         let mut diagnostics = Vec::new();
         for idx in self.graph.node_indices() {
@@ -427,6 +491,7 @@ impl PassageGraph {
                     target: target.name.clone(),
                     is_broken: e.weight().is_broken,
                     display_text: e.weight().display_text.clone(),
+                    is_upstream: e.weight().is_upstream,
                 }
             })
             .collect();
@@ -576,4 +641,7 @@ pub struct GraphEdgeExport {
     pub target: String,
     pub is_broken: bool,
     pub display_text: Option<String>,
+    /// Whether this is an upstream lifecycle edge (not a user-navigable link).
+    #[serde(default)]
+    pub is_upstream: bool,
 }
