@@ -124,29 +124,35 @@ pub enum Block {
 /// Special passages come from different sources and must be tracked
 /// separately to maintain format isolation:
 ///
-/// - **TwineCore**: Editor/compiler constructs that exist regardless of the
-///   story format (StoryTitle, StoryData, StoryJavaScript, StoryStylesheet).
-///   These are defined by the Twine 2 specification, not by any format engine.
+/// - **TwineCore**: Compiler constructs defined by the Twee 3 specification
+///   that exist regardless of the story format. Includes both name-matched
+///   passages (StoryTitle, StoryData, Start) and tag-matched passages
+///   (`script`, `stylesheet`). These are format-agnostic.
 ///
 /// - **LegacyCore**: Twine 1 passage names that predate the format system
-///   ("stylesheet", "script"). Recognized for import/migration compatibility.
+///   ("stylesheet", "script" as passage NAMES, not tags). Recognized for
+///   import/migration compatibility only.
 ///
-/// - **StoryFormat**: Format-specific special passages defined by the active
-///   format plugin (e.g., SugarCube's StoryInit, Harlowe's tagged headers).
-///   These are the format plugin's responsibility — the core never hardcodes
-///   format-specific passage names.
+/// - **StoryFormat**: Format-specific special passages and tags defined by
+///   the active format plugin. SugarCube registers name-matched code passages
+///   (StoryInit, PassageHeader) and tag-matched code tags (init, widget, nobr).
+///   Harlowe registers tag-matched passages (header, footer, startup).
+///   The core never hardcodes format-specific names or tags.
 ///
 /// - **UserDefined**: User-created special passages (reserved for future use).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpecialPassageLayer {
-    /// Twine 2 editor/compiler constructs (StoryTitle, StoryData,
-    /// StoryJavaScript, StoryStylesheet). Format-agnostic.
+    /// Twee 3 specification / Twine compiler constructs.
+    /// Name-matched: StoryTitle, StoryData, Start.
+    /// Tag-matched: script, stylesheet.
+    /// Format-agnostic — every story format must handle these.
     TwineCore,
-    /// Twine 1 legacy passage names ("stylesheet", "script").
-    /// Recognized for import/migration compatibility.
+    /// Twine 1 legacy passage names ("stylesheet", "script" as NAMES).
+    /// Recognized for import/migration compatibility only.
     LegacyCore,
-    /// Format-specific special passages (StoryInit, PassageHeader, etc.).
-    /// Defined by the active format plugin.
+    /// Format-specific special passages and tags (StoryInit, PassageHeader,
+    /// [init], [widget], [nobr] for SugarCube; [header], [footer], [startup]
+    /// for Harlowe). Defined by the active format plugin.
     StoryFormat,
     /// User-defined special passages (not yet implemented).
     UserDefined,
@@ -232,16 +238,70 @@ pub enum SpecialPassageBehavior {
     Custom(String),
 }
 
+/// How a special passage definition is matched against actual passages.
+///
+/// The Twee 3 specification distinguishes two matching strategies:
+///
+/// - **Name-matched**: The passage NAME must exactly match (e.g., "StoryTitle",
+///   "StoryData", "StoryInit", "PassageHeader"). These are singleton passages —
+///   only one passage with a given name can exist in a story.
+///
+/// - **Tag-matched**: The passage TAG must match (e.g., `[script]`, `[stylesheet]`,
+///   `[init]`, `[widget]`, `[header]`). Multiple passages can share the same tag,
+///   and the passage name can be anything. Tweego compiles them in alphabetical
+///   order by passage name.
+///
+/// This distinction is critical for format isolation: SugarCube matches
+/// PassageHeader by NAME, while Harlowe matches [header] by TAG. Both achieve
+/// the same functional result (content prepended to every passage) but through
+/// different mechanisms. The classification system must handle both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatchStrategy {
+    /// Match by exact passage name (case-sensitive for SugarCube).
+    /// Examples: StoryTitle, StoryData, StoryInit, PassageHeader.
+    Name,
+    /// Match by passage tag (case-insensitive, per Twee 3 spec).
+    /// Examples: script, stylesheet, init, widget, header, footer.
+    /// Multiple passages can match the same tag.
+    Tag,
+}
+
+impl Default for MatchStrategy {
+    fn default() -> Self {
+        MatchStrategy::Name
+    }
+}
+
 /// Definition of a special passage.
 ///
 /// Special passages have different ownership layers (TwineCore, LegacyCore,
-/// StoryFormat, UserDefined) that determine where they are defined and how
-/// they are handled by the LSP server. See [`SpecialPassageLayer`] for
-/// the full taxonomy.
+/// StoryFormat, UserDefined) and different matching strategies (Name vs Tag)
+/// that determine how they are identified in source files.
+///
+/// ## Matching Strategy
+///
+/// - `MatchStrategy::Name`: The `name` field is the canonical passage name
+///   that must appear in the passage header (e.g., `:: StoryInit`).
+///
+/// - `MatchStrategy::Tag`: The `name` field is the canonical TAG name
+///   that must appear in the passage's tag block (e.g., `:: MyJS [script]`).
+///   The passage name is user-defined and irrelevant for matching.
+///
+/// ## Workspace Scaffolding
+///
+/// The `scaffold` field provides metadata for the "Create Workspace" command,
+/// allowing the LSP to generate default project skeletons with the correct
+/// passage structure for each story format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecialPassageDef {
-    /// The canonical passage name (e.g., "StoryInit", "StoryTitle").
+    /// The canonical name for matching.
+    ///
+    /// - For `MatchStrategy::Name`: the passage name (e.g., "StoryInit").
+    /// - For `MatchStrategy::Tag`: the tag name (e.g., "script").
     pub name: String,
+    /// How this definition is matched against actual passages.
+    #[serde(default)]
+    pub match_strategy: MatchStrategy,
     /// The behavior of this special passage.
     pub behavior: SpecialPassageBehavior,
     /// Whether this passage contributes variables to the state.
@@ -258,6 +318,43 @@ pub struct SpecialPassageDef {
     /// into format plugin definitions, and vice versa.
     #[serde(default)]
     pub layer: SpecialPassageLayer,
+    /// Workspace scaffolding metadata.
+    ///
+    /// When present, this definition can be used by the "Create Workspace"
+    /// command to generate a default project skeleton. The scaffold provides
+    /// the file path convention, default passage name, and initial content.
+    #[serde(default)]
+    pub scaffold: Option<ScaffoldInfo>,
+}
+
+/// Workspace scaffolding metadata for a special passage definition.
+///
+/// This allows the "Create Workspace" command to generate default project
+/// files for each special passage, producing a skeleton like:
+///
+/// ```text
+/// project/
+/// ├── story/
+/// │   ├── _core_special_passages.twee   (StoryTitle, StoryData)
+/// │   ├── _format_special_passages.twee (StoryInit, PassageHeader, etc.)
+/// │   ├── script.twee                   (:: Script [script])
+/// │   ├── style.twee                    (:: Style [stylesheet])
+/// │   └── Start.twee                    (:: Start)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScaffoldInfo {
+    /// Suggested file name for this passage in a new project.
+    /// This is a suggestion — users can organize files however they like.
+    /// Example: "script.twee", "style.twee", "_core_special_passages.twee"
+    pub file_name: String,
+    /// Default passage name to use in the scaffold.
+    /// For Name-matched passages, this equals the passage name (e.g., "StoryInit").
+    /// For Tag-matched passages, this is a suggested name (e.g., "Script" for [script]).
+    pub default_passage_name: String,
+    /// Default content for the passage body.
+    /// An empty string means the passage body is left empty for the user.
+    #[serde(default)]
+    pub default_content: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -266,9 +363,9 @@ pub struct SpecialPassageDef {
 
 /// Returns the Twine-core special passage definitions.
 ///
-/// These are format-agnostic constructs defined by the Twine 2
-/// editor/compiler, not by any story format engine. Every story format
-/// must handle these passages — they are not optional.
+/// These are format-agnostic constructs defined by the Twee 3 specification
+/// and the Twine 2 compiler, not by any story format engine. Every story
+/// format must handle these passages — they are not optional.
 ///
 /// ## Format Isolation
 ///
@@ -278,71 +375,117 @@ pub struct SpecialPassageDef {
 /// registry. This ensures that:
 ///
 /// 1. Twine-core passages are always recognized regardless of format.
-/// 2. Format plugins don't duplicate or misinterpret editor constructs.
+/// 2. Format plugins don't duplicate or misinterpret compiler constructs.
 /// 3. Diagnostics and graph edges for core passages are consistent.
 ///
-/// ## Story JavaScript vs Story Stylesheet
+/// ## Matching Strategy
 ///
-/// "Story JavaScript" and "Story Stylesheet" are Twine 2 editor concepts.
-/// In the compiled HTML, they become `<script>` and `<style>` children
-/// of `<tw-storydata>`, not named passages in any format's passage store.
-/// SugarCube loads them internally as `tw-user-script-0` and
-/// `tw-user-style-0` — they never appear as passage names in the engine.
+/// Core passages use BOTH matching strategies per the Twee 3 spec:
 ///
-/// However, in Twee source files, script/stylesheet passages ARE
-/// identified by their **tags** (`[script]` or `[stylesheet]`), not by
-/// their passage name. The passage name can be anything (e.g.,
-/// `:: MyScript[script]` works fine).
+/// - **Name-matched** (`MatchStrategy::Name`): `StoryTitle`, `StoryData`,
+///   `Start`. These are singleton passages — only one passage with each
+///   name can exist in a story.
 ///
-/// We include them here as TwineCore special passages because:
-/// - The LSP needs to recognize and highlight them.
-/// - Story JavaScript can contribute variables (SugarCube's `State.variables`,
-///   Harlowe's `State.variables`, etc. are all accessible from JS).
-/// - Graph analysis needs to know they exist at startup.
+/// - **Tag-matched** (`MatchStrategy::Tag`): `script`, `stylesheet`.
+///   Multiple passages can share these tags, and the passage name can be
+///   anything. Tweego compiles them in alphabetical order by passage name.
+///
+/// ## Script & Stylesheet Passages
+///
+/// In the Twee 3 specification, `script` and `stylesheet` are defined as
+/// **special tags**, not special passage names. Any passage tagged
+/// `[script]` contains JavaScript; any passage tagged `[stylesheet]`
+/// contains CSS. The passage name is user-defined and irrelevant for
+/// matching. This is the canonical mechanism in Tweego-based workflows.
+///
+/// In the compiled HTML, script/stylesheet passages become `<script>` and
+/// `<style>` children of `<tw-storydata>`, not named passages in any
+/// format's passage store. SugarCube loads them as `tw-user-script-0`
+/// and `tw-user-style-0`.
 pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
     vec![
-        // ── Metadata passages ────────────────────────────────────────────
+        // ── Name-matched metadata passages ──────────────────────────────
         SpecialPassageDef {
             name: "StoryTitle".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Metadata,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
             layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "_core_special_passages.twee".into(),
+                default_passage_name: "StoryTitle".into(),
+                default_content: String::new(),
+            }),
         },
         SpecialPassageDef {
             name: "StoryData".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Metadata,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
             layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "_core_special_passages.twee".into(),
+                default_passage_name: "StoryData".into(),
+                default_content: r#"{
+    "ifid": "",
+    "format": "SugarCube",
+    "format-version": "2.36.0",
+    "start": "Start"
+}"#.into(),
+            }),
+        },
+        SpecialPassageDef {
+            name: "Start".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::Custom("Start".into()),
+            contributes_variables: false,
+            participates_in_graph: true,
+            execution_priority: Some(1000),
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "Start.twee".into(),
+                default_passage_name: "Start".into(),
+                default_content: String::new(),
+            }),
         },
 
-        // ── Script injection ──────────────────────────────────────────────
-        // Story JavaScript is a Twine 2 editor concept. In Twee files, it's
-        // identified by the [script] tag, not the passage name. We include
-        // it here so the LSP can recognize tagged script passages as special
-        // and know they contribute variables to the story state.
+        // ── Tag-matched code passages ──────────────────────────────────────
+        // The Twee 3 spec defines "script" and "stylesheet" as SPECIAL TAGS,
+        // not special passage names. Any passage with [script] contains JS;
+        // any passage with [stylesheet] contains CSS. The passage name is
+        // user-defined and can be anything. Multiple passages can share the
+        // same tag. Tweego compiles them in alphabetical order by name.
         SpecialPassageDef {
-            name: "Story JavaScript".into(),
+            name: "script".into(),
+            match_strategy: MatchStrategy::Tag,
             behavior: SpecialPassageBehavior::ScriptInjection,
             contributes_variables: true,
             participates_in_graph: false,
             execution_priority: Some(-1), // Runs before StoryInit
             layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "script.twee".into(),
+                default_passage_name: "Script".into(),
+                default_content: String::new(),
+            }),
         },
-
-        // ── Style injection ───────────────────────────────────────────────
-        // Story Stylesheet is a Twine 2 editor concept. In Twee files, it's
-        // identified by the [stylesheet] tag, not the passage name.
         SpecialPassageDef {
-            name: "Story Stylesheet".into(),
+            name: "stylesheet".into(),
+            match_strategy: MatchStrategy::Tag,
             behavior: SpecialPassageBehavior::StyleInjection,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
             layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "style.twee".into(),
+                default_passage_name: "Style".into(),
+                default_content: String::new(),
+            }),
         },
     ]
 }
@@ -352,25 +495,34 @@ pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
 /// These predate the Twine 2 format system. They are recognized for
 /// import/migration compatibility (Twee imports, Twine archives, Tweego
 /// conversions). In Twine 1, "stylesheet" and "script" were passage
-/// NAMES (not tags), which is why they appear here as name-based
-/// definitions rather than tag-based detection.
+/// NAMES (not tags), which is why they appear here as Name-matched
+/// definitions rather than Tag-matched.
+///
+/// **Note**: These are Name-matched because in Twine 1, the passage was
+/// literally named "script" or "stylesheet". This differs from Twee 3,
+/// where `[script]` and `[stylesheet]` are tags. Both mechanisms are
+/// supported — the LSP checks both Name and Tag matching.
 pub fn legacy_core_special_passages() -> Vec<SpecialPassageDef> {
     vec![
         SpecialPassageDef {
             name: "stylesheet".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::StyleInjection,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
             layer: SpecialPassageLayer::LegacyCore,
+            scaffold: None,
         },
         SpecialPassageDef {
             name: "script".into(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::ScriptInjection,
             contributes_variables: true,
             participates_in_graph: false,
             execution_priority: Some(-1),
             layer: SpecialPassageLayer::LegacyCore,
+            scaffold: None,
         },
     ]
 }

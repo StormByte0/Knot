@@ -23,7 +23,7 @@
 //! highlighting and completion.
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
     StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
@@ -723,27 +723,33 @@ impl ChapbookPlugin {
         vec![
             SpecialPassageDef {
                 name: "look".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Custom("ChapbookLook".into()),
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: None,
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Chrome,
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(90),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Chrome,
                 contributes_variables: false,
                 participates_in_graph: false,
                 execution_priority: Some(110),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
         ]
     }
@@ -778,20 +784,24 @@ impl FormatPlugin for ChapbookPlugin {
                 if header.tags.contains(&"header".to_string()) {
                     Some(SpecialPassageDef {
                         name: header.name.clone(),
+                        match_strategy: MatchStrategy::Name,
                         behavior: SpecialPassageBehavior::Chrome,
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(90),
                         layer: SpecialPassageLayer::StoryFormat,
+                        scaffold: None,
                     })
                 } else if header.tags.contains(&"footer".to_string()) {
                     Some(SpecialPassageDef {
                         name: header.name.clone(),
+                        match_strategy: MatchStrategy::Name,
                         behavior: SpecialPassageBehavior::Chrome,
                         contributes_variables: false,
                         participates_in_graph: false,
                         execution_priority: Some(110),
                         layer: SpecialPassageLayer::StoryFormat,
+                        scaffold: None,
                     })
                 } else {
                     None

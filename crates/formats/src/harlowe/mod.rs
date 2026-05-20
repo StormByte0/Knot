@@ -14,7 +14,7 @@
 //! - Complete special passage registry including tagged header/footer
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
     StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
@@ -1102,43 +1102,53 @@ impl HarlowePlugin {
         vec![
             SpecialPassageDef {
                 name: "startup".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::Startup,
                 contributes_variables: true,
                 participates_in_graph: false,
                 execution_priority: Some(0),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "header".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::ChromeInterceptor,
                 contributes_variables: true,
                 participates_in_graph: true,
                 execution_priority: Some(90),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "footer".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::ChromeInterceptor,
                 contributes_variables: true,
                 participates_in_graph: true,
                 execution_priority: Some(110),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::ChromeInterceptor,
                 contributes_variables: true,
                 participates_in_graph: true,
                 execution_priority: Some(91),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
             SpecialPassageDef {
                 name: "PassageFooter".into(),
+                match_strategy: MatchStrategy::Name,
                 behavior: SpecialPassageBehavior::ChromeInterceptor,
                 contributes_variables: true,
                 participates_in_graph: true,
                 execution_priority: Some(111),
                 layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
             },
         ]
     }
@@ -1204,11 +1214,13 @@ impl FormatPlugin for HarlowePlugin {
                         };
                         SpecialPassageDef {
                             name: header.name.clone(),
+                            match_strategy: MatchStrategy::Name,
                             behavior,
                             contributes_variables: is_startup,
                             participates_in_graph: false,
                             execution_priority: priority,
                             layer: SpecialPassageLayer::StoryFormat,
+                            scaffold: None,
                         }
                     })
                 });

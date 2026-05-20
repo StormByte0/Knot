@@ -142,6 +142,15 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
         }
 
         let target = caps.get(1).unwrap().as_str().trim().to_string();
+
+        // Filter: skip targets containing "::" — this is JavaScript
+        // namespace accessor syntax (e.g., Use::Operation), not a Twine
+        // passage name. The "::" prefix is used for passage headers in
+        // Twee format but never appears inside passage link targets.
+        if target.contains("::") {
+            continue;
+        }
+
         links.push(Link {
             display_text: None,
             target,

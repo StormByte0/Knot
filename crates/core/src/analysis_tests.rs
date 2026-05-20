@@ -7,7 +7,7 @@
 mod tests {
     use crate::graph::{DiagnosticKind, PassageEdge, PassageGraph, PassageNode};
     use crate::passage::{
-        Link, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer, StoryFormat,
+        Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer, StoryFormat,
         VarKind, VarOp,
     };
     use crate::document::Document;
@@ -56,11 +56,13 @@ mod tests {
         p.is_special = true;
         p.special_def = Some(SpecialPassageDef {
             name: "StoryData".to_string(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Metadata,
             contributes_variables: false,
             participates_in_graph: false,
             execution_priority: None,
             layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
         });
         p
     }
@@ -891,11 +893,13 @@ mod tests {
         p.is_special = true;
         p.special_def = Some(SpecialPassageDef {
             name: "StoryInit".to_string(),
+            match_strategy: MatchStrategy::Name,
             behavior: SpecialPassageBehavior::Startup,
             contributes_variables: true,
             participates_in_graph: false,
             execution_priority: Some(0),
             layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
         });
         p.vars = vec![
             VarOp {
