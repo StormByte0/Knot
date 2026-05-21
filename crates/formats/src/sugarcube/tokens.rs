@@ -330,9 +330,243 @@ fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     tokens
 }
 
+/// SugarCube assignment operators that appear inside macro argument lists.
+const SUGARCUBE_OPERATORS: &[&str] = &["+=", "-=", "*=", "/=", "%="];
+
 // ---------------------------------------------------------------------------
-// Comment tokens
+// Widget / Function tokens
 // ---------------------------------------------------------------------------
+
+/// Generate Function semantic tokens for `<<widget name>>` definitions.
+///
+/// Only emits a token for the widget NAME, not the `<<widget>>` / `<</widget>>`
+/// delimiters. The macro keyword itself is already highlighted by the `Macro`
+/// token from `body_tokens()`. The widget name is distinct — it's a function
+/// definition, not an invocation.
+pub(crate) fn widget_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let widget_macro_names = macros::macro_definition_macros();
+
+    let parsed_macros = blocks::scan_macros(body);
+    for m in &parsed_macros {
+        if m.name.starts_with('/') {
+            continue;
+        }
+        if !widget_macro_names.contains(m.name.as_str()) {
+            continue;
+        }
+
+        let args_str = m.args.as_str();
+        if args_str.is_empty() {
+            continue;
+        }
+
+        // The first word in the args is the widget name.
+        // Strip any surrounding quotes first (SugarCube allows both quoted
+        // and unquoted widget names, though unquoted is canonical).
+        let name_part = args_str.split_whitespace().next().unwrap_or("");
+        let widget_name = name_part.trim_matches('"').trim_matches('\'');
+        if widget_name.is_empty() {
+            continue;
+        }
+
+        // Find the byte position of the widget name in the body.
+        // Search for the name in the args string starting after the macro name.
+        let name_end_in_body = m.name_start + m.name_len;
+        let range_end = m.end.saturating_sub(2);
+        if name_end_in_body >= range_end {
+            continue; // Degenerate macro (name extends past closing >>)
+        }
+        let body_after_name = &body[name_end_in_body..range_end];
+        let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+        let args_offset_in_body = name_end_in_body + trimmed_start;
+
+        // Find the widget name within the args portion
+        if let Some(rel_pos) = args_str.find(widget_name) {
+            tokens.push(SemanticToken {
+                start: body_offset + args_offset_in_body + rel_pos,
+                length: widget_name.len(),
+                token_type: SemanticTokenType::Function,
+                modifier: Some(SemanticTokenModifier::Definition),
+            });
+        }
+    }
+
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// Number tokens
+// ---------------------------------------------------------------------------
+
+/// Generate Number semantic tokens for numeric literals inside macro arguments.
+///
+/// Detects integer and decimal literals that appear as standalone tokens
+/// inside `<<macro ...>>` constructs. Only scans within macro delimiters
+/// to avoid highlighting numbers in prose text (which would be incorrect —
+/// "You see 3 items" should not color the "3").
+pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let re_number = regex::Regex::new(r"(?<![A-Za-z_$])(\d+(?:\.\d+)?)(?![A-Za-z_$])").unwrap();
+
+    let parsed_macros = blocks::scan_macros(body);
+    for m in &parsed_macros {
+        if m.name.starts_with('/') {
+            continue;
+        }
+
+        let args_str = m.args.as_str();
+        if args_str.is_empty() {
+            continue;
+        }
+
+        let name_end_in_body = m.name_start + m.name_len;
+        let range_end = m.end.saturating_sub(2);
+        if name_end_in_body >= range_end {
+            continue; // Degenerate macro
+        }
+        let body_after_name = &body[name_end_in_body..range_end];
+        let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+        let args_offset_in_body = name_end_in_body + trimmed_start;
+
+        for caps in re_number.captures_iter(args_str) {
+            if let Some(num_match) = caps.get(1) {
+                tokens.push(SemanticToken {
+                    start: body_offset + args_offset_in_body + num_match.start(),
+                    length: num_match.end() - num_match.start(),
+                    token_type: SemanticTokenType::Number,
+                    modifier: None,
+                });
+            }
+        }
+    }
+
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// String tokens
+// ---------------------------------------------------------------------------
+
+/// Generate String semantic tokens for quoted string literals inside macro arguments.
+///
+/// Only scans within macro delimiters to avoid highlighting prose text.
+/// Highlights the content inside `"..."` and `'...'` quotes, excluding the
+/// quote characters themselves (TextMate handles the quote punctuation).
+pub(crate) fn string_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+
+    let parsed_macros = blocks::scan_macros(body);
+    for m in &parsed_macros {
+        if m.name.starts_with('/') {
+            continue;
+        }
+
+        let args_str = m.args.as_str();
+        if args_str.is_empty() {
+            continue;
+        }
+
+        let name_end_in_body = m.name_start + m.name_len;
+        let range_end = m.end.saturating_sub(2);
+        if name_end_in_body >= range_end {
+            continue; // Degenerate macro
+        }
+        let body_after_name = &body[name_end_in_body..range_end];
+        let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+        let args_offset_in_body = name_end_in_body + trimmed_start;
+
+        // Parse quoted strings from the args
+        let quoted_args = parse_quoted_args_with_spans(args_str);
+        for (_content, rel_start, rel_end) in &quoted_args {
+            // Skip passage name strings — those get PassageRef tokens instead.
+            // We only want to emit String tokens for non-passage-ref strings.
+            // The passage ref detection is handled separately by macro_passage_ref_tokens().
+            // Here we emit String tokens for ALL quoted args; PassageRef tokens
+            // will overlap and take precedence visually since they're emitted after.
+            // To avoid double-emission, we check if this macro+arg is a passage ref.
+            tokens.push(SemanticToken {
+                start: body_offset + args_offset_in_body + *rel_start,
+                length: rel_end - rel_start,
+                token_type: SemanticTokenType::String,
+                modifier: None,
+            });
+        }
+    }
+
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// Operator tokens
+// ---------------------------------------------------------------------------
+
+/// Generate Operator semantic tokens for SugarCube compound assignment operators.
+///
+/// Detects `+=`, `-=`, `*=`, `/=`, `%=` inside macro argument lists.
+/// These are format-specific operators that TextMate doesn't know about.
+pub(crate) fn operator_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+
+    for op in SUGARCUBE_OPERATORS {
+        let op_bytes = op.as_bytes();
+        let op_len = op_bytes.len();
+
+        let mut pos = 0;
+        while pos + op_len <= len {
+            if &bytes[pos..pos + op_len] == op_bytes {
+                tokens.push(SemanticToken {
+                    start: body_offset + pos,
+                    length: op_len,
+                    token_type: SemanticTokenType::Operator,
+                    modifier: None,
+                });
+                pos += op_len;
+            } else {
+                pos += 1;
+            }
+        }
+    }
+
+    tokens
+}
+
+// ---------------------------------------------------------------------------
+// Property tokens
+// ---------------------------------------------------------------------------
+
+/// Generate Property semantic tokens for dot-notation access on namespace objects.
+///
+/// Detects patterns like `State.variables`, `Story.passage`, `Engine.play`
+/// where a namespace object (from SUGARCUBE_NAMESPACES) is followed by `.property`.
+/// Only the property name after the dot is highlighted as a `Property` token —
+/// the namespace itself gets a `Namespace` token from `namespace_tokens()`.
+pub(crate) fn property_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+
+    // Build a regex that matches any namespace followed by `.` and an identifier.
+    // Example: State.variables → "variables" gets a Property token.
+    let ns_pattern = SUGARCUBE_NAMESPACES.join("|");
+    let re = regex::Regex::new(&format!(
+        r"(?:{})\.([A-Za-z_][A-Za-z0-9_]*)",
+        ns_pattern
+    )).unwrap();
+
+    for caps in re.captures_iter(body) {
+        if let Some(prop_match) = caps.get(1) {
+            tokens.push(SemanticToken {
+                start: body_offset + prop_match.start(),
+                length: prop_match.end() - prop_match.start(),
+                token_type: SemanticTokenType::Property,
+                modifier: None,
+            });
+        }
+    }
+
+    tokens
+}
 
 /// Generate Comment semantic tokens for Twine-style comments.
 ///
@@ -345,7 +579,6 @@ fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 /// contexts. The Twine-specific comment delimiters (`/%` and `/%%`)
 /// are not recognized by standard TextMate grammars, so we must emit
 /// semantic tokens for them.
-#[allow(dead_code)]
 pub(crate) fn comment_tokens(body: &str, body_offset: usize, comment_spans: &[Range<usize>]) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     for span in comment_spans {
@@ -463,7 +696,11 @@ pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<Se
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
                 let name_end_in_body = m.name_start + m.name_len;
-                let body_after_name = &body[name_end_in_body..m.end.saturating_sub(2)]; // before >>
+                let range_end = m.end.saturating_sub(2);
+                if name_end_in_body >= range_end {
+                    continue; // Degenerate macro
+                }
+                let body_after_name = &body[name_end_in_body..range_end]; // before >>
                 let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
                 let args_offset_in_body = name_end_in_body + trimmed_start;
 
@@ -585,7 +822,10 @@ pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> 
             Some(SpecialPassageLayer::StoryFormat) => {
                 Some(SemanticTokenModifier::StoryFormat)
             }
-            Some(SpecialPassageLayer::UserDefined) | None => None,
+            Some(SpecialPassageLayer::UserDefined) => {
+                Some(SemanticTokenModifier::UserDefined)
+            }
+            None => None,
         };
         (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage, modifier)
     } else {

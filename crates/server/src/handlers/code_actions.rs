@@ -9,6 +9,13 @@ pub(crate) async fn code_action(
     state: &ServerState,
     params: CodeActionParams,
 ) -> Result<Option<CodeActionResponse>, tower_lsp::jsonrpc::Error> {
+    // Short-circuit if the server is shutting down — the transport stream
+    // may already be destroyed, so any attempt to write a response would
+    // trigger "Cannot call write after a stream was destroyed".
+    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+
     let _uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 

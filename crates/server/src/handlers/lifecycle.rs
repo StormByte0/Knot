@@ -10,6 +10,9 @@ pub(crate) async fn initialize(
 ) -> Result<InitializeResult, tower_lsp::jsonrpc::Error> {
     tracing::info!("initialize");
 
+    // Reset the shutdown guard — we're starting fresh
+    state.shutting_down.store(false, std::sync::atomic::Ordering::SeqCst);
+
     // Update workspace root URI if provided
     if let Some(root_uri) = params.root_uri {
         let mut inner = state.inner.write().await;
@@ -145,6 +148,7 @@ pub(crate) async fn initialize(
                             lsp_types::SemanticTokenModifier::new("controlFlow"), // bit 3
                             lsp_types::SemanticTokenModifier::STATIC,        // bit 4 — TwineCore layer scope
                             lsp_types::SemanticTokenModifier::ASYNC,         // bit 5 — StoryFormat layer scope
+                            lsp_types::SemanticTokenModifier::MODIFICATION,  // bit 6 — UserDefined layer scope
                         ],
                     },
                     range: Some(false),
@@ -207,9 +211,12 @@ pub(crate) async fn initialized(
 }
 
 pub(crate) async fn shutdown(
-    _state: &ServerState,
+    state: &ServerState,
 ) -> Result<(), tower_lsp::jsonrpc::Error> {
     tracing::info!("Language server shutting down");
+    // Signal in-flight handlers to short-circuit so they don't try to
+    // write to a transport stream that is about to be destroyed.
+    state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 

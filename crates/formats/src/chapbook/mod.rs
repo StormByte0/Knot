@@ -718,7 +718,11 @@ impl ChapbookPlugin {
         diagnostics
     }
 
-    /// Chapbook special passage definitions.
+    /// Chapbook name-matched special passage definitions.
+    ///
+    /// Only `look`, `PassageHeader`, and `PassageFooter` are name-matched.
+    /// The `[header]` and `[footer]` tag-matched definitions live in
+    /// `tag_matched_special_passages()`.
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
             SpecialPassageDef {
@@ -771,42 +775,11 @@ impl FormatPlugin for ChapbookPlugin {
         for (header, body) in &raw_passages {
             let body_offset = header.header_start + header.header_len + 1; // +1 for newline after header
 
-            let format_defs = Self::special_passage_defs();
-            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
-                .or_else(|| {
-                    knot_core::passage::twine_core_special_passages().iter()
-                        .chain(knot_core::passage::legacy_core_special_passages().iter())
-                        .find(|d| d.name == header.name).cloned()
-                });
-
-            // Also check for tagged header/footer passages
-            let special_def = special_def.or_else(|| {
-                if header.tags.contains(&"header".to_string()) {
-                    Some(SpecialPassageDef {
-                        name: header.name.clone(),
-                        match_strategy: MatchStrategy::Name,
-                        behavior: SpecialPassageBehavior::Chrome,
-                        contributes_variables: false,
-                        participates_in_graph: false,
-                        execution_priority: Some(90),
-                        layer: SpecialPassageLayer::StoryFormat,
-                        scaffold: None,
-                    })
-                } else if header.tags.contains(&"footer".to_string()) {
-                    Some(SpecialPassageDef {
-                        name: header.name.clone(),
-                        match_strategy: MatchStrategy::Name,
-                        behavior: SpecialPassageBehavior::Chrome,
-                        contributes_variables: false,
-                        participates_in_graph: false,
-                        execution_priority: Some(110),
-                        layer: SpecialPassageLayer::StoryFormat,
-                        scaffold: None,
-                    })
-                } else {
-                    None
-                }
-            });
+            // Determine if this is a special passage using the unified
+            // classification system. Tags are checked FIRST (per the
+            // Twee 3 spec), then names. This replaces the old manual
+            // three-stage lookup (format defs → core defs → tag fallback).
+            let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
@@ -890,20 +863,16 @@ impl FormatPlugin for ChapbookPlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        let format_defs = Self::special_passage_defs();
-        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
-            .or_else(|| {
-                knot_core::passage::twine_core_special_passages().iter()
-                    .chain(knot_core::passage::legacy_core_special_passages().iter())
-                    .find(|d| d.name == passage_name).cloned()
-            });
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+        let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
         } else {
             Passage::new(passage_name.to_string(), 0..passage_text.len())
         };
+
+        passage.tags = passage_tags.to_vec();
 
         passage.links = self.extract_links(passage_text, 0);
 
@@ -937,6 +906,43 @@ impl FormatPlugin for ChapbookPlugin {
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         Self::special_passage_defs()
+    }
+
+    /// Chapbook tag-matched special passage definitions.
+    ///
+    /// In Chapbook, `[header]` and `[footer]` are TAG-based special
+    /// passages — the passage name is user-defined and irrelevant for
+    /// classification. A passage like `:: TopBar [header]` is classified
+    /// as a Chrome passage by its tag, not its name.
+    ///
+    /// This override ensures that `classify_passage()` (used by both
+    /// `parse()` and `parse_passage()`) correctly identifies tag-matched
+    /// special passages, fixing the incremental re-parse path that was
+    /// previously broken because the default `tag_matched_special_passages()`
+    /// returned an empty vec.
+    fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
+        vec![
+            SpecialPassageDef {
+                name: "header".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+            SpecialPassageDef {
+                name: "footer".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+        ]
     }
 
     fn display_name(&self) -> &str {
@@ -1417,5 +1423,53 @@ mod tests {
         // With byte-offset tracking, we get 2.
         assert_eq!(result.passages.len(), 2, "Should correctly split duplicate passage headers");
         assert_eq!(result.passages[1].name, "Room");
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental re-parse (parse_passage) with tag-matched passages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_passage_tagged_header() {
+        let plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage(
+            "TopBar",
+            &["header".to_string()],
+            "Header content\n",
+        );
+        let p = result.expect("tagged [header] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
+    }
+
+    #[test]
+    fn parse_passage_tagged_footer() {
+        let plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage(
+            "BottomBar",
+            &["footer".to_string()],
+            "Footer content\n",
+        );
+        let p = result.expect("tagged [footer] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
+    }
+
+    #[test]
+    fn parse_passage_name_matched_passage_header() {
+        let plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage(
+            "PassageHeader",
+            &[],
+            "Header content\n",
+        );
+        let p = result.expect("PassageHeader (name-matched) should be classified as special");
+        assert!(p.is_special, "PassageHeader should be special via name matching");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
 }

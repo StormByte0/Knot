@@ -487,6 +487,24 @@ pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
                 default_content: String::new(),
             }),
         },
+        // "style" is a Twee 3 / Tweego alias for "stylesheet". Tweego treats
+        // [style] identically to [stylesheet] regardless of the story format.
+        // Both tags produce <style> elements in the compiled HTML.
+        // This is a core concept, not format-specific.
+        SpecialPassageDef {
+            name: "style".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: Some(ScaffoldInfo {
+                file_name: "style.twee".into(),
+                default_passage_name: "Style".into(),
+                default_content: String::new(),
+            }),
+        },
     ]
 }
 
@@ -684,32 +702,45 @@ impl Passage {
 
     /// Whether this passage is a script passage (contains JavaScript).
     ///
-    /// Script passages are identified by their **tag** `[script]`, not by
-    /// their passage name. In SugarCube/Twine 2, "Story JavaScript" is a
-    /// Twine editor concept — the engine loads it via `<script>` elements
-    /// in the compiled HTML, not as a named passage. In Twee source files,
-    /// any passage tagged `[script]` is treated as JavaScript (e.g.,
-    /// `:: MyScript[script]`).
+    /// Uses the classification system as the single source of truth when
+    /// `special_def` is available, falling back to raw tag matching only
+    /// when the passage has not been classified (e.g., during incremental
+    /// re-parse when tags are unavailable).
     ///
-    /// The tag comparison is case-insensitive to match Twine's behavior
-    /// (Twine normalizes tags to lowercase). The passage name is **not**
-    /// checked because SugarCube is case-sensitive about passage names —
-    /// there is no canonical "Story JavaScript" passage in the engine.
+    /// This ensures that legacy name-matched passages (e.g., `:: script`
+    /// from Twine 1) are correctly detected when the classification system
+    /// identifies them as `ScriptInjection`, even though they lack the
+    /// `[script]` tag.
     pub fn is_script_passage(&self) -> bool {
+        if let Some(ref def) = self.special_def {
+            return matches!(def.behavior, SpecialPassageBehavior::ScriptInjection);
+        }
+        // Fallback for unclassified passages (e.g., during incremental
+        // re-parse when tags are unavailable or not yet classified).
         self.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
     }
 
     /// Whether this passage is a stylesheet passage (contains CSS).
     ///
-    /// Stylesheet passages are identified by their **tag** `[stylesheet]`,
-    /// not by their passage name. Same reasoning as `is_script_passage()` —
-    /// "Story Stylesheet" is a Twine editor concept, not a SugarCube
-    /// engine passage name. In Twee source files, any passage tagged
-    /// `[stylesheet]` is treated as CSS (e.g., `:: MyCSS[stylesheet]`).
+    /// Uses the classification system as the single source of truth when
+    /// `special_def` is available, falling back to raw tag matching only
+    /// when the passage has not been classified.
     ///
-    /// The tag comparison is case-insensitive to match Twine's behavior.
+    /// This ensures consistency with the classification system and handles
+    /// legacy name-matched passages (e.g., `:: stylesheet` from Twine 1).
+    ///
+    /// The fallback checks both "stylesheet" and "style" — the latter is
+    /// a Twee 3 / Tweego alias that Tweego treats identically regardless
+    /// of the story format.
     pub fn is_stylesheet_passage(&self) -> bool {
-        self.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet"))
+        if let Some(ref def) = self.special_def {
+            return matches!(def.behavior, SpecialPassageBehavior::StyleInjection);
+        }
+        // Fallback for unclassified passages. Both "stylesheet" and "style"
+        // are core Twee tags that mark CSS passages.
+        self.tags.iter().any(|t| {
+            t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style")
+        })
     }
 
     /// Whether this passage is an interface passage (contains HTML).
@@ -736,3 +767,123 @@ impl Passage {
 //
 // Script/stylesheet detection is now handled entirely by tag matching
 // in `is_script_passage()` and `is_stylesheet_passage()`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── "style" tag classification regression tests ────────────────────
+
+    #[test]
+    fn test_style_tag_classified_as_style_injection() {
+        // Verify that the "style" tag is in the core special passages
+        let core = twine_core_special_passages();
+        let style_def = core.iter().find(|d| d.name == "style" && d.match_strategy == MatchStrategy::Tag);
+        assert!(style_def.is_some(), "[style] tag should be in twine_core_special_passages()");
+        let def = style_def.unwrap();
+        assert_eq!(def.behavior, SpecialPassageBehavior::StyleInjection);
+        assert_eq!(def.layer, SpecialPassageLayer::TwineCore);
+    }
+
+    #[test]
+    fn test_stylesheet_tag_classified_as_style_injection() {
+        let core = twine_core_special_passages();
+        let def = core.iter().find(|d| d.name == "stylesheet" && d.match_strategy == MatchStrategy::Tag);
+        assert!(def.is_some(), "[stylesheet] tag should be in twine_core_special_passages()");
+        assert_eq!(def.unwrap().behavior, SpecialPassageBehavior::StyleInjection);
+    }
+
+    #[test]
+    fn test_is_stylesheet_passage_with_style_tag() {
+        // A passage with [style] tag should be detected as stylesheet
+        let def = SpecialPassageDef {
+            name: "MyCSS".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let mut passage = Passage::new_special("MyCSS".into(), 0..100, def);
+        passage.tags = vec!["style".into()];
+        assert!(passage.is_stylesheet_passage(), "Passage with [style] tag should be stylesheet");
+    }
+
+    #[test]
+    fn test_is_stylesheet_passage_with_stylesheet_tag() {
+        let def = SpecialPassageDef {
+            name: "MyCSS".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let mut passage = Passage::new_special("MyCSS".into(), 0..100, def);
+        passage.tags = vec!["stylesheet".into()];
+        assert!(passage.is_stylesheet_passage(), "Passage with [stylesheet] tag should be stylesheet");
+    }
+
+    #[test]
+    fn test_is_stylesheet_passage_fallback_style_tag() {
+        // When special_def is None (unclassified), fallback should recognize "style"
+        let mut passage = Passage::new("MyCSS".into(), 0..100);
+        passage.tags = vec!["style".into()];
+        assert!(passage.is_stylesheet_passage(), "Fallback should recognize [style] tag");
+    }
+
+    #[test]
+    fn test_is_stylesheet_passage_fallback_stylesheet_tag() {
+        let mut passage = Passage::new("MyCSS".into(), 0..100);
+        passage.tags = vec!["stylesheet".into()];
+        assert!(passage.is_stylesheet_passage(), "Fallback should recognize [stylesheet] tag");
+    }
+
+    #[test]
+    fn test_is_stylesheet_passage_fallback_case_insensitive() {
+        let mut passage = Passage::new("MyCSS".into(), 0..100);
+        passage.tags = vec!["STYLE".into()];
+        assert!(passage.is_stylesheet_passage(), "Fallback should be case-insensitive for [STYLE] tag");
+
+        passage.tags = vec!["StyleSheet".into()];
+        assert!(passage.is_stylesheet_passage(), "Fallback should be case-insensitive for [StyleSheet] tag");
+    }
+
+    #[test]
+    fn test_is_script_passage_with_script_tag() {
+        let def = SpecialPassageDef {
+            name: "MyJS".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::ScriptInjection,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(-1),
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let mut passage = Passage::new_special("MyJS".into(), 0..100, def);
+        passage.tags = vec!["script".into()];
+        assert!(passage.is_script_passage(), "Passage with [script] tag should be script");
+    }
+
+    #[test]
+    fn test_normal_passage_not_stylesheet() {
+        let passage = Passage::new("Forest".into(), 0..100);
+        assert!(!passage.is_stylesheet_passage(), "Normal passage should not be stylesheet");
+        assert!(!passage.is_script_passage(), "Normal passage should not be script");
+    }
+
+    #[test]
+    fn test_style_and_stylesheet_are_distinct_entries() {
+        // Both "style" and "stylesheet" should exist as separate entries
+        let core = twine_core_special_passages();
+        let style_count = core.iter()
+            .filter(|d| d.match_strategy == MatchStrategy::Tag && d.behavior == SpecialPassageBehavior::StyleInjection)
+            .count();
+        assert_eq!(style_count, 2, "Should have both [style] and [stylesheet] tag entries");
+    }
+}

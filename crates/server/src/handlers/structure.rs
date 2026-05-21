@@ -117,6 +117,11 @@ pub(crate) async fn document_link(
     state: &ServerState,
     params: DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>, tower_lsp::jsonrpc::Error> {
+    // Short-circuit if the server is shutting down
+    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 

@@ -826,7 +826,11 @@ impl SnowmanPlugin {
     // Special passage definitions
     // -----------------------------------------------------------------------
 
-    /// Snowman special passage definitions.
+    /// Snowman name-matched special passage definitions.
+    ///
+    /// Only `Script`, `Style`, `PassageHeader`, and `PassageFooter` are
+    /// name-matched. The `[header]` and `[footer]` tag-matched definitions
+    /// live in `tag_matched_special_passages()`.
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
             SpecialPassageDef {
@@ -889,55 +893,17 @@ impl FormatPlugin for SnowmanPlugin {
         for (header, body) in &raw_passages {
             let body_offset = header.header_end + 1;
 
-            // Determine if this is a special passage by name
-            // Check format-specific defs first, then fall back to TwineCore/LegacyCore.
-            let format_defs = Self::special_passage_defs();
-            let special_def = format_defs.iter().find(|d| d.name == header.name).cloned()
-                .or_else(|| {
-                    knot_core::passage::twine_core_special_passages().iter()
-                        .chain(knot_core::passage::legacy_core_special_passages().iter())
-                        .find(|d| d.name == header.name).cloned()
-                });
-
-            // Check if this passage has header/footer tags
-            let is_header_tagged = header.tags.iter().any(|t| t == "header");
-            let is_footer_tagged = header.tags.iter().any(|t| t == "footer");
+            // Determine if this is a special passage using the unified
+            // classification system. Tags are checked FIRST (per the
+            // Twee 3 spec), then names. This replaces the old manual
+            // three-stage lookup (format defs → core defs → tag fallback).
+            let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
                     header.name.clone(),
                     header.header_start..body_offset + body.len(),
                     def.clone(),
-                )
-            } else if is_header_tagged {
-                Passage::new_special(
-                    header.name.clone(),
-                    header.header_start..body_offset + body.len(),
-                    SpecialPassageDef {
-                        name: "PassageHeader".into(),
-                        match_strategy: MatchStrategy::Name,
-                        behavior: SpecialPassageBehavior::Chrome,
-                        contributes_variables: false,
-                        participates_in_graph: false,
-                        execution_priority: Some(90),
-                        layer: SpecialPassageLayer::StoryFormat,
-                        scaffold: None,
-                    },
-                )
-            } else if is_footer_tagged {
-                Passage::new_special(
-                    header.name.clone(),
-                    header.header_start..body_offset + body.len(),
-                    SpecialPassageDef {
-                        name: "PassageFooter".into(),
-                        match_strategy: MatchStrategy::Name,
-                        behavior: SpecialPassageBehavior::Chrome,
-                        contributes_variables: false,
-                        participates_in_graph: false,
-                        execution_priority: Some(110),
-                        layer: SpecialPassageLayer::StoryFormat,
-                        scaffold: None,
-                    },
                 )
             } else {
                 Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
@@ -998,21 +964,17 @@ impl FormatPlugin for SnowmanPlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        // For incremental re-parse: we receive just the body text.
-        let format_defs = Self::special_passage_defs();
-        let special_def = format_defs.iter().find(|d| d.name == passage_name).cloned()
-            .or_else(|| {
-                knot_core::passage::twine_core_special_passages().iter()
-                    .chain(knot_core::passage::legacy_core_special_passages().iter())
-                    .find(|d| d.name == passage_name).cloned()
-            });
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+        // For incremental re-parse: we receive body text and tags.
+        let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
         } else {
             Passage::new(passage_name.to_string(), 0..passage_text.len())
         };
+
+        passage.tags = passage_tags.to_vec();
 
         passage.links = self.extract_links(passage_text, 0);
         passage.vars = self.extract_vars(passage_text, 0);
@@ -1026,6 +988,43 @@ impl FormatPlugin for SnowmanPlugin {
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         Self::special_passage_defs()
+    }
+
+    /// Snowman tag-matched special passage definitions.
+    ///
+    /// In Snowman, `[header]` and `[footer]` are TAG-based special
+    /// passages — the passage name is user-defined and irrelevant for
+    /// classification. A passage like `:: TopBar [header]` is classified
+    /// as a Chrome passage by its tag, not its name.
+    ///
+    /// This override ensures that `classify_passage()` (used by both
+    /// `parse()` and `parse_passage()`) correctly identifies tag-matched
+    /// special passages, fixing the incremental re-parse path that was
+    /// previously broken because the default `tag_matched_special_passages()`
+    /// returned an empty vec.
+    fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
+        vec![
+            SpecialPassageDef {
+                name: "header".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+            SpecialPassageDef {
+                name: "footer".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::Chrome,
+                contributes_variables: false,
+                participates_in_graph: false,
+                execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+        ]
     }
 
     fn display_name(&self) -> &str {
@@ -1557,5 +1556,53 @@ mod tests {
                 .any(|d| d.code == "sm-undefined-var" && d.message.contains("gold")),
             "Should NOT warn about s.gold when it is written in another passage"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental re-parse (parse_passage) with tag-matched passages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_passage_tagged_header() {
+        let plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage(
+            "TopBar",
+            &["header".to_string()],
+            "Header content\n",
+        );
+        let p = result.expect("tagged [header] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
+    }
+
+    #[test]
+    fn parse_passage_tagged_footer() {
+        let plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage(
+            "BottomBar",
+            &["footer".to_string()],
+            "Footer content\n",
+        );
+        let p = result.expect("tagged [footer] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
+    }
+
+    #[test]
+    fn parse_passage_name_matched_passage_header() {
+        let plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage(
+            "PassageHeader",
+            &[],
+            "Header content\n",
+        );
+        let p = result.expect("PassageHeader (name-matched) should be classified as special");
+        assert!(p.is_special, "PassageHeader should be special via name matching");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
 }

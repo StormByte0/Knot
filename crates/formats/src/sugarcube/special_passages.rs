@@ -6,9 +6,10 @@
 //! - **Name-matched** code passages (StoryInit, PassageHeader, etc.)
 //! - **Tag-matched** code tags ([init], [widget]) and special tags ([nobr])
 //!
-//! **Note:** StoryTitle, StoryData, Start, [script], and [stylesheet] are NOT
-//! defined here — they are Twine-core passages defined in
-//! `knot_core::passage::twine_core_special_passages()`.
+//! **Note:** StoryTitle, StoryData, Start, [script], [stylesheet], and [style]
+//! are NOT defined here — they are Twine-core passages defined in
+//! `knot_core::passage::twine_core_special_passages()`. The [style] tag is a
+//! Twee 3 / Tweego alias for [stylesheet] and is recognized at the core level.
 //!
 //! ## Format Isolation
 //!
@@ -272,11 +273,3 @@ pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
     ]
 }
 
-/// Backwards-compatible accessor: returns name-matched passages only.
-///
-/// This is used by `FormatPlugin::special_passages()` which expects
-/// the legacy vec of name-matched definitions. The classification
-/// system separately queries `tag_matched_special_passages()`.
-pub(crate) fn special_passage_defs() -> Vec<SpecialPassageDef> {
-    name_matched_special_passages()
-}

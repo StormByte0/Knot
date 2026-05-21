@@ -157,6 +157,9 @@ pub enum SemanticTokenModifier {
     /// This token is part of the story-format layer.
     /// LSP modifier: `async` (reused to indicate format scope)
     StoryFormat,
+    /// This token is a user-defined special passage.
+    /// LSP modifier: `modification` (indicates user-level customization)
+    UserDefined,
 }
 
 /// A diagnostic produced by a format plugin during parsing.
@@ -272,8 +275,14 @@ pub trait FormatPlugin: Send + Sync {
     fn parse(&self, uri: &Url, text: &str) -> ParseResult;
 
     /// Re-parse only a single passage (for incremental updates).
+    ///
     /// The `passage_text` is the body text of the passage (after the header line).
-    fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage>;
+    /// The `passage_tags` are the passage's tags, needed for tag-matched
+    /// special passage classification (e.g., `[script]`, `[stylesheet]`,
+    /// `[widget]`, `[init]`). Without tags, the classification system cannot
+    /// identify tag-matched special passages, which would cause them to be
+    /// misclassified as regular passages during incremental re-parse.
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage>;
 
     /// Returns the name-matched special passage definitions for this format.
     ///
@@ -792,15 +801,28 @@ pub trait FormatPlugin: Send + Sync {
     }
 
     // -----------------------------------------------------------------------
-    // Script/stylesheet tags (optional)
+    // Script/stylesheet tags (superseded by classification system)
     // -----------------------------------------------------------------------
 
     /// Returns the passage tag names that mark script passages.
+    ///
+    /// **Deprecated**: Use the classification system instead. Tag-matched
+    /// `SpecialPassageDef` entries in `twine_core_special_passages()` and
+    /// `tag_matched_special_passages()` are the single source of truth for
+    /// which tags mark script passages. This method is kept for backward
+    /// compatibility only and is not called by any server handler.
     fn script_tags(&self) -> Vec<&'static str> {
         Vec::new()
     }
 
     /// Returns the passage tag names that mark stylesheet passages.
+    ///
+    /// **Deprecated**: Use the classification system instead. Tag-matched
+    /// `SpecialPassageDef` entries in `twine_core_special_passages()` and
+    /// `tag_matched_special_passages()` are the single source of truth for
+    /// which tags mark stylesheet passages (including the "style" alias).
+    /// This method is kept for backward compatibility only and is not
+    /// called by any server handler.
     fn stylesheet_tags(&self) -> Vec<&'static str> {
         Vec::new()
     }

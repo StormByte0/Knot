@@ -145,6 +145,20 @@ impl FormatPlugin for SugarCubePlugin {
                 });
                 tokens.extend(ref_tokens);
 
+                // Property tokens (State.variables, Engine.play, etc.)
+                let mut prop_toks = tokens::property_tokens(body, body_offset);
+                prop_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(prop_toks);
+
+                // Comment tokens for Twine-style comments
+                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans.iter()
+                    .map(|s| s.start.saturating_sub(body_offset)..s.end.saturating_sub(body_offset))
+                    .collect::<Vec<_>>());
+                tokens.extend(comment_toks);
+
                 // Validation: skip SugarCube-specific bracket checks
                 // (no [[/]] or <</>> validation on JS content)
             } else if is_stylesheet {
@@ -276,6 +290,57 @@ impl FormatPlugin for SugarCubePlugin {
                 });
                 tokens.extend(body_tokens);
 
+                // Widget/Function tokens (<<widget name>>)
+                let mut widget_toks = tokens::widget_tokens(body, body_offset);
+                widget_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(widget_toks);
+
+                // Number tokens inside macro arguments
+                let mut number_toks = tokens::number_tokens(body, body_offset);
+                number_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(number_toks);
+
+                // String tokens for quoted arguments inside macros
+                // (e.g., <<goto "Forest">>, <<set $x to "hello">>).
+                // PassageRef tokens emitted later will override String tokens
+                // where the quoted arg is a passage name — later tokens win
+                // in the LSP semantic tokens protocol.
+                let mut string_toks = tokens::string_tokens(body, body_offset);
+                string_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(string_toks);
+
+                // Operator tokens (+=, -=, etc.)
+                let mut op_toks = tokens::operator_tokens(body, body_offset);
+                op_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(op_toks);
+
+                // Property tokens (State.variables, Story.passage, etc.)
+                let mut prop_toks = tokens::property_tokens(body, body_offset);
+                prop_toks.retain(|tok| {
+                    let tok_span = tok.start..tok.start + tok.length;
+                    !comments::is_in_comment(&comment_spans, &tok_span)
+                });
+                tokens.extend(prop_toks);
+
+                // Comment tokens for Twine-style comments (/% ... %/, /%% ... %%/)
+                // that the TextMate grammar doesn't recognize.
+                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans.iter()
+                    .map(|s| s.start.saturating_sub(body_offset)..s.end.saturating_sub(body_offset))
+                    .collect::<Vec<_>>());
+                tokens.extend(comment_toks);
+
                 // PassageRef tokens for implicit passage references
                 // (Engine.play, data-passage, etc.)
                 let mut implicit_ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
@@ -318,19 +383,20 @@ impl FormatPlugin for SugarCubePlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        // For incremental re-parse: we receive just the body text.
-        // Tags are not available here, so we can only do name-matching.
-        // Tag-based detection will be applied later when the full passage
-        // is re-parsed in context. The is_script_passage() and
-        // is_stylesheet_passage() checks below handle the common case.
-        let special_def = self.classify_passage(passage_name, &[]);
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+        // For incremental re-parse: we receive the body text and tags.
+        // Tags are now passed through, allowing tag-matched special passages
+        // (e.g., [script], [stylesheet], [widget], [init]) to be correctly
+        // classified during incremental updates.
+        let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
         } else {
             Passage::new(passage_name.to_string(), 0..passage_text.len())
         };
+
+        passage.tags = passage_tags.to_vec();
 
         // Context-aware: skip SugarCube regex on script/stylesheet passages
         let is_script = passage.is_script_passage();
@@ -951,7 +1017,7 @@ mod tests {
     #[test]
     fn incremental_reparse() {
         let plugin = SugarCubePlugin::new();
-        let passage = plugin.parse_passage("Start", "You have $gold coins.\n");
+        let passage = plugin.parse_passage("Start", &[], "You have $gold coins.\n");
 
         assert!(passage.is_some());
         let p = passage.unwrap();
@@ -1168,7 +1234,7 @@ mod tests {
     #[test]
     fn special_passage_defs_complete() {
         // SugarCube's own special passage definitions (StoryFormat layer only)
-        let sc_defs = special_passages::special_passage_defs();
+        let sc_defs = special_passages::name_matched_special_passages();
         let sc_names: Vec<&str> = sc_defs.iter().map(|d| d.name.as_str()).collect();
 
         // StoryFormat-layer passages owned by SugarCube
