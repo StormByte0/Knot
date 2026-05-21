@@ -537,12 +537,21 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
     let whitespace_len = after_colons.len() - after_colons.trim_start().len();
     let rest = after_colons.trim_start();
 
-    // The name extends to the `[` bracket (for tags) or `{` (for metadata)
-    // or the end of the line.
-    let name_end = rest.find('[')
-        .or_else(|| rest.rfind('{'))
-        .unwrap_or(rest.len());
-    let name_text = rest[..name_end].trim_end();
+    // The name extends to the `[` bracket (for tags) or `{` (for JSON metadata)
+    // or the end of the line. Strip JSON metadata first (must end with '}'),
+    // then tags — matching the SugarCube lexer's parse_header_line() order.
+    let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
+        if rest.trim_end().ends_with('}') {
+            &rest[..brace_start]
+        } else {
+            rest
+        }
+    } else {
+        rest
+    };
+    let name_end = rest_before_json.find('[')
+        .unwrap_or(rest_before_json.len());
+    let name_text = rest_before_json[..name_end].trim_end();
 
     // Compute the byte offset where the name starts and ends.
     let name_byte_start = 2 + whitespace_len;

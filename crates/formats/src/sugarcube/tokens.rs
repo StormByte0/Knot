@@ -603,13 +603,21 @@ pub(crate) fn property_tokens(body: &str, body_offset: usize) -> Vec<SemanticTok
 /// semantic tokens for them.
 pub(crate) fn comment_tokens(body: &str, body_offset: usize, comment_spans: &[Range<usize>]) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
+    let body_len = body.len();
     for span in comment_spans {
         let start = span.start;
         let end = span.end;
+        // Convert doc-absolute offsets to body-relative for slicing `body`.
+        // Clamp to body bounds so a bad span can never panic.
+        let rel_start = start.saturating_sub(body_offset).min(body_len);
+        let rel_end = end.saturating_sub(body_offset).min(body_len);
+        if rel_start >= rel_end {
+            continue; // Inverted or empty span after conversion — skip
+        }
         // Only emit comment tokens for Twine-style comment delimiters
         // that the TextMate grammar won't catch. Skip HTML, JS, and CSS
         // comments which TextMate handles.
-        let text = &body[start.saturating_sub(body_offset)..end.saturating_sub(body_offset)];
+        let text = &body[rel_start..rel_end];
         if text.starts_with("/%") || text.starts_with("<!--") {
             tokens.push(SemanticToken {
                 start: start,

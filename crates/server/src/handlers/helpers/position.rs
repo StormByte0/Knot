@@ -126,14 +126,32 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
 }
 
 /// Parse just the passage name from a header (the part after `::`).
+///
+/// Handles the Twee 3 header format:
+/// - JSON metadata: `:: Name [tags] {"position":"x,y"}`
+/// - Bare headers: `:: Name`
+///
+/// The stripping order matches the format plugins' `parse_header_line`:
+/// first strip `{...}` JSON metadata, then `[...]` tags.
+/// This ensures the server's header parsing always produces the same name
+/// that the format plugin stored during workspace indexing.
 pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     let header = header.trim();
-    // Strip angle-bracket position metadata: :: Name [tags] <x,y>
-    let header = if let Some(angle_start) = header.find('<') {
-        header[..angle_start].trim()
+
+    // Strip JSON metadata block first: :: Name [tags] {"position":"100,200"}
+    // The metadata must be the last thing on the line and start with '{'.
+    // This mirrors the format plugins' parse_header_line() logic.
+    let header = if let Some(brace_start) = header.rfind('{') {
+        if header.trim_end().ends_with('}') {
+            header[..brace_start].trim()
+        } else {
+            header
+        }
     } else {
-        header.trim()
+        header
     };
+
+    // Strip tag brackets: :: Name [tag1 tag2]
     if let Some(bracket_start) = header.find('[') {
         header[..bracket_start].trim().to_string()
     } else {
@@ -141,31 +159,82 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     }
 }
 
-/// Parse the position from a passage header line.
+/// Parse the position from a passage header line's JSON metadata block.
 ///
-/// Twee 3 format supports position metadata in angle brackets:
-/// `:: Passage Name [tags] <100,200>`
+/// Twee 3 format supports position metadata as a JSON object after tags:
+/// `:: Passage Name [tags] {"position":"100,200"}`
 ///
-/// The angle brackets appear after the tags (if any) and contain
-/// the x,y coordinates separated by a comma.
-pub(crate) fn parse_passage_position(line: &str) -> Option<(f64, f64)> {
-    // Find the last <...> on the line (position comes after tags)
-    let last_angle_start = line.rfind('<')?;
-    let after_angle = &line[last_angle_start + 1..];
-
-    // Find the closing >
-    let angle_end = after_angle.find('>')?;
-    let content = &after_angle[..angle_end];
-
-    // Parse "x,y" or "x, y"
-    let parts: Vec<&str> = content.split(',').collect();
-    if parts.len() != 2 {
+/// The position is stored in the "position" field as a string "x,y".
+/// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
+/// Both formats are supported.
+pub(crate) fn parse_passage_position_from_header(line: &str) -> Option<(f64, f64)> {
+    // Find the JSON metadata block at the end of the line
+    let brace_start = line.rfind('{')?;
+    let after_brace = &line[brace_start..];
+    if !after_brace.trim_end().ends_with('}') {
         return None;
     }
 
-    let x = parts[0].trim().parse::<f64>().ok()?;
-    let y = parts[1].trim().parse::<f64>().ok()?;
-    Some((x, y))
+    // Try to parse as JSON
+    let json_val: serde_json::Value = serde_json::from_str(after_brace).ok()?;
+
+    // Try "position" as a string "x,y"
+    if let Some(pos_str) = json_val.get("position").and_then(|v| v.as_str()) {
+        let parts: Vec<&str> = pos_str.split(',').collect();
+        if parts.len() == 2 {
+            let x = parts[0].trim().parse::<f64>().ok()?;
+            let y = parts[1].trim().parse::<f64>().ok()?;
+            return Some((x, y));
+        }
+    }
+
+    // Try "position" as a JSON object {"x":...,"y":...}
+    if let Some(pos_obj) = json_val.get("position").and_then(|v| v.as_object()) {
+        let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
+        let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
+        return Some((x, y));
+    }
+
+    None
+}
+
+/// Build or update the JSON metadata block in a passage header line with
+/// a new position value.
+///
+/// If the header already has a JSON metadata block, the "position" field
+/// is updated. If not, a new `{"position":"x,y"}` block is appended.
+///
+/// Returns the new header line with the updated position metadata.
+pub(crate) fn update_passage_position_in_header(line: &str, x: f64, y: f64) -> String {
+    /// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
+    fn format_coord(v: f64) -> String {
+        if v.fract() == 0.0 {
+            format!("{}", v as i64)
+        } else {
+            format!("{:.2}", v)
+        }
+    }
+
+    let pos_str = format!("{},{}", format_coord(x), format_coord(y));
+
+    // Check if there's an existing JSON metadata block
+    if let Some(brace_start) = line.rfind('{') {
+        let after_brace = &line[brace_start..];
+        if after_brace.trim_end().ends_with('}') {
+            // Try to parse the existing JSON and update the position field
+            if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(after_brace) {
+                json_val["position"] = serde_json::Value::String(pos_str.clone());
+                if let Ok(new_json) = serde_json::to_string(&json_val) {
+                    let before = line[..brace_start].trim_end();
+                    return format!("{} {}", before, new_json);
+                }
+            }
+        }
+    }
+
+    // No existing JSON block — append a new one
+    let trimmed = line.trim_end();
+    format!("{} {{\"position\":\"{}\"}}", trimmed, pos_str)
 }
 
 // ===========================================================================

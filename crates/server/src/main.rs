@@ -50,6 +50,7 @@ async fn main() {
         Ok(file) => {
             // Write to both stderr and the log file using layered subscribers
             use tracing_subscriber::layer::SubscriberExt;
+            use tracing_subscriber::Layer;
             let stderr_layer = tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
                 .with_ansi(false)

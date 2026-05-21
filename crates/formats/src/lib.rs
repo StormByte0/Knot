@@ -30,6 +30,7 @@
 
 pub mod plugin;
 pub mod types;
+pub mod core_specials;
 pub mod sugarcube;
 pub mod harlowe;
 pub mod chapbook;

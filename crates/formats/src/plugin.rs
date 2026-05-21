@@ -811,6 +811,10 @@ pub trait FormatPlugin: Send + Sync {
     /// `tag_matched_special_passages()` are the single source of truth for
     /// which tags mark script passages. This method is kept for backward
     /// compatibility only and is not called by any server handler.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use twine_core_special_passages() and classify_passage() instead"
+    )]
     fn script_tags(&self) -> Vec<&'static str> {
         Vec::new()
     }
@@ -823,6 +827,10 @@ pub trait FormatPlugin: Send + Sync {
     /// which tags mark stylesheet passages (including the "style" alias).
     /// This method is kept for backward compatibility only and is not
     /// called by any server handler.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use twine_core_special_passages() and classify_passage() instead"
+    )]
     fn stylesheet_tags(&self) -> Vec<&'static str> {
         Vec::new()
     }

@@ -125,10 +125,9 @@ impl ServerState {
                     if line.starts_with("::") {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
                         passage_lines.insert(name.clone(), line_num as u32);
-                        // Try to extract position from the header line
-                        // Twee 3 format: :: Passage Name [tags] <x,y>
-                        // or Twine 2 HTML-style: position data in passage metadata
-                        if let Some(pos) = helpers::parse_passage_position(line) {
+                        // Try to extract position from the header line's JSON metadata
+                        // Twee 3 format: :: Passage Name [tags] {"position":"x,y"}
+                        if let Some(pos) = helpers::parse_passage_position_from_header(line) {
                             passage_positions.insert(name, pos);
                         }
                     }
@@ -1363,9 +1362,9 @@ impl ServerState {
     /// `knot/updatePositions` — update passage position metadata in source files.
     ///
     /// When the user drags nodes in the Story Map graph view, the webview
-    /// sends new positions via this request. The server updates the `<x,y>`
-    /// position metadata in the Twee passage headers using the standard
-    /// Twee 3 format: `:: PassageName [tags] <x,y>`.
+    /// sends new positions via this request. The server updates the
+    /// `{"position":"x,y"}` metadata in the Twee passage headers using the
+    /// standard Twee 3 format: `:: PassageName [tags] {"position":"x,y"}`.
     ///
     /// This preserves compatibility with Twine and other Twee editors — no
     /// custom metadata format is introduced.
@@ -1389,15 +1388,6 @@ impl ServerState {
         let mut changes: HashMap<url::Url, Vec<LspTextEdit>> = HashMap::new();
         let mut updated_count: u32 = 0;
         let mut errors: Vec<String> = Vec::new();
-
-        /// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
-        fn format_coord(v: f64) -> String {
-            if v.fract() == 0.0 {
-                format!("{}", v as i64)
-            } else {
-                format!("{:.2}", v)
-            }
-        }
 
         for update in &params.updates {
             // Find the file URI for this passage
@@ -1430,29 +1420,13 @@ impl ServerState {
                 if line.starts_with("::") {
                     let name = helpers::parse_passage_name_from_header(&line[2..]);
                     if name == update.passage_name {
-                        let new_line = if helpers::parse_passage_position(line).is_some() {
-                            // Position exists: replace <oldx,oldy> with <newx,newy>
-                            let angle_start = line.rfind('<').unwrap_or_else(|| {
-                                tracing::warn!("knot/updatePositions: line has position but no '<' char: {}", line);
-                                line.len() // Fallback: append position at end
-                            });
-                            let new_line = format!(
-                                "{}<{},{}>",
-                                &line[..angle_start],
-                                format_coord(update.position_x),
-                                format_coord(update.position_y)
-                            );
-                            new_line
-                        } else {
-                            // No position: append <x,y> before trailing whitespace
-                            let trimmed = line.trim_end();
-                            format!(
-                                "{} <{},{}>",
-                                trimmed,
-                                format_coord(update.position_x),
-                                format_coord(update.position_y)
-                            )
-                        };
+                        // Use the shared helper to update/add the {"position":"x,y"}
+                        // JSON metadata in the header line.
+                        let new_line = helpers::update_passage_position_in_header(
+                            line,
+                            update.position_x,
+                            update.position_y,
+                        );
 
                         let range = lsp_types::Range {
                             start: lsp_types::Position {

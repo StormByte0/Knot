@@ -910,44 +910,83 @@ impl FormatPlugin for SnowmanPlugin {
             };
 
             passage.tags = header.tags.clone();
-            passage.links = self.extract_links(body, body_offset);
-            passage.vars = self.extract_vars(body, body_offset);
 
-            // Build blocks from template segments
-            let segments = self.parse_template_segments(body, body_offset);
-            passage.body = self.build_blocks(&segments);
+            // ── Context-aware parsing ──────────────────────────────────────
+            // Detect script and stylesheet passages. These contain non-Twine
+            // content (JavaScript or CSS) and should NOT be parsed with
+            // Snowman's ERB template segment regexes.
+            //
+            // Script passages: tagged [script] (Twine-core tag)
+            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
+            let is_script = passage.is_script_passage();
+            let is_stylesheet = passage.is_stylesheet_passage();
 
-            // Header tokens. Use distinct types for `::` prefix vs passage name,
-            // and SpecialPassage variants for special passages.
-            let (prefix_type, name_type) = if special_def.is_some() {
-                (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+            if is_script || is_stylesheet {
+                // Script/stylesheet passages: store as raw text, skip
+                // Snowman-specific template segment parsing.
+                passage.body = vec![Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
+
+                // Header tokens.
+                let (prefix_type, name_type) = if special_def.is_some() {
+                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                } else {
+                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
+                };
+                tokens.push(SemanticToken {
+                    start: header.header_start,
+                    length: 2,
+                    token_type: prefix_type,
+                    modifier: None,
+                });
+                tokens.push(SemanticToken {
+                    start: header.header_start + 2,
+                    length: header.name.len(),
+                    token_type: name_type,
+                    modifier: None,
+                });
             } else {
-                (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
-            };
-            tokens.push(SemanticToken {
-                start: header.header_start,
-                length: 2,
-                token_type: prefix_type,
-                modifier: None,
-            });
-            tokens.push(SemanticToken {
-                start: header.header_start + 2,
-                length: header.name.len(),
-                token_type: name_type,
-                modifier: None,
-            });
+                passage.links = self.extract_links(body, body_offset);
+                passage.vars = self.extract_vars(body, body_offset);
 
-            // Body tokens.
-            tokens.extend(self.body_tokens(body, body_offset));
+                // Build blocks from template segments
+                let segments = self.parse_template_segments(body, body_offset);
+                passage.body = self.build_blocks(&segments);
 
-            // Validation diagnostics.
-            let body_diags = self.validate(body, body_offset);
-            for d in &body_diags {
-                if matches!(d.severity, FormatDiagnosticSeverity::Error) {
-                    has_errors = true;
+                // Header tokens. Use distinct types for `::` prefix vs passage name,
+                // and SpecialPassage variants for special passages.
+                let (prefix_type, name_type) = if special_def.is_some() {
+                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                } else {
+                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
+                };
+                tokens.push(SemanticToken {
+                    start: header.header_start,
+                    length: 2,
+                    token_type: prefix_type,
+                    modifier: None,
+                });
+                tokens.push(SemanticToken {
+                    start: header.header_start + 2,
+                    length: header.name.len(),
+                    token_type: name_type,
+                    modifier: None,
+                });
+
+                // Body tokens.
+                tokens.extend(self.body_tokens(body, body_offset));
+
+                // Validation diagnostics.
+                let body_diags = self.validate(body, body_offset);
+                for d in &body_diags {
+                    if matches!(d.severity, FormatDiagnosticSeverity::Error) {
+                        has_errors = true;
+                    }
                 }
+                diagnostics.extend(body_diags);
             }
-            diagnostics.extend(body_diags);
 
             passages.push(passage);
         }
@@ -976,12 +1015,25 @@ impl FormatPlugin for SnowmanPlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        passage.links = self.extract_links(passage_text, 0);
-        passage.vars = self.extract_vars(passage_text, 0);
+        // Context-aware parsing: skip format-specific body parsing for
+        // Twine-core script/stylesheet passages.
+        let is_script = passage.is_script_passage();
+        let is_stylesheet = passage.is_stylesheet_passage();
 
-        // Build blocks from template segments
-        let segments = self.parse_template_segments(passage_text, 0);
-        passage.body = self.build_blocks(&segments);
+        if is_script || is_stylesheet {
+            // Script/stylesheet passages: store as raw text.
+            passage.body = vec![Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else {
+            passage.links = self.extract_links(passage_text, 0);
+            passage.vars = self.extract_vars(passage_text, 0);
+
+            // Build blocks from template segments
+            let segments = self.parse_template_segments(passage_text, 0);
+            passage.body = self.build_blocks(&segments);
+        }
 
         Some(passage)
     }

@@ -5,12 +5,12 @@
 //!
 //! - Dot grid background (panning canvas feel)
 //! - Origin at top-left (0,0), start passage near origin
-//! - Position-based layout using Twee passage `<x,y>` metadata
+//! - Position-based layout using Twee passage `{"position":"x,y"}` metadata
 //! - Automatic dagre layout for passages without position data
 //! - Click-to-navigate (clicking a node opens the passage in the editor)
 //! - Color-coded nodes (normal, special, metadata, unreachable)
 //! - Red dashed edges for broken links
-//! - Drag-to-reposition with position write-back (Twine-compatible `<x,y>`)
+//! - Drag-to-reposition with position write-back (Twine-compatible `{"position":"x,y"}`)
 //! - Search/filter passages by name or tag
 //! - Zoom-to-fit and layout switching controls
 

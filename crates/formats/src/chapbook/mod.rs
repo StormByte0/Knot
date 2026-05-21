@@ -789,68 +789,106 @@ impl FormatPlugin for ChapbookPlugin {
 
             passage.tags = header.tags.clone();
 
-            // Extract links
-            passage.links = self.extract_links(body, body_offset);
+            // ── Context-aware parsing ──────────────────────────────────────
+            // Detect script and stylesheet passages. These contain non-Twine
+            // content (JavaScript or CSS) and should NOT be parsed with
+            // Chapbook's template segment regexes.
+            //
+            // Script passages: tagged [script] (Twine-core tag)
+            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
+            let is_script = passage.is_script_passage();
+            let is_stylesheet = passage.is_stylesheet_passage();
 
-            // Extract variables from template segments
-            let segments = self.parse_template_segments(body);
-            let mut vars = Vec::new();
+            if is_script || is_stylesheet {
+                // Script/stylesheet passages: store as raw text, skip
+                // Chapbook-specific template segment parsing.
+                passage.body = vec![Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
 
-            for seg in &segments {
-                match seg {
-                    TemplateSegment::Javascript { content_start, content_end, .. } => {
-                        let content = &body[*content_start..*content_end];
-                        vars.extend(self.extract_js_vars(content, body_offset + *content_start));
-                    }
-                    TemplateSegment::Modify { content_start, content_end, .. } => {
-                        let content = &body[*content_start..*content_end];
-                        vars.extend(self.extract_modify_vars(content, body_offset + *content_start));
-                    }
-                    TemplateSegment::Insert { expr_start, expr_end, .. } => {
-                        let expr = &body[*expr_start..*expr_end];
-                        vars.extend(self.extract_insert_vars(expr, body_offset + *expr_start));
-                    }
-                    _ => {}
-                }
-            }
-
-            passage.vars = vars;
-
-            // Build block model from segments
-            passage.body = self.build_blocks(body, body_offset, &segments);
-
-            // Semantic tokens for header.
-            // Use distinct token types for `::` prefix vs passage name,
-            // and SpecialPassage variants for special passages.
-            let (prefix_type, name_type) = if special_def.is_some() {
-                (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                // Semantic tokens for header.
+                let (prefix_type, name_type) = if special_def.is_some() {
+                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                } else {
+                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
+                };
+                tokens.push(SemanticToken {
+                    start: header.header_start,
+                    length: 2,
+                    token_type: prefix_type,
+                    modifier: None,
+                });
+                tokens.push(SemanticToken {
+                    start: header.header_start + 2,
+                    length: header.name.len(),
+                    token_type: name_type,
+                    modifier: None,
+                });
             } else {
-                (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
-            };
-            tokens.push(SemanticToken {
-                start: header.header_start,
-                length: 2,
-                token_type: prefix_type,
-                modifier: None,
-            });
-            tokens.push(SemanticToken {
-                start: header.header_start + 2,
-                length: header.name.len(),
-                token_type: name_type,
-                modifier: None,
-            });
+                // Extract links
+                passage.links = self.extract_links(body, body_offset);
 
-            // Semantic tokens for body.
-            tokens.extend(self.body_tokens(body, body_offset));
+                // Extract variables from template segments
+                let segments = self.parse_template_segments(body);
+                let mut vars = Vec::new();
 
-            // Validation diagnostics.
-            let body_diags = self.validate(body, body_offset);
-            for d in &body_diags {
-                if matches!(d.severity, FormatDiagnosticSeverity::Error) {
-                    has_errors = true;
+                for seg in &segments {
+                    match seg {
+                        TemplateSegment::Javascript { content_start, content_end, .. } => {
+                            let content = &body[*content_start..*content_end];
+                            vars.extend(self.extract_js_vars(content, body_offset + *content_start));
+                        }
+                        TemplateSegment::Modify { content_start, content_end, .. } => {
+                            let content = &body[*content_start..*content_end];
+                            vars.extend(self.extract_modify_vars(content, body_offset + *content_start));
+                        }
+                        TemplateSegment::Insert { expr_start, expr_end, .. } => {
+                            let expr = &body[*expr_start..*expr_end];
+                            vars.extend(self.extract_insert_vars(expr, body_offset + *expr_start));
+                        }
+                        _ => {}
+                    }
                 }
+
+                passage.vars = vars;
+
+                // Build block model from segments
+                passage.body = self.build_blocks(body, body_offset, &segments);
+
+                // Semantic tokens for header.
+                // Use distinct token types for `::` prefix vs passage name,
+                // and SpecialPassage variants for special passages.
+                let (prefix_type, name_type) = if special_def.is_some() {
+                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                } else {
+                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
+                };
+                tokens.push(SemanticToken {
+                    start: header.header_start,
+                    length: 2,
+                    token_type: prefix_type,
+                    modifier: None,
+                });
+                tokens.push(SemanticToken {
+                    start: header.header_start + 2,
+                    length: header.name.len(),
+                    token_type: name_type,
+                    modifier: None,
+                });
+
+                // Semantic tokens for body.
+                tokens.extend(self.body_tokens(body, body_offset));
+
+                // Validation diagnostics.
+                let body_diags = self.validate(body, body_offset);
+                for d in &body_diags {
+                    if matches!(d.severity, FormatDiagnosticSeverity::Error) {
+                        has_errors = true;
+                    }
+                }
+                diagnostics.extend(body_diags);
             }
-            diagnostics.extend(body_diags);
 
             passages.push(passage);
         }
@@ -874,32 +912,45 @@ impl FormatPlugin for ChapbookPlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        passage.links = self.extract_links(passage_text, 0);
+        // Context-aware parsing: skip format-specific body parsing for
+        // Twine-core script/stylesheet passages.
+        let is_script = passage.is_script_passage();
+        let is_stylesheet = passage.is_stylesheet_passage();
 
-        // Extract variables from template segments
-        let segments = self.parse_template_segments(passage_text);
-        let mut vars = Vec::new();
+        if is_script || is_stylesheet {
+            // Script/stylesheet passages: store as raw text.
+            passage.body = vec![Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else {
+            passage.links = self.extract_links(passage_text, 0);
 
-        for seg in &segments {
-            match seg {
-                TemplateSegment::Javascript { content_start, content_end, .. } => {
-                    let content = &passage_text[*content_start..*content_end];
-                    vars.extend(self.extract_js_vars(content, *content_start));
+            // Extract variables from template segments
+            let segments = self.parse_template_segments(passage_text);
+            let mut vars = Vec::new();
+
+            for seg in &segments {
+                match seg {
+                    TemplateSegment::Javascript { content_start, content_end, .. } => {
+                        let content = &passage_text[*content_start..*content_end];
+                        vars.extend(self.extract_js_vars(content, *content_start));
+                    }
+                    TemplateSegment::Modify { content_start, content_end, .. } => {
+                        let content = &passage_text[*content_start..*content_end];
+                        vars.extend(self.extract_modify_vars(content, *content_start));
+                    }
+                    TemplateSegment::Insert { expr_start, expr_end, .. } => {
+                        let expr = &passage_text[*expr_start..*expr_end];
+                        vars.extend(self.extract_insert_vars(expr, *expr_start));
+                    }
+                    _ => {}
                 }
-                TemplateSegment::Modify { content_start, content_end, .. } => {
-                    let content = &passage_text[*content_start..*content_end];
-                    vars.extend(self.extract_modify_vars(content, *content_start));
-                }
-                TemplateSegment::Insert { expr_start, expr_end, .. } => {
-                    let expr = &passage_text[*expr_start..*expr_end];
-                    vars.extend(self.extract_insert_vars(expr, *expr_start));
-                }
-                _ => {}
             }
-        }
 
-        passage.vars = vars;
-        passage.body = self.build_blocks(passage_text, 0, &segments);
+            passage.vars = vars;
+            passage.body = self.build_blocks(passage_text, 0, &segments);
+        }
 
         Some(passage)
     }

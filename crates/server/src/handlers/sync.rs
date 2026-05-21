@@ -22,6 +22,15 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
     let mut inner = state.inner.write().await;
 
+    // If workspace indexing is still in progress, do a lightweight insert
+    // only — the indexing pass will rebuild the graph and publish
+    // diagnostics once all files are loaded.  Without this guard,
+    // did_open races with index_workspace: it rebuilds the graph with
+    // only the files loaded so far, publishes diagnostics showing
+    // passages as orphaned, and those stale diagnostics persist until
+    // the next edit triggers a fresh analysis.
+    let indexing_in_progress = !inner.workspace.indexed;
+
     // Clean up any stale URI-equivalent entries from workspace indexing.
     // We collect stale keys first to avoid double mutable borrow issues.
     let stale_keys: Vec<Url> = {
@@ -70,6 +79,18 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
             .unwrap_or_default(),
         "did_open: passages defined"
     );
+
+    // If workspace indexing is still in progress, skip the graph rebuild
+    // and diagnostic publish — index_workspace will do both once all
+    // files have been loaded.  Doing it here would race with the
+    // indexing loop and produce a graph built from only the files
+    // loaded so far, causing false "orphaned passage" diagnostics.
+    if indexing_in_progress {
+        tracing::debug!("did_open: skipping graph rebuild — workspace indexing in progress");
+        drop(inner);
+        return;
+    }
+
     let format_after = inner.workspace.resolve_format();
     inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
 

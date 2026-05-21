@@ -1164,25 +1164,52 @@ impl FormatPlugin for HarlowePlugin {
 
             passage.tags = header.tags.clone();
 
-            // Extract body elements.
-            passage.links = self.extract_links(body, body_offset);
-            passage.vars = self.extract_vars(body, body_offset);
-            passage.body = self.extract_blocks(body, body_offset);
+            // ── Context-aware parsing ──────────────────────────────────────
+            // Detect script and stylesheet passages. These contain non-Twine
+            // content (JavaScript or CSS) and should NOT be parsed with
+            // Harlowe's hook/changer/macro regexes.
+            //
+            // Script passages: tagged [script] (Twine-core tag)
+            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
+            let is_script = passage.is_script_passage();
+            let is_stylesheet = passage.is_stylesheet_passage();
 
-            // Semantic tokens for header. Use SpecialPassage type for special passages.
-            tokens.extend(self.header_tokens(header, special_def.is_some()));
+            if is_script {
+                // Script passages: store as raw text, skip Harlowe-specific parsing.
+                // Format-specific implicit passage refs can be added here in the future.
+                passage.body = vec![Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
+                tokens.extend(self.header_tokens(header, true));
+            } else if is_stylesheet {
+                // Stylesheet passages: no link extraction, no variable extraction.
+                passage.body = vec![Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
+                tokens.extend(self.header_tokens(header, true));
+            } else {
+                // Extract body elements using Harlowe-specific parsing.
+                passage.links = self.extract_links(body, body_offset);
+                passage.vars = self.extract_vars(body, body_offset);
+                passage.body = self.extract_blocks(body, body_offset);
 
-            // Semantic tokens for body.
-            tokens.extend(self.body_tokens(body, body_offset));
+                // Semantic tokens for header. Use SpecialPassage type for special passages.
+                tokens.extend(self.header_tokens(header, special_def.is_some()));
 
-            // Validation diagnostics.
-            let body_diags = self.validate(body, body_offset);
-            for d in &body_diags {
-                if matches!(d.severity, FormatDiagnosticSeverity::Error) {
-                    has_errors = true;
+                // Semantic tokens for body.
+                tokens.extend(self.body_tokens(body, body_offset));
+
+                // Validation diagnostics.
+                let body_diags = self.validate(body, body_offset);
+                for d in &body_diags {
+                    if matches!(d.severity, FormatDiagnosticSeverity::Error) {
+                        has_errors = true;
+                    }
                 }
+                diagnostics.extend(body_diags);
             }
-            diagnostics.extend(body_diags);
 
             passages.push(passage);
         }
@@ -1209,9 +1236,22 @@ impl FormatPlugin for HarlowePlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        passage.links = self.extract_links(passage_text, 0);
-        passage.vars = self.extract_vars(passage_text, 0);
-        passage.body = self.extract_blocks(passage_text, 0);
+        // Context-aware parsing: skip format-specific body parsing for
+        // Twine-core script/stylesheet passages.
+        let is_script = passage.is_script_passage();
+        let is_stylesheet = passage.is_stylesheet_passage();
+
+        if is_script || is_stylesheet {
+            // Script/stylesheet passages: store as raw text.
+            passage.body = vec![Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
+        } else {
+            passage.links = self.extract_links(passage_text, 0);
+            passage.vars = self.extract_vars(passage_text, 0);
+            passage.body = self.extract_blocks(passage_text, 0);
+        }
 
         Some(passage)
     }
