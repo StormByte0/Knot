@@ -6,7 +6,7 @@
             "include": "source.twee"
         },
         {
-            "comment": "Story JavaScript special passage — entire body is JavaScript (SugarCube-specific name)",
+            "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats.",
             "contentName": "source.js.embedded.twee",
             "begin": "^(::)\\s+[Ss]tory\\s+[Jj]ava[Ss]cript\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
@@ -18,7 +18,7 @@
             "patterns": [{ "include": "source.js" }]
         },
         {
-            "comment": "Story Stylesheet special passage — entire body is CSS (SugarCube-specific name)",
+            "comment": "Story Stylesheet special passage — entire body is CSS. Shared across all Twine formats.",
             "contentName": "source.css.embedded.twee",
             "begin": "^(::)\\s+[Ss]tory\\s+[Ss]tylesheet\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
@@ -30,7 +30,7 @@
             "patterns": [{ "include": "source.css" }]
         },
         {
-            "comment": "Script passage: :: Name [script] — entire body is JavaScript (SugarCube-specific tag)",
+            "comment": "Script passage: :: Name [script] — entire body is JavaScript (Twine-core tag, shared across all formats)",
             "contentName": "source.js.embedded.twee",
             "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
@@ -52,7 +52,7 @@
             ]
         },
         {
-            "comment": "Stylesheet passage: :: Name [stylesheet] — entire body is CSS (SugarCube-specific tag)",
+            "comment": "Stylesheet passage: :: Name [stylesheet] — entire body is CSS (Twine-core tag, shared across all formats)",
             "contentName": "source.css.embedded.twee",
             "begin": "^(::)\\s+(.*?)\\s+\\[stylesheet\\]\\s*(\\{.*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",

@@ -737,8 +737,8 @@ pub struct KnotReindexResponse {
 /// Request: `knot/updatePositions` — update the position metadata for passages
 /// that were moved in the Story Map graph view.
 ///
-/// The server applies WorkspaceEdit operations to update the `<x,y>` position
-/// metadata in the passage headers. This preserves compatibility with Twine
+/// The server applies WorkspaceEdit operations to update the `{"position":"x,y"}`
+/// JSON metadata in the passage headers. This preserves compatibility with Twine
 /// and other Twee editors — no custom metadata format is introduced.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotUpdatePositionsParams {

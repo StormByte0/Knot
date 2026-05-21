@@ -84,6 +84,116 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // parse_passage_name_from_header with JSON metadata
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_passage_name_with_json_position() {
+        assert_eq!(
+            parse_passage_name_from_header("Start {\"position\":\"100,200\"}"),
+            "Start"
+        );
+    }
+
+    #[test]
+    fn test_parse_passage_name_with_tags_and_json() {
+        assert_eq!(
+            parse_passage_name_from_header("Start [important] {\"position\":\"100,200\"}"),
+            "Start"
+        );
+    }
+
+    #[test]
+    fn test_parse_passage_name_multi_word_with_tags_json() {
+        assert_eq!(
+            parse_passage_name_from_header("Story JavaScript [script] {\"position\":\"100,200\"}"),
+            "Story JavaScript"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_passage_position_from_header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_position_from_header_string_format() {
+        let pos = parse_passage_position_from_header(":: Start {\"position\":\"100,200\"}");
+        assert_eq!(pos, Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn test_parse_position_from_header_with_tags() {
+        let pos = parse_passage_position_from_header(":: Start [important] {\"position\":\"50,75\"}");
+        assert_eq!(pos, Some((50.0, 75.0)));
+    }
+
+    #[test]
+    fn test_parse_position_from_header_object_format() {
+        let pos = parse_passage_position_from_header(":: Start {\"position\":{\"x\":100,\"y\":200}}");
+        assert_eq!(pos, Some((100.0, 200.0)));
+    }
+
+    #[test]
+    fn test_parse_position_from_header_no_position() {
+        let pos = parse_passage_position_from_header(":: Start");
+        assert_eq!(pos, None);
+    }
+
+    #[test]
+    fn test_parse_position_from_header_json_no_position() {
+        let pos = parse_passage_position_from_header(":: Start {\"ifid\":\"ABC\"}");
+        assert_eq!(pos, None);
+    }
+
+    #[test]
+    fn test_parse_position_from_header_decimal() {
+        let pos = parse_passage_position_from_header(":: Start {\"position\":\"100.5,200.75\"}");
+        assert_eq!(pos, Some((100.5, 200.75)));
+    }
+
+    // -----------------------------------------------------------------------
+    // update_passage_position_in_header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_position_new_json() {
+        let result = update_passage_position_in_header(":: Start", 100.0, 200.0);
+        assert!(result.contains("{\"position\":\"100,200\"}"), "Result: {}", result);
+    }
+
+    #[test]
+    fn test_update_position_replace_existing() {
+        let result = update_passage_position_in_header(
+            ":: Start {\"position\":\"50,75\"}", 100.0, 200.0,
+        );
+        assert!(result.contains("\"position\":\"100,200\""), "Result: {}", result);
+    }
+
+    #[test]
+    fn test_update_position_preserves_other_metadata() {
+        let result = update_passage_position_in_header(
+            ":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}", 100.0, 200.0,
+        );
+        assert!(result.contains("\"position\":\"100,200\""), "Result: {}", result);
+        assert!(result.contains("\"ifid\":\"ABC\""), "Result: {}", result);
+    }
+
+    #[test]
+    fn test_update_position_with_tags() {
+        let result = update_passage_position_in_header(
+            ":: Start [important]", 100.0, 200.0,
+        );
+        assert!(result.contains("[important]"), "Result: {}", result);
+        assert!(result.contains("{\"position\":\"100,200\"}"), "Result: {}", result);
+    }
+
+    #[test]
+    fn test_update_position_decimal() {
+        let result = update_passage_position_in_header(":: Start", 100.5, 200.75);
+        assert!(result.contains("{\"position\":\"100.5,200.75\"}"), "Result: {}", result);
+    }
+
+    // -----------------------------------------------------------------------
     // find_passage_header_range
     // -----------------------------------------------------------------------
 

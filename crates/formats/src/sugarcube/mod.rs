@@ -154,9 +154,10 @@ impl FormatPlugin for SugarCubePlugin {
                 tokens.extend(prop_toks);
 
                 // Comment tokens for Twine-style comments
-                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans.iter()
-                    .map(|s| s.start.saturating_sub(body_offset)..s.end.saturating_sub(body_offset))
-                    .collect::<Vec<_>>());
+                // comment_spans are already doc-absolute (body-relative +
+                // body_offset); comment_tokens() converts them back to
+                // body-relative internally for body slicing.
+                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans);
                 tokens.extend(comment_toks);
 
                 // Validation: skip SugarCube-specific bracket checks
@@ -336,9 +337,9 @@ impl FormatPlugin for SugarCubePlugin {
 
                 // Comment tokens for Twine-style comments (/% ... %/, /%% ... %%/)
                 // that the TextMate grammar doesn't recognize.
-                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans.iter()
-                    .map(|s| s.start.saturating_sub(body_offset)..s.end.saturating_sub(body_offset))
-                    .collect::<Vec<_>>());
+                // comment_spans are already doc-absolute; comment_tokens()
+                // converts them back to body-relative internally.
+                let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans);
                 tokens.extend(comment_toks);
 
                 // PassageRef tokens for implicit passage references
@@ -840,13 +841,15 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     // -------------------------------------------------------------------
-    // Script/stylesheet tags
+    // Script/stylesheet tags (deprecated — use classification system)
     // -------------------------------------------------------------------
 
+    #[allow(deprecated)]
     fn script_tags(&self) -> Vec<&'static str> {
         macros::script_tags()
     }
 
+    #[allow(deprecated)]
     fn stylesheet_tags(&self) -> Vec<&'static str> {
         macros::stylesheet_tags()
     }
