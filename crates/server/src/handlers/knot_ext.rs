@@ -1432,7 +1432,10 @@ impl ServerState {
                     if name == update.passage_name {
                         let new_line = if helpers::parse_passage_position(line).is_some() {
                             // Position exists: replace <oldx,oldy> with <newx,newy>
-                            let angle_start = line.rfind('<').unwrap();
+                            let angle_start = line.rfind('<').unwrap_or_else(|| {
+                                tracing::warn!("knot/updatePositions: line has position but no '<' char: {}", line);
+                                line.len() // Fallback: append position at end
+                            });
                             let new_line = format!(
                                 "{}<{},{}>",
                                 &line[..angle_start],

@@ -54,6 +54,7 @@
 
 use std::ops::Range;
 
+use once_cell::sync::Lazy;
 use crate::plugin::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use super::links::{
     RE_LINK_ARROW, RE_LINK_PIPE, RE_LINK_SIMPLE,
@@ -407,7 +408,11 @@ pub(crate) fn widget_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
 /// "You see 3 items" should not color the "3").
 pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
-    let re_number = regex::Regex::new(r"(?<![A-Za-z_$])(\d+(?:\.\d+)?)(?![A-Za-z_$])").unwrap();
+    // Note: The Rust `regex` crate does not support lookbehind (`(?<!...)`).
+    // We use a simpler pattern and filter boundaries manually.
+    static RE_NUMBER: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r"(\d+(?:\.\d+)?)").unwrap()
+    });
 
     let parsed_macros = blocks::scan_macros(body);
     for m in &parsed_macros {
@@ -429,14 +434,28 @@ pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
         let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
         let args_offset_in_body = name_end_in_body + trimmed_start;
 
-        for caps in re_number.captures_iter(args_str) {
+        for caps in RE_NUMBER.captures_iter(args_str) {
             if let Some(num_match) = caps.get(1) {
-                tokens.push(SemanticToken {
-                    start: body_offset + args_offset_in_body + num_match.start(),
-                    length: num_match.end() - num_match.start(),
-                    token_type: SemanticTokenType::Number,
-                    modifier: None,
-                });
+                // Check word boundaries manually (what lookbehind/lookahead would do)
+                let start = num_match.start();
+                let end = num_match.end();
+                let before_ok = start == 0
+                    || !args_str.as_bytes()[start - 1].is_ascii_alphanumeric()
+                        && args_str.as_bytes()[start - 1] != b'_'
+                        && args_str.as_bytes()[start - 1] != b'$';
+                let after_ok = end >= args_str.len()
+                    || !args_str.as_bytes()[end].is_ascii_alphanumeric()
+                        && args_str.as_bytes()[end] != b'_'
+                        && args_str.as_bytes()[end] != b'$';
+
+                if before_ok && after_ok {
+                    tokens.push(SemanticToken {
+                        start: body_offset + args_offset_in_body + num_match.start(),
+                        length: num_match.end() - num_match.start(),
+                        token_type: SemanticTokenType::Number,
+                        modifier: None,
+                    });
+                }
             }
         }
     }
@@ -548,13 +567,16 @@ pub(crate) fn property_tokens(body: &str, body_offset: usize) -> Vec<SemanticTok
 
     // Build a regex that matches any namespace followed by `.` and an identifier.
     // Example: State.variables → "variables" gets a Property token.
-    let ns_pattern = SUGARCUBE_NAMESPACES.join("|");
-    let re = regex::Regex::new(&format!(
-        r"(?:{})\.([A-Za-z_][A-Za-z0-9_]*)",
-        ns_pattern
-    )).unwrap();
+    // Uses Lazy static to avoid recompiling the regex on every call.
+    static RE_PROPERTY: Lazy<regex::Regex> = Lazy::new(|| {
+        let ns_pattern = SUGARCUBE_NAMESPACES.join("|");
+        regex::Regex::new(&format!(
+            r"(?:{})\.([A-Za-z_][A-Za-z0-9_]*)",
+            ns_pattern
+        )).unwrap()
+    });
 
-    for caps in re.captures_iter(body) {
+    for caps in RE_PROPERTY.captures_iter(body) {
         if let Some(prop_match) = caps.get(1) {
             tokens.push(SemanticToken {
                 start: body_offset + prop_match.start(),

@@ -542,7 +542,7 @@ mod tests {
     fn test_double_colon_filter_js_namespace() {
         // Use::Operation is JS namespace syntax, NOT a Twine passage link
         let body = r#"var x = Use::Operation;"#;
-        let links = extract_links(body, 0);
+        let _links = extract_links(body, 0);
         // RE_LINK_SIMPLE won't match this because there's no [[...]]
         // But if someone writes [[Use::Operation]], it should be filtered
         let body2 = r#"[[Use::Operation]]"#;

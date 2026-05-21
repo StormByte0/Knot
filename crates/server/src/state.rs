@@ -7,7 +7,7 @@ use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
 use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
 use tower_lsp::Client;
 use url::Url;

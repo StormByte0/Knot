@@ -31,6 +31,7 @@ mod tests {
     use super::*;
     use knot_core::graph::DiagnosticKind;
     use knot_core::passage::StoryFormat;
+    use lsp_types::{DiagnosticSeverity, Position};
 
     // -----------------------------------------------------------------------
     // diagnostic_kind_to_severity

@@ -37,7 +37,7 @@ once_cell = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
 # Testing
 insta = "1"
