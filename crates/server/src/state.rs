@@ -7,6 +7,7 @@ use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
 use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tower_lsp::Client;
 use url::Url;
@@ -78,6 +79,10 @@ pub struct ServerState {
     pub client: Client,
     /// Mutable inner state behind an async read-write lock.
     pub inner: RwLock<ServerStateInner>,
+    /// Shutdown guard — set to `true` when `shutdown()` is called so that
+    /// in-flight handlers can short-circuit instead of writing to a destroyed
+    /// transport stream.  Reset to `false` on `initialize()`.
+    pub shutting_down: AtomicBool,
 }
 
 impl ServerState {
@@ -101,6 +106,7 @@ impl ServerState {
                 format_diagnostics: HashMap::new(),
                 breakpoints: Vec::new(),
             }),
+            shutting_down: AtomicBool::new(false),
         }
     }
 }

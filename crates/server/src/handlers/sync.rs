@@ -9,6 +9,11 @@ use lsp_types::*;
 use url::Url;
 
 pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentParams) {
+    // Short-circuit if the server is shutting down
+    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let text = params.text_document.text;
     let version = params.text_document.version;
@@ -72,11 +77,18 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
-    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-    let open_docs = inner.open_documents.clone();
-    let fmt_diags = inner.format_diagnostics.clone();
-    let config = inner.workspace.config.clone();
+    // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
+
+    // Read-lock phase: analysis (read-only)
+    let (diagnostics, open_docs, fmt_diags, config) = {
+        let inner = state.inner.read().await;
+        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        let open_docs = inner.open_documents.clone();
+        let fmt_diags = inner.format_diagnostics.clone();
+        let config = inner.workspace.config.clone();
+        (diagnostics, open_docs, fmt_diags, config)
+    };
 
     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
@@ -86,6 +98,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
+    // Short-circuit if the server is shutting down
+    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let version = params.text_document.version;
 
@@ -250,42 +267,56 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         }
     }
 
-    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-    tracing::debug!(
-        file = %uri,
-        diagnostic_count = diagnostics.len(),
-        workspace_total_passages = inner.workspace.passage_count(),
-        workspace_total_documents = inner.workspace.document_count(),
-        graph_nodes = inner.workspace.graph.passage_count(),
-        graph_edges = inner.workspace.graph.edge_count(),
-        "did_change: analysis complete, workspace state dump"
-    );
-
-    // Log all passage definitions across the workspace for debugging
-    // duplicate detection issues
-    {
-        let mut all_passage_names: Vec<(String, String)> = Vec::new();
-        for d in inner.workspace.documents() {
-            for p in &d.passages {
-                all_passage_names.push((p.name.clone(), d.uri.to_string()));
-            }
-        }
-        tracing::debug!(
-            all_passages = ?all_passage_names,
-            "did_change: full workspace passage definitions"
-        );
-    }
+    // ── Phase 1 complete: all state mutations are done. ──────────────
+    // Release the write lock early so that read-lock handlers
+    // (codeAction, documentLink, inlayHint, etc.) are not blocked while
+    // we run the (read-only) diagnostic analysis below.  This is the key
+    // fix for the "Cannot call write after a stream was destroyed" race:
+    // the shorter the write-lock hold time, the less likely a restart
+    // will catch in-flight handlers still waiting for the lock.
 
     // Check if format changed after StoryData extraction
     let format_after = inner.workspace.resolve_format();
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
+    drop(inner); // ← release write lock
 
-    let open_docs = inner.open_documents.clone();
-    let fmt_diags = inner.format_diagnostics.clone();
-    let config = inner.workspace.config.clone();
-    drop(inner);
+    // ── Phase 2: read-lock — analysis (read-only) ──────────────────
+    let (diagnostics, open_docs, fmt_diags, config) = {
+        let inner = state.inner.read().await;
+        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        tracing::debug!(
+            file = %uri,
+            diagnostic_count = diagnostics.len(),
+            workspace_total_passages = inner.workspace.passage_count(),
+            workspace_total_documents = inner.workspace.document_count(),
+            graph_nodes = inner.workspace.graph.passage_count(),
+            graph_edges = inner.workspace.graph.edge_count(),
+            "did_change: analysis complete, workspace state dump"
+        );
 
+        // Log all passage definitions across the workspace for debugging
+        // duplicate detection issues
+        {
+            let mut all_passage_names: Vec<(String, String)> = Vec::new();
+            for d in inner.workspace.documents() {
+                for p in &d.passages {
+                    all_passage_names.push((p.name.clone(), d.uri.to_string()));
+                }
+            }
+            tracing::debug!(
+                all_passages = ?all_passage_names,
+                "did_change: full workspace passage definitions"
+            );
+        }
+
+        let open_docs = inner.open_documents.clone();
+        let fmt_diags = inner.format_diagnostics.clone();
+        let config = inner.workspace.config.clone();
+        (diagnostics, open_docs, fmt_diags, config)
+    }; // ← read lock dropped
+
+    // ── Phase 3: no lock — publish ─────────────────────────────────
     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
     if should_notify {
@@ -388,11 +419,17 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
     }
 
     // Re-run analysis and publish diagnostics with updated config
-    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-    let open_docs = inner.open_documents.clone();
-    let fmt_diags = inner.format_diagnostics.clone();
-    let config = inner.workspace.config.clone();
+    // Release write lock before analysis
     drop(inner);
+
+    let (diagnostics, open_docs, fmt_diags, config) = {
+        let inner = state.inner.read().await;
+        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        let open_docs = inner.open_documents.clone();
+        let fmt_diags = inner.format_diagnostics.clone();
+        let config = inner.workspace.config.clone();
+        (diagnostics, open_docs, fmt_diags, config)
+    };
 
     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 }
@@ -470,11 +507,18 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
                         let should_notify = format_before != format_after;
 
-                        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-                        let open_docs = inner.open_documents.clone();
-                        let fmt_diags = inner.format_diagnostics.clone();
-                        let config = inner.workspace.config.clone();
+                        // Release write lock before analysis
                         drop(inner);
+
+                        // Read-lock phase: analysis (read-only)
+                        let (diagnostics, open_docs, fmt_diags, config) = {
+                            let inner = state.inner.read().await;
+                            let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+                            let open_docs = inner.open_documents.clone();
+                            let fmt_diags = inner.format_diagnostics.clone();
+                            let config = inner.workspace.config.clone();
+                            (diagnostics, open_docs, fmt_diags, config)
+                        };
 
                         helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
@@ -495,11 +539,18 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // Recheck broken links after removal
                 inner.workspace.graph.recheck_broken_links();
 
-                let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-                let open_docs = inner.open_documents.clone();
-                let fmt_diags = inner.format_diagnostics.clone();
-                let config = inner.workspace.config.clone();
+                // Release write lock before analysis
                 drop(inner);
+
+                // Read-lock phase: analysis (read-only)
+                let (diagnostics, open_docs, fmt_diags, config) = {
+                    let inner = state.inner.read().await;
+                    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+                    let open_docs = inner.open_documents.clone();
+                    let fmt_diags = inner.format_diagnostics.clone();
+                    let config = inner.workspace.config.clone();
+                    (diagnostics, open_docs, fmt_diags, config)
+                };
 
                 helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 
@@ -542,11 +593,18 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             let should_notify = format_before != Some(format_after.clone());
                             let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
-                            let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-                            let open_docs = inner.open_documents.clone();
-                            let fmt_diags = inner.format_diagnostics.clone();
-                            let config = inner.workspace.config.clone();
+                            // Release write lock before analysis
                             drop(inner);
+
+                            // Read-lock phase: analysis (read-only)
+                            let (diagnostics, open_docs, fmt_diags, config) = {
+                                let inner = state.inner.read().await;
+                                let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+                                let open_docs = inner.open_documents.clone();
+                                let fmt_diags = inner.format_diagnostics.clone();
+                                let config = inner.workspace.config.clone();
+                                (diagnostics, open_docs, fmt_diags, config)
+                            };
 
                             helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
 

@@ -1355,16 +1355,20 @@ fn is_pre_start_passage(workspace: &knot_core::Workspace, passage_name: &str) ->
         if let Some(passage) = doc.passages.iter().find(|p| p.name == passage_name) {
             if passage.is_special {
                 if let Some(ref def) = passage.special_def {
-                    // Startup passages (StoryInit) run before the start passage
+                    // Startup passages (StoryInit) and script-injection passages
+                    // both run before the start passage. Script-injection passages
+                    // (tagged [script] or legacy-named "script") are compiled into
+                    // <script> elements that execute at story load time.
                     return matches!(
                         def.behavior,
                         knot_core::passage::SpecialPassageBehavior::Startup
+                            | knot_core::passage::SpecialPassageBehavior::ScriptInjection
                     );
                 }
             }
-            // Script-tagged passages also run before the start passage
-            // (Twine compiles their JavaScript into <script> elements that
-            // execute at story load time). Use tag-based detection, not name.
+            // Fallback: tag-based detection for unclassified script passages.
+            // This path is reached when special_def is not set (shouldn't happen
+            // in normal parse flow, but defensive).
             if passage.is_script_passage() {
                 return true;
             }

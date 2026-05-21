@@ -463,4 +463,196 @@ mod tests {
         assert!(targets.contains(&"G"));
         assert!(targets.contains(&"H"));
     }
+
+    // ── Regression tests for Use::Operation false positive ────────────────
+
+    #[test]
+    fn test_double_colon_filter_rejects_js_namespace() {
+        // Bug 3 regression: Use::Operation in JS must NOT be treated as a
+        // passage reference. The `::` filter in extract_links() rejects
+        // link targets containing "::".
+        let body = r#"var x = Use::Operation;"#;
+        let links = extract_links(body, 0);
+        // No [[...]] syntax present, so no links should be extracted
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn test_double_colon_in_simple_link_rejected() {
+        // Even if someone wrote [[Use::Operation]] in a normal passage,
+        // the `::` filter should reject it as a passage target.
+        let body = r#"Before [[Use::Operation]] after"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "Targets with :: should be filtered out");
+    }
+
+    #[test]
+    fn test_js_bracket_notation_filtered() {
+        // Bug 3 regression: obj[[key]] is JS bracket access, not a Twine link.
+        let body = r#"var x = obj[[key]];"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket notation should be filtered");
+    }
+
+    #[test]
+    fn test_js_chained_bracket_notation_filtered() {
+        // arr[i][[key]] — chained bracket access
+        let body = r#"var x = arr[i][[key]];"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "Chained JS bracket notation should be filtered");
+    }
+
+    #[test]
+    fn test_js_function_result_bracket_filtered() {
+        // func()[[key]] — function result access
+        let body = r#"var x = func()[[key]];"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "Function result bracket notation should be filtered");
+    }
+
+    #[test]
+    fn test_sugarcube_var_bracket_filtered() {
+        // $var[[key]] — SugarCube variable bracket access
+        let body = r#"$items[[0]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "SugarCube variable bracket notation should be filtered");
+    }
+
+    #[test]
+    fn test_normal_link_not_filtered() {
+        // A genuine [[Forest]] link should NOT be filtered
+        let body = r#"You go [[Forest]]."#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    #[test]
+    fn test_normal_arrow_link_not_filtered() {
+        // [[Go north->Forest]] should work normally
+        let body = r#"[[Go north->Forest]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    // ── Regression tests for "::" filter (Bug 3 defense) ──────────────
+
+    #[test]
+    fn test_double_colon_filter_js_namespace() {
+        // Use::Operation is JS namespace syntax, NOT a Twine passage link
+        let body = r#"var x = Use::Operation;"#;
+        let links = extract_links(body, 0);
+        // RE_LINK_SIMPLE won't match this because there's no [[...]]
+        // But if someone writes [[Use::Operation]], it should be filtered
+        let body2 = r#"[[Use::Operation]]"#;
+        let links2 = extract_links(body2, 0);
+        assert!(links2.is_empty(), "Targets containing '::' should be filtered (JS namespace)");
+    }
+
+    #[test]
+    fn test_double_colon_filter_in_simple_link() {
+        // Any [[target::with::colons]] should be rejected
+        let body = r#"[[Some::Namespace]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "Simple links with '::' in target should be filtered");
+    }
+
+    #[test]
+    fn test_double_colon_not_in_arrow_link() {
+        // Arrow links: [[Display->Target]] — the "target" portion
+        // shouldn't contain "::" in normal usage, but arrow/pipe links
+        // don't get the "::" filter (only simple links do).
+        // This is acceptable because arrow/pipe syntax already disambiguates.
+        let body = r#"[[Click->Forest]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    #[test]
+    fn test_normal_passage_name_with_single_colon() {
+        // A single colon in a passage name is fine (though unusual)
+        // Only "::" (double colon) triggers the filter
+        let body = r#"[[Chapter 1: Intro]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1, "Single colon should NOT trigger the '::' filter");
+        assert_eq!(links[0].target, "Chapter 1: Intro");
+    }
+
+    // ── Regression tests for is_js_bracket_context() ──────────────────
+
+    #[test]
+    fn test_js_bracket_context_after_open_bracket() {
+        // arr[[key]] — open bracket before [[
+        let body = r#"var x = arr[[key]];"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after '[' should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_close_bracket() {
+        // arr[0][[key]] — close bracket before [[
+        let body = r#"var x = arr[0][[key]];"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after ']' should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_alphanumeric() {
+        // cursor[[key]] — alphanumeric before [[
+        let body = r#"cursor[[key]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after alphanumeric should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_underscore() {
+        // my_var[[key]] — underscore before [[
+        let body = r#"my_var[[key]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after '_' should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_dollar() {
+        // $items[[0]] — SugarCube variable before [[
+        let body = r#"$items[[0]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after '$' should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_close_paren() {
+        // func()[[key]] — close paren before [[
+        let body = r#"func()[[key]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after ')' should be filtered");
+    }
+
+    #[test]
+    fn test_js_bracket_context_after_close_brace() {
+        // {}[[key]] — close brace before [[
+        let body = r#"{}[[key]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), "JS bracket after '}}' should be filtered");
+    }
+
+    #[test]
+    fn test_link_after_space_not_filtered() {
+        // "Go to [[Forest]]" — space before [[ is NOT a JS context
+        let body = r#"Go to [[Forest]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
+
+    #[test]
+    fn test_link_at_line_start_not_filtered() {
+        // [[Forest]] at position 0 — no previous char, not JS context
+        let body = r#"[[Forest]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "Forest");
+    }
 }

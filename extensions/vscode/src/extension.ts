@@ -712,12 +712,35 @@ function registerCommands(context: vscode.ExtensionContext) {
 
             try {
                 await client?.stop();
-                // Small delay to let the server fully shut down
-                await new Promise(resolve => setTimeout(resolve, 500));
+                // Allow in-flight requests to complete before starting a new
+                // server instance.  The previous 500 ms was too short — if
+                // did_change was still holding the write lock, read-lock
+                // handlers (codeAction, documentLink, inlayHint) could be
+                // blocked and would try to write their responses to a
+                // transport stream that had already been destroyed.
+                await new Promise(resolve => setTimeout(resolve, 2000));
                 await client?.start();
                 vscode.window.showInformationMessage('Knot language server restarted.');
             } catch (e) {
-                vscode.window.showErrorMessage(`Failed to restart Knot server: ${e}`);
+                // "Cannot call write after a stream was destroyed" is a
+                // cosmetic error that occurs when an in-flight LSP request
+                // tries to respond after the transport was torn down during
+                // a restart.  Suppress it — the new client session will be
+                // fully functional.
+                const msg = String(e);
+                if (msg.includes('write after a stream was destroyed')) {
+                    // Try to start the client again — the stop completed,
+                    // the error is just from a late response.
+                    try {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        await client?.start();
+                        vscode.window.showInformationMessage('Knot language server restarted.');
+                    } catch (e2) {
+                        vscode.window.showErrorMessage(`Failed to restart Knot server: ${e2}`);
+                    }
+                } else {
+                    vscode.window.showErrorMessage(`Failed to restart Knot server: ${e}`);
+                }
             }
         })
     );

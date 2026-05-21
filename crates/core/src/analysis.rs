@@ -461,7 +461,7 @@ impl AnalysisEngine {
 
         for doc in workspace.documents() {
             for passage in &doc.passages {
-                if passage.is_metadata() || passage.is_special || passage.is_script_passage() || passage.is_stylesheet_passage() {
+                if passage.is_metadata() || passage.is_special {
                     continue;
                 }
 

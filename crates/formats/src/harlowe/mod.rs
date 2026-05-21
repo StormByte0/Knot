@@ -1097,39 +1097,14 @@ impl HarlowePlugin {
         diagnostics
     }
 
-    /// Harlowe special passage definitions.
+    /// Harlowe name-matched special passage definitions.
+    ///
+    /// These are passages identified by their exact passage name.
+    /// Only `PassageHeader` and `PassageFooter` are name-matched in Harlowe.
+    /// The `[startup]`, `[header]`, and `[footer]` tag-matched definitions
+    /// live in `tag_matched_special_passages()`.
     fn special_passage_defs() -> Vec<SpecialPassageDef> {
         vec![
-            SpecialPassageDef {
-                name: "startup".into(),
-                match_strategy: MatchStrategy::Name,
-                behavior: SpecialPassageBehavior::Startup,
-                contributes_variables: true,
-                participates_in_graph: false,
-                execution_priority: Some(0),
-                layer: SpecialPassageLayer::StoryFormat,
-                scaffold: None,
-            },
-            SpecialPassageDef {
-                name: "header".into(),
-                match_strategy: MatchStrategy::Name,
-                behavior: SpecialPassageBehavior::ChromeInterceptor,
-                contributes_variables: true,
-                participates_in_graph: true,
-                execution_priority: Some(90),
-                layer: SpecialPassageLayer::StoryFormat,
-                scaffold: None,
-            },
-            SpecialPassageDef {
-                name: "footer".into(),
-                match_strategy: MatchStrategy::Name,
-                behavior: SpecialPassageBehavior::ChromeInterceptor,
-                contributes_variables: true,
-                participates_in_graph: true,
-                execution_priority: Some(110),
-                layer: SpecialPassageLayer::StoryFormat,
-                scaffold: None,
-            },
             SpecialPassageDef {
                 name: "PassageHeader".into(),
                 match_strategy: MatchStrategy::Name,
@@ -1153,21 +1128,6 @@ impl HarlowePlugin {
         ]
     }
 
-    /// Check if a passage with the given tags should be treated as having
-    /// special header/footer behavior (Harlowe also supports tag-based
-    /// header/footer: a passage tagged `header` or `footer`).
-    fn has_tag_behavior(tags: &[String]) -> Option<SpecialPassageBehavior> {
-        if tags.iter().any(|t| t == "header") {
-            return Some(SpecialPassageBehavior::ChromeInterceptor);
-        }
-        if tags.iter().any(|t| t == "footer") {
-            return Some(SpecialPassageBehavior::ChromeInterceptor);
-        }
-        if tags.iter().any(|t| t == "startup") {
-            return Some(SpecialPassageBehavior::Startup);
-        }
-        None
-    }
 }
 
 impl FormatPlugin for HarlowePlugin {
@@ -1186,44 +1146,11 @@ impl FormatPlugin for HarlowePlugin {
         for (header, body) in &raw_passages {
             let body_offset = header.header_start + header.header_len;
 
-            // Determine if this is a special passage.
-            let format_defs = Self::special_passage_defs();
-            let special_def = format_defs
-                .iter()
-                .find(|d| d.name == header.name)
-                .cloned()
-                .or_else(|| {
-                    knot_core::passage::twine_core_special_passages().iter()
-                        .chain(knot_core::passage::legacy_core_special_passages().iter())
-                        .find(|d| d.name == header.name).cloned()
-                })
-                .or_else(|| {
-                    // Tag-based special behavior
-                    Self::has_tag_behavior(&header.tags).map(|behavior| {
-                        let is_startup = behavior == SpecialPassageBehavior::Startup;
-                        let priority = match &behavior {
-                            SpecialPassageBehavior::Startup => Some(0),
-                            SpecialPassageBehavior::ChromeInterceptor => {
-                                if header.tags.iter().any(|t| t == "header") {
-                                    Some(92)
-                                } else {
-                                    Some(112)
-                                }
-                            }
-                            _ => None,
-                        };
-                        SpecialPassageDef {
-                            name: header.name.clone(),
-                            match_strategy: MatchStrategy::Name,
-                            behavior,
-                            contributes_variables: is_startup,
-                            participates_in_graph: false,
-                            execution_priority: priority,
-                            layer: SpecialPassageLayer::StoryFormat,
-                            scaffold: None,
-                        }
-                    })
-                });
+            // Determine if this is a special passage using the unified
+            // classification system. Tags are checked FIRST (per the
+            // Twee 3 spec), then names. This replaces the old manual
+            // three-stage lookup (format defs → core defs → tag fallback).
+            let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
@@ -1268,23 +1195,19 @@ impl FormatPlugin for HarlowePlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_text: &str) -> Option<Passage> {
-        let format_defs = Self::special_passage_defs();
-        let special_def = format_defs
-            .iter()
-            .find(|d| d.name == passage_name)
-            .cloned()
-            .or_else(|| {
-                knot_core::passage::twine_core_special_passages().iter()
-                    .chain(knot_core::passage::legacy_core_special_passages().iter())
-                    .find(|d| d.name == passage_name).cloned()
-            });
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+        // Use the full classification system which handles tag-matched
+        // passages (e.g., [header], [footer], [startup]) in addition to
+        // name-matched passages.
+        let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
             Passage::new_special(passage_name.to_string(), 0..passage_text.len(), def)
         } else {
             Passage::new(passage_name.to_string(), 0..passage_text.len())
         };
+
+        passage.tags = passage_tags.to_vec();
 
         passage.links = self.extract_links(passage_text, 0);
         passage.vars = self.extract_vars(passage_text, 0);
@@ -1295,6 +1218,53 @@ impl FormatPlugin for HarlowePlugin {
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         Self::special_passage_defs()
+    }
+
+    /// Harlowe tag-matched special passage definitions.
+    ///
+    /// In Harlowe, `[startup]`, `[header]`, and `[footer]` are TAG-based
+    /// special passages — the passage name is user-defined and irrelevant
+    /// for classification. A passage like `:: Nav [header]` is classified
+    /// as a ChromeInterceptor by its tag, not its name.
+    ///
+    /// This override ensures that `classify_passage()` (used by both
+    /// `parse()` and `parse_passage()`) correctly identifies tag-matched
+    /// special passages, fixing the incremental re-parse path that was
+    /// previously broken because the default `tag_matched_special_passages()`
+    /// returned an empty vec.
+    fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
+        vec![
+            SpecialPassageDef {
+                name: "startup".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::Startup,
+                contributes_variables: true,
+                participates_in_graph: false,
+                execution_priority: Some(0),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+            SpecialPassageDef {
+                name: "header".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
+                execution_priority: Some(90),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+            SpecialPassageDef {
+                name: "footer".into(),
+                match_strategy: MatchStrategy::Tag,
+                behavior: SpecialPassageBehavior::ChromeInterceptor,
+                contributes_variables: true,
+                participates_in_graph: true,
+                execution_priority: Some(110),
+                layer: SpecialPassageLayer::StoryFormat,
+                scaffold: None,
+            },
+        ]
     }
 
     fn display_name(&self) -> &str {
@@ -1422,12 +1392,29 @@ mod tests {
     #[test]
     fn detect_special_passages() {
         let plugin = HarlowePlugin::new();
-        assert!(plugin.is_special_passage("startup"));
-        assert!(plugin.is_special_passage("header"));
-        assert!(plugin.is_special_passage("footer"));
+        // Name-matched passages: detected by passage name alone (no tags needed)
         assert!(plugin.is_special_passage("PassageHeader"));
         assert!(plugin.is_special_passage("PassageFooter"));
         assert!(!plugin.is_special_passage("MyRoom"));
+
+        // Tag-matched passages: NOT detected by name alone — they require tags.
+        // "startup", "header", "footer" are TAG-based in Harlowe, not name-based.
+        // Use classify_passage() to detect them with tags.
+        assert!(!plugin.is_special_passage("startup"),
+            "startup is tag-matched, not name-matched");
+        assert!(!plugin.is_special_passage("header"),
+            "header is tag-matched, not name-matched");
+        assert!(!plugin.is_special_passage("footer"),
+            "footer is tag-matched, not name-matched");
+
+        // Verify tag-matched detection works via classify_passage
+        let startup_def = plugin.classify_passage("Init", &["startup".to_string()]);
+        assert!(startup_def.is_some(), "startup tag should classify via classify_passage");
+        assert!(matches!(startup_def.unwrap().behavior, SpecialPassageBehavior::Startup));
+
+        let header_def = plugin.classify_passage("Nav", &["header".to_string()]);
+        assert!(header_def.is_some(), "header tag should classify via classify_passage");
+        assert!(matches!(header_def.unwrap().behavior, SpecialPassageBehavior::ChromeInterceptor));
     }
 
     #[test]
@@ -1772,7 +1759,7 @@ mod tests {
     #[test]
     fn incremental_reparse() {
         let plugin = HarlowePlugin::new();
-        let passage = plugin.parse_passage("Start", "You have $gold coins.\n");
+        let passage = plugin.parse_passage("Start", &[], "You have $gold coins.\n");
 
         assert!(passage.is_some());
         let p = passage.unwrap();
@@ -1804,6 +1791,82 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let p = &result.passages[0];
         assert!(p.is_special, "Passage tagged 'footer' should be special");
+    }
+
+    // -----------------------------------------------------------------------
+    // Incremental re-parse (parse_passage) with tag-matched passages
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_passage_tagged_header() {
+        let plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage(
+            "Nav",
+            &["header".to_string()],
+            "Some header content\n",
+        );
+        let p = result.expect("tagged [header] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+    }
+
+    #[test]
+    fn parse_passage_tagged_footer() {
+        let plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage(
+            "Credits",
+            &["footer".to_string()],
+            "Thanks for playing.\n",
+        );
+        let p = result.expect("tagged [footer] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
+        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+    }
+
+    #[test]
+    fn parse_passage_tagged_startup() {
+        let plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage(
+            "Init",
+            &["startup".to_string()],
+            "(set: $x to 1)\n",
+        );
+        let p = result.expect("tagged [startup] passage should be classified as special");
+        assert!(p.is_special, "Passage tagged 'startup' should be special via classify_passage");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::Startup));
+        assert!(def.contributes_variables, "startup passages should contribute variables");
+    }
+
+    #[test]
+    fn parse_passage_name_matched_passage_header() {
+        let plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage(
+            "PassageHeader",
+            &[],
+            "Header content\n",
+        );
+        let p = result.expect("PassageHeader (name-matched) should be classified as special");
+        assert!(p.is_special, "PassageHeader should be special via name matching");
+        let def = p.special_def.as_ref().unwrap();
+        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+    }
+
+    #[test]
+    fn classify_passage_tag_takes_priority_over_name() {
+        let plugin = HarlowePlugin::new();
+        // A passage named "PassageHeader" but tagged [startup] should
+        // be classified by its TAG (startup) first per the Twee 3 spec,
+        // not by its name (PassageHeader).
+        let def = plugin.classify_passage("PassageHeader", &["startup".to_string()]);
+        assert!(def.is_some(), "Should classify PassageHeader with [startup] tag");
+        let d = def.unwrap();
+        assert!(matches!(d.behavior, SpecialPassageBehavior::Startup),
+            "Tag-matched startup should take priority over name-matched PassageHeader");
     }
 
     // -----------------------------------------------------------------------

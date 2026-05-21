@@ -41,6 +41,7 @@ pub(crate) const SM_DEPRECATED: u32 = 1 << 2;   // bit 2
 pub(crate) const SM_CONTROLFLOW: u32 = 1 << 3;  // bit 3
 pub(crate) const SM_TWINECORE: u32 = 1 << 4;    // bit 4 (maps to `static` in legend)
 pub(crate) const SM_STORYFORMAT: u32 = 1 << 5;  // bit 5 (maps to `async` in legend)
+pub(crate) const SM_USERDEFINED: u32 = 1 << 6;   // bit 6 (maps to `modification` in legend)
 
 // ---------------------------------------------------------------------------
 // Semantic token encoding helpers
@@ -129,6 +130,7 @@ fn map_token_modifier(modifier: &Option<fmt_plugin::SemanticTokenModifier>) -> u
         Some(fmt_plugin::SemanticTokenModifier::ControlFlow) => SM_CONTROLFLOW,
         Some(fmt_plugin::SemanticTokenModifier::TwineCore) => SM_TWINECORE,
         Some(fmt_plugin::SemanticTokenModifier::StoryFormat) => SM_STORYFORMAT,
+        Some(fmt_plugin::SemanticTokenModifier::UserDefined) => SM_USERDEFINED,
         None => 0,
     }
 }
@@ -385,6 +387,13 @@ pub(crate) async fn inlay_hint(
     state: &ServerState,
     params: InlayHintParams,
 ) -> Result<Option<Vec<InlayHint>>, tower_lsp::jsonrpc::Error> {
+    // Short-circuit if the server is shutting down — the dataflow analysis
+    // below is the single most expensive handler; if the stream is about to
+    // be destroyed, there is no point running it.
+    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(None);
+    }
+
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
