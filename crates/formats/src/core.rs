@@ -20,7 +20,6 @@
 use knot_core::passage::{
     Block, Link, Passage, SpecialPassageDef, StoryFormat,
 };
-use std::ops::Range;
 use url::Url;
 
 use crate::plugin::{FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
@@ -260,7 +259,7 @@ impl FormatPlugin for TwineCorePlugin {
         "Twine Core"
     }
 
-    fn parse(&self, uri: &Url, text: &str) -> ParseResult {
+    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
         let passages_raw = self.split_passages(text);
         let mut passages = Vec::new();
         let mut tokens = Vec::new();
