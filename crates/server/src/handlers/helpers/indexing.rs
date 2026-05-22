@@ -235,24 +235,31 @@ pub(crate) async fn index_workspace(
     }
 
     // After all files are loaded, rebuild the graph and run analysis
-    let mut inner = inner.write().await;
-    let format = inner.workspace.resolve_format();
-    inner.workspace.graph = rebuild_graph(&inner.workspace, &inner.format_registry, format.clone());
-    inner.workspace.mark_indexed();
+    let format;
+    let doc_uris: Vec<String>;
+    let diagnostics;
+    let open_docs;
+    let fmt_diags;
+    let config;
+    {
+        let mut inner_guard = inner.write().await;
+        format = inner_guard.workspace.resolve_format();
+        inner_guard.workspace.graph = rebuild_graph(&inner_guard.workspace, &inner_guard.format_registry, format.clone());
+        inner_guard.workspace.mark_indexed();
 
-    // Notify the client of the detected format so it can switch language IDs
-    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
+        // Notify the client of the detected format so it can switch language IDs
+        doc_uris = inner_guard.open_documents.keys().map(|u| u.to_string()).collect();
 
-    let diagnostics = analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-    let open_docs = inner.open_documents.clone();
-    let fmt_diags = inner.format_diagnostics.clone();
-    let config = inner.workspace.config.clone();
-    drop(inner);
+        diagnostics = analyze_with_format_vars(&inner_guard.workspace, &inner_guard.format_registry);
+        open_docs = inner_guard.open_documents.clone();
+        fmt_diags = inner_guard.format_diagnostics.clone();
+        config = inner_guard.workspace.config.clone();
+    }
 
     // Re-acquire read lock for publish — it needs workspace for variable related info
     {
-        let inner = inner.read().await;
-        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+        let inner_guard = inner.read().await;
+        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &inner_guard.workspace, &config).await;
     }
 
     // Always send formatDetected after initial indexing so the client
