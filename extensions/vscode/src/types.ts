@@ -346,3 +346,11 @@ export interface KnotFormatDetectedParams {
     format: string;
     document_uris: string[];
 }
+
+/** Notification: knot/refreshSemanticTokens */
+export interface KnotRefreshSemanticTokensParams {
+    /** URIs of documents whose semantic tokens need to be refreshed. */
+    document_uris: string[];
+    /** Optional reason for the refresh (for logging/debugging). */
+    reason?: string;
+}

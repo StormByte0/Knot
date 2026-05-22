@@ -22,7 +22,7 @@ import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse } from './types';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse, KnotRefreshSemanticTokensParams } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -137,6 +137,10 @@ export async function activate(context: vscode.ExtensionContext) {
     const clientOptions = {
         documentSelector: [
             { scheme: 'file', language: 'twee' },
+            { scheme: 'file', language: 'twee-sugarcube' },
+            { scheme: 'file', language: 'twee-harlowe' },
+            { scheme: 'file', language: 'twee-chapbook' },
+            { scheme: 'file', language: 'twee-snowman' },
         ],
         synchronize: {
             fileEvents: vscode.workspace.createFileSystemWatcher(
@@ -268,6 +272,43 @@ export async function activate(context: vscode.ExtensionContext) {
                     console.warn(`[Knot] Error processing format notification for ${docUri}: ${e}`);
                 }
             }
+
+            // After switching language IDs, trigger a semantic token refresh
+            // so that already-open editors get proper highlighting based on
+            // the newly detected format. Without this, editors that were
+            // already open before format detection complete may show stale
+            // or empty tokens.
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+            refreshDecorationsForOpenEditors();
+        }
+    );
+
+    // Register custom notification handler for knot/refreshSemanticTokens
+    // When the server detects that semantic tokens may be stale in other
+    // documents (e.g., cross-file link resolution changes, format detection),
+    // it sends this notification. We trigger VS Code's semantic token refresh
+    // so that the editor re-requests tokens for the affected documents.
+    //
+    // This complements the standard `workspace/semanticTokens/refresh` request
+    // that the server also sends — that mechanism is handled automatically by
+    // vscode-languageclient. This handler provides additional coverage and can
+    // be used for decoration updates beyond what the standard refresh covers.
+    client.onNotification(
+        { method: 'knot/refreshSemanticTokens' },
+        (params: KnotRefreshSemanticTokensParams) => {
+            const reason = params.reason || 'unknown';
+            console.log(`[Knot] Refreshing semantic tokens for ${params.document_uris.length} document(s) (reason: ${reason})`);
+
+            // Trigger VS Code's built-in semantic token refresh for all
+            // visible editors. VS Code doesn't provide a per-document
+            // semantic token refresh API, so we refresh all visible
+            // editors. This is the same mechanism that
+            // `workspace/semanticTokens/refresh` uses under the hood.
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+
+            // Also refresh decorations for the affected documents, since
+            // broken link highlights and gutter badges may have changed.
+            refreshDecorationsForOpenEditors();
         }
     );
 
@@ -1093,6 +1134,15 @@ function registerLanguageStatus(context: vscode.ExtensionContext) {
 // ---------------------------------------------------------------------------
 // Decorations API
 // ---------------------------------------------------------------------------
+
+/** Refresh decorations for all currently visible twee editors. */
+function refreshDecorationsForOpenEditors() {
+    for (const editor of vscode.window.visibleTextEditors) {
+        if (editor.document.languageId.startsWith('twee')) {
+            updateDecorations(editor);
+        }
+    }
+}
 
 /** Register editor decorations for Twee files. */
 function registerDecorations(context: vscode.ExtensionContext) {

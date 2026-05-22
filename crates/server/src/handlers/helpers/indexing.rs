@@ -256,6 +256,16 @@ pub(crate) async fn index_workspace(
     // may be the first time the client hears about it).
     send_format_detected(client, format, doc_uris).await;
 
+    // After indexing completes, request the client to refresh semantic
+    // tokens for all visible editors. This is critical for the scenario
+    // where files were already open in VS Code before the extension
+    // restarted: the server re-indexed them during the initial pass,
+    // but VS Code still holds stale (empty) tokens from before the
+    // restart. The standard `workspace/semanticTokens/refresh` request
+    // tells VS Code to re-request `textDocument/semanticTokens/full`
+    // for every visible document.
+    send_workspace_semantic_token_refresh(client).await;
+
     Ok(())
 }
 
@@ -333,21 +343,43 @@ pub(crate) async fn send_format_detected(
         .await;
 }
 
-/// Send a semantic token refresh notification for documents that may have
-/// stale tokens due to cross-file effects.
+/// Send a semantic token refresh for documents that may have stale tokens
+/// due to cross-file effects.
 ///
 /// Called when a change in one document affects the semantic highlighting
 /// of other documents (e.g., broken link status changes, format detection
 /// updates, passage name resolution changes). The changed document is
-/// excluded because it already gets refreshed via the normal did_change flow.
+/// excluded from the custom notification because it already gets refreshed
+/// via the normal did_change flow.
+///
+/// This function uses **two mechanisms** to ensure the client refreshes
+/// tokens:
+///
+/// 1. **Standard LSP**: Sends `workspace/semanticTokens/refresh` — the
+///    official server-to-client request that tells VS Code to re-request
+///    `textDocument/semanticTokens/full` for all visible documents. This
+///    is handled automatically by `vscode-languageclient` and does not
+///    require any custom client-side code.
+///
+/// 2. **Custom notification**: Sends `knot/refreshSemanticTokens` with
+///    the list of affected document URIs and a reason string. The client
+///    can use this for targeted UI updates (e.g., refreshing decorations)
+///    beyond what the standard refresh provides.
 pub(crate) async fn send_semantic_token_refresh(
     client: &tower_lsp::Client,
     changed_uri: &Url,
     all_uris: &[Url],
     reason: &str,
 ) {
-    // Refresh all documents except the one that changed (it already gets
-    // refreshed via the normal did_change flow).
+    // Primary mechanism: standard LSP workspace/semanticTokens/refresh.
+    // This tells VS Code to re-request semantic tokens for ALL visible
+    // documents — exactly what we need for cross-file effects like
+    // broken link resolution changes.
+    send_workspace_semantic_token_refresh(client).await;
+
+    // Secondary mechanism: custom notification with affected URIs.
+    // The client can use this for additional UI updates (decorations,
+    // link highlights, etc.) beyond the standard semantic token refresh.
     let affected: Vec<String> = all_uris
         .iter()
         .filter(|u| *u != changed_uri)
@@ -368,5 +400,35 @@ pub(crate) async fn send_semantic_token_refresh(
                 },
             )
             .await;
+    }
+}
+
+/// Send the standard LSP `workspace/semanticTokens/refresh` request.
+///
+/// This is the official server-to-client request defined in LSP 3.16+
+/// that asks the client to re-request semantic tokens for all visible
+/// documents. `vscode-languageclient` handles this automatically — it
+/// re-issues `textDocument/semanticTokens/full` for every open editor.
+///
+/// This is the primary mechanism for forcing a semantic token refresh
+/// after server-side state changes that affect highlighting (e.g., after
+/// initial workspace indexing completes, or when cross-file link
+/// resolution changes).
+async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
+    use lsp_types::request::SemanticTokensRefreshRequest;
+
+    match client.request::<SemanticTokensRefreshRequest>(()).await {
+        Ok(()) => {
+            tracing::debug!("workspace/semanticTokens/refresh accepted by client");
+        }
+        Err(e) => {
+            // Not fatal — older clients may not support this request.
+            // The custom knot/refreshSemanticTokens notification serves
+            // as a fallback.
+            tracing::debug!(
+                "workspace/semanticTokens/refresh failed (client may not support it): {}",
+                e
+            );
+        }
     }
 }
