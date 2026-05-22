@@ -107,13 +107,11 @@ pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
 
     let value: serde_json::Value = serde_json::from_str(json_text).ok()?;
 
-    let format_str = value
+    let format = value
         .get("format")
         .and_then(|v| v.as_str())
-        .unwrap_or("SugarCube"); // Fallback when JSON has no format field
-    let format = format_str
-        .parse::<StoryFormat>()
-        .unwrap_or_else(|_| StoryFormat::default_format());
+        .and_then(|s| s.parse::<StoryFormat>().ok())
+        .unwrap_or_else(StoryFormat::default_format);
 
     let format_version = value
         .get("format-version")

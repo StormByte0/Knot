@@ -249,7 +249,11 @@ pub(crate) async fn index_workspace(
     let config = inner.workspace.config.clone();
     drop(inner);
 
-    publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+    // Re-acquire read lock for publish — it needs workspace for variable related info
+    {
+        let inner = inner.read().await;
+        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+    }
 
     // Always send formatDetected after initial indexing so the client
     // can set language IDs even when the format hasn't "changed" (it
