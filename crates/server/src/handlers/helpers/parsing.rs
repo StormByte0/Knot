@@ -11,8 +11,9 @@ use url::Url;
 /// Returns both the constructed `Document` and the `ParseResult` (which
 /// includes format-specific diagnostics and semantic tokens).
 ///
-/// Falls back to the default format if the requested format plugin is not
-/// available.
+/// Falls back to the Core format plugin if the requested format plugin is not
+/// available. The Core plugin provides base Twine engine behavior (passage
+/// headers, links, core special passages) with no format-specific features.
 pub(crate) fn parse_with_format_plugin(
     registry: &fmt_plugin::FormatRegistry,
     uri: &Url,
@@ -100,6 +101,9 @@ pub(crate) fn extract_passage_body(full_text: &str, passage_start: usize) -> Str
 ///   "start": "Prologue"
 /// }
 /// ```
+///
+/// If the "format" field is missing, empty, or unrecognized, falls back to
+/// `StoryFormat::Core` (base Twine engine, no format-specific features).
 pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
     // Find the first `{` in the body — skip any leading whitespace or tags
     let json_start = body.find('{')?;

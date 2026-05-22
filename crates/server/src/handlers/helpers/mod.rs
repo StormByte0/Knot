@@ -353,8 +353,8 @@ mod tests {
         let meta = parse_story_data_json(json);
         assert!(meta.is_some());
         let meta = meta.unwrap();
-        // Default values
-        assert_eq!(meta.format, StoryFormat::SugarCube);
+        // Default values — falls back to Core when no format specified
+        assert_eq!(meta.format, StoryFormat::Core);
         assert_eq!(meta.start_passage, "Start");
     }
 

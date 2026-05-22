@@ -112,10 +112,11 @@ fn workspace_with_metadata(format: StoryFormat, start: &str) -> Workspace {
 // ===========================================================================
 
 #[test]
-fn registry_contains_all_four_formats() {
+fn registry_contains_all_formats() {
     let registry = FormatRegistry::with_defaults();
     let formats = registry.formats();
-    assert_eq!(formats.len(), 4, "Should have exactly 4 format plugins");
+    assert_eq!(formats.len(), 5, "Should have 5 format plugins (Core + 4 story formats)");
+    assert!(formats.contains(&StoryFormat::Core));
     assert!(formats.contains(&StoryFormat::SugarCube));
     assert!(formats.contains(&StoryFormat::Harlowe));
     assert!(formats.contains(&StoryFormat::Chapbook));
@@ -123,9 +124,38 @@ fn registry_contains_all_four_formats() {
 }
 
 #[test]
-fn registry_default_includes_sugarcube() {
+fn registry_default_includes_core() {
     let registry = FormatRegistry::default();
+    assert!(registry.get(&StoryFormat::Core).is_some(), "Core plugin should be registered");
     assert!(registry.get(&StoryFormat::SugarCube).is_some());
+}
+
+// ===========================================================================
+// Core (base Twine engine) end-to-end
+// ===========================================================================
+
+#[test]
+fn core_parse_passages_and_links() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::Core).expect("Core plugin should be registered");
+
+    let src = ":: StoryData\n{\"ifid\":\"TEST-IFID\"}\n:: Start\nYou are at the start. [[Forest]]\n:: Forest\nYou are in the forest.\n";
+    let result = plugin.parse(&Url::parse("file:///project/story.tw").unwrap(), src);
+
+    // Core should parse passages
+    assert!(result.passages.len() >= 2, "Core should parse at least 2 passages");
+
+    // Core should extract links
+    let start_passage = result.passages.iter().find(|p| p.name == "Start");
+    assert!(start_passage.is_some(), "Should find Start passage");
+    let start = start_passage.unwrap();
+    assert!(start.links.iter().any(|l| l.target == "Forest"), "Start should link to Forest");
+
+    // Core should NOT provide macros
+    assert!(plugin.builtin_macros().is_empty(), "Core should have no macros");
+
+    // Core should NOT provide variable sigils
+    assert!(plugin.variable_sigils().is_empty(), "Core should have no variable sigils");
 }
 
 // ===========================================================================

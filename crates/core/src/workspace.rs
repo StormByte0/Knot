@@ -277,18 +277,21 @@ impl Workspace {
     ///
     /// Attempts to parse the format string using `FromStr`. If the format
     /// string is `None` or unrecognized, falls back to the default format
-    /// (SugarCube).
+    /// (Core — base Twine engine, no format-specific features).
     fn resolve_format_from_storydata(&self, format_str: Option<&str>) -> StoryFormat {
         match format_str {
-            Some(s) => StoryFormat::from_str(s).unwrap_or_else(|_| StoryFormat::default_format()),
-            None => StoryFormat::default_format(),
+            Some(s) if !s.is_empty() => StoryFormat::from_str(s).unwrap_or_else(|_| {
+                tracing::warn!("Unrecognized format string '{}', falling back to Core", s);
+                StoryFormat::default_format()
+            }),
+            _ => StoryFormat::default_format(),
         }
     }
 
     /// Resolve the story format using the priority order:
     /// 1. knot.json configuration (explicit override — takes precedence when set)
     /// 2. StoryData passage (authoritative format declaration in source)
-    /// 3. Default (SugarCube 2)
+    /// 3. Default (Core — base Twine engine, no format-specific features)
     ///
     /// The config override exists so developers can test their project with a
     /// different format without modifying source files. When `config.format`
@@ -325,7 +328,7 @@ impl Workspace {
                 passage_name: "StoryData".to_string(),
                 file_uri: self.root_uri.to_string(),
                 kind: DiagnosticKind::MissingStoryData,
-                message: "Missing StoryData passage. Assuming SugarCube 2.".to_string(),
+                message: "Missing StoryData passage. Falling back to core Twine engine (no format-specific features).".to_string(),
             });
         } else if story_data_count > 1 {
             diagnostics.push(GraphDiagnostic {
@@ -490,7 +493,7 @@ mod tests {
         ws.parse_story_data().expect("parse should succeed");
 
         let meta = ws.metadata.as_ref().expect("metadata should be set");
-        assert_eq!(meta.format, StoryFormat::SugarCube); // default
+        assert_eq!(meta.format, StoryFormat::Core); // default — no format specified
         assert_eq!(meta.format_version, None);
         assert_eq!(meta.start_passage, "Start"); // default
         assert_eq!(
@@ -507,7 +510,7 @@ mod tests {
         ws.parse_story_data().expect("parse should succeed");
 
         let meta = ws.metadata.as_ref().expect("metadata should be set");
-        assert_eq!(meta.format, StoryFormat::SugarCube);
+        assert_eq!(meta.format, StoryFormat::Core); // default — no format specified
         assert_eq!(meta.format_version, None);
         assert_eq!(meta.start_passage, "Start");
         assert_eq!(meta.ifid, None);
@@ -561,8 +564,8 @@ mod tests {
         ws.parse_story_data().expect("parse should succeed");
 
         let meta = ws.metadata.as_ref().expect("metadata should be set");
-        // Unsupported format falls back to SugarCube default
-        assert_eq!(meta.format, StoryFormat::SugarCube);
+        // Unsupported format falls back to Core (base Twine engine)
+        assert_eq!(meta.format, StoryFormat::Core);
     }
 
     #[test]
@@ -598,16 +601,16 @@ mod tests {
     #[test]
     fn resolve_format_default() {
         let ws = Workspace::new(Url::parse("file:///project/").unwrap());
-        // No metadata, no config format — default
-        assert_eq!(ws.resolve_format(), StoryFormat::SugarCube);
+        // No metadata, no config format — default to Core (base Twine engine)
+        assert_eq!(ws.resolve_format(), StoryFormat::Core);
     }
 
     #[test]
     fn resolve_format_invalid_config_falls_back() {
         let mut ws = Workspace::new(Url::parse("file:///project/").unwrap());
         ws.config.format = Some("InvalidFormat".to_string());
-        // Invalid config format string should fall through to default
-        assert_eq!(ws.resolve_format(), StoryFormat::SugarCube);
+        // Invalid config format string should fall through to default (Core)
+        assert_eq!(ws.resolve_format(), StoryFormat::Core);
     }
 
     #[test]

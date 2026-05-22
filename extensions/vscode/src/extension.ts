@@ -239,8 +239,11 @@ export async function activate(context: vscode.ExtensionContext) {
     client.onNotification(
         { method: 'knot/formatDetected' },
         (params: { format: string; document_uris: string[] }) => {
-            // Map format names from the server to VS Code language IDs
+            // Map format names from the server to VS Code language IDs.
+            // "Core" means no format was detected — keep the base 'twee'
+            // language ID so the default TextMate grammar is used.
             const formatToLanguageId: Record<string, string> = {
+                'Core': 'twee',
                 'SugarCube': 'twee-sugarcube',
                 'Harlowe': 'twee-harlowe',
                 'Chapbook': 'twee-chapbook',

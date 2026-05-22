@@ -7,8 +7,21 @@ use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
 /// A story format identifier.
+///
+/// The `Core` variant represents the base Twine/Twee engine — the only
+/// behavior guaranteed for any `.twee` file regardless of story format.
+/// When format detection fails (no StoryData, no config override), the
+/// server falls back to `Core` so that users still get passage headers,
+/// links, and core special passage highlights without overfitting to any
+/// specific format.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StoryFormat {
+    /// Base Twine engine — no format-specific features.
+    /// Provides passage headers, links, core special passages (StoryTitle,
+    /// StoryData, Start, [script], [stylesheet], [style]), and basic
+    /// semantic tokens. All format-specific features (macros, variable
+    /// sigils, global objects, etc.) are unavailable.
+    Core,
     SugarCube,
     Harlowe,
     Chapbook,
@@ -17,14 +30,26 @@ pub enum StoryFormat {
 
 impl StoryFormat {
     /// Returns the default format when none is specified.
+    ///
+    /// This returns `StoryFormat::Core` — the base Twine engine behavior.
+    /// No format-specific features (macros, variables, etc.) are assumed.
+    /// This ensures the extension doesn't overfit to any specific story
+    /// format when the actual format cannot be determined.
     pub fn default_format() -> Self {
-        StoryFormat::SugarCube
+        StoryFormat::Core
+    }
+
+    /// Returns true if this format is a concrete story format plugin
+    /// (not the core-only fallback).
+    pub fn is_format_plugin(&self) -> bool {
+        !matches!(self, StoryFormat::Core)
     }
 }
 
 impl std::fmt::Display for StoryFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            StoryFormat::Core => write!(f, "Core"),
             StoryFormat::SugarCube => write!(f, "SugarCube"),
             StoryFormat::Harlowe => write!(f, "Harlowe"),
             StoryFormat::Chapbook => write!(f, "Chapbook"),
@@ -38,6 +63,7 @@ impl std::str::FromStr for StoryFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "core" => Ok(StoryFormat::Core),
             "sugarcube" => Ok(StoryFormat::SugarCube),
             "harlowe" => Ok(StoryFormat::Harlowe),
             "chapbook" => Ok(StoryFormat::Chapbook),
@@ -507,10 +533,15 @@ pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
             scaffold: Some(ScaffoldInfo {
                 file_name: "_core_special_passages.twee".into(),
                 default_passage_name: "StoryData".into(),
+                // The "format" field is intentionally left empty — the user
+                // must set it to their chosen story format. We do NOT default
+                // to SugarCube or any other format here, because the core
+                // engine is format-agnostic. If the user doesn't specify a
+                // format, the server falls back to Core (base Twine engine).
                 default_content: r#"{
     "ifid": "",
-    "format": "SugarCube",
-    "format-version": "2.36.0",
+    "format": "",
+    "format-version": "",
     "start": "Start"
 }"#.into(),
             }),
