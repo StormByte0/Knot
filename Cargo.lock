@@ -422,7 +422,6 @@ version = "2.0.0"
 dependencies = [
  "knot-core",
  "logos",
- "once_cell",
  "regex",
  "serde",
  "serde_json",

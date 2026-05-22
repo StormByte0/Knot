@@ -96,6 +96,54 @@ pub(crate) fn byte_range_to_lsp_range(text: &str, range: &std::ops::Range<usize>
     Range { start, end }
 }
 
+/// Convert an LSP Position (line, UTF-16 character) to a byte offset in the text.
+///
+/// This is the reverse of [`byte_offset_to_position`]. It finds the start of
+/// the given line, then converts the UTF-16 `character` offset to a byte
+/// offset using [`utf16_to_byte_offset`].
+pub(crate) fn position_to_byte_offset(text: &str, pos: Position) -> usize {
+    let mut byte_offset = 0;
+    let mut current_line = 0u32;
+
+    // Advance to the start of the target line
+    for ch in text.chars() {
+        if current_line == pos.line {
+            break;
+        }
+        byte_offset += ch.len_utf8();
+        if ch == '\n' {
+            current_line += 1;
+        }
+    }
+
+    // If we didn't reach the target line, return end of text
+    if current_line < pos.line {
+        return text.len();
+    }
+
+    // Find the end of the current line (or end of text)
+    let line_start = byte_offset;
+    let line_end = text[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(text.len());
+    let line_text = &text[line_start..line_end];
+
+    // Convert UTF-16 character offset to byte offset within the line
+    let char_byte_offset = utf16_to_byte_offset(line_text, pos.character as usize);
+    line_start + char_byte_offset
+}
+
+/// Convert an LSP Range to a byte range in the text.
+///
+/// Uses [`position_to_byte_offset`] to convert both the start and end
+/// positions of the LSP range to byte offsets.
+pub(crate) fn lsp_range_to_byte_range(text: &str, range: &Range) -> std::ops::Range<usize> {
+    let start = position_to_byte_offset(text, range.start);
+    let end = position_to_byte_offset(text, range.end);
+    start..end
+}
+
 // ===========================================================================
 // Passage header / position helpers
 // ===========================================================================

@@ -26,6 +26,7 @@ pub mod comments;
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::LazyLock;
 use url::Url;
 
 use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin, ParseResult};
@@ -38,9 +39,33 @@ use crate::types::{
 // Plugin struct
 // ---------------------------------------------------------------------------
 
+/// Regex for open macro tags: <<name args>>
+static RE_MACRO_OPEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap()
+});
+
+/// Regex for close macro tags: <</name>>
+static RE_MACRO_CLOSE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap()
+});
+
+/// Regex for <<set $var to "literal">> patterns (dynamic navigation resolution)
+static RE_SET_STRING: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"<<set\s+([\$][A-Za-z_][A-Za-z0-9_]*)\s+to\s+"([^"]*)""#
+    ).unwrap()
+});
+
+/// Regex for navigation macros with variable args (dynamic navigation resolution)
+static RE_NAV_VAR: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"<<(?:goto|include|link|button)\s+(?:"[^"]*"\s+)?([\$][A-Za-z_][A-Za-z0-9_]*)"#
+    ).unwrap()
+});
+
 /// SugarCube 2.x format plugin.
 ///
-/// Regexes are compiled once using `once_cell::sync::Lazy` in the submodule
+/// Regexes are compiled once using `std::sync::LazyLock` in the submodule
 /// statics rather than per-instance, since they are immutable and identical
 /// across all instances.
 pub struct SugarCubePlugin;
@@ -54,7 +79,7 @@ impl Default for SugarCubePlugin {
 impl SugarCubePlugin {
     /// Create a new SugarCube plugin instance.
     ///
-    /// Regexes are pre-compiled as `Lazy` statics, so this is essentially free.
+    /// Regexes are pre-compiled as `LazyLock` statics, so this is essentially free.
     pub fn new() -> Self {
         Self
     }
@@ -624,8 +649,7 @@ impl FormatPlugin for SugarCubePlugin {
         let mut events = Vec::new();
 
         // Open macros: <<name ...>> — use the same regex as the TextMate grammar
-        let re_open = regex::Regex::new(r"<<([A-Za-z_][A-Za-z0-9_]*)(?:\s+((?:[^>]|>[^>])*?))?>>").unwrap();
-        for caps in re_open.captures_iter(line) {
+        for caps in RE_MACRO_OPEN.captures_iter(line) {
             if let Some(name_match) = caps.get(1) {
                 let name = name_match.as_str();
                 if block_names.contains(name) {
@@ -639,8 +663,7 @@ impl FormatPlugin for SugarCubePlugin {
         }
 
         // Close macros: <</name>>
-        let re_close = regex::Regex::new(r"<</([A-Za-z_][A-Za-z0-9_]*)>>").unwrap();
-        for caps in re_close.captures_iter(line) {
+        for caps in RE_MACRO_CLOSE.captures_iter(line) {
             if let Some(name_match) = caps.get(1) {
                 let name = name_match.as_str();
                 events.push(MacroBlockEvent {
@@ -748,10 +771,6 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn build_var_string_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, Vec<String>> {
         // SugarCube-specific: scan <<set $var to "literal">> patterns
-        let re_set_string = regex::Regex::new(
-            r#"<<set\s+([\$][A-Za-z_][A-Za-z0-9_]*)\s+to\s+"([^"]*)""#
-        ).unwrap();
-
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for doc in workspace.documents() {
             for passage in &doc.passages {
@@ -761,7 +780,7 @@ impl FormatPlugin for SugarCubePlugin {
                         knot_core::passage::Block::Macro { args, .. } => args.as_str(),
                         _ => continue,
                     };
-                    for caps in re_set_string.captures_iter(content) {
+                    for caps in RE_SET_STRING.captures_iter(content) {
                         if let (Some(var_match), Some(val_match)) = (caps.get(1), caps.get(2)) {
                             let var_name = var_match.as_str().to_string();
                             let string_val = val_match.as_str().to_string();
@@ -784,10 +803,6 @@ impl FormatPlugin for SugarCubePlugin {
         var_string_map: &HashMap<String, Vec<String>>,
     ) -> Vec<ResolvedNavLink> {
         // SugarCube-specific: resolve <<goto $var>>, <<include $var>>, <<link "label" $var>>, <<button "label" $var>>
-        let re_nav_var = regex::Regex::new(
-            r#"<<(?:goto|include|link|button)\s+(?:"[^"]*"\s+)?([\$][A-Za-z_][A-Za-z0-9_]*)"#
-        ).unwrap();
-
         let mut links = Vec::new();
         for block in &passage.body {
             let content = match block {
@@ -795,7 +810,7 @@ impl FormatPlugin for SugarCubePlugin {
                 knot_core::passage::Block::Macro { args, .. } => args.as_str(),
                 _ => continue,
             };
-            for caps in re_nav_var.captures_iter(content) {
+            for caps in RE_NAV_VAR.captures_iter(content) {
                 if let Some(var_match) = caps.get(1) {
                     let var_name = var_match.as_str().to_string();
                     if let Some(known_values) = var_string_map.get(&var_name) {

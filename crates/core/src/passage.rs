@@ -20,24 +20,6 @@ impl StoryFormat {
     pub fn default_format() -> Self {
         StoryFormat::SugarCube
     }
-
-    /// Whether cross-passage variable tracking is fully supported.
-    #[deprecated(
-        since = "2.0.0",
-        note = "Use FormatPlugin::supports_full_variable_tracking() instead"
-    )]
-    pub fn supports_full_variable_tracking(&self) -> bool {
-        matches!(self, StoryFormat::SugarCube | StoryFormat::Snowman)
-    }
-
-    /// Whether variable tracking is partially supported.
-    #[deprecated(
-        since = "2.0.0",
-        note = "Use FormatPlugin::supports_partial_variable_tracking() instead"
-    )]
-    pub fn supports_partial_variable_tracking(&self) -> bool {
-        matches!(self, StoryFormat::Harlowe)
-    }
 }
 
 impl std::fmt::Display for StoryFormat {
@@ -910,21 +892,6 @@ impl Passage {
         }
     }
 }
-
-// NOTE: The `is_story_javascript()` and `is_story_stylesheet()` helper
-// functions have been removed. These previously matched passage names
-// case-insensitively with optional whitespace (e.g., "Story JavaScript",
-// "StoryJavascript", "story javascript"). This was incorrect because:
-//
-// 1. SugarCube is case-sensitive — passage names must match exactly.
-// 2. "Story JavaScript" and "Story Stylesheet" are Twine 2 editor
-//    concepts, not SugarCube engine passage names. In the compiled HTML,
-//    they become `<script>`/`<style>` elements, not named passages.
-// 3. In Twee source files, script/stylesheet passages are identified by
-//    their [script]/[stylesheet] tags, not by their passage name.
-//
-// Script/stylesheet detection is now handled entirely by tag matching
-// in `is_script_passage()` and `is_stylesheet_passage()`.
 
 #[cfg(test)]
 mod tests {

@@ -2,7 +2,7 @@
 //! did_save, did_change_configuration, did_change_watched_files.
 
 use crate::handlers::helpers;
-use crate::state::ServerState;
+use crate::state::{ServerState, ServerStateInner};
 use knot_core::editing::graph_surgery;
 use knot_core::passage::{Passage, StoryFormat};
 use lsp_types::*;
@@ -21,6 +21,9 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     tracing::info!("did_open: {}", uri);
 
     let mut inner = state.inner.write().await;
+
+    // Store the LSP version in doc_versions so it survives re-parses
+    inner.doc_versions.insert(uri.clone(), version);
 
     // If workspace indexing is still in progress, do a lightweight insert
     // only — the indexing pass will rebuild the graph and publish
@@ -116,6 +119,19 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     if should_notify {
         helpers::send_format_detected(&state.client, format_after, doc_uris).await;
     }
+
+    // Notify other open documents that their semantic tokens may be stale
+    // due to cross-file link resolution changes from this document opening.
+    let all_uris: Vec<Url> = {
+        let inner = state.inner.read().await;
+        inner.open_documents.keys().cloned().collect()
+    };
+    helpers::send_semantic_token_refresh(
+        &state.client,
+        &uri,
+        &all_uris,
+        "document opened — cross-file link resolution may have changed",
+    ).await;
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -129,15 +145,14 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
 
     tracing::debug!("did_change: {} (v{})", uri, version);
 
-    // With FULL sync the last change contains the full text.
-    let text = params
-        .content_changes
-        .into_iter()
-        .last()
-        .map(|c| c.text)
-        .unwrap_or_default();
-
     let mut inner = state.inner.write().await;
+
+    // Update doc_versions with the authoritative LSP version
+    inner.doc_versions.insert(uri.clone(), version);
+
+    // Apply incremental changes to the rope-based snapshot and get the
+    // resulting full text for re-parsing.
+    let text = apply_document_changes(&mut inner, &uri, version, params.content_changes);
 
     // Always update the text cache immediately so go-to-definition etc.
     // see the latest content
@@ -316,6 +331,15 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     if should_notify {
         helpers::send_format_detected(&state.client, format_after, doc_uris).await;
     }
+
+    // Notify other open documents that their semantic tokens may be stale
+    // due to broken link resolution changes.
+    helpers::send_semantic_token_refresh(
+        &state.client,
+        &uri,
+        &open_docs.keys().cloned().collect::<Vec<_>>(),
+        "cross-file link resolution may have changed",
+    ).await;
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
@@ -520,6 +544,15 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         if should_notify {
                             helpers::send_format_detected(&state.client, format_after, doc_uris).await;
                         }
+
+                        // Notify other open documents that their semantic tokens may be stale
+                        // due to a new file being added (affects passage resolution).
+                        helpers::send_semantic_token_refresh(
+                            &state.client,
+                            &uri,
+                            &open_docs.keys().cloned().collect::<Vec<_>>(),
+                            "file created — passage resolution may have changed",
+                        ).await;
                     }
             }
             FileChangeType::DELETED => {
@@ -547,6 +580,15 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 };
 
                 helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+
+                // Notify remaining open documents that their semantic tokens may be stale
+                // due to a file being deleted (broken links may have changed).
+                helpers::send_semantic_token_refresh(
+                    &state.client,
+                    &uri,
+                    &open_docs.keys().cloned().collect::<Vec<_>>(),
+                    "file deleted — broken link resolution may have changed",
+                ).await;
 
                 // Clear diagnostics for the deleted file
                 state.client
@@ -605,9 +647,153 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             if should_notify {
                                 helpers::send_format_detected(&state.client, format_after, doc_uris).await;
                             }
+
+                            // Notify other open documents that their semantic tokens may be stale
+                            // due to a file changing on disk (affects passage resolution).
+                            helpers::send_semantic_token_refresh(
+                                &state.client,
+                                &uri,
+                                &open_docs.keys().cloned().collect::<Vec<_>>(),
+                                "file changed on disk — passage resolution may have changed",
+                            ).await;
                         }
             }
             _ => {}
         }
+    }
+}
+
+/// Apply incremental document changes and return the resulting full text.
+///
+/// With INCREMENTAL sync, each `TextDocumentContentChangeEvent` contains
+/// a `range` (the region being replaced) and `text` (the replacement text).
+/// If the range is `None`, the change is a full-text replacement.
+///
+/// This function:
+/// 1. Gets the current document from the workspace
+/// 2. If the document has a snapshot, converts each LSP range to a byte range
+///    and applies changes incrementally to the rope
+/// 3. If no snapshot is available, falls back to the full text from the last
+///    change event (backward-compatible behavior)
+/// 4. Returns the full text after all changes have been applied
+fn apply_document_changes(
+    inner: &mut ServerStateInner,
+    uri: &Url,
+    version: i32,
+    content_changes: Vec<TextDocumentContentChangeEvent>,
+) -> String {
+    use crate::handlers::helpers::lsp_range_to_byte_range;
+
+    // Collect incremental changes as (byte_range, new_text) pairs.
+    // We need the current text to convert LSP positions to byte offsets.
+    // The current text comes from the rope snapshot (if available) or
+    // the open_documents cache.
+    let has_snapshot = inner.workspace.get_document(uri)
+        .map(|d| d.snapshot.is_some())
+        .unwrap_or(false);
+
+    if has_snapshot && !content_changes.is_empty() {
+        // Check if all changes have ranges (incremental) or if any are
+        // full-text replacements (range is None)
+        let has_full_replace = content_changes.iter().any(|c| c.range.is_none());
+
+        if has_full_replace {
+            // Full-text replacement — use the text from the last change
+            // that has no range (or the last change overall)
+            let text = content_changes
+                .into_iter()
+                .rev()
+                .find(|c| c.range.is_none())
+                .map(|c| c.text)
+                .unwrap_or_default();
+
+            // Rebuild the snapshot from the full text
+            if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                doc.version = version;
+                doc.set_snapshot_from_text(&text);
+            }
+
+            tracing::debug!(
+                file = %uri,
+                version,
+                text_len = text.len(),
+                "apply_document_changes: full-text replacement"
+            );
+            text
+        } else {
+            // All changes have ranges — apply incrementally
+            // We need to build the list of (byte_range, new_text) pairs.
+            // Important: LSP positions in each change refer to the document
+            // state *after* all previous changes in the list have been applied.
+            // So we must apply them one at a time, converting positions using
+            // the current text state each time.
+
+            // Get the current full text for position conversion
+            let current_text = inner.open_documents.get(uri).cloned().unwrap_or_default();
+
+            // Apply changes one by one using Document::apply_incremental_change
+            // We need to track the evolving text for position conversion
+            let mut evolving_text = current_text;
+            let mut byte_changes: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+
+            for change in &content_changes {
+                if let Some(range) = &change.range {
+                    let byte_range = lsp_range_to_byte_range(&evolving_text, range);
+                    byte_changes.push((byte_range.clone(), change.text.clone()));
+
+                    // Update evolving_text to reflect this change so that
+                    // subsequent position conversions are correct
+                    let mut new_text = String::with_capacity(
+                        evolving_text.len() - (byte_range.end - byte_range.start) + change.text.len()
+                    );
+                    new_text.push_str(&evolving_text[..byte_range.start]);
+                    new_text.push_str(&change.text);
+                    new_text.push_str(&evolving_text[byte_range.end..]);
+                    evolving_text = new_text;
+                }
+            }
+
+            // Now apply all changes to the document's rope snapshot
+            if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                match doc.apply_incremental_change(version, &byte_changes) {
+                    Some(text) => {
+                        tracing::debug!(
+                            file = %uri,
+                            version,
+                            change_count = byte_changes.len(),
+                            text_len = text.len(),
+                            "apply_document_changes: incremental applied"
+                        );
+                        return text;
+                    }
+                    None => {
+                        // Snapshot wasn't available after all — fall back
+                        tracing::warn!(
+                            file = %uri,
+                            "apply_document_changes: snapshot unexpectedly None, falling back to full text"
+                        );
+                    }
+                }
+            }
+
+            // Fallback: return the evolved text we computed manually
+            evolving_text
+        }
+    } else {
+        // No snapshot available — fall back to the last change's full text
+        // This is the old FULL-sync behavior
+        let text = content_changes
+            .into_iter()
+            .last()
+            .map(|c| c.text)
+            .unwrap_or_default();
+
+        tracing::debug!(
+            file = %uri,
+            version,
+            text_len = text.len(),
+            "apply_document_changes: no snapshot, using last change text"
+        );
+        text
     }
 }

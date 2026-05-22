@@ -769,3 +769,32 @@ pub struct KnotUpdatePositionsResponse {
     /// Errors for passages that couldn't be updated.
     pub errors: Vec<String>,
 }
+
+// ---------------------------------------------------------------------------
+// knot/refreshSemanticTokens — request client to refresh semantic tokens
+// ---------------------------------------------------------------------------
+
+/// Notification: `knot/refreshSemanticTokens` — request the client to
+/// re-request semantic tokens for the specified documents.
+///
+/// Sent by the server when a change in one document affects the semantic
+/// highlighting of other documents (e.g., broken link status changes,
+/// format detection updates, passage name resolution changes).
+///
+/// The client should call `textDocument/semanticTokens/full` for each
+/// specified URI to get updated tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnotRefreshSemanticTokensParams {
+    /// URIs of documents whose semantic tokens need to be refreshed.
+    pub document_uris: Vec<String>,
+    /// Optional reason for the refresh (for logging/debugging).
+    pub reason: Option<String>,
+}
+
+/// The LSP notification type for `knot/refreshSemanticTokens`.
+pub struct KnotRefreshSemanticTokensNotification;
+
+impl Notification for KnotRefreshSemanticTokensNotification {
+    type Params = KnotRefreshSemanticTokensParams;
+    const METHOD: &'static str = "knot/refreshSemanticTokens";
+}
