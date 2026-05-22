@@ -326,8 +326,12 @@ pub(crate) async fn semantic_tokens_full(
             let parse_result = plugin.parse(&uri, text);
             let tokens = convert_semantic_tokens(text, &parse_result.tokens);
             let data = encode_semantic_tokens(&tokens);
+
+            // Add result_id based on document version for delta support
+            let result_id = inner.doc_versions.get(&uri).map(|v| v.to_string());
+
             return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-                result_id: None,
+                result_id,
                 data,
             })));
         }

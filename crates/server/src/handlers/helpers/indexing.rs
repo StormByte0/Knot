@@ -332,3 +332,41 @@ pub(crate) async fn send_format_detected(
         })
         .await;
 }
+
+/// Send a semantic token refresh notification for documents that may have
+/// stale tokens due to cross-file effects.
+///
+/// Called when a change in one document affects the semantic highlighting
+/// of other documents (e.g., broken link status changes, format detection
+/// updates, passage name resolution changes). The changed document is
+/// excluded because it already gets refreshed via the normal did_change flow.
+pub(crate) async fn send_semantic_token_refresh(
+    client: &tower_lsp::Client,
+    changed_uri: &Url,
+    all_uris: &[Url],
+    reason: &str,
+) {
+    // Refresh all documents except the one that changed (it already gets
+    // refreshed via the normal did_change flow).
+    let affected: Vec<String> = all_uris
+        .iter()
+        .filter(|u| *u != changed_uri)
+        .map(|u| u.to_string())
+        .collect();
+
+    if !affected.is_empty() {
+        tracing::debug!(
+            "Sending semantic token refresh for {} documents (reason: {})",
+            affected.len(),
+            reason
+        );
+        client
+            .send_notification::<crate::lsp_ext::KnotRefreshSemanticTokensNotification>(
+                crate::lsp_ext::KnotRefreshSemanticTokensParams {
+                    document_uris: affected,
+                    reason: Some(reason.to_string()),
+                },
+            )
+            .await;
+    }
+}

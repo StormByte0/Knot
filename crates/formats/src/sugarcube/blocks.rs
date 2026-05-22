@@ -481,6 +481,52 @@ fn is_right_shift_operator(_body: &str, bytes: &[u8], len: usize, pos: usize) ->
     false
 }
 
+/// Parse quoted string arguments from a macro's argument string.
+///
+/// Extracts the content of `"..."` and `'...'` quoted strings from the
+/// args portion of a macro invocation. This handles:
+/// - `<<goto "PassageName">>` → ["PassageName"]
+/// - `<<link "Label" "PassageName">>` → ["Label", "PassageName"]
+/// - `<<include 'Some Passage'>>` → ["Some Passage"]
+///
+/// Returns tuples of (content, rel_start, rel_end) where rel_start/rel_end
+/// are byte offsets relative to the args string, covering the content
+/// INSIDE the quotes (not including the quote characters themselves).
+///
+/// Shared by `links.rs` (for macro passage reference extraction) and
+/// `tokens.rs` (for semantic token generation).
+pub(crate) fn parse_quoted_args(args: &str) -> Vec<(String, usize, usize)> {
+    let mut result = Vec::new();
+    let mut chars = args.char_indices().peekable();
+
+    while let Some(&(_pos, c)) = chars.peek() {
+        if c == '"' || c == '\'' {
+            let quote = c;
+            chars.next(); // consume opening quote
+            let content_start = chars.peek().map(|&(i, _)| i).unwrap_or(args.len());
+            let mut content = String::new();
+            let mut content_end = content_start;
+            while let Some(&(i, cc)) = chars.peek() {
+                if cc == quote {
+                    content_end = i;
+                    chars.next(); // consume closing quote
+                    break;
+                }
+                content.push(cc);
+                content_end = i + cc.len_utf8();
+                chars.next();
+            }
+            if !content.is_empty() {
+                result.push((content, content_start, content_end));
+            }
+        } else {
+            chars.next(); // skip non-quote characters
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -54,7 +54,7 @@
 
 use std::ops::Range;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use crate::plugin::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use super::links::{
     RE_LINK_ARROW, RE_LINK_PIPE, RE_LINK_SIMPLE,
@@ -410,7 +410,7 @@ pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
     let mut tokens = Vec::new();
     // Note: The Rust `regex` crate does not support lookbehind (`(?<!...)`).
     // We use a simpler pattern and filter boundaries manually.
-    static RE_NUMBER: Lazy<regex::Regex> = Lazy::new(|| {
+    static RE_NUMBER: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(\d+(?:\.\d+)?)").unwrap()
     });
 
@@ -496,7 +496,7 @@ pub(crate) fn string_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
         let args_offset_in_body = name_end_in_body + trimmed_start;
 
         // Parse quoted strings from the args
-        let quoted_args = parse_quoted_args_with_spans(args_str);
+        let quoted_args = blocks::parse_quoted_args(args_str);
         for (_content, rel_start, rel_end) in &quoted_args {
             // Skip passage name strings — those get PassageRef tokens instead.
             // We only want to emit String tokens for non-passage-ref strings.
@@ -568,7 +568,7 @@ pub(crate) fn property_tokens(body: &str, body_offset: usize) -> Vec<SemanticTok
     // Build a regex that matches any namespace followed by `.` and an identifier.
     // Example: State.variables → "variables" gets a Property token.
     // Uses Lazy static to avoid recompiling the regex on every call.
-    static RE_PROPERTY: Lazy<regex::Regex> = Lazy::new(|| {
+    static RE_PROPERTY: LazyLock<regex::Regex> = LazyLock::new(|| {
         let ns_pattern = SUGARCUBE_NAMESPACES.join("|");
         regex::Regex::new(&format!(
             r"(?:{})\.([A-Za-z_][A-Za-z0-9_]*)",
@@ -707,7 +707,7 @@ pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<Se
         }
 
         // Parse quoted string arguments
-        let string_args = parse_quoted_args_with_spans(args_str);
+        let string_args = blocks::parse_quoted_args(args_str);
 
         if string_args.is_empty() {
             continue;
@@ -747,57 +747,9 @@ pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<Se
     tokens
 }
 
-/// Parse quoted string arguments from a macro's argument string, returning
-/// both the content and the byte span (relative to the args string) of each
-/// quoted argument (excluding the quote characters).
-fn parse_quoted_args_with_spans(args: &str) -> Vec<(String, usize, usize)> {
-    let mut result = Vec::new();
-    let mut chars = args.char_indices().peekable();
-
-    while let Some(&(_pos, c)) = chars.peek() {
-        if c == '"' || c == '\'' {
-            let quote = c;
-            chars.next(); // consume opening quote
-            let content_start = chars.peek().map(|&(i, _)| i).unwrap_or(args.len());
-            let mut content = String::new();
-            let mut content_end = content_start;
-            while let Some(&(i, cc)) = chars.peek() {
-                if cc == quote {
-                    content_end = i;
-                    chars.next(); // consume closing quote
-                    break;
-                }
-                content.push(cc);
-                content_end = i + cc.len_utf8();
-                chars.next();
-            }
-            if !content.is_empty() {
-                result.push((content, content_start, content_end));
-            }
-        } else {
-            chars.next(); // skip non-quote characters
-        }
-    }
-
-    result
-}
-
 // ---------------------------------------------------------------------------
-// Stylesheet / Interface body tokens
+// Interface body tokens
 // ---------------------------------------------------------------------------
-
-/// Generate semantic tokens for the body of stylesheet passages.
-///
-/// Intentionally returns no tokens — let TextMate handle CSS highlighting.
-/// A blanket `String` token would override TextMate scopes, making
-/// the entire body one uniform color.
-#[allow(dead_code)]
-pub(crate) fn stylesheet_body_tokens(_body: &str, _body_offset: usize) -> Vec<SemanticToken> {
-    // Intentionally return no tokens — let TextMate handle CSS highlighting.
-    // A blanket `String` token would override TextMate scopes, making
-    // the entire body one uniform color.
-    Vec::new()
-}
 
 /// Generate semantic tokens for the body of StoryInterface passages.
 ///
@@ -893,6 +845,12 @@ pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> 
 /// bracket, then computes tag positions relative to that bracket. This
 /// correctly handles whitespace between the passage name and the bracket
 /// (e.g., `:: Story Stylesheet [stylesheet]` has a space before `[`).
+///
+/// After computing each tag's byte span, the extracted text is verified
+/// against the expected tag string from `header.tags`. If the content
+/// doesn't match (due to whitespace handling differences between this
+/// manual scan and the lexer's `split_whitespace()`), the token is
+/// skipped rather than producing an incorrect one.
 fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
@@ -900,17 +858,9 @@ fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
         return tokens;
     }
 
-    // We have the raw text after `::` (e.g., " Story Stylesheet [stylesheet]").
-    // Find the `[` bracket in this raw text. The tag bracket is the LAST `[`
-    // on the line that is paired with a closing `]` — this matches the
-    // lexer's tag detection logic (rfind('[') + ends_with(']')).
-    //
-    // The byte offset of `[` in the document is:
-    //   header_start + 2 + position_of_bracket_in_raw_after_colons
     let raw = &header.raw_after_colons;
 
-    // Find the `[` bracket. Use rfind to match the lexer's logic.
-    // Strip any trailing JSON metadata first (same as parse_header_line).
+    // Strip trailing JSON metadata (same logic as parse_header_line).
     let raw_before_json = if let Some(brace_start) = raw.rfind('{') {
         if raw.trim_end().ends_with('}') {
             &raw[..brace_start]
@@ -923,42 +873,42 @@ fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
 
     let bracket_pos_in_raw = match raw_before_json.rfind('[') {
         Some(pos) if raw_before_json.trim_end().ends_with(']') => pos,
-        _ => return tokens, // No valid tag bracket found
+        _ => return tokens,
     };
 
-    // The document-absolute byte offset of the `[` character.
     let bracket_start_abs = header.header_start + 2 + bracket_pos_in_raw;
-    let tags_inner_start = bracket_start_abs + 1; // first tag starts after `[`
+    let tags_inner_start = bracket_start_abs + 1;
 
-    // Scan through the tag bracket content to find each tag's position.
-    // Tags are space-separated inside [...].
-    // We need the actual text inside the brackets to match tag positions.
     let close_bracket_pos = raw_before_json.rfind(']').unwrap_or(raw_before_json.len());
     let tags_text = &raw_before_json[bracket_pos_in_raw + 1..close_bracket_pos];
 
-    let mut offset = tags_inner_start;
     let mut tag_idx = 0;
     let mut in_tag = false;
     let mut tag_start = 0usize;
 
+    // Use byte iteration since tags are ASCII identifiers.
     for (i, ch) in tags_text.char_indices() {
         if ch.is_whitespace() {
             if in_tag {
-                // End of current tag
-                let tag_end_abs = tags_inner_start + i;
-                if tag_idx < header.tags.len() {
-                    tokens.push(SemanticToken {
-                        start: tag_start,
-                        length: tag_end_abs - tag_start,
-                        token_type: SemanticTokenType::Tag,
-                        modifier: None,
-                    });
+                // End of current tag — verify content before emitting.
+                let tag_start_rel = tag_start - tags_inner_start;
+                let tag_end_rel = i;
+                if tag_end_rel <= tags_text.len() && tag_idx < header.tags.len() {
+                    let extracted = tags_text[tag_start_rel..tag_end_rel].trim();
+                    if extracted == header.tags[tag_idx] {
+                        let tag_end_abs = tags_inner_start + i;
+                        tokens.push(SemanticToken {
+                            start: tag_start,
+                            length: tag_end_abs - tag_start,
+                            token_type: SemanticTokenType::Tag,
+                            modifier: None,
+                        });
+                    }
                     tag_idx += 1;
                 }
                 in_tag = false;
             }
         } else if !in_tag {
-            // Start of a new tag
             tag_start = tags_inner_start + i;
             in_tag = true;
         }
@@ -966,13 +916,17 @@ fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
 
     // Handle the last tag (if no trailing whitespace)
     if in_tag && tag_idx < header.tags.len() {
-        let tag_end_abs = tags_inner_start + tags_text.len();
-        tokens.push(SemanticToken {
-            start: tag_start,
-            length: tag_end_abs - tag_start,
-            token_type: SemanticTokenType::Tag,
-            modifier: None,
-        });
+        let tag_start_rel = tag_start - tags_inner_start;
+        let extracted = tags_text[tag_start_rel..].trim();
+        if extracted == header.tags[tag_idx] {
+            let tag_end_abs = tags_inner_start + tags_text.len();
+            tokens.push(SemanticToken {
+                start: tag_start,
+                length: tag_end_abs - tag_start,
+                token_type: SemanticTokenType::Tag,
+                modifier: None,
+            });
+        }
     }
 
     tokens

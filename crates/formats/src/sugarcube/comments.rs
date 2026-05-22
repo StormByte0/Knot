@@ -14,14 +14,14 @@
 //! matches falling within comments can be filtered out, preserving accurate
 //! byte offsets.
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::ops::Range;
 
 /// Regex to find `<<script>>...<</script>>` block spans in passage bodies.
 /// Used to determine where `//` line comments are valid.
-pub(crate) static RE_SCRIPT_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<<script>>.*?<</script>>").unwrap());
+pub(crate) static RE_SCRIPT_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<<script>>.*?<</script>>").unwrap());
 
 // ---------------------------------------------------------------------------
 // Block comment detection (valid globally in SugarCube passages)

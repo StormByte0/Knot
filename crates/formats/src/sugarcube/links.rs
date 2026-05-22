@@ -6,7 +6,7 @@
 //! references (<<goto>>, <<link>>, <<include>>, <<button>>, etc.).
 
 use knot_core::passage::Link;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::ops::Range;
 
@@ -21,48 +21,48 @@ use super::macros;
 /// NOTE: This regex can match JavaScript bracket notation like `obj[[key]]`
 /// which is NOT a Twine link. The `extract_links()` function filters out
 /// these false positives by checking the character before the match.
-pub(crate) static RE_LINK_SIMPLE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+pub(crate) static RE_LINK_SIMPLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
 
 /// [[Display->Target]] — arrow-style link
-pub(crate) static RE_LINK_ARROW: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+pub(crate) static RE_LINK_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
 
 /// [[Display|Target]] — pipe-style link
-pub(crate) static RE_LINK_PIPE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+pub(crate) static RE_LINK_PIPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
 
 /// HTML data-passage attribute — implicit passage reference
-pub(crate) static RE_DATA_PASSAGE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"data-passage\s*=\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_DATA_PASSAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"data-passage\s*=\s*["']([^"']+)["']"#).unwrap());
 
 /// Engine.play() — implicit passage reference
-pub(crate) static RE_ENGINE_PLAY: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_ENGINE_PLAY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Engine\s*\.\s*play\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// Engine.goto() — implicit passage reference
-pub(crate) static RE_ENGINE_GOTO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_ENGINE_GOTO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Engine\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// Story.get() — implicit passage reference
-pub(crate) static RE_STORY_GET: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"Story\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_STORY_GET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Story\s*\.\s*get\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// Story.passage() — implicit passage reference
-pub(crate) static RE_STORY_PASSAGE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_STORY_PASSAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Story\s*\.\s*passage\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// Story.has() — implicit passage reference (checks if passage exists)
-pub(crate) static RE_STORY_HAS: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"Story\s*\.\s*has\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_STORY_HAS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Story\s*\.\s*has\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// UI.goto() — implicit passage reference (navigates to passage)
-pub(crate) static RE_UI_GOTO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"UI\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_UI_GOTO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"UI\s*\.\s*goto\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 /// UI.include() — implicit passage reference (includes passage content)
-pub(crate) static RE_UI_INCLUDE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
+pub(crate) static RE_UI_INCLUDE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"UI\s*\.\s*include\s*\(\s*["']([^"']+)["']"#).unwrap());
 
 // ---------------------------------------------------------------------------
 // NOTE: Macro passage reference extraction now uses the string-aware scanner
@@ -89,13 +89,9 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
         }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
-        // Filter: skip targets containing "::" — this is JavaScript
-        // namespace accessor syntax (e.g., Use::Operation), not a Twine
-        // passage name. The "::" prefix is used for passage headers in
-        // Twee format but never appears inside passage link targets.
-        if target.contains("::") {
-            continue;
-        }
+        // No "::" filter for arrow links — the -> separator already
+        // disambiguates from JS bracket notation, so a target like
+        // My::Passage after -> is always intentional.
         links.push(Link {
             display_text: Some(display),
             target,
@@ -112,10 +108,9 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
         }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
-        // Filter: skip targets containing "::" — same as arrow links above.
-        if target.contains("::") {
-            continue;
-        }
+        // No "::" filter for pipe links — the | separator already
+        // disambiguates from JS bracket notation, so a target like
+        // My::Passage after | is always intentional.
         links.push(Link {
             display_text: Some(display),
             target,
@@ -154,11 +149,14 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
 
         let target = caps.get(1).unwrap().as_str().trim().to_string();
 
-        // Filter: skip targets containing "::" — this is JavaScript
-        // namespace accessor syntax (e.g., Use::Operation), not a Twine
-        // passage name. The "::" prefix is used for passage headers in
-        // Twee format but never appears inside passage link targets.
-        if target.contains("::") {
+        // Filter: skip targets containing "::" ONLY when the match occurs
+        // in a JavaScript bracket context (obj[[key]] with :: in the key).
+        // Standalone [[Use::Operation]] in prose is unlikely but valid as a
+        // passage name — let it through. JS bracket contexts are already
+        // caught by is_js_bracket_context() above, so this is a secondary
+        // defense for cases where is_js_bracket_context returns false but
+        // the content looks like a C++/JS namespace pattern.
+        if target.contains("::") && is_js_bracket_context(body, m.start()) {
             continue;
         }
 
@@ -182,7 +180,7 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
     let mut links = Vec::new();
 
     // All regexes are Lazy statics — compiled once, reused across all calls.
-    let patterns: &[&Lazy<Regex>] = &[
+    let patterns: &[&LazyLock<Regex>] = &[
         &RE_DATA_PASSAGE,
         &RE_ENGINE_PLAY,
         &RE_ENGINE_GOTO,
@@ -199,12 +197,11 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
                 let full_match = caps.get(0).unwrap();
                 let target = target_match.as_str().trim().to_string();
                 if !target.is_empty() {
-                    // Filter: skip targets containing "::" — this is
-                    // JavaScript namespace accessor syntax (e.g.,
-                    // Use::Operation), not a Twine passage name.
-                    if target.contains("::") {
-                        continue;
-                    }
+                    // No "::" filter for implicit passage refs — quoted
+                    // string arguments in Engine.play("..."), data-passage="...",
+                    // etc. are always intentional passage references. JS
+                    // namespace syntax Use::Operation never appears as a
+                    // quoted string argument to these functions.
                     links.push(Link {
                         display_text: None,
                         target,
@@ -257,7 +254,7 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
         }
 
         // Parse quoted string arguments from the args string.
-        let string_args = parse_quoted_args(args_str);
+        let string_args = super::blocks::parse_quoted_args(args_str);
 
         if string_args.is_empty() {
             continue;
@@ -275,11 +272,12 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
         if idx < string_args.len() {
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
-                // Filter: skip targets containing "::" — JavaScript
-                // namespace accessor syntax, not a Twine passage name.
-                if content.contains("::") {
-                    continue;
-                }
+                // No "::" filter for macro passage refs — quoted string
+                // arguments in <<goto "...">>, <<link "..." "...">>, etc.
+                // are always intentional passage references. JS namespace
+                // syntax Use::Operation never appears as a quoted string
+                // argument to SugarCube macros.
+
                 // Compute the args offset in the body.
                 // The args string is trimmed from body[name_end..closing_gt_start].
                 let name_end_in_body = m.name_start + m.name_len;
@@ -298,49 +296,6 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
     }
 
     links
-}
-
-/// Parse quoted string arguments from a macro's argument string.
-///
-/// Extracts the content of `"..."` and `'...'` quoted strings from the
-/// args portion of a macro invocation. This handles:
-/// - `<<goto "PassageName">>` → ["PassageName"]
-/// - `<<link "Label" "PassageName">>` → ["Label", "PassageName"]
-/// - `<<include 'Some Passage'>>` → ["Some Passage"]
-///
-/// Returns tuples of (content, rel_start, rel_end) where rel_start/rel_end
-/// are byte offsets relative to the args string, covering the content
-/// INSIDE the quotes (not including the quote characters themselves).
-fn parse_quoted_args(args: &str) -> Vec<(String, usize, usize)> {
-    let mut result = Vec::new();
-    let mut chars = args.char_indices().peekable();
-
-    while let Some(&(_pos, c)) = chars.peek() {
-        if c == '"' || c == '\'' {
-            let quote = c;
-            chars.next(); // consume opening quote
-            let content_start = chars.peek().map(|&(i, _)| i).unwrap_or(args.len());
-            let mut content = String::new();
-            let mut content_end = content_start;
-            while let Some(&(i, cc)) = chars.peek() {
-                if cc == quote {
-                    content_end = i;
-                    chars.next(); // consume closing quote
-                    break;
-                }
-                content.push(cc);
-                content_end = i + cc.len_utf8();
-                chars.next();
-            }
-            if !content.is_empty() {
-                result.push((content, content_start, content_end));
-            }
-        } else {
-            chars.next(); // skip non-quote characters
-        }
-    }
-
-    result
 }
 
 /// Check whether a `[[` at the given position in `text` is a JavaScript
@@ -375,20 +330,20 @@ mod tests {
 
     #[test]
     fn test_parse_quoted_args() {
-        let args = parse_quoted_args(r#""Forest""#);
+        let args = super::super::blocks::parse_quoted_args(r#""Forest""#);
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].0, "Forest");
 
-        let args = parse_quoted_args(r#""Label" "Forest""#);
+        let args = super::super::blocks::parse_quoted_args(r#""Label" "Forest""#);
         assert_eq!(args.len(), 2);
         assert_eq!(args[0].0, "Label");
         assert_eq!(args[1].0, "Forest");
 
-        let args = parse_quoted_args(r#"'Single'"#);
+        let args = super::super::blocks::parse_quoted_args(r#"'Single'"#);
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].0, "Single");
 
-        let args = parse_quoted_args(r#""Multi Word" "Other""#);
+        let args = super::super::blocks::parse_quoted_args(r#""Multi Word" "Other""#);
         assert_eq!(args.len(), 2);
         assert_eq!(args[0].0, "Multi Word");
         assert_eq!(args[1].0, "Other");
@@ -500,12 +455,23 @@ mod tests {
     }
 
     #[test]
-    fn test_double_colon_in_simple_link_rejected() {
-        // Even if someone wrote [[Use::Operation]] in a normal passage,
-        // the `::` filter should reject it as a passage target.
+    fn test_double_colon_in_simple_link_after_space_allowed() {
+        // After a space, [[Use::Operation]] is NOT in a JS bracket context,
+        // so the `::` filter does not apply — this is allowed through as a
+        // (rare but valid) passage name.
         let body = r#"Before [[Use::Operation]] after"#;
         let links = extract_links(body, 0);
-        assert!(links.is_empty(), "Targets with :: should be filtered out");
+        assert_eq!(links.len(), 1, ":: in simple link after space should be allowed");
+        assert_eq!(links[0].target, "Use::Operation");
+    }
+
+    #[test]
+    fn test_double_colon_in_simple_link_in_js_context_filtered() {
+        // obj[[Use::Operation]] is JS bracket access with :: in the key —
+        // should be filtered by the combined :: + JS context check.
+        let body = r#"obj[[Use::Operation]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), ":: in JS bracket context should be filtered");
     }
 
     #[test]
@@ -561,35 +527,43 @@ mod tests {
     // ── Regression tests for "::" filter (Bug 3 defense) ──────────────
 
     #[test]
-    fn test_double_colon_filter_js_namespace() {
-        // Use::Operation is JS namespace syntax, NOT a Twine passage link
-        let body = r#"var x = Use::Operation;"#;
-        let _links = extract_links(body, 0);
-        // RE_LINK_SIMPLE won't match this because there's no [[...]]
-        // But if someone writes [[Use::Operation]], it should be filtered
-        let body2 = r#"[[Use::Operation]]"#;
-        let links2 = extract_links(body2, 0);
-        assert!(links2.is_empty(), "Targets containing '::' should be filtered (JS namespace)");
-    }
-
-    #[test]
-    fn test_double_colon_filter_in_simple_link() {
-        // Any [[target::with::colons]] should be rejected
-        let body = r#"[[Some::Namespace]]"#;
+    fn test_double_colon_simple_link_at_start_allowed() {
+        // [[Use::Operation]] at position 0 is NOT in a JS bracket context,
+        // so the `::` filter does not apply — this is allowed through as a
+        // (rare but valid) passage name.
+        let body = r#"[[Use::Operation]]"#;
         let links = extract_links(body, 0);
-        assert!(links.is_empty(), "Simple links with '::' in target should be filtered");
+        assert_eq!(links.len(), 1, ":: at line start should be allowed");
+        assert_eq!(links[0].target, "Use::Operation");
     }
 
     #[test]
-    fn test_double_colon_not_in_arrow_link() {
-        // Arrow links: [[Display->Target]] — the "target" portion
-        // shouldn't contain "::" in normal usage, but arrow/pipe links
-        // don't get the "::" filter (only simple links do).
-        // This is acceptable because arrow/pipe syntax already disambiguates.
-        let body = r#"[[Click->Forest]]"#;
+    fn test_double_colon_simple_link_after_alphanumeric_filtered() {
+        // cursor[[Some::Namespace]] — alphanumeric before [[ makes this a
+        // JS bracket context, so :: in the target is filtered.
+        let body = r#"cursor[[Some::Namespace]]"#;
+        let links = extract_links(body, 0);
+        assert!(links.is_empty(), ":: in JS bracket context should be filtered");
+    }
+
+    #[test]
+    fn test_double_colon_arrow_link_allowed() {
+        // Arrow links with :: in target are always allowed — the -> separator
+        // disambiguates from JS bracket notation.
+        let body = r#"[[Go->My::Passage]]"#;
         let links = extract_links(body, 0);
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].target, "Forest");
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_pipe_link_allowed() {
+        // Pipe links with :: in target are always allowed — the | separator
+        // disambiguates from JS bracket notation.
+        let body = r#"[[Click|My::Passage]]"#;
+        let links = extract_links(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
     }
 
     #[test]
@@ -676,5 +650,62 @@ mod tests {
         let links = extract_links(body, 0);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "Forest");
+    }
+
+    // ── Context-aware :: filter — implicit and macro refs ─────────────
+
+    #[test]
+    fn test_double_colon_in_engine_play_allowed() {
+        // Engine.play("My::Passage") — quoted string args are always
+        // intentional passage references; :: should NOT be filtered.
+        let body = r#"Engine.play("My::Passage")"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_in_data_passage_allowed() {
+        // data-passage="My::Passage" — always intentional
+        let body = r#"data-passage="My::Passage""#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_in_story_has_allowed() {
+        // Story.has("My::Passage") — always intentional
+        let body = r#"Story.has("My::Passage")"#;
+        let links = extract_implicit_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_in_macro_goto_allowed() {
+        // <<goto "My::Passage">> — always intentional
+        let body = r#"<<goto "My::Passage">>"#;
+        let links = extract_macro_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_in_macro_link_allowed() {
+        // <<link "Click" "My::Passage">> — always intentional
+        let body = r#"<<link "Click" "My::Passage">>Go<</link>>"#;
+        let links = extract_macro_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
+    }
+
+    #[test]
+    fn test_double_colon_in_macro_include_allowed() {
+        // <<include "My::Passage">> — always intentional
+        let body = r#"<<include "My::Passage">>"#;
+        let links = extract_macro_passage_refs(body, 0);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].target, "My::Passage");
     }
 }

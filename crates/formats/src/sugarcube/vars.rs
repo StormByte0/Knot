@@ -38,7 +38,7 @@
 
 use crate::types::{StateVariable, VarAccessKind, VarLocation};
 use knot_core::passage::{VarKind, VarOp};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -57,129 +57,129 @@ use std::ops::Range;
 /// We cannot use lookbehind (regex crate limitation) to exclude `$$` escape
 /// markup directly. Instead, we match `$var` and filter out matches preceded
 /// by another `$` in the extraction code.
-pub(crate) static RE_VAR: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+pub(crate) static RE_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
 /// `_variableName` — SugarCube temporary/scratch variable reference.
 ///
 /// Per the SugarCube spec, temporary variable names follow the same rules
 /// as story variables but with `_` as the sigil.
-pub(crate) static RE_TEMP_VAR: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"_([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+pub(crate) static RE_TEMP_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"_([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
 /// `<<set $var to ...>>` — TwineScript `to` assignment for persistent vars
-pub(crate) static RE_SET_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+to\b").unwrap());
+pub(crate) static RE_SET_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+to\b").unwrap());
 
 /// `<<set $var = ...>>` — JavaScript `=` assignment for persistent vars.
 /// We match `=` that is NOT preceded by `!<>` (to avoid `==`, `!=`, `<=`, `>=`)
 /// and NOT followed by `=` (to avoid `==` and `===`).
 /// Since the regex crate doesn't support lookbehind, we use a simpler approach:
 /// match the assignment and then filter out compound operators in the code.
-pub(crate) static RE_SET_MACRO_EQ: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
+pub(crate) static RE_SET_MACRO_EQ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
 
 /// `<<set $var += ...>>` — Compound assignment for persistent vars
 /// (also catches -=, *=, /=, %=)
-pub(crate) static RE_SET_MACRO_COMPOUND: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
+pub(crate) static RE_SET_MACRO_COMPOUND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
 
 /// `<<set _var to ...>>` — TwineScript `to` assignment for temporary vars
-pub(crate) static RE_SET_TEMP_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<set\s+_([A-Za-z\$_][A-Za-z0-9\$_]*)\s+to\b").unwrap());
+pub(crate) static RE_SET_TEMP_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<set\s+_([A-Za-z\$_][A-Za-z0-9\$_]*)\s+to\b").unwrap());
 
 /// `<<set _var = ...>>` — JavaScript `=` assignment for temporary vars
-pub(crate) static RE_SET_TEMP_MACRO_EQ: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<set\s+_([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
+pub(crate) static RE_SET_TEMP_MACRO_EQ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<set\s+_([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
 
 /// `$varname.property.path` — dot-notation variable reference.
 /// The `$$` escape is handled by filtering in the extraction code.
-pub(crate) static RE_VAR_DOT_PATH: Lazy<Regex> = Lazy::new(|| Regex::new(
+pub(crate) static RE_VAR_DOT_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(
     r"\$([A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)"
 ).unwrap());
 
 /// `$varname["property"]` or `$varname['property']` — bracket-notation
 /// property access. The property name is captured.
 /// The `$$` escape is handled by filtering in the extraction code.
-pub(crate) static RE_VAR_BRACKET_PROP: Lazy<Regex> = Lazy::new(|| Regex::new(
+pub(crate) static RE_VAR_BRACKET_PROP: LazyLock<Regex> = LazyLock::new(|| Regex::new(
     r#"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\[["']([A-Za-z\$_][A-Za-z0-9\$_]*)["']\]"#
 ).unwrap());
 
 /// `var/let/const x = State.variables.specificVar` — JS aliasing of a specific
 /// SugarCube state variable (e.g., `var gold = State.variables.gold`)
-pub(crate) static RE_JS_ALIAS_SPECIFIC: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_JS_ALIAS_SPECIFIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:var|let|const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*State\.variables\.([A-Za-z_][A-Za-z0-9_]*)").unwrap()
 });
 
 /// `var/let/const x = State.variables` — JS aliasing of the ENTIRE State.variables
 /// object (e.g., `var v = State.variables; v.gold = 10;`)
-pub(crate) static RE_JS_ALIAS_WHOLE: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_JS_ALIAS_WHOLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:var|let|const)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*State\.variables\b").unwrap()
 });
 
 /// `State.variables.varName = value` — JS direct write to SugarCube state
-pub(crate) static RE_JS_STATE_WRITE: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_JS_STATE_WRITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"State\.variables\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap()
 });
 
 /// `State.getVar("$varName")` — JS API to read a variable
-pub(crate) static RE_JS_STATE_GETVAR: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_JS_STATE_GETVAR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"State\.getVar\(\s*"\$([A-Za-z_][A-Za-z0-9_]*)\s*""#).unwrap()
 });
 
 /// `State.setVar("$varName", value)` — JS API to write a variable
-pub(crate) static RE_JS_STATE_SETVAR: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_JS_STATE_SETVAR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"State\.setVar\(\s*"\$([A-Za-z_][A-Za-z0-9_]*)""#).unwrap()
 });
 
 /// `alias.property` — access through a whole-object alias.
 /// This is detected after finding a `var x = State.variables` alias.
-pub(crate) static RE_ALIAS_PROPERTY: Lazy<Regex> = Lazy::new(|| {
+pub(crate) static RE_ALIAS_PROPERTY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)").unwrap()
 });
 
 /// `<<unset $var>>` — macro that explicitly removes a state variable
-pub(crate) static RE_UNSET_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<unset\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)>>").unwrap());
+pub(crate) static RE_UNSET_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<unset\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)>>").unwrap());
 
 /// Setter link: `[[text|passage][$var to value]]` or `[[text|passage][$var = value]]`
 /// These assign variables during link navigation.
-pub(crate) static RE_SETTER_LINK: Lazy<Regex> = Lazy::new(|| Regex::new(
+pub(crate) static RE_SETTER_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(
     r"\[\[[^\]]*?\]\[\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+(?:to|=)"
 ).unwrap());
 
 /// `$var++` or `++$var` — post/pre increment (both read and write)
-pub(crate) static RE_VAR_INCREMENT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)\+\+|\+\+\$([A-Za-z\$_][A-Za-z0-9\$_]*))").unwrap());
+pub(crate) static RE_VAR_INCREMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)\+\+|\+\+\$([A-Za-z\$_][A-Za-z0-9\$_]*))").unwrap());
 
 /// `$var--` or `--$var` — post/pre decrement (both read and write)
-pub(crate) static RE_VAR_DECREMENT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)--|--\$([A-Za-z\$_][A-Za-z0-9\$_]*))").unwrap());
+pub(crate) static RE_VAR_DECREMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)--|--\$([A-Za-z\$_][A-Za-z0-9\$_]*))").unwrap());
 
 /// `<<run ...>>` — macro that executes raw JavaScript.
 /// Capture group 1 is the JavaScript body between `<<run ` and `>>`.
-pub(crate) static RE_RUN_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<run\s+([\s\S]*?)>>").unwrap());
+pub(crate) static RE_RUN_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<run\s+([\s\S]*?)>>").unwrap());
 
 /// `<<if $var ...>>`, `<<elseif $var ...>>`, `<<when $var ...>>` —
 /// conditional macros that read a variable.
-pub(crate) static RE_IF_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<(?:if|elseif|when)\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+pub(crate) static RE_IF_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<(?:if|elseif|when)\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
 /// `<<capture $var ...>>` — macro that captures/assigns a variable (WRITE).
-pub(crate) static RE_CAPTURE_MACRO: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"<<capture\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
+pub(crate) static RE_CAPTURE_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<<capture\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
 /// `$var =` — JS-style assignment of a persistent SugarCube variable
 /// within `<<run>>` macro bodies. Must be filtered in code to exclude
 /// `==`/`===` comparisons and compound assignments (`+=`, etc.).
-pub(crate) static RE_JS_VAR_ASSIGN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
+pub(crate) static RE_JS_VAR_ASSIGN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*=").unwrap());
 
 /// `$var +=` etc. — JS compound assignment of a persistent variable
 /// within `<<run>>` macro bodies (also `-=`, `*=`, `/=`, `%=`).
-pub(crate) static RE_JS_VAR_COMPOUND: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
+pub(crate) static RE_JS_VAR_COMPOUND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
 
 // ---------------------------------------------------------------------------
 // Variable extraction

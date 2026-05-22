@@ -43,7 +43,7 @@ pub(crate) async fn initialize(
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
-                change: Some(TextDocumentSyncKind::FULL),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
                 will_save: Some(false),
                 will_save_wait_until: Some(false),
                 save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {

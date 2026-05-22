@@ -61,6 +61,14 @@ pub struct ServerStateInner {
     /// These are separate from graph diagnostics because they are produced
     /// by the format parser during parsing, not by graph analysis.
     pub format_diagnostics: HashMap<Url, Vec<FormatDiagnostic>>,
+    /// Per-document version tracking (URI → LSP version number).
+    /// The LSP version is monotonically increasing and comes from the client.
+    /// This is stored separately from `Document.version` because re-parsing
+    /// a document (via `parse_with_format_plugin`) creates a new `Document`
+    /// that resets the version. Keeping the version here preserves it across
+    /// re-parses so that `did_change` can always use the authoritative client
+    /// version.
+    pub doc_versions: HashMap<Url, i32>,
     /// Debug breakpoints — set of passage names where breakpoints are active.
     pub breakpoints: Vec<String>,
 }
@@ -104,6 +112,7 @@ impl ServerState {
                 editor_open_docs: HashSet::new(),
                 open_documents: HashMap::new(),
                 format_diagnostics: HashMap::new(),
+                doc_versions: HashMap::new(),
                 breakpoints: Vec::new(),
             }),
             shutting_down: AtomicBool::new(false),
