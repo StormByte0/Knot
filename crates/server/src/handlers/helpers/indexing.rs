@@ -415,9 +415,9 @@ pub(crate) async fn send_semantic_token_refresh(
 /// initial workspace indexing completes, or when cross-file link
 /// resolution changes).
 async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
-    use lsp_types::request::SemanticTokensRefreshRequest;
+    use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;
 
-    match client.request::<SemanticTokensRefreshRequest>(()).await {
+    match client.send_request::<WorkspaceSemanticTokensRefreshRequest>(()).await {
         Ok(()) => {
             tracing::debug!("workspace/semanticTokens/refresh accepted by client");
         }
