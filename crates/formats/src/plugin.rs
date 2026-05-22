@@ -724,7 +724,7 @@ pub trait FormatPlugin: Send + Sync {
     /// Build an insertion snippet for a macro.
     ///
     /// Override this in format plugins that use different delimiter syntax.
-    /// The default implementation produces SugarCube-style snippets.
+    /// The default implementation produces bare-name snippets (no delimiters).
     fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
         // Default: bare name + placeholder. Format plugins MUST override this
         // to add their own delimiters and body structure.
@@ -1093,8 +1093,15 @@ impl FormatRegistry {
     }
 
     /// Create a registry with all built-in format plugins.
+    ///
+    /// The `Core` plugin is registered first as the lowest-priority fallback.
+    /// It provides base Twine engine behavior (passage headers, links, core
+    /// special passages) with no format-specific features. When format
+    /// detection fails, `resolve_format()` returns `Core`, and the registry
+    /// finds this plugin.
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
+        registry.register(Box::new(crate::core::TwineCorePlugin::new()));
         registry.register(Box::new(crate::sugarcube::SugarCubePlugin::new()));
         registry.register(Box::new(crate::harlowe::HarlowePlugin::new()));
         registry.register(Box::new(crate::chapbook::ChapbookPlugin::new()));

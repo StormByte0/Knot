@@ -85,9 +85,9 @@ pub(crate) async fn on_type_formatting(
         }
     }
 
-    // Auto-close << with >> (SugarCube-specific)
+    // Auto-close << with >> (format-specific)
     // Only applies when the detected format uses `<<>>` macro delimiters.
-    // Harlowe uses `()`, Chapbook uses `[]`, Snowman uses `<% %>`.
+    // SugarCube uses `<<>>`, Harlowe uses `()`, Chapbook uses `[]`, Snowman uses `<% %>`.
     if ch == ">" && byte_pos >= 2 {
         let before = &line_text[..byte_pos];
         if before.ends_with("<<") {

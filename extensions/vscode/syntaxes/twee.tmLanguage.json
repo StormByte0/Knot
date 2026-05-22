@@ -90,28 +90,7 @@
                 }
             ]
         },
-        {
-            "comment": "StoryInterface special passage — entire body is HTML. SugarCube-specific but placed in base grammar for priority over generic header pattern.",
-            "contentName": "text.html.embedded.twee",
-            "begin": "^(::)\\s+([Ss]tory[Ii]nterface)\\s*(\\{.*\\})?\\s*$",
-            "end": "^(?=\\s*::)|\\z",
-            "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.passage.twee"
-                },
-                "2": {
-                    "name": "entity.name.passage.special.twee"
-                },
-                "3": {
-                    "name": "meta.passage.metadata.twee"
-                }
-            },
-            "patterns": [
-                {
-                    "include": "text.html.basic"
-                }
-            ]
-        },
+
         {
             "comment": "Passage header: :: Name [tags] {metadata}",
             "name": "meta.passage.header.twee",
@@ -240,7 +219,7 @@
             }
         },
         {
-            "comment": "Story variable: $varName (used by SugarCube and Harlowe)",
+            "comment": "Story variable: $varName. This pattern is intentionally NOT in the base grammar because $-prefixed variables are format-specific (SugarCube, Harlowe). Chapbook uses state.varName and Snowman uses s.varName. The format-specific TextMate grammars (sugarcube.tmLanguage.json, harlowe.tmLanguage.json) each define their own variable patterns.",
             "name": "variable.other.story.twee",
             "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
         }

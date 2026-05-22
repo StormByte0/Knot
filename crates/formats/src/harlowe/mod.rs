@@ -19,6 +19,7 @@ use knot_core::passage::{
 };
 use regex::Regex;
 use std::ops::Range;
+use std::sync::LazyLock;
 use url::Url;
 
 use crate::plugin::{
@@ -63,40 +64,60 @@ struct ParsedHeader {
 }
 
 // ---------------------------------------------------------------------------
+// Regex statics
+// ---------------------------------------------------------------------------
+
+/// Regex for simple links: `[[Target]]`
+static RE_LINK_SIMPLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+/// Regex for arrow links: `[[Display->Target]]`
+static RE_LINK_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+/// Regex for pipe links: `[[Display|Target]]`
+static RE_LINK_PIPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+/// Regex for Harlowe link changer: `(link:"text")[[Target]]`
+static RE_LINK_CHANGER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#).unwrap());
+/// Regex for Harlowe (set: $var to ...) variable write.
+static RE_SET_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap());
+/// Regex for Harlowe (put: ... into $var) variable write.
+static RE_PUT_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").unwrap());
+/// Regex for Harlowe (move: $var into $other) variable operation.
+static RE_MOVE_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(move:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+        .unwrap()
+});
+/// Regex for Harlowe (unpack: ... into $var) variable write.
+static RE_UNPACK_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").unwrap());
+/// Regex for all $variable references.
+static RE_VAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+/// Regex for Harlowe macros: (name: ...)
+static RE_MACRO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)" ).unwrap());
+/// Regex for named hooks: [hookname]
+static RE_NAMED_HOOK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").unwrap());
+/// Regex for hook attachment: [text]<changer|
+static RE_HOOK_ATTACH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|").unwrap());
+/// Regex for hook reference: |changer>[text]
+static RE_HOOK_REF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").unwrap());
+/// Regex for collapsing whitespace markup: {text}
+static RE_COLLAPSE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{([^}]*)\}").unwrap());
+
+// ---------------------------------------------------------------------------
 // Plugin struct
 // ---------------------------------------------------------------------------
 
 /// Harlowe 3.x format plugin.
-pub struct HarlowePlugin {
-    /// Regex for simple links: `[[Target]]`
-    re_link_simple: Regex,
-    /// Regex for arrow links: `[[Display->Target]]`
-    re_link_arrow: Regex,
-    /// Regex for pipe links: `[[Display|Target]]`
-    re_link_pipe: Regex,
-    /// Regex for Harlowe link changer: `(link:"text")[[Target]]`
-    re_link_changer: Regex,
-    /// Regex for Harlowe (set: $var to ...) variable write.
-    re_set_var: Regex,
-    /// Regex for Harlowe (put: ... into $var) variable write.
-    re_put_var: Regex,
-    /// Regex for Harlowe (move: $var into $other) variable operation.
-    re_move_var: Regex,
-    /// Regex for Harlowe (unpack: ... into $var) variable write.
-    re_unpack_var: Regex,
-    /// Regex for all $variable references.
-    re_var: Regex,
-    /// Regex for Harlowe macros: (name: ...)
-    re_macro: Regex,
-    /// Regex for named hooks: [hookname]
-    re_named_hook: Regex,
-    /// Regex for hook attachment: [text]<changer|
-    re_hook_attach: Regex,
-    /// Regex for hook reference: |changer>[text]
-    re_hook_ref: Regex,
-    /// Regex for collapsing whitespace markup: {text}
-    re_collapse: Regex,
-}
+pub struct HarlowePlugin;
 
 impl Default for HarlowePlugin {
     fn default() -> Self {
@@ -107,41 +128,7 @@ impl Default for HarlowePlugin {
 impl HarlowePlugin {
     /// Create a new Harlowe plugin instance.
     pub fn new() -> Self {
-        Self {
-            // [[Target]] — simple passage link
-            re_link_simple: Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap(),
-            // [[Display->Target]] — arrow-style link
-            re_link_arrow: Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap(),
-            // [[Display|Target]] — pipe-style link
-            re_link_pipe: Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap(),
-            // (link:"text")[[Target]] — changer link
-            re_link_changer: Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#).unwrap(),
-            // (set: $var to expr) — Harlowe variable write
-            re_set_var: Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap(),
-            // (put: expr into $var) — Harlowe variable write
-            re_put_var: Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").unwrap(),
-            // (move: $var into $other) — Harlowe variable move: writes to $other, reads $var
-            re_move_var: Regex::new(
-                r"\(move:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)",
-            )
-            .unwrap(),
-            // (unpack: ... into $var) — Harlowe destructuring write (3.3+)
-            // Uses .*? instead of [^)]* to handle nested parentheses
-            re_unpack_var: Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
-                .unwrap(),
-            // $variableName — any Harlowe variable reference
-            re_var: Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap(),
-            // (macroname: args) — Harlowe macro/command
-            re_macro: Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)").unwrap(),
-            // [hookname] — named hook (alphanumeric + hyphens/underscores, no spaces)
-            re_named_hook: Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").unwrap(),
-            // [text]<changer| — changer attached after hook
-            re_hook_attach: Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|").unwrap(),
-            // |changer>[text] — changer before hook
-            re_hook_ref: Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").unwrap(),
-            // {text} — collapsing whitespace markup
-            re_collapse: Regex::new(r"\{([^}]*)\}").unwrap(),
-        }
+        Self
     }
 
     // -----------------------------------------------------------------------
@@ -259,7 +246,7 @@ impl HarlowePlugin {
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
         // Detect writes via (set: $var to ...)
-        for caps in self.re_set_var.captures_iter(body) {
+        for caps in RE_SET_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = format!("${}", caps.get(1).unwrap().as_str());
             let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
@@ -274,7 +261,7 @@ impl HarlowePlugin {
         }
 
         // Detect writes via (put: ... into $var)
-        for caps in self.re_put_var.captures_iter(body) {
+        for caps in RE_PUT_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = format!("${}", caps.get(1).unwrap().as_str());
             if let Some(dollar_pos) = full.as_str().rfind('$') {
@@ -296,7 +283,7 @@ impl HarlowePlugin {
         }
 
         // Detect (move: $src into $dst) — write to $dst, read from $src
-        for caps in self.re_move_var.captures_iter(body) {
+        for caps in RE_MOVE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let src_name = format!("${}", caps.get(1).unwrap().as_str());
             let dst_name = format!("${}", caps.get(2).unwrap().as_str());
@@ -345,7 +332,7 @@ impl HarlowePlugin {
         }
 
         // Detect (unpack: ... into $var) — write to $var
-        for caps in self.re_unpack_var.captures_iter(body) {
+        for caps in RE_UNPACK_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = format!("${}", caps.get(1).unwrap().as_str());
             if let Some(dollar_pos) = full.as_str().rfind('$') {
@@ -367,7 +354,7 @@ impl HarlowePlugin {
         }
 
         // Detect all $var references not already writes
-        for caps in self.re_var.captures_iter(body) {
+        for caps in RE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -392,7 +379,7 @@ impl HarlowePlugin {
         let mut links = Vec::new();
 
         // Harlowe changer links: (link:"text")[[Target]]
-        for caps in self.re_link_changer.captures_iter(body) {
+        for caps in RE_LINK_CHANGER.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -408,7 +395,7 @@ impl HarlowePlugin {
         }
 
         // Arrow-style links: [[Display->Target]]
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -424,7 +411,7 @@ impl HarlowePlugin {
         }
 
         // Pipe-style links: [[Display|Target]]
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -441,18 +428,17 @@ impl HarlowePlugin {
 
         // Simple links: [[Target]]
         // Skip overlaps with arrow/pipe/changer links.
-        let known_spans: Vec<Range<usize>> = self
-            .re_link_arrow
+        let known_spans: Vec<Range<usize>> = RE_LINK_ARROW
             .captures_iter(body)
-            .chain(self.re_link_pipe.captures_iter(body))
-            .chain(self.re_link_changer.captures_iter(body))
+            .chain(RE_LINK_PIPE.captures_iter(body))
+            .chain(RE_LINK_CHANGER.captures_iter(body))
             .filter_map(|caps| {
                 let m = caps.get(0)?;
                 Some(m.start()..m.end())
             })
             .collect();
 
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let span = m.start()..m.end();
             let overlaps = known_spans
@@ -482,7 +468,7 @@ impl HarlowePlugin {
             .map(|l| (l.span.start - body_offset)..(l.span.end - body_offset))
             .collect();
 
-        for caps in self.re_named_hook.captures_iter(body) {
+        for caps in RE_NAMED_HOOK.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let hook_name = caps.get(1).unwrap().as_str().to_string();
             let hook_span = m.start()..m.end();
@@ -491,11 +477,11 @@ impl HarlowePlugin {
                 .iter()
                 .any(|s| hook_span.start >= s.start && hook_span.end <= s.end);
             // Skip if this is actually part of a hook attachment or reference
-            let overlaps_attach = self.re_hook_attach.captures_iter(body).any(|ac| {
+            let overlaps_attach = RE_HOOK_ATTACH.captures_iter(body).any(|ac| {
                 let am = ac.get(0).unwrap();
                 hook_span.start >= am.start() && hook_span.end <= am.end()
             });
-            let overlaps_ref = self.re_hook_ref.captures_iter(body).any(|rc| {
+            let overlaps_ref = RE_HOOK_REF.captures_iter(body).any(|rc| {
                 let rm = rc.get(0).unwrap();
                 hook_span.start >= rm.start() && hook_span.end <= rm.end()
             });
@@ -521,7 +507,7 @@ impl HarlowePlugin {
         let mut non_text_spans: Vec<Range<usize>> = Vec::new();
 
         // Macros: (macroname: ...)
-        for caps in self.re_macro.captures_iter(body) {
+        for caps in RE_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let macro_prefix = caps.get(1).unwrap().as_str();
             // macro_prefix is like "set:" — extract the name
@@ -552,7 +538,7 @@ impl HarlowePlugin {
         }
 
         // Named hooks: [hookname] — Expression blocks
-        for caps in self.re_named_hook.captures_iter(body) {
+        for caps in RE_NAMED_HOOK.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let hook_name = caps.get(1).unwrap().as_str().to_string();
             // Skip if this overlaps with a hook attachment or reference span
@@ -570,7 +556,7 @@ impl HarlowePlugin {
         }
 
         // Hook attachment: [text]<changer| — Expression block
-        for caps in self.re_hook_attach.captures_iter(body) {
+        for caps in RE_HOOK_ATTACH.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let content = caps.get(1).unwrap().as_str().to_string();
             let changer = caps.get(2).unwrap().as_str().to_string();
@@ -582,7 +568,7 @@ impl HarlowePlugin {
         }
 
         // Hook reference: |changer>[text] — Expression block
-        for caps in self.re_hook_ref.captures_iter(body) {
+        for caps in RE_HOOK_REF.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let changer = caps.get(1).unwrap().as_str().to_string();
             let content = caps.get(2).unwrap().as_str().to_string();
@@ -594,7 +580,7 @@ impl HarlowePlugin {
         }
 
         // Collapsing whitespace markup: {text} — Expression block
-        for caps in self.re_collapse.captures_iter(body) {
+        for caps in RE_COLLAPSE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let content = caps.get(1).unwrap().as_str().to_string();
             // Skip if this overlaps with already-tracked spans
@@ -722,7 +708,7 @@ impl HarlowePlugin {
         }
 
         // Macro tokens
-        for caps in self.re_macro.captures_iter(body) {
+        for caps in RE_MACRO.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let full_cmd = Self::find_paren_span(body, m.start());
             let end = full_cmd.unwrap_or(m.end());
@@ -737,7 +723,7 @@ impl HarlowePlugin {
         // Variable tokens — write spans first
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
-        for caps in self.re_set_var.captures_iter(body) {
+        for caps in RE_SET_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
             let var_name = format!("${}", caps.get(1).unwrap().as_str());
@@ -751,7 +737,7 @@ impl HarlowePlugin {
             write_spans.push(var_start..var_end);
         }
 
-        for caps in self.re_put_var.captures_iter(body) {
+        for caps in RE_PUT_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
@@ -772,7 +758,7 @@ impl HarlowePlugin {
             }
         }
 
-        for caps in self.re_move_var.captures_iter(body) {
+        for caps in RE_MOVE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let dollar_positions: Vec<usize> = full
                 .as_str()
@@ -801,7 +787,7 @@ impl HarlowePlugin {
             }
         }
 
-        for caps in self.re_unpack_var.captures_iter(body) {
+        for caps in RE_UNPACK_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
@@ -823,7 +809,7 @@ impl HarlowePlugin {
         }
 
         // Variable read tokens (skip overlaps with writes)
-        for caps in self.re_var.captures_iter(body) {
+        for caps in RE_VAR.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -841,7 +827,7 @@ impl HarlowePlugin {
         }
 
         // Hook expression tokens
-        for caps in self.re_named_hook.captures_iter(body) {
+        for caps in RE_NAMED_HOOK.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let hook_name = caps.get(1).unwrap().as_str();
             if !hook_name.contains(' ') {
@@ -854,7 +840,7 @@ impl HarlowePlugin {
             }
         }
 
-        for caps in self.re_hook_attach.captures_iter(body) {
+        for caps in RE_HOOK_ATTACH.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -864,7 +850,7 @@ impl HarlowePlugin {
             });
         }
 
-        for caps in self.re_hook_ref.captures_iter(body) {
+        for caps in RE_HOOK_REF.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -1076,7 +1062,7 @@ impl HarlowePlugin {
         // Check for mismatched changer syntax: [text]<name| without matching |name>[text]
         // Collect all changer names from [text]<name| patterns
         let mut attached_changers: Vec<(String, usize, usize)> = Vec::new(); // (name, start, end)
-        for caps in self.re_hook_attach.captures_iter(body) {
+        for caps in RE_HOOK_ATTACH.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let name = caps.get(2).unwrap().as_str().to_string();
             attached_changers.push((name, m.start(), m.end()));
@@ -1084,7 +1070,7 @@ impl HarlowePlugin {
 
         // Collect all reference changers from |name>[text] patterns
         let mut ref_changers: Vec<(String, usize, usize)> = Vec::new();
-        for caps in self.re_hook_ref.captures_iter(body) {
+        for caps in RE_HOOK_REF.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let name = caps.get(1).unwrap().as_str().to_string();
             ref_changers.push((name, m.start(), m.end()));

@@ -17,6 +17,7 @@ use knot_core::passage::{
 };
 use regex::Regex;
 use std::ops::Range;
+use std::sync::LazyLock;
 use url::Url;
 
 use crate::plugin::{
@@ -73,28 +74,40 @@ struct ParsedHeader {
 }
 
 // ---------------------------------------------------------------------------
+// Compiled regexes (module-level LazyLock)
+// ---------------------------------------------------------------------------
+
+/// Regex for simple links: `[[Target]]`
+static RE_LINK_SIMPLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+/// Regex for arrow links: `[[Display->Target]]`
+static RE_LINK_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+/// Regex for pipe links: `[[Display|Target]]`
+static RE_LINK_PIPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+/// Regex for Snowman state variable reads: `s.variableName`
+static RE_VAR_READ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+/// Regex for Snowman state variable writes: `s.variableName =`
+static RE_VAR_WRITE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+/// Regex for window.story.state variable reads: `window.story.state.variableName`
+static RE_WSS_VAR_READ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+/// Regex for window.story.state variable writes: `window.story.state.variableName =`
+static RE_WSS_VAR_WRITE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+/// Regex for passage headers.
+static RE_HEADER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap());
+
+// ---------------------------------------------------------------------------
 // Plugin struct
 // ---------------------------------------------------------------------------
 
 /// Snowman format plugin.
-pub struct SnowmanPlugin {
-    /// Regex for simple links: `[[Target]]`
-    re_link_simple: Regex,
-    /// Regex for arrow links: `[[Display->Target]]`
-    re_link_arrow: Regex,
-    /// Regex for pipe links: `[[Display|Target]]`
-    re_link_pipe: Regex,
-    /// Regex for Snowman state variable reads: `s.variableName`
-    re_var_read: Regex,
-    /// Regex for Snowman state variable writes: `s.variableName =`
-    re_var_write: Regex,
-    /// Regex for window.story.state variable reads: `window.story.state.variableName`
-    re_wss_var_read: Regex,
-    /// Regex for window.story.state variable writes: `window.story.state.variableName =`
-    re_wss_var_write: Regex,
-    /// Regex for passage headers.
-    re_header: Regex,
-}
+pub struct SnowmanPlugin {}
 
 impl Default for SnowmanPlugin {
     fn default() -> Self {
@@ -105,21 +118,7 @@ impl Default for SnowmanPlugin {
 impl SnowmanPlugin {
     /// Create a new Snowman plugin instance.
     pub fn new() -> Self {
-        Self {
-            re_link_simple: Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap(),
-            re_link_arrow: Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap(),
-            re_link_pipe: Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap(),
-            // s.variableName — read access (also matches writes; filtered below)
-            re_var_read: Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").unwrap(),
-            // s.variableName = — write access
-            re_var_write: Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap(),
-            // window.story.state.variableName — read access
-            re_wss_var_read: Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)").unwrap(),
-            // window.story.state.variableName = — write access
-            re_wss_var_write: Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=")
-                .unwrap(),
-            re_header: Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap(),
-        }
+        Self {}
     }
 
     // -----------------------------------------------------------------------
@@ -139,7 +138,7 @@ impl SnowmanPlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if let Some(caps) = self.re_header.captures(line) {
+            if let Some(caps) = RE_HEADER.captures(line) {
                 let name = caps.get(1).unwrap().as_str().trim().to_string();
                 let tags = caps
                     .get(2)
@@ -396,7 +395,7 @@ impl SnowmanPlugin {
         let mut links = Vec::new();
 
         // Arrow links.
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -412,7 +411,7 @@ impl SnowmanPlugin {
         }
 
         // Pipe links.
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -428,17 +427,16 @@ impl SnowmanPlugin {
         }
 
         // Simple links (skip overlaps with arrow/pipe).
-        let known_spans: Vec<Range<usize>> = self
-            .re_link_arrow
+        let known_spans: Vec<Range<usize>> = RE_LINK_ARROW
             .captures_iter(body)
-            .chain(self.re_link_pipe.captures_iter(body))
+            .chain(RE_LINK_PIPE.captures_iter(body))
             .filter_map(|caps| {
                 let m = caps.get(0)?;
                 Some(m.start()..m.end())
             })
             .collect();
 
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let span = m.start()..m.end();
             let overlaps = known_spans
@@ -475,7 +473,7 @@ impl SnowmanPlugin {
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
         // Detect writes via s.varName =
-        for caps in self.re_var_write.captures_iter(body) {
+        for caps in RE_VAR_WRITE.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = caps.get(1).unwrap().as_str();
             let prefix = format!("s.{}", var_name);
@@ -491,7 +489,7 @@ impl SnowmanPlugin {
         }
 
         // Detect writes via window.story.state.varName =
-        for caps in self.re_wss_var_write.captures_iter(body) {
+        for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = caps.get(1).unwrap().as_str();
             let prefix = format!("window.story.state.{}", var_name);
@@ -507,7 +505,7 @@ impl SnowmanPlugin {
         }
 
         // Detect reads via s.varName (not already a write)
-        for caps in self.re_var_read.captures_iter(body) {
+        for caps in RE_VAR_READ.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -526,7 +524,7 @@ impl SnowmanPlugin {
         }
 
         // Detect reads via window.story.state.varName (not already a write)
-        for caps in self.re_wss_var_read.captures_iter(body) {
+        for caps in RE_WSS_VAR_READ.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
@@ -706,7 +704,7 @@ impl SnowmanPlugin {
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
         // Variable write tokens (s.varName =)
-        for caps in self.re_var_write.captures_iter(body) {
+        for caps in RE_VAR_WRITE.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = caps.get(1).unwrap().as_str();
             let prefix = format!("s.{}", var_name);
@@ -722,7 +720,7 @@ impl SnowmanPlugin {
         }
 
         // Variable write tokens (window.story.state.varName =)
-        for caps in self.re_wss_var_write.captures_iter(body) {
+        for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let var_name = caps.get(1).unwrap().as_str();
             let prefix = format!("window.story.state.{}", var_name);
@@ -738,7 +736,7 @@ impl SnowmanPlugin {
         }
 
         // Variable read tokens (s.varName)
-        for caps in self.re_var_read.captures_iter(body) {
+        for caps in RE_VAR_READ.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let start = body_offset + full.start();
             let end = body_offset + full.end();
@@ -754,7 +752,7 @@ impl SnowmanPlugin {
         }
 
         // Variable read tokens (window.story.state.varName)
-        for caps in self.re_wss_var_read.captures_iter(body) {
+        for caps in RE_WSS_VAR_READ.captures_iter(body) {
             let full = caps.get(0).unwrap();
             let start = body_offset + full.start();
             let end = body_offset + full.end();
@@ -803,7 +801,7 @@ impl SnowmanPlugin {
         }
 
         // Link tokens.
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -812,7 +810,7 @@ impl SnowmanPlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -821,7 +819,7 @@ impl SnowmanPlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),

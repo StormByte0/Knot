@@ -27,12 +27,39 @@ use knot_core::passage::{
     StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
+use std::sync::LazyLock;
 use url::Url;
 
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
+
+// ---------------------------------------------------------------------------
+// Compiled regexes (module-level LazyLock)
+// ---------------------------------------------------------------------------
+
+/// Regex for simple links: `[[Target]]`
+static RE_LINK_SIMPLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+/// Regex for arrow links: `[[Display->Target]]`
+static RE_LINK_ARROW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+/// Regex for pipe links: `[[Display|Target]]`
+static RE_LINK_PIPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+/// Regex for passage headers: `:: Name [tags]`
+static RE_HEADER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap());
+/// Regex for state variable writes: `state.varName =`
+static RE_STATE_WRITE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+/// Regex for state variable reads: `state.varName`
+static RE_STATE_READ: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+/// Regex for `[modify]` key-value lines: `key: value`
+static RE_MODIFY_KV: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").unwrap());
 
 // ---------------------------------------------------------------------------
 // Parsed header
@@ -75,22 +102,7 @@ enum TemplateSegment {
 // ---------------------------------------------------------------------------
 
 /// Chapbook format plugin.
-pub struct ChapbookPlugin {
-    /// Regex for simple links: `[[Target]]`
-    re_link_simple: Regex,
-    /// Regex for arrow links: `[[Display->Target]]`
-    re_link_arrow: Regex,
-    /// Regex for pipe links: `[[Display|Target]]`
-    re_link_pipe: Regex,
-    /// Regex for passage headers: `:: Name [tags]`
-    re_header: Regex,
-    /// Regex for state variable writes: `state.varName =`
-    re_state_write: Regex,
-    /// Regex for state variable reads: `state.varName`
-    re_state_read: Regex,
-    /// Regex for `[modify]` key-value lines: `key: value`
-    re_modify_kv: Regex,
-}
+pub struct ChapbookPlugin;
 
 impl Default for ChapbookPlugin {
     fn default() -> Self {
@@ -101,18 +113,7 @@ impl Default for ChapbookPlugin {
 impl ChapbookPlugin {
     /// Create a new Chapbook plugin instance.
     pub fn new() -> Self {
-        Self {
-            re_link_simple: Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap(),
-            re_link_arrow: Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap(),
-            re_link_pipe: Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap(),
-            re_header: Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap(),
-            // state.varName = value — write
-            re_state_write: Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap(),
-            // state.varName — read (also matches writes; filtered in code)
-            re_state_read: Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").unwrap(),
-            // key: value (inside [modify] blocks)
-            re_modify_kv: Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").unwrap(),
-        }
+        Self
     }
 
     // -----------------------------------------------------------------------
@@ -130,7 +131,7 @@ impl ChapbookPlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if self.re_header.is_match(line) {
+            if RE_HEADER.is_match(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -204,7 +205,7 @@ impl ChapbookPlugin {
         let mut links = Vec::new();
 
         // Arrow-style links: [[Display->Target]]
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -220,7 +221,7 @@ impl ChapbookPlugin {
         }
 
         // Pipe-style links: [[Display|Target]]
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
@@ -236,17 +237,16 @@ impl ChapbookPlugin {
         }
 
         // Simple links: [[Target]] (skip overlaps with arrow/pipe).
-        let known_spans: Vec<std::ops::Range<usize>> = self
-            .re_link_arrow
+        let known_spans: Vec<std::ops::Range<usize>> = RE_LINK_ARROW
             .captures_iter(body)
-            .chain(self.re_link_pipe.captures_iter(body))
+            .chain(RE_LINK_PIPE.captures_iter(body))
             .filter_map(|caps| {
                 let m = caps.get(0)?;
                 Some(m.start()..m.end())
             })
             .collect();
 
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             let span = m.start()..m.end();
             let overlaps = known_spans.iter().any(|s| span.start >= s.start && span.end <= s.end);
@@ -389,7 +389,7 @@ impl ChapbookPlugin {
         let mut write_spans: Vec<std::ops::Range<usize>> = Vec::new();
 
         // Detect writes: state.varName = value
-        for caps in self.re_state_write.captures_iter(content) {
+        for caps in RE_STATE_WRITE.captures_iter(content) {
             let full = caps.get(0).unwrap();
             let var_name = format!("state.{}", caps.get(1).unwrap().as_str());
             let var_start = content_offset + full.start();
@@ -404,7 +404,7 @@ impl ChapbookPlugin {
         }
 
         // Detect reads: state.varName (not already a write)
-        for caps in self.re_state_read.captures_iter(content) {
+        for caps in RE_STATE_READ.captures_iter(content) {
             let full = caps.get(0).unwrap();
             let var_start = content_offset + full.start();
             let var_end = content_offset + full.end();
@@ -440,7 +440,7 @@ impl ChapbookPlugin {
         let mut line_offset = 0;
 
         for line in content.lines() {
-            if let Some(caps) = self.re_modify_kv.captures(line) {
+            if let Some(caps) = RE_MODIFY_KV.captures(line) {
                 let key = caps.get(1).unwrap().as_str();
                 let var_name = format!("modify.{}", key);
                 // Find the key position within the line
@@ -465,7 +465,7 @@ impl ChapbookPlugin {
     fn extract_insert_vars(&self, expr: &str, expr_offset: usize) -> Vec<VarOp> {
         let mut vars = Vec::new();
 
-        for caps in self.re_state_read.captures_iter(expr) {
+        for caps in RE_STATE_READ.captures_iter(expr) {
             let full = caps.get(0).unwrap();
             let var_start = expr_offset + full.start();
             let var_end = expr_offset + full.end();
@@ -551,7 +551,7 @@ impl ChapbookPlugin {
         let segments = self.parse_template_segments(body);
 
         // Link tokens.
-        for caps in self.re_link_arrow.captures_iter(body) {
+        for caps in RE_LINK_ARROW.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -560,7 +560,7 @@ impl ChapbookPlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_pipe.captures_iter(body) {
+        for caps in RE_LINK_PIPE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -569,7 +569,7 @@ impl ChapbookPlugin {
                 modifier: None,
             });
         }
-        for caps in self.re_link_simple.captures_iter(body) {
+        for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let m = caps.get(0).unwrap();
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
@@ -589,7 +589,7 @@ impl ChapbookPlugin {
                     let content_offset = body_offset + *content_start;
 
                     // Write tokens
-                    for caps in self.re_state_write.captures_iter(content) {
+                    for caps in RE_STATE_WRITE.captures_iter(content) {
                         let full = caps.get(0).unwrap();
                         let var_name = format!("state.{}", caps.get(1).unwrap().as_str());
                         let var_start = content_offset + full.start();
@@ -604,7 +604,7 @@ impl ChapbookPlugin {
                     }
 
                     // Read tokens
-                    for caps in self.re_state_read.captures_iter(content) {
+                    for caps in RE_STATE_READ.captures_iter(content) {
                         let full = caps.get(0).unwrap();
                         let var_start = content_offset + full.start();
                         let var_end = content_offset + full.end();
