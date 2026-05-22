@@ -5,6 +5,7 @@
 //! webview, trigger builds, launch preview play, and query variable flow.
 
 use lsp_types::notification::Notification;
+use lsp_types::request::Request;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -797,4 +798,26 @@ pub struct KnotRefreshSemanticTokensNotification;
 impl Notification for KnotRefreshSemanticTokensNotification {
     type Params = KnotRefreshSemanticTokensParams;
     const METHOD: &'static str = "knot/refreshSemanticTokens";
+}
+
+// ---------------------------------------------------------------------------
+// workspace/semanticTokens/refresh — standard LSP request (missing from
+// lsp-types 0.94, defined here for tower-lsp send_request)
+// ---------------------------------------------------------------------------
+
+/// Server-to-client request: `workspace/semanticTokens/refresh`.
+///
+/// Defined in LSP 3.16+. Asks the client to refresh semantic tokens for all
+/// visible documents. The client responds by re-issuing
+/// `textDocument/semanticTokens/full` for every open editor.
+///
+/// This type is defined here because `lsp_types 0.94` does not include it.
+/// Once the crate is upgraded to a version that provides it, this definition
+/// can be removed.
+pub struct WorkspaceSemanticTokensRefreshRequest;
+
+impl Request for WorkspaceSemanticTokensRefreshRequest {
+    type Params = ();
+    type Result = ();
+    const METHOD: &'static str = "workspace/semanticTokens/refresh";
 }
