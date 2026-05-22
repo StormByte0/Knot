@@ -12,7 +12,7 @@ pub mod analysis;
 pub mod editing;
 
 pub use document::{Document, DocumentSnapshot};
-pub use passage::{Passage, Block, Link, VarOp, VarKind, SpecialPassageBehavior};
+pub use passage::{Passage, Block, Link, VarOp, VarKind, SpecialPassageBehavior, PassageCategory};
 pub use graph::PassageGraph;
 pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;

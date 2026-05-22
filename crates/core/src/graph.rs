@@ -8,7 +8,7 @@
 //! - Unreachable passage detection (BFS from entry point)
 //! - Variable flow analysis support
 
-use crate::passage::{SpecialPassageLayer, VarKind, VarOp};
+use crate::passage::{PassageCategory, SpecialPassageBehavior, SpecialPassageLayer, VarKind, VarOp};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -45,6 +45,91 @@ pub struct PassageNode {
     /// Returns `None` for regular (non-special) user-defined passages.
     #[serde(default)]
     pub layer: Option<SpecialPassageLayer>,
+    /// The classification category of this passage.
+    ///
+    /// This is the preferred way to determine a passage's classification
+    /// tier in the priority hierarchy. It provides more granular information
+    /// than `is_special` (which is just a boolean). Handlers should prefer
+    /// `category` over `is_special` for conditional logic.
+    #[serde(default)]
+    pub category: PassageCategory,
+    /// The behavior of this special passage, if it is one.
+    ///
+    /// This enables the graph to construct implicit lifecycle edges without
+    /// re-scanning workspace passages or the format plugin's definitions.
+    /// The graph becomes self-sufficient for special passage queries.
+    ///
+    /// Returns `None` for regular (non-special) user-defined passages.
+    #[serde(default)]
+    pub behavior: Option<SpecialPassageBehavior>,
+}
+
+/// Pre-classified bundle of special passages, organized by behavior.
+///
+/// This bundle is maintained incrementally as nodes are added/removed from
+/// the graph, so handlers and graph construction code never need to re-scan
+/// all workspace passages to find special passages by behavior. The graph
+/// is self-sufficient for special passage queries.
+///
+/// ## Usage
+///
+/// Instead of iterating all workspace documents and checking
+/// `passage.special_def.behavior`, query the bundle:
+///
+/// ```ignore
+/// // OLD: iterate workspace passages
+/// for doc in workspace.documents() {
+///     for passage in &doc.passages {
+///         if matches!(passage.special_def, Some(def) if matches!(def.behavior, ScriptInjection)) {
+///             script_passages.push(passage.name.clone());
+///         }
+///     }
+/// }
+///
+/// // NEW: query the bundle
+/// let script_passages = &graph.special_bundle.script_injection;
+/// ```
+///
+/// ## Maintenance
+///
+/// The bundle is updated automatically by `PassageGraph::add_passage()` and
+/// `PassageGraph::remove_passage()`. Callers should never modify the bundle
+/// directly.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SpecialPassageBundle {
+    /// ScriptInjection passages (TwineCore/LegacyCore [script] tagged,
+    /// or named "script"). These run before startup passages and
+    /// contribute variables. Example: "Story JavaScript".
+    #[serde(default)]
+    pub script_injection: Vec<String>,
+    /// Startup passages (StoryInit, [init] tagged). These run after
+    /// script injection but before the start passage.
+    #[serde(default)]
+    pub startup: Vec<String>,
+    /// Chrome passages (StoryCaption, StoryBanner, StoryMenu, etc.).
+    /// These render in the UI chrome area on every navigation.
+    #[serde(default)]
+    pub chrome: Vec<String>,
+    /// ChromeInterceptor passages (PassageHeader, PassageFooter).
+    /// These wrap every rendered passage body.
+    #[serde(default)]
+    pub chrome_interceptor: Vec<String>,
+    /// StructureTemplate passages (StoryInterface).
+    /// These define the HTML shell for the entire story.
+    #[serde(default)]
+    pub structure_template: Vec<String>,
+    /// Metadata passages (StoryData, StoryTitle).
+    /// These provide metadata only, no content rendering.
+    #[serde(default)]
+    pub metadata: Vec<String>,
+    /// PassageReady passages (PassageReady, PassageDone).
+    /// These run on every navigation.
+    #[serde(default)]
+    pub passage_ready: Vec<String>,
+    /// All special passage names (union of the above lists).
+    /// Useful for "is this special?" checks without matching behavior.
+    #[serde(default)]
+    pub all_special_names: HashSet<String>,
 }
 
 /// Edge data representing a link between passages.
@@ -141,6 +226,12 @@ pub struct PassageGraph {
     graph: DiGraph<PassageNode, PassageEdge>,
     /// Mapping from passage name to node index.
     name_to_idx: HashMap<String, NodeIndex>,
+    /// Pre-classified bundle of special passages, maintained incrementally.
+    ///
+    /// This enables the graph to answer special passage queries without
+    /// re-scanning workspace documents or the format plugin's definitions.
+    /// Updated automatically by `add_passage()` and `remove_passage()`.
+    pub special_bundle: SpecialPassageBundle,
 }
 
 impl PassageGraph {
@@ -149,29 +240,50 @@ impl PassageGraph {
         Self {
             graph: DiGraph::new(),
             name_to_idx: HashMap::new(),
+            special_bundle: SpecialPassageBundle::default(),
         }
     }
 
     /// Add a passage as a node to the graph.
     /// Returns the node index. If a passage with the same name already exists,
-    /// it is replaced.
+    /// it is replaced and the special bundle is updated accordingly.
     pub fn add_passage(&mut self, node: PassageNode) -> NodeIndex {
-        if let Some(&idx) = self.name_to_idx.get(&node.name) {
+        let node_name = node.name.clone();
+
+        // If replacing an existing node, remove its old bundle entry first.
+        // We clone the old node's data into locals before calling
+        // remove_from_bundle to avoid borrowing self immutably (via
+        // old_node) and mutably (via remove_from_bundle) at the same time.
+        if let Some(&idx) = self.name_to_idx.get(&node_name) {
+            let (old_name, old_behavior) = {
+                let old_node = &self.graph[idx];
+                (old_node.name.clone(), old_node.behavior.clone())
+            };
+            self.remove_from_bundle(&old_name, old_behavior.as_ref());
             self.graph[idx] = node;
-            idx
         } else {
-            let idx = self.graph.add_node(node.clone());
-            self.name_to_idx.insert(node.name, idx);
-            idx
+            let idx = self.graph.add_node(node);
+            self.name_to_idx.insert(node_name.clone(), idx);
         }
+
+        // Add the new node to the bundle. We snapshot the node from the
+        // graph so the immutable borrow ends before add_to_bundle takes
+        // &mut self.
+        let idx = self.name_to_idx[&node_name];
+        let node_snapshot = self.graph[idx].clone();
+        self.add_to_bundle(&node_snapshot);
+
+        idx
     }
 
     /// Remove a passage node from the graph by name.
-    /// Also removes all edges connected to this node.
+    /// Also removes all edges connected to this node and updates the bundle.
     pub fn remove_passage(&mut self, name: &str) -> Option<PassageNode> {
         let idx = self.name_to_idx.remove(name)?;
-        // Remove edges first (petgraph handles this when removing the node)
         let node = self.graph.remove_node(idx);
+        if let Some(ref n) = node {
+            self.remove_from_bundle(&n.name, n.behavior.as_ref());
+        }
         // Rebuild name_to_idx since node indices shift after removal
         self.rebuild_index();
         node
@@ -230,9 +342,12 @@ impl PassageGraph {
                 is_metadata: false,
                 is_placeholder: true,
                 layer: None,
+                category: PassageCategory::Regular,
+                behavior: None,
             };
-            let idx = self.graph.add_node(node.clone());
-            self.name_to_idx.insert(node.name, idx);
+            let idx = self.graph.add_node(node);
+            self.name_to_idx.insert(name.to_string(), idx);
+            // Placeholders are never special, so no bundle update needed
             idx
         }
     }
@@ -246,24 +361,158 @@ impl PassageGraph {
         }
     }
 
+    /// Add a node's entry to the special bundle.
+    fn add_to_bundle(&mut self, node: &PassageNode) {
+        if !node.is_special {
+            return;
+        }
+        self.special_bundle.all_special_names.insert(node.name.clone());
+        if let Some(ref behavior) = node.behavior {
+            match behavior {
+                SpecialPassageBehavior::ScriptInjection => {
+                    self.special_bundle.script_injection.push(node.name.clone());
+                }
+                SpecialPassageBehavior::Startup => {
+                    self.special_bundle.startup.push(node.name.clone());
+                }
+                SpecialPassageBehavior::Chrome => {
+                    self.special_bundle.chrome.push(node.name.clone());
+                }
+                SpecialPassageBehavior::ChromeInterceptor => {
+                    self.special_bundle.chrome_interceptor.push(node.name.clone());
+                }
+                SpecialPassageBehavior::StructureTemplate => {
+                    self.special_bundle.structure_template.push(node.name.clone());
+                }
+                SpecialPassageBehavior::Metadata => {
+                    self.special_bundle.metadata.push(node.name.clone());
+                }
+                SpecialPassageBehavior::PassageReady => {
+                    self.special_bundle.passage_ready.push(node.name.clone());
+                }
+                SpecialPassageBehavior::StyleInjection => {
+                    // StyleInjection passages don't need a dedicated list;
+                    // they're in all_special_names but have no lifecycle edges.
+                }
+                SpecialPassageBehavior::Custom(_) => {
+                    // Custom behaviors are tracked in all_special_names
+                    // but don't have a dedicated bundle list.
+                }
+            }
+        }
+    }
+
+    /// Remove a node's entry from the special bundle.
+    fn remove_from_bundle(&mut self, name: &str, behavior: Option<&SpecialPassageBehavior>) {
+        self.special_bundle.all_special_names.remove(name);
+        if let Some(behavior) = behavior {
+            match behavior {
+                SpecialPassageBehavior::ScriptInjection => {
+                    self.special_bundle.script_injection.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::Startup => {
+                    self.special_bundle.startup.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::Chrome => {
+                    self.special_bundle.chrome.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::ChromeInterceptor => {
+                    self.special_bundle.chrome_interceptor.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::StructureTemplate => {
+                    self.special_bundle.structure_template.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::Metadata => {
+                    self.special_bundle.metadata.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::PassageReady => {
+                    self.special_bundle.passage_ready.retain(|n| n != name);
+                }
+                SpecialPassageBehavior::StyleInjection | SpecialPassageBehavior::Custom(_) => {
+                    // No dedicated list to update
+                }
+            }
+        }
+    }
+
     /// Detect broken links — edges whose target passage doesn't exist in the graph
     /// as a real node (i.e., no document URI).
+    ///
+    /// ## Suppressions
+    ///
+    /// Broken link diagnostics are suppressed in these cases:
+    ///
+    /// 1. **ScriptInjection / StyleInjection sources**: Script and stylesheet
+    ///    passages contain non-Twine content (JavaScript, CSS). Link extraction
+    ///    from these passages is best-effort and prone to false positives
+    ///    (e.g., JavaScript string concatenation like `'Use::' + key` being
+    ///    misidentified as a passage reference). Suppressing broken link
+    ///    diagnostics for these passages avoids noise from inevitable
+    ///    extraction inaccuracies.
+    ///
+    /// 2. **Targets containing `::`**: The `::` sequence is the Twee passage
+    ///    header prefix and never appears in passage link targets. Any target
+    ///    containing `::` is a JavaScript namespace accessor (e.g., `Use::Item`)
+    ///    or string concatenation artifact (e.g., `'Use::' + key`), not a
+    ///    real passage name. This is a defense-in-depth filter — the link
+    ///    extraction code already filters `::` targets, but this catches any
+    ///    that slip through.
+    ///
+    /// 3. **Upstream edges**: Lifecycle edges (ScriptInjection → Startup,
+    ///    Startup → Start) are structural, not user-authored links. They are
+    ///    never broken because they're added after verifying both endpoints
+    ///    exist, but this guard provides an extra safety net.
     pub fn detect_broken_links(&self) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
         for edge_ref in self.graph.edge_references() {
-            if edge_ref.weight().is_broken {
-                let source_idx = edge_ref.source();
-                let source = &self.graph[source_idx];
-                diagnostics.push(GraphDiagnostic {
-                    passage_name: source.name.clone(),
-                    file_uri: source.file_uri.clone(),
-                    kind: DiagnosticKind::BrokenLink,
-                    message: format!(
-                        "Link target '{}' not found in workspace",
-                        self.graph[edge_ref.target()].name
-                    ),
-                });
+            if !edge_ref.weight().is_broken {
+                continue;
             }
+
+            // Skip upstream lifecycle edges — these are structural, not
+            // user-authored navigation links.
+            if edge_ref.weight().is_upstream {
+                continue;
+            }
+
+            let source_idx = edge_ref.source();
+            let source = &self.graph[source_idx];
+            let target = &self.graph[edge_ref.target()];
+
+            // Skip broken link diagnostics for ScriptInjection and
+            // StyleInjection source passages. These contain non-Twine
+            // content (JavaScript / CSS) where link extraction is
+            // best-effort and false positives are expected. For example,
+            // JavaScript code like `var name = 'Use::' + key;` may be
+            // misidentified as a passage reference to "Use::".
+            if let Some(ref behavior) = source.behavior {
+                if matches!(
+                    behavior,
+                    SpecialPassageBehavior::ScriptInjection
+                        | SpecialPassageBehavior::StyleInjection
+                ) {
+                    continue;
+                }
+            }
+
+            // Defense-in-depth: skip targets containing "::". The `::`
+            // sequence is the Twee passage header prefix and never appears
+            // in real passage link targets. Any target with `::` is a
+            // JavaScript namespace accessor (e.g., `Use::Operation`) or
+            // string concatenation artifact (e.g., `'Use::' + key`).
+            if target.name.contains("::") {
+                continue;
+            }
+
+            diagnostics.push(GraphDiagnostic {
+                passage_name: source.name.clone(),
+                file_uri: source.file_uri.clone(),
+                kind: DiagnosticKind::BrokenLink,
+                message: format!(
+                    "Link target '{}' not found in workspace",
+                    target.name
+                ),
+            });
         }
         diagnostics
     }

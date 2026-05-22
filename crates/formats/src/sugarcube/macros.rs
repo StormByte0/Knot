@@ -1655,40 +1655,6 @@ pub fn comparison_operators() -> Vec<&'static str> {
     vec!["gt", "gte", "lt", "lte"]
 }
 
-/// Script tag passage names.
-///
-/// **Removed**: These are now defined in `twine_core_special_passages()` in
-/// the core crate as tag-matched `SpecialPassageDef` entries. The
-/// `FormatPlugin::script_tags()` and `FormatPlugin::stylesheet_tags()` trait
-/// methods are deprecated and should not be used. The classification system
-/// (`classify_passage()`) is the single source of truth.
-///
-/// This function is kept as an empty stub for backward compatibility only.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use twine_core_special_passages() from knot_core::passage instead"
-)]
-pub fn script_tags() -> Vec<&'static str> {
-    vec![]
-}
-
-/// Stylesheet tag passage names.
-///
-/// **Removed**: These are now defined in `twine_core_special_passages()` in
-/// the core crate as tag-matched `SpecialPassageDef` entries. The
-/// `FormatPlugin::script_tags()` and `FormatPlugin::stylesheet_tags()` trait
-/// methods are deprecated and should not be used. The classification system
-/// (`classify_passage()`) is the single source of truth.
-///
-/// This function is kept as an empty stub for backward compatibility only.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use twine_core_special_passages() from knot_core::passage instead"
-)]
-pub fn stylesheet_tags() -> Vec<&'static str> {
-    vec![]
-}
-
 // ---------------------------------------------------------------------------
 // Global object hover descriptions
 // ---------------------------------------------------------------------------

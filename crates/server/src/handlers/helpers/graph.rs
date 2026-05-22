@@ -1,7 +1,7 @@
 //! Passage graph rebuild and implicit special edge construction.
 
 use knot_core::graph::{PassageEdge, PassageNode};
-use knot_core::passage::{SpecialPassageBehavior, SpecialPassageLayer, StoryFormat};
+use knot_core::passage::{PassageCategory, SpecialPassageBehavior, SpecialPassageLayer, StoryFormat};
 use knot_core::Workspace;
 use knot_formats::plugin as fmt_plugin;
 
@@ -30,7 +30,7 @@ pub(crate) fn rebuild_graph(
         .unwrap_or_default();
 
     // ── Step 2: Collect passage info ────────────────────────────────────
-    let info: Vec<(String, String, bool, bool, Option<SpecialPassageLayer>, Vec<(Option<String>, String)>)> = workspace
+    let info: Vec<(String, String, bool, bool, Option<SpecialPassageLayer>, PassageCategory, Option<SpecialPassageBehavior>, Vec<(Option<String>, String)>)> = workspace
         .documents()
         .flat_map(|doc| {
             doc.passages.iter().map(|p| {
@@ -58,6 +58,8 @@ pub(crate) fn rebuild_graph(
                     p.is_special,
                     p.is_metadata(),
                     p.special_def.as_ref().map(|d| d.layer.clone()),
+                    p.category(),
+                    p.special_def.as_ref().map(|d| d.behavior.clone()),
                     edges,
                 )
             })
@@ -66,7 +68,7 @@ pub(crate) fn rebuild_graph(
 
     let mut graph = knot_core::PassageGraph::new();
 
-    for (name, file_uri, is_special, is_metadata, layer, _edges) in &info {
+    for (name, file_uri, is_special, is_metadata, layer, category, behavior, _edges) in &info {
         let node = PassageNode {
             name: name.clone(),
             file_uri: file_uri.clone(),
@@ -74,12 +76,14 @@ pub(crate) fn rebuild_graph(
             is_metadata: *is_metadata,
             is_placeholder: false,
             layer: layer.clone(),
+            category: *category,
+            behavior: behavior.clone(),
         };
         graph.add_passage(node);
     }
 
     // Add edges after all nodes exist so broken-link detection works.
-    for (source, _, _, _, _, edges) in &info {
+    for (source, _, _, _, _, _, _, edges) in &info {
         for (display_text, target) in edges {
             let target_exists = graph.contains_passage(target);
             let edge = PassageEdge {
@@ -92,7 +96,9 @@ pub(crate) fn rebuild_graph(
     }
 
     // ── Step 4: Add implicit edges for special passages ──────────────────
-    add_implicit_special_edges(&mut graph, workspace, plugin);
+    // Uses the graph's special_bundle instead of re-scanning workspace
+    // passages. The bundle was populated incrementally by add_passage().
+    add_implicit_special_edges(&mut graph, workspace);
 
     graph
 }
@@ -121,58 +127,14 @@ pub(crate) fn rebuild_graph(
 ///    Only user-defined passages need explicit links for context and
 ///    reachability analysis.
 ///
-/// ## Structural vs Explicit Edges
+/// ## Bundle-Driven Construction
 ///
-/// This function only adds **structural/lifecycle edges** — edges that
-/// represent the engine's implicit execution ordering. It does NOT add
-/// edges for **explicit references** detected by the format plugin's parser.
-/// Those are handled separately:
-///
-/// - **`data-passage` attributes** in StoryInterface: The SugarCube parser
-///   extracts `data-passage="SidebarStats"` as a link, which becomes a
-///   graph edge via `rebuild_graph()`. StoryInterface is classified as
-///   `StructureTemplate` because it can contain these references.
-///
-/// - **`Engine.play()`/`Engine.goTo()`** in Story JavaScript: The parser
-///   extracts these as links via `extract_implicit_passage_refs()`. These
-///   create graph edges from the script passage to the referenced user
-///   passages. ScriptInjection passages have `contributes_variables: true`
-///   for this reason.
-///
-/// - **Widget declarations** in Story JavaScript: Widgets that reference
-///   passages via `<<include>>`, `<<goto>>`, etc. are detected by the
-///   format plugin's `resolve_dynamic_navigation_links()` and create
-///   graph edges.
-///
-/// - **`<<goto>>`/`<<include>>`** in StoryInit or other special passages:
-///   Detected by the parser as macro passage refs and create graph edges.
-///
-/// The key principle: **isolation applies to implicit/structural edges,
-/// not to explicit references detected by the format plugin**. If a special
-/// passage contains an explicit reference to a user-defined passage, that
-/// reference SHOULD create a graph edge to ensure correct reachability
-/// analysis and variable flow.
-///
-/// ## Why No Other Structural Cross-Zone Edges
-///
-/// - **Chrome passages** (StoryCaption, StoryBanner, etc.) render in the
-///   UI chrome area on every navigation. They don't need structural edges
-///   because they're always invoked by the engine.
-///
-/// - **ChromeInterceptor passages** (PassageHeader, PassageFooter) wrap
-///   every rendered passage body. They're conceptually connected to ALL
-///   user-defined passages but we don't create O(N) edges. Instead, the
-///   analysis engine merges their variable context into every passage's
-///   entry state during dataflow analysis.
-///
-/// - **User-defined → Special**: User passages rarely link to special
-///   passages directly. If they do (e.g., `<<include "StoryInit">>`),
-///   those are detected as passage refs by the format plugin, not as
-///   structural graph edges.
+/// This function queries the graph's `special_bundle` instead of iterating
+/// workspace documents. The bundle was populated incrementally by
+/// `add_passage()`, so this function is self-sufficient — it needs only
+/// the graph and the workspace metadata (for the start passage name).
 ///
 /// ## Upstream Chain
-///
-/// The upstream chain reflects execution order:
 ///
 /// ```text
 /// Story JavaScript (TwineCore, ScriptInjection, priority -1)
@@ -182,80 +144,24 @@ pub(crate) fn rebuild_graph(
 /// Start passage (user-defined, from StoryData's start attribute)
 /// ```
 ///
-/// Edge Types
-///
 /// Upstream edges are marked with `is_upstream: true` so the story map
 /// can render them differently (e.g., dashed lines) from normal
 /// navigation edges.
-///
-/// **Format isolation**: The server never hardcodes format-specific passage
-/// names. All special passage definitions come from the merged registry
-/// (TwineCore + LegacyCore + StoryFormat via `all_special_passages()`).
 pub(crate) fn add_implicit_special_edges(
     graph: &mut knot_core::PassageGraph,
     workspace: &Workspace,
-    plugin: Option<&dyn fmt_plugin::FormatPlugin>,
 ) {
-    let Some(plugin) = plugin else {
-        return;
-    };
+    // Clone bundle lists so the immutable borrow on graph.special_bundle
+    // ends before we call graph.add_edge() (which takes &mut self).
+    let script_injection = graph.special_bundle.script_injection.clone();
+    let startup = graph.special_bundle.startup.clone();
 
-    let special_defs = plugin.all_special_passages();
-
-    // ── Build the upstream chain among special passages only ──────────
-    //
-    // Collect special passages that actually exist in the graph, grouped
-    // by their layer and behavior. We only add edges among special
-    // passages and the single Startup → Start bridge.
-
-    // Collect TwineCore ScriptInjection passages (e.g., "Story JavaScript")
-    let mut twine_core_script: Vec<String> = Vec::new();
-    // Collect StoryFormat Startup passages (e.g., "StoryInit")
-    let mut story_format_startup: Vec<String> = Vec::new();
-
-    for def in &special_defs {
-        if !graph.contains_passage(&def.name) {
-            continue;
-        }
-        match (&def.layer, &def.behavior) {
-            (SpecialPassageLayer::TwineCore, SpecialPassageBehavior::ScriptInjection) => {
-                twine_core_script.push(def.name.clone());
-            }
-            (SpecialPassageLayer::LegacyCore, SpecialPassageBehavior::ScriptInjection) => {
-                // Legacy "script" passages are also upstream from Startup
-                twine_core_script.push(def.name.clone());
-            }
-            (SpecialPassageLayer::StoryFormat, SpecialPassageBehavior::Startup) => {
-                story_format_startup.push(def.name.clone());
-            }
-            _ => {
-                // Chrome, ChromeInterceptor, PassageReady, Metadata,
-                // StyleInjection, Custom: no implicit edges.
-                //
-                // ChromeInterceptor passages (PassageHeader, PassageFooter)
-                // wrap every rendered passage but don't get graph edges.
-                // The analysis engine merges their variable context into
-                // every passage's entry state during dataflow analysis,
-                // making O(N) edges unnecessary.
-                //
-                // Chrome passages render in the UI chrome area on every
-                // navigation and are always reachable by engine definition.
-                //
-                // PassageReady/PassageDone run on every navigation but
-                // their variable flow is handled by the format plugin's
-                // seed variable system, not graph edges.
-            }
-        }
-    }
-
-    // ── Edge: TwineCore/LegacyCore ScriptInjection → StoryFormat Startup ──
-    //
-    // This represents the execution order: script injection passages run
-    // before startup passages. For example, "Story JavaScript" (TwineCore)
-    // runs before "StoryInit" (StoryFormat), so its variables and side
-    // effects are available when StoryInit executes.
-    for script_name in &twine_core_script {
-        for startup_name in &story_format_startup {
+    // ── Edge: ScriptInjection → Startup ──────────────────────────────
+    // Script injection passages run before startup passages. For example,
+    // "Story JavaScript" (TwineCore) runs before "StoryInit" (StoryFormat),
+    // so its variables and side effects are available when StoryInit executes.
+    for script_name in &script_injection {
+        for startup_name in &startup {
             let already_exists = graph.outgoing_neighbors(script_name)
                 .iter()
                 .any(|n| n == startup_name);
@@ -269,24 +175,10 @@ pub(crate) fn add_implicit_special_edges(
         }
     }
 
-    // ── Bridge Edge: StoryFormat Startup → Start passage ──────────────
-    //
-    // This is the single edge that crosses from the special passage chain
-    // into the user-defined passage graph. It represents the moment the
-    // engine finishes running startup passages and begins normal navigation
-    // at the start passage. This edge is essential for:
-    //
-    // 1. Variable flow: Startup passages seed variables that are available
-    //    in the start passage's entry state.
-    // 2. Reachability: The start passage is reachable from the startup
-    //    chain (though it's always reachable by definition since it's the
-    //    BFS entry point).
-    // 3. Story map visualization: Shows the transition from engine setup
-    //    to user content.
-    //
-    // The start passage name comes from StoryData's `start` attribute,
-    // falling back to "Start" if not specified.
-    if !story_format_startup.is_empty() {
+    // ── Bridge Edge: Startup → Start passage ─────────────────────────
+    // This is the single edge from the special chain into the user-defined
+    // graph. It represents the moment the engine begins normal navigation.
+    if !startup.is_empty() {
         let start_passage_name = workspace
             .metadata
             .as_ref()
@@ -294,10 +186,7 @@ pub(crate) fn add_implicit_special_edges(
             .unwrap_or("Start");
 
         if graph.contains_passage(start_passage_name) {
-            // Find the highest-priority Startup passage (lowest priority number)
-            // as the source of the bridge edge. Typically this is StoryInit
-            // (priority 0), which is the last startup passage to run.
-            let bridge_source = story_format_startup.first().unwrap();
+            let bridge_source = &startup[0];
 
             let already_exists = graph.outgoing_neighbors(bridge_source)
                 .iter()
@@ -311,24 +200,4 @@ pub(crate) fn add_implicit_special_edges(
             }
         }
     }
-
-    // NOTE: No other edges are added from special passages to user-defined
-    // passages. The isolation principle holds:
-    //
-    // - Variable flow analysis uses explicit seeding via
-    //   `collect_special_passage_initializers()` and
-    //   `supplement_seed_with_format_specials()` to propagate
-    //   variable state from special passages.
-    //
-    // - ChromeInterceptor variable contexts is merged into every passage's
-    //   entry state during dataflow analysis (not via graph edges).
-    //
-    // - Reachability analysis skips special passages entirely
-    //   (they're always reachable by engine definition).
-    //
-    // - Orphan detection skips special passages entirely
-    //   (they're always referenced by the engine).
-    //
-    // - The story map can show the upstream chain as a separate
-    //   visual cluster, distinct from the user navigation graph.
 }

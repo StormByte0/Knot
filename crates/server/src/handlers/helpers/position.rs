@@ -136,13 +136,15 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
 /// This ensures the server's header parsing always produces the same name
 /// that the format plugin stored during workspace indexing.
 pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
-    let header = header.trim();
+    // Trim trailing \r for CRLF robustness — mirrors the format plugins'
+    // parse_header_line() CRLF fix.
+    let header = header.trim().trim_end_matches('\r');
 
     // Strip JSON metadata block first: :: Name [tags] {"position":"100,200"}
     // The metadata must be the last thing on the line and start with '{'.
     // This mirrors the format plugins' parse_header_line() logic.
     let header = if let Some(brace_start) = header.rfind('{') {
-        if header.trim_end().ends_with('}') {
+        if header.ends_with('}') {
             header[..brace_start].trim()
         } else {
             header
@@ -152,8 +154,14 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     };
 
     // Strip tag brackets: :: Name [tag1 tag2]
-    if let Some(bracket_start) = header.find('[') {
-        header[..bracket_start].trim().to_string()
+    // Use rfind('[') + ends_with(']') to match the lexer's tag detection,
+    // avoiding false matches on '[' characters inside passage names.
+    if let Some(bracket_start) = header.rfind('[') {
+        if header.ends_with(']') {
+            header[..bracket_start].trim().to_string()
+        } else {
+            header.to_string()
+        }
     } else {
         header.to_string()
     }

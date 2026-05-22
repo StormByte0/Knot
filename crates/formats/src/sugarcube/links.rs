@@ -89,6 +89,13 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
         }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
+        // Filter: skip targets containing "::" — this is JavaScript
+        // namespace accessor syntax (e.g., Use::Operation), not a Twine
+        // passage name. The "::" prefix is used for passage headers in
+        // Twee format but never appears inside passage link targets.
+        if target.contains("::") {
+            continue;
+        }
         links.push(Link {
             display_text: Some(display),
             target,
@@ -105,6 +112,10 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
         }
         let display = caps.get(1).unwrap().as_str().trim().to_string();
         let target = caps.get(2).unwrap().as_str().trim().to_string();
+        // Filter: skip targets containing "::" — same as arrow links above.
+        if target.contains("::") {
+            continue;
+        }
         links.push(Link {
             display_text: Some(display),
             target,
@@ -188,6 +199,12 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
                 let full_match = caps.get(0).unwrap();
                 let target = target_match.as_str().trim().to_string();
                 if !target.is_empty() {
+                    // Filter: skip targets containing "::" — this is
+                    // JavaScript namespace accessor syntax (e.g.,
+                    // Use::Operation), not a Twine passage name.
+                    if target.contains("::") {
+                        continue;
+                    }
                     links.push(Link {
                         display_text: None,
                         target,
@@ -258,6 +275,11 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
         if idx < string_args.len() {
             let (content, rel_start, rel_end) = &string_args[idx];
             if !content.is_empty() {
+                // Filter: skip targets containing "::" — JavaScript
+                // namespace accessor syntax, not a Twine passage name.
+                if content.contains("::") {
+                    continue;
+                }
                 // Compute the args offset in the body.
                 // The args string is trimmed from body[name_end..closing_gt_start].
                 let name_end_in_body = m.name_start + m.name_len;

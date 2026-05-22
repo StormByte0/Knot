@@ -889,9 +889,10 @@ pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> 
 
 /// Generate Tag semantic tokens with accurate positions.
 ///
-/// Instead of using a fixed-offset formula that assumes uniform spacing,
-/// this function scans the header line to find the exact byte positions
-/// of each tag inside the `[...]` bracket.
+/// Scans the raw header text to find the exact byte position of the `[`
+/// bracket, then computes tag positions relative to that bracket. This
+/// correctly handles whitespace between the passage name and the bracket
+/// (e.g., `:: Story Stylesheet [stylesheet]` has a space before `[`).
 fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
@@ -899,68 +900,79 @@ fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
         return tokens;
     }
 
-    // Re-derive the header line start from header_start.
-    // The header text starts at header_start and has length header_len.
-    // We need to find the `[` bracket that contains the tags.
+    // We have the raw text after `::` (e.g., " Story Stylesheet [stylesheet]").
+    // Find the `[` bracket in this raw text. The tag bracket is the LAST `[`
+    // on the line that is paired with a closing `]` — this matches the
+    // lexer's tag detection logic (rfind('[') + ends_with(']')).
     //
-    // We know:
-    // - name_start is the byte offset of the passage name
-    // - name_start = header_start + 2 + whitespace_len
-    // - After the name, there's `[tag1 tag2]` optionally followed by `{...}`
-    //
-    // Find the `[` after the passage name in the header.
-    // We can reconstruct from name_start + name length.
-    let name_end = header.name_start + header.name.len();
+    // The byte offset of `[` in the document is:
+    //   header_start + 2 + position_of_bracket_in_raw_after_colons
+    let raw = &header.raw_after_colons;
 
-    // The tag bracket starts at or after name_end. We search for `[`
-    // in the header starting from name_end. The offset is absolute
-    // (document-level), so we can emit tokens directly.
-    //
-    // However, we don't have the raw header text here — we only have
-    // the ParsedHeader fields. So we reconstruct tag positions from
-    // the known tag names and the fact that tags are space-separated
-    // inside `[...]`.
-    //
-    // The bracket starts at some offset after name_end. We need to
-    // find it. Since we don't have the raw text, we use the fact that
-    // the format is `Name[tag1 tag2]` — the `[` is right after the name
-    // (possibly with whitespace, but typically no space in Twee format).
-    //
-    // For now, we use a more robust approach: compute tag positions
-    // relative to the `[` bracket. We find the `[` position by
-    // searching forward from name_end.
+    // Find the `[` bracket. Use rfind to match the lexer's logic.
+    // Strip any trailing JSON metadata first (same as parse_header_line).
+    let raw_before_json = if let Some(brace_start) = raw.rfind('{') {
+        if raw.trim_end().ends_with('}') {
+            &raw[..brace_start]
+        } else {
+            raw
+        }
+    } else {
+        raw
+    };
 
-    // Since we don't have the source text, we estimate:
-    // Format: `::Name [tag1 tag2]` or `:: Name [tag1 tag2]`
-    // Tags are at: bracket_start + 1 + (sum of previous tags + spaces)
-    //
-    // This is still approximate but accounts for variable tag lengths.
+    let bracket_pos_in_raw = match raw_before_json.rfind('[') {
+        Some(pos) if raw_before_json.trim_end().ends_with(']') => pos,
+        _ => return tokens, // No valid tag bracket found
+    };
 
-    // The simplest correct approach: tags appear in order after the
-    // opening `[`, separated by single spaces. The bracket itself is
-    // typically at name_end (no space between name and `[` in standard
-    // Twee format) or name_end + some whitespace.
+    // The document-absolute byte offset of the `[` character.
+    let bracket_start_abs = header.header_start + 2 + bracket_pos_in_raw;
+    let tags_inner_start = bracket_start_abs + 1; // first tag starts after `[`
 
-    // For accurate tag positions, we would need the raw header text.
-    // Since ParsedHeader doesn't store it, we use the name as anchor.
-    // We assume the bracket is immediately after the name (which is
-    // the standard Twee format: `:: Name [tags]`).
-
-    let bracket_start = name_end; // `[` is right after the name
-    let tags_inner_start = bracket_start + 1; // first tag starts after `[`
+    // Scan through the tag bracket content to find each tag's position.
+    // Tags are space-separated inside [...].
+    // We need the actual text inside the brackets to match tag positions.
+    let close_bracket_pos = raw_before_json.rfind(']').unwrap_or(raw_before_json.len());
+    let tags_text = &raw_before_json[bracket_pos_in_raw + 1..close_bracket_pos];
 
     let mut offset = tags_inner_start;
-    for (i, tag) in header.tags.iter().enumerate() {
-        if i > 0 {
-            offset += 1; // space between tags
+    let mut tag_idx = 0;
+    let mut in_tag = false;
+    let mut tag_start = 0usize;
+
+    for (i, ch) in tags_text.char_indices() {
+        if ch.is_whitespace() {
+            if in_tag {
+                // End of current tag
+                let tag_end_abs = tags_inner_start + i;
+                if tag_idx < header.tags.len() {
+                    tokens.push(SemanticToken {
+                        start: tag_start,
+                        length: tag_end_abs - tag_start,
+                        token_type: SemanticTokenType::Tag,
+                        modifier: None,
+                    });
+                    tag_idx += 1;
+                }
+                in_tag = false;
+            }
+        } else if !in_tag {
+            // Start of a new tag
+            tag_start = tags_inner_start + i;
+            in_tag = true;
         }
+    }
+
+    // Handle the last tag (if no trailing whitespace)
+    if in_tag && tag_idx < header.tags.len() {
+        let tag_end_abs = tags_inner_start + tags_text.len();
         tokens.push(SemanticToken {
-            start: offset,
-            length: tag.len(),
+            start: tag_start,
+            length: tag_end_abs - tag_start,
             token_type: SemanticTokenType::Tag,
             modifier: None,
         });
-        offset += tag.len();
     }
 
     tokens
