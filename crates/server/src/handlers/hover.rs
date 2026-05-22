@@ -41,33 +41,10 @@ pub(crate) async fn hover(
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
 
-    // 1. Try macro hover — delegate syntax detection to the format plugin
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_macro_hover(line, line_idx, char_pos, plugin) {
-            return Ok(Some(hover));
-        }
-    }
-
-    // 2. Try variable hover — check if cursor is on $variable or _variable
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_variable_hover(line, line_idx, char_pos, &inner.workspace, plugin) {
-            return Ok(Some(hover));
-        }
-    }
-
-    // 3. Try global object hover — check if cursor is on a format-specific global
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_global_hover(line, line_idx, char_pos, plugin) {
-            return Ok(Some(hover));
-        }
-    }
-
-    // 4. Try link hover — check if cursor is inside [[...]]
-    if let Some(hover) = try_link_hover(line, line_idx, char_pos, &inner.workspace) {
-        return Ok(Some(hover));
-    }
-
-    // 5. Try passage hover — check if cursor is on a passage header
+    // 1. Try passage header hover FIRST — if the cursor is on a :: header
+    //    line, always show passage info. This prevents global object names
+    //    (e.g., "Story" in "Story Stylesheet [stylesheet]") from matching
+    //    the global hover before the passage hover gets a chance.
     if let Some(passage_name) = helpers::find_passage_at_position(text, position)
         && let Some((_, passage)) = inner.workspace.find_passage(&passage_name)
     {
@@ -134,6 +111,32 @@ pub(crate) async fn hover(
             }),
             range: hover_range,
         }));
+    }
+
+    // 2. Try macro hover — delegate syntax detection to the format plugin
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_macro_hover(line, line_idx, char_pos, plugin) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 3. Try variable hover — check if cursor is on $variable or _variable
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_variable_hover(line, line_idx, char_pos, &inner.workspace, plugin) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 4. Try global object hover — check if cursor is on a format-specific global
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_global_hover(line, line_idx, char_pos, plugin) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 5. Try link hover — check if cursor is inside [[...]]
+    if let Some(hover) = try_link_hover(line, line_idx, char_pos, &inner.workspace) {
+        return Ok(Some(hover));
     }
 
     Ok(None)
@@ -346,12 +349,29 @@ fn try_variable_hover(
 }
 
 /// Try to show hover info for a format-specific global object.
+///
+/// **Guard**: This function immediately returns `None` when the cursor
+/// is on a passage header line (starts with `::`). Passage header hover
+/// already handles these lines in step 1 of the hover handler, but if
+/// that check fails for any reason (e.g., the passage isn't indexed yet),
+/// we must not fall through to a global object hover that would split
+/// multi-word passage names like "Story Stylesheet" — where "Story"
+/// is both a passage name component AND a SugarCube global object.
 fn try_global_hover(
     line: &str,
     line_idx: usize,
     char_pos: usize,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
+    // Never show global object hover on passage header lines.
+    // The passage header hover (step 1) owns these lines. Falling through
+    // to global hover would cause split hover behavior for multi-word
+    // passage names where a word happens to match a global object
+    // (e.g., "Story" in "Story Stylesheet" matches SugarCube's Story API).
+    if line.trim_start().starts_with("::") {
+        return None;
+    }
+
     // Extract the word at the cursor position.
     let chars: Vec<char> = line.chars().collect();
     let utf16_to_char_idx = |utf16_offset: usize| -> usize {
@@ -535,13 +555,15 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
     // between `::` and the name.
     let after_colons = &line_text[2..];
     let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-    let rest = after_colons.trim_start();
+    // Trim trailing \r for CRLF robustness — mirrors the format plugins'
+    // parse_header_line() CRLF fix.
+    let rest = after_colons.trim_start().trim_end_matches('\r');
 
     // The name extends to the `[` bracket (for tags) or `{` (for JSON metadata)
     // or the end of the line. Strip JSON metadata first (must end with '}'),
-    // then tags — matching the SugarCube lexer's parse_header_line() order.
+    // then tags — matching the format plugins' parse_header_line() order.
     let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
-        if rest.trim_end().ends_with('}') {
+        if rest.ends_with('}') {
             &rest[..brace_start]
         } else {
             rest
@@ -549,8 +571,17 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
     } else {
         rest
     };
-    let name_end = rest_before_json.find('[')
-        .unwrap_or(rest_before_json.len());
+    // Use rfind('[') + ends_with(']') to match the lexer's tag detection.
+    // This avoids false matches on '[' characters inside passage names.
+    let name_end = if let Some(bracket_start) = rest_before_json.rfind('[') {
+        if rest_before_json.ends_with(']') {
+            bracket_start
+        } else {
+            rest_before_json.len()
+        }
+    } else {
+        rest_before_json.len()
+    };
     let name_text = rest_before_json[..name_end].trim_end();
 
     // Compute the byte offset where the name starts and ends.

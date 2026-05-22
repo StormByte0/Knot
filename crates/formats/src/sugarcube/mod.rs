@@ -841,20 +841,6 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     // -------------------------------------------------------------------
-    // Script/stylesheet tags (deprecated — use classification system)
-    // -------------------------------------------------------------------
-
-    #[allow(deprecated)]
-    fn script_tags(&self) -> Vec<&'static str> {
-        macros::script_tags()
-    }
-
-    #[allow(deprecated)]
-    fn stylesheet_tags(&self) -> Vec<&'static str> {
-        macros::stylesheet_tags()
-    }
-
-    // -------------------------------------------------------------------
     // Variable tracking capability
     // -------------------------------------------------------------------
 

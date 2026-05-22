@@ -400,6 +400,10 @@ impl SnowmanPlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -412,6 +416,10 @@ impl SnowmanPlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -438,6 +446,10 @@ impl SnowmanPlugin {
                 .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
                 let target = caps.get(1).unwrap().as_str().trim().to_string();
+                // Filter: skip targets containing "::" — JS namespace accessor
+                if target.contains("::") {
+                    continue;
+                }
                 links.push(Link {
                     display_text: None,
                     target,

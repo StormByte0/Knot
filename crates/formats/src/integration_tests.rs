@@ -68,6 +68,14 @@ fn rebuild_graph(workspace: &mut Workspace) {
             is_metadata: *is_metadata,
             is_placeholder: false,
             layer: None,
+            category: if *is_metadata {
+                knot_core::passage::PassageCategory::CoreMetadata
+            } else if *is_special {
+                knot_core::passage::PassageCategory::FormatNamed
+            } else {
+                knot_core::passage::PassageCategory::Regular
+            },
+            behavior: None,
         });
     }
 

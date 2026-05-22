@@ -135,7 +135,7 @@ pub enum Block {
 ///
 /// - **StoryFormat**: Format-specific special passages and tags defined by
 ///   the active format plugin. SugarCube registers name-matched code passages
-///   (StoryInit, PassageHeader) and tag-matched code tags (init, widget, nobr).
+///   (StoryInit, PassageHeader) and tag-matched code tags (init, widget).
 ///   Harlowe registers tag-matched passages (header, footer, startup).
 ///   The core never hardcodes format-specific names or tags.
 ///
@@ -151,7 +151,7 @@ pub enum SpecialPassageLayer {
     /// Recognized for import/migration compatibility only.
     LegacyCore,
     /// Format-specific special passages and tags (StoryInit, PassageHeader,
-    /// [init], [widget], [nobr] for SugarCube; [header], [footer], [startup]
+    /// [init], [widget] for SugarCube; [header], [footer], [startup]
     /// for Harlowe). Defined by the active format plugin.
     StoryFormat,
     /// User-defined special passages (not yet implemented).
@@ -161,6 +161,101 @@ pub enum SpecialPassageLayer {
 impl Default for SpecialPassageLayer {
     fn default() -> Self {
         SpecialPassageLayer::StoryFormat
+    }
+}
+
+/// The classification category of a passage within the priority hierarchy.
+///
+/// This enum explicitly represents the 6-level priority order that the
+/// classification system uses when matching passages against special passage
+/// definitions. Each variant corresponds to a distinct priority level, making
+/// it possible to inspect and log classification decisions for debugging.
+///
+/// ## Priority Order (highest to lowest)
+///
+/// 1. **CoreMetadata** — StoryData (format detection) and StoryTitle.
+///    These are TwineCore name-matched passages with `Metadata` behavior.
+///    StoryData must be identified first because it determines which format
+///    plugin is active, which in turn affects all subsequent classification.
+///
+/// 2. **CoreNamed** — Other Twine-core name-matched passages (Start).
+///    These are always recognized by name regardless of the active format.
+///    A passage named "Start" with `[widget]` is still Start, not a widget.
+///
+/// 3. **CoreTagged** — Twine-core tag-matched passages ([script], [stylesheet],
+///    [style]). These are compiler constructs that apply across all formats.
+///    Checked after core name matches so that a passage named "StoryInit"
+///    tagged [script] is classified as StoryInit (CoreNamed/FormatNamed),
+///    not as a script passage.
+///
+/// 4. **CoreLegacy** — Twine 1 legacy name-matched passages ("script" and
+///    "stylesheet" as passage NAMES, not tags). Import/migration only.
+///
+/// 5. **FormatNamed** — Format-specific name-matched passages (StoryInit,
+///    PassageHeader, StoryCaption, etc.). Singleton passages identified by
+///    exact name. The specific set depends on the active format plugin.
+///
+/// 6. **FormatTagged** — Format-specific tag-matched passages ([init],
+///    [widget] for SugarCube; [header], [footer], [startup] for
+///    Harlowe). Multiple passages can share a tag.
+///
+/// 7. **Regular** — User-defined passages with no special definition match.
+///    Tag checking happens BEFORE classifying as Regular, ensuring that
+///    passages with special tags are never missed.
+///
+/// ## Usage
+///
+/// The `Passage::category()` method derives the category from the passage's
+/// `special_def` field. The `FormatPlugin::classify_passage_category()`
+/// method performs the full priority cascade and returns both the
+/// `SpecialPassageDef` (if matched) and the `PassageCategory`.
+///
+/// ## Downstream Impact
+///
+/// Handlers that need to distinguish passage types should prefer
+/// `passage.category()` over raw `is_special` checks. The category
+/// provides more granular information for diagnostics, graph construction,
+/// and semantic token generation:
+///
+/// - **Diagnostics**: `CoreMetadata` and `CoreNamed` passages are always
+///   exempt from broken-link, orphan, and dead-end diagnostics.
+///   `CoreTagged` passages are also exempt. `FormatTagged` passages with
+///   `participates_in_graph: false` should be excluded from graph analysis.
+/// - **Graph**: Only passages with `participates_in_graph: true` get graph
+///   nodes. The category helps determine which implicit edges to add.
+/// - **Semantic tokens**: The category determines the token type
+///   (SpecialPassageHeader vs PassageHeader) and layer modifier
+///   (TwineCore, StoryFormat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PassageCategory {
+    /// Core metadata passages: StoryData, StoryTitle.
+    /// Name-matched, TwineCore layer, Metadata behavior.
+    /// StoryData is the format-detection entry point.
+    CoreMetadata,
+    /// Core name-matched passages (non-metadata): Start.
+    /// Always recognized by name regardless of format.
+    CoreNamed,
+    /// Core tag-matched passages: [script], [stylesheet], [style].
+    /// Format-agnostic compiler constructs.
+    CoreTagged,
+    /// Legacy core name-matched: "script"/"stylesheet" as passage NAMES.
+    /// Twine 1 import/migration compatibility only.
+    CoreLegacy,
+    /// Format-specific name-matched: StoryInit, PassageHeader, etc.
+    /// Singleton passages. Specific set depends on active format plugin.
+    FormatNamed,
+    /// Format-specific tag-matched: [init], [widget], [header], etc.
+    /// Multiple passages can share a tag.
+    FormatTagged,
+    /// Regular user-defined passage. No special definition matched.
+    /// Tags were checked before this classification, so no special
+    /// passages are missed.
+    Regular,
+}
+
+impl Default for PassageCategory {
+    fn default() -> Self {
+        PassageCategory::Regular
     }
 }
 
@@ -668,17 +763,18 @@ impl Passage {
 
     /// Whether this is a universal metadata passage (StoryData or StoryTitle).
     ///
-    /// Uses the special passage definition's `layer` field when available,
-    /// falling back to name matching for passages without a definition.
+    /// Uses the classification system as the single source of truth.
+    /// Passages named "StoryData" or "StoryTitle" are ALWAYS classified
+    /// as `CoreMetadata` by the classification system (they are TwineCore
+    /// name-matched with `Metadata` behavior), so the fallback for
+    /// unclassified passages is purely defensive.
     pub fn is_metadata(&self) -> bool {
-        if self.is_special {
-            self.special_def
-                .as_ref()
-                .map(|d| matches!(d.behavior, SpecialPassageBehavior::Metadata))
-                .unwrap_or(false)
-        } else {
-            self.name == "StoryData" || self.name == "StoryTitle"
+        if let Some(ref def) = self.special_def {
+            return matches!(def.behavior, SpecialPassageBehavior::Metadata);
         }
+        // Defensive fallback for unclassified passages (should not happen
+        // in normal operation — every passage goes through classify_passage()).
+        self.name == "StoryData" || self.name == "StoryTitle"
     }
 
     /// Returns the ownership layer of this passage, if it is a special passage.
@@ -745,11 +841,73 @@ impl Passage {
 
     /// Whether this passage is an interface passage (contains HTML).
     ///
-    /// Only the exact passage name "StoryInterface" qualifies. SugarCube
-    /// is case-sensitive about passage names, so this uses exact matching
-    /// (not case-insensitive).
+    /// Uses the classification system as the single source of truth when
+    /// `special_def` is available, checking for `StructureTemplate` behavior.
+    /// This replaces the previous hardcoded `self.name == "StoryInterface"`
+    /// check, which bypassed the classification system and would incorrectly
+    /// match a Harlowe passage named "StoryInterface" (Harlowe doesn't
+    /// define StoryInterface as a special passage).
+    ///
+    /// The fallback to name matching is kept only for unclassified passages
+    /// (e.g., during incremental re-parse when the format plugin is not yet
+    /// available).
     pub fn is_interface_passage(&self) -> bool {
+        if let Some(ref def) = self.special_def {
+            return matches!(def.behavior, SpecialPassageBehavior::StructureTemplate);
+        }
+        // Fallback for unclassified passages
         self.name == "StoryInterface"
+    }
+
+    /// Returns the classification category of this passage.
+    ///
+    /// Derives the category from the `special_def` field, which is assigned
+    /// by the format plugin's `classify_passage()` method during parsing.
+    /// If no special definition exists, returns `PassageCategory::Regular`.
+    ///
+    /// This is the preferred way to inspect a passage's classification
+    /// for diagnostics, graph construction, and semantic tokens. It provides
+    /// more granular information than the boolean `is_special` field.
+    pub fn category(&self) -> PassageCategory {
+        match &self.special_def {
+            None => PassageCategory::Regular,
+            Some(def) => {
+                match (&def.layer, &def.match_strategy, &def.behavior) {
+                    // Core metadata: StoryData, StoryTitle
+                    (SpecialPassageLayer::TwineCore, MatchStrategy::Name, SpecialPassageBehavior::Metadata) => {
+                        PassageCategory::CoreMetadata
+                    }
+                    // Core name-matched (non-metadata): Start
+                    (SpecialPassageLayer::TwineCore, MatchStrategy::Name, _) => {
+                        PassageCategory::CoreNamed
+                    }
+                    // Core tag-matched: [script], [stylesheet], [style]
+                    (SpecialPassageLayer::TwineCore, MatchStrategy::Tag, _) => {
+                        PassageCategory::CoreTagged
+                    }
+                    // Legacy core name-matched: "script"/"stylesheet" as passage NAMES
+                    (SpecialPassageLayer::LegacyCore, MatchStrategy::Name, _) => {
+                        PassageCategory::CoreLegacy
+                    }
+                    // Legacy core tag-matched (unlikely but handle it)
+                    (SpecialPassageLayer::LegacyCore, MatchStrategy::Tag, _) => {
+                        PassageCategory::CoreTagged
+                    }
+                    // Format-specific name-matched: StoryInit, PassageHeader, etc.
+                    (SpecialPassageLayer::StoryFormat, MatchStrategy::Name, _) => {
+                        PassageCategory::FormatNamed
+                    }
+                    // Format-specific tag-matched: [init], [widget], [header], etc.
+                    (SpecialPassageLayer::StoryFormat, MatchStrategy::Tag, _) => {
+                        PassageCategory::FormatTagged
+                    }
+                    // User-defined special passages (future)
+                    (SpecialPassageLayer::UserDefined, _, _) => {
+                        PassageCategory::FormatNamed // Treat as format-level for now
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -885,5 +1043,171 @@ mod tests {
             .filter(|d| d.match_strategy == MatchStrategy::Tag && d.behavior == SpecialPassageBehavior::StyleInjection)
             .count();
         assert_eq!(style_count, 2, "Should have both [style] and [stylesheet] tag entries");
+    }
+
+    // ── PassageCategory tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_regular_passage_category() {
+        let passage = Passage::new("Forest".into(), 0..100);
+        assert_eq!(passage.category(), PassageCategory::Regular);
+    }
+
+    #[test]
+    fn test_core_metadata_category_storydata() {
+        let def = SpecialPassageDef {
+            name: "StoryData".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::Metadata,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("StoryData".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreMetadata);
+        assert!(passage.is_metadata());
+    }
+
+    #[test]
+    fn test_core_metadata_category_storytitle() {
+        let def = SpecialPassageDef {
+            name: "StoryTitle".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::Metadata,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("StoryTitle".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreMetadata);
+        assert!(passage.is_metadata());
+    }
+
+    #[test]
+    fn test_core_named_category_start() {
+        let def = SpecialPassageDef {
+            name: "Start".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::Custom("Start".into()),
+            contributes_variables: false,
+            participates_in_graph: true,
+            execution_priority: Some(1000),
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("Start".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreNamed);
+        assert!(!passage.is_metadata());
+    }
+
+    #[test]
+    fn test_core_tagged_category_script() {
+        let def = SpecialPassageDef {
+            name: "MyJS".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::ScriptInjection,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(-1),
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("MyJS".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreTagged);
+        assert!(passage.is_script_passage());
+    }
+
+    #[test]
+    fn test_core_tagged_category_stylesheet() {
+        let def = SpecialPassageDef {
+            name: "MyCSS".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::StyleInjection,
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::TwineCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("MyCSS".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreTagged);
+        assert!(passage.is_stylesheet_passage());
+    }
+
+    #[test]
+    fn test_format_named_category_storyinit() {
+        let def = SpecialPassageDef {
+            name: "StoryInit".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::Startup,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(0),
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("StoryInit".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::FormatNamed);
+    }
+
+    #[test]
+    fn test_format_tagged_category_widget() {
+        let def = SpecialPassageDef {
+            name: "MyWidget".into(),
+            match_strategy: MatchStrategy::Tag,
+            behavior: SpecialPassageBehavior::Custom("Widget".into()),
+            contributes_variables: false,
+            participates_in_graph: false,
+            execution_priority: None,
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("MyWidget".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::FormatTagged);
+    }
+
+    #[test]
+    fn test_is_interface_passage_uses_classification() {
+        // StoryInterface with StructureTemplate behavior
+        let def = SpecialPassageDef {
+            name: "StoryInterface".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::StructureTemplate,
+            contributes_variables: false,
+            participates_in_graph: true,
+            execution_priority: Some(107),
+            layer: SpecialPassageLayer::StoryFormat,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("StoryInterface".into(), 0..100, def);
+        assert!(passage.is_interface_passage());
+        assert_eq!(passage.category(), PassageCategory::FormatNamed);
+    }
+
+    #[test]
+    fn test_is_interface_passage_fallback() {
+        // Without special_def, fallback to name check
+        let passage = Passage::new("StoryInterface".into(), 0..100);
+        assert!(passage.is_interface_passage());
+    }
+
+    #[test]
+    fn test_legacy_core_category() {
+        let def = SpecialPassageDef {
+            name: "script".into(),
+            match_strategy: MatchStrategy::Name,
+            behavior: SpecialPassageBehavior::ScriptInjection,
+            contributes_variables: true,
+            participates_in_graph: false,
+            execution_priority: Some(-1),
+            layer: SpecialPassageLayer::LegacyCore,
+            scaffold: None,
+        };
+        let passage = Passage::new_special("script".into(), 0..100, def);
+        assert_eq!(passage.category(), PassageCategory::CoreLegacy);
     }
 }

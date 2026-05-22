@@ -100,6 +100,14 @@ mod tests {
                 is_metadata: *is_metadata,
                 is_placeholder: false,
                 layer: None,
+                category: if *is_metadata {
+                    crate::passage::PassageCategory::CoreMetadata
+                } else if *is_special {
+                    crate::passage::PassageCategory::FormatNamed
+                } else {
+                    crate::passage::PassageCategory::Regular
+                },
+                behavior: None,
             });
         }
 
@@ -556,6 +564,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         graph.add_passage(start);
         graph.add_edge(
@@ -576,6 +586,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         graph.add_passage(forest);
         graph.recheck_broken_links();
@@ -597,6 +609,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
@@ -605,6 +619,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         graph.add_passage(start);
         graph.add_passage(forest);
@@ -754,6 +770,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         let forest = PassageNode {
             name: "Forest".to_string(),
@@ -762,6 +780,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: None,
+            category: crate::passage::PassageCategory::Regular,
+            behavior: None,
         };
         let story_init = PassageNode {
             name: "StoryInit".to_string(),
@@ -770,6 +790,8 @@ mod tests {
             is_metadata: false,
             is_placeholder: false,
             layer: Some(SpecialPassageLayer::StoryFormat),
+            category: crate::passage::PassageCategory::FormatNamed,
+            behavior: None,
         };
         let story_data = PassageNode {
             name: "StoryData".to_string(),
@@ -778,6 +800,8 @@ mod tests {
             is_metadata: true,
             is_placeholder: false,
             layer: Some(SpecialPassageLayer::TwineCore),
+            category: crate::passage::PassageCategory::CoreMetadata,
+            behavior: None,
         };
 
         graph.add_passage(start);

@@ -36,6 +36,10 @@ pub(crate) struct ParsedHeader {
     /// The (x, y) position of this passage on the Twine canvas, parsed from
     /// the header metadata JSON block (e.g., `{"position":"100,200"}`).
     pub position: Option<(f64, f64)>,
+    /// The raw header line text (after `::`, before CRLF stripping for
+    /// display, but with CRLF stripped). Used by semantic token generation
+    /// to find exact byte positions of tags inside the `[...]` bracket.
+    pub raw_after_colons: String,
 }
 
 /// Parse passage headers from the full source text.
@@ -65,11 +69,20 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
 
     // Build passage bodies.
     for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
-        let header_line = &text[header_start..header_end];
+        let mut header_line = &text[header_start..header_end];
+        // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
+        // Strip it so that parse_header_line() receives clean content and
+        // body_offset calculation is correct.
+        let trailing_cr = header_line.ends_with('\r');
+        if trailing_cr {
+            header_line = &header_line[..header_line.len() - 1];
+        }
+        // Adjust header_end to exclude the \r for correct body_offset
+        let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
         let parsed = parse_header_line(header_line, header_start);
 
         // Body starts after the header line (skip trailing newline).
-        let body_start = header_end;
+        let body_start = adjusted_header_end;
         let body_end = if i + 1 < header_spans.len() {
             header_spans[i + 1].0
         } else {
@@ -95,7 +108,10 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
     // Strip the leading `::` and optional whitespace.
     let after_colons = line.strip_prefix("::")?;
     let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-    let rest = after_colons.trim_start();
+    // Trim trailing \r — the Logos regex `::[^\n]*` includes \r on CRLF
+    // line endings, causing `ends_with(']')` and `ends_with('}')` checks
+    // to fail. This makes header parsing robust on both LF and CRLF files.
+    let rest = after_colons.trim_start().trim_end_matches('\r');
 
     // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
     let name_start = offset + 2 + whitespace_len;
@@ -138,6 +154,10 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
         return None;
     }
 
+    // Store the raw text after `::` (with CRLF stripped) so that semantic
+    // token generation can find exact tag positions by scanning for `[`.
+    let raw_after_colons = after_colons.trim_end_matches('\r').to_string();
+
     Some(ParsedHeader {
         name,
         tags,
@@ -145,6 +165,7 @@ pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeade
         header_len: line.len(),
         name_start,
         position,
+        raw_after_colons,
     })
 }
 

@@ -82,6 +82,8 @@ pub fn graph_surgery(
                 is_metadata: passage.is_metadata(),
                 is_placeholder: false,
                 layer: passage.special_def.as_ref().map(|d| d.layer.clone()),
+                category: passage.category(),
+                behavior: passage.special_def.as_ref().map(|d| d.behavior.clone()),
             };
             graph.add_passage(node);
 

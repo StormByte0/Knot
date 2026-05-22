@@ -174,11 +174,19 @@ impl HarlowePlugin {
         let mut results: Vec<(ParsedHeader, &'a str)> = Vec::new();
 
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
-            let header_line = &text[header_start..header_end];
+            let mut header_line = &text[header_start..header_end];
+            // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
+            // Strip it so that parse_header_line() receives clean content and
+            // body_offset calculation is correct.
+            let trailing_cr = header_line.ends_with('\r');
+            if trailing_cr {
+                header_line = &header_line[..header_line.len() - 1];
+            }
+            let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
             let parsed = Self::parse_header_line(header_line, header_start);
 
             // Body starts after the header line (skip trailing newline).
-            let body_start = header_end;
+            let body_start = adjusted_header_end;
             let body_end = if i + 1 < header_spans.len() {
                 header_spans[i + 1].0
             } else {
@@ -199,7 +207,9 @@ impl HarlowePlugin {
         // Strip the leading `::` and optional whitespace.
         let after_colons = line.strip_prefix("::")?;
         let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-        let rest = after_colons.trim_start();
+        // Trim trailing \r — the Logos regex `::[^\n]*` includes \r on CRLF
+        // line endings, causing `ends_with(']')` to fail.
+        let rest = after_colons.trim_start().trim_end_matches('\r');
 
         // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
         let name_start = offset + 2 + whitespace_len;
@@ -386,6 +396,10 @@ impl HarlowePlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -398,6 +412,10 @@ impl HarlowePlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -410,6 +428,10 @@ impl HarlowePlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -438,6 +460,12 @@ impl HarlowePlugin {
                 .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
                 let target = caps.get(1).unwrap().as_str().trim().to_string();
+                // Filter: skip targets containing "::" — this is JavaScript
+                // namespace accessor syntax (e.g., Use::Operation), not a
+                // Twine passage name.
+                if target.contains("::") {
+                    continue;
+                }
                 links.push(Link {
                     display_text: None,
                     target,

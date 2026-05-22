@@ -4,7 +4,7 @@
 //! organized by matching strategy:
 //!
 //! - **Name-matched** code passages (StoryInit, PassageHeader, etc.)
-//! - **Tag-matched** code tags ([init], [widget]) and special tags ([nobr])
+//! - **Tag-matched** code tags ([init], [widget])
 //!
 //! **Note:** StoryTitle, StoryData, Start, [script], [stylesheet], and [style]
 //! are NOT defined here — they are Twine-core passages defined in
@@ -29,17 +29,16 @@
 //!
 //! ## SugarCube-Specific Tags
 //!
-//! SugarCube defines additional code tags and special tags beyond the core:
+//! SugarCube defines additional code tags beyond the core:
 //!
 //! - `[init]` — Initialization tag (SugarCube 2.36+). Equivalent to StoryInit
 //!   but tag-based, intended for add-ons/libraries.
 //! - `[widget]` — Widget definition tag. Passages tagged [widget] define
 //!   reusable macros.
-//! - `[nobr]` — Special tag that strips line breaks from passage output.
 //!
-//! These are registered here as tag-matched definitions so the LSP recognizes
-//! them and applies the correct behaviors (suppress navigation, suppress
-//! diagnostics, etc.).
+//! Note: `[nobr]` is NOT a special tag — it is a rendering hint that strips
+//! line breaks from passage output. Passages with `[nobr]` are still normal
+//! navigable passages and should not be classified as special passages.
 //!
 //! ## Case Sensitivity
 //!
@@ -256,20 +255,15 @@ pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
             scaffold: None,
         },
 
-        // ── Special tags ───────────────────────────────────────────────
-        // [nobr] — Strips line breaks from the passage output.
-        // This is a rendering hint, not a code tag — passages with
-        // [nobr] CAN be navigated to normally.
-        SpecialPassageDef {
-            name: "nobr".into(),
-            match_strategy: MatchStrategy::Tag,
-            behavior: SpecialPassageBehavior::Custom("NoBr".into()),
-            contributes_variables: false,
-            participates_in_graph: true, // Normal navigation passage with rendering hint
-            execution_priority: None,
-            layer: SpecialPassageLayer::StoryFormat,
-            scaffold: None,
-        },
+        // NOTE: [nobr] is NOT listed here because it is a rendering hint,
+        // not a special passage classification. Passages tagged [nobr] are
+        // normal navigable passages — the tag only strips line breaks from
+        // the rendered output. Treating it as a "special passage" would
+        // incorrectly give it SpecialPassage semantic tokens (different
+        // highlighting) and potentially exclude it from graph analysis.
+        //
+        // If [nobr] is ever needed for diagnostics or graph edges, it should
+        // be handled as a passage property, not as a special passage category.
     ]
 }
 

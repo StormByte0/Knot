@@ -163,7 +163,9 @@ impl ChapbookPlugin {
     /// Parse a single `:: Name [tags]` header line.
     fn parse_header_line(&self, line: &str, offset: usize) -> Option<ParsedHeader> {
         let rest = line.strip_prefix("::")?;
-        let rest = rest.trim_start();
+        // Defensive: trim trailing \r in case of CRLF input outside the
+        // text.lines() path (e.g., if called from a different code path).
+        let rest = rest.trim_start().trim_end_matches('\r');
 
         let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
             if rest.ends_with(']') {
@@ -206,6 +208,10 @@ impl ChapbookPlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -218,6 +224,10 @@ impl ChapbookPlugin {
             let m = caps.get(0).unwrap();
             let display = caps.get(1).unwrap().as_str().trim().to_string();
             let target = caps.get(2).unwrap().as_str().trim().to_string();
+            // Filter: skip targets containing "::" — JS namespace accessor
+            if target.contains("::") {
+                continue;
+            }
             links.push(Link {
                 display_text: Some(display),
                 target,
@@ -242,6 +252,10 @@ impl ChapbookPlugin {
             let overlaps = known_spans.iter().any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
                 let target = caps.get(1).unwrap().as_str().trim().to_string();
+                // Filter: skip targets containing "::" — JS namespace accessor
+                if target.contains("::") {
+                    continue;
+                }
                 links.push(Link {
                     display_text: None,
                     target,
