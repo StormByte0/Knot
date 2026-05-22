@@ -241,7 +241,11 @@ fn try_macro_hover(
     None
 }
 
-/// Try to show hover info for a variable when cursor is on `$var` or `_var`.
+/// Try to show hover info for a variable when cursor is on a format-specific
+/// variable sigil (e.g., `$var` or `_var` in SugarCube).
+///
+/// Uses `FormatPlugin::variable_sigils()` to detect variable starts instead of
+/// hardcoding sigil characters, so this works across all formats.
 fn try_variable_hover(
     line: &str,
     line_idx: usize,
@@ -249,11 +253,17 @@ fn try_variable_hover(
     workspace: &knot_core::Workspace,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
+    // Build the set of format-specific variable sigils
+    let sigils: Vec<char> = plugin.variable_sigils().iter().map(|s| s.sigil).collect();
+    if sigils.is_empty() {
+        return None;
+    }
+
     let chars: Vec<char> = line.chars().collect();
     let mut pos = 0;
     while pos < chars.len() {
-        // Check for $variable or _variable (but not _ inside identifiers like foo_bar)
-        let is_var_start = (chars[pos] == '$' || chars[pos] == '_')
+        // Check for a format-specific variable sigil followed by an identifier
+        let is_var_start = sigils.contains(&chars[pos])
             && pos + 1 < chars.len()
             && (chars[pos + 1].is_alphabetic() || chars[pos + 1] == '_');
 
@@ -262,14 +272,17 @@ fn try_variable_hover(
             continue;
         }
 
-        // For _ variables, check that the preceding char is not alphanumeric
-        // (to avoid matching _bar inside foo_bar)
-        if chars[pos] == '_' && pos > 0 && chars[pos - 1].is_alphanumeric() {
+        // For sigils that are valid inside identifiers (like `_`), check that
+        // the preceding char is not alphanumeric to avoid false matches
+        // (e.g., matching `_bar` inside `foo_bar`). Only sigils that are
+        // valid identifier characters need this guard.
+        let sigil = chars[pos];
+        let needs_preceding_boundary = sigil.is_alphanumeric() || sigil == '_';
+        if needs_preceding_boundary && pos > 0 && chars[pos - 1].is_alphanumeric() {
             pos += 1;
             continue;
         }
 
-        let sigil = chars[pos];
         let start = pos;
         pos += 1;
         while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
@@ -314,13 +327,11 @@ fn try_variable_hover(
             };
 
             let sigil_desc = plugin.describe_variable_sigil(sigil)
-                .unwrap_or("Unknown variable type");
+                .unwrap_or("variable");
 
             let var_type = plugin.resolve_variable_sigil(sigil)
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    if sigil == '_' { "temporary".to_string() } else { "story (persistent)".to_string() }
-                });
+                .unwrap_or_else(|| "variable".to_string());
 
             let hover_text = format!(
                 "**{}** `{}`\n\n{}\nRead in {} location(s)\n\n---\n\n{}",

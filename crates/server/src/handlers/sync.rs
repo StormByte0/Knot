@@ -114,7 +114,10 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         (diagnostics, open_docs, fmt_diags, config)
     };
 
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+    {
+        let inner = state.inner.read().await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+    }
 
     if should_notify {
         helpers::send_format_detected(&state.client, format_after, doc_uris).await;
@@ -325,8 +328,11 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         (diagnostics, open_docs, fmt_diags, config)
     }; // ← read lock dropped
 
-    // ── Phase 3: no lock — publish ─────────────────────────────────
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+    // ── Phase 3: publish (needs workspace read lock for variable related info) ──
+    {
+        let inner = state.inner.read().await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+    }
 
     if should_notify {
         helpers::send_format_detected(&state.client, format_after, doc_uris).await;
@@ -351,6 +357,10 @@ pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentP
     // so that features like find-references still work for closed files
     inner.editor_open_docs.remove(&uri);
     inner.format_diagnostics.remove(&uri);
+    // Clean up the version entry to prevent unbounded memory growth.
+    // The version will be re-inserted with the client's authoritative
+    // version if the document is re-opened.
+    inner.doc_versions.remove(&uri);
     drop(inner);
 
     // Clear diagnostics for the closed file.
@@ -449,7 +459,10 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
         (diagnostics, open_docs, fmt_diags, config)
     };
 
-    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+    {
+        let inner = state.inner.read().await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+    }
 }
 
 pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidChangeWatchedFilesParams) {
@@ -538,7 +551,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             (diagnostics, open_docs, fmt_diags, config)
                         };
 
-                        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+                        {
+                            let inner = state.inner.read().await;
+                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                        }
 
                         // Notify client if format changed after file creation
                         if should_notify {
@@ -579,7 +595,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     (diagnostics, open_docs, fmt_diags, config)
                 };
 
-                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+                {
+                    let inner = state.inner.read().await;
+                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                }
 
                 // Notify remaining open documents that their semantic tokens may be stale
                 // due to a file being deleted (broken links may have changed).
@@ -642,7 +661,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 (diagnostics, open_docs, fmt_diags, config)
                             };
 
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &config).await;
+                            {
+                                let inner = state.inner.read().await;
+                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                            }
 
                             if should_notify {
                                 helpers::send_format_detected(&state.client, format_after, doc_uris).await;

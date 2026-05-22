@@ -71,6 +71,7 @@ pub(crate) async fn publish_all_diagnostics(
     graph_diagnostics: &[knot_core::graph::GraphDiagnostic],
     format_diagnostics: &std::collections::HashMap<Url, Vec<fmt_plugin::FormatDiagnostic>>,
     open_documents: &std::collections::HashMap<Url, String>,
+    workspace: &Workspace,
     config: &knot_core::workspace::KnotConfig,
 ) {
     use std::collections::HashMap as StdHashMap;
@@ -121,7 +122,7 @@ pub(crate) async fn publish_all_diagnostics(
 
                 // Build related information pointing to source or target passages
                 let related_information = build_related_information_for_push(
-                    open_documents, &gd.kind, &gd.passage_name, &gd.message,
+                    open_documents, workspace, &gd.kind, &gd.passage_name, &gd.message,
                 );
 
                 lsp_diagnostics.push(Diagnostic {
@@ -285,6 +286,7 @@ pub(crate) fn analyze_with_format_vars(
 /// Build related information for push diagnostics (publish_all_diagnostics).
 pub(crate) fn build_related_information_for_push(
     open_documents: &HashMap<Url, String>,
+    workspace: &Workspace,
     kind: &DiagnosticKind,
     passage_name: &str,
     _message: &str,
@@ -305,7 +307,7 @@ pub(crate) fn build_related_information_for_push(
         DiagnosticKind::UninitializedVariable => {
             // Point to where the variable is first read
             let var_name = extract_variable_name(_message);
-            find_variable_read_locations(open_documents, passage_name, var_name.as_deref())
+            find_variable_read_locations(workspace, passage_name, var_name.as_deref(), open_documents)
         }
         _ => None,
     }
@@ -411,60 +413,53 @@ pub(crate) fn find_all_definition_locations(
 }
 
 /// Find locations where a variable is read (for uninitialized variable diagnostics).
+///
+/// Uses the already-parsed `passage.vars` from the workspace instead of
+/// re-scanning for `$` patterns, which would be SugarCube-specific. The
+/// format plugin populates `passage.vars` during parsing with the correct
+/// variable names and locations for whichever format is active.
 pub(crate) fn find_variable_read_locations(
-    open_documents: &HashMap<Url, String>,
-    passage_name: &str,
+    workspace: &Workspace,
+    _passage_name: &str,
     variable_name: Option<&str>,
+    open_documents: &std::collections::HashMap<Url, String>,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     let mut related = Vec::new();
 
-    for (doc_uri, text) in open_documents {
-        let lines: Vec<&str> = text.lines().collect();
-        let mut in_passage = false;
+    // Search across all passages for read locations of the variable
+    for doc in workspace.documents() {
+        let text = match open_documents.get(&doc.uri) {
+            Some(t) => t,
+            None => continue,
+        };
 
-        for (line_idx, line) in lines.iter().enumerate() {
-            // Check for passage header
-            if line.starts_with("::") {
-                let name = parse_passage_name_from_header(&line[2..]);
-                in_passage = name == passage_name;
-                continue;
-            }
-            if !in_passage { continue; }
-
-            // Find $variable patterns (SugarCube/Snowman style)
-            let chars: Vec<char> = line.chars().collect();
-            let mut pos = 0;
-            while pos < chars.len() {
-                if chars[pos] == '$' && pos + 1 < chars.len() && (chars[pos + 1].is_alphabetic() || chars[pos + 1] == '_') {
-                    // Found a variable reference — extract the full name
-                    let start = pos;
-                    pos += 1;
-                    while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
-                        pos += 1;
-                    }
-                    let var_name: String = chars[start..pos].iter().collect();
-
-                    // If a specific variable was requested, only include matching reads
-                    if let Some(filter) = variable_name {
-                        if var_name != filter { continue; }
-                    }
-
-                    let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
-                    let byte_end: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
-
-                    related.push(DiagnosticRelatedInformation {
-                        location: Location {
-                            uri: doc_uri.clone(),
-                            range: Range {
-                                start: Position { line: line_idx as u32, character: utf16_len_up_to(line, byte_start) },
-                                end: Position { line: line_idx as u32, character: utf16_len_up_to(line, byte_end) },
-                            },
-                        },
-                        message: format!("Variable {} is read here", var_name),
-                    });
-                } else {
-                    pos += 1;
+        for passage in &doc.passages {
+            for var in &passage.vars {
+                if var.kind != knot_core::passage::VarKind::Read {
+                    continue;
                 }
+                if let Some(filter) = variable_name {
+                    if var.name != filter {
+                        continue;
+                    }
+                }
+
+                // Compute the line number from the byte span offset
+                let line = text[..var.span.start.min(text.len())]
+                    .lines()
+                    .count()
+                    .saturating_sub(1) as u32;
+
+                related.push(DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: doc.uri.clone(),
+                        range: Range {
+                            start: Position { line, character: 0 },
+                            end: Position { line, character: 0 },
+                        },
+                    },
+                    message: format!("Variable {} is read in passage '{}'", var.name, passage.name),
+                });
             }
         }
     }

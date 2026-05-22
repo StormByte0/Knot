@@ -114,7 +114,7 @@ pub(crate) async fn completion(
                     kind: Some(CompletionItemKind::VARIABLE),
                     detail: Some(detail_str),
                     sort_text: Some(format!("1_{:06}", i)),
-                    filter_text: Some(var_name.trim_start_matches('$').trim_start_matches('_').to_string()),
+                    filter_text: Some(var_name.trim_start_matches(|c: char| c == '$' || c == '_').to_string()),
                     insert_text: Some(var_name.to_string()),
                     insert_text_format: Some(InsertTextFormat::SNIPPET),
                     commit_characters: Some(vec![" ".to_string(), "\n".to_string()]),
@@ -246,10 +246,19 @@ pub(crate) async fn completion_resolve(
             }
             "variable" => {
                 let is_temp = data.get("is_temp").and_then(|v| v.as_bool()).unwrap_or(false);
-                // Use the plugin to describe the variable sigil if available
+                // Use the plugin to describe the variable sigil if available.
+                // Fall back to format-agnostic labels instead of assuming
+                // SugarCube's $/_ sigils.
                 let format_desc = plugin
-                    .and_then(|p| p.describe_variable_sigil(if is_temp { '_' } else { '$' }))
-                    .unwrap_or(if is_temp { "temporary" } else { "story" });
+                    .and_then(|p| {
+                        let sigils = p.variable_sigils();
+                        // Find the sigil matching the is_temp flag:
+                        // _ sigil → temporary, any other → persistent
+                        sigils.iter().find(|s| (s.sigil == '_') == is_temp)
+                            .map(|s| s.description)
+                            .or_else(|| sigils.first().map(|s| s.description))
+                    })
+                    .unwrap_or(if is_temp { "temporary variable" } else { "variable" });
 
                 let doc_markdown = format!(
                     "**{}**\n\n{} variable — {}",
@@ -486,10 +495,27 @@ fn try_passage_in_quote_completion(
     let (macro_name, open_pos) = best_match?;
     let after_open = &before_cursor[open_pos..];
 
-    // Must not contain the closing delimiter (already closed)
-    if after_open.contains(">>") { return None; }
-    if after_open.contains("))") { return None; }
-    if after_open.contains("]]") { return None; }
+    // Must not contain the closing delimiter for the active format.
+    // Instead of checking all possible close delimiters across all formats,
+    // use the format plugin's macro label to build the expected close pattern.
+    let macro_label = plugin.format_macro_label(macro_name);
+    // Derive the close delimiter from the macro label format:
+    //   <<name>> → close is >>
+    //   (name:)  → close is )
+    //   [name]   → close is ]
+    //   {{name}} → close is }}
+    let close_delim = if macro_label.starts_with("<<") {
+        ">>"
+    } else if macro_label.starts_with('(') {
+        ")"
+    } else if macro_label.starts_with('[') {
+        "]"
+    } else if macro_label.starts_with("{{") {
+        "}}"
+    } else {
+        "" // no known close delimiter
+    };
+    if !close_delim.is_empty() && after_open.contains(close_delim) { return None; }
 
     // Count the number of quoted strings so far to determine which arg we're in
     let arg_count = after_open.matches('"').count() / 2;
