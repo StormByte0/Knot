@@ -90,14 +90,17 @@ pub fn graph_surgery(
             // Re-add edges for this passage
             for link in &passage.links {
                 let target_exists = graph.contains_passage(&link.target);
-                let edge_type = if !target_exists {
-                    crate::graph::EdgeType::Broken
+                let (edge_type, pre_broken_type) = if !target_exists {
+                    // Save the hint so recheck_broken_links can restore it later
+                    let would_be = link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation);
+                    (crate::graph::EdgeType::Broken, Some(would_be))
                 } else {
-                    crate::graph::EdgeType::Navigation
+                    (link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation), None)
                 };
                 let edge = PassageEdge {
                     display_text: link.display_text.clone(),
                     edge_type,
+                    pre_broken_type,
                 };
                 graph.add_edge(&passage.name, &link.target, edge);
             }
@@ -106,14 +109,15 @@ pub fn graph_surgery(
             for (source, display_text, target) in extra_edges {
                 if *source == passage.name {
                     let target_exists = graph.contains_passage(target);
-                    let edge_type = if !target_exists {
-                        crate::graph::EdgeType::Broken
+                    let (edge_type, pre_broken_type) = if !target_exists {
+                        (crate::graph::EdgeType::Broken, Some(crate::graph::EdgeType::Navigation))
                     } else {
-                        crate::graph::EdgeType::Navigation
+                        (crate::graph::EdgeType::Navigation, None)
                     };
                     let edge = PassageEdge {
                         display_text: display_text.clone(),
                         edge_type,
+                        pre_broken_type,
                     };
                     graph.add_edge(source, target, edge);
                 }

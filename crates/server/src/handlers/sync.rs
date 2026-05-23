@@ -257,6 +257,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
                     graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
                         display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
                         edge_type: knot_core::graph::EdgeType::Upstream,
+                        pre_broken_type: None,
                     });
                 }
             }
@@ -271,6 +272,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
                     graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
                         display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
                         edge_type: knot_core::graph::EdgeType::Upstream,
+                        pre_broken_type: None,
                     });
                 }
             }
@@ -578,6 +580,52 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                 // Recheck broken links after removal
                 inner.workspace.graph.recheck_broken_links();
+
+                // Re-add upstream lifecycle edges for special passages after
+                // removal. When a file containing a Startup or ScriptInjection
+                // passage is deleted, petgraph removes all edges connected to
+                // that node, which can break the upstream chain for remaining
+                // special passages. We must re-establish the chain.
+                let start_passage_name: String = inner.workspace.metadata
+                    .as_ref()
+                    .map(|m| m.start_passage.clone())
+                    .unwrap_or_else(|| "Start".into());
+
+                {
+                    let graph = &mut inner.workspace.graph;
+
+                    let script_injection = graph.special_bundle.script_injection.clone();
+                    let startup = graph.special_bundle.startup.clone();
+
+                    // Upstream edge: ScriptInjection → Startup
+                    for script_name in &script_injection {
+                        for startup_name in &startup {
+                            let exists = graph.outgoing_neighbors(script_name).iter().any(|n| n == startup_name);
+                            if !exists {
+                                graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
+                                    display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
+                                    edge_type: knot_core::graph::EdgeType::Upstream,
+                                    pre_broken_type: None,
+                                });
+                            }
+                        }
+                    }
+
+                    // Bridge edge: Startup → Start passage
+                    if !startup.is_empty() {
+                        if graph.contains_passage(&start_passage_name) {
+                            let bridge_source = &startup[0];
+                            let exists = graph.outgoing_neighbors(bridge_source).iter().any(|n| *n == start_passage_name);
+                            if !exists {
+                                graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
+                                    display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
+                                    edge_type: knot_core::graph::EdgeType::Upstream,
+                                    pre_broken_type: None,
+                                });
+                            }
+                        }
+                    }
+                }
 
                 // Release write lock before analysis
                 drop(inner);

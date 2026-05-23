@@ -3,6 +3,7 @@
 //! A passage represents a single named section of a Twine story. Passages
 //! contain text blocks, links to other passages, and variable operations.
 
+use crate::graph::EdgeType;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -82,6 +83,15 @@ pub struct Link {
     pub target: String,
     /// The byte range of this link in the source text.
     pub span: Range<usize>,
+    /// A format-provided hint about the semantic edge type.
+    ///
+    /// When set by the format plugin during link extraction (e.g., SugarCube
+    /// sets `Jump` for `<<goto>>`, `Include` for `<<include>>`), the graph
+    /// handler uses this hint directly instead of calling `classify_edge()`.
+    /// When `None`, the graph handler falls back to `classify_edge()` or
+    /// the default `Navigation` type.
+    #[serde(default)]
+    pub edge_type_hint: Option<EdgeType>,
 }
 
 /// The kind of variable operation.

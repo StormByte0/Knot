@@ -10,7 +10,7 @@ export interface KnotLanguageClient {
     start(): Promise<void>;
     stop(): Promise<void>;
     isRunning(): boolean;
-    sendRequest<T>(method: string, params: Record<string, unknown>): Promise<T>;
+    sendRequest<T>(method: string, params: object): Promise<T>;
     onNotification<P = Record<string, unknown>>(type: { method: string }, handler: (params: P) => void): void;
 }
 

@@ -805,19 +805,29 @@ impl FormatPlugin for SugarCubePlugin {
         // SugarCube-specific: resolve <<goto $var>>, <<include $var>>, <<link "label" $var>>, <<button "label" $var>>
         let mut links = Vec::new();
         for block in &passage.body {
-            let content = match block {
-                knot_core::passage::Block::Text { content, .. } => content.as_str(),
-                knot_core::passage::Block::Macro { args, .. } => args.as_str(),
+            // Only Macro blocks can contain navigation macros with variable args.
+            // The block's name field tells us which macro produced the link,
+            // which determines the edge type (goto→Jump, include→Include, etc.)
+            let (content, macro_name) = match block {
+                knot_core::passage::Block::Macro { name, args, .. } => (args.as_str(), name.as_str()),
                 _ => continue,
             };
             for caps in RE_NAV_VAR.captures_iter(content) {
                 if let Some(var_match) = caps.get(1) {
                     let var_name = var_match.as_str().to_string();
                     if let Some(known_values) = var_string_map.get(&var_name) {
+                        // Classify the edge type based on the macro name,
+                        // matching the same logic as extract_macro_passage_refs().
+                        let edge_type_hint = match macro_name {
+                            "goto" => Some(knot_core::graph::EdgeType::Jump),
+                            "include" => Some(knot_core::graph::EdgeType::Include),
+                            _ => None, // <<link>>, <<button>>, etc. → Navigation
+                        };
                         for value in known_values {
                             links.push(ResolvedNavLink {
                                 display_text: Some(format!("{} (via {})", value, var_name)),
                                 target: value.clone(),
+                                edge_type_hint,
                             });
                         }
                     }
@@ -833,36 +843,62 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn classify_edge(
         &self,
-        _source_passage: &Passage,
+        source_passage: &Passage,
         display_text: Option<&str>,
         target: &str,
     ) -> Option<knot_core::graph::EdgeType> {
-        // SugarCube edge classification based on display_text patterns.
-        // Navigation macros like <<goto>>, <<include>>, <<widget>> produce
-        // edges with characteristic display text or are resolved as
-        // dynamic navigation links with "(via $var)" in display text.
+        // SugarCube edge classification. This method is called by the graph
+        // handler when the link's edge_type_hint is None — primarily for
+        // regular [[links]] and dynamic navigation resolved from variables.
+        //
+        // Most macro-based links (<<goto>>, <<include>>) already have their
+        // edge_type_hint set during link extraction, so this method handles
+        // the remaining cases that can only be determined with full passage
+        // context.
 
-        // Check if this looks like a dynamic navigation link
+        // Check if this is a dynamic navigation link resolved from a variable.
+        // The display text has the pattern "PassageName (via $var)".
+        // We need to determine the original macro by scanning the source
+        // passage body for the macro that contained this variable reference.
         if let Some(dt) = display_text {
-            // Dynamic navigation resolved from variable: "(via $var)" suffix
             if dt.contains("(via ") {
-                // Check if the original macro was goto/include/widget
-                // by looking at the passage body blocks. For now,
-                // we classify based on the target's characteristics.
-                // The rebuild_graph will re-classify when it has the
-                // full passage context.
+                // Extract the variable name from the display text
+                if let Some(var_name) = dt.split("(via ").nth(1).and_then(|s| s.strip_suffix(')')) {
+                    // Scan the passage body blocks for the macro that contains
+                    // this variable reference to determine the edge type.
+                    for block in &source_passage.body {
+                        if let knot_core::passage::Block::Macro { name, args, .. } = block {
+                            if args.contains(var_name) {
+                                match name.as_str() {
+                                    "goto" => return Some(knot_core::graph::EdgeType::Jump),
+                                    "include" => return Some(knot_core::graph::EdgeType::Include),
+                                    _ => {} // <<link>>, <<button>> → Navigation
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Classify based on what we know about the target passage.
-        // Widget passages are tagged [widget] — if the target is a widget,
-        // this is a Call edge.
-        // For now, use a simple heuristic: check if the display text
-        // or target name suggests a particular edge type.
-        // The format plugin's full context isn't available here for
-        // per-link classification, so we return Navigation and let
-        // the rebuild_graph helper handle the detailed classification.
-        let _ = (display_text, target);
+        // Check if the target passage is a widget (tagged [widget]).
+        // Widget invocations (<<widgetName>>) are Call edges — they push
+        // onto the call stack and return, unlike navigation which replaces
+        // the current passage.
+        if target.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            // Only check if the target looks like a valid widget name
+            // (alphanumeric + underscores, no spaces). Scan the body for
+            // a bare macro invocation matching the target name — this is
+            // how widgets are invoked in SugarCube.
+            for block in &source_passage.body {
+                if let knot_core::passage::Block::Macro { name, .. } = block {
+                    if name == target {
+                        return Some(knot_core::graph::EdgeType::Call);
+                    }
+                }
+            }
+        }
+
         None // Use default Navigation classification
     }
 

@@ -436,7 +436,13 @@ function refreshStoryMap() {
  * - If the graph panel has no viewColumn (sidebar or detached window),
  *   open in the default active editor (no split).
  * - If the graph is in a tab in the same window, find an existing
- *   non-graph column to reuse, or create one split beside it.
+ *   non-graph column to reuse.
+ * - If no non-graph editors exist and the graph is in column 2+,
+ *   open in column 1 (reusing the empty slot rather than creating a
+ *   third column via ViewColumn.Beside).
+ * - If the graph is in column 1 and no other editors exist, create
+ *   a column beside it (ViewColumn.Beside) — this is the expected
+ *   layout: editor left, graph right.
  * - This prevents creating a new split for every passage click.
  */
 function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
@@ -455,7 +461,17 @@ function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscod
         return nonGraphEditors[0].viewColumn;
     }
 
-    // No other editors — create one split beside the graph
+    // No other editors exist. If the graph is in column 2+, put the
+    // passage in column 1 (the graph already claimed column 2, so
+    // column 1 is empty and available). This avoids creating a third
+    // column via ViewColumn.Beside which would waste screen space.
+    if (graphColumn > vscode.ViewColumn.One) {
+        return vscode.ViewColumn.One;
+    }
+
+    // Graph is in column 1 — create a column beside it so the passage
+    // opens in column 2. This is the standard layout: editor right of
+    // graph, or graph left of editor.
     return vscode.ViewColumn.Beside;
 }
 

@@ -92,6 +92,7 @@ fn rebuild_graph(workspace: &mut Workspace) {
                     } else {
                         knot_core::graph::EdgeType::Navigation
                     },
+                    pre_broken_type: None,
                 },
             );
         }

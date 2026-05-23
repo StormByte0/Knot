@@ -221,6 +221,7 @@ impl ChapbookPlugin {
                 display_text: Some(display),
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
+                edge_type_hint: None,
             });
         }
 
@@ -237,6 +238,7 @@ impl ChapbookPlugin {
                 display_text: Some(display),
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
+                edge_type_hint: None,
             });
         }
 
@@ -264,6 +266,7 @@ impl ChapbookPlugin {
                     display_text: None,
                     target,
                     span: body_offset + m.start()..body_offset + m.end(),
+                    edge_type_hint: None,
                 });
             }
         }

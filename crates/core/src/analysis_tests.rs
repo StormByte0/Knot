@@ -24,6 +24,7 @@ mod tests {
                 display_text: None,
                 target: t.to_string(),
                 span: 0..t.len(),
+                edge_type_hint: None,
             })
             .collect();
         p
@@ -124,6 +125,7 @@ mod tests {
                         } else {
                             crate::graph::EdgeType::Navigation
                         },
+                        pre_broken_type: None,
                     },
                 );
             }
@@ -586,6 +588,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 edge_type: EdgeType::Broken,
+                pre_broken_type: None,
             },
         );
 
@@ -641,6 +644,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 edge_type: EdgeType::Navigation,
+                pre_broken_type: None,
             },
         );
 
@@ -657,6 +661,7 @@ mod tests {
             PassageEdge {
                 display_text: None,
                 edge_type: EdgeType::Broken, // Forest no longer exists
+                pre_broken_type: None,
             },
         );
         graph.recheck_broken_links();
@@ -821,10 +826,12 @@ mod tests {
         graph.add_edge("Start", "Forest", PassageEdge {
             display_text: Some("Go to forest".to_string()),
             edge_type: EdgeType::Navigation,
+            pre_broken_type: None,
         });
         graph.add_edge("Start", "MissingPassage", PassageEdge {
             display_text: None,
             edge_type: EdgeType::Broken,
+            pre_broken_type: None,
         });
 
         let mut tags = std::collections::HashMap::new();
@@ -997,8 +1004,8 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &["$gold"], &[]);
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6 });
-        start.links.push(Link { display_text: None, target: "Cave".to_string(), span: 0..4 });
+        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
+        start.links.push(Link { display_text: None, target: "Cave".to_string(), span: 0..4, edge_type_hint: None });
         doc.passages.push(start);
         doc.passages.push(make_passage_with_vars("Forest", &[], &["$gold"]));
         doc.passages.push(make_passage_with_vars("Cave", &[], &[]));
@@ -1039,14 +1046,14 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &[], &[]);
-        start.links.push(Link { display_text: None, target: "PathA".to_string(), span: 0..5 });
-        start.links.push(Link { display_text: None, target: "PathB".to_string(), span: 0..5 });
+        start.links.push(Link { display_text: None, target: "PathA".to_string(), span: 0..5, edge_type_hint: None });
+        start.links.push(Link { display_text: None, target: "PathB".to_string(), span: 0..5, edge_type_hint: None });
         doc.passages.push(start);
         let mut path_a = make_passage_with_vars("PathA", &["$sword"], &[]);
-        path_a.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4 });
+        path_a.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4, edge_type_hint: None });
         doc.passages.push(path_a);
         let mut path_b = make_passage_with_vars("PathB", &["$shield"], &[]);
-        path_b.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4 });
+        path_b.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4, edge_type_hint: None });
         doc.passages.push(path_b);
         doc.passages.push(make_passage_with_vars(
             "Boss",
@@ -1235,7 +1242,7 @@ mod tests {
             &["_temp"],        // temp write
             &[],
         );
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6 });
+        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
         doc.passages.push(start);
         doc.passages.push(make_passage_with_temp_vars(
             "Forest",
@@ -1316,7 +1323,7 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &["$gold"], &[]);
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6 });
+        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
         doc.passages.push(start);
         doc.passages.push(make_passage_with_vars("Forest", &[], &["$gold"]));
         doc.passages.push(make_story_data_passage());

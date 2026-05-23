@@ -286,7 +286,13 @@ export default function StoryMap({
       }
     });
 
-    // Drag end → write back position (snapped to grid)
+    // Drag end → snap to grid and write back position
+    // NOTE: We do NOT snap during the 'drag' event. Calling node.position()
+    // during an active drag fights with Cytoscape.js's internal drag mechanism,
+    // causing the node to drift away from the pointer. This is especially
+    // noticeable in the narrow sidebar webview where zoom can amplify the
+    // offset. Instead, we let Cytoscape handle the drag naturally and only
+    // apply grid-snapping when the drag gesture completes.
     cy.on('dragfree', 'node', (evt) => {
       const dragged = evt.target;
       if (!dragged || !dragged.data('id') || dragged.data('isGroup')) return;
@@ -295,24 +301,24 @@ export default function StoryMap({
       const oldY = dragged.data('posY');
       const newX = snapToGrid(pos.x);
       const newY = snapToGrid(pos.y);
-      dragged.position({ x: newX, y: newY });
+      // Animate to the snapped position for visual feedback
+      dragged.animate({
+        position: { x: newX, y: newY },
+      }, {
+        duration: 80,
+        easing: 'ease-out',
+        complete: () => {
+          dragged.data('posX', newX);
+          dragged.data('posY', newY);
+        },
+      });
       if (oldX == null || oldY == null ||
           Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
-        dragged.data('posX', newX);
-        dragged.data('posY', newY);
         const updates: KnotPositionUpdate[] = [
           { passage_name: dragged.data('id'), position_x: newX, position_y: newY },
         ];
         vscode.postMessage({ command: 'updatePositions', updates });
       }
-    });
-
-    // Snap node to grid in real-time while dragging (Twine-style)
-    cy.on('drag', 'node', (evt) => {
-      const node = evt.target;
-      if (node.data('isGroup')) return; // don't snap group parents
-      const pos = node.position();
-      node.position({ x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
     });
 
     // Tooltip: show on mouseover (group parents excluded)

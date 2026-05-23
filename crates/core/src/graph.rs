@@ -176,6 +176,20 @@ pub struct PassageEdge {
     /// upstream lifecycle, or broken).
     #[serde(default)]
     pub edge_type: EdgeType,
+    /// The original edge type before it was overwritten to `EdgeType::Broken`.
+    ///
+    /// When a link's target passage doesn't exist, `edge_type` is set to
+    /// `Broken`. This field preserves the *original* semantic type (Jump,
+    /// Call, Include, Navigation) so that `recheck_broken_links()` can
+    /// restore it correctly when the target is later created. Without this,
+    /// a `<<goto>>` whose target is created would incorrectly become
+    /// `Navigation` instead of `Jump`.
+    ///
+    /// `None` means the edge was never Broken (or was Broken from the start
+    /// with no prior type to restore). The field is not serialized to the
+    /// wire protocol — it is internal to graph bookkeeping.
+    #[serde(default, skip_serializing)]
+    pub pre_broken_type: Option<EdgeType>,
 }
 
 /// Diagnostic produced by graph analysis.
@@ -504,18 +518,17 @@ impl PassageGraph {
     ///
     /// 3. **Upstream edges**: Lifecycle edges (ScriptInjection → Startup,
     ///    Startup → Start) are structural, not user-authored links. They are
-    ///    never broken because they're added after verifying both endpoints
-    ///    exist, but this guard provides an extra safety net.
+    ///    never Broken because they are added only after verifying both
+    ///    endpoints exist, so the `edge_type != Broken` filter naturally
+    ///    excludes them.
     pub fn detect_broken_links(&self) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
         for edge_ref in self.graph.edge_references() {
+            // Only report diagnostics for Broken edges.
+            // Upstream lifecycle edges are never Broken (they are added
+            // only after verifying both endpoints exist), so they are
+            // naturally excluded by this check.
             if edge_ref.weight().edge_type != EdgeType::Broken {
-                continue;
-            }
-
-            // Skip upstream lifecycle edges — these are structural, not
-            // user-authored navigation links.
-            if edge_ref.weight().edge_type == EdgeType::Upstream {
                 continue;
             }
 
@@ -939,8 +952,10 @@ impl PassageGraph {
     ///
     /// This is called after graph surgery or document removal to ensure that
     /// edges that previously pointed to non-existent passages now correctly
-    /// reflect whether their targets exist. Also updates `edge_type` to
-    /// `EdgeType::Broken` or back to `EdgeType::Navigation` as appropriate.
+    /// reflect whether their targets exist. When an edge's target becomes
+    /// real, the original edge type (Jump, Call, Include, Navigation) is
+    /// restored from `pre_broken_type`; if none was saved, Navigation is
+    /// used as the default.
     pub fn recheck_broken_links(&mut self) {
         // Collect edge updates: (edge_id, target_is_missing)
         let updates: Vec<(petgraph::graph::EdgeIndex, bool)> = self
@@ -958,12 +973,23 @@ impl PassageGraph {
         for (edge_id, new_broken) in updates {
             if let Some(edge) = self.graph.edge_weight_mut(edge_id) {
                 if new_broken {
-                    edge.edge_type = EdgeType::Broken;
+                    // Target doesn't exist — mark as Broken, but save the
+                    // original type so we can restore it later if the target
+                    // is created. Only save if we haven't already (avoid
+                    // overwriting a previously saved type on repeated checks).
+                    if edge.edge_type != EdgeType::Broken {
+                        edge.pre_broken_type = Some(edge.edge_type);
+                        edge.edge_type = EdgeType::Broken;
+                    }
                 } else if edge.edge_type == EdgeType::Broken {
-                    // Target now exists — was broken, now it's a navigation edge
-                    edge.edge_type = EdgeType::Navigation;
+                    // Target now exists — restore the original type if we
+                    // saved one. Otherwise fall back to Navigation.
+                    edge.edge_type = edge.pre_broken_type
+                        .unwrap_or(EdgeType::Navigation);
+                    edge.pre_broken_type = None;
                 }
-                // All other edge types (Upstream, Call, Include, Jump) are preserved
+                // All other edge types (Upstream, Call, Include, Jump) are
+                // preserved when their target exists.
             }
         }
     }

@@ -30,14 +30,14 @@ pub(crate) fn rebuild_graph(
         .unwrap_or_default();
 
     // ── Step 2: Collect passage info ────────────────────────────────────
-    let info: Vec<(String, String, bool, bool, Option<SpecialPassageLayer>, PassageCategory, Option<SpecialPassageBehavior>, Vec<(Option<String>, String)>)> = workspace
+    let info: Vec<(String, String, bool, bool, Option<SpecialPassageLayer>, PassageCategory, Option<SpecialPassageBehavior>, Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)>)> = workspace
         .documents()
         .flat_map(|doc| {
             doc.passages.iter().map(|p| {
-                let mut edges: Vec<(Option<String>, String)> = p
+                let mut edges: Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)> = p
                     .links
                     .iter()
-                    .map(|l| (l.display_text.clone(), l.target.clone()))
+                    .map(|l| (l.display_text.clone(), l.target.clone(), l.edge_type_hint))
                     .collect();
 
                 // ── Dynamic variable resolution for navigation macros ────
@@ -49,7 +49,7 @@ pub(crate) fn rebuild_graph(
                         .map(|plug| plug.resolve_dynamic_navigation_links(p, &var_string_map))
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|link| (link.display_text, link.target)),
+                        .map(|link| (link.display_text, link.target, link.edge_type_hint)),
                 );
 
                 (
@@ -84,29 +84,63 @@ pub(crate) fn rebuild_graph(
 
     // Add edges after all nodes exist so broken-link detection works.
     // Use the format plugin's classify_edge() for format-aware edge typing.
+    // Priority: edge_type_hint from link extraction > classify_edge() > Navigation.
     for (source, _, _, _, _, _, _, edges) in &info {
-        for (display_text, target) in edges {
+        for (display_text, target, hint) in edges {
             let target_exists = graph.contains_passage(target);
-            // Ask the format plugin to classify this edge. If it returns
-            // None, fall back to Navigation (or Broken if target missing).
-            let edge_type = if !target_exists {
-                knot_core::graph::EdgeType::Broken
+            // Determine the edge type using a priority chain:
+            // 1. Broken links always win (target doesn't exist)
+            // 2. The format plugin's extraction hint (set during link
+            //    extraction, e.g., <<goto>> → Jump, <<include>> → Include)
+            // 3. The format plugin's classify_edge() method (for cases
+            //    that need full passage context, like widget invocations)
+            // 4. Default Navigation
+            //
+            // When the target doesn't exist, we save the "would-be" type
+            // in pre_broken_type so that recheck_broken_links() can
+            // restore the correct type (e.g., Jump) when the target is
+            // later created, instead of defaulting to Navigation.
+            let (edge_type, pre_broken_type) = if !target_exists {
+                // Compute what the type WOULD be if the target existed
+                let would_be_type = if let Some(hint_type) = hint {
+                    *hint_type
+                } else if let Some(plug) = plugin.as_ref() {
+                    let source_passage = workspace.find_passage(source)
+                        .map(|(_, p)| p.clone());
+                    if let Some(sp) = source_passage {
+                        plug.classify_edge(&sp, display_text.as_deref(), target)
+                            .unwrap_or(knot_core::graph::EdgeType::Navigation)
+                    } else {
+                        knot_core::graph::EdgeType::Navigation
+                    }
+                } else {
+                    knot_core::graph::EdgeType::Navigation
+                };
+                (knot_core::graph::EdgeType::Broken, Some(would_be_type))
+            } else if let Some(hint_type) = hint {
+                // Use the extraction-time hint directly — it's more reliable
+                // than re-scanning the passage body in classify_edge().
+                (*hint_type, None)
             } else if let Some(plug) = plugin.as_ref() {
-                // Find the source passage to get full context for classification
+                // Fall back to classify_edge() for cases where the hint
+                // wasn't set during extraction (e.g., [[links]] that might
+                // be widget invocations, or dynamic variable links).
                 let source_passage = workspace.find_passage(source)
                     .map(|(_, p)| p.clone());
                 if let Some(sp) = source_passage {
-                    plug.classify_edge(&sp, display_text.as_deref(), target)
-                        .unwrap_or(knot_core::graph::EdgeType::Navigation)
+                    let classified = plug.classify_edge(&sp, display_text.as_deref(), target)
+                        .unwrap_or(knot_core::graph::EdgeType::Navigation);
+                    (classified, None)
                 } else {
-                    knot_core::graph::EdgeType::Navigation
+                    (knot_core::graph::EdgeType::Navigation, None)
                 }
             } else {
-                knot_core::graph::EdgeType::Navigation
+                (knot_core::graph::EdgeType::Navigation, None)
             };
             let edge = PassageEdge {
                 display_text: display_text.clone(),
                 edge_type,
+                pre_broken_type,
             };
             graph.add_edge(source, target, edge);
         }
@@ -186,6 +220,7 @@ pub(crate) fn add_implicit_special_edges(
                 graph.add_edge(script_name, startup_name, PassageEdge {
                     display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
                     edge_type: knot_core::graph::EdgeType::Upstream,
+                    pre_broken_type: None,
                 });
             }
         }
@@ -211,6 +246,7 @@ pub(crate) fn add_implicit_special_edges(
                 graph.add_edge(bridge_source, start_passage_name, PassageEdge {
                     display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
                     edge_type: knot_core::graph::EdgeType::Upstream,
+                    pre_broken_type: None,
                 });
             }
         }

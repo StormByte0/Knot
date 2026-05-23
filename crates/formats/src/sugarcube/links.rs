@@ -96,6 +96,7 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
             display_text: Some(display),
             target,
             span: body_offset + m.start()..body_offset + m.end(),
+            edge_type_hint: None,
         });
     }
 
@@ -115,6 +116,7 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
             display_text: Some(display),
             target,
             span: body_offset + m.start()..body_offset + m.end(),
+            edge_type_hint: None,
         });
     }
 
@@ -164,6 +166,7 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
             display_text: None,
             target,
             span: body_offset + m.start()..body_offset + m.end(),
+            edge_type_hint: None,
         });
     }
 
@@ -179,19 +182,23 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
 pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
 
-    // All regexes are Lazy statics — compiled once, reused across all calls.
-    let patterns: &[&LazyLock<Regex>] = &[
-        &RE_DATA_PASSAGE,
-        &RE_ENGINE_PLAY,
-        &RE_ENGINE_GOTO,
-        &RE_STORY_GET,
-        &RE_STORY_PASSAGE,
-        &RE_STORY_HAS,
-        &RE_UI_GOTO,
-        &RE_UI_INCLUDE,
+    // Each pattern paired with its edge type hint.
+    // - Engine.goto() / UI.goto() are unconditional redirects → Jump
+    // - UI.include() is a passage inclusion → Include
+    // - Everything else (data-passage, Engine.play, Story.get/has/passage)
+    //   is either navigation or data access → None (Navigation default)
+    let patterns: &[(&LazyLock<Regex>, Option<knot_core::graph::EdgeType>)] = &[
+        (&RE_DATA_PASSAGE, None),
+        (&RE_ENGINE_PLAY, None),
+        (&RE_ENGINE_GOTO, Some(knot_core::graph::EdgeType::Jump)),
+        (&RE_STORY_GET, None),
+        (&RE_STORY_PASSAGE, None),
+        (&RE_STORY_HAS, None),
+        (&RE_UI_GOTO, Some(knot_core::graph::EdgeType::Jump)),
+        (&RE_UI_INCLUDE, Some(knot_core::graph::EdgeType::Include)),
     ];
 
-    for re in patterns {
+    for (re, edge_hint) in patterns {
         for caps in re.captures_iter(body) {
             if let Some(target_match) = caps.get(1) {
                 let full_match = caps.get(0).unwrap();
@@ -206,6 +213,7 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
                         display_text: None,
                         target,
                         span: body_offset + full_match.start()..body_offset + full_match.end(),
+                        edge_type_hint: *edge_hint,
                     });
                 }
             }
@@ -285,11 +293,22 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
                 let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
                 let args_offset_in_body = name_end_in_body + trimmed_start;
 
+                // Classify the edge type based on the macro name.
+                // <<goto>> is an unconditional redirect (Jump), <<include>>
+                // is a passage inclusion (Include). Everything else (<<link>>,
+                // <<button>>, <<actions>>, etc.) is a player-choice navigation.
+                let edge_type_hint = match macro_name {
+                    "goto" => Some(knot_core::graph::EdgeType::Jump),
+                    "include" => Some(knot_core::graph::EdgeType::Include),
+                    _ => None,
+                };
+
                 links.push(Link {
                     display_text: None,
                     target: content.clone(),
                     span: body_offset + args_offset_in_body + *rel_start
                         ..body_offset + args_offset_in_body + *rel_end,
+                    edge_type_hint,
                 });
             }
         }

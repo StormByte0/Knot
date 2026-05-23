@@ -226,6 +226,11 @@ pub struct ResolvedNavLink {
     pub display_text: Option<String>,
     /// The target passage name.
     pub target: String,
+    /// A format-provided hint about the semantic edge type.
+    /// Set during dynamic navigation link resolution when the format
+    /// plugin knows the edge semantics (e.g., SugarCube's <<goto $var>>
+    /// resolves to a Jump edge, <<include $var>> to an Include edge).
+    pub edge_type_hint: Option<knot_core::graph::EdgeType>,
 }
 
 // ---------------------------------------------------------------------------
