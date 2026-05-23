@@ -256,8 +256,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
                 if !exists {
                     graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
                         display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                        is_broken: false,
-                        is_upstream: true,
+                        edge_type: knot_core::graph::EdgeType::Upstream,
                     });
                 }
             }
@@ -271,8 +270,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
                 if !exists {
                     graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
                         display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
-                        is_broken: false,
-                        is_upstream: true,
+                        edge_type: knot_core::graph::EdgeType::Upstream,
                     });
                 }
             }
@@ -397,10 +395,9 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
     }
 
     // Fetch VS Code diagnostic settings via workspace/configuration
-    let diag_keys: [(&str, &str); 13] = [
+    let diag_keys: [(&str, &str); 12] = [
         ("BrokenLink", "broken-link"),
         ("UnreachablePassage", "unreachable-passage"),
-        ("InfiniteLoop", "infinite-loop"),
         ("UninitializedVariable", "uninitialized-variable"),
         ("UnusedVariable", "unused-variable"),
         ("RedundantWrite", "redundant-write"),

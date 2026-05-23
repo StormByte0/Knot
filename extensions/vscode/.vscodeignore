@@ -1,0 +1,45 @@
+# Source files (not needed in the packaged extension)
+src/**
+webview/src/**
+webview/node_modules/**
+webview/dist/**
+webview/index.html
+webview/tsconfig.json
+webview/vite.config.ts
+webview/package.json
+
+# Build tools and configs
+.eslintrc.json
+eslint.config.js
+tsconfig.json
+.vscode-test/**
+
+# Development files
+.gitignore
+**/*.map
+**/*.ts
+
+# Keep the compiled JS output
+!out/**
+
+# Keep the built webview assets
+!media/storymap/**
+
+# Keep the existing media assets
+!media/cytoscape.min.js
+!media/cytoscape-dagre.min.js
+!media/passage-icon.svg
+!media/icon.png
+
+# Keep syntaxes and language config
+!syntaxes/**
+!language-configuration.json
+
+# Keep the server binary
+!bin/**
+
+# Documentation (not needed in package)
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+ARCHITECTURE.md

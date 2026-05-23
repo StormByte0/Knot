@@ -557,7 +557,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
             if (isBp) html += '<span class="badge badge-breakpoint">Breakpoint</span>';
             if (d.is_reachable) html += '<span class="badge badge-reachable">Reachable</span>';
             else html += '<span class="badge badge-unreachable">Unreachable</span>';
-            if (d.in_infinite_loop) html += '<span class="badge badge-loop">Loop</span>';
+            if (d.game_loops.length > 0) html += '<span class="badge badge-loop">Loop</span>';
             html += '</span></div>';
 
             // Toolbar
@@ -707,7 +707,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                 html += '<ul class="diag-list">';
                 for (const diag of d.diagnostics) {
                     const cls = diag.kind.includes('Error') || diag.kind === 'BrokenLink' || diag.kind === 'DuplicateStoryData' ? 'diag-error' :
-                                diag.kind.includes('Warning') || diag.kind === 'InfiniteLoop' || diag.kind === 'InvalidPassageName' ? 'diag-warning' : 'diag-info';
+                                diag.kind.includes('Warning') || diag.kind === 'InvalidPassageName' ? 'diag-warning' : 'diag-info';
                     html += '<li class="diag-item ' + cls + '"><strong>' + esc(diag.kind) + '</strong>: ' + esc(diag.message) + '</li>';
                 }
                 html += '</ul></div>';

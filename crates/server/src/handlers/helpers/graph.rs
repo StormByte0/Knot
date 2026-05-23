@@ -83,13 +83,30 @@ pub(crate) fn rebuild_graph(
     }
 
     // Add edges after all nodes exist so broken-link detection works.
+    // Use the format plugin's classify_edge() for format-aware edge typing.
     for (source, _, _, _, _, _, _, edges) in &info {
         for (display_text, target) in edges {
             let target_exists = graph.contains_passage(target);
+            // Ask the format plugin to classify this edge. If it returns
+            // None, fall back to Navigation (or Broken if target missing).
+            let edge_type = if !target_exists {
+                knot_core::graph::EdgeType::Broken
+            } else if let Some(plug) = plugin.as_ref() {
+                // Find the source passage to get full context for classification
+                let source_passage = workspace.find_passage(source)
+                    .map(|(_, p)| p.clone());
+                if let Some(sp) = source_passage {
+                    plug.classify_edge(&sp, display_text.as_deref(), target)
+                        .unwrap_or(knot_core::graph::EdgeType::Navigation)
+                } else {
+                    knot_core::graph::EdgeType::Navigation
+                }
+            } else {
+                knot_core::graph::EdgeType::Navigation
+            };
             let edge = PassageEdge {
                 display_text: display_text.clone(),
-                is_broken: !target_exists,
-                is_upstream: false,
+                edge_type,
             };
             graph.add_edge(source, target, edge);
         }
@@ -144,7 +161,7 @@ pub(crate) fn rebuild_graph(
 /// Start passage (user-defined, from StoryData's start attribute)
 /// ```
 ///
-/// Upstream edges are marked with `is_upstream: true` so the story map
+/// Upstream edges use `EdgeType::Upstream` so the story map
 /// can render them differently (e.g., dashed lines) from normal
 /// navigation edges.
 pub(crate) fn add_implicit_special_edges(
@@ -168,8 +185,7 @@ pub(crate) fn add_implicit_special_edges(
             if !already_exists {
                 graph.add_edge(script_name, startup_name, PassageEdge {
                     display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                    is_broken: false,
-                    is_upstream: true,
+                    edge_type: knot_core::graph::EdgeType::Upstream,
                 });
             }
         }
@@ -194,8 +210,7 @@ pub(crate) fn add_implicit_special_edges(
             if !already_exists {
                 graph.add_edge(bridge_source, start_passage_name, PassageEdge {
                     display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
-                    is_broken: false,
-                    is_upstream: true,
+                    edge_type: knot_core::graph::EdgeType::Upstream,
                 });
             }
         }

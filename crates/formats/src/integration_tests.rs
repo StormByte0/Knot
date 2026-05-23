@@ -87,8 +87,11 @@ fn rebuild_graph(workspace: &mut Workspace) {
                 target,
                 PassageEdge {
                     display_text: display_text.clone(),
-                    is_broken: !target_exists,
-                    is_upstream: false,
+                    edge_type: if !target_exists {
+                        knot_core::graph::EdgeType::Broken
+                    } else {
+                        knot_core::graph::EdgeType::Navigation
+                    },
                 },
             );
         }

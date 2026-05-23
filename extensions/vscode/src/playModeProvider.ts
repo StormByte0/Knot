@@ -1104,8 +1104,8 @@ export class PlayModeProvider {
                 html += '<div class="debug-links">';
                 html += '<div class="debug-row"><span class="label">Outgoing links</span><span class="value">' + data.links.length + '</span></div>';
                 for (const link of data.links) {
-                    const broken = link.is_broken ? ' broken' : '';
-                    html += '<div class="debug-link-item' + broken + '" onclick="vscode.postMessage({command:\\'openPassage\\',name:\\'' + esc(link.target || link.name || '') + '\\'})">' + esc(link.target || link.name || link.display_text || 'unknown') + (link.display_text ? ' (' + esc(link.display_text) + ')' : '') + (link.is_broken ? ' &#x26A0; broken' : '') + '</div>';
+                    const broken = !link.target_exists ? ' broken' : '';
+                    html += '<div class="debug-link-item' + broken + '" onclick="vscode.postMessage({command:\\'openPassage\\',name:\\'' + esc(link.passage_name || link.target || link.name || '') + '\\'})">' + esc(link.passage_name || link.target || link.name || link.display_text || 'unknown') + (link.display_text ? ' (' + esc(link.display_text) + ')' : '') + (!link.target_exists ? ' &#x26A0; broken' : '') + '</div>';
                 }
                 html += '</div>';
             }

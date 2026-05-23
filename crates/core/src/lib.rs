@@ -14,6 +14,8 @@ pub mod editing;
 pub use document::{Document, DocumentSnapshot};
 pub use passage::{Passage, Block, Link, VarOp, VarKind, SpecialPassageBehavior, PassageCategory};
 pub use graph::PassageGraph;
+pub use graph::EdgeType;
+pub use graph::GameLoopInfo;
 pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;

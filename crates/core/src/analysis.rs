@@ -101,10 +101,6 @@ impl AnalysisEngine {
         // Unreachable passage detection
         diagnostics.extend(workspace.graph.detect_unreachable(start_passage));
 
-        // Infinite loop detection
-        let passage_vars = Self::collect_passage_vars(workspace);
-        diagnostics.extend(workspace.graph.detect_infinite_loops(&passage_vars));
-
         // NOTE: Variable flow analysis is now delegated to format plugins.
         // The server should call `analyze_with_format_diagnostics()` instead
         // of relying on this method for variable diagnostics. The core's
@@ -620,7 +616,7 @@ impl AnalysisEngine {
         Self::run_dataflow(workspace, start_passage, passage_data, seed_init)
     }
 
-    /// Collect variable operations per passage as references (for infinite loop detection).
+    /// Collect variable operations per passage as references.
     pub fn collect_passage_vars_as_ref(workspace: &Workspace) -> HashMap<String, Vec<&VarOp>> {
         Self::collect_passage_vars(workspace)
     }

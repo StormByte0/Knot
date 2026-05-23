@@ -175,7 +175,6 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
     match kind {
         DiagnosticKind::BrokenLink => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnreachablePassage => DiagnosticSeverity::HINT,
-        DiagnosticKind::InfiniteLoop => DiagnosticSeverity::WARNING,
         DiagnosticKind::UninitializedVariable => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnusedVariable => DiagnosticSeverity::HINT,
         DiagnosticKind::RedundantWrite => DiagnosticSeverity::HINT,

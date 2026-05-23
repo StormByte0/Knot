@@ -828,6 +828,45 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     // -------------------------------------------------------------------
+    // Edge classification (format-aware edge typing)
+    // -------------------------------------------------------------------
+
+    fn classify_edge(
+        &self,
+        _source_passage: &Passage,
+        display_text: Option<&str>,
+        target: &str,
+    ) -> Option<knot_core::graph::EdgeType> {
+        // SugarCube edge classification based on display_text patterns.
+        // Navigation macros like <<goto>>, <<include>>, <<widget>> produce
+        // edges with characteristic display text or are resolved as
+        // dynamic navigation links with "(via $var)" in display text.
+
+        // Check if this looks like a dynamic navigation link
+        if let Some(dt) = display_text {
+            // Dynamic navigation resolved from variable: "(via $var)" suffix
+            if dt.contains("(via ") {
+                // Check if the original macro was goto/include/widget
+                // by looking at the passage body blocks. For now,
+                // we classify based on the target's characteristics.
+                // The rebuild_graph will re-classify when it has the
+                // full passage context.
+            }
+        }
+
+        // Classify based on what we know about the target passage.
+        // Widget passages are tagged [widget] — if the target is a widget,
+        // this is a Call edge.
+        // For now, use a simple heuristic: check if the display text
+        // or target name suggests a particular edge type.
+        // The format plugin's full context isn't available here for
+        // per-link classification, so we return Navigation and let
+        // the rebuild_graph helper handle the detailed classification.
+        let _ = (display_text, target);
+        None // Use default Navigation classification
+    }
+
+    // -------------------------------------------------------------------
     // Hover / documentation
     // -------------------------------------------------------------------
 

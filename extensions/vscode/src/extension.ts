@@ -1058,7 +1058,6 @@ function registerCommands(context: vscode.ExtensionContext) {
                 diagnostics: {
                     'broken-link': 'warning',
                     'unreachable-passage': 'hint',
-                    'infinite-loop': 'warning',
                     'uninitialized-variable': 'warning',
                     'unused-variable': 'hint'
                 }
