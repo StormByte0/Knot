@@ -7,15 +7,48 @@ import { vscode } from '../App';
 // Register the dagre layout extension
 cytoscape.use(dagre);
 
+// ── Snap-to-grid constant (Twine-inspired) ──────────────────────────────────
+const GRID_SNAP = 20;
+
+/** Snap a coordinate to the nearest grid point. */
+function snapToGrid(value: number): number {
+  return Math.round(value / GRID_SNAP) * GRID_SNAP;
+}
+
+// ── Special passage classification ──────────────────────────────────────────
+// Twine-core special passages defined by the Twee specification.
+// Everything else that's is_special but NOT in this list is format-specific
+// (e.g., SugarCube's StoryInit, StoryInterface, etc.).
+const TWINE_CORE_SPECIALS = new Set([
+  'StoryTitle', 'StoryData', 'StoryStylesheet', 'StoryJavaScript',
+  'StorySettings', 'StoryIncludes',
+]);
+
+type SpecialGroup = 'twine_core' | 'format_special' | null;
+
+function classifySpecial(label: string, isMetadata: boolean): SpecialGroup {
+  // Metadata passages (tagged [stylesheet], [script], etc.) are Twine-standard
+  if (isMetadata) return 'twine_core';
+  if (TWINE_CORE_SPECIALS.has(label)) return 'twine_core';
+  return 'format_special';
+}
+
 // ── Twine-inspired color palette ────────────────────────────────────────────
 const COLORS = {
-  normal:     '#4fc3f7',
-  start:      '#66bb6a',
-  special:    '#ffb74d',
-  metadata:   '#ce93d8',
-  unreachable:'#555555',
-  broken:     '#f14c4c',
-  gameLoop:   '#ff7043',
+  normal:      '#3a7ca5',
+  start:       '#43a047',
+  special:     '#ef6c00',
+  metadata:    '#8e24aa',
+  unreachable: '#4a4a4a',
+  broken:      '#e53935',
+  gameLoop:    '#ff7043',
+  edgeNormal:  '#7a8a9e',
+  edgeUpstream:'#5c6370',
+  edgeCall:    '#ab47bc',
+  edgeInclude: '#26a69a',
+  edgeJump:    '#ffa726',
+  groupBorder: '#666666',
+  groupBg:     'rgba(255,255,255,0.03)',
 };
 
 function getNodeColor(data: {
@@ -24,24 +57,21 @@ function getNodeColor(data: {
   is_special?: boolean;
   is_start?: boolean;
 }): string {
-  if (data.is_metadata)    return COLORS.metadata;
   if (data.is_unreachable) return COLORS.unreachable;
-  if (data.is_special)     return COLORS.special;
   if (data.is_start)       return COLORS.start;
+  if (data.is_metadata)    return COLORS.metadata;
+  if (data.is_special)     return COLORS.special;
   return COLORS.normal;
 }
 
-// ── Cytoscape stylesheet (faithfully ported from inline HTML) ───────────────
-// Using `any[]` because Cytoscape's style types are extremely strict about
-// property names and don't easily accommodate mappable data properties like
-// `data(bgColor)`. The runtime behavior is correct regardless.
+// ── Cytoscape stylesheet ────────────────────────────────────────────────────
 const CYTOSCAPE_STYLE: any[] = [
   {
     selector: 'node',
     style: {
       'label': 'data(label)',
       'background-color': 'data(bgColor)',
-      'color': '#e0e0e0',
+      'color': '#ffffff',
       'text-valign': 'center',
       'text-halign': 'center',
       'font-size': '11px',
@@ -50,23 +80,24 @@ const CYTOSCAPE_STYLE: any[] = [
       'width': 'data(w)',
       'height': 'data(h)',
       'shape': 'round-rectangle',
-      'text-outline-color': '#1e1e1e',
-      'text-outline-width': '2px',
+      'text-outline-color': 'transparent',
+      'text-outline-width': '0px',
       'border-width': '2px',
       'border-color': 'data(borderColor)',
       'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      'font-weight': 'normal',
     },
   },
   {
     selector: 'edge',
     style: {
       'width': 1.5,
-      'line-color': '#555',
-      'target-arrow-color': '#555',
+      'line-color': COLORS.edgeNormal,
+      'target-arrow-color': COLORS.edgeNormal,
       'target-arrow-shape': 'triangle',
       'arrow-scale': 0.7,
       'curve-style': 'bezier',
-      'opacity': 0.6,
+      'opacity': 0.7,
     },
   },
   {
@@ -75,39 +106,39 @@ const CYTOSCAPE_STYLE: any[] = [
       'line-color': COLORS.broken,
       'target-arrow-color': COLORS.broken,
       'line-style': 'dashed',
-      'opacity': 0.85,
+      'opacity': 0.9,
     },
   },
   {
     selector: 'edge.is_upstream',
     style: {
       'line-style': 'dashed',
-      'line-color': '#888',
-      'target-arrow-color': '#888',
+      'line-color': COLORS.edgeUpstream,
+      'target-arrow-color': COLORS.edgeUpstream,
       'opacity': 0.4,
     },
   },
   {
     selector: 'edge.is_call',
     style: {
-      'line-color': '#ab47bc',
-      'target-arrow-color': '#ab47bc',
+      'line-color': COLORS.edgeCall,
+      'target-arrow-color': COLORS.edgeCall,
       'line-style': 'dotted',
     },
   },
   {
     selector: 'edge.is_include',
     style: {
-      'line-color': '#26a69a',
-      'target-arrow-color': '#26a69a',
+      'line-color': COLORS.edgeInclude,
+      'target-arrow-color': COLORS.edgeInclude,
       'line-style': 'dotted',
     },
   },
   {
     selector: 'edge.is_jump',
     style: {
-      'line-color': '#ffa726',
-      'target-arrow-color': '#ffa726',
+      'line-color': COLORS.edgeJump,
+      'target-arrow-color': COLORS.edgeJump,
     },
   },
   {
@@ -116,14 +147,14 @@ const CYTOSCAPE_STYLE: any[] = [
       'label': 'data(displayText)',
       'font-size': '8px',
       'text-rotation': 'autorotate',
-      'text-outline-color': '#1e1e1e',
-      'text-outline-width': '1px',
-      'color': '#999',
+      'text-outline-color': '#1e1e2e',
+      'text-outline-width': '2px',
+      'color': '#aab0bc',
     },
   },
   {
     selector: 'node.highlighted',
-    style: { 'border-color': '#fff', 'border-width': '3px', 'z-index': 999 },
+    style: { 'border-color': '#ffffff', 'border-width': '3px', 'z-index': 999 },
   },
   {
     selector: 'node.dimmed',
@@ -141,7 +172,47 @@ const CYTOSCAPE_STYLE: any[] = [
       'border-style': 'double',
     },
   },
+  {
+    selector: 'node.is_start',
+    style: {
+      'font-weight': 'bold',
+      'border-width': '3px',
+      'border-color': '#ffffff',
+    },
+  },
+  // ── Compound group boxes ─────────────────────────────────────────────────
+  {
+    selector: '.group-box',
+    style: {
+      'background-color': COLORS.groupBg,
+      'background-opacity': 1,
+      'border-width': 1,
+      'border-style': 'dashed',
+      'border-color': COLORS.groupBorder,
+      'border-opacity': 0.6,
+      'label': 'data(label)',
+      'text-valign': 'top',
+      'text-halign': 'left',
+      'font-size': '9px',
+      'color': '#888888',
+      'text-margin-x': 4,
+      'text-margin-y': 2,
+      'padding-left': 8,
+      'padding-right': 8,
+      'padding-top': 16,
+      'padding-bottom': 6,
+      'shape': 'round-rectangle',
+      'compound-sizing-wrt-labels': 'include',
+      'z-index': 0,
+      'z-compound-depth': 'bottom',
+    },
+  },
 ];
+
+// ── Compound group IDs ──────────────────────────────────────────────────────
+const GROUP_TWINE_CORE = '__group_twine_core';
+const GROUP_FORMAT_SPECIAL = '__group_format_special';
+const GROUP_UNREACHABLE = '__group_unreachable';
 
 interface StoryMapProps {
   graphData: KnotGraphResponse | null;
@@ -161,51 +232,23 @@ export default function StoryMap({
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<cytoscape.Core | null>(null);
   const currentDataRef = useRef<KnotGraphResponse | null>(null);
-  const gridCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
 
-  // ── Grid background renderer ──────────────────────────────────────────────
-  const drawGrid = useCallback(() => {
+  // ── Pan-aware CSS grid background ─────────────────────────────────────────
+  // Updates the container's CSS background-position and background-size
+  // so the dot grid pans and zooms with the Cytoscape viewport.
+  const updateGridBackground = useCallback(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const cy = cyRef.current;
+    if (!container || !cy) return;
 
-    // Remove old grid canvas
-    if (gridCanvasRef.current) {
-      gridCanvasRef.current.remove();
-    }
+    const pan = cy.pan();
+    const zoom = cy.zoom();
+    const gridSize = GRID_SNAP * zoom;
 
-    const canvas = document.createElement('canvas');
-    canvas.id = 'gridCanvas';
-    canvas.style.position = 'absolute';
-    canvas.style.top = '0';
-    canvas.style.left = '0';
-    canvas.style.width = '100%';
-    canvas.style.height = '100%';
-    canvas.style.pointerEvents = 'none';
-    canvas.style.zIndex = '0';
-    container.insertBefore(canvas, container.firstChild);
-    gridCanvasRef.current = canvas;
-
-    const rect = container.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    const ctx = canvas.getContext('2d');
-
-    if (ctx) {
-      // Twine-style dot grid
-      const spacing = 20;
-      const gridDotColor = getComputedStyle(document.documentElement)
-        .getPropertyValue('--grid-dot').trim() || 'rgba(255,255,255,0.07)';
-      ctx.fillStyle = gridDotColor;
-      for (let x = spacing; x < rect.width; x += spacing) {
-        for (let y = spacing; y < rect.height; y += spacing) {
-          ctx.beginPath();
-          ctx.arc(x, y, 1, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-    }
+    container.style.backgroundSize = `${gridSize}px ${gridSize}px`;
+    container.style.backgroundPosition = `${pan.x % gridSize}px ${pan.y % gridSize}px`;
   }, []);
 
   // ── Initialize Cytoscape ──────────────────────────────────────────────────
@@ -226,9 +269,10 @@ export default function StoryMap({
     cyRef.current = cy;
     console.log('[StoryMap] Cytoscape instance created successfully');
 
-    // Click → open passage
+    // Click → open passage (ignore compound group parents)
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
+      if (node.data('isGroup')) return; // skip group parent nodes
       const file = node.data('file');
       const line = node.data('line') || 0;
       if (file) {
@@ -236,15 +280,16 @@ export default function StoryMap({
       }
     });
 
-    // Drag end → write back position
+    // Drag end → write back position (snapped to grid)
     cy.on('dragfree', 'node', (evt) => {
       const dragged = evt.target;
-      if (!dragged || !dragged.data('id')) return;
+      if (!dragged || !dragged.data('id') || dragged.data('isGroup')) return;
       const pos = dragged.position();
       const oldX = dragged.data('posX');
       const oldY = dragged.data('posY');
-      const newX = Math.round(pos.x * 100) / 100;
-      const newY = Math.round(pos.y * 100) / 100;
+      const newX = snapToGrid(pos.x);
+      const newY = snapToGrid(pos.y);
+      dragged.position({ x: newX, y: newY });
       if (oldX == null || oldY == null ||
           Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
         dragged.data('posX', newX);
@@ -256,9 +301,18 @@ export default function StoryMap({
       }
     });
 
-    // Tooltip: show on mouseover
+    // Snap node to grid in real-time while dragging (Twine-style)
+    cy.on('drag', 'node', (evt) => {
+      const node = evt.target;
+      if (node.data('isGroup')) return; // don't snap group parents
+      const pos = node.position();
+      node.position({ x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
+    });
+
+    // Tooltip: show on mouseover (group parents excluded)
     cy.on('mouseover', 'node', (evt) => {
       const d = evt.target.data();
+      if (d.isGroup) return;
       const tip = document.getElementById('tooltip');
       if (!tip) return;
       const nameEl = tip.querySelector('.tt-name');
@@ -278,13 +332,12 @@ export default function StoryMap({
 
       if (metaEl) {
         const parts: string[] = [];
-        if (d.in_degree > 0)  parts.push('In: ' + d.in_degree);
-        if (d.out_degree > 0) parts.push('Out: ' + d.out_degree);
+        if (d.is_start)       parts.push('Start');
         if (d.is_special)     parts.push('Special');
         if (d.is_metadata)    parts.push('Metadata');
         if (d.is_unreachable) parts.push('Unreachable');
-        if (d.var_writes && d.var_writes.length > 0) parts.push('Writes: ' + d.var_writes.join(', '));
-        if (d.var_reads && d.var_reads.length > 0)   parts.push('Reads: ' + d.var_reads.join(', '));
+        if (d.in_degree > 0)  parts.push('In: ' + d.in_degree);
+        if (d.out_degree > 0) parts.push('Out: ' + d.out_degree);
         if (d.posX != null && d.posY != null) parts.push('(' + Math.round(d.posX) + ', ' + Math.round(d.posY) + ')');
         metaEl.textContent = parts.join(' | ');
       }
@@ -292,42 +345,33 @@ export default function StoryMap({
       tip.style.display = 'block';
     });
 
-    // Tooltip: hide on mouseout
     cy.on('mouseout', 'node', () => {
       const tip = document.getElementById('tooltip');
       if (tip) tip.style.display = 'none';
     });
 
-    // Tooltip: hide on drag
     cy.on('tapdrag', () => {
       const tip = document.getElementById('tooltip');
       if (tip) tip.style.display = 'none';
     });
 
-    // Redraw grid + notify Cytoscape on resize
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) {
-        const { width, height } = entry.contentRect;
-        console.log('[StoryMap] ResizeObserver fired:', Math.round(width), 'x', Math.round(height));
-      }
-      drawGrid();
-      // Cytoscape must be told when its container changes size
+    // Pan/zoom → update CSS grid background to stay in sync
+    cy.on('viewport', updateGridBackground);
+
+    // Resize → update Cytoscape + grid
+    const ro = new ResizeObserver(() => {
       if (cyRef.current) {
         cyRef.current.resize();
       }
+      updateGridBackground();
     });
     ro.observe(containerRef.current);
 
-    // Deferred resize: VS Code sidebar webviews may not have their final
-    // dimensions at the time this effect runs. Scheduling a resize after
-    // the browser has completed layout ensures Cytoscape sees the real
-    // container size.
+    // Deferred resize
     requestAnimationFrame(() => {
       if (cyRef.current) {
         cyRef.current.resize();
-        drawGrid();
-        console.log('[StoryMap] Deferred resize applied, container:', containerRef.current?.getBoundingClientRect());
+        updateGridBackground();
       }
     });
 
@@ -336,20 +380,12 @@ export default function StoryMap({
       cy.destroy();
       cyRef.current = null;
     };
-  }, [drawGrid]);
+  }, [updateGridBackground]);
 
   // ── Build the graph from server data ──────────────────────────────────────
-  // NOTE: layout and onLayoutChange are intentionally NOT in the dependency
-  // array to prevent an infinite re-render loop. The buildGraph callback
-  // uses layoutRef.current instead of the layout prop, and calls
-  // onLayoutChange only when the server-suggested layout differs from the
-  // current layout (a one-way sync, not a cycle).
   const buildGraph = useCallback((data: KnotGraphResponse) => {
     const cy = cyRef.current;
-    if (!cy) {
-      console.warn('[StoryMap] buildGraph called but Cytoscape not initialized');
-      return;
-    }
+    if (!cy) return;
 
     const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
     const edges = Array.isArray(data?.edges) ? data.edges : [];
@@ -369,17 +405,51 @@ export default function StoryMap({
       loop.members.forEach((m) => gameLoopMembers.add(m));
     });
 
-    // Build a set of valid node IDs for edge validation
+    // ── Classify nodes into groups ──────────────────────────────────────
+    const twineCoreChildren: string[] = [];
+    const formatSpecialChildren: string[] = [];
+    const unreachableChildren: string[] = [];
+
     const nodeIds = new Set<string>();
 
-    /* ── Nodes ─────────────────────────────────────────────────────────── */
     for (const n of nodes) {
       nodeIds.add(n.id);
-      const isStart = (n.id === 'Start' || n.label === 'Start');
+
+      const isStart = n.is_start || (n.id === 'Start' || n.label === 'Start');
+
+      // Classify special/unreachable into groups
+      // Priority: special > unreachable (special passages stay in their
+      // category group even if unreachable; only non-special unreachables
+      // go to the unreachable group)
+      if (n.is_special || n.is_metadata) {
+        const group = classifySpecial(n.label, !!n.is_metadata);
+        if (group === 'twine_core') {
+          twineCoreChildren.push(n.id);
+        } else {
+          formatSpecialChildren.push(n.id);
+        }
+      } else if (n.is_unreachable) {
+        unreachableChildren.push(n.id);
+      }
+
       const color = getNodeColor({ ...n, is_start: isStart });
-      const size = Math.max(50, Math.min(100, 40 + Math.max(n.out_degree || 0, n.in_degree || 0) * 6));
+      const size = 60;
       const hasPos = n.position_x != null && n.position_y != null;
       const isGameLoop = gameLoopMembers.has(n.id);
+
+      // Determine compound parent
+      let parent: string | undefined;
+      if (twineCoreChildren.includes(n.id)) {
+        parent = GROUP_TWINE_CORE;
+      } else if (formatSpecialChildren.includes(n.id)) {
+        parent = GROUP_FORMAT_SPECIAL;
+      } else if (unreachableChildren.includes(n.id)) {
+        parent = GROUP_UNREACHABLE;
+      }
+
+      const nodeClasses: string[] = [];
+      if (isGameLoop) nodeClasses.push('game_loop');
+      if (isStart) nodeClasses.push('is_start');
 
       const el: cytoscape.NodeDefinition = {
         data: {
@@ -394,20 +464,22 @@ export default function StoryMap({
           is_metadata: !!n.is_metadata,
           is_unreachable: !!n.is_unreachable,
           is_start: isStart,
-          bgColor: n.is_unreachable ? '#2a2a2a' : '#2d2d30',
-          borderColor: color,
+          isGroup: false,
+          bgColor: color,
+          borderColor: n.is_unreachable ? '#3a3a3a' : color,
           w: n.is_metadata ? 40 : size,
           h: n.is_metadata ? 40 : size * 0.55,
-          posX: n.position_x,
-          posY: n.position_y,
+          posX: n.position_x != null ? snapToGrid(n.position_x) : null,
+          posY: n.position_y != null ? snapToGrid(n.position_y) : null,
           var_writes: n.var_writes || [],
           var_reads: n.var_reads || [],
+          parent,
         },
-        classes: isGameLoop ? ['game_loop'] : [],
+        classes: nodeClasses,
       };
 
       if (hasPos) {
-        el.position = { x: n.position_x!, y: n.position_y! };
+        el.position = { x: snapToGrid(n.position_x!), y: snapToGrid(n.position_y!) };
         positionedIds.add(n.id);
       } else {
         unpositioned.push(n);
@@ -416,25 +488,40 @@ export default function StoryMap({
       elements.push(el);
     }
 
-    /* ── Edges ─────────────────────────────────────────────────────────── */
-    // Track used edge IDs to prevent duplicates when multiple edges exist
-    // between the same pair of nodes (e.g., a nav link AND an <<include>>)
+    // ── Add compound group parent nodes ─────────────────────────────────
+    if (twineCoreChildren.length > 0) {
+      elements.push({
+        data: { id: GROUP_TWINE_CORE, label: 'Twine Core', isGroup: true },
+        classes: ['group-box'],
+        position: { x: 0, y: 0 }, // will be repositioned
+      });
+    }
+    if (formatSpecialChildren.length > 0) {
+      elements.push({
+        data: { id: GROUP_FORMAT_SPECIAL, label: 'Format Specials', isGroup: true },
+        classes: ['group-box'],
+        position: { x: 0, y: 0 },
+      });
+    }
+    if (unreachableChildren.length > 0) {
+      elements.push({
+        data: { id: GROUP_UNREACHABLE, label: 'Unreachable', isGroup: true },
+        classes: ['group-box'],
+        position: { x: 0, y: 0 },
+      });
+    }
+
+    // ── Edges ───────────────────────────────────────────────────────────
     const usedEdgeIds = new Set<string>();
     let edgeIndex = 0;
 
     for (const e of edges) {
-      // BUG FIX: Skip edges whose source or target node doesn't exist in
-      // the graph. Broken-link edges often reference passages that don't
-      // exist as nodes, and Cytoscape throws when adding an edge with a
-      // non-existent endpoint.
+      // Skip edges referencing compound group parents
       if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
         console.warn('[StoryMap] Skipping edge with missing endpoint:', e.source, '->', e.target, '(' + e.edge_type + ')');
         continue;
       }
 
-      // Build a unique edge ID. Multiple edges between the same pair are
-      // possible (e.g., navigation + include), so we append the edge type
-      // and a sequential index to guarantee uniqueness.
       let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
       if (usedEdgeIds.has(edgeId)) {
         edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}_${edgeIndex}]`;
@@ -461,43 +548,137 @@ export default function StoryMap({
       elements.push(el);
     }
 
-    // BUG FIX: Wrap cy.add() in try/catch — if any element definition is
-    // invalid (e.g., an edge references a node that was somehow missed by
-    // our validation), Cytoscape will throw. Previously this crashed the
-    // entire React render cycle silently.
     try {
       cy.add(elements);
       console.log('[StoryMap] Added', elements.length, 'elements to Cytoscape');
     } catch (err) {
       console.error('[StoryMap] cy.add() failed:', err);
       vscode.postMessage({ command: 'log', level: 'error', message: '[StoryMap] cy.add() failed: ' + String(err) });
-      return; // Don't try to layout an empty/broken graph
+      return;
     }
 
-    /* ── Layout ────────────────────────────────────────────────────────── */
+    // ── Layout ──────────────────────────────────────────────────────────
     const hasAnyPositions = positionedIds.size > 0;
     const chosenLayout = data.layout || (hasAnyPositions ? 'position' : 'dagre');
 
-    // One-way sync: only update parent if the server-suggested layout
-    // differs from the current layout. This uses layoutRef to avoid
-    // depending on the layout prop (which would cause a re-render loop).
     if (chosenLayout !== layoutRef.current) {
       onLayoutChange(chosenLayout);
     }
 
     applyLayout(chosenLayout, cy, positionedIds, unpositioned);
-    drawGrid();
 
-    // Deferred fit: ensure Cytoscape recalculates after the browser has
-    // processed the DOM changes from adding elements and running layout.
+    // ── Reposition compound groups ──────────────────────────────────────
+    repositionGroups(cy, twineCoreChildren, formatSpecialChildren, unreachableChildren);
+
+    updateGridBackground();
+
+    // Pan to origin like Twine, then fit
     requestAnimationFrame(() => {
       if (cyRef.current && cyRef.current.nodes().length > 0) {
         cyRef.current.resize();
         cyRef.current.fit(undefined, 30);
-        console.log('[StoryMap] Deferred fit applied, nodes:', cyRef.current.nodes().length);
+        console.log('[StoryMap] Viewport fit applied');
       }
     });
-  }, [onLayoutChange, drawGrid]); // intentionally excludes `layout`
+  }, [onLayoutChange, updateGridBackground]);
+
+  // ── Reposition compound groups after layout ───────────────────────────────
+  // Special passages go to the top-left in labeled boxes.
+  // Unreachable passages go to the bottom-right in a labeled box.
+  const repositionGroups = useCallback((
+    cy: cytoscape.Core,
+    twineCoreIds: string[],
+    formatSpecialIds: string[],
+    unreachableIds: string[],
+  ) => {
+    // ── Position Twine Core group at top-left ───────────────────────────
+    let groupY = GRID_SNAP * 2; // start at y=40
+
+    if (twineCoreIds.length > 0) {
+      const children = twineCoreIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
+      // Sort alphabetically for consistent layout
+      children.sort((a, b) => (a.data('label') || '').localeCompare(b.data('label') || ''));
+
+      let offsetX = GRID_SNAP * 2;
+      let rowMaxH = 0;
+      for (const n of children) {
+        const w = n.width();
+        const h = n.height();
+        if (offsetX + w > 500 && offsetX > GRID_SNAP * 2) {
+          offsetX = GRID_SNAP * 2;
+          groupY += rowMaxH + GRID_SNAP;
+          rowMaxH = 0;
+        }
+        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(groupY + h / 2) });
+        n.data('posX', snapToGrid(offsetX + w / 2));
+        n.data('posY', snapToGrid(groupY + h / 2));
+        offsetX += w + GRID_SNAP;
+        rowMaxH = Math.max(rowMaxH, h);
+      }
+      // Advance Y past the Twine Core group (compound padding + row height)
+      const twineCoreBB = cy.getElementById(GROUP_TWINE_CORE).boundingBox();
+      groupY = twineCoreBB.y2 + GRID_SNAP;
+    }
+
+    // ── Position Format Specials group below Twine Core ─────────────────
+    if (formatSpecialIds.length > 0) {
+      const children = formatSpecialIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
+      children.sort((a, b) => (a.data('label') || '').localeCompare(b.data('label') || ''));
+
+      let offsetX = GRID_SNAP * 2;
+      let rowMaxH = 0;
+      for (const n of children) {
+        const w = n.width();
+        const h = n.height();
+        if (offsetX + w > 500 && offsetX > GRID_SNAP * 2) {
+          offsetX = GRID_SNAP * 2;
+          groupY += rowMaxH + GRID_SNAP;
+          rowMaxH = 0;
+        }
+        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(groupY + h / 2) });
+        n.data('posX', snapToGrid(offsetX + w / 2));
+        n.data('posY', snapToGrid(groupY + h / 2));
+        offsetX += w + GRID_SNAP;
+        rowMaxH = Math.max(rowMaxH, h);
+      }
+    }
+
+    // ── Position Unreachable group to the right of main graph ───────────
+    if (unreachableIds.length > 0) {
+      // Find the bounding box of all non-unreachable, non-special nodes
+      const reachableNodes = cy.nodes().filter((n: any) =>
+        !n.data('isGroup') && !n.data('is_unreachable') && !n.data('is_special') && !n.data('is_metadata')
+      );
+      let baseX = 400;
+      let baseY = GRID_SNAP * 2;
+
+      if (reachableNodes.length > 0) {
+        const bb = reachableNodes.boundingBox();
+        baseX = bb.x2 + GRID_SNAP * 4;
+        baseY = bb.y1;
+      }
+
+      const children = unreachableIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
+
+      let offsetX = baseX;
+      let offsetY = baseY;
+      let rowMaxH = 0;
+      for (const n of children) {
+        const w = n.width();
+        const h = n.height();
+        if (offsetX + w > baseX + 400 && offsetX > baseX) {
+          offsetX = baseX;
+          offsetY += rowMaxH + GRID_SNAP;
+          rowMaxH = 0;
+        }
+        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(offsetY + h / 2) });
+        n.data('posX', snapToGrid(offsetX + w / 2));
+        n.data('posY', snapToGrid(offsetY + h / 2));
+        offsetX += w + GRID_SNAP;
+        rowMaxH = Math.max(rowMaxH, h);
+      }
+    }
+  }, []);
 
   // ── Apply layout ──────────────────────────────────────────────────────────
   const applyLayout = useCallback((
@@ -509,8 +690,8 @@ export default function StoryMap({
     if (!cy || cy.nodes().length === 0) return;
 
     if (name === 'position') {
-      // ── Saved layout: positioned nodes stay, unpositioned get auto-arranged
       cy.nodes().forEach((n: any) => {
+        if (n.data('isGroup')) return;
         const px = n.data('posX');
         const py = n.data('posY');
         if (px != null && py != null) {
@@ -518,61 +699,39 @@ export default function StoryMap({
         }
       });
 
-      const unpos = cy.nodes().filter((n: any) => n.data('posX') == null || n.data('posY') == null);
-      if (unpos.length > 0 && unpos.length < cy.nodes().length) {
-        const fixed = cy.nodes().filter((n: any) => n.data('posX') != null && n.data('posY') != null);
+      const unpos = cy.nodes().filter((n: any) => !n.data('isGroup') && (n.data('posX') == null || n.data('posY') == null));
+      if (unpos.length > 0 && unpos.length < cy.nodes().filter((n: any) => !n.data('isGroup')).length) {
+        const fixed = cy.nodes().filter((n: any) => !n.data('isGroup') && n.data('posX') != null && n.data('posY') != null);
         const bb = fixed.boundingBox();
         const offsetX = bb.x2 + 150;
         const offsetY = bb.y1;
 
-        const subNodes = unpos;
-        const subEdgeIds = new Set<string>();
-        subNodes.forEach((n: any) => { subEdgeIds.add(n.id()); });
-
-        // Build a temporary sub-cytoscape for dagre layout
         const subElements: cytoscape.ElementDefinition[] = [];
-        subNodes.forEach((n: any) => {
+        unpos.forEach((n: any) => {
           subElements.push({ data: { id: n.id(), label: n.data('label') } });
         });
-        // Edges between unpositioned nodes
         cy.edges().forEach((e: any) => {
-          if (subEdgeIds.has(e.data('source')) && subEdgeIds.has(e.data('target'))) {
-            subElements.push({
-              data: { id: e.id(), source: e.data('source'), target: e.data('target') },
-            });
+          const src = e.data('source');
+          const tgt = e.data('target');
+          if (unpos.some((n: any) => n.id() === src) && unpos.some((n: any) => n.id() === tgt)) {
+            subElements.push({ data: { id: e.id(), source: src, target: tgt } });
           }
         });
 
         if (subElements.length > 1) {
-          const subCy = cytoscape({
-            container: undefined, // headless
-            elements: subElements,
-            layout: { name: 'null' },
-          });
-          subCy.layout({
-            name: 'dagre',
-            rankDir: 'TB',
-            spacingFactor: 1.0,
-            nodeSep: 50,
-            rankSep: 70,
-            animate: false,
-          } as any).run();
-
+          const subCy = cytoscape({ container: undefined, elements: subElements, layout: { name: 'null' } });
+          subCy.layout({ name: 'dagre', rankDir: 'TB', spacingFactor: 1.0, nodeSep: 50, rankSep: 70, animate: false } as any).run();
           subCy.nodes().forEach((sn: any) => {
             const mainNode = cy.getElementById(sn.id());
             if (mainNode.length > 0) {
-              mainNode.position({
-                x: sn.position().x + offsetX,
-                y: sn.position().y + offsetY,
-              });
+              mainNode.position({ x: sn.position().x + offsetX, y: sn.position().y + offsetY });
             }
           });
           subCy.destroy();
         } else {
           unpos.forEach((n: any) => { n.position({ x: offsetX, y: offsetY }); });
         }
-      } else if (unpos.length === cy.nodes().length) {
-        // ALL nodes unpositioned — fall through to dagre
+      } else if (unpos.length === cy.nodes().filter((n: any) => !n.data('isGroup')).length) {
         applyLayout('dagre', cy, _positionedIds, _unpositionedNodes);
         return;
       }
@@ -581,29 +740,13 @@ export default function StoryMap({
       return;
     }
 
-    // ── Algorithmic layouts ──────────────────────────────────────────────────
     let opts: any;
     switch (name) {
       case 'dagre':
-        opts = {
-          name: 'dagre',
-          rankDir: 'TB',
-          spacingFactor: 1.0,
-          nodeSep: 50,
-          rankSep: 70,
-          animate: true,
-          animationDuration: 300,
-        };
+        opts = { name: 'dagre', rankDir: 'TB', spacingFactor: 1.0, nodeSep: 50, rankSep: 70, animate: true, animationDuration: 300 };
         break;
       case 'cose':
-        opts = {
-          name: 'cose',
-          animate: true,
-          animationDuration: 400,
-          nodeRepulsion: 10000,
-          idealEdgeLength: 120,
-          gravity: 0.2,
-        };
+        opts = { name: 'cose', animate: true, animationDuration: 400, nodeRepulsion: 10000, idealEdgeLength: 120, gravity: 0.2 };
         break;
       default:
         opts = { name: 'dagre', spacingFactor: 1.0, animate: true };
@@ -622,8 +765,6 @@ export default function StoryMap({
   useEffect(() => {
     const cy = cyRef.current;
     if (!cy || cy.nodes().length === 0 || !currentDataRef.current) return;
-
-    // Don't rebuild the graph, just apply a different layout
     applyLayout(layout, cy, new Set(), []);
   }, [layout, applyLayout]);
 
@@ -638,10 +779,12 @@ export default function StoryMap({
       return;
     }
 
+    // Dim everything, then highlight matches (skip group parents)
     cy.nodes().addClass('dimmed');
     cy.edges().addClass('dimmed');
 
     const matched = cy.nodes().filter((n: any) => {
+      if (n.data('isGroup')) return false;
       const label = (n.data('label') || '').toLowerCase();
       const tags: string[] = n.data('tags') || [];
       return label.includes(q) || tags.some(t => t.toLowerCase().includes(q));

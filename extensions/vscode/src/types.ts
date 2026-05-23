@@ -36,6 +36,9 @@ export interface KnotGraphNode {
     is_special: boolean;
     is_metadata: boolean;
     is_unreachable: boolean;
+    /** True if this is the story's start passage (parsed from StoryData).
+     *  Not yet populated by the server — client falls back to name heuristic. */
+    is_start?: boolean;
     /** The x-coordinate of the passage in the Twine visual editor, if available. */
     position_x?: number;
     /** The y-coordinate of the passage in the Twine visual editor, if available. */

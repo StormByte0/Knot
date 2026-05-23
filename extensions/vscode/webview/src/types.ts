@@ -26,6 +26,9 @@ export interface KnotGraphNode {
   is_special: boolean;
   is_metadata: boolean;
   is_unreachable: boolean;
+  /** True if this is the story's start passage (from StoryData).
+   *  Older servers may not send this; client falls back to name heuristic. */
+  is_start?: boolean;
   position_x?: number;
   position_y?: number;
   var_writes: string[];
