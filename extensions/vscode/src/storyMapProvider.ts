@@ -102,6 +102,8 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     if (file) {
                         const uri = vscode.Uri.parse(file);
                         const doc = await vscode.workspace.openTextDocument(uri);
+                        // Sidebar: open in the active editor — no split created.
+                        // Omitting viewColumn uses VS Code's default (active editor group).
                         await vscode.window.showTextDocument(doc, {
                             preview: true,
                             selection: new vscode.Range(line, 0, line, 200),

@@ -429,6 +429,36 @@ function refreshStoryMap() {
     }
 }
 
+/**
+ * Find the best ViewColumn for opening a passage from the Story Map.
+ *
+ * Logic:
+ * - If the graph panel has no viewColumn (sidebar or detached window),
+ *   open in the default active editor (no split).
+ * - If the graph is in a tab in the same window, find an existing
+ *   non-graph column to reuse, or create one split beside it.
+ * - This prevents creating a new split for every passage click.
+ */
+function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
+    // Sidebar or detached window → use default active editor
+    if (!graphColumn) {
+        return undefined;
+    }
+
+    // Check if there are text editors in columns other than the graph's
+    const nonGraphEditors = vscode.window.visibleTextEditors.filter(
+        e => e.viewColumn !== undefined && e.viewColumn !== graphColumn
+    );
+
+    if (nonGraphEditors.length > 0) {
+        // Reuse the first available non-graph column
+        return nonGraphEditors[0].viewColumn;
+    }
+
+    // No other editors — create one split beside the graph
+    return vscode.ViewColumn.Beside;
+}
+
 // ---------------------------------------------------------------------------
 // Tweego compiler availability
 // ---------------------------------------------------------------------------
@@ -570,8 +600,13 @@ function registerCommands(context: vscode.ExtensionContext) {
                         if (file) {
                             const uri = vscode.Uri.parse(file);
                             const doc = await vscode.workspace.openTextDocument(uri);
+                            // Smart viewport logic:
+                            // 1. If graph is in a tab, find or create a non-graph column
+                            // 2. If graph is in a detached window, open in parent window's editor
+                            const targetColumn = findTargetViewColumn(panel.viewColumn);
                             await vscode.window.showTextDocument(doc, {
                                 preview: true,
+                                viewColumn: targetColumn,
                                 selection: new vscode.Range(line, 0, line, 200),
                             });
                         }
