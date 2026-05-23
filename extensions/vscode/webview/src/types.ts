@@ -69,7 +69,8 @@ export type WebviewOutboundMessage =
   | { command: 'openPassage'; file: string; line: number }
   | { command: 'refreshGraph' }
   | { command: 'openFullView' }
-  | { command: 'updatePositions'; updates: KnotPositionUpdate[] };
+  | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
+  | { command: 'log'; level: 'error' | 'warn' | 'info'; message: string };
 
 /** Messages sent FROM the extension TO the webview. */
 export type WebviewInboundMessage =

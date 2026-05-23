@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && rm -f ../media/storymap/index.html",
+    "build": "tsc -b && vite build && node -e \"try{require('fs').unlinkSync(require('path').resolve(__dirname,'../media/storymap/index.html'))}catch(e){}\"",
     "preview": "vite preview"
   },
   "dependencies": {
