@@ -129,7 +129,19 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                                     workspace_uri: workspaceFolders[0].uri.toString(),
                                     updates: updates,
                                 };
-                                await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
+                                const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
+                                // After the server applies the workspace edit, VS Code sends
+                                // textDocument/didChange which re-parses and re-analyzes. However,
+                                // the did_change handler runs asynchronously and diagnostics may
+                                // not be published immediately. Force a diagnostic refresh by
+                                // requesting a fresh graph — this ensures the Story Map and
+                                // diagnostics are in sync after position updates.
+                                if (result.success) {
+                                    // Small delay to allow did_change to process first
+                                    setTimeout(() => {
+                                        vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+                                    }, 100);
+                                }
                             } catch (e) {
                                 console.error('[Knot] Failed to update passage positions:', e);
                             }

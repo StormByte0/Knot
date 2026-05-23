@@ -79,14 +79,20 @@ impl TwineCorePlugin {
                 header_spans.push((line_start, line_end));
             }
 
-            byte_offset = line_end + 1;
+            // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
+            // Rust's str::lines() strips both \n and \r\n, so we must check
+            // the raw text to know which one was present.
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            byte_offset = line_end + newline_len;
         }
 
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
             let header_line = &text[header_start..header_end];
             let parsed = Self::parse_header_line(header_line, header_start);
 
-            let body_start = header_end + 1;
+            // Body starts after the header line's newline (CRLF = 2, LF = 1).
+            let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") { 2 } else if header_end < text.len() { 1 } else { 0 };
+            let body_start = header_end + newline_len;
             let body_end = if i + 1 < header_spans.len() {
                 header_spans[i + 1].0
             } else {

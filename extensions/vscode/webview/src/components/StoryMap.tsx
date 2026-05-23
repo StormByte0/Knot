@@ -26,7 +26,13 @@ const TWINE_CORE_SPECIALS = new Set([
 
 type SpecialGroup = 'twine_core' | 'format_special' | null;
 
-function classifySpecial(label: string, isMetadata: boolean): SpecialGroup {
+function classifySpecial(label: string, isMetadata: boolean, isStart: boolean): SpecialGroup {
+  // The start passage is a special case — it should NOT be placed in any
+  // group box. According to Twine's engine design, special passages don't
+  // typically have edges to the start passage. Keeping start outside the
+  // bundles keeps the graph clean since start has many outgoing edges to
+  // user-defined passages.
+  if (isStart) return null;
   // Metadata passages (tagged [stylesheet], [script], etc.) are Twine-standard
   if (isMetadata) return 'twine_core';
   if (TWINE_CORE_SPECIALS.has(label)) return 'twine_core';
@@ -417,15 +423,17 @@ export default function StoryMap({
 
       const isStart = n.is_start || (n.id === 'Start' || n.label === 'Start');
 
-      // Classify special/unreachable into groups
+      // Classify special/unreachable into groups.
+      // The start passage is NEVER placed in a group box — it sits outside
+      // so its many outgoing edges to user passages don't clutter the bundles.
       // Priority: special > unreachable (special passages stay in their
       // category group even if unreachable; only non-special unreachables
       // go to the unreachable group)
-      if (n.is_special || n.is_metadata) {
-        const group = classifySpecial(n.label, !!n.is_metadata);
+      if ((n.is_special || n.is_metadata) && !isStart) {
+        const group = classifySpecial(n.label, !!n.is_metadata, isStart);
         if (group === 'twine_core') {
           twineCoreChildren.push(n.id);
-        } else {
+        } else if (group === 'format_special') {
           formatSpecialChildren.push(n.id);
         }
       } else if (n.is_unreachable) {
@@ -437,14 +445,16 @@ export default function StoryMap({
       const hasPos = n.position_x != null && n.position_y != null;
       const isGameLoop = gameLoopMembers.has(n.id);
 
-      // Determine compound parent
+      // Determine compound parent — start passage never gets a parent
       let parent: string | undefined;
-      if (twineCoreChildren.includes(n.id)) {
-        parent = GROUP_TWINE_CORE;
-      } else if (formatSpecialChildren.includes(n.id)) {
-        parent = GROUP_FORMAT_SPECIAL;
-      } else if (unreachableChildren.includes(n.id)) {
-        parent = GROUP_UNREACHABLE;
+      if (!isStart) {
+        if (twineCoreChildren.includes(n.id)) {
+          parent = GROUP_TWINE_CORE;
+        } else if (formatSpecialChildren.includes(n.id)) {
+          parent = GROUP_FORMAT_SPECIAL;
+        } else if (unreachableChildren.includes(n.id)) {
+          parent = GROUP_UNREACHABLE;
+        }
       }
 
       const nodeClasses: string[] = [];
@@ -584,6 +594,7 @@ export default function StoryMap({
 
   // ── Reposition compound groups after layout ───────────────────────────────
   // Special passages go to the top-left in labeled boxes.
+  // Start passage goes below the special groups but outside any box.
   // Unreachable passages go to the bottom-right in a labeled box.
   const repositionGroups = useCallback((
     cy: cytoscape.Core,
@@ -641,6 +652,27 @@ export default function StoryMap({
         offsetX += w + GRID_SNAP;
         rowMaxH = Math.max(rowMaxH, h);
       }
+      // Advance Y past the Format Specials group
+      const formatGroupEl = cy.getElementById(GROUP_FORMAT_SPECIAL);
+      if (formatGroupEl.length > 0) {
+        const formatBB = formatGroupEl.boundingBox();
+        groupY = formatBB.y2 + GRID_SNAP;
+      }
+    }
+
+    // ── Position Start passage below the special groups ─────────────────
+    // The start passage is placed outside any group box, right below the
+    // special passage area, so its outgoing edges don't clutter the boxes.
+    const startNode = cy.nodes().filter((n: any) => n.data('is_start') && !n.data('isGroup'));
+    if (startNode.length > 0) {
+      const sn = startNode[0];
+      const w = sn.width();
+      const h = sn.height();
+      sn.position({ x: snapToGrid(GRID_SNAP * 2 + w / 2), y: snapToGrid(groupY + h / 2) });
+      sn.data('posX', snapToGrid(GRID_SNAP * 2 + w / 2));
+      sn.data('posY', snapToGrid(groupY + h / 2));
+      // Advance Y past the start node
+      groupY += h + GRID_SNAP;
     }
 
     // ── Position Unreachable group to the right of main graph ───────────

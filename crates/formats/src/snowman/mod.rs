@@ -157,18 +157,17 @@ impl SnowmanPlugin {
                 });
             }
 
-            byte_offset = line_end + 1; // +1 for the newline character
+            // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            byte_offset = line_end + newline_len;
         }
 
         // Build passage bodies
         let mut results = Vec::new();
         for header in headers.into_iter() {
-            // Body starts after the header line + its trailing newline
-            let body_start = if header.header_end < text.len() {
-                header.header_end + 1
-            } else {
-                header.header_end
-            };
+            // Body starts after the header line + its trailing newline (CRLF = 2, LF = 1)
+            let newline_len = if text.get(header.header_end..header.header_end + 2) == Some("\r\n") { 2 } else if header.header_end < text.len() { 1 } else { 0 };
+            let body_start = header.header_end + newline_len;
 
             // Body ends at the start of the next header, or end of text
             // We need to find the next header start. Since we consumed headers,
@@ -180,7 +179,8 @@ impl SnowmanPlugin {
                 let mut off = 0;
                 for line in remaining.lines() {
                     let line_off = off;
-                    off = line_off + line.len() + 1; // +1 for newline
+                    let nl_len = if remaining.get(line_off + line.len()..line_off + line.len() + 2) == Some("\r\n") { 2 } else if line_off + line.len() < remaining.len() { 1 } else { 0 };
+                    off = line_off + line.len() + nl_len;
                     if line.starts_with("::") {
                         found = body_start + line_off;
                         break;
