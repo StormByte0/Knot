@@ -308,7 +308,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             html += '<div class="stat-grid">';
             html += makeCard(d.unreachable_passage_count, 'Unreachable', d.unreachable_passage_count > 0 ? 'warning' : 'success');
             html += makeCard(d.broken_link_count, 'Broken Links', d.broken_link_count > 0 ? 'error' : 'success');
-            html += makeCard(d.infinite_loop_count, 'Loops', d.infinite_loop_count > 0 ? 'warning' : 'success');
+            html += makeCard(d.game_loop_count, 'Loops', d.game_loop_count > 0 ? 'warning' : 'success');
             html += makeCard(d.dead_end_count, 'Dead Ends', d.dead_end_count > 0 ? 'warning' : 'success');
             html += '</div>';
 

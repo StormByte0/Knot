@@ -1,0 +1,170 @@
+/* ── Story Map webview styles ──────────────────────────────────────────────
+ *
+ * Twine-inspired visual design with VS Code theme integration.
+ * Uses a slightly warmer dark background with visible dot-grid.
+ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
+}
+
+#root {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+}
+
+:root {
+    --bg: #1e1e2e;
+    --fg: var(--vscode-editor-foreground, #d4d4d4);
+    --accent: var(--vscode-focusBorder, #007acc);
+    --border: #3a3a4a;
+    --muted: var(--vscode-descriptionForeground, #8b8b8b);
+    --card: var(--vscode-sideBar-background, #252536);
+    --error: var(--vscode-errorForeground, #f14c4c);
+    --grid-dot: rgba(255,255,255,0.09);
+}
+
+/* ── App container ─────────────────────────────────────────────────────── */
+.app-container {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+    font-size: 13px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────── */
+#toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+#toolbar input {
+    flex: 1;
+    min-width: 60px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    outline: none;
+}
+#toolbar input:focus { border-color: var(--accent); }
+
+#toolbar button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    white-space: nowrap;
+    line-height: 1.4;
+}
+#toolbar button:hover { background: var(--accent); color: #fff; }
+
+#toolbar select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+    outline: none;
+}
+
+/* ── Graph canvas ──────────────────────────────────────────────────────── */
+#cy {
+    flex: 1 1 0%;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+    /* Dot grid background — pan/zoom synced via JS */
+    background-color: var(--bg);
+    background-image: radial-gradient(circle, var(--grid-dot) 1px, transparent 1px);
+    background-size: 20px 20px;
+    background-position: 0 0;
+}
+
+/* ── Status bar ────────────────────────────────────────────────────────── */
+#statusBar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 3px 8px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--muted);
+    flex-shrink: 0;
+}
+
+/* ── Tooltip ───────────────────────────────────────────────────────────── */
+#tooltip {
+    position: absolute;
+    display: none;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--fg);
+    pointer-events: none;
+    z-index: 999;
+    max-width: 280px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+#tooltip .tt-name { font-weight: 600; margin-bottom: 3px; }
+#tooltip .tt-tag {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 9px;
+    margin-right: 2px;
+    margin-top: 2px;
+}
+#tooltip .tt-meta { color: var(--muted); font-size: 10px; margin-top: 3px; }
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+#legend {
+    position: absolute;
+    bottom: 32px;
+    right: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 10px;
+    opacity: 0.85;
+}
+#legend:hover { opacity: 1; }
+#legend .legend-item { display: flex; align-items: center; gap: 5px; margin: 1px 0; color: #b0b8c8; }
+#legend .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }

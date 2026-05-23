@@ -156,10 +156,37 @@ impl ServerState {
             .map(|d| d.passage_name.clone())
             .collect();
 
-        let export = inner.workspace.graph.export_graph_with_metadata(
+        // Collect variable write/read summaries per passage for the graph export.
+        let mut var_writes: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut var_reads: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for doc in inner.workspace.documents() {
+            for passage in &doc.passages {
+                let writes: Vec<String> = passage
+                    .persistent_variable_inits()
+                    .map(|v| v.name.clone())
+                    .collect();
+                let reads: Vec<String> = passage
+                    .persistent_variable_reads()
+                    .map(|v| v.name.clone())
+                    .collect();
+                if !writes.is_empty() {
+                    var_writes.insert(passage.name.clone(), writes);
+                }
+                if !reads.is_empty() {
+                    var_reads.insert(passage.name.clone(), reads);
+                }
+            }
+        }
+
+        let export = inner.workspace.graph.export_graph_with_metadata_and_vars(
             &passage_tags,
             &unreachable_set,
             &passage_positions,
+            &var_writes,
+            &var_reads,
         );
 
         let nodes: Vec<KnotGraphNode> = export
@@ -178,6 +205,9 @@ impl ServerState {
                 is_unreachable: n.is_unreachable,
                 position_x: n.position.map(|(x, _)| x),
                 position_y: n.position.map(|(_, y)| y),
+                var_writes: n.var_writes,
+                var_reads: n.var_reads,
+                block: n.block,
             })
             .collect();
 
@@ -187,14 +217,25 @@ impl ServerState {
             .map(|e| KnotGraphEdge {
                 source: e.source,
                 target: e.target,
-                is_broken: e.is_broken,
+                edge_type: format!("{:?}", e.edge_type).to_lowercase(),
                 display_text: e.display_text,
+            })
+            .collect();
+
+        let game_loops: Vec<KnotGameLoop> = export
+            .game_loops
+            .into_iter()
+            .map(|gl| KnotGameLoop {
+                members: gl.members,
+                header: gl.header,
+                has_mutation: gl.has_mutation,
             })
             .collect();
 
         Ok(KnotGraphResponse {
             nodes,
             edges,
+            game_loops,
             layout: Some("dagre".to_string()),
         })
     }
@@ -474,7 +515,7 @@ impl ServerState {
                     incoming_links: Vec::new(),
                     predecessors: Vec::new(),
                     successors: Vec::new(),
-                    in_infinite_loop: false,
+                    game_loops: Vec::new(),
                     diagnostics: vec![KnotDebugDiagnostic {
                         kind: "NotFound".to_string(),
                         message: format!("Passage '{}' not found in workspace", name),
@@ -555,11 +596,36 @@ impl ServerState {
         let predecessors = workspace.graph.incoming_neighbors(&params.passage_name);
         let successors = workspace.graph.outgoing_neighbors(&params.passage_name);
 
-        // Check if in infinite loop
-        let passage_vars: std::collections::HashMap<String, Vec<&knot_core::passage::VarOp>> =
-            AnalysisEngine::collect_passage_vars_as_ref(workspace);
-        let loop_diags = workspace.graph.detect_infinite_loops(&passage_vars);
-        let in_infinite_loop = loop_diags.iter().any(|d| d.passage_name == params.passage_name);
+        // Game loops this passage participates in
+        let mut var_writes_for_loops: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for doc in workspace.documents() {
+            for p in &doc.passages {
+                let writes: Vec<String> = p
+                    .persistent_variable_inits()
+                    .map(|v| v.name.clone())
+                    .collect();
+                if !writes.is_empty() {
+                    var_writes_for_loops.insert(p.name.clone(), writes);
+                }
+            }
+        }
+        let all_game_loops = workspace.graph.export_graph_with_metadata_and_vars(
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+            &var_writes_for_loops,
+            &std::collections::HashMap::new(),
+        ).game_loops;
+        let game_loops: Vec<KnotGameLoop> = all_game_loops
+            .into_iter()
+            .filter(|gl| gl.members.contains(&params.passage_name))
+            .map(|gl| KnotGameLoop {
+                members: gl.members,
+                header: gl.header,
+                has_mutation: gl.has_mutation,
+            })
+            .collect();
 
         // Diagnostics for this passage (use format-delegated analysis)
         let all_diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
@@ -585,7 +651,7 @@ impl ServerState {
             incoming_links,
             predecessors,
             successors,
-            in_infinite_loop,
+            game_loops,
             diagnostics,
         })
     }
@@ -721,6 +787,8 @@ impl ServerState {
         let mut orphaned_count: u32 = 0;
 
         let mut all_variables: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut var_writes_for_loops: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
         // Per-passage word counts for complexity metrics
         let mut passage_word_counts: Vec<u32> = Vec::new();
@@ -782,6 +850,15 @@ impl ServerState {
                     if !var.is_temporary {
                         all_variables.insert(var.name.clone());
                     }
+                }
+
+                // Collect var writes for game loop detection
+                let writes: Vec<String> = passage
+                    .persistent_variable_inits()
+                    .map(|v| v.name.clone())
+                    .collect();
+                if !writes.is_empty() {
+                    var_writes_for_loops.insert(passage.name.clone(), writes);
                 }
             }
         }
@@ -846,7 +923,8 @@ impl ServerState {
         let diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
         let unreachable_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::UnreachablePassage)).count() as u32;
         let broken_link_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::BrokenLink)).count() as u32;
-        let infinite_loop_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::InfiniteLoop)).count() as u32;
+        // Compute game loop count from the graph
+        let game_loop_count = workspace.graph.game_loop_count(&var_writes_for_loops) as u32;
         let variable_issue_count: u32 = diagnostics.iter().filter(|d| matches!(
             d.kind,
             knot_core::graph::DiagnosticKind::UninitializedVariable
@@ -924,7 +1002,7 @@ impl ServerState {
             metadata_passage_count,
             unreachable_passage_count: unreachable_count,
             broken_link_count,
-            infinite_loop_count,
+            game_loop_count,
             total_links,
             avg_out_degree,
             avg_in_degree,

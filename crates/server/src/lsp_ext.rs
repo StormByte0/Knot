@@ -26,6 +26,10 @@ pub struct KnotGraphResponse {
     pub nodes: Vec<KnotGraphNode>,
     /// Edges (links) between passages.
     pub edges: Vec<KnotGraphEdge>,
+    /// Detected game loops (strongly connected components).
+    /// Cycles with state mutation — the client uses these for loop
+    /// visualization (cycle highlighting, loop header indicators).
+    pub game_loops: Vec<KnotGameLoop>,
     /// Optional layout hint for the webview renderer.
     pub layout: Option<String>,
 }
@@ -59,6 +63,16 @@ pub struct KnotGraphNode {
     /// The y-coordinate of the passage in the Twine visual editor, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_y: Option<f64>,
+    /// Persistent variable names written in this passage.
+    #[serde(default)]
+    pub var_writes: Vec<String>,
+    /// Persistent variable names read in this passage.
+    #[serde(default)]
+    pub var_reads: Vec<String>,
+    /// Block assignment for this node (placeholder for future block
+    /// detection). `None` means no block has been assigned yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
 }
 
 /// A directed edge (link) between two passages.
@@ -68,10 +82,23 @@ pub struct KnotGraphEdge {
     pub source: String,
     /// Target passage name.
     pub target: String,
-    /// Whether the target passage does not exist (broken link).
-    pub is_broken: bool,
+    /// The semantic type of this edge: "navigation", "upstream", "call",
+    /// "include", "jump", or "broken".
+    pub edge_type: String,
     /// The display text of the link (e.g., "Go to forest" in [[Go to forest->Forest]]).
     pub display_text: Option<String>,
+}
+
+/// A detected game loop (strongly connected component with mutation).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotGameLoop {
+    /// The passages that participate in this cycle.
+    pub members: Vec<String>,
+    /// The identified loop header passage, or `None` if no single header
+    /// could be identified.
+    pub header: Option<String>,
+    /// Whether the cycle contains persistent variable writes.
+    pub has_mutation: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -341,8 +368,8 @@ pub struct KnotDebugResponse {
     pub predecessors: Vec<String>,
     /// Passages reachable from this one (successors in the graph).
     pub successors: Vec<String>,
-    /// Whether this passage is part of an infinite loop.
-    pub in_infinite_loop: bool,
+    /// Game loops this passage participates in.
+    pub game_loops: Vec<KnotGameLoop>,
     /// Diagnostic messages associated with this passage.
     pub diagnostics: Vec<KnotDebugDiagnostic>,
 }
@@ -446,8 +473,8 @@ pub struct KnotProfileResponse {
     pub unreachable_passage_count: u32,
     /// Number of broken links.
     pub broken_link_count: u32,
-    /// Number of infinite loops detected.
-    pub infinite_loop_count: u32,
+    /// Number of game loops detected.
+    pub game_loop_count: u32,
     /// Total number of links (edges).
     pub total_links: u32,
     /// Average outgoing links per passage.

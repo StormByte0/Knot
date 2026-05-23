@@ -864,6 +864,45 @@ pub trait FormatPlugin: Send + Sync {
     }
 
     // -----------------------------------------------------------------------
+    // Edge classification (optional — format-aware edge typing)
+    // -----------------------------------------------------------------------
+
+    /// Classify the edge type for a link from the given source passage.
+    ///
+    /// Each format plugin overrides this method to classify edges as
+    /// navigation, call, include, or jump based on the format-specific
+    /// syntax used in the source passage. This is the format-isolation-
+    /// correct way to handle edge types — handlers never hardcode
+    /// format-specific edge logic.
+    ///
+    /// ## Default Classification Rules
+    ///
+    /// - `[[link]]` → `Navigation` (player choice — Twine core)
+    /// - Broken targets → `Broken` (set by graph engine, not plugins)
+    /// - Upstream lifecycle → `Upstream` (set by graph engine, not plugins)
+    ///
+    /// ## Format-Specific Overrides
+    ///
+    /// - **SugarCube**: `<<widget>>` → `Call`, `<<include>>` → `Include`,
+    ///   `<<goto>>` → `Jump`, `<<link>>`/`<<button>>` → `Navigation`
+    /// - **Harlowe**: `(display:)` → `Include`, `(go-to:)` → `Jump`,
+    ///   `(redirect:)` → `Jump`, `(link-goto:)` → `Navigation`
+    /// - **Chapbook**: `{{> partial}}` → `Include`
+    /// - **Snowman**: `include()` → `Include`
+    ///
+    /// The `display_text` and `target` identify the specific link being
+    /// classified. If the plugin returns `None`, the default `Navigation`
+    /// type is used.
+    fn classify_edge(
+        &self,
+        _source_passage: &Passage,
+        _display_text: Option<&str>,
+        _target: &str,
+    ) -> Option<knot_core::graph::EdgeType> {
+        None
+    }
+
+    // -----------------------------------------------------------------------
     // Hover / documentation (optional)
     // -----------------------------------------------------------------------
 
