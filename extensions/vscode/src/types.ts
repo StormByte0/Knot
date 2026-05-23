@@ -21,6 +21,7 @@ export interface KnotLanguageClient {
 export interface KnotGraphResponse {
     nodes: KnotGraphNode[];
     edges: KnotGraphEdge[];
+    game_loops: KnotGameLoop[];
     layout?: string;
 }
 
@@ -39,13 +40,33 @@ export interface KnotGraphNode {
     position_x?: number;
     /** The y-coordinate of the passage in the Twine visual editor, if available. */
     position_y?: number;
+    /** Persistent variable names written in this passage. */
+    var_writes: string[];
+    /** Persistent variable names read in this passage. */
+    var_reads: string[];
+    /** Block assignment placeholder for future block detection. */
+    block?: string;
 }
 
 export interface KnotGraphEdge {
     source: string;
     target: string;
-    is_broken: boolean;
+    /** The semantic type of this edge: "navigation", "upstream", "call", "include", "jump", or "broken". */
+    edge_type: string;
     display_text?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Game loop types (matches Rust-side KnotGameLoop)
+// ---------------------------------------------------------------------------
+
+export interface KnotGameLoop {
+    /** The passages that participate in this cycle. */
+    members: string[];
+    /** The identified loop header passage, or null if no single header could be identified. */
+    header: string | null;
+    /** Whether the cycle contains persistent variable writes. */
+    has_mutation: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +80,7 @@ export interface KnotProfileResponse {
     metadata_passage_count: number;
     unreachable_passage_count: number;
     broken_link_count: number;
-    infinite_loop_count: number;
+    game_loop_count: number;
     total_links: number;
     avg_out_degree: number;
     avg_in_degree: number;
@@ -128,7 +149,7 @@ export interface KnotDebugResponse {
     incoming_links: KnotDebugLink[];
     predecessors: string[];
     successors: string[];
-    in_infinite_loop: boolean;
+    game_loops: KnotGameLoop[];
     diagnostics: KnotDebugDiagnostic[];
 }
 

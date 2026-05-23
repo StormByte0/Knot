@@ -90,10 +90,14 @@ pub fn graph_surgery(
             // Re-add edges for this passage
             for link in &passage.links {
                 let target_exists = graph.contains_passage(&link.target);
+                let edge_type = if !target_exists {
+                    crate::graph::EdgeType::Broken
+                } else {
+                    crate::graph::EdgeType::Navigation
+                };
                 let edge = PassageEdge {
                     display_text: link.display_text.clone(),
-                    is_broken: !target_exists,
-                    is_upstream: false,
+                    edge_type,
                 };
                 graph.add_edge(&passage.name, &link.target, edge);
             }
@@ -102,10 +106,14 @@ pub fn graph_surgery(
             for (source, display_text, target) in extra_edges {
                 if *source == passage.name {
                     let target_exists = graph.contains_passage(target);
+                    let edge_type = if !target_exists {
+                        crate::graph::EdgeType::Broken
+                    } else {
+                        crate::graph::EdgeType::Navigation
+                    };
                     let edge = PassageEdge {
                         display_text: display_text.clone(),
-                        is_broken: !target_exists,
-                        is_upstream: false,
+                        edge_type,
                     };
                     graph.add_edge(source, target, edge);
                 }

@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::graph::{DiagnosticKind, PassageEdge, PassageGraph, PassageNode};
+    use crate::graph::{DiagnosticKind, EdgeType, PassageEdge, PassageGraph, PassageNode};
     use crate::passage::{
         Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer, StoryFormat,
         VarKind, VarOp,
@@ -119,8 +119,11 @@ mod tests {
                     target,
                     PassageEdge {
                         display_text: display_text.clone(),
-                        is_broken: !target_exists,
-                        is_upstream: false,
+                        edge_type: if !target_exists {
+                            crate::graph::EdgeType::Broken
+                        } else {
+                            crate::graph::EdgeType::Navigation
+                        },
                     },
                 );
             }
@@ -201,11 +204,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Infinite loop detection
+    // Game loop detection (SCCs via graph export)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn infinite_loop_cycle_no_mutation() {
+    fn game_loop_detected_without_mutation() {
         let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
         workspace.metadata = Some(StoryMetadata {
             format: StoryFormat::SugarCube,
@@ -225,18 +228,22 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Use the graph export to check for game loops
+        let var_writes = std::collections::HashMap::new();
+        let var_reads = std::collections::HashMap::new();
+        let tags = std::collections::HashMap::new();
+        let unreachable = std::collections::HashSet::new();
+        let positions = std::collections::HashMap::new();
+        let export = workspace.graph.export_graph_with_metadata_and_vars(
+            &tags, &unreachable, &positions, &var_writes, &var_reads,
+        );
 
-        let loops_: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.kind == DiagnosticKind::InfiniteLoop)
-            .collect();
-
-        assert_eq!(loops_.len(), 1, "Should detect 1 infinite loop");
+        assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");
+        assert!(!export.game_loops[0].has_mutation, "Game loop should have has_mutation=false");
     }
 
     #[test]
-    fn no_infinite_loop_with_mutation() {
+    fn game_loop_detected_with_mutation() {
         let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
         workspace.metadata = Some(StoryMetadata {
             format: StoryFormat::SugarCube,
@@ -264,14 +271,19 @@ mod tests {
         workspace.insert_document(doc);
         rebuild_workspace_graph(&mut workspace);
 
-        let diagnostics = AnalysisEngine::analyze(&workspace);
+        // Build var_writes from passage data
+        let mut var_writes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        var_writes.insert("Forest".to_string(), vec!["$visited".to_string()]);
+        let var_reads = std::collections::HashMap::new();
+        let tags = std::collections::HashMap::new();
+        let unreachable = std::collections::HashSet::new();
+        let positions = std::collections::HashMap::new();
+        let export = workspace.graph.export_graph_with_metadata_and_vars(
+            &tags, &unreachable, &positions, &var_writes, &var_reads,
+        );
 
-        let loops_: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.kind == DiagnosticKind::InfiniteLoop)
-            .collect();
-
-        assert!(loops_.is_empty(), "Cycle with mutation should not be flagged");
+        assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");
+        assert!(export.game_loops[0].has_mutation, "Game loop should have has_mutation=true");
     }
 
     // -----------------------------------------------------------------------
@@ -573,8 +585,7 @@ mod tests {
             "Forest",
             PassageEdge {
                 display_text: None,
-                is_broken: true,
-                is_upstream: false,
+                edge_type: EdgeType::Broken,
             },
         );
 
@@ -629,8 +640,7 @@ mod tests {
             "Forest",
             PassageEdge {
                 display_text: None,
-                is_broken: false,
-                is_upstream: false,
+                edge_type: EdgeType::Navigation,
             },
         );
 
@@ -646,8 +656,7 @@ mod tests {
             "Forest",
             PassageEdge {
                 display_text: None,
-                is_broken: true, // Forest no longer exists
-                is_upstream: false,
+                edge_type: EdgeType::Broken, // Forest no longer exists
             },
         );
         graph.recheck_broken_links();
@@ -811,13 +820,11 @@ mod tests {
 
         graph.add_edge("Start", "Forest", PassageEdge {
             display_text: Some("Go to forest".to_string()),
-            is_broken: false,
-            is_upstream: false,
+            edge_type: EdgeType::Navigation,
         });
         graph.add_edge("Start", "MissingPassage", PassageEdge {
             display_text: None,
-            is_broken: true,
-            is_upstream: false,
+            edge_type: EdgeType::Broken,
         });
 
         let mut tags = std::collections::HashMap::new();
@@ -858,11 +865,11 @@ mod tests {
         // Verify edges
         assert_eq!(export.edges.len(), 2);
 
-        let broken_edge = export.edges.iter().find(|e| e.is_broken).unwrap();
+        let broken_edge = export.edges.iter().find(|e| e.edge_type == EdgeType::Broken).unwrap();
         assert_eq!(broken_edge.source, "Start");
         assert_eq!(broken_edge.target, "MissingPassage");
 
-        let normal_edge = export.edges.iter().find(|e| !e.is_broken).unwrap();
+        let normal_edge = export.edges.iter().find(|e| e.edge_type == EdgeType::Navigation).unwrap();
         assert_eq!(normal_edge.source, "Start");
         assert_eq!(normal_edge.target, "Forest");
         assert_eq!(normal_edge.display_text, Some("Go to forest".to_string()));

@@ -4,11 +4,11 @@
 //! and edges are links between passages. This module provides:
 //!
 //! - Broken link detection
-//! - Infinite traversal loop detection (Tarjan's SCC)
+//! - Game loop detection (Tarjan's SCC)
 //! - Unreachable passage detection (BFS from entry point)
 //! - Variable flow analysis support
 
-use crate::passage::{PassageCategory, SpecialPassageBehavior, SpecialPassageLayer, VarKind, VarOp};
+use crate::passage::{PassageCategory, SpecialPassageBehavior, SpecialPassageLayer};
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -132,25 +132,50 @@ pub struct SpecialPassageBundle {
     pub all_special_names: HashSet<String>,
 }
 
+/// Classification of an edge's semantic type.
+///
+/// Replaces the old `is_broken`/`is_upstream` boolean pair with a proper
+/// enum that distinguishes navigation, call, include, jump, upstream
+/// lifecycle, and broken edges. The story map uses this to render edges
+/// with distinct visual styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EdgeType {
+    /// A player-choice navigation link: `[[Target]]`.
+    /// The fundamental Twine automaton transition.
+    Navigation,
+    /// An upstream lifecycle edge (not a user-navigable link).
+    /// Connects special passages in execution order
+    /// (TwineCore → StoryFormat → Start). Rendered as dashed lines
+    /// in the story map.
+    Upstream,
+    /// A widget/function invocation: `<<widget>>` in SugarCube.
+    /// Models a call-return (pushdown automaton) edge.
+    Call,
+    /// A passage inclusion: `<<include>>` / `(display:)` / `{{> partial}}`.
+    /// The included passage runs inline, not as a navigation.
+    Include,
+    /// An unconditional redirect: `<<goto>>` / `(go-to:)` / `(redirect:)`.
+    /// Not a player choice — the engine immediately navigates.
+    Jump,
+    /// A broken link whose target passage doesn't exist.
+    Broken,
+}
+
+impl Default for EdgeType {
+    fn default() -> Self {
+        EdgeType::Navigation
+    }
+}
+
 /// Edge data representing a link between passages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassageEdge {
     /// The display text of the link (if any).
     pub display_text: Option<String>,
-    /// Whether this link is a broken link (target doesn't exist).
-    pub is_broken: bool,
-    /// Whether this is an upstream lifecycle edge rather than a navigation edge.
-    ///
-    /// Upstream edges connect special passages in execution order
-    /// (TwineCore → StoryFormat) and are not user-navigable links.
-    /// They indicate that the source passage runs before the target
-    /// in the engine's lifecycle (e.g., StoryInit → Start means
-    /// StoryInit's variables are available when Start runs).
-    ///
-    /// The story map can render these differently (e.g., dashed lines)
-    /// to distinguish them from normal [[link]] navigation.
+    /// The semantic type of this edge (navigation, call, include, jump,
+    /// upstream lifecycle, or broken).
     #[serde(default)]
-    pub is_upstream: bool,
+    pub edge_type: EdgeType,
 }
 
 /// Diagnostic produced by graph analysis.
@@ -166,6 +191,26 @@ pub struct GraphDiagnostic {
     pub message: String,
 }
 
+/// Information about a detected game loop (strongly connected component).
+///
+/// In Twine, cycles are the core interaction pattern (game loops), not bugs.
+/// This struct carries the SCC analysis results that the story map uses
+/// for loop visualization, replacing the old `DiagnosticKind::InfiniteLoop`
+/// which incorrectly treated cycles as warnings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameLoopInfo {
+    /// The passages that participate in this cycle.
+    pub members: Vec<String>,
+    /// The identified loop header passage (dominates the back-edge source).
+    /// This is the passage that controls whether the loop repeats.
+    /// `None` if dominance analysis couldn't identify a single header.
+    pub header: Option<String>,
+    /// Whether the cycle contains persistent variable writes.
+    /// If false, the loop has no state mutation and will repeat
+    /// infinitely (a genuine infinite loop, not a game loop).
+    pub has_mutation: bool,
+}
+
 /// Kinds of diagnostics the graph engine can produce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticKind {
@@ -173,8 +218,7 @@ pub enum DiagnosticKind {
     BrokenLink,
     /// A passage cannot be reached from the entry point.
     UnreachablePassage,
-    /// An infinite traversal loop was detected.
-    InfiniteLoop,
+
     /// A variable may be used before initialization.
     UninitializedVariable,
     /// A variable is written but never read on any reachable path.
@@ -465,13 +509,13 @@ impl PassageGraph {
     pub fn detect_broken_links(&self) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
         for edge_ref in self.graph.edge_references() {
-            if !edge_ref.weight().is_broken {
+            if edge_ref.weight().edge_type != EdgeType::Broken {
                 continue;
             }
 
             // Skip upstream lifecycle edges — these are structural, not
             // user-authored navigation links.
-            if edge_ref.weight().is_upstream {
+            if edge_ref.weight().edge_type == EdgeType::Upstream {
                 continue;
             }
 
@@ -613,92 +657,42 @@ impl PassageGraph {
         diagnostics
     }
 
-    /// Detect potential infinite loops using Tarjan's Strongly Connected Components.
-    /// A cycle is flagged as an infinite loop if no state mutation (variable write)
-    /// occurs within the cycle.
-    pub fn detect_infinite_loops(
-        &self,
-        passage_vars: &HashMap<String, Vec<&VarOp>>,
-    ) -> Vec<GraphDiagnostic> {
-        let sccs = tarjan_scc(&self.graph);
-        let mut diagnostics = Vec::new();
 
-        for scc in &sccs {
-            // Only interested in non-trivial SCCs (size > 1, or self-loops)
-            if scc.len() < 2 {
-                // Check for self-loop
-                if let Some(&idx) = scc.first()
-                    && self
-                        .graph
-                        .edges_directed(idx, petgraph::Direction::Outgoing)
-                        .any(|e| e.target() == idx)
-                    {
-                        let node = &self.graph[idx];
-                        // Check if there are persistent variable writes in this passage
-                        // (temporary variable writes don't persist across passages)
-                        let has_mutation = passage_vars
-                            .get(&node.name)
-                            .map(|ops| ops.iter().any(|v| v.kind == VarKind::Init && !v.is_temporary))
-                            .unwrap_or(false);
-
-                        if !has_mutation {
-                            diagnostics.push(GraphDiagnostic {
-                                passage_name: node.name.clone(),
-                                file_uri: node.file_uri.clone(),
-                                kind: DiagnosticKind::InfiniteLoop,
-                                message: format!(
-                                    "Potential infinite loop: passage '{}' links to itself without state mutation",
-                                    node.name
-                                ),
-                            });
-                        }
-                    }
-                continue;
-            }
-
-            // Multi-node cycle: check if any passage in the cycle has persistent variable writes
-            // (temporary variable writes don't count — they don't persist across passages)
-            let has_mutation = scc.iter().any(|&idx| {
-                let name = &self.graph[idx].name;
-                passage_vars
-                    .get(name)
-                    .map(|ops| ops.iter().any(|v| v.kind == VarKind::Init && !v.is_temporary))
-                    .unwrap_or(false)
-            });
-
-            if !has_mutation {
-                // Report the first passage in the cycle as the diagnostic location
-                let node = &self.graph[scc[0]];
-                let cycle_names: Vec<&str> = scc
-                    .iter()
-                    .map(|&idx| self.graph[idx].name.as_str())
-                    .collect();
-                diagnostics.push(GraphDiagnostic {
-                    passage_name: node.name.clone(),
-                    file_uri: node.file_uri.clone(),
-                    kind: DiagnosticKind::InfiniteLoop,
-                    message: format!(
-                        "Potential infinite loop: cycle [{}] has no state mutation",
-                        cycle_names.join(" → ")
-                    ),
-                });
-            }
-        }
-
-        diagnostics
-    }
 
     /// Export the graph as a serializable structure for the Story Map webview.
     ///
     /// The `passage_tags` map provides tag data for each passage name (collected
     /// from the document model, since the graph only stores passage nodes).
     /// The `unreachable` set contains passage names that are unreachable from
-    /// the start passage.
+    /// the start passage. The `passage_vars` map provides variable write/read
+    /// names per passage for the variable summary fields.
     pub fn export_graph_with_metadata(
         &self,
         passage_tags: &std::collections::HashMap<String, Vec<String>>,
         unreachable: &std::collections::HashSet<String>,
         passage_positions: &std::collections::HashMap<String, (f64, f64)>,
+    ) -> GraphExport {
+        self.export_graph_with_metadata_and_vars(
+            passage_tags,
+            unreachable,
+            passage_positions,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    /// Full graph export with variable summaries and game loop data.
+    ///
+    /// This is the preferred export method. It includes all data from
+    /// `export_graph_with_metadata` plus per-node variable summaries
+    /// and game loop detection results.
+    pub fn export_graph_with_metadata_and_vars(
+        &self,
+        passage_tags: &std::collections::HashMap<String, Vec<String>>,
+        unreachable: &std::collections::HashSet<String>,
+        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
+        var_writes: &std::collections::HashMap<String, Vec<String>>,
+        var_reads: &std::collections::HashMap<String, Vec<String>>,
     ) -> GraphExport {
         let nodes: Vec<GraphNodeExport> = self
             .graph
@@ -725,6 +719,9 @@ impl PassageGraph {
                     is_metadata: node.is_metadata,
                     is_unreachable: unreachable.contains(&node.name),
                     position: passage_positions.get(&node.name).copied(),
+                    var_writes: var_writes.get(&node.name).cloned().unwrap_or_default(),
+                    var_reads: var_reads.get(&node.name).cloned().unwrap_or_default(),
+                    block: None,
                 }
             })
             .collect();
@@ -738,14 +735,128 @@ impl PassageGraph {
                 GraphEdgeExport {
                     source: source.name.clone(),
                     target: target.name.clone(),
-                    is_broken: e.weight().is_broken,
+                    edge_type: e.weight().edge_type,
                     display_text: e.weight().display_text.clone(),
-                    is_upstream: e.weight().is_upstream,
                 }
             })
             .collect();
 
-        GraphExport { nodes, edges }
+        // Detect game loops for export (SCCs with mutation)
+        let game_loops = self.detect_game_loops_for_export(var_writes);
+
+        GraphExport { nodes, edges, game_loops }
+    }
+
+    /// Detect game loops (strongly connected components) and return them
+    /// as `GameLoopExport` instances for the graph export.
+    ///
+    /// All non-trivial SCCs (size > 1 or self-loops) are reported as game
+    /// loops with `has_mutation` indicating whether the cycle contains
+    /// persistent variable writes. The client can use this to distinguish
+    /// game loops with mutation (normal interaction patterns) from those
+    /// without (potential infinite loops) visually.
+    fn detect_game_loops_for_export(
+        &self,
+        var_writes: &std::collections::HashMap<String, Vec<String>>,
+    ) -> Vec<GameLoopExport> {
+        let sccs = tarjan_scc(&self.graph);
+        let mut game_loops = Vec::new();
+
+        for scc in &sccs {
+            // Only interested in non-trivial SCCs (size > 1, or self-loops)
+            if scc.len() < 2 {
+                // Check for self-loop
+                if let Some(&idx) = scc.first()
+                    && self
+                        .graph
+                        .edges_directed(idx, petgraph::Direction::Outgoing)
+                        .any(|e| e.target() == idx)
+                {
+                    let node = &self.graph[idx];
+                    let has_mutation = var_writes
+                        .get(&node.name)
+                        .map(|writes| !writes.is_empty())
+                        .unwrap_or(false);
+
+                    game_loops.push(GameLoopExport {
+                        members: vec![node.name.clone()],
+                        header: Some(node.name.clone()),
+                        has_mutation,
+                    });
+                }
+                continue;
+            }
+
+            // Multi-node cycle: check for persistent variable writes
+            let members: Vec<String> = scc
+                .iter()
+                .map(|&idx| self.graph[idx].name.clone())
+                .collect();
+            let has_mutation = members.iter().any(|name| {
+                var_writes
+                    .get(name)
+                    .map(|writes| !writes.is_empty())
+                    .unwrap_or(false)
+            });
+
+            // Simple header detection: the node with the highest in-degree
+            // within the SCC is the most likely loop header (dominance
+            // approximation). A proper dominance analysis would require
+            // an iterative dominator tree algorithm, but in-degree
+            // within the SCC is a good heuristic.
+            let header = self.identify_loop_header(scc);
+
+            game_loops.push(GameLoopExport {
+                members,
+                header,
+                has_mutation,
+            });
+        }
+
+        game_loops
+    }
+
+    /// Count the number of game loops (non-trivial SCCs) in the graph.
+    ///
+    /// This is a convenience method for profiling and statistics. It runs
+    /// the same SCC analysis as `detect_game_loops_for_export` but only
+    /// returns the count, avoiding the overhead of building full
+    /// `GameLoopExport` structs.
+    pub fn game_loop_count(&self, var_writes: &std::collections::HashMap<String, Vec<String>>) -> usize {
+        self.detect_game_loops_for_export(var_writes).len()
+    }
+
+    /// Identify the loop header of an SCC using in-degree heuristics.
+    ///
+    /// The header is the node that dominates the back-edge's source —
+    /// i.e., the node that controls whether the loop repeats. As a
+    /// simple heuristic, we pick the node with the highest in-degree
+    /// from within the SCC (most internal predecessors), breaking ties
+    /// by highest total in-degree.
+    fn identify_loop_header(&self, scc: &[NodeIndex]) -> Option<String> {
+        let scc_set: HashSet<NodeIndex> = scc.iter().copied().collect();
+
+        let mut best: Option<(NodeIndex, usize, usize)> = None;
+        for &idx in scc {
+            let internal_in = self
+                .graph
+                .edges_directed(idx, petgraph::Direction::Incoming)
+                .filter(|e| scc_set.contains(&e.source()))
+                .count();
+            let total_in = self
+                .graph
+                .edges_directed(idx, petgraph::Direction::Incoming)
+                .count();
+            match best {
+                None => best = Some((idx, internal_in, total_in)),
+                Some((_, bi, bt)) if internal_in > bi || (internal_in == bi && total_in > bt) => {
+                    best = Some((idx, internal_in, total_in));
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(idx, _, _)| self.graph[idx].name.clone())
     }
 
     /// Export the graph as a serializable structure for the Story Map webview.
@@ -828,9 +939,10 @@ impl PassageGraph {
     ///
     /// This is called after graph surgery or document removal to ensure that
     /// edges that previously pointed to non-existent passages now correctly
-    /// reflect whether their targets exist.
+    /// reflect whether their targets exist. Also updates `edge_type` to
+    /// `EdgeType::Broken` or back to `EdgeType::Navigation` as appropriate.
     pub fn recheck_broken_links(&mut self) {
-        // Collect edge updates: (edge_id, new_is_broken)
+        // Collect edge updates: (edge_id, target_is_missing)
         let updates: Vec<(petgraph::graph::EdgeIndex, bool)> = self
             .graph
             .edge_references()
@@ -845,7 +957,13 @@ impl PassageGraph {
         // Apply updates
         for (edge_id, new_broken) in updates {
             if let Some(edge) = self.graph.edge_weight_mut(edge_id) {
-                edge.is_broken = new_broken;
+                if new_broken {
+                    edge.edge_type = EdgeType::Broken;
+                } else if edge.edge_type == EdgeType::Broken {
+                    // Target now exists — was broken, now it's a navigation edge
+                    edge.edge_type = EdgeType::Navigation;
+                }
+                // All other edge types (Upstream, Call, Include, Jump) are preserved
             }
         }
     }
@@ -862,6 +980,25 @@ impl Default for PassageGraph {
 pub struct GraphExport {
     pub nodes: Vec<GraphNodeExport>,
     pub edges: Vec<GraphEdgeExport>,
+    /// Detected game loops (SCCs). The client uses this for loop
+    /// visualization (cycle highlighting, loop header indicators).
+    /// Each game loop includes `has_mutation` so the client can
+    /// visually distinguish game loops with mutation from those
+    /// without (potential infinite loops).
+    #[serde(default)]
+    pub game_loops: Vec<GameLoopExport>,
+}
+
+/// A detected game loop, exported for client visualization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameLoopExport {
+    /// The passages that participate in this cycle.
+    pub members: Vec<String>,
+    /// The identified loop header passage (dominates the back-edge source),
+    /// or `None` if no single header could be identified.
+    pub header: Option<String>,
+    /// Whether the cycle contains persistent variable writes.
+    pub has_mutation: bool,
 }
 
 /// A single node in the exported graph.
@@ -881,6 +1018,18 @@ pub struct GraphNodeExport {
     /// coordinates instead of using an automatic layout.
     #[serde(default)]
     pub position: Option<(f64, f64)>,
+    /// Persistent variable names written in this passage.
+    /// Data already available from format plugin variable extraction.
+    #[serde(default)]
+    pub var_writes: Vec<String>,
+    /// Persistent variable names read in this passage.
+    /// Data already available from format plugin variable extraction.
+    #[serde(default)]
+    pub var_reads: Vec<String>,
+    /// Block assignment for this node (placeholder for future block
+    /// detection). `None` means no block has been assigned yet.
+    #[serde(default)]
+    pub block: Option<String>,
 }
 
 /// A single edge in the exported graph.
@@ -888,9 +1037,9 @@ pub struct GraphNodeExport {
 pub struct GraphEdgeExport {
     pub source: String,
     pub target: String,
-    pub is_broken: bool,
-    pub display_text: Option<String>,
-    /// Whether this is an upstream lifecycle edge (not a user-navigable link).
+    /// The semantic type of this edge (navigation, call, include, jump,
+    /// upstream lifecycle, or broken).
     #[serde(default)]
-    pub is_upstream: bool,
+    pub edge_type: EdgeType,
+    pub display_text: Option<String>,
 }

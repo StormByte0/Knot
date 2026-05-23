@@ -14,3 +14,10 @@ extensions/vscode/bin/knot-server.exe
 
 # Preserve the .gitkeep placeholder
 !extensions/vscode/bin/.gitkeep
+
+# React webview build output (built by npm run build:webview)
+extensions/vscode/media/storymap/
+
+# React webview dev dependencies and build cache
+extensions/vscode/webview/node_modules/
+extensions/vscode/webview/dist/
