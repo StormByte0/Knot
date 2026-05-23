@@ -296,9 +296,26 @@ export default function StoryMap({
       if (tip) tip.style.display = 'none';
     });
 
-    // Redraw grid on resize
-    const ro = new ResizeObserver(() => drawGrid());
+    // Redraw grid + notify Cytoscape on resize
+    const ro = new ResizeObserver(() => {
+      drawGrid();
+      // Cytoscape must be told when its container changes size
+      if (cyRef.current) {
+        cyRef.current.resize();
+      }
+    });
     ro.observe(containerRef.current);
+
+    // Deferred resize: VS Code sidebar webviews may not have their final
+    // dimensions at the time this effect runs. Scheduling a resize after
+    // the browser has completed layout ensures Cytoscape sees the real
+    // container size.
+    requestAnimationFrame(() => {
+      if (cyRef.current) {
+        cyRef.current.resize();
+        drawGrid();
+      }
+    });
 
     return () => {
       ro.disconnect();
@@ -405,6 +422,15 @@ export default function StoryMap({
 
     applyLayout(chosenLayout, cy, positionedIds, unpositioned);
     drawGrid();
+
+    // Deferred fit: ensure Cytoscape recalculates after the browser has
+    // processed the DOM changes from adding elements and running layout.
+    requestAnimationFrame(() => {
+      if (cyRef.current && cyRef.current.nodes().length > 0) {
+        cyRef.current.resize();
+        cyRef.current.fit(undefined, 30);
+      }
+    });
   }, [layout, onLayoutChange, drawGrid]);
 
   // ── Apply layout ──────────────────────────────────────────────────────────
@@ -572,7 +598,7 @@ export default function StoryMap({
     <div
       ref={containerRef}
       id="cy"
-      style={{ flex: 1, minHeight: 0 }}
+      style={{ flex: '1 1 0%', minHeight: 0, width: '100%', position: 'relative' }}
     />
   );
 }
