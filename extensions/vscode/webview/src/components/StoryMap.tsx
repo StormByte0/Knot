@@ -162,6 +162,8 @@ export default function StoryMap({
   const cyRef = useRef<cytoscape.Core | null>(null);
   const currentDataRef = useRef<KnotGraphResponse | null>(null);
   const gridCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
 
   // ── Grid background renderer ──────────────────────────────────────────────
   const drawGrid = useCallback(() => {
@@ -208,7 +210,12 @@ export default function StoryMap({
 
   // ── Initialize Cytoscape ──────────────────────────────────────────────────
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current) {
+      vscode.postMessage({ command: 'log', level: 'warn', message: '[StoryMap] containerRef is null at init time' });
+      return;
+    }
+
+    console.log('[StoryMap] Initializing Cytoscape, container:', containerRef.current.getBoundingClientRect());
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -217,6 +224,7 @@ export default function StoryMap({
     });
 
     cyRef.current = cy;
+    console.log('[StoryMap] Cytoscape instance created successfully');
 
     // Click → open passage
     cy.on('tap', 'node', (evt) => {
@@ -297,7 +305,12 @@ export default function StoryMap({
     });
 
     // Redraw grid + notify Cytoscape on resize
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        const { width, height } = entry.contentRect;
+        console.log('[StoryMap] ResizeObserver fired:', Math.round(width), 'x', Math.round(height));
+      }
       drawGrid();
       // Cytoscape must be told when its container changes size
       if (cyRef.current) {
@@ -314,6 +327,7 @@ export default function StoryMap({
       if (cyRef.current) {
         cyRef.current.resize();
         drawGrid();
+        console.log('[StoryMap] Deferred resize applied, container:', containerRef.current?.getBoundingClientRect());
       }
     });
 
@@ -325,13 +339,23 @@ export default function StoryMap({
   }, [drawGrid]);
 
   // ── Build the graph from server data ──────────────────────────────────────
+  // NOTE: layout and onLayoutChange are intentionally NOT in the dependency
+  // array to prevent an infinite re-render loop. The buildGraph callback
+  // uses layoutRef.current instead of the layout prop, and calls
+  // onLayoutChange only when the server-suggested layout differs from the
+  // current layout (a one-way sync, not a cycle).
   const buildGraph = useCallback((data: KnotGraphResponse) => {
     const cy = cyRef.current;
-    if (!cy) return;
+    if (!cy) {
+      console.warn('[StoryMap] buildGraph called but Cytoscape not initialized');
+      return;
+    }
 
     const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
     const edges = Array.isArray(data?.edges) ? data.edges : [];
     currentDataRef.current = { ...data, nodes, edges };
+
+    console.log('[StoryMap] buildGraph: nodes=', nodes.length, 'edges=', edges.length);
 
     cy.elements().remove();
 
@@ -345,8 +369,12 @@ export default function StoryMap({
       loop.members.forEach((m) => gameLoopMembers.add(m));
     });
 
+    // Build a set of valid node IDs for edge validation
+    const nodeIds = new Set<string>();
+
     /* ── Nodes ─────────────────────────────────────────────────────────── */
     for (const n of nodes) {
+      nodeIds.add(n.id);
       const isStart = (n.id === 'Start' || n.label === 'Start');
       const color = getNodeColor({ ...n, is_start: isStart });
       const size = Math.max(50, Math.min(100, 40 + Math.max(n.out_degree || 0, n.in_degree || 0) * 6));
@@ -389,10 +417,34 @@ export default function StoryMap({
     }
 
     /* ── Edges ─────────────────────────────────────────────────────────── */
+    // Track used edge IDs to prevent duplicates when multiple edges exist
+    // between the same pair of nodes (e.g., a nav link AND an <<include>>)
+    const usedEdgeIds = new Set<string>();
+    let edgeIndex = 0;
+
     for (const e of edges) {
+      // BUG FIX: Skip edges whose source or target node doesn't exist in
+      // the graph. Broken-link edges often reference passages that don't
+      // exist as nodes, and Cytoscape throws when adding an edge with a
+      // non-existent endpoint.
+      if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
+        console.warn('[StoryMap] Skipping edge with missing endpoint:', e.source, '->', e.target, '(' + e.edge_type + ')');
+        continue;
+      }
+
+      // Build a unique edge ID. Multiple edges between the same pair are
+      // possible (e.g., navigation + include), so we append the edge type
+      // and a sequential index to guarantee uniqueness.
+      let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
+      if (usedEdgeIds.has(edgeId)) {
+        edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}_${edgeIndex}]`;
+      }
+      usedEdgeIds.add(edgeId);
+      edgeIndex++;
+
       const el: cytoscape.EdgeDefinition = {
         data: {
-          id: e.source + '->' + e.target,
+          id: edgeId,
           source: e.source,
           target: e.target,
           displayText: e.display_text || null,
@@ -409,14 +461,27 @@ export default function StoryMap({
       elements.push(el);
     }
 
-    cy.add(elements);
+    // BUG FIX: Wrap cy.add() in try/catch — if any element definition is
+    // invalid (e.g., an edge references a node that was somehow missed by
+    // our validation), Cytoscape will throw. Previously this crashed the
+    // entire React render cycle silently.
+    try {
+      cy.add(elements);
+      console.log('[StoryMap] Added', elements.length, 'elements to Cytoscape');
+    } catch (err) {
+      console.error('[StoryMap] cy.add() failed:', err);
+      vscode.postMessage({ command: 'log', level: 'error', message: '[StoryMap] cy.add() failed: ' + String(err) });
+      return; // Don't try to layout an empty/broken graph
+    }
 
     /* ── Layout ────────────────────────────────────────────────────────── */
     const hasAnyPositions = positionedIds.size > 0;
     const chosenLayout = data.layout || (hasAnyPositions ? 'position' : 'dagre');
 
-    // Update parent about the layout choice if it differs
-    if (chosenLayout !== layout) {
+    // One-way sync: only update parent if the server-suggested layout
+    // differs from the current layout. This uses layoutRef to avoid
+    // depending on the layout prop (which would cause a re-render loop).
+    if (chosenLayout !== layoutRef.current) {
       onLayoutChange(chosenLayout);
     }
 
@@ -429,9 +494,10 @@ export default function StoryMap({
       if (cyRef.current && cyRef.current.nodes().length > 0) {
         cyRef.current.resize();
         cyRef.current.fit(undefined, 30);
+        console.log('[StoryMap] Deferred fit applied, nodes:', cyRef.current.nodes().length);
       }
     });
-  }, [layout, onLayoutChange, drawGrid]);
+  }, [onLayoutChange, drawGrid]); // intentionally excludes `layout`
 
   // ── Apply layout ──────────────────────────────────────────────────────────
   const applyLayout = useCallback((
@@ -598,7 +664,13 @@ export default function StoryMap({
     <div
       ref={containerRef}
       id="cy"
-      style={{ flex: '1 1 0%', minHeight: 0, width: '100%', position: 'relative' }}
+      style={{
+        position: 'relative',
+        flex: '1 1 0%',
+        minHeight: 0,
+        width: '100%',
+        overflow: 'hidden',
+      }}
     />
   );
 }

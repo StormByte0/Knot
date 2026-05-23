@@ -33,6 +33,20 @@ import * as fs from 'fs';
 import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
 
 // ---------------------------------------------------------------------------
+// Story Map output channel — shared across all StoryMapProvider instances
+// ---------------------------------------------------------------------------
+
+let _storyMapChannel: vscode.OutputChannel | null = null;
+
+/** Get or create the dedicated output channel for Story Map log messages. */
+function getStoryMapChannel(): vscode.OutputChannel {
+    if (!_storyMapChannel) {
+        _storyMapChannel = vscode.window.createOutputChannel('Knot Story Map');
+    }
+    return _storyMapChannel;
+}
+
+// ---------------------------------------------------------------------------
 // Story Map webview provider
 // ---------------------------------------------------------------------------
 
@@ -78,6 +92,8 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, false);
 
+        const channel = getStoryMapChannel();
+
         // Handle messages from the webview
         webviewView.webview.onDidReceiveMessage(async (message) => {
             switch (message.command) {
@@ -119,6 +135,21 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 }
+                case 'log': {
+                    // Webview → Extension logging bridge
+                    const { level, message: msg } = message;
+                    const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
+                    channel.appendLine(`${prefix} [${new Date().toLocaleTimeString()}] ${msg}`);
+                    // Also log to the extension host console for debugging
+                    if (level === 'error') {
+                        console.error('[Knot StoryMap]', msg);
+                    } else if (level === 'warn') {
+                        console.warn('[Knot StoryMap]', msg);
+                    } else {
+                        console.log('[Knot StoryMap]', msg);
+                    }
+                    break;
+                }
             }
         });
 
@@ -148,6 +179,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             this._postGraphData();
         } catch (e) {
             console.error('[Knot] Failed to fetch story graph:', e);
+            getStoryMapChannel().appendLine(`❌ [${new Date().toLocaleTimeString()}] Failed to fetch story graph: ${String(e)}`);
         }
     }
 
