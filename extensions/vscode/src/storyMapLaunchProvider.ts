@@ -61,7 +61,7 @@ export class StoryMapLaunchProvider implements vscode.WebviewViewProvider {
         }
         body {
             margin: 0;
-            padding: 12px;
+            padding: 10px;
             background: var(--vscode-editor-background, #1e1e1e);
             color: var(--vscode-editor-foreground, #d4d4d4);
             font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
@@ -71,13 +71,14 @@ export class StoryMapLaunchProvider implements vscode.WebviewViewProvider {
             background: var(--launch-card-bg);
             color: var(--launch-card-fg);
             border-radius: var(--launch-card-radius);
-            padding: 12px 16px;
+            padding: 10px 14px;
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 10px;
             transition: background 0.15s ease;
             user-select: none;
+            font-weight: 500;
         }
         .launch-card:hover {
             background: var(--launch-card-hover);
@@ -86,16 +87,17 @@ export class StoryMapLaunchProvider implements vscode.WebviewViewProvider {
             opacity: 0.9;
         }
         .launch-icon {
-            width: 20px;
-            height: 20px;
+            width: 18px;
+            height: 18px;
             flex-shrink: 0;
             display: flex;
             align-items: center;
             justify-content: center;
+            opacity: 0.85;
         }
         .launch-icon svg {
-            width: 18px;
-            height: 18px;
+            width: 16px;
+            height: 16px;
             fill: currentColor;
         }
         .launch-text {
@@ -104,14 +106,14 @@ export class StoryMapLaunchProvider implements vscode.WebviewViewProvider {
         }
         .launch-title {
             font-weight: 600;
-            font-size: 13px;
+            font-size: 12px;
             line-height: 1.3;
         }
         .launch-subtitle {
-            font-size: 11px;
-            opacity: 0.8;
+            font-size: 10px;
+            opacity: 0.7;
             line-height: 1.3;
-            margin-top: 2px;
+            margin-top: 1px;
         }
     </style>
 </head>
@@ -119,12 +121,12 @@ export class StoryMapLaunchProvider implements vscode.WebviewViewProvider {
     <div class="launch-card" id="launchBtn">
         <span class="launch-icon">
             <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
-                <path d="M1 3a2 2 0 012-2h10a2 2 0 012 2v10a2 2 0 01-2 2H3a2 2 0 01-2-2V3zm2-1a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1H3zm1 2h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/>
+                <path d="M14 2H2a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1V3a1 1 0 00-1-1zM2 3h12v10H2V3zm2 2h3v1H4V5zm0 3h3v1H4V8zm0 3h2v1H4v-1zm5-6h3v1H9V5zm0 3h3v1H9V8z"/>
             </svg>
         </span>
         <span class="launch-text">
             <span class="launch-title">Open Story Map</span>
-            <span class="launch-subtitle">Visualize and navigate story structure</span>
+            <span class="launch-subtitle">Visualize story structure</span>
         </span>
     </div>
     <script nonce="${nonce}">

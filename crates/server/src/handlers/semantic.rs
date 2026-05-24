@@ -216,6 +216,25 @@ pub(crate) async fn document_symbol(
                 None
             };
 
+            // Compute the selection range to cover ONLY the passage name
+            // (after `::` + whitespace, before `[` tags or `{` JSON metadata).
+            // This must be contained within the full range.
+            let after_colons = line[2..].trim_start();
+            let whitespace_after_colons = line[2..].len() - after_colons.len();
+            let name_end_offset = after_colons.find(|c: char| c == '[' || c == '{')
+                .unwrap_or(after_colons.len());
+            let name_part = &after_colons[..name_end_offset].trim_end();
+            let sel_start_char = 2 + helpers::utf16_len(&line[2..2 + whitespace_after_colons]);
+            let sel_end_char = sel_start_char + helpers::utf16_len(name_part);
+
+            // Ensure range.end is at least as far as selectionRange.end
+            // when the passage is a single-line passage (end_line == line_idx).
+            let range_end_char = if end_line == line_idx as u32 {
+                helpers::utf16_len(line)
+            } else {
+                0
+            };
+
             // lsp_types 0.94 still requires the `deprecated` field in the struct literal
             // even though it was deprecated in LSP 3.16+ in favor of `tags`.
             #[allow(deprecated)]
@@ -232,17 +251,17 @@ pub(crate) async fn document_symbol(
                     },
                     end: Position {
                         line: end_line,
-                        character: 0,
+                        character: range_end_char,
                     },
                 },
                 selection_range: Range {
                     start: Position {
                         line: line_idx as u32,
-                        character: 2, // after "::" (always 2 UTF-16 code units for ASCII)
+                        character: sel_start_char,
                     },
                     end: Position {
                         line: line_idx as u32,
-                        character: helpers::utf16_len(line),
+                        character: sel_end_char,
                     },
                 },
                 children: None,

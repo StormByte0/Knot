@@ -100,7 +100,7 @@ impl ServerState {
                 .sum();
         }
 
-        tracing::debug!(
+        tracing::trace!(
             "knot/graph: exporting {} documents / {} passages / {} graph nodes",
             document_count,
             passage_count,
@@ -1574,30 +1574,20 @@ impl ServerState {
             }
         }
 
-        // Optimistically update open_documents with the new header lines
-        // BEFORE dropping the write lock. This prevents concurrent
-        // knot/updatePositions calls from reading stale text and producing
-        // duplicate JSON metadata blocks.
-        for (uri, edits) in &changes {
-            if let Some(text) = inner.open_documents.get_mut(uri) {
-                // Apply edits in reverse line order to preserve offsets
-                let mut sorted_edits: Vec<_> = edits.iter().collect();
-                sorted_edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line));
-
-                for edit in sorted_edits {
-                    let line_idx = edit.range.start.line as usize;
-                    let lines: Vec<&str> = text.lines().collect();
-                    if line_idx < lines.len() {
-                        // Replace the specific line
-                        let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-                        new_lines[line_idx] = edit.new_text.clone();
-                        *text = new_lines.join("\n");
-                    }
-                }
-            }
-        }
-
-        drop(inner);
+        // ── Apply the edits via the LSP client ────────────────────────────
+        // We do NOT optimistically update open_documents here. The LSP client
+        // will apply the edits and send did_change notifications, which will
+        // update open_documents correctly. Optimistic updates caused the
+        // did_change handler to double-apply the same changes, producing
+        // duplicate JSON metadata blocks and garbled passage names.
+        //
+        // To prevent concurrent position updates from reading stale text, we
+        // hold the write lock while computing edits and only drop it after
+        // the edit list is finalized. The actual apply_edit is async and
+        // cannot hold the lock (it would deadlock with did_change), but by
+        // the time a second update_positions arrives, the first one's
+        // did_change will have already updated open_documents.
+        drop(inner); // release write lock before async apply_edit
 
         // Apply the edits via the LSP client
         if !changes.is_empty() {

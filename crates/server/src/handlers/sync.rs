@@ -185,7 +185,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         .get_document(&uri)
         .map(|d| d.passages.clone())
         .unwrap_or_default();
-    tracing::debug!(
+    tracing::trace!(
         file = %uri,
         old_passage_count = old_passages.len(),
         old_passages = ?old_passages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
@@ -221,7 +221,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         &file_uri_str,
         &extra_edges,
     );
-    tracing::debug!(
+    tracing::trace!(
         "graph_surgery result: added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
         surgery_result.added,
         surgery_result.removed,
@@ -297,28 +297,27 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     let (diagnostics, open_docs, fmt_diags, config) = {
         let inner = state.inner.read().await;
         let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-        tracing::debug!(
+        tracing::trace!(
             file = %uri,
             diagnostic_count = diagnostics.len(),
             workspace_total_passages = inner.workspace.passage_count(),
             workspace_total_documents = inner.workspace.document_count(),
             graph_nodes = inner.workspace.graph.passage_count(),
             graph_edges = inner.workspace.graph.edge_count(),
-            "did_change: analysis complete, workspace state dump"
+            "did_change: analysis complete"
         );
 
-        // Log all passage definitions across the workspace for debugging
-        // duplicate detection issues
+        // Log passage count summary (not full list — that was too noisy and
+        // produced huge debug output on every keystroke)
         {
-            let mut all_passage_names: Vec<(String, String)> = Vec::new();
-            for d in inner.workspace.documents() {
-                for p in &d.passages {
-                    all_passage_names.push((p.name.clone(), d.uri.to_string()));
-                }
-            }
+            let total_passages: usize = inner.workspace.documents()
+                .map(|d| d.passages.len())
+                .sum();
+            let total_docs = inner.workspace.document_count();
             tracing::debug!(
-                all_passages = ?all_passage_names,
-                "did_change: full workspace passage definitions"
+                total_documents = total_docs,
+                total_passages,
+                "did_change: workspace summary"
             );
         }
 

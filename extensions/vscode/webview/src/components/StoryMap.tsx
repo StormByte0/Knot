@@ -26,6 +26,7 @@ import {
   getStraightPath,
   ReactFlowProvider,
   MarkerType,
+  useStore,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -48,6 +49,17 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4.0;
 // Perpendicular pixel offset for bidirectional edge pairs
 const BIDIR_OFFSET = 7;
+
+// ── Twine 2 layout anchors ────────────────────────────────────────────────
+// Start passage anchors here; regular graph flows right/down from it.
+const START_ANCHOR_X = 420;
+const START_ANCHOR_Y = 60;
+// Special passages bounding box starts here (top-left corner).
+const SPECIAL_BOX_X = 40;
+const SPECIAL_BOX_Y = 60;
+// Unreachable list starts below the special box.
+const UNREACHABLE_LIST_X = 40;
+const UNREACHABLE_LIST_Y_OFFSET = 60; // gap below specials
 
 // ── Color palette ──────────────────────────────────────────────────────────
 
@@ -97,6 +109,32 @@ function perpOffset(
   return [(-dy / len) * dist, (dx / len) * dist];
 }
 
+// ── Rectangle intersection for floating edges ──────────────────────────────
+// Given a center point, a target point, and a rectangle size, returns the
+// point where the center→target line intersects the rectangle boundary.
+function getRectIntersection(
+  center: { x: number; y: number },
+  target: { x: number; y: number },
+  width: number,
+  height: number,
+): [number, number] {
+  const dx = target.x - center.x;
+  const dy = target.y - center.y;
+  if (dx === 0 && dy === 0) return [center.x, center.y];
+
+  const halfW = width / 2;
+  const halfH = height / 2;
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+
+  // Determine which edge the center→target line intersects
+  const scale = (absDx * halfH > absDy * halfW)
+    ? halfW / absDx   // left or right edge
+    : halfH / absDy;  // top or bottom edge
+
+  return [center.x + dx * scale, center.y + dy * scale];
+}
+
 // ── Custom Node: Passage ───────────────────────────────────────────────────
 
 function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
@@ -138,17 +176,27 @@ function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
   );
 }
 
-// ── Custom straight edge with optional perpendicular offset ────────────────
+// ── Custom straight edge with floating intersection ────────────────────────
 // The `data.offsetPx` field shifts the path sideways for bidir pairs.
 // The `data.edgeKind` drives color/dash.
+// Instead of connecting to handle positions (Top/Bottom), this edge
+// calculates where the center-to-center line intersects each node's
+// rectangular boundary, so arrows appear at the border — not hidden
+// behind the rounded-rectangle node.
 
 interface StraightEdgeData {
   edgeKind: 'navigation' | 'upstream' | 'broken';
   offsetPx: number; // perpendicular offset in pixels (0 = no offset)
 }
 
+// How many pixels to pull the target endpoint back from the intersection
+// so the arrow marker head sits neatly on the border instead of
+// overlapping into the node.
+const ARROW_PULLBACK = 5;
+
 function StraightEdge({
   id,
+  source, target,
   sourceX, sourceY,
   targetX, targetY,
   data,
@@ -156,11 +204,68 @@ function StraightEdge({
 }: EdgeProps) {
   const { edgeKind = 'navigation', offsetPx = 0 } = (data || {}) as unknown as StraightEdgeData;
 
+  // ── Subscribe to source/target node positions for floating edge calc ───
+  const sourceSelector = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (s: any) => {
+      const n = s.nodeLookup?.get(source);
+      if (!n) return null;
+      return {
+        x: n.internals?.positionAbsolute?.x ?? 0,
+        y: n.internals?.positionAbsolute?.y ?? 0,
+        w: n.measured?.width ?? NODE_W,
+        h: n.measured?.height ?? NODE_H,
+      };
+    },
+    [source],
+  );
+  const targetSelector = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (s: any) => {
+      const n = s.nodeLookup?.get(target);
+      if (!n) return null;
+      return {
+        x: n.internals?.positionAbsolute?.x ?? 0,
+        y: n.internals?.positionAbsolute?.y ?? 0,
+        w: n.measured?.width ?? NODE_W,
+        h: n.measured?.height ?? NODE_H,
+      };
+    },
+    [target],
+  );
+
+  const nodeEq = (a: { x: number; y: number; w: number; h: number } | null,
+                  b: { x: number; y: number; w: number; h: number } | null) => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+  };
+
+  const srcData = useStore(sourceSelector, nodeEq);
+  const tgtData = useStore(targetSelector, nodeEq);
+
   let sx = sourceX;
   let sy = sourceY;
   let tx = targetX;
   let ty = targetY;
 
+  // ── Calculate border intersection points ───────────────────────────────
+  if (srcData && tgtData) {
+    const srcCenter = { x: srcData.x + srcData.w / 2, y: srcData.y + srcData.h / 2 };
+    const tgtCenter = { x: tgtData.x + tgtData.w / 2, y: tgtData.y + tgtData.h / 2 };
+
+    [sx, sy] = getRectIntersection(srcCenter, tgtCenter, srcData.w, srcData.h);
+    [tx, ty] = getRectIntersection(tgtCenter, srcCenter, tgtData.w, tgtData.h);
+
+    // Pull the target endpoint back so the arrow marker sits on the border
+    const edgeDx = tx - sx;
+    const edgeDy = ty - sy;
+    const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy) || 1;
+    tx -= (edgeDx / edgeLen) * ARROW_PULLBACK;
+    ty -= (edgeDy / edgeLen) * ARROW_PULLBACK;
+  }
+
+  // ── Apply perpendicular offset for bidirectional pairs ─────────────────
   if (offsetPx !== 0) {
     const [ox, oy] = perpOffset(sx, sy, tx, ty, offsetPx);
     sx += ox; sy += oy;
@@ -241,6 +346,21 @@ function dagreLayout(
 }
 
 // ── Build React Flow elements from KnotGraphResponse ──────────────────────
+//
+// Twine 2 inspired layout:
+//   ┌──────────────────┐   ┌─────────┐
+//   │ Special Passages  │   │  Start  │──→ regular reachable flow ──→
+//   │ (bounding box)    │   └─────────┘         (dagre, right/down)
+//   └──────────────────┘       │
+//        │                     ↓
+//   ┌──────────────────┐   more reachable passages
+//   │ Unreachable List │        ↓
+//   │ (stacked)        │       ...
+//   └──────────────────┘
+//
+// When all nodes have positions (user has manually positioned them),
+// those positions are used as-is. The auto-layout only applies to
+// nodes without saved positions.
 
 function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] } {
   const rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
@@ -256,36 +376,62 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   }
 
   // ── Identify start & special sets ─────────────────────────────────────
-  const startId = rawNodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start')?.id;
+  const startNode = rawNodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start');
+  const startId = startNode?.id;
   const specialSet = new Set<string>(
     rawNodes
       .filter(n => (n.is_special || n.is_metadata) && n.id !== startId)
       .map(n => n.id),
   );
+  const unreachableSet = new Set<string>(
+    rawNodes.filter(n => n.is_unreachable).map(n => n.id),
+  );
 
   // ── Detect bidirectional pairs ─────────────────────────────────────────
-  // For each edge A→B, record whether B→A also exists.
   const edgeSet = new Set<string>(rawEdges.map(e => `${e.source}→${e.target}`));
   const isBidir = (src: string, tgt: string) =>
     edgeSet.has(`${src}→${tgt}`) && edgeSet.has(`${tgt}→${src}`);
-  // Track which bidir pairs we've already assigned an offset to
   const bidirFirst = new Set<string>();
 
-  // ── Build passage nodes ────────────────────────────────────────────────
-  const positioned: Node[] = [];
-  const unpositioned: Node[] = [];
+  // ── Classify nodes into categories ────────────────────────────────────
   const childToGroup = new Map<string, string>();
-
   for (const [gid, members] of groupMembers) {
     for (const mid of members) childToGroup.set(mid, gid);
   }
 
+  // Separate nodes into: start, special, unreachable, regular
+  const startNodes: KnotGraphNode[] = [];
+  const specialNodes: KnotGraphNode[] = [];
+  const unreachableNodes: KnotGraphNode[] = [];
+  const regularNodes: KnotGraphNode[] = [];
+
   for (const n of rawNodes) {
     const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
-    const rfNode: Node<PassageNodeData> = {
+    if (isStart) {
+      startNodes.push(n);
+    } else if (specialSet.has(n.id)) {
+      specialNodes.push(n);
+    } else if (unreachableSet.has(n.id)) {
+      unreachableNodes.push(n);
+    } else {
+      regularNodes.push(n);
+    }
+  }
+
+  // ── Check if we need auto-layout ──────────────────────────────────────
+  // If ANY node lacks a saved position, we apply the full Twine 2 auto-
+  // layout. Otherwise, we respect the user's manually-saved positions.
+  const allHavePositions = rawNodes.every(
+    n => n.position_x != null && n.position_y != null,
+  );
+
+  // ── Helper: create a React Flow passage node ──────────────────────────
+  function makePassageNode(n: KnotGraphNode, x: number, y: number): Node<PassageNodeData> {
+    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
+    return {
       id: n.id,
       type: 'passage',
-      position: { x: n.position_x != null ? snap(n.position_x) : 0, y: n.position_y != null ? snap(n.position_y) : 0 },
+      position: { x: snap(x), y: snap(y) },
       data: {
         label: n.label,
         file: n.file,
@@ -308,43 +454,87 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       },
       parentId: childToGroup.get(n.id),
     };
-
-    if (n.position_x != null && n.position_y != null) {
-      positioned.push(rfNode);
-    } else {
-      unpositioned.push(rfNode);
-    }
   }
 
-  // ── Layout unpositioned nodes with dagre ───────────────────────────────
-  if (unpositioned.length > 0) {
-    const nodeIds = new Set(unpositioned.map(n => n.id));
-    const subEdges: Edge[] = rawEdges
-      .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
-      .map((e, i) => ({ id: `dagre-${i}`, source: e.source, target: e.target }));
+  // ── Build passage nodes ───────────────────────────────────────────────
+  const allPassageNodes: Node[] = [];
 
-    const positions = dagreLayout(unpositioned, subEdges);
+  if (allHavePositions) {
+    // User has saved positions — use them directly
+    for (const n of rawNodes) {
+      const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
+      allPassageNodes.push(makePassageNode(n, n.position_x!, n.position_y!));
+    }
+  } else {
+    // ── Twine 2 auto-layout ─────────────────────────────────────────────
 
-    // Offset so unpositioned block doesn't overlap positioned nodes
-    let offsetX = 0;
-    if (positioned.length > 0) {
-      const maxX = Math.max(...positioned.map(n => n.position.x)) + NODE_W + GRID_SNAP * 4;
-      const minY = Math.min(...positioned.map(n => n.position.y));
-      offsetX = maxX;
-      for (const n of unpositioned) {
-        const p = positions.get(n.id);
-        if (p) n.position = { x: p.x + offsetX, y: p.y + minY };
+    // 1. Start passage: anchor at fixed position
+    if (startNode) {
+      allPassageNodes.push(makePassageNode(startNode, START_ANCHOR_X, START_ANCHOR_Y));
+    }
+
+    // 2. Special passages: arrange in a column inside a bounding box
+    //    Sort: metadata (StoryData, StoryTitle) first, then other specials
+    specialNodes.sort((a, b) => {
+      if (a.is_metadata && !b.is_metadata) return -1;
+      if (!a.is_metadata && b.is_metadata) return 1;
+      return a.label.localeCompare(b.label);
+    });
+    for (let i = 0; i < specialNodes.length; i++) {
+      allPassageNodes.push(makePassageNode(
+        specialNodes[i],
+        SPECIAL_BOX_X,
+        SPECIAL_BOX_Y + i * (NODE_H + GRID_SNAP),
+      ));
+    }
+
+    // 3. Unreachable passages: stacked vertically below the specials
+    unreachableNodes.sort((a, b) => a.label.localeCompare(b.label));
+    const unreachableStartY = specialNodes.length > 0
+      ? SPECIAL_BOX_Y + specialNodes.length * (NODE_H + GRID_SNAP) + UNREACHABLE_LIST_Y_OFFSET
+      : SPECIAL_BOX_Y;
+    for (let i = 0; i < unreachableNodes.length; i++) {
+      allPassageNodes.push(makePassageNode(
+        unreachableNodes[i],
+        UNREACHABLE_LIST_X,
+        unreachableStartY + i * (NODE_H + GRID_SNAP),
+      ));
+    }
+
+    // 4. Regular reachable passages: layout with dagre, flowing right and
+    //    down from the start passage.
+    if (regularNodes.length > 0) {
+      const regularIds = new Set(regularNodes.map(n => n.id));
+      const subEdges: Edge[] = rawEdges
+        .filter(e => regularIds.has(e.source) && regularIds.has(e.target))
+        .map((e, i) => ({ id: `dagre-${i}`, source: e.source, target: e.target }));
+
+      // Also include edges from start → regular to anchor the flow
+      if (startId) {
+        for (const e of rawEdges) {
+          if (e.source === startId && regularIds.has(e.target)) {
+            subEdges.push({ id: `dagre-start-${e.target}`, source: startId, target: e.target });
+          }
+        }
       }
-    } else {
-      for (const n of unpositioned) {
+
+      // Create temporary dagre nodes for regular passages
+      const dagreNodes: Node[] = regularNodes.map(n => makePassageNode(n, 0, 0));
+      const positions = dagreLayout(dagreNodes, subEdges, 'LR'); // Left-to-Right flow
+
+      // Apply dagre positions, offset so they flow right/down from start
+      for (const n of dagreNodes) {
         const p = positions.get(n.id);
-        if (p) n.position = p;
+        if (p) {
+          n.position = {
+            x: snap(p.x + START_ANCHOR_X + NODE_W + GRID_SNAP * 3),
+            y: snap(p.y + START_ANCHOR_Y),
+          };
+        }
       }
+      allPassageNodes.push(...dagreNodes);
     }
   }
-
-  // All passage nodes combined
-  const allPassageNodes = [...positioned, ...unpositioned];
 
   // ── Build group container nodes ────────────────────────────────────────
   const groupNodes: Node[] = [];
@@ -369,6 +559,68 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       draggable: false,
       selectable: false,
       zIndex: -1,
+    });
+  }
+
+  // Add special passage bounding box as a group node (Twine 2 style)
+  const specialRfNodes = allPassageNodes.filter(
+    n => n.type === 'passage' && specialSet.has(n.id),
+  );
+  if (specialRfNodes.length > 0 && !allHavePositions) {
+    const pad = 28;
+    const labelH = 22;
+    const xs = specialRfNodes.map(n => n.position.x);
+    const ys = specialRfNodes.map(n => n.position.y);
+    const minX = Math.min(...xs) - pad;
+    const minY = Math.min(...ys) - pad - labelH;
+    const maxX = Math.max(...xs) + NODE_W + pad;
+    const maxY = Math.max(...ys) + NODE_H + pad;
+
+    groupNodes.push({
+      id: '__specials__',
+      type: 'group',
+      position: { x: snap(minX), y: snap(minY) },
+      data: { label: 'Special Passages' } as GroupNodeData,
+      style: {
+        width: snap(maxX - minX),
+        height: snap(maxY - minY),
+        background: 'rgba(230, 81, 0, 0.04)',
+        borderColor: 'rgba(230, 81, 0, 0.25)',
+      },
+      draggable: false,
+      selectable: false,
+      zIndex: -2,
+    });
+  }
+
+  // Add unreachable passage list bounding box
+  const unreachableRfNodes = allPassageNodes.filter(
+    n => n.type === 'passage' && unreachableSet.has(n.id),
+  );
+  if (unreachableRfNodes.length > 0 && !allHavePositions) {
+    const pad = 28;
+    const labelH = 22;
+    const xs = unreachableRfNodes.map(n => n.position.x);
+    const ys = unreachableRfNodes.map(n => n.position.y);
+    const minX = Math.min(...xs) - pad;
+    const minY = Math.min(...ys) - pad - labelH;
+    const maxX = Math.max(...xs) + NODE_W + pad;
+    const maxY = Math.max(...ys) + NODE_H + pad;
+
+    groupNodes.push({
+      id: '__unreachable__',
+      type: 'group',
+      position: { x: snap(minX), y: snap(minY) },
+      data: { label: 'Unreachable' } as GroupNodeData,
+      style: {
+        width: snap(maxX - minX),
+        height: snap(maxY - minY),
+        background: 'rgba(66, 66, 66, 0.04)',
+        borderColor: 'rgba(66, 66, 66, 0.25)',
+      },
+      draggable: false,
+      selectable: false,
+      zIndex: -2,
     });
   }
 
@@ -591,8 +843,12 @@ function StoryMapInner({
   }, [fitRequested, fitView]);
 
   // ── Focus a passage ────────────────────────────────────────────────────
+  // Pan-only focus: preserve the user's current zoom level so navigating
+  // to a passage feels like jumping across the map, not zooming in/out.
+  // Only bump the zoom up if it's so low the node would be invisible.
   useEffect(() => {
     if (focusRequested <= 0 || !focusPassageName) return;
+    // Don't let the viewport-restore effect fight our navigation
     skipViewportRestoreRef.current = true;
 
     // Find node by id, then by label
@@ -604,8 +860,19 @@ function StoryMapInner({
     }
     if (!target) return;
 
-    fitView({ nodes: [{ id: target.id }], padding: 0.4, duration: 0 });
+    // Pan-only: lock zoom to the current level so fitView only pans.
+    // If the user is zoomed out very far, nudge up to a readable level.
+    const currentZoom = getViewport().zoom;
+    const focusZoom = Math.max(currentZoom, 0.5);
+    fitView({
+      nodes: [{ id: target.id }],
+      padding: 0.4,
+      duration: 0,
+      minZoom: focusZoom,
+      maxZoom: focusZoom,
+    });
 
+    // Brief highlight to show which node was focused (fades after 1s)
     setNodes(nds => nds.map(n => {
       if (n.type !== 'passage') return n;
       const d = n.data as PassageNodeData;
@@ -618,10 +885,17 @@ function StoryMapInner({
         const d = n.data as PassageNodeData;
         return { ...n, data: { ...d, focused: false } };
       }));
-    }, 1800);
-  }, [focusRequested, focusPassageName, fitView, getNode, setNodes]);
+      // After focus highlight fades, stop skipping viewport restore
+      // so subsequent graph refreshes preserve the user's viewport
+      skipViewportRestoreRef.current = false;
+    }, 1000);
+  }, [focusRequested, focusPassageName, fitView, getViewport, getNode, setNodes]);
 
   // ── Save all positions ─────────────────────────────────────────────────
+  // After saving, the file watcher will trigger a refreshGraph, which
+  // sends new data. Since all nodes now have positions in the source,
+  // the rebuild will use the saved positions. We mark the viewport to
+  // be preserved so the user doesn't see a jarring reset.
   useEffect(() => {
     if (saveRequested <= 0) return;
     const updates: KnotPositionUpdate[] = nodesRef.current
@@ -636,8 +910,15 @@ function StoryMapInner({
           color: d.metadata_color,
         };
       });
-    if (updates.length > 0) vscode.postMessage({ command: 'saveAllPositions', updates });
-  }, [saveRequested]);
+    if (updates.length > 0) {
+      // Save current viewport so the next graph rebuild preserves it
+      try {
+        const vp = getViewport();
+        savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
+      } catch { /* not ready */ }
+      vscode.postMessage({ command: 'saveAllPositions', updates });
+    }
+  }, [saveRequested, getViewport]);
 
   // ── Node drag end → snap + send position ──────────────────────────────
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
@@ -733,10 +1014,10 @@ function StoryMapInner({
         />
         <Controls showInteractive={false} />
         <Background
-          variant={BackgroundVariant.Dots}
+          variant={BackgroundVariant.Lines}
           gap={GRID_SNAP}
           size={1}
-          color="rgba(255,255,255,0.07)"
+          color="rgba(255,255,255,0.06)"
         />
       </ReactFlow>
       <NodeTooltip tip={tooltip} />
