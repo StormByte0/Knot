@@ -103,7 +103,16 @@ let unreachableDecorationType: vscode.TextEditorDecorationType | null = null;
 let linkDecorationType: vscode.TextEditorDecorationType | null = null;
 let decorationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ── Active Story Map panel (SINGLE INSTANCE) ────────────────────────────────
+// There is only ever ONE graph view at a time. It can be docked in either
+// the sidebar or a separate panel — never both simultaneously. Opening the
+// panel hides the sidebar view; closing the panel restores the sidebar.
+let activeStoryMapPanel: vscode.WebviewPanel | null = null;
+// Track the extension context so the panel command can access it.
+let _extensionContext: vscode.ExtensionContext | null = null;
+
 export async function activate(context: vscode.ExtensionContext) {
+    _extensionContext = context;
     const useRustServer = vscode.workspace
         .getConfiguration('knot')
         .get<boolean>('experimental.rustServer', true);
@@ -422,9 +431,26 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 }
 
-/** Refresh the Story Map webview if it's visible. */
-function refreshStoryMap() {
-    if (storyMapProvider) {
+/** Refresh the active Story Map webview (single instance).
+ *  If a popped-out panel is open, refresh that. Otherwise, refresh the sidebar. */
+async function refreshStoryMap() {
+    if (activeStoryMapPanel) {
+        // Panel is the active view — refresh it directly
+        if (client && client.isRunning()) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                try {
+                    const result = await client.sendRequest<KnotGraphResponse>('knot/graph', {
+                        workspace_uri: workspaceFolders[0].uri.toString(),
+                    });
+                    activeStoryMapPanel.webview.postMessage({ command: 'updateGraph', data: result });
+                } catch (e) {
+                    console.error('[Knot] Failed to refresh panel graph:', e);
+                }
+            }
+        }
+    } else if (storyMapProvider) {
+        // Sidebar is the active view
         storyMapProvider.refreshGraph();
     }
 }
@@ -591,9 +617,21 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
 // ---------------------------------------------------------------------------
 
 function registerCommands(context: vscode.ExtensionContext) {
-    // Open Story Map — opens a full-view webview panel (detachable, higher resolution)
+    // Open Story Map — single-instance full-view webview panel.
+    //
+    // Design: There is only ONE graph view at a time. It can be docked in
+    // either the sidebar or a separate panel — never both simultaneously.
+    // Opening the panel hides the sidebar view; closing the panel restores
+    // the sidebar. This eliminates redundant position writes and ensures
+    // focusNode always reaches the active view.
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.openStoryMap', async () => {
+            // If a panel already exists, just reveal it — don't create a second one
+            if (activeStoryMapPanel) {
+                activeStoryMapPanel.reveal(vscode.ViewColumn.Beside);
+                return;
+            }
+
             const panel = vscode.window.createWebviewPanel(
                 'knot.storyMapPanel',
                 'Knot Story Map',
@@ -604,6 +642,16 @@ function registerCommands(context: vscode.ExtensionContext) {
                     retainContextWhenHidden: true,
                 }
             );
+
+            // Register as the single active panel
+            activeStoryMapPanel = panel;
+
+            // Hide the sidebar Story Map while the panel is active —
+            // single view, single writer, no conflicts.
+            if (storyMapProvider) {
+                storyMapProvider.setVisible(false);
+            }
+
             const panelProvider = new StoryMapProvider(context.extensionUri);
             panelProvider.setClient(client);
             panel.webview.html = panelProvider.getFullViewHtml(panel.webview, context.extensionUri);
@@ -616,9 +664,6 @@ function registerCommands(context: vscode.ExtensionContext) {
                         if (file) {
                             const uri = vscode.Uri.parse(file);
                             const doc = await vscode.workspace.openTextDocument(uri);
-                            // Smart viewport logic:
-                            // 1. If graph is in a tab, find or create a non-graph column
-                            // 2. If graph is in a detached window, open in parent window's editor
                             const targetColumn = findTargetViewColumn(panel.viewColumn);
                             await vscode.window.showTextDocument(doc, {
                                 preview: true,
@@ -629,19 +674,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                         break;
                     }
                     case 'refreshGraph': {
-                        if (client && client.isRunning()) {
-                            const workspaceFolders = vscode.workspace.workspaceFolders;
-                            if (workspaceFolders && workspaceFolders.length > 0) {
-                                try {
-                                    const result = await client.sendRequest<KnotGraphResponse>('knot/graph', {
-                                        workspace_uri: workspaceFolders[0].uri.toString(),
-                                    });
-                                    panel.webview.postMessage({ command: 'updateGraph', data: result });
-                                } catch (e) {
-                                    console.error('[Knot] Failed to fetch story graph for panel:', e);
-                                }
-                            }
-                        }
+                        await refreshStoryMap();
                         break;
                     }
                     case 'updatePositions': {
@@ -661,6 +694,42 @@ function registerCommands(context: vscode.ExtensionContext) {
                         }
                         break;
                     }
+                    case 'saveAllPositions': {
+                        const { updates } = message;
+                        if (client && client.isRunning() && updates && updates.length > 0) {
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                try {
+                                    const result = await client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', {
+                                        workspace_uri: workspaceFolders[0].uri.toString(),
+                                        updates: updates,
+                                    });
+                                    if (result.success) {
+                                        vscode.window.setStatusBarMessage(`Knot: Saved ${result.updated_count} passage positions`, 3000);
+                                    }
+                                } catch (e) {
+                                    console.error('[Knot] Failed to save all passage positions:', e);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    case 'log': {
+                        const { level, message: msg } = message;
+                        const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
+                        console.log(`[Knot StoryMap Panel] ${prefix} ${msg}`);
+                        break;
+                    }
+                }
+            });
+
+            // When the panel is closed, restore the sidebar as the active view
+            panel.onDidDispose(() => {
+                activeStoryMapPanel = null;
+                if (storyMapProvider) {
+                    storyMapProvider.setVisible(true);
+                    // Refresh the sidebar view since it's now the active view again
+                    storyMapProvider.refreshGraph();
                 }
             });
 
@@ -902,11 +971,24 @@ function registerCommands(context: vscode.ExtensionContext) {
         })
     );
 
-    // Open Passage by Name (used by debug view)
+    // Open Passage by Name (used by debug view, diagnostics, etc.)
+    // Also tells the Story Map to focus on the passage node so the
+    // graph view stays in sync with the editor.
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string, targetLine?: number) => {
             if (!client || !client.isRunning()) {
                 return;
+            }
+
+            // Tell the active Story Map to focus on this passage node.
+            // Route to whichever view is currently active (panel or sidebar).
+            if (activeStoryMapPanel) {
+                activeStoryMapPanel.webview.postMessage({
+                    command: 'focusNode',
+                    passageName,
+                });
+            } else if (storyMapProvider) {
+                storyMapProvider.focusNode(passageName);
             }
 
             // First, search open documents

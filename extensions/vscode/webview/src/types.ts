@@ -73,11 +73,13 @@ export type WebviewOutboundMessage =
   | { command: 'refreshGraph' }
   | { command: 'openFullView' }
   | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
+  | { command: 'saveAllPositions'; updates: KnotPositionUpdate[] }
   | { command: 'log'; level: 'error' | 'warn' | 'info'; message: string };
 
 /** Messages sent FROM the extension TO the webview. */
 export type WebviewInboundMessage =
-  | { command: 'updateGraph'; data: KnotGraphResponse };
+  | { command: 'updateGraph'; data: KnotGraphResponse }
+  | { command: 'focusNode'; passageName: string };
 
 // ---------------------------------------------------------------------------
 // VS Code API type

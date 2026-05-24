@@ -38,7 +38,7 @@ static RE_LINK_ARROW: LazyLock<Regex> =
 static RE_LINK_PIPE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
 static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?(?:\s+\{[^}]*\})*\s*$").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -111,6 +111,25 @@ impl TwineCorePlugin {
     fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
         let rest = line.strip_prefix("::")?;
         let rest = rest.trim_start().trim_end_matches('\r');
+
+        // Strip JSON metadata blocks from the end of the line.
+        // Twee 3 format supports optional JSON metadata after tags:
+        //   :: PassageName [tags] {"position":"100,200"}
+        // The metadata must be stripped before extracting the passage name
+        // and tags, otherwise it pollutes the name and breaks passage
+        // lookup. This mirrors the SugarCube lexer's parse_header_line().
+        let mut cleaned = rest.to_string();
+        loop {
+            let trimmed = cleaned.trim_end();
+            if let Some(brace_start) = trimmed.rfind('{') {
+                if trimmed[brace_start..].trim_end().ends_with('}') {
+                    cleaned = trimmed[..brace_start].trim_end().to_string();
+                    continue;
+                }
+            }
+            break;
+        }
+        let rest = cleaned.as_str();
 
         let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
             if rest.ends_with(']') {
@@ -223,10 +242,24 @@ impl TwineCorePlugin {
         if let Some(rest) = header_line.strip_prefix("::") {
             let trimmed = rest.trim_start();
             let ws_len = rest.len() - trimmed.len();
-            let name_len = if let Some(bracket_pos) = trimmed.find('[') {
-                trimmed[..bracket_pos].trim().len()
+            // Strip trailing JSON metadata blocks before finding name length,
+            // mirroring parse_header_line()'s stripping logic. Without this,
+            // {"position":"x,y"} would be included in the name token.
+            let mut cleaned = trimmed.to_string();
+            loop {
+                let t = cleaned.trim_end_matches('\r').trim_end();
+                if let Some(brace_start) = t.rfind('{') {
+                    if t[brace_start..].trim_end().ends_with('}') {
+                        cleaned = t[..brace_start].trim_end().to_string();
+                        continue;
+                    }
+                }
+                break;
+            }
+            let name_len = if let Some(bracket_pos) = cleaned.find('[') {
+                cleaned[..bracket_pos].trim().len()
             } else {
-                trimmed.trim().len()
+                cleaned.trim().len()
             };
             let name_type = if is_special {
                 SemanticTokenType::SpecialPassage

@@ -168,3 +168,11 @@ html, body {
 #legend:hover { opacity: 1; }
 #legend .legend-item { display: flex; align-items: center; gap: 5px; margin: 1px 0; color: #b0b8c8; }
 #legend .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+
+/* ── Box selection overlay (Cytoscape) ──────────────────────────────────── */
+/* Styled selection rectangle when user click-drags on empty canvas to
+ * select multiple nodes. Matches the VS Code accent color for consistency. */
+#cy .cy-box-selection {
+    border: 1px solid var(--accent);
+    background: rgba(0, 122, 204, 0.15);
+}

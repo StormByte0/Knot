@@ -65,8 +65,24 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _client: KnotLanguageClient | null = null;
     private _graphData: KnotGraphResponse | null = null;
+    // When a popped-out panel is active, the sidebar view is "hidden" —
+    // it should NOT send position updates or handle focusNode. This flag
+    // implements the single-instance guarantee: only one graph view is
+    // authoritative at a time.
+    private _hidden: boolean = false;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
+
+    /** Set visibility state. When hidden (panel is active), the sidebar
+     *  view suppresses position writes and focusNode messages. */
+    public setVisible(visible: boolean) {
+        this._hidden = !visible;
+    }
+
+    /** Check if this sidebar view is the active graph view. */
+    public isActive(): boolean {
+        return !this._hidden && !!this._view;
+    }
 
     /** Set the language client reference so we can send LSP requests. */
     public setClient(client: KnotLanguageClient | null) {
@@ -120,6 +136,9 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                     break;
                 }
                 case 'updatePositions': {
+                    // Suppressed when the sidebar is hidden (panel is active).
+                    // Single-instance guarantee: only one view writes positions.
+                    if (this._hidden) break;
                     const { updates } = message;
                     if (this._client && this._client.isRunning() && updates && updates.length > 0) {
                         const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -130,20 +149,42 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
                                     updates: updates,
                                 };
                                 const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
-                                // After the server applies the workspace edit, VS Code sends
-                                // textDocument/didChange which re-parses and re-analyzes. However,
-                                // the did_change handler runs asynchronously and diagnostics may
-                                // not be published immediately. Force a diagnostic refresh by
-                                // requesting a fresh graph — this ensures the Story Map and
-                                // diagnostics are in sync after position updates.
                                 if (result.success) {
-                                    // Small delay to allow did_change to process first
                                     setTimeout(() => {
                                         vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
                                     }, 100);
                                 }
                             } catch (e) {
                                 console.error('[Knot] Failed to update passage positions:', e);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case 'saveAllPositions': {
+                    // Suppressed when the sidebar is hidden (panel is active).
+                    if (this._hidden) break;
+                    const { updates } = message;
+                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            try {
+                                const params: KnotUpdatePositionsParams = {
+                                    workspace_uri: workspaceFolders[0].uri.toString(),
+                                    updates: updates,
+                                };
+                                const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
+                                if (result.success) {
+                                    vscode.window.setStatusBarMessage(`Knot: Saved ${result.updated_count} passage positions`, 3000);
+                                    setTimeout(() => {
+                                        vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+                                    }, 100);
+                                } else if (result.errors && result.errors.length > 0) {
+                                    vscode.window.showWarningMessage(`Knot: Some positions failed to save: ${result.errors.join(', ')}`);
+                                }
+                            } catch (e) {
+                                console.error('[Knot] Failed to save all passage positions:', e);
+                                vscode.window.showErrorMessage('Knot: Failed to save passage positions.');
                             }
                         }
                     }
@@ -173,9 +214,10 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Fetch graph data from the language server and push to the webview. */
+    /** Fetch graph data from the language server and push to the webview.
+     *  Skipped when this sidebar view is hidden (panel is active). */
     public async refreshGraph() {
-        if (!this._client || !this._client.isRunning()) {
+        if (!this._client || !this._client.isRunning() || this._hidden) {
             return;
         }
 
@@ -203,6 +245,18 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             this._view.webview.postMessage({
                 command: 'updateGraph',
                 data: this._graphData,
+            });
+        }
+    }
+
+    /** Tell the Story Map webview to pan and focus on a specific passage node.
+     *  Called when navigating to a passage from diagnostics, debug view, etc.
+     *  Skipped when this sidebar view is hidden (panel is active). */
+    public focusNode(passageName: string) {
+        if (this._view && !this._hidden) {
+            this._view.webview.postMessage({
+                command: 'focusNode',
+                passageName,
             });
         }
     }

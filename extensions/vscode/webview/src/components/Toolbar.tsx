@@ -8,6 +8,7 @@ interface ToolbarProps {
   onLayoutChange: (layout: string) => void;
   onFit: () => void;
   onRefresh: () => void;
+  onSavePositions: () => void;
   graphData: KnotGraphResponse | null;
 }
 
@@ -18,6 +19,7 @@ export default function Toolbar({
   onLayoutChange,
   onFit,
   onRefresh,
+  onSavePositions,
   graphData,
 }: ToolbarProps) {
   const handleSearchInput = useCallback(
@@ -44,13 +46,13 @@ export default function Toolbar({
       <input
         type="text"
         id="searchInput"
-        placeholder="Filter passages..."
+        placeholder="Search passages..."
         value={searchQuery}
         onChange={handleSearchInput}
       />
       <select
         id="layoutSelect"
-        title="Layout"
+        title="Layout mode"
         value={layout}
         onChange={handleLayoutChange}
       >
@@ -58,11 +60,18 @@ export default function Toolbar({
         <option value="dagre">Flow</option>
         <option value="cose">Force</option>
       </select>
-      <button id="fitBtn" title="Zoom to fit" onClick={onFit}>
-        Fit
+      <button id="fitBtn" title="Zoom to fit all" onClick={onFit}>
+        &#x25CE;
       </button>
-      <button id="refreshBtn" title="Refresh" onClick={onRefresh}>
+      <button id="refreshBtn" title="Refresh graph" onClick={onRefresh}>
         &#x21BB;
+      </button>
+      <button
+        id="saveBtn"
+        title="Save layout to workspace"
+        onClick={onSavePositions}
+      >
+        &#x1F4BE;
       </button>
     </div>
   );

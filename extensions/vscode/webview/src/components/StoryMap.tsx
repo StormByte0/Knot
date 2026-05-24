@@ -15,28 +15,69 @@ function snapToGrid(value: number): number {
   return Math.round(value / GRID_SNAP) * GRID_SNAP;
 }
 
-// ── Special passage classification ──────────────────────────────────────────
-// Twine-core special passages defined by the Twee specification.
-// Everything else that's is_special but NOT in this list is format-specific
-// (e.g., SugarCube's StoryInit, StoryInterface, etc.).
-const TWINE_CORE_SPECIALS = new Set([
-  'StoryTitle', 'StoryData', 'StoryStylesheet', 'StoryJavaScript',
-  'StorySettings', 'StoryIncludes',
-]);
+// ── Standardized node dimensions ────────────────────────────────────────────
+// All passage nodes use the same width/height so the graph looks clean and
+// predictable. Labels that don't fit are truncated with ellipsis.
+const NODE_W = 100;
+const NODE_H = 36;
 
-type SpecialGroup = 'twine_core' | 'format_special' | null;
+// ── Layout constants ──────────────────────────────────────────────────────────
+/**
+ * Layout follows a Twine-inspired viewport model:
+ *
+ *   ┌──────────────────────┬────────────────┬────────────────┐
+ *   │ special_passage_group│                │                │
+ *   ├──────────────────────┼────────────────┼────────────────┤
+ *   │ unreachable_passages │ graph start    │ graph expands  │
+ *   │  ·                   │ graph expands  │ graph expands  │
+ *   └──────────────────────┴────────────────┴────────────────┘
+ *
+ * The Start node anchors the graph. The graph expands
+ * rightward (positive X) and downward (positive Y) from that anchor,
+ * giving all nodes positive coordinates — just like Twine's canvas.
+ *
+ * The special passages box sits top-left. Unreachable passages stack
+ * vertically below the box in the left column.
+ */
 
-function classifySpecial(label: string, isMetadata: boolean, isStart: boolean): SpecialGroup {
-  // The start passage is a special case — it should NOT be placed in any
-  // group box. According to Twine's engine design, special passages don't
-  // typically have edges to the start passage. Keeping start outside the
-  // bundles keeps the graph clean since start has many outgoing edges to
-  // user-defined passages.
-  if (isStart) return null;
-  // Metadata passages (tagged [stylesheet], [script], etc.) are Twine-standard
-  if (isMetadata) return 'twine_core';
-  if (TWINE_CORE_SPECIALS.has(label)) return 'twine_core';
-  return 'format_special';
+/** Fixed width for the special passages box (2-column layout). */
+const SPECIAL_BOX_WIDTH = 260;
+/** Origin of the special passages box (top-left corner). */
+const BOX_ORIGIN_X = GRID_SNAP * 2;   // 40
+const BOX_ORIGIN_Y = GRID_SNAP * 2;   // 40
+/** Default anchor position for the start passage when it has no saved position.
+ *  Placed to the right of the unreachable column, at the same vertical level
+ *  as the unreachable passages area. */
+const START_ANCHOR_X = 380;
+const START_ANCHOR_Y = BOX_ORIGIN_Y;
+
+// ── Zoom constraints ──────────────────────────────────────────────────────────
+// The zoom level is controlled entirely by the user's scroll wheel.
+// We clamp it to a sane range to prevent degenerate views.
+const MIN_ZOOM = 0.15;
+const MAX_ZOOM = 4.0;
+
+// ── Special passage hierarchy for box arrangement ──────────────────────────
+// Defines display order within the special passages box for visual symmetry.
+// Core Twine passages come first, then format-specific ones, sorted
+// alphabetically within each tier.
+const SPECIAL_TIER_ORDER: Record<string, number> = {
+  'StoryTitle':      0,
+  'StoryData':       1,
+  'StoryStylesheet': 2,
+  'StoryJavaScript': 3,
+  'StoryInit':       4,
+  'StoryInterface':  5,
+  'StoryCaption':    6,
+  'StoryMenu':       7,
+  'StoryAuthor':     8,
+};
+
+/** Sort key for special passages within the box. Lower tier = displayed first. */
+function specialSortKey(label: string): number {
+  if (label in SPECIAL_TIER_ORDER) return SPECIAL_TIER_ORDER[label];
+  // Unknown special passages go last, sorted alphabetically after tier 10
+  return 10;
 }
 
 // ── Twine-inspired color palette ────────────────────────────────────────────
@@ -53,8 +94,9 @@ const COLORS = {
   edgeCall:    '#ab47bc',
   edgeInclude: '#26a69a',
   edgeJump:    '#ffa726',
-  groupBorder: '#666666',
-  groupBg:     'rgba(255,255,255,0.03)',
+  groupBorder: '#555555',
+  groupBg:     'transparent',
+  selectionBox:'rgba(0,122,204,0.15)',
 };
 
 function getNodeColor(data: {
@@ -82,9 +124,9 @@ const CYTOSCAPE_STYLE: any[] = [
       'text-halign': 'center',
       'font-size': '11px',
       'text-wrap': 'ellipsis',
-      'text-max-width': '90px',
-      'width': 'data(w)',
-      'height': 'data(h)',
+      'text-max-width': `${NODE_W - 10}px`,
+      'width': NODE_W,
+      'height': NODE_H,
       'shape': 'round-rectangle',
       'text-outline-color': 'transparent',
       'text-outline-width': '0px',
@@ -187,15 +229,17 @@ const CYTOSCAPE_STYLE: any[] = [
     },
   },
   // ── Compound group boxes ─────────────────────────────────────────────────
+  // Border-only style — no solid fill. The box is just a labelled border
+  // that visually groups the special passages without obscuring the canvas.
   {
     selector: '.group-box',
     style: {
       'background-color': COLORS.groupBg,
-      'background-opacity': 1,
+      'background-opacity': 0,
       'border-width': 1,
-      'border-style': 'dashed',
+      'border-style': 'solid',
       'border-color': COLORS.groupBorder,
-      'border-opacity': 0.6,
+      'border-opacity': 0.5,
       'label': 'data(label)',
       'text-valign': 'top',
       'text-halign': 'left',
@@ -213,18 +257,30 @@ const CYTOSCAPE_STYLE: any[] = [
       'z-compound-depth': 'bottom',
     },
   },
+  // ── Focused node (highlighted via focusNode command) ────────────────────
+  {
+    selector: 'node.focused',
+    style: {
+      'border-color': '#007acc',
+      'border-width': '3px',
+      'z-index': 998,
+    },
+  },
 ];
 
 // ── Compound group IDs ──────────────────────────────────────────────────────
-const GROUP_TWINE_CORE = '__group_twine_core';
-const GROUP_FORMAT_SPECIAL = '__group_format_special';
-const GROUP_UNREACHABLE = '__group_unreachable';
+const GROUP_SPECIAL = '__group_special';
+// Unreachable passages get NO compound group box — they are positioned
+// to the left side of the main graph in a vertical stack.
 
 interface StoryMapProps {
   graphData: KnotGraphResponse | null;
   layout: string;
   searchQuery: string;
   fitRequested: number;
+  saveRequested: number;
+  focusRequested: number;
+  focusPassageName: string;
   onLayoutChange: (layout: string) => void;
 }
 
@@ -233,6 +289,9 @@ export default function StoryMap({
   layout,
   searchQuery,
   fitRequested,
+  saveRequested,
+  focusRequested,
+  focusPassageName,
   onLayoutChange,
 }: StoryMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -240,6 +299,9 @@ export default function StoryMap({
   const currentDataRef = useRef<KnotGraphResponse | null>(null);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  // Track whether the initial fit has been applied so we don't
+  // re-fit on subsequent graph updates (which would fight user zoom).
+  const initialFitDoneRef = useRef(false);
 
   // ── Pan-aware CSS grid background ─────────────────────────────────────────
   // Updates the container's CSS background-position and background-size
@@ -257,6 +319,45 @@ export default function StoryMap({
     container.style.backgroundPosition = `${pan.x % gridSize}px ${pan.y % gridSize}px`;
   }, []);
 
+  // ── Focus on a node by passage name ─────────────────────────────────────
+  // Pans and zooms the viewport to center on the specified passage node.
+  // Used when navigating to a passage from diagnostics or other views.
+  // Preserves the user's current zoom level — only pans the viewport.
+  const focusOnNode = useCallback((passageName: string) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    // Try to find the node by ID first, then by label
+    let node = cy.getElementById(passageName);
+    if (node.length === 0) {
+      node = cy.nodes().filter((n: any) => n.data('label') === passageName && !n.data('isGroup'));
+    }
+    if (node.length === 0) return;
+
+    const target = node[0];
+
+    // Remove previous focus highlights
+    cy.nodes().removeClass('focused');
+    target.addClass('focused');
+
+    // Pan to center the node in the viewport at the current zoom level.
+    // We do NOT change zoom — the user controls zoom via scroll.
+    cy.animate({
+      pan: {
+        x: (cy.width() / 2) - target.position().x * cy.zoom(),
+        y: (cy.height() / 2) - target.position().y * cy.zoom(),
+      },
+    }, {
+      duration: 300,
+      easing: 'ease-in-out-cubic',
+    });
+
+    // Remove focus highlight after a delay
+    setTimeout(() => {
+      target.removeClass('focused');
+    }, 2000);
+  }, []);
+
   // ── Initialize Cytoscape ──────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) {
@@ -270,15 +371,30 @@ export default function StoryMap({
       container: containerRef.current,
       style: CYTOSCAPE_STYLE,
       layout: { name: 'null' },
+      // ── Box selection: click-drag on empty canvas draws a selection
+      // rectangle. All nodes inside are selected. Dragging any selected
+      // node moves ALL selected nodes together (Cytoscape default).
+      boxSelectionEnabled: true,
+      // Auto-dismiss selection when clicking on empty canvas
+      autounselectify: false,
+      // Allow selecting nodes by clicking
+      selectionType: 'single',
+      // ── Zoom constraints: the zoom level is entirely user-controlled
+      // via scroll wheel. We just clamp it to a sane range.
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
     });
 
     cyRef.current = cy;
     console.log('[StoryMap] Cytoscape instance created successfully');
 
     // Click → open passage (ignore compound group parents)
+    // Ctrl/Cmd+click toggles selection without opening
     cy.on('tap', 'node', (evt) => {
       const node = evt.target;
       if (node.data('isGroup')) return; // skip group parent nodes
+      // If the node is part of a multi-selection, don't open — just select
+      if (cy.nodes(':selected').length > 1 && node.selected()) return;
       const file = node.data('file');
       const line = node.data('line') || 0;
       if (file) {
@@ -286,37 +402,49 @@ export default function StoryMap({
       }
     });
 
-    // Drag end → snap to grid and write back position
-    // NOTE: We do NOT snap during the 'drag' event. Calling node.position()
-    // during an active drag fights with Cytoscape.js's internal drag mechanism,
-    // causing the node to drift away from the pointer. This is especially
-    // noticeable in the narrow sidebar webview where zoom can amplify the
-    // offset. Instead, we let Cytoscape handle the drag naturally and only
-    // apply grid-snapping when the drag gesture completes.
+    // Drag end → snap to grid and write back positions
+    // Handles BOTH single-node drag and multi-node drag (when multiple
+    // nodes are selected, Cytoscape moves them all together).
     cy.on('dragfree', 'node', (evt) => {
       const dragged = evt.target;
       if (!dragged || !dragged.data('id') || dragged.data('isGroup')) return;
-      const pos = dragged.position();
-      const oldX = dragged.data('posX');
-      const oldY = dragged.data('posY');
-      const newX = snapToGrid(pos.x);
-      const newY = snapToGrid(pos.y);
-      // Animate to the snapped position for visual feedback
-      dragged.animate({
-        position: { x: newX, y: newY },
-      }, {
-        duration: 80,
-        easing: 'ease-out',
-        complete: () => {
-          dragged.data('posX', newX);
-          dragged.data('posY', newY);
-        },
+
+      // Collect all selected non-group nodes for batch position update
+      const selectedNodes = cy.nodes(':selected').filter((n: any) => !n.data('isGroup'));
+      const nodesToSnap = selectedNodes.length > 1 ? selectedNodes : cy.collection([dragged]);
+
+      const updates: KnotPositionUpdate[] = [];
+
+      nodesToSnap.forEach((n: any) => {
+        const pos = n.position();
+        const oldX = n.data('posX');
+        const oldY = n.data('posY');
+        const newX = snapToGrid(pos.x);
+        const newY = snapToGrid(pos.y);
+
+        // Animate to snapped position for visual feedback
+        n.animate({
+          position: { x: newX, y: newY },
+        }, {
+          duration: 80,
+          easing: 'ease-out',
+          complete: () => {
+            n.data('posX', newX);
+            n.data('posY', newY);
+          },
+        });
+
+        if (oldX == null || oldY == null ||
+            Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
+          updates.push({
+            passage_name: n.data('id'),
+            position_x: newX,
+            position_y: newY,
+          });
+        }
       });
-      if (oldX == null || oldY == null ||
-          Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
-        const updates: KnotPositionUpdate[] = [
-          { passage_name: dragged.data('id'), position_x: newX, position_y: newY },
-        ];
+
+      if (updates.length > 0) {
         vscode.postMessage({ command: 'updatePositions', updates });
       }
     });
@@ -405,6 +533,11 @@ export default function StoryMap({
 
     console.log('[StoryMap] buildGraph: nodes=', nodes.length, 'edges=', edges.length);
 
+    // Save the current viewport state before rebuilding so we can
+    // restore it after (prevents the "glitching zoom" effect).
+    const prevZoom = cy.zoom();
+    const prevPan = cy.pan();
+
     cy.elements().remove();
 
     const elements: cytoscape.ElementDefinition[] = [];
@@ -418,9 +551,8 @@ export default function StoryMap({
     });
 
     // ── Classify nodes into groups ──────────────────────────────────────
-    const twineCoreChildren: string[] = [];
-    const formatSpecialChildren: string[] = [];
-    const unreachableChildren: string[] = [];
+    const specialChildren: string[] = [];   // all special/metadata passages (one box)
+    const unreachableIds: string[] = [];     // unreachable — no box, positioned to left side
 
     const nodeIds = new Set<string>();
 
@@ -429,43 +561,38 @@ export default function StoryMap({
 
       const isStart = n.is_start || (n.id === 'Start' || n.label === 'Start');
 
-      // Classify special/unreachable into groups.
-      // The start passage is NEVER placed in a group box — it sits outside
-      // so its many outgoing edges to user passages don't clutter the bundles.
-      // Priority: special > unreachable (special passages stay in their
-      // category group even if unreachable; only non-special unreachables
-      // go to the unreachable group)
+      // All special passages (is_special || is_metadata) go into the single
+      // "Special Passages" box, EXCEPT the start passage which sits outside
+      // so its many outgoing edges don't clutter the box.
       if ((n.is_special || n.is_metadata) && !isStart) {
-        const group = classifySpecial(n.label, !!n.is_metadata, isStart);
-        if (group === 'twine_core') {
-          twineCoreChildren.push(n.id);
-        } else if (group === 'format_special') {
-          formatSpecialChildren.push(n.id);
-        }
+        specialChildren.push(n.id);
       } else if (n.is_unreachable) {
-        unreachableChildren.push(n.id);
+        unreachableIds.push(n.id);
       }
 
       const color = getNodeColor({ ...n, is_start: isStart });
-      const size = 60;
-      const hasPos = n.position_x != null && n.position_y != null;
       const isGameLoop = gameLoopMembers.has(n.id);
 
-      // Determine compound parent — start passage never gets a parent
+      // Determine compound parent — start passage never gets a parent.
+      // Unreachable passages also get NO parent (no box for them).
       let parent: string | undefined;
-      if (!isStart) {
-        if (twineCoreChildren.includes(n.id)) {
-          parent = GROUP_TWINE_CORE;
-        } else if (formatSpecialChildren.includes(n.id)) {
-          parent = GROUP_FORMAT_SPECIAL;
-        } else if (unreachableChildren.includes(n.id)) {
-          parent = GROUP_UNREACHABLE;
-        }
+      if (!isStart && specialChildren.includes(n.id)) {
+        parent = GROUP_SPECIAL;
       }
 
       const nodeClasses: string[] = [];
       if (isGameLoop) nodeClasses.push('game_loop');
       if (isStart) nodeClasses.push('is_start');
+
+      // Anchor the start passage at a default location if it has no saved
+      // position. This gives the dagre layout a stable root to build around,
+      // making visual navigation predictable from the very first run.
+      let effectivePosX = n.position_x != null ? snapToGrid(n.position_x) : null;
+      let effectivePosY = n.position_y != null ? snapToGrid(n.position_y) : null;
+      if (isStart && effectivePosX == null && effectivePosY == null) {
+        effectivePosX = snapToGrid(START_ANCHOR_X);
+        effectivePosY = snapToGrid(START_ANCHOR_Y);
+      }
 
       const el: cytoscape.NodeDefinition = {
         data: {
@@ -483,10 +610,11 @@ export default function StoryMap({
           isGroup: false,
           bgColor: color,
           borderColor: n.is_unreachable ? '#3a3a3a' : color,
-          w: n.is_metadata ? 40 : size,
-          h: n.is_metadata ? 40 : size * 0.55,
-          posX: n.position_x != null ? snapToGrid(n.position_x) : null,
-          posY: n.position_y != null ? snapToGrid(n.position_y) : null,
+          // All nodes get standardized dimensions
+          w: NODE_W,
+          h: NODE_H,
+          posX: effectivePosX,
+          posY: effectivePosY,
           var_writes: n.var_writes || [],
           var_reads: n.var_reads || [],
           parent,
@@ -494,8 +622,9 @@ export default function StoryMap({
         classes: nodeClasses,
       };
 
-      if (hasPos) {
-        el.position = { x: snapToGrid(n.position_x!), y: snapToGrid(n.position_y!) };
+      const effectiveHasPos = effectivePosX != null && effectivePosY != null;
+      if (effectiveHasPos) {
+        el.position = { x: effectivePosX!, y: effectivePosY! };
         positionedIds.add(n.id);
       } else {
         unpositioned.push(n);
@@ -504,30 +633,22 @@ export default function StoryMap({
       elements.push(el);
     }
 
-    // ── Add compound group parent nodes ─────────────────────────────────
-    if (twineCoreChildren.length > 0) {
+    // ── Add single compound group parent node ──────────────────────────
+    if (specialChildren.length > 0) {
       elements.push({
-        data: { id: GROUP_TWINE_CORE, label: 'Twine Core', isGroup: true },
+        data: { id: GROUP_SPECIAL, label: 'Special Passages', isGroup: true },
         classes: ['group-box'],
         position: { x: 0, y: 0 }, // will be repositioned
       });
     }
-    if (formatSpecialChildren.length > 0) {
-      elements.push({
-        data: { id: GROUP_FORMAT_SPECIAL, label: 'Format Specials', isGroup: true },
-        classes: ['group-box'],
-        position: { x: 0, y: 0 },
-      });
-    }
-    if (unreachableChildren.length > 0) {
-      elements.push({
-        data: { id: GROUP_UNREACHABLE, label: 'Unreachable', isGroup: true },
-        classes: ['group-box'],
-        position: { x: 0, y: 0 },
-      });
-    }
+    // No group box for unreachable passages — they are arranged to the side.
 
     // ── Edges ───────────────────────────────────────────────────────────
+    // Build a set of special box member IDs for edge suppression.
+    const specialSet = new Set(specialChildren);
+    // Find the start passage ID (same logic as the node loop above).
+    const startId = nodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start')?.id;
+
     const usedEdgeIds = new Set<string>();
     let edgeIndex = 0;
 
@@ -536,6 +657,22 @@ export default function StoryMap({
       if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
         console.warn('[StoryMap] Skipping edge with missing endpoint:', e.source, '->', e.target, '(' + e.edge_type + ')');
         continue;
+      }
+
+      // ── Edge suppression ─────────────────────────────────────────────
+      // 1. No edges between passages inside the special box. Special
+      //    passages are all loaded/serviced at startup; internal edges
+      //    are noise.
+      // 2. No edges from special box members to the start passage. The
+      //    upstream lifecycle chain is implicit and clutters the view.
+      // The ONLY edges drawn to/from special box members are references
+      // FROM outside the box INTO a special passage (e.g., a user passage
+      // that [[-> StoryInterface]]).
+      if (specialSet.has(e.source) && specialSet.has(e.target)) {
+        continue; // both in box → skip
+      }
+      if (specialSet.has(e.source) && e.target === startId) {
+        continue; // box → Start → skip
       }
 
       let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
@@ -581,151 +718,177 @@ export default function StoryMap({
       onLayoutChange(chosenLayout);
     }
 
-    applyLayout(chosenLayout, cy, positionedIds, unpositioned);
+    // Callback to run after layout completes (handles both synchronous
+    // position layout and animated dagre/cose layouts).
+    const afterLayout = () => {
+      // ── Reposition compound groups & anchors ─────────────────────────
+      repositionGroups(cy, specialChildren, unreachableIds);
 
-    // ── Reposition compound groups ──────────────────────────────────────
-    repositionGroups(cy, twineCoreChildren, formatSpecialChildren, unreachableChildren);
+      updateGridBackground();
 
-    updateGridBackground();
-
-    // Pan to origin like Twine, then fit
-    requestAnimationFrame(() => {
-      if (cyRef.current && cyRef.current.nodes().length > 0) {
-        cyRef.current.resize();
-        cyRef.current.fit(undefined, 30);
-        console.log('[StoryMap] Viewport fit applied');
+      // Only fit on the very first build. Subsequent graph updates
+      // (e.g., from file saves triggering refreshGraph) restore the
+      // previous viewport to avoid the "glitching zoom" effect.
+      if (!initialFitDoneRef.current) {
+        initialFitDoneRef.current = true;
+        requestAnimationFrame(() => {
+          if (cyRef.current && cyRef.current.nodes().length > 0) {
+            cyRef.current.resize();
+            cyRef.current.fit(undefined, 30);
+          }
+        });
+      } else {
+        // Restore the viewport state from before the rebuild
+        requestAnimationFrame(() => {
+          if (cyRef.current) {
+            cyRef.current.resize();
+            cyRef.current.viewport({ zoom: prevZoom, pan: prevPan });
+            updateGridBackground();
+          }
+        });
       }
-    });
+    };
+
+    applyLayout(chosenLayout, cy, positionedIds, unpositioned, afterLayout);
   }, [onLayoutChange, updateGridBackground]);
 
   // ── Reposition compound groups after layout ───────────────────────────────
-  // Special passages go to the top-left in labeled boxes.
-  // Start passage goes below the special groups but outside any box.
-  // Unreachable passages go to the bottom-right in a labeled box.
+  // Layout follows the Twine-inspired viewport model:
+  //
+  //   ┌──────────────────────┬────────────────┬────────────────┐
+  //   │ special_passage_group│                │                │
+  //   ├──────────────────────┼────────────────┼────────────────┤
+  //   │ unreachable_passages │ graph start    │ graph expands  │
+  //   │  ·                   │ graph expands  │ graph expands  │
+  //   └──────────────────────┴────────────────┴────────────────┘
+  //
+  // The special passages box is a border-only compound node at the top-left.
+  // Unreachable passages stack vertically below it on the left side.
+  // The Start node anchors the graph to the right of the unreachable column;
+  // from there the graph expands rightward (positive X) and downward
+  // (positive Y).
   const repositionGroups = useCallback((
     cy: cytoscape.Core,
-    twineCoreIds: string[],
-    formatSpecialIds: string[],
+    specialIds: string[],
     unreachableIds: string[],
   ) => {
-    // ── Position Twine Core group at top-left ───────────────────────────
-    let groupY = GRID_SNAP * 2; // start at y=40
+    // ── Position Special Passages group at top-left ─────────────────────
+    // Fixed-width 2-column layout with tiered sort for visual symmetry.
+    // Children are sorted by importance tier (core Twine first, then
+    // format-specific), then alphabetically within each tier.
+    const colWidth = snapToGrid(SPECIAL_BOX_WIDTH / 2);
+    const colGap = GRID_SNAP;
+    const rowGap = GRID_SNAP;
 
-    if (twineCoreIds.length > 0) {
-      const children = twineCoreIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
-      // Sort alphabetically for consistent layout
-      children.sort((a, b) => (a.data('label') || '').localeCompare(b.data('label') || ''));
+    let groupBottomY = BOX_ORIGIN_Y; // tracks the bottom of the group
 
-      let offsetX = GRID_SNAP * 2;
+    if (specialIds.length > 0) {
+      const children = specialIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
+
+      // Sort by tier (importance) then alphabetically for symmetric layout
+      children.sort((a, b) => {
+        const tierA = specialSortKey(a.data('label') || '');
+        const tierB = specialSortKey(b.data('label') || '');
+        if (tierA !== tierB) return tierA - tierB;
+        return (a.data('label') || '').localeCompare(b.data('label') || '');
+      });
+
+      // Lay out children in a 2-column grid within the fixed-width box
+      let col = 0;
+      let rowY = BOX_ORIGIN_Y;
       let rowMaxH = 0;
+
       for (const n of children) {
-        const w = n.width();
-        const h = n.height();
-        if (offsetX + w > 500 && offsetX > GRID_SNAP * 2) {
-          offsetX = GRID_SNAP * 2;
-          groupY += rowMaxH + GRID_SNAP;
+        const h = NODE_H; // standardized height
+
+        // Calculate center position for this cell
+        const cellCenterX = BOX_ORIGIN_X + col * (colWidth + colGap) + colWidth / 2;
+        const cellCenterY = rowY + h / 2;
+
+        n.position({ x: snapToGrid(cellCenterX), y: snapToGrid(cellCenterY) });
+        n.data('posX', snapToGrid(cellCenterX));
+        n.data('posY', snapToGrid(cellCenterY));
+
+        rowMaxH = Math.max(rowMaxH, h);
+
+        // Alternate columns: 0 → 1 → next row
+        col++;
+        if (col >= 2) {
+          col = 0;
+          rowY += rowMaxH + rowGap;
           rowMaxH = 0;
         }
-        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(groupY + h / 2) });
-        n.data('posX', snapToGrid(offsetX + w / 2));
-        n.data('posY', snapToGrid(groupY + h / 2));
-        offsetX += w + GRID_SNAP;
-        rowMaxH = Math.max(rowMaxH, h);
       }
-      // Advance Y past the Twine Core group (compound padding + row height)
-      const twineCoreBB = cy.getElementById(GROUP_TWINE_CORE).boundingBox();
-      groupY = twineCoreBB.y2 + GRID_SNAP;
+
+      // Track the bottom of the group for placing unreachable passages below
+      const groupEl = cy.getElementById(GROUP_SPECIAL);
+      if (groupEl.length > 0) {
+        const bb = groupEl.boundingBox();
+        groupBottomY = bb.y2 + GRID_SNAP * 2;
+      } else {
+        groupBottomY = rowY + rowMaxH + GRID_SNAP * 3;
+      }
+    } else {
+      groupBottomY = BOX_ORIGIN_Y + GRID_SNAP * 2;
     }
 
-    // ── Position Format Specials group below Twine Core ─────────────────
-    if (formatSpecialIds.length > 0) {
-      const children = formatSpecialIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
-      children.sort((a, b) => (a.data('label') || '').localeCompare(b.data('label') || ''));
+    // ── Position Unreachable passages vertically on the LEFT side ───────
+    // Unreachable passages are NOT in a compound group — they stack
+    // vertically (single column) below the special passages box on the
+    // left side of the canvas. This keeps them visible but out of the way
+    // of the main graph flow which expands right and down.
+    if (unreachableIds.length > 0) {
+      const children = unreachableIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
 
-      let offsetX = GRID_SNAP * 2;
-      let rowMaxH = 0;
+      // Vertical stack starting below the special box
+      let offsetY = groupBottomY;
+      const unreachableX = BOX_ORIGIN_X + NODE_W / 2; // same left margin as the special box
+
       for (const n of children) {
-        const w = n.width();
-        const h = n.height();
-        if (offsetX + w > 500 && offsetX > GRID_SNAP * 2) {
-          offsetX = GRID_SNAP * 2;
-          groupY += rowMaxH + GRID_SNAP;
-          rowMaxH = 0;
-        }
-        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(groupY + h / 2) });
-        n.data('posX', snapToGrid(offsetX + w / 2));
-        n.data('posY', snapToGrid(groupY + h / 2));
-        offsetX += w + GRID_SNAP;
-        rowMaxH = Math.max(rowMaxH, h);
-      }
-      // Advance Y past the Format Specials group
-      const formatGroupEl = cy.getElementById(GROUP_FORMAT_SPECIAL);
-      if (formatGroupEl.length > 0) {
-        const formatBB = formatGroupEl.boundingBox();
-        groupY = formatBB.y2 + GRID_SNAP;
+        const h = NODE_H; // standardized height
+        n.position({ x: snapToGrid(unreachableX), y: snapToGrid(offsetY + h / 2) });
+        n.data('posX', snapToGrid(unreachableX));
+        n.data('posY', snapToGrid(offsetY + h / 2));
+        offsetY += h + GRID_SNAP;
       }
     }
 
-    // ── Position Start passage below the special groups ─────────────────
-    // The start passage is placed outside any group box, right below the
-    // special passage area, so its outgoing edges don't clutter the boxes.
+    // ── Position Start passage to the right of the unreachable column ──
+    // The start passage is the graph anchor. It sits to the right of the
+    // left column (special box + unreachable) at the top of the canvas,
+    // so the graph flows right and down from it — just like Twine.
     const startNode = cy.nodes().filter((n: any) => n.data('is_start') && !n.data('isGroup'));
     if (startNode.length > 0) {
       const sn = startNode[0];
-      const w = sn.width();
-      const h = sn.height();
-      sn.position({ x: snapToGrid(GRID_SNAP * 2 + w / 2), y: snapToGrid(groupY + h / 2) });
-      sn.data('posX', snapToGrid(GRID_SNAP * 2 + w / 2));
-      sn.data('posY', snapToGrid(groupY + h / 2));
-      // Advance Y past the start node
-      groupY += h + GRID_SNAP;
-    }
-
-    // ── Position Unreachable group to the right of main graph ───────────
-    if (unreachableIds.length > 0) {
-      // Find the bounding box of all non-unreachable, non-special nodes
-      const reachableNodes = cy.nodes().filter((n: any) =>
-        !n.data('isGroup') && !n.data('is_unreachable') && !n.data('is_special') && !n.data('is_metadata')
-      );
-      let baseX = 400;
-      let baseY = GRID_SNAP * 2;
-
-      if (reachableNodes.length > 0) {
-        const bb = reachableNodes.boundingBox();
-        baseX = bb.x2 + GRID_SNAP * 4;
-        baseY = bb.y1;
-      }
-
-      const children = unreachableIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
-
-      let offsetX = baseX;
-      let offsetY = baseY;
-      let rowMaxH = 0;
-      for (const n of children) {
-        const w = n.width();
-        const h = n.height();
-        if (offsetX + w > baseX + 400 && offsetX > baseX) {
-          offsetX = baseX;
-          offsetY += rowMaxH + GRID_SNAP;
-          rowMaxH = 0;
-        }
-        n.position({ x: snapToGrid(offsetX + w / 2), y: snapToGrid(offsetY + h / 2) });
-        n.data('posX', snapToGrid(offsetX + w / 2));
-        n.data('posY', snapToGrid(offsetY + h / 2));
-        offsetX += w + GRID_SNAP;
-        rowMaxH = Math.max(rowMaxH, h);
+      const existingPosX = sn.data('posX');
+      const existingPosY = sn.data('posY');
+      // Only reposition if the start passage has no position set at all
+      // (i.e., this is a fresh layout with no saved positions)
+      if (existingPosX == null || existingPosY == null) {
+        sn.position({ x: snapToGrid(START_ANCHOR_X), y: snapToGrid(START_ANCHOR_Y + NODE_H / 2) });
+        sn.data('posX', snapToGrid(START_ANCHOR_X));
+        sn.data('posY', snapToGrid(START_ANCHOR_Y + NODE_H / 2));
       }
     }
   }, []);
 
   // ── Apply layout ──────────────────────────────────────────────────────────
+  // The `onComplete` callback is invoked after the layout finishes — for
+  // synchronous layouts it fires immediately, for animated layouts it fires
+  // on the Cytoscape `layoutstop` event. This ensures `repositionGroups`
+  // (passed as onComplete from buildGraph) never gets overridden by a
+  // running layout animation.
   const applyLayout = useCallback((
     name: string,
     cy: cytoscape.Core,
     _positionedIds?: Set<string>,
     _unpositionedNodes?: any[],
+    onComplete?: () => void,
   ) => {
-    if (!cy || cy.nodes().length === 0) return;
+    if (!cy || cy.nodes().length === 0) {
+      onComplete?.();
+      return;
+    }
 
     if (name === 'position') {
       cy.nodes().forEach((n: any) => {
@@ -770,11 +933,11 @@ export default function StoryMap({
           unpos.forEach((n: any) => { n.position({ x: offsetX, y: offsetY }); });
         }
       } else if (unpos.length === cy.nodes().filter((n: any) => !n.data('isGroup')).length) {
-        applyLayout('dagre', cy, _positionedIds, _unpositionedNodes);
+        applyLayout('dagre', cy, _positionedIds, _unpositionedNodes, onComplete);
         return;
       }
 
-      cy.fit(undefined, 30);
+      onComplete?.();
       return;
     }
 
@@ -789,7 +952,14 @@ export default function StoryMap({
       default:
         opts = { name: 'dagre', spacingFactor: 1.0, animate: true };
     }
-    cy.layout(opts).run();
+
+    const layoutInst = cy.layout(opts);
+    // Fire onComplete when the animated layout finishes, so that
+    // repositionGroups doesn't get overridden by the animation.
+    if (onComplete) {
+      layoutInst.one('layoutstop', onComplete);
+    }
+    layoutInst.run();
   }, []);
 
   // ── Update graph when data changes ────────────────────────────────────────
@@ -833,13 +1003,49 @@ export default function StoryMap({
     matched.neighborhood('node').removeClass('dimmed');
   }, [searchQuery]);
 
-  // ── Fit to view ───────────────────────────────────────────────────────────
+  // ── Fit to view (manual only — triggered by toolbar button) ───────────────
   useEffect(() => {
     const cy = cyRef.current;
     if (cy && fitRequested > 0) {
       cy.fit(undefined, 30);
     }
   }, [fitRequested]);
+
+  // ── Focus on a passage node (triggered by extension focusNode message) ────
+  useEffect(() => {
+    if (focusRequested > 0 && focusPassageName) {
+      focusOnNode(focusPassageName);
+    }
+  }, [focusRequested, focusPassageName, focusOnNode]);
+
+  // ── Save all positions to workspace ─────────────────────────────────────
+  // When the user clicks "Save", collect the current position of every
+  // non-group node from the Cytoscape instance and send them to the
+  // extension. The extension forwards to the LSP server which writes
+  // {"position":"x,y"} metadata into each passage header.
+  useEffect(() => {
+    if (saveRequested <= 0) return;
+    const cy = cyRef.current;
+    if (!cy) return;
+
+    const updates: KnotPositionUpdate[] = [];
+    cy.nodes().forEach((n: any) => {
+      if (n.data('isGroup')) return;
+      const id = n.data('id');
+      const pos = n.position();
+      if (id && pos) {
+        updates.push({
+          passage_name: id,
+          position_x: snapToGrid(pos.x),
+          position_y: snapToGrid(pos.y),
+        });
+      }
+    });
+
+    if (updates.length > 0) {
+      vscode.postMessage({ command: 'saveAllPositions', updates });
+    }
+  }, [saveRequested]);
 
   return (
     <div

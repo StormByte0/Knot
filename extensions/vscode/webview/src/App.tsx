@@ -132,14 +132,22 @@ export default function App() {
   useEffect(() => {
     const handler = (event: MessageEvent) => {
       const msg: WebviewInboundMessage = event.data;
-      if (msg.command === 'updateGraph') {
-        console.log('[StoryMap] Received updateGraph:', msg.data?.nodes?.length, 'nodes,', msg.data?.edges?.length, 'edges');
-        setGraphData(msg.data);
-        // Compute stats
-        const nodes = msg.data?.nodes?.length ?? 0;
-        const edges = msg.data?.edges?.length ?? 0;
-        const broken = msg.data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
-        setStats({ nodes, edges, broken });
+      switch (msg.command) {
+        case 'updateGraph':
+          console.log('[StoryMap] Received updateGraph:', msg.data?.nodes?.length, 'nodes,', msg.data?.edges?.length, 'edges');
+          setGraphData(msg.data);
+          // Compute stats
+          const nodes = msg.data?.nodes?.length ?? 0;
+          const edges = msg.data?.edges?.length ?? 0;
+          const broken = msg.data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
+          setStats({ nodes, edges, broken });
+          break;
+        case 'focusNode':
+          // The extension wants us to focus on a specific passage node.
+          // Use the focusRequested counter to trigger the StoryMap effect.
+          setFocusPassageName(msg.passageName);
+          setFocusRequested(Date.now());
+          break;
       }
     };
     window.addEventListener('message', handler);
@@ -157,7 +165,6 @@ export default function App() {
   }, []);
 
   const handleFit = useCallback(() => {
-    // StoryMap will handle this via a ref callback
     setFitRequested(Date.now());
   }, []);
 
@@ -171,6 +178,17 @@ export default function App() {
     setSearchQuery(query);
   }, []);
 
+  // Save all current node positions to the workspace.
+  const [saveRequested, setSaveRequested] = useState(0);
+
+  const handleSavePositions = useCallback(() => {
+    setSaveRequested(Date.now());
+  }, []);
+
+  // Focus on a passage node — triggered by extension message.
+  const [focusRequested, setFocusRequested] = useState(0);
+  const [focusPassageName, setFocusPassageName] = useState('');
+
   return (
     <StoryMapErrorBoundary>
       <div className="app-container">
@@ -181,6 +199,7 @@ export default function App() {
           onLayoutChange={handleLayoutChange}
           onFit={handleFit}
           onRefresh={handleRefresh}
+          onSavePositions={handleSavePositions}
           graphData={graphData}
         />
         <StoryMap
@@ -188,6 +207,9 @@ export default function App() {
           layout={layout}
           searchQuery={searchQuery}
           fitRequested={fitRequested}
+          saveRequested={saveRequested}
+          focusRequested={focusRequested}
+          focusPassageName={focusPassageName}
           onLayoutChange={handleLayoutChange}
         />
         <Tooltip />
