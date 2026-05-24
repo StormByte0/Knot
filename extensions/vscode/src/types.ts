@@ -43,6 +43,10 @@ export interface KnotGraphNode {
     position_x?: number;
     /** The y-coordinate of the passage in the Twine visual editor, if available. */
     position_y?: number;
+    /** Manual group assignment from passage header metadata. */
+    group?: string;
+    /** Node color from passage header metadata. */
+    color?: string;
     /** Persistent variable names written in this passage. */
     var_writes: string[];
     /** Persistent variable names read in this passage. */
@@ -336,6 +340,10 @@ export interface KnotPositionUpdate {
     passage_name: string;
     position_x: number;
     position_y: number;
+    /** Optional group assignment to write back to passage metadata. */
+    group?: string;
+    /** Optional color to write back to passage metadata. */
+    color?: string;
 }
 
 export interface KnotUpdatePositionsParams {

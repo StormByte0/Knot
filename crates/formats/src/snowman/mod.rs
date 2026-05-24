@@ -71,6 +71,8 @@ struct ParsedHeader {
     header_start: usize,
     /// Byte offset where the header line ends (exclusive, before newline).
     header_end: usize,
+    /// Byte offset where the passage name starts (after `::` and any whitespace).
+    name_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,8 +101,11 @@ static RE_WSS_VAR_READ: LazyLock<Regex> =
 static RE_WSS_VAR_WRITE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
 /// Regex for passage headers.
+/// Matches: `:: Name [tags] {"metadata":"..."}` or `:: Name [tags]` or `:: Name`
+/// The JSON metadata block is optional and stripped before name/tag extraction.
+/// Updated to handle optional JSON metadata block after tags (or after name if no tags).
 static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap());
+    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*(?:\{.*\})?\s*$").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -139,7 +144,8 @@ impl SnowmanPlugin {
             let line_end = line_start + line.len();
 
             if let Some(caps) = RE_HEADER.captures(line) {
-                let name = caps.get(1).unwrap().as_str().trim().to_string();
+                let name_match = caps.get(1).unwrap();
+                let name = name_match.as_str().trim().to_string();
                 let tags = caps
                     .get(2)
                     .map(|m| {
@@ -149,11 +155,20 @@ impl SnowmanPlugin {
                             .collect()
                     })
                     .unwrap_or_default();
+                // Compute name_start: offset of the captured name group in source text.
+                // The regex capture starts after `:: ` prefix, but may include leading
+                // whitespace. We compute the actual name start by finding the name
+                // within the capture.
+                let capture_start = line_start + name_match.start();
+                let capture_text = name_match.as_str();
+                let ws_len = capture_text.len() - capture_text.trim_start().len();
+                let name_start = capture_start + ws_len;
                 headers.push(ParsedHeader {
                     name,
                     tags,
                     header_start: line_start,
                     header_end: line_end,
+                    name_start,
                 });
             }
 
@@ -955,7 +970,7 @@ impl FormatPlugin for SnowmanPlugin {
                     modifier: None,
                 });
                 tokens.push(SemanticToken {
-                    start: header.header_start + 2,
+                    start: header.name_start,
                     length: header.name.len(),
                     token_type: name_type,
                     modifier: None,
@@ -982,7 +997,7 @@ impl FormatPlugin for SnowmanPlugin {
                     modifier: None,
                 });
                 tokens.push(SemanticToken {
-                    start: header.header_start + 2,
+                    start: header.name_start,
                     length: header.name.len(),
                     token_type: name_type,
                     modifier: None,

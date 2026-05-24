@@ -69,6 +69,12 @@ pub struct KnotGraphNode {
     /// Persistent variable names read in this passage.
     #[serde(default)]
     pub var_reads: Vec<String>,
+    /// Manual group assignment from passage header metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Node color from passage header metadata (hex or named).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     /// Block assignment for this node (placeholder for future block
     /// detection). `None` means no block has been assigned yet.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -785,6 +791,12 @@ pub struct KnotPositionUpdate {
     pub position_x: f64,
     /// New y coordinate.
     pub position_y: f64,
+    /// Optional group assignment to write back to passage metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Optional color to write back to passage metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// Response: `knot/updatePositions`

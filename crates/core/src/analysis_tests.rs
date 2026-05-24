@@ -238,6 +238,7 @@ mod tests {
         let positions = std::collections::HashMap::new();
         let export = workspace.graph.export_graph_with_metadata_and_vars(
             &tags, &unreachable, &positions, &var_writes, &var_reads,
+            &std::collections::HashMap::new(), &std::collections::HashMap::new(),
         );
 
         assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");
@@ -282,6 +283,7 @@ mod tests {
         let positions = std::collections::HashMap::new();
         let export = workspace.graph.export_graph_with_metadata_and_vars(
             &tags, &unreachable, &positions, &var_writes, &var_reads,
+            &std::collections::HashMap::new(), &std::collections::HashMap::new(),
         );
 
         assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");

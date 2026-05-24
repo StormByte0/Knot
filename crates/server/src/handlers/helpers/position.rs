@@ -223,7 +223,32 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
 /// The position is stored in the "position" field as a string "x,y".
 /// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
 /// Both formats are supported.
+///
+/// This is a convenience wrapper around [`parse_passage_metadata_from_header`]
+/// that extracts only the position. Callers that also need `group` or
+/// `color` should use `parse_passage_metadata_from_header` directly.
+#[allow(dead_code)]
 pub(crate) fn parse_passage_position_from_header(line: &str) -> Option<(f64, f64)> {
+    parse_passage_metadata_from_header(line).and_then(|meta| meta.position)
+}
+
+/// Parsed passage metadata from the header line's JSON block.
+///
+/// The JSON block can contain `position`, `group`, and `color` properties,
+/// and is extensible for future metadata. Only the last `{...}` block on the
+/// line is parsed (matching the Twee 3 specification).
+pub(crate) struct PassageMetadata {
+    pub position: Option<(f64, f64)>,
+    pub group: Option<String>,
+    pub color: Option<String>,
+}
+
+/// Parse all known metadata properties from a passage header line's JSON block.
+///
+/// Twee 3 format: `:: Passage Name [tags] {"position":"100,200","group":"Intro","color":"#ff6600"}`
+///
+/// Returns `None` if no valid JSON metadata block is found on the line.
+pub(crate) fn parse_passage_metadata_from_header(line: &str) -> Option<PassageMetadata> {
     // Find the JSON metadata block at the end of the line
     let brace_start = line.rfind('{')?;
     let after_brace = &line[brace_start..];
@@ -234,24 +259,46 @@ pub(crate) fn parse_passage_position_from_header(line: &str) -> Option<(f64, f64
     // Try to parse as JSON
     let json_val: serde_json::Value = serde_json::from_str(after_brace).ok()?;
 
-    // Try "position" as a string "x,y"
-    if let Some(pos_str) = json_val.get("position").and_then(|v| v.as_str()) {
-        let parts: Vec<&str> = pos_str.split(',').collect();
-        if parts.len() == 2 {
-            let x = parts[0].trim().parse::<f64>().ok()?;
-            let y = parts[1].trim().parse::<f64>().ok()?;
-            return Some((x, y));
+    // Extract position
+    let position = {
+        // Try "position" as a string "x,y"
+        if let Some(pos_str) = json_val.get("position").and_then(|v| v.as_str()) {
+            let parts: Vec<&str> = pos_str.split(',').collect();
+            if parts.len() == 2 {
+                let x = parts[0].trim().parse::<f64>().ok()?;
+                let y = parts[1].trim().parse::<f64>().ok()?;
+                Some((x, y))
+            } else {
+                None
+            }
         }
-    }
+        // Try "position" as a JSON object {"x":...,"y":...}
+        else if let Some(pos_obj) = json_val.get("position").and_then(|v| v.as_object()) {
+            let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
+            let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
+            Some((x, y))
+        } else {
+            None
+        }
+    };
 
-    // Try "position" as a JSON object {"x":...,"y":...}
-    if let Some(pos_obj) = json_val.get("position").and_then(|v| v.as_object()) {
-        let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
-        let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
-        return Some((x, y));
-    }
+    // Extract group
+    let group = json_val
+        .get("group")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
-    None
+    // Extract color
+    let color = json_val
+        .get("color")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Some(PassageMetadata {
+        position,
+        group,
+        color,
+    })
 }
 
 /// Build or update the JSON metadata block in a passage header line with
@@ -262,6 +309,28 @@ pub(crate) fn parse_passage_position_from_header(line: &str) -> Option<(f64, f64
 ///
 /// Returns the new header line with the updated position metadata.
 pub(crate) fn update_passage_position_in_header(line: &str, x: f64, y: f64) -> String {
+    update_passage_metadata_in_header(line, Some((x, y)), None, None)
+}
+
+/// Build or update the JSON metadata block in a passage header line with
+/// position, group, and/or color values.
+///
+/// This writes the **entire** JSON metadata block, preserving existing
+/// properties and updating/adding the ones provided. Per the design spec,
+/// every metadata write rewrites the whole block to avoid partial updates.
+///
+/// - `position`: If provided, sets or updates the "position" field.
+/// - `group`: If `Some(Some(v))`, sets the "group" field. If `Some(None)`,
+///   removes the "group" field. If `None`, leaves the existing value unchanged.
+/// - `color`: Same semantics as `group`.
+///
+/// Returns the new header line with the updated metadata.
+pub(crate) fn update_passage_metadata_in_header(
+    line: &str,
+    position: Option<(f64, f64)>,
+    group: Option<Option<&str>>,
+    color: Option<Option<&str>>,
+) -> String {
     /// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
     fn format_coord(v: f64) -> String {
         if v.fract() == 0.0 {
@@ -271,26 +340,123 @@ pub(crate) fn update_passage_position_in_header(line: &str, x: f64, y: f64) -> S
         }
     }
 
-    let pos_str = format!("{},{}", format_coord(x), format_coord(y));
+    // Strip ALL trailing JSON metadata blocks from the line. This repairs
+    // duplication damage from the old race condition where multiple
+    // position updates could pile up JSON blocks before open_documents
+    // was updated. We keep only the last (most recent) block's data and
+    // merge it with the new values being written.
+    //
+    // Example input:  `:: Name [tags] {"position":"1,2"} {"position":"3,4"}`
+    // After stripping: `:: Name [tags]`  +  merged JSON with latest values
+    let mut stripped_line = line;
+    let mut existing_json: Option<serde_json::Value> = None;
 
-    // Check if there's an existing JSON metadata block
-    if let Some(brace_start) = line.rfind('{') {
-        let after_brace = &line[brace_start..];
-        if after_brace.trim_end().ends_with('}') {
-            // Try to parse the existing JSON and update the position field
-            if let Ok(mut json_val) = serde_json::from_str::<serde_json::Value>(after_brace) {
-                json_val["position"] = serde_json::Value::String(pos_str.clone());
-                if let Ok(new_json) = serde_json::to_string(&json_val) {
-                    let before = line[..brace_start].trim_end();
-                    return format!("{} {}", before, new_json);
+    // Peel off JSON blocks from right to left, keeping only the last one
+    loop {
+        if let Some(brace_start) = stripped_line.rfind('{') {
+            let after_brace = &stripped_line[brace_start..];
+            if after_brace.trim_end().ends_with('}') {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(after_brace) {
+                    // Keep the last (rightmost) block's data — it has the
+                    // most recent position/group/color values.
+                    if existing_json.is_none() {
+                        existing_json = Some(parsed);
+                    }
+                    // Strip this block and continue scanning for more
+                    stripped_line = stripped_line[..brace_start].trim_end();
+                    continue;
                 }
             }
         }
+        break;
     }
 
-    // No existing JSON block — append a new one
+    // If we found an existing JSON block, merge the new values into it
+    if let Some(mut json_val) = existing_json {
+        // Update position if provided
+        if let Some((x, y)) = position {
+            let pos_str = format!("{},{}", format_coord(x), format_coord(y));
+            json_val["position"] = serde_json::Value::String(pos_str);
+        }
+
+        // Update group if provided
+        if let Some(group_opt) = group {
+            match group_opt {
+                Some(v) => {
+                    json_val["group"] = serde_json::Value::String(v.to_string());
+                }
+                None => {
+                    // Remove group field
+                    if let Some(obj) = json_val.as_object_mut() {
+                        obj.remove("group");
+                    }
+                }
+            }
+        }
+
+        // Update color if provided
+        if let Some(color_opt) = color {
+            match color_opt {
+                Some(v) => {
+                    json_val["color"] = serde_json::Value::String(v.to_string());
+                }
+                None => {
+                    // Remove color field
+                    if let Some(obj) = json_val.as_object_mut() {
+                        obj.remove("color");
+                    }
+                }
+            }
+        }
+
+        // Remove empty object — if only "position" remains and it was the
+        // only field, we still keep it. But if position is also None and the
+        // object is empty, don't write an empty {} block.
+        if let Some(obj) = json_val.as_object() {
+            if obj.is_empty() {
+                return stripped_line.to_string();
+            }
+        }
+
+        if let Ok(new_json) = serde_json::to_string(&json_val) {
+            return format!("{} {}", stripped_line, new_json);
+        }
+    }
+
+    // No existing JSON block — create one with provided values
+    let mut json_obj = serde_json::Map::new();
+
+    if let Some((x, y)) = position {
+        let pos_str = format!("{},{}", format_coord(x), format_coord(y));
+        json_obj.insert(
+            "position".to_string(),
+            serde_json::Value::String(pos_str),
+        );
+    }
+
+    if let Some(Some(v)) = group {
+        json_obj.insert(
+            "group".to_string(),
+            serde_json::Value::String(v.to_string()),
+        );
+    }
+
+    if let Some(Some(v)) = color {
+        json_obj.insert(
+            "color".to_string(),
+            serde_json::Value::String(v.to_string()),
+        );
+    }
+
+    if json_obj.is_empty() {
+        // Nothing to write — return the line unchanged
+        return line.to_string();
+    }
+
+    let new_json = serde_json::to_string(&serde_json::Value::Object(json_obj))
+        .unwrap_or_else(|_| "{}".to_string());
     let trimmed = line.trim_end();
-    format!("{} {{\"position\":\"{}\"}}", trimmed, pos_str)
+    format!("{} {}", trimmed, new_json)
 }
 
 // ===========================================================================

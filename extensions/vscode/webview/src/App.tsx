@@ -3,7 +3,6 @@ import { VsCodeApi, KnotGraphResponse, WebviewInboundMessage } from './types';
 import StoryMap from './components/StoryMap';
 import Toolbar from './components/Toolbar';
 import Legend from './components/Legend';
-import Tooltip from './components/Tooltip';
 
 // Acquire the VS Code API — must be called once per webview lifetime
 const vscode: VsCodeApi = acquireVsCodeApi();
@@ -124,7 +123,6 @@ class StoryMapErrorBoundary extends Component<{ children: ReactNode }, ErrorBoun
 
 export default function App() {
   const [graphData, setGraphData] = useState<KnotGraphResponse | null>(null);
-  const [layout, setLayout] = useState<string>('position');
   const [searchQuery, setSearchQuery] = useState('');
   const [stats, setStats] = useState({ nodes: 0, edges: 0, broken: 0 });
 
@@ -144,7 +142,6 @@ export default function App() {
           break;
         case 'focusNode':
           // The extension wants us to focus on a specific passage node.
-          // Use the focusRequested counter to trigger the StoryMap effect.
           setFocusPassageName(msg.passageName);
           setFocusRequested(Date.now());
           break;
@@ -170,10 +167,6 @@ export default function App() {
 
   const [fitRequested, setFitRequested] = useState(0);
 
-  const handleLayoutChange = useCallback((newLayout: string) => {
-    setLayout(newLayout);
-  }, []);
-
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
   }, []);
@@ -195,24 +188,18 @@ export default function App() {
         <Toolbar
           searchQuery={searchQuery}
           onSearchChange={handleSearchChange}
-          layout={layout}
-          onLayoutChange={handleLayoutChange}
           onFit={handleFit}
           onRefresh={handleRefresh}
           onSavePositions={handleSavePositions}
-          graphData={graphData}
         />
         <StoryMap
           graphData={graphData}
-          layout={layout}
           searchQuery={searchQuery}
           fitRequested={fitRequested}
           saveRequested={saveRequested}
           focusRequested={focusRequested}
           focusPassageName={focusPassageName}
-          onLayoutChange={handleLayoutChange}
         />
-        <Tooltip />
         <Legend />
         <div id="statusBar">
           <span id="statNodes">{stats.nodes} passages</span>

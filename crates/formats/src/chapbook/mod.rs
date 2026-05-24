@@ -73,6 +73,8 @@ struct ParsedHeader {
     header_start: usize,
     /// Byte length of the header line (not including trailing newline).
     header_len: usize,
+    /// Byte offset where the passage name starts (after `::` and any whitespace).
+    name_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,27 +167,41 @@ impl ChapbookPlugin {
         results
     }
 
-    /// Parse a single `:: Name [tags]` header line.
+    /// Parse a single `:: Name [tags] {"metadata":"..."}` header line.
     fn parse_header_line(&self, line: &str, offset: usize) -> Option<ParsedHeader> {
-        let rest = line.strip_prefix("::")?;
+        let after_colons = line.strip_prefix("::")?;
+        let whitespace_len = after_colons.len() - after_colons.trim_start().len();
         // Defensive: trim trailing \r in case of CRLF input outside the
         // text.lines() path (e.g., if called from a different code path).
-        let rest = rest.trim_start().trim_end_matches('\r');
+        let rest = after_colons.trim_start().trim_end_matches('\r');
 
-        let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
-            if rest.ends_with(']') {
-                let name_part = rest[..bracket_start].trim();
-                let tag_part = &rest[bracket_start + 1..rest.len() - 1];
+        // Strip JSON metadata block from end of line BEFORE tag extraction.
+        // Twee 3 format: `:: Name [tags] {"position":"100,200","group":"G"}`
+        // Without this, `rest.ends_with(']')` fails because `}` comes after `]`.
+        let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
+            if rest[brace_start..].trim_end().ends_with('}') {
+                &rest[..brace_start]
+            } else {
+                rest
+            }
+        } else {
+            rest
+        };
+
+        let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
+            if rest_before_json.ends_with(']') {
+                let name_part = rest_before_json[..bracket_start].trim();
+                let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
                 let tags = tag_part
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
                 (name_part.to_string(), tags)
             } else {
-                (rest.trim().to_string(), Vec::new())
+                (rest_before_json.trim().to_string(), Vec::new())
             }
         } else {
-            (rest.trim().to_string(), Vec::new())
+            (rest_before_json.trim().to_string(), Vec::new())
         };
 
         if name.is_empty() {
@@ -197,6 +213,7 @@ impl ChapbookPlugin {
             tags,
             header_start: offset,
             header_len: line.len(),
+            name_start: offset + 2 + whitespace_len,
         })
     }
 
@@ -841,7 +858,7 @@ impl FormatPlugin for ChapbookPlugin {
                     modifier: None,
                 });
                 tokens.push(SemanticToken {
-                    start: header.header_start + 2,
+                    start: header.name_start,
                     length: header.name.len(),
                     token_type: name_type,
                     modifier: None,
@@ -892,7 +909,7 @@ impl FormatPlugin for ChapbookPlugin {
                     modifier: None,
                 });
                 tokens.push(SemanticToken {
-                    start: header.header_start + 2,
+                    start: header.name_start,
                     length: header.name.len(),
                     token_type: name_type,
                     modifier: None,

@@ -14,13 +14,3 @@ interface VsCodeApi {
 }
 
 declare function acquireVsCodeApi(): VsCodeApi;
-
-// ---------------------------------------------------------------------------
-// Cytoscape-dagre plugin — no @types package available
-// ---------------------------------------------------------------------------
-
-declare module 'cytoscape-dagre' {
-  import { Ext } from 'cytoscape';
-  const dagre: Ext;
-  export default dagre;
-}

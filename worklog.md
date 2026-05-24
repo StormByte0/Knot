@@ -131,3 +131,84 @@ Stage Summary:
 - Bug 3 prevents broken upstream chain visualization after file deletion
 - No memory leaks found (placeholder node accumulation is minor and mitigated by full rebuilds)
 - Pipeline from indexing → graph building → analysis → export is correctly cross-checked and functional
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Graph view grouping redesign — single special passages box, no unreachable box, edge suppression
+
+Work Log:
+- Removed TWINE_CORE_SPECIALS set, SpecialGroup type, and classifySpecial() function
+- Replaced GROUP_TWINE_CORE + GROUP_FORMAT_SPECIAL with single GROUP_SPECIAL compound node labeled "Special Passages"
+- Removed GROUP_UNREACHABLE compound node — unreachable passages now positioned to the side with NO box
+- Updated node classification: all is_special || is_metadata passages (except Start) go into single specialChildren array
+- Updated compound parent assignment: only specialChildren get GROUP_SPECIAL parent; unreachable gets no parent
+- Added edge suppression logic:
+  - Skip edges where both source and target are in the special box (internal edges are noise)
+  - Skip edges from special box members to Start passage (upstream lifecycle is implicit)
+  - Only edges TO special box members from outside the box are drawn
+- Rewrote repositionGroups() to handle single group + unboxed unreachable positioning
+- TypeScript compilation verified clean (both extension and webview)
+- Vite production build verified clean
+
+Stage Summary:
+- One unified "Special Passages" box containing ALL special/metadata passages
+- Unreachable passages positioned to the side without a box
+- Internal special box edges suppressed (no box→box or box→Start edges)
+- Only external→special edges are drawn (e.g., user passage referencing StoryInterface)
+
+---
+Task ID: 5
+Agent: Main Agent
+Task: UI polish — compact 2-column special box, vertical unreachable stack, save positions button, start passage anchor
+
+Work Log:
+- Changed special passages box to fixed-width (240px) 2-column grid layout
+  - Each column gets half the box width, nodes alternate left/right
+  - Variable height grows with number of passages
+  - Looks stable regardless of format (SugarCube has ~8 specials, Harlowe ~4)
+- Changed unreachable passages from horizontal row to vertical stack
+  - Nodes are wider than tall, so horizontal rows run out of view bounds
+  - Vertical stack stays compact and within the right-side margin
+- Added "Save" button to toolbar that collects all node positions and persists to workspace
+  - Webview types: added saveAllPositions message type
+  - Toolbar: added Save button with onSavePositions callback
+  - App: wired saveRequested state → StoryMap → collects positions from Cytoscape
+  - storyMapProvider.ts: added saveAllPositions handler with status bar feedback
+  - extension.ts: added saveAllPositions handler for full-view panel
+- Added start passage anchor: when Start has no saved position, it defaults to (100, 300)
+  - Gives dagre layout a stable root to build around from first run
+  - Respects existing positions when they exist (no override)
+- TypeScript compilation verified clean (both extension and webview)
+- Vite production build verified clean
+
+Stage Summary:
+- Special box: fixed-width 2-column compact grid
+- Unreachable: vertical stack, no horizontal overflow
+- Save positions: toolbar button → batch LSP call → status bar confirmation
+- Start anchor: (100, 300) default when no saved position
+
+---
+Task ID: 3
+Agent: main
+Task: Graph view UI refinements - multi-select, left-side unreachable, Twine layout, border-only box, standardized sizes
+
+Work Log:
+- Enabled Cytoscape box selection (boxSelectionEnabled: true) for click-drag multi-select
+- Updated dragfree handler to snap and persist positions for ALL selected nodes, not just the dragged one
+- Moved unreachable passages from RIGHT side to LEFT side (below the special passages box)
+- Redesigned layout to follow Twine's viewport model: special box top-left, unreachable left column, Start anchor center-right, graph expands right+down
+- Changed special passages box from solid fill (rgba background) to border-only style (background-opacity: 0)
+- Added tiered sort order for special passages within the box (core Twine first: StoryTitle, StoryData, etc.)
+- Standardized all node dimensions to NODE_W=100, NODE_H=36 (removed per-type sizing)
+- Added START_ANCHOR_X=380 so Start sits to the right of the left column
+- Added CSS for box selection overlay (.cy-box-selection)
+- TypeScript and Vite both compile clean
+- Created diffs-only zip at /home/z/my-project/download/knot-v2-diffs.zip
+
+Stage Summary:
+- Multi-select: Click-drag on empty canvas draws selection box; dragging any selected node moves all selected nodes together
+- Layout model: Twine-inspired viewport with positive XY expansion from top-left
+- Unreachable passages: Vertical stack on LEFT side below special box
+- Special box: Border-only (no fill), 2-column grid with tiered hierarchy
+- Node sizes: Standardized 100x36 for all passage nodes

@@ -691,6 +691,8 @@ impl PassageGraph {
             passage_positions,
             &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         )
     }
 
@@ -706,6 +708,8 @@ impl PassageGraph {
         passage_positions: &std::collections::HashMap<String, (f64, f64)>,
         var_writes: &std::collections::HashMap<String, Vec<String>>,
         var_reads: &std::collections::HashMap<String, Vec<String>>,
+        passage_groups: &std::collections::HashMap<String, String>,
+        passage_colors: &std::collections::HashMap<String, String>,
     ) -> GraphExport {
         let nodes: Vec<GraphNodeExport> = self
             .graph
@@ -732,6 +736,8 @@ impl PassageGraph {
                     is_metadata: node.is_metadata,
                     is_unreachable: unreachable.contains(&node.name),
                     position: passage_positions.get(&node.name).copied(),
+                    group: passage_groups.get(&node.name).cloned(),
+                    color: passage_colors.get(&node.name).cloned(),
                     var_writes: var_writes.get(&node.name).cloned().unwrap_or_default(),
                     var_reads: var_reads.get(&node.name).cloned().unwrap_or_default(),
                     block: None,
@@ -880,6 +886,27 @@ impl PassageGraph {
         self.export_graph_with_metadata(
             &std::collections::HashMap::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    /// Full graph export with variable summaries (convenience wrapper
+    /// without group/color metadata).
+    pub fn export_graph_with_vars(
+        &self,
+        passage_tags: &std::collections::HashMap<String, Vec<String>>,
+        unreachable: &std::collections::HashSet<String>,
+        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
+        var_writes: &std::collections::HashMap<String, Vec<String>>,
+        var_reads: &std::collections::HashMap<String, Vec<String>>,
+    ) -> GraphExport {
+        self.export_graph_with_metadata_and_vars(
+            passage_tags,
+            unreachable,
+            passage_positions,
+            var_writes,
+            var_reads,
+            &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
         )
     }
@@ -1052,6 +1079,14 @@ pub struct GraphNodeExport {
     /// Data already available from format plugin variable extraction.
     #[serde(default)]
     pub var_reads: Vec<String>,
+    /// Manual group assignment from passage header metadata `{"group":"..."}`.
+    /// Groups are rendered as bounding-box containers in the graph view.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Node color from passage header metadata `{"color":"..."}`.
+    /// Overrides the default category-based color.
+    #[serde(default)]
+    pub color: Option<String>,
     /// Block assignment for this node (placeholder for future block
     /// detection). `None` means no block has been assigned yet.
     #[serde(default)]

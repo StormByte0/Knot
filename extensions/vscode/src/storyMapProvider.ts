@@ -1,31 +1,24 @@
-//! Story Map webview provider for the Knot extension.
+//! Story Map webview panel provider for the Knot extension.
 //!
-//! This module implements a VS Code webview panel that renders an interactive
-//! passage graph using Cytoscape.js, inspired by the Twine 2 story editor.
+//! This module implements the Story Map as a **WebviewPanel only** (no sidebar
+//! WebviewView). Per the v3 design spec:
 //!
-//! The graph UI is built as a React + Vite application located in
-//! `extensions/vscode/webview/`. The Vite build produces two files in
-//! `extensions/vscode/media/storymap/`:
+//! - The Story Map is a visualization and navigation tool, not an editor.
+//! - One panel instance at a time (single-instance guarantee).
+//! - Can be docked anywhere, popped to a separate window.
+//! - Editor ↔ Graph coupling: cursor movement focuses nodes; clicking nodes
+//!   opens passages.
+//! - Viewport persistence via workspace state.
+//!
+//! The graph UI is built as a React + Vite application using React Flow,
+//! located in `extensions/vscode/webview/`. The Vite build produces two files
+//! in `extensions/vscode/media/storymap/`:
 //!
 //!   - `storymap.js`  — the bundled React application
 //!   - `storymap.css` — the bundled styles
 //!
 //! This provider loads those built assets and injects them into a minimal
 //! HTML shell that the VS Code webview API can render.
-//!
-//! Features (all preserved from the original inline implementation):
-//!
-//! - Dot grid background (panning canvas feel)
-//! - Origin at top-left (0,0), start passage near origin
-//! - Position-based layout using Twee passage `{"position":"x,y"}` metadata
-//! - Automatic dagre layout for passages without position data
-//! - Click-to-navigate (clicking a node opens the passage in the editor)
-//! - Color-coded nodes (normal, special, metadata, unreachable)
-//! - Red dashed edges for broken links
-//! - Drag-to-reposition with position write-back (Twine-compatible `{"position":"x,y"}`)
-//! - Search/filter passages by name or tag
-//! - Zoom-to-fit and layout switching controls
-//! - Game loop visualization
 
 import * as vscode from 'vscode';
 import * as path from 'path';
@@ -33,7 +26,7 @@ import * as fs from 'fs';
 import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
 
 // ---------------------------------------------------------------------------
-// Story Map output channel — shared across all StoryMapProvider instances
+// Story Map output channel — shared across all instances
 // ---------------------------------------------------------------------------
 
 let _storyMapChannel: vscode.OutputChannel | null = null;
@@ -47,7 +40,7 @@ function getStoryMapChannel(): vscode.OutputChannel {
 }
 
 // ---------------------------------------------------------------------------
-// Story Map webview provider
+// Nonce helper
 // ---------------------------------------------------------------------------
 
 function getNonce(): string {
@@ -59,165 +52,94 @@ function getNonce(): string {
     return nonce;
 }
 
-export class StoryMapProvider implements vscode.WebviewViewProvider {
-    public static readonly viewType = 'knot.storyMap';
+// ---------------------------------------------------------------------------
+// Story Map Panel Manager (WebviewPanel only, no WebviewView)
+// ---------------------------------------------------------------------------
 
-    private _view?: vscode.WebviewView;
+/**
+ * Manages the single-instance Story Map WebviewPanel.
+ *
+ * Design: There is only ONE graph view at a time. Opening a new one closes
+ * the old one. This eliminates redundant position writes and ensures focusNode
+ * always reaches the active view.
+ */
+export class StoryMapPanelManager {
+    private _panel: vscode.WebviewPanel | null = null;
     private _client: KnotLanguageClient | null = null;
+    private _extensionUri: vscode.Uri;
+    private _context: vscode.ExtensionContext;
     private _graphData: KnotGraphResponse | null = null;
-    // When a popped-out panel is active, the sidebar view is "hidden" —
-    // it should NOT send position updates or handle focusNode. This flag
-    // implements the single-instance guarantee: only one graph view is
-    // authoritative at a time.
-    private _hidden: boolean = false;
 
-    constructor(private readonly _extensionUri: vscode.Uri) {}
-
-    /** Set visibility state. When hidden (panel is active), the sidebar
-     *  view suppresses position writes and focusNode messages. */
-    public setVisible(visible: boolean) {
-        this._hidden = !visible;
+    constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
+        this._extensionUri = extensionUri;
+        this._context = context;
     }
 
-    /** Check if this sidebar view is the active graph view. */
-    public isActive(): boolean {
-        return !this._hidden && !!this._view;
+    /** Dispose the panel (implements Disposable for context.subscriptions). */
+    public dispose() {
+        if (this._panel) {
+            this._panel.dispose();
+            this._panel = null;
+        }
+        this._graphData = null;
     }
 
     /** Set the language client reference so we can send LSP requests. */
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
-        // If the view is already resolved, refresh the graph immediately
-        if (this._view) {
+        // If the panel is already open, refresh immediately
+        if (this._panel) {
             this.refreshGraph();
         }
     }
 
-    /** Resolve the webview view (called when the sidebar panel is opened). */
-    public resolveWebviewView(
-        webviewView: vscode.WebviewView,
-        _context: vscode.WebviewViewResolveContext,
-        _token: vscode.CancellationToken,
-    ) {
-        this._view = webviewView;
+    /** Check if the panel is currently visible. */
+    public isVisible(): boolean {
+        return this._panel !== null && this._panel.visible;
+    }
 
-        webviewView.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [this._extensionUri],
-        };
+    /** Get the panel's view column, if open. */
+    public get viewColumn(): vscode.ViewColumn | undefined {
+        return this._panel?.viewColumn;
+    }
 
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview, false);
+    /** Open or reveal the Story Map panel. Single-instance: opening a new
+     *  one closes the old one. */
+    public async show() {
+        // If a panel already exists, just reveal it
+        if (this._panel) {
+            this._panel.reveal(vscode.ViewColumn.Beside);
+            return;
+        }
 
-        const channel = getStoryMapChannel();
-
-        // Handle messages from the webview
-        webviewView.webview.onDidReceiveMessage(async (message) => {
-            switch (message.command) {
-                case 'openPassage': {
-                    const { file, line } = message;
-                    if (file) {
-                        const uri = vscode.Uri.parse(file);
-                        const doc = await vscode.workspace.openTextDocument(uri);
-                        // Sidebar: open in the active editor — no split created.
-                        // Omitting viewColumn uses VS Code's default (active editor group).
-                        await vscode.window.showTextDocument(doc, {
-                            preview: true,
-                            selection: new vscode.Range(line, 0, line, 200),
-                        });
-                    }
-                    break;
-                }
-                case 'refreshGraph': {
-                    await this.refreshGraph();
-                    break;
-                }
-                case 'openFullView': {
-                    await vscode.commands.executeCommand('knot.openStoryMap');
-                    break;
-                }
-                case 'updatePositions': {
-                    // Suppressed when the sidebar is hidden (panel is active).
-                    // Single-instance guarantee: only one view writes positions.
-                    if (this._hidden) break;
-                    const { updates } = message;
-                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
-                        const workspaceFolders = vscode.workspace.workspaceFolders;
-                        if (workspaceFolders && workspaceFolders.length > 0) {
-                            try {
-                                const params: KnotUpdatePositionsParams = {
-                                    workspace_uri: workspaceFolders[0].uri.toString(),
-                                    updates: updates,
-                                };
-                                const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
-                                if (result.success) {
-                                    setTimeout(() => {
-                                        vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
-                                    }, 100);
-                                }
-                            } catch (e) {
-                                console.error('[Knot] Failed to update passage positions:', e);
-                            }
-                        }
-                    }
-                    break;
-                }
-                case 'saveAllPositions': {
-                    // Suppressed when the sidebar is hidden (panel is active).
-                    if (this._hidden) break;
-                    const { updates } = message;
-                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
-                        const workspaceFolders = vscode.workspace.workspaceFolders;
-                        if (workspaceFolders && workspaceFolders.length > 0) {
-                            try {
-                                const params: KnotUpdatePositionsParams = {
-                                    workspace_uri: workspaceFolders[0].uri.toString(),
-                                    updates: updates,
-                                };
-                                const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', params);
-                                if (result.success) {
-                                    vscode.window.setStatusBarMessage(`Knot: Saved ${result.updated_count} passage positions`, 3000);
-                                    setTimeout(() => {
-                                        vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
-                                    }, 100);
-                                } else if (result.errors && result.errors.length > 0) {
-                                    vscode.window.showWarningMessage(`Knot: Some positions failed to save: ${result.errors.join(', ')}`);
-                                }
-                            } catch (e) {
-                                console.error('[Knot] Failed to save all passage positions:', e);
-                                vscode.window.showErrorMessage('Knot: Failed to save passage positions.');
-                            }
-                        }
-                    }
-                    break;
-                }
-                case 'log': {
-                    // Webview → Extension logging bridge
-                    const { level, message: msg } = message;
-                    const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
-                    channel.appendLine(`${prefix} [${new Date().toLocaleTimeString()}] ${msg}`);
-                    // Also log to the extension host console for debugging
-                    if (level === 'error') {
-                        console.error('[Knot StoryMap]', msg);
-                    } else if (level === 'warn') {
-                        console.warn('[Knot StoryMap]', msg);
-                    } else {
-                        console.log('[Knot StoryMap]', msg);
-                    }
-                    break;
-                }
+        const panel = vscode.window.createWebviewPanel(
+            'knot.storyMapPanel',
+            'Knot Story Map',
+            vscode.ViewColumn.Beside,
+            {
+                enableScripts: true,
+                localResourceRoots: [this._extensionUri],
+                retainContextWhenHidden: true,
             }
-        });
+        );
 
-        // If client is already set, refresh immediately
-        if (this._client) {
-            this.refreshGraph();
+        this._panel = panel;
+        this._setupPanel(panel);
+    }
+
+    /** Focus on a specific passage node in the graph. */
+    public focusNode(passageName: string) {
+        if (this._panel) {
+            this._panel.webview.postMessage({
+                command: 'focusNode',
+                passageName,
+            });
         }
     }
 
-    /** Fetch graph data from the language server and push to the webview.
-     *  Skipped when this sidebar view is hidden (panel is active). */
+    /** Fetch graph data from the language server and push to the webview. */
     public async refreshGraph() {
-        if (!this._client || !this._client.isRunning() || this._hidden) {
+        if (!this._client || !this._client.isRunning() || !this._panel) {
             return;
         }
 
@@ -241,39 +163,186 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
 
     /** Post the current graph data to the webview. */
     private _postGraphData() {
-        if (this._view && this._graphData) {
-            this._view.webview.postMessage({
+        if (this._panel && this._graphData) {
+            this._panel.webview.postMessage({
                 command: 'updateGraph',
                 data: this._graphData,
             });
         }
     }
 
-    /** Tell the Story Map webview to pan and focus on a specific passage node.
-     *  Called when navigating to a passage from diagnostics, debug view, etc.
-     *  Skipped when this sidebar view is hidden (panel is active). */
-    public focusNode(passageName: string) {
-        if (this._view && !this._hidden) {
-            this._view.webview.postMessage({
-                command: 'focusNode',
-                passageName,
-            });
+    /** Set up a newly created panel with HTML, message handlers, and lifecycle. */
+    private _setupPanel(panel: vscode.WebviewPanel) {
+        // Generate the HTML for the webview
+        panel.webview.html = this._getHtmlForWebview(panel.webview);
+
+        // Restore viewport from workspace state
+        const savedViewport = this._context.workspaceState.get<{ x: number; y: number; zoom: number }>('knot.storyMapViewport');
+        if (savedViewport) {
+            // Send viewport after a short delay to let the webview initialize
+            setTimeout(() => {
+                panel.webview.postMessage({
+                    command: 'restoreViewport',
+                    x: savedViewport.x,
+                    y: savedViewport.y,
+                    zoom: savedViewport.zoom,
+                });
+            }, 200);
+        }
+
+        const channel = getStoryMapChannel();
+
+        // Handle messages from the webview
+        panel.webview.onDidReceiveMessage(async (message) => {
+            switch (message.command) {
+                case 'openPassage': {
+                    const { file, line } = message;
+                    if (file) {
+                        const uri = vscode.Uri.parse(file);
+                        const doc = await vscode.workspace.openTextDocument(uri);
+                        const targetColumn = this._findTargetViewColumn(panel.viewColumn);
+                        await vscode.window.showTextDocument(doc, {
+                            preview: true,
+                            viewColumn: targetColumn,
+                            selection: new vscode.Range(line, 0, line, 200),
+                        });
+                    }
+                    break;
+                }
+                case 'refreshGraph': {
+                    await this.refreshGraph();
+                    break;
+                }
+                case 'updatePositions': {
+                    const { updates } = message;
+                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            try {
+                                await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', {
+                                    workspace_uri: workspaceFolders[0].uri.toString(),
+                                    updates: updates,
+                                });
+                            } catch (e) {
+                                console.error('[Knot] Failed to update passage positions:', e);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case 'saveAllPositions': {
+                    const { updates } = message;
+                    if (this._client && this._client.isRunning() && updates && updates.length > 0) {
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            try {
+                                const result = await this._client.sendRequest<KnotUpdatePositionsResponse>('knot/updatePositions', {
+                                    workspace_uri: workspaceFolders[0].uri.toString(),
+                                    updates: updates,
+                                });
+                                if (result.success) {
+                                    vscode.window.setStatusBarMessage(`Knot: Saved ${result.updated_count} passage positions`, 3000);
+                                } else if (result.errors && result.errors.length > 0) {
+                                    vscode.window.showWarningMessage(`Knot: Some positions failed to save: ${result.errors.join(', ')}`);
+                                }
+                            } catch (e) {
+                                console.error('[Knot] Failed to save all passage positions:', e);
+                                vscode.window.showErrorMessage('Knot: Failed to save passage positions.');
+                            }
+                        }
+                    }
+                    break;
+                }
+                case 'updateViewport': {
+                    // Persist viewport state to workspace state
+                    const { x, y, zoom } = message;
+                    this._context.workspaceState.update('knot.storyMapViewport', { x, y, zoom });
+                    break;
+                }
+                case 'log': {
+                    const { level, message: msg } = message;
+                    const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : 'ℹ️';
+                    channel.appendLine(`${prefix} [${new Date().toLocaleTimeString()}] ${msg}`);
+                    if (level === 'error') {
+                        console.error('[Knot StoryMap]', msg);
+                    } else if (level === 'warn') {
+                        console.warn('[Knot StoryMap]', msg);
+                    } else {
+                        console.log('[Knot StoryMap]', msg);
+                    }
+                    break;
+                }
+            }
+        });
+
+        // When the panel is closed, clean up
+        panel.onDidDispose(() => {
+            this._panel = null;
+            this._graphData = null;
+        });
+
+        // When the panel becomes visible again, refresh
+        panel.onDidChangeViewState((e) => {
+            if (e.webviewPanel.visible) {
+                this.refreshGraph();
+            }
+        });
+
+        // Initial graph load
+        if (this._client && this._client.isRunning()) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders && workspaceFolders.length > 0) {
+                this._client.sendRequest<KnotGraphResponse>('knot/graph', {
+                    workspace_uri: workspaceFolders[0].uri.toString(),
+                }).then((result) => {
+                    this._graphData = result;
+                    this._postGraphData();
+                }).catch((e) => {
+                    console.error('[Knot] Failed to fetch initial graph data:', e);
+                });
+            }
         }
     }
 
-    /** Generate HTML for the full-view (detached) webview panel. */
-    public getFullViewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
-        return this._getHtmlForWebview(webview, true);
+    /**
+     * Find the best ViewColumn for opening a passage from the Story Map.
+     *
+     * Logic:
+     * - If the graph panel has no viewColumn (detached window), open in the
+     *   default active editor (no split).
+     * - If the graph is in a tab in the same window, find an existing
+     *   non-graph column to reuse.
+     * - If no non-graph editors exist and the graph is in column 2+,
+     *   open in column 1.
+     * - If the graph is in column 1 and no other editors exist, create a
+     *   column beside it (ViewColumn.Beside).
+     */
+    private _findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
+        if (!graphColumn) {
+            return undefined;
+        }
+
+        const nonGraphEditors = vscode.window.visibleTextEditors.filter(
+            e => e.viewColumn !== undefined && e.viewColumn !== graphColumn
+        );
+
+        if (nonGraphEditors.length > 0) {
+            return nonGraphEditors[0].viewColumn;
+        }
+
+        if (graphColumn > vscode.ViewColumn.One) {
+            return vscode.ViewColumn.One;
+        }
+
+        return vscode.ViewColumn.Beside;
     }
 
-    /** Generate the HTML for the webview.
+    /** Generate HTML for the webview.
      *
      *  This loads the pre-built React application from `media/storymap/`.
-     *  If the build artifacts don't exist yet (e.g., during development
-     *  before running `npm run build:webview`), a fallback page is shown
-     *  with instructions.
+     *  If the build artifacts don't exist yet, a fallback page is shown.
      */
-    private _getHtmlForWebview(webview: vscode.Webview, isFullView: boolean): string {
+    private _getHtmlForWebview(webview: vscode.Webview): string {
         const nonce = getNonce();
 
         // Resolve URIs for the built React app assets
@@ -284,7 +353,7 @@ export class StoryMapProvider implements vscode.WebviewViewProvider {
             vscode.Uri.joinPath(this._extensionUri, 'media', 'storymap', 'storymap.css')
         );
 
-        // Check if the build artifacts exist — if not, show a helpful fallback
+        // Check if the build artifacts exist
         const storymapJsPath = path.join(this._extensionUri.fsPath, 'media', 'storymap', 'storymap.js');
         if (!fs.existsSync(storymapJsPath)) {
             return this._getFallbackHtml(webview, nonce);

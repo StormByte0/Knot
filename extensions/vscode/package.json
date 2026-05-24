@@ -207,7 +207,7 @@
       "knot-container": [
         {
           "type": "webview",
-          "id": "knot.storyMap",
+          "id": "knot.storyMapLaunch",
           "name": "Story Map",
           "icon": "$(graph)",
           "visibility": "visible"
@@ -215,8 +215,15 @@
         {
           "type": "webview",
           "id": "knot.debugView",
-          "name": "Passage Debug",
+          "name": "Passage Diagnostics",
           "icon": "$(bug)",
+          "visibility": "visible"
+        },
+        {
+          "type": "webview",
+          "id": "knot.variableFlowView",
+          "name": "Variable Tracking",
+          "icon": "$(symbol-variable)",
           "visibility": "visible"
         },
         {
@@ -224,13 +231,6 @@
           "id": "knot.profileView",
           "name": "Workspace Profile",
           "icon": "$(dashboard)",
-          "visibility": "visible"
-        },
-        {
-          "type": "webview",
-          "id": "knot.variableFlowView",
-          "name": "Variable Flow",
-          "icon": "$(symbol-variable)",
           "visibility": "visible"
         }
       ]
@@ -243,10 +243,10 @@
           "group": "navigation@10"
         }
       ],
-      "view/title": [
+      "editor/title": [
         {
           "command": "knot.openStoryMap",
-          "when": "view == knot.storyMap",
+          "when": "resourceLangId == twee",
           "group": "navigation"
         }
       ]

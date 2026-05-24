@@ -1,1063 +1,947 @@
-import React, { useEffect, useRef, useCallback } from 'react';
-import cytoscape from 'cytoscape';
-import dagre from 'cytoscape-dagre';
-import { KnotGraphResponse, KnotPositionUpdate } from '../types';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  ReactFlow,
+  MiniMap,
+  Controls,
+  Background,
+  useNodesState,
+  useEdgesState,
+  useReactFlow,
+  Handle,
+  Position,
+  BackgroundVariant,
+  ConnectionMode,
+  Node,
+  Edge,
+  NodeChange,
+  NodePositionChange,
+  NodeProps,
+  BaseEdge,
+  EdgeProps,
+  getSmoothStepPath,
+  ReactFlowProvider,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import dagre from 'dagre';
+import {
+  KnotGraphResponse,
+  KnotGraphNode,
+  KnotGraphEdge,
+  KnotPositionUpdate,
+  PassageNodeData,
+  GroupNodeData,
+} from '../types';
 import { vscode } from '../App';
 
-// Register the dagre layout extension
-cytoscape.use(dagre);
+// ── Constants ──────────────────────────────────────────────────────────────
 
-// ── Snap-to-grid constant (Twine-inspired) ──────────────────────────────────
 const GRID_SNAP = 20;
+const NODE_WIDTH = 150;
+const NODE_HEIGHT = 36;
+const MIN_ZOOM = 0.15;
+const MAX_ZOOM = 4.0;
 
-/** Snap a coordinate to the nearest grid point. */
+// ── Twine-inspired color palette ───────────────────────────────────────────
+
+const COLORS = {
+  normal: '#3a7ca5',
+  start: '#43a047',
+  special: '#ef6c00',
+  metadata: '#8e24aa',
+  unreachable: '#4a4a4a',
+  broken: '#e53935',
+  edgeNormal: '#7a8a9e',
+  edgeUpstream: '#5c6370',
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
 function snapToGrid(value: number): number {
   return Math.round(value / GRID_SNAP) * GRID_SNAP;
 }
 
-// ── Standardized node dimensions ────────────────────────────────────────────
-// All passage nodes use the same width/height so the graph looks clean and
-// predictable. Labels that don't fit are truncated with ellipsis.
-const NODE_W = 100;
-const NODE_H = 36;
-
-// ── Layout constants ──────────────────────────────────────────────────────────
-/**
- * Layout follows a Twine-inspired viewport model:
- *
- *   ┌──────────────────────┬────────────────┬────────────────┐
- *   │ special_passage_group│                │                │
- *   ├──────────────────────┼────────────────┼────────────────┤
- *   │ unreachable_passages │ graph start    │ graph expands  │
- *   │  ·                   │ graph expands  │ graph expands  │
- *   └──────────────────────┴────────────────┴────────────────┘
- *
- * The Start node anchors the graph. The graph expands
- * rightward (positive X) and downward (positive Y) from that anchor,
- * giving all nodes positive coordinates — just like Twine's canvas.
- *
- * The special passages box sits top-left. Unreachable passages stack
- * vertically below the box in the left column.
- */
-
-/** Fixed width for the special passages box (2-column layout). */
-const SPECIAL_BOX_WIDTH = 260;
-/** Origin of the special passages box (top-left corner). */
-const BOX_ORIGIN_X = GRID_SNAP * 2;   // 40
-const BOX_ORIGIN_Y = GRID_SNAP * 2;   // 40
-/** Default anchor position for the start passage when it has no saved position.
- *  Placed to the right of the unreachable column, at the same vertical level
- *  as the unreachable passages area. */
-const START_ANCHOR_X = 380;
-const START_ANCHOR_Y = BOX_ORIGIN_Y;
-
-// ── Zoom constraints ──────────────────────────────────────────────────────────
-// The zoom level is controlled entirely by the user's scroll wheel.
-// We clamp it to a sane range to prevent degenerate views.
-const MIN_ZOOM = 0.15;
-const MAX_ZOOM = 4.0;
-
-// ── Special passage hierarchy for box arrangement ──────────────────────────
-// Defines display order within the special passages box for visual symmetry.
-// Core Twine passages come first, then format-specific ones, sorted
-// alphabetically within each tier.
-const SPECIAL_TIER_ORDER: Record<string, number> = {
-  'StoryTitle':      0,
-  'StoryData':       1,
-  'StoryStylesheet': 2,
-  'StoryJavaScript': 3,
-  'StoryInit':       4,
-  'StoryInterface':  5,
-  'StoryCaption':    6,
-  'StoryMenu':       7,
-  'StoryAuthor':     8,
-};
-
-/** Sort key for special passages within the box. Lower tier = displayed first. */
-function specialSortKey(label: string): number {
-  if (label in SPECIAL_TIER_ORDER) return SPECIAL_TIER_ORDER[label];
-  // Unknown special passages go last, sorted alphabetically after tier 10
-  return 10;
-}
-
-// ── Twine-inspired color palette ────────────────────────────────────────────
-const COLORS = {
-  normal:      '#3a7ca5',
-  start:       '#43a047',
-  special:     '#ef6c00',
-  metadata:    '#8e24aa',
-  unreachable: '#4a4a4a',
-  broken:      '#e53935',
-  gameLoop:    '#ff7043',
-  edgeNormal:  '#7a8a9e',
-  edgeUpstream:'#5c6370',
-  edgeCall:    '#ab47bc',
-  edgeInclude: '#26a69a',
-  edgeJump:    '#ffa726',
-  groupBorder: '#555555',
-  groupBg:     'transparent',
-  selectionBox:'rgba(0,122,204,0.15)',
-};
-
-function getNodeColor(data: {
-  is_metadata?: boolean;
-  is_unreachable?: boolean;
-  is_special?: boolean;
-  is_start?: boolean;
-}): string {
-  if (data.is_unreachable) return COLORS.unreachable;
-  if (data.is_start)       return COLORS.start;
-  if (data.is_metadata)    return COLORS.metadata;
-  if (data.is_special)     return COLORS.special;
+function getNodeColor(node: KnotGraphNode): string {
+  if (node.color) return node.color;
+  if (node.is_unreachable) return COLORS.unreachable;
+  if (node.is_start || node.id === 'Start') return COLORS.start;
+  if (node.is_metadata) return COLORS.metadata;
+  if (node.is_special) return COLORS.special;
   return COLORS.normal;
 }
 
-// ── Cytoscape stylesheet ────────────────────────────────────────────────────
-const CYTOSCAPE_STYLE: any[] = [
-  {
-    selector: 'node',
-    style: {
-      'label': 'data(label)',
-      'background-color': 'data(bgColor)',
-      'color': '#ffffff',
-      'text-valign': 'center',
-      'text-halign': 'center',
-      'font-size': '11px',
-      'text-wrap': 'ellipsis',
-      'text-max-width': `${NODE_W - 10}px`,
-      'width': NODE_W,
-      'height': NODE_H,
-      'shape': 'round-rectangle',
-      'text-outline-color': 'transparent',
-      'text-outline-width': '0px',
-      'border-width': '2px',
-      'border-color': 'data(borderColor)',
-      'font-family': '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-      'font-weight': 'normal',
-    },
-  },
-  {
-    selector: 'edge',
-    style: {
-      'width': 1.5,
-      'line-color': COLORS.edgeNormal,
-      'target-arrow-color': COLORS.edgeNormal,
-      'target-arrow-shape': 'triangle',
-      'arrow-scale': 0.7,
-      'curve-style': 'bezier',
-      'opacity': 0.7,
-    },
-  },
-  {
-    selector: 'edge.is_broken',
-    style: {
-      'line-color': COLORS.broken,
-      'target-arrow-color': COLORS.broken,
-      'line-style': 'dashed',
-      'opacity': 0.9,
-    },
-  },
-  {
-    selector: 'edge.is_upstream',
-    style: {
-      'line-style': 'dashed',
-      'line-color': COLORS.edgeUpstream,
-      'target-arrow-color': COLORS.edgeUpstream,
-      'opacity': 0.4,
-    },
-  },
-  {
-    selector: 'edge.is_call',
-    style: {
-      'line-color': COLORS.edgeCall,
-      'target-arrow-color': COLORS.edgeCall,
-      'line-style': 'dotted',
-    },
-  },
-  {
-    selector: 'edge.is_include',
-    style: {
-      'line-color': COLORS.edgeInclude,
-      'target-arrow-color': COLORS.edgeInclude,
-      'line-style': 'dotted',
-    },
-  },
-  {
-    selector: 'edge.is_jump',
-    style: {
-      'line-color': COLORS.edgeJump,
-      'target-arrow-color': COLORS.edgeJump,
-    },
-  },
-  {
-    selector: 'edge.has_label',
-    style: {
-      'label': 'data(displayText)',
-      'font-size': '8px',
-      'text-rotation': 'autorotate',
-      'text-outline-color': '#1e1e2e',
-      'text-outline-width': '2px',
-      'color': '#aab0bc',
-    },
-  },
-  {
-    selector: 'node.highlighted',
-    style: { 'border-color': '#ffffff', 'border-width': '3px', 'z-index': 999 },
-  },
-  {
-    selector: 'node.dimmed',
-    style: { 'opacity': 0.2 },
-  },
-  {
-    selector: 'edge.dimmed',
-    style: { 'opacity': 0.08 },
-  },
-  {
-    selector: 'node.game_loop',
-    style: {
-      'border-color': COLORS.gameLoop,
-      'border-width': '3px',
-      'border-style': 'double',
-    },
-  },
-  {
-    selector: 'node.is_start',
-    style: {
-      'font-weight': 'bold',
-      'border-width': '3px',
-      'border-color': '#ffffff',
-    },
-  },
-  // ── Compound group boxes ─────────────────────────────────────────────────
-  // Border-only style — no solid fill. The box is just a labelled border
-  // that visually groups the special passages without obscuring the canvas.
-  {
-    selector: '.group-box',
-    style: {
-      'background-color': COLORS.groupBg,
-      'background-opacity': 0,
-      'border-width': 1,
-      'border-style': 'solid',
-      'border-color': COLORS.groupBorder,
-      'border-opacity': 0.5,
-      'label': 'data(label)',
-      'text-valign': 'top',
-      'text-halign': 'left',
-      'font-size': '9px',
-      'color': '#888888',
-      'text-margin-x': 4,
-      'text-margin-y': 2,
-      'padding-left': 8,
-      'padding-right': 8,
-      'padding-top': 16,
-      'padding-bottom': 6,
-      'shape': 'round-rectangle',
-      'compound-sizing-wrt-labels': 'include',
-      'z-index': 0,
-      'z-compound-depth': 'bottom',
-    },
-  },
-  // ── Focused node (highlighted via focusNode command) ────────────────────
-  {
-    selector: 'node.focused',
-    style: {
-      'border-color': '#007acc',
-      'border-width': '3px',
-      'z-index': 998,
-    },
-  },
-];
+// ── Debounce utility ───────────────────────────────────────────────────────
 
-// ── Compound group IDs ──────────────────────────────────────────────────────
-const GROUP_SPECIAL = '__group_special';
-// Unreachable passages get NO compound group box — they are positioned
-// to the left side of the main graph in a vertical stack.
+function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const debounced = (...args: Parameters<T>) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+  return debounced as T;
+}
 
-interface StoryMapProps {
+// ── Custom Node: Passage ───────────────────────────────────────────────────
+
+function PassageNodeComponent({ data }: NodeProps<Node<PassageNodeData>>) {
+  const d = data as PassageNodeData;
+  const color = d.color || COLORS.normal;
+
+  const nodeClassNames = [
+    'passage-node',
+    d.is_start && 'passage-node--start',
+    d.is_special && 'passage-node--special',
+    d.is_metadata && 'passage-node--metadata',
+    d.is_unreachable && 'passage-node--unreachable',
+    d.highlighted && 'passage-node--highlighted',
+    d.dimmed && 'passage-node--dimmed',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return (
+    <div
+      className={nodeClassNames}
+      style={{
+        backgroundColor: color,
+        borderColor: d.is_unreachable ? '#3a3a3a' : color,
+      }}
+    >
+      <Handle
+        type="target"
+        position={Position.Top}
+        style={{ background: 'transparent', border: 'none', width: 8, height: 8 }}
+      />
+      <span className="passage-node__label" title={d.label}>
+        {d.label}
+      </span>
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        style={{ background: 'transparent', border: 'none', width: 8, height: 8 }}
+      />
+    </div>
+  );
+}
+
+// ── Custom Node: Group ─────────────────────────────────────────────────────
+
+function GroupNodeComponent({ data }: NodeProps<Node<GroupNodeData>>) {
+  const d = data as GroupNodeData;
+
+  return (
+    <div className="group-node">
+      <div className="group-node__label">{d.label}</div>
+    </div>
+  );
+}
+
+// ── Custom Edges ───────────────────────────────────────────────────────────
+
+function NavigationEdge(props: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    sourcePosition: props.sourcePosition,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    targetPosition: props.targetPosition,
+    borderRadius: 8,
+  });
+
+  return (
+    <BaseEdge
+      id={props.id}
+      path={edgePath}
+      style={{
+        stroke: COLORS.edgeNormal,
+        strokeWidth: 1.5,
+        opacity: 0.7,
+      }}
+      markerEnd="url(#arrowhead)"
+    />
+  );
+}
+
+function UpstreamEdge(props: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    sourcePosition: props.sourcePosition,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    targetPosition: props.targetPosition,
+    borderRadius: 8,
+  });
+
+  return (
+    <BaseEdge
+      id={props.id}
+      path={edgePath}
+      style={{
+        stroke: COLORS.edgeUpstream,
+        strokeWidth: 1.5,
+        strokeDasharray: '5 3',
+        opacity: 0.4,
+      }}
+      markerEnd="url(#arrowhead-upstream)"
+    />
+  );
+}
+
+function BrokenEdge(props: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    sourcePosition: props.sourcePosition,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    targetPosition: props.targetPosition,
+    borderRadius: 8,
+  });
+
+  return (
+    <BaseEdge
+      id={props.id}
+      path={edgePath}
+      style={{
+        stroke: COLORS.broken,
+        strokeWidth: 1.5,
+        strokeDasharray: '6 3',
+        opacity: 0.9,
+      }}
+      markerEnd="url(#arrowhead-broken)"
+    />
+  );
+}
+
+// ── Node type map ──────────────────────────────────────────────────────────
+
+const nodeTypes = {
+  passage: PassageNodeComponent,
+  group: GroupNodeComponent,
+};
+
+const edgeTypes = {
+  navigation: NavigationEdge,
+  upstream: UpstreamEdge,
+  broken: BrokenEdge,
+};
+
+// ── Dagre layout (fallback for unpositioned nodes) ─────────────────────────
+
+function runDagreLayout(
+  nodes: Node[],
+  edges: Edge[],
+): Map<string, { x: number; y: number }> {
+  const g = new dagre.graphlib.Graph();
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 70, marginx: 40, marginy: 40 });
+
+  for (const node of nodes) {
+    const w = node.type === 'group' ? 300 : NODE_WIDTH;
+    const h = node.type === 'group' ? 200 : NODE_HEIGHT;
+    g.setNode(node.id, { width: w, height: h });
+  }
+
+  for (const edge of edges) {
+    g.setEdge(edge.source, edge.target);
+  }
+
+  dagre.layout(g);
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const node of nodes) {
+    const pos = g.node(node.id);
+    if (pos) {
+      positions.set(node.id, { x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
+    }
+  }
+
+  return positions;
+}
+
+// ── Build graph data into React Flow nodes and edges ───────────────────────
+
+function buildGraphElements(
+  data: KnotGraphResponse,
+): { nodes: Node[]; edges: Edge[] } {
+  const rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
+  const rawEdges = Array.isArray(data?.edges) ? data.edges : [];
+
+  // Collect groups
+  const groupMap = new Map<string, { label: string; members: string[] }>();
+  for (const n of rawNodes) {
+    if (n.group) {
+      if (!groupMap.has(n.group)) {
+        groupMap.set(n.group, { label: n.group, members: [] });
+      }
+      groupMap.get(n.group)!.members.push(n.id);
+    }
+  }
+
+  // Only use EXPLICIT groups from passage metadata. No auto-grouping.
+  // Unreachable passages should NOT be lumped into a "Special Passages"
+  // group — that was confusing and hid real structural issues.
+
+  // Identify start ID for edge suppression
+  const startId = rawNodes.find(
+    (n) => n.is_start || n.id === 'Start' || n.label === 'Start',
+  )?.id;
+
+  // Build set of special passage IDs for edge suppression
+  const specialSet = new Set<string>();
+  for (const n of rawNodes) {
+    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
+    if ((n.is_special || n.is_metadata) && !isStart) {
+      specialSet.add(n.id);
+    }
+  }
+
+  // ── Create group nodes ──────────────────────────────────────────────
+  const rfNodes: Node[] = [];
+  const groupChildToParent = new Map<string, string>();
+
+  for (const [groupId, group] of groupMap) {
+    for (const memberId of group.members) {
+      groupChildToParent.set(memberId, groupId);
+    }
+
+    rfNodes.push({
+      id: groupId,
+      type: 'group',
+      position: { x: 0, y: 0 },
+      data: { label: group.label } as GroupNodeData,
+      style: {
+        width: 300,
+        height: 200,
+      },
+      draggable: false,
+      selectable: false,
+    });
+  }
+
+  // ── Create passage nodes ────────────────────────────────────────────
+  const positionedNodes: Node[] = [];
+  const unpositionedNodes: Node[] = [];
+
+  for (const n of rawNodes) {
+    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
+    const color = getNodeColor(n);
+    const parentId = groupChildToParent.get(n.id);
+
+    let posX = n.position_x != null ? snapToGrid(n.position_x) : null;
+    let posY = n.position_y != null ? snapToGrid(n.position_y) : null;
+
+    const rfNode: Node<PassageNodeData> = {
+      id: n.id,
+      type: 'passage',
+      position: { x: posX ?? 0, y: posY ?? 0 },
+      data: {
+        label: n.label,
+        file: n.file,
+        line: n.line,
+        tags: n.tags || [],
+        out_degree: n.out_degree || 0,
+        in_degree: n.in_degree || 0,
+        is_special: !!n.is_special,
+        is_metadata: !!n.is_metadata,
+        is_unreachable: !!n.is_unreachable,
+        is_start: isStart,
+        color,
+        metadata_color: n.color,  // only the server-provided metadata color
+        var_writes: n.var_writes || [],
+        var_reads: n.var_reads || [],
+        group: n.group,
+        dimmed: false,
+        highlighted: false,
+      },
+      parentId,
+    };
+
+    if (posX != null && posY != null) {
+      positionedNodes.push(rfNode);
+    } else {
+      unpositionedNodes.push(rfNode);
+    }
+
+    rfNodes.push(rfNode);
+  }
+
+  // ── Layout unpositioned nodes with dagre ────────────────────────────
+  if (unpositionedNodes.length > 0) {
+    // Build edges for the unpositioned subgraph
+    const nodeIds = new Set(unpositionedNodes.map((n) => n.id));
+    const subEdges: Edge[] = rawEdges
+      .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+      .map((e) => ({
+        id: `${e.source}->${e.target}`,
+        source: e.source,
+        target: e.target,
+      }));
+
+    const dagrePositions = runDagreLayout(unpositionedNodes, subEdges);
+
+    // If there are also positioned nodes, offset the dagre layout so it
+    // doesn't overlap with the positioned nodes
+    if (positionedNodes.length > 0) {
+      let maxX = -Infinity;
+      let minY = Infinity;
+      for (const pn of positionedNodes) {
+        if (pn.position.x > maxX) maxX = pn.position.x;
+        if (pn.position.y < minY) minY = pn.position.y;
+      }
+      const offsetX = maxX + NODE_WIDTH + GRID_SNAP * 3;
+      const offsetY = minY;
+
+      for (const un of unpositionedNodes) {
+        const pos = dagrePositions.get(un.id);
+        if (pos) {
+          un.position = {
+            x: pos.x + offsetX,
+            y: pos.y + offsetY,
+          };
+        }
+      }
+    } else {
+      // All nodes are unpositioned — just use dagre positions directly
+      for (const un of unpositionedNodes) {
+        const pos = dagrePositions.get(un.id);
+        if (pos) {
+          un.position = { x: pos.x, y: pos.y };
+        }
+      }
+    }
+  }
+
+  // ── Position group nodes to encompass their children ────────────────
+  for (const [groupId, group] of groupMap) {
+    const childNodes = rfNodes.filter(
+      (n) => groupChildToParent.get(n.id) === groupId,
+    );
+    if (childNodes.length === 0) continue;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const cn of childNodes) {
+      minX = Math.min(minX, cn.position.x - NODE_WIDTH / 2);
+      minY = Math.min(minY, cn.position.y - NODE_HEIGHT / 2);
+      maxX = Math.max(maxX, cn.position.x + NODE_WIDTH / 2);
+      maxY = Math.max(maxY, cn.position.y + NODE_HEIGHT / 2);
+    }
+
+    const padding = 30;
+    const groupNode = rfNodes.find((n) => n.id === groupId);
+    if (groupNode) {
+      groupNode.position = {
+        x: snapToGrid(minX - padding),
+        y: snapToGrid(minY - padding - 20), // extra top padding for label
+      };
+      groupNode.style = {
+        width: snapToGrid(maxX - minX + padding * 2),
+        height: snapToGrid(maxY - minY + padding * 2 + 20),
+      };
+    }
+
+    // Offset child positions relative to group
+    if (groupNode) {
+      const gx = groupNode.position.x;
+      const gy = groupNode.position.y;
+      for (const cn of childNodes) {
+        // Children with parentId are positioned absolutely in React Flow
+        // unless the group is a subflow. We use absolute positioning.
+      }
+    }
+  }
+
+  // ── Create edges ────────────────────────────────────────────────────
+  const nodeIds = new Set(rawNodes.map((n) => n.id));
+  const rfEdges: Edge[] = [];
+  const usedEdgeIds = new Set<string>();
+  let edgeIndex = 0;
+
+  for (const e of rawEdges) {
+    // Skip edges referencing missing nodes
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
+      continue;
+    }
+
+    // Edge suppression:
+    // 1. No edges between special passages within the same group
+    // 2. No edges from special group members to Start
+    if (specialSet.has(e.source) && specialSet.has(e.target)) {
+      continue;
+    }
+    if (specialSet.has(e.source) && e.target === startId) {
+      continue;
+    }
+
+    let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
+    if (usedEdgeIds.has(edgeId)) {
+      edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}_${edgeIndex}]`;
+    }
+    usedEdgeIds.add(edgeId);
+    edgeIndex++;
+
+    // Determine edge type for rendering
+    let edgeType = 'navigation';
+    if (e.edge_type === 'upstream') {
+      edgeType = 'upstream';
+    } else if (e.edge_type === 'broken') {
+      edgeType = 'broken';
+    }
+
+    rfEdges.push({
+      id: edgeId,
+      source: e.source,
+      target: e.target,
+      type: edgeType,
+      data: {
+        displayText: e.display_text || null,
+      },
+    });
+  }
+
+  return { nodes: rfNodes, edges: rfEdges };
+}
+
+// ── SVG marker definitions for arrowheads ──────────────────────────────────
+
+function ArrowMarkers() {
+  return (
+    <defs>
+      <marker
+        id="arrowhead"
+        markerWidth="10"
+        markerHeight="7"
+        refX="9"
+        refY="3.5"
+        orient="auto"
+        markerUnits="strokeWidth"
+      >
+        <polygon
+          points="0 0, 10 3.5, 0 7"
+          fill={COLORS.edgeNormal}
+          opacity="0.7"
+        />
+      </marker>
+      <marker
+        id="arrowhead-upstream"
+        markerWidth="10"
+        markerHeight="7"
+        refX="9"
+        refY="3.5"
+        orient="auto"
+        markerUnits="strokeWidth"
+      >
+        <polygon
+          points="0 0, 10 3.5, 0 7"
+          fill={COLORS.edgeUpstream}
+          opacity="0.4"
+        />
+      </marker>
+      <marker
+        id="arrowhead-broken"
+        markerWidth="10"
+        markerHeight="7"
+        refX="9"
+        refY="3.5"
+        orient="auto"
+        markerUnits="strokeWidth"
+      >
+        <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.broken} opacity="0.9" />
+      </marker>
+    </defs>
+  );
+}
+
+// ── Inner StoryMap component (needs ReactFlow context) ─────────────────────
+
+interface StoryMapInnerProps {
   graphData: KnotGraphResponse | null;
-  layout: string;
   searchQuery: string;
   fitRequested: number;
   saveRequested: number;
   focusRequested: number;
   focusPassageName: string;
-  onLayoutChange: (layout: string) => void;
 }
 
-export default function StoryMap({
+function StoryMapInner({
   graphData,
-  layout,
   searchQuery,
   fitRequested,
   saveRequested,
   focusRequested,
   focusPassageName,
-  onLayoutChange,
-}: StoryMapProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<cytoscape.Core | null>(null);
-  const currentDataRef = useRef<KnotGraphResponse | null>(null);
-  const layoutRef = useRef(layout);
-  layoutRef.current = layout;
-  // Track whether the initial fit has been applied so we don't
-  // re-fit on subsequent graph updates (which would fight user zoom).
+}: StoryMapInnerProps) {
+  const { fitView, setViewport, getViewport, getNode } = useReactFlow();
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
   const initialFitDoneRef = useRef(false);
+  const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+  const graphDataRef = useRef<KnotGraphResponse | null>(null);
+  // When focusNode is active, skip viewport restoration on the next graph
+  // rebuild so the user's manual panning isn't overridden by the saved
+  // viewport from before the focus action.
+  const skipViewportRestoreRef = useRef(false);
 
-  // ── Pan-aware CSS grid background ─────────────────────────────────────────
-  // Updates the container's CSS background-position and background-size
-  // so the dot grid pans and zooms with the Cytoscape viewport.
-  const updateGridBackground = useCallback(() => {
-    const container = containerRef.current;
-    const cy = cyRef.current;
-    if (!container || !cy) return;
-
-    const pan = cy.pan();
-    const zoom = cy.zoom();
-    const gridSize = GRID_SNAP * zoom;
-
-    container.style.backgroundSize = `${gridSize}px ${gridSize}px`;
-    container.style.backgroundPosition = `${pan.x % gridSize}px ${pan.y % gridSize}px`;
-  }, []);
-
-  // ── Focus on a node by passage name ─────────────────────────────────────
-  // Pans and zooms the viewport to center on the specified passage node.
-  // Used when navigating to a passage from diagnostics or other views.
-  // Preserves the user's current zoom level — only pans the viewport.
-  const focusOnNode = useCallback((passageName: string) => {
-    const cy = cyRef.current;
-    if (!cy) return;
-
-    // Try to find the node by ID first, then by label
-    let node = cy.getElementById(passageName);
-    if (node.length === 0) {
-      node = cy.nodes().filter((n: any) => n.data('label') === passageName && !n.data('isGroup'));
-    }
-    if (node.length === 0) return;
-
-    const target = node[0];
-
-    // Remove previous focus highlights
-    cy.nodes().removeClass('focused');
-    target.addClass('focused');
-
-    // Pan to center the node in the viewport at the current zoom level.
-    // We do NOT change zoom — the user controls zoom via scroll.
-    cy.animate({
-      pan: {
-        x: (cy.width() / 2) - target.position().x * cy.zoom(),
-        y: (cy.height() / 2) - target.position().y * cy.zoom(),
-      },
-    }, {
-      duration: 300,
-      easing: 'ease-in-out-cubic',
-    });
-
-    // Remove focus highlight after a delay
-    setTimeout(() => {
-      target.removeClass('focused');
-    }, 2000);
-  }, []);
-
-  // ── Initialize Cytoscape ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (!containerRef.current) {
-      vscode.postMessage({ command: 'log', level: 'warn', message: '[StoryMap] containerRef is null at init time' });
-      return;
-    }
-
-    console.log('[StoryMap] Initializing Cytoscape, container:', containerRef.current.getBoundingClientRect());
-
-    const cy = cytoscape({
-      container: containerRef.current,
-      style: CYTOSCAPE_STYLE,
-      layout: { name: 'null' },
-      // ── Box selection: click-drag on empty canvas draws a selection
-      // rectangle. All nodes inside are selected. Dragging any selected
-      // node moves ALL selected nodes together (Cytoscape default).
-      boxSelectionEnabled: true,
-      // Auto-dismiss selection when clicking on empty canvas
-      autounselectify: false,
-      // Allow selecting nodes by clicking
-      selectionType: 'single',
-      // ── Zoom constraints: the zoom level is entirely user-controlled
-      // via scroll wheel. We just clamp it to a sane range.
-      minZoom: MIN_ZOOM,
-      maxZoom: MAX_ZOOM,
-    });
-
-    cyRef.current = cy;
-    console.log('[StoryMap] Cytoscape instance created successfully');
-
-    // Click → open passage (ignore compound group parents)
-    // Ctrl/Cmd+click toggles selection without opening
-    cy.on('tap', 'node', (evt) => {
-      const node = evt.target;
-      if (node.data('isGroup')) return; // skip group parent nodes
-      // If the node is part of a multi-selection, don't open — just select
-      if (cy.nodes(':selected').length > 1 && node.selected()) return;
-      const file = node.data('file');
-      const line = node.data('line') || 0;
-      if (file) {
-        vscode.postMessage({ command: 'openPassage', file, line });
-      }
-    });
-
-    // Drag end → snap to grid and write back positions
-    // Handles BOTH single-node drag and multi-node drag (when multiple
-    // nodes are selected, Cytoscape moves them all together).
-    cy.on('dragfree', 'node', (evt) => {
-      const dragged = evt.target;
-      if (!dragged || !dragged.data('id') || dragged.data('isGroup')) return;
-
-      // Collect all selected non-group nodes for batch position update
-      const selectedNodes = cy.nodes(':selected').filter((n: any) => !n.data('isGroup'));
-      const nodesToSnap = selectedNodes.length > 1 ? selectedNodes : cy.collection([dragged]);
-
-      const updates: KnotPositionUpdate[] = [];
-
-      nodesToSnap.forEach((n: any) => {
-        const pos = n.position();
-        const oldX = n.data('posX');
-        const oldY = n.data('posY');
-        const newX = snapToGrid(pos.x);
-        const newY = snapToGrid(pos.y);
-
-        // Animate to snapped position for visual feedback
-        n.animate({
-          position: { x: newX, y: newY },
-        }, {
-          duration: 80,
-          easing: 'ease-out',
-          complete: () => {
-            n.data('posX', newX);
-            n.data('posY', newY);
-          },
-        });
-
-        if (oldX == null || oldY == null ||
-            Math.abs(newX - oldX) > 0.5 || Math.abs(newY - oldY) > 0.5) {
-          updates.push({
-            passage_name: n.data('id'),
-            position_x: newX,
-            position_y: newY,
-          });
+  // ── Debounced position update ───────────────────────────────────────
+  const debouncedPositionUpdate = useMemo(
+    () =>
+      debounce((updates: KnotPositionUpdate[]) => {
+        if (updates.length > 0) {
+          vscode.postMessage({ command: 'updatePositions', updates });
         }
-      });
+      }, 150),
+    [],
+  );
 
-      if (updates.length > 0) {
-        vscode.postMessage({ command: 'updatePositions', updates });
-      }
-    });
+  // ── Debounced viewport update ───────────────────────────────────────
+  const debouncedViewportUpdate = useMemo(
+    () =>
+      debounce((x: number, y: number, zoom: number) => {
+        vscode.postMessage({ command: 'updateViewport', x, y, zoom });
+      }, 500),
+    [],
+  );
 
-    // Tooltip: show on mouseover (group parents excluded)
-    cy.on('mouseover', 'node', (evt) => {
-      const d = evt.target.data();
-      if (d.isGroup) return;
-      const tip = document.getElementById('tooltip');
-      if (!tip) return;
-      const nameEl = tip.querySelector('.tt-name');
-      const tagsEl = tip.querySelector('.tt-tags');
-      const metaEl = tip.querySelector('.tt-meta');
-      if (nameEl) nameEl.textContent = d.label;
+  // ── Build graph when data changes ───────────────────────────────────
+  useEffect(() => {
+    if (!graphData) return;
 
-      if (tagsEl) {
-        tagsEl.innerHTML = '';
-        (d.tags || []).forEach((t: string) => {
-          const s = document.createElement('span');
-          s.className = 'tt-tag';
-          s.textContent = t;
-          tagsEl.appendChild(s);
-        });
-      }
-
-      if (metaEl) {
-        const parts: string[] = [];
-        if (d.is_start)       parts.push('Start');
-        if (d.is_special)     parts.push('Special');
-        if (d.is_metadata)    parts.push('Metadata');
-        if (d.is_unreachable) parts.push('Unreachable');
-        if (d.in_degree > 0)  parts.push('In: ' + d.in_degree);
-        if (d.out_degree > 0) parts.push('Out: ' + d.out_degree);
-        if (d.posX != null && d.posY != null) parts.push('(' + Math.round(d.posX) + ', ' + Math.round(d.posY) + ')');
-        metaEl.textContent = parts.join(' | ');
-      }
-
-      tip.style.display = 'block';
-    });
-
-    cy.on('mouseout', 'node', () => {
-      const tip = document.getElementById('tooltip');
-      if (tip) tip.style.display = 'none';
-    });
-
-    cy.on('tapdrag', () => {
-      const tip = document.getElementById('tooltip');
-      if (tip) tip.style.display = 'none';
-    });
-
-    // Pan/zoom → update CSS grid background to stay in sync
-    cy.on('viewport', updateGridBackground);
-
-    // Resize → update Cytoscape + grid
-    const ro = new ResizeObserver(() => {
-      if (cyRef.current) {
-        cyRef.current.resize();
-      }
-      updateGridBackground();
-    });
-    ro.observe(containerRef.current);
-
-    // Deferred resize
-    requestAnimationFrame(() => {
-      if (cyRef.current) {
-        cyRef.current.resize();
-        updateGridBackground();
-      }
-    });
-
-    return () => {
-      ro.disconnect();
-      cy.destroy();
-      cyRef.current = null;
-    };
-  }, [updateGridBackground]);
-
-  // ── Build the graph from server data ──────────────────────────────────────
-  const buildGraph = useCallback((data: KnotGraphResponse) => {
-    const cy = cyRef.current;
-    if (!cy) return;
-
-    const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
-    const edges = Array.isArray(data?.edges) ? data.edges : [];
-    currentDataRef.current = { ...data, nodes, edges };
-
-    console.log('[StoryMap] buildGraph: nodes=', nodes.length, 'edges=', edges.length);
-
-    // Save the current viewport state before rebuilding so we can
-    // restore it after (prevents the "glitching zoom" effect).
-    const prevZoom = cy.zoom();
-    const prevPan = cy.pan();
-
-    cy.elements().remove();
-
-    const elements: cytoscape.ElementDefinition[] = [];
-    const positionedIds = new Set<string>();
-    const unpositioned: typeof nodes = [];
-
-    // Determine game loop members
-    const gameLoopMembers = new Set<string>();
-    (data.game_loops || []).forEach((loop) => {
-      loop.members.forEach((m) => gameLoopMembers.add(m));
-    });
-
-    // ── Classify nodes into groups ──────────────────────────────────────
-    const specialChildren: string[] = [];   // all special/metadata passages (one box)
-    const unreachableIds: string[] = [];     // unreachable — no box, positioned to left side
-
-    const nodeIds = new Set<string>();
-
-    for (const n of nodes) {
-      nodeIds.add(n.id);
-
-      const isStart = n.is_start || (n.id === 'Start' || n.label === 'Start');
-
-      // All special passages (is_special || is_metadata) go into the single
-      // "Special Passages" box, EXCEPT the start passage which sits outside
-      // so its many outgoing edges don't clutter the box.
-      if ((n.is_special || n.is_metadata) && !isStart) {
-        specialChildren.push(n.id);
-      } else if (n.is_unreachable) {
-        unreachableIds.push(n.id);
-      }
-
-      const color = getNodeColor({ ...n, is_start: isStart });
-      const isGameLoop = gameLoopMembers.has(n.id);
-
-      // Determine compound parent — start passage never gets a parent.
-      // Unreachable passages also get NO parent (no box for them).
-      let parent: string | undefined;
-      if (!isStart && specialChildren.includes(n.id)) {
-        parent = GROUP_SPECIAL;
-      }
-
-      const nodeClasses: string[] = [];
-      if (isGameLoop) nodeClasses.push('game_loop');
-      if (isStart) nodeClasses.push('is_start');
-
-      // Anchor the start passage at a default location if it has no saved
-      // position. This gives the dagre layout a stable root to build around,
-      // making visual navigation predictable from the very first run.
-      let effectivePosX = n.position_x != null ? snapToGrid(n.position_x) : null;
-      let effectivePosY = n.position_y != null ? snapToGrid(n.position_y) : null;
-      if (isStart && effectivePosX == null && effectivePosY == null) {
-        effectivePosX = snapToGrid(START_ANCHOR_X);
-        effectivePosY = snapToGrid(START_ANCHOR_Y);
-      }
-
-      const el: cytoscape.NodeDefinition = {
-        data: {
-          id: n.id,
-          label: n.label,
-          file: n.file,
-          line: n.line,
-          tags: n.tags || [],
-          out_degree: n.out_degree || 0,
-          in_degree: n.in_degree || 0,
-          is_special: !!n.is_special,
-          is_metadata: !!n.is_metadata,
-          is_unreachable: !!n.is_unreachable,
-          is_start: isStart,
-          isGroup: false,
-          bgColor: color,
-          borderColor: n.is_unreachable ? '#3a3a3a' : color,
-          // All nodes get standardized dimensions
-          w: NODE_W,
-          h: NODE_H,
-          posX: effectivePosX,
-          posY: effectivePosY,
-          var_writes: n.var_writes || [],
-          var_reads: n.var_reads || [],
-          parent,
-        },
-        classes: nodeClasses,
-      };
-
-      const effectiveHasPos = effectivePosX != null && effectivePosY != null;
-      if (effectiveHasPos) {
-        el.position = { x: effectivePosX!, y: effectivePosY! };
-        positionedIds.add(n.id);
-      } else {
-        unpositioned.push(n);
-      }
-
-      elements.push(el);
-    }
-
-    // ── Add single compound group parent node ──────────────────────────
-    if (specialChildren.length > 0) {
-      elements.push({
-        data: { id: GROUP_SPECIAL, label: 'Special Passages', isGroup: true },
-        classes: ['group-box'],
-        position: { x: 0, y: 0 }, // will be repositioned
-      });
-    }
-    // No group box for unreachable passages — they are arranged to the side.
-
-    // ── Edges ───────────────────────────────────────────────────────────
-    // Build a set of special box member IDs for edge suppression.
-    const specialSet = new Set(specialChildren);
-    // Find the start passage ID (same logic as the node loop above).
-    const startId = nodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start')?.id;
-
-    const usedEdgeIds = new Set<string>();
-    let edgeIndex = 0;
-
-    for (const e of edges) {
-      // Skip edges referencing compound group parents
-      if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
-        console.warn('[StoryMap] Skipping edge with missing endpoint:', e.source, '->', e.target, '(' + e.edge_type + ')');
-        continue;
-      }
-
-      // ── Edge suppression ─────────────────────────────────────────────
-      // 1. No edges between passages inside the special box. Special
-      //    passages are all loaded/serviced at startup; internal edges
-      //    are noise.
-      // 2. No edges from special box members to the start passage. The
-      //    upstream lifecycle chain is implicit and clutters the view.
-      // The ONLY edges drawn to/from special box members are references
-      // FROM outside the box INTO a special passage (e.g., a user passage
-      // that [[-> StoryInterface]]).
-      if (specialSet.has(e.source) && specialSet.has(e.target)) {
-        continue; // both in box → skip
-      }
-      if (specialSet.has(e.source) && e.target === startId) {
-        continue; // box → Start → skip
-      }
-
-      let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
-      if (usedEdgeIds.has(edgeId)) {
-        edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}_${edgeIndex}]`;
-      }
-      usedEdgeIds.add(edgeId);
-      edgeIndex++;
-
-      const el: cytoscape.EdgeDefinition = {
-        data: {
-          id: edgeId,
-          source: e.source,
-          target: e.target,
-          displayText: e.display_text || null,
-        },
-        classes: [
-          e.edge_type === 'broken' ? 'is_broken' : '',
-          e.edge_type === 'upstream' ? 'is_upstream' : '',
-          e.edge_type === 'call' ? 'is_call' : '',
-          e.edge_type === 'include' ? 'is_include' : '',
-          e.edge_type === 'jump' ? 'is_jump' : '',
-          e.display_text ? 'has_label' : '',
-        ].filter(Boolean) as string[],
-      };
-      elements.push(el);
-    }
-
+    // Save current viewport before rebuild
     try {
-      cy.add(elements);
-      console.log('[StoryMap] Added', elements.length, 'elements to Cytoscape');
-    } catch (err) {
-      console.error('[StoryMap] cy.add() failed:', err);
-      vscode.postMessage({ command: 'log', level: 'error', message: '[StoryMap] cy.add() failed: ' + String(err) });
-      return;
+      const vp = getViewport();
+      savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
+    } catch {
+      // React Flow may not be ready yet
     }
 
-    // ── Layout ──────────────────────────────────────────────────────────
-    const hasAnyPositions = positionedIds.size > 0;
-    const chosenLayout = data.layout || (hasAnyPositions ? 'position' : 'dagre');
+    graphDataRef.current = graphData;
+    const { nodes: newNodes, edges: newEdges } = buildGraphElements(graphData);
 
-    if (chosenLayout !== layoutRef.current) {
-      onLayoutChange(chosenLayout);
-    }
+    setNodes(newNodes);
+    setEdges(newEdges);
 
-    // Callback to run after layout completes (handles both synchronous
-    // position layout and animated dagre/cose layouts).
-    const afterLayout = () => {
-      // ── Reposition compound groups & anchors ─────────────────────────
-      repositionGroups(cy, specialChildren, unreachableIds);
-
-      updateGridBackground();
-
-      // Only fit on the very first build. Subsequent graph updates
-      // (e.g., from file saves triggering refreshGraph) restore the
-      // previous viewport to avoid the "glitching zoom" effect.
-      if (!initialFitDoneRef.current) {
-        initialFitDoneRef.current = true;
-        requestAnimationFrame(() => {
-          if (cyRef.current && cyRef.current.nodes().length > 0) {
-            cyRef.current.resize();
-            cyRef.current.fit(undefined, 30);
-          }
-        });
-      } else {
-        // Restore the viewport state from before the rebuild
-        requestAnimationFrame(() => {
-          if (cyRef.current) {
-            cyRef.current.resize();
-            cyRef.current.viewport({ zoom: prevZoom, pan: prevPan });
-            updateGridBackground();
-          }
-        });
-      }
-    };
-
-    applyLayout(chosenLayout, cy, positionedIds, unpositioned, afterLayout);
-  }, [onLayoutChange, updateGridBackground]);
-
-  // ── Reposition compound groups after layout ───────────────────────────────
-  // Layout follows the Twine-inspired viewport model:
-  //
-  //   ┌──────────────────────┬────────────────┬────────────────┐
-  //   │ special_passage_group│                │                │
-  //   ├──────────────────────┼────────────────┼────────────────┤
-  //   │ unreachable_passages │ graph start    │ graph expands  │
-  //   │  ·                   │ graph expands  │ graph expands  │
-  //   └──────────────────────┴────────────────┴────────────────┘
-  //
-  // The special passages box is a border-only compound node at the top-left.
-  // Unreachable passages stack vertically below it on the left side.
-  // The Start node anchors the graph to the right of the unreachable column;
-  // from there the graph expands rightward (positive X) and downward
-  // (positive Y).
-  const repositionGroups = useCallback((
-    cy: cytoscape.Core,
-    specialIds: string[],
-    unreachableIds: string[],
-  ) => {
-    // ── Position Special Passages group at top-left ─────────────────────
-    // Fixed-width 2-column layout with tiered sort for visual symmetry.
-    // Children are sorted by importance tier (core Twine first, then
-    // format-specific), then alphabetically within each tier.
-    const colWidth = snapToGrid(SPECIAL_BOX_WIDTH / 2);
-    const colGap = GRID_SNAP;
-    const rowGap = GRID_SNAP;
-
-    let groupBottomY = BOX_ORIGIN_Y; // tracks the bottom of the group
-
-    if (specialIds.length > 0) {
-      const children = specialIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
-
-      // Sort by tier (importance) then alphabetically for symmetric layout
-      children.sort((a, b) => {
-        const tierA = specialSortKey(a.data('label') || '');
-        const tierB = specialSortKey(b.data('label') || '');
-        if (tierA !== tierB) return tierA - tierB;
-        return (a.data('label') || '').localeCompare(b.data('label') || '');
+    // Fit view on first load
+    if (!initialFitDoneRef.current && newNodes.length > 0) {
+      initialFitDoneRef.current = true;
+      // Defer fitView so React Flow can measure the nodes first
+      requestAnimationFrame(() => {
+        fitView({ padding: 0.15, duration: 400 });
       });
-
-      // Lay out children in a 2-column grid within the fixed-width box
-      let col = 0;
-      let rowY = BOX_ORIGIN_Y;
-      let rowMaxH = 0;
-
-      for (const n of children) {
-        const h = NODE_H; // standardized height
-
-        // Calculate center position for this cell
-        const cellCenterX = BOX_ORIGIN_X + col * (colWidth + colGap) + colWidth / 2;
-        const cellCenterY = rowY + h / 2;
-
-        n.position({ x: snapToGrid(cellCenterX), y: snapToGrid(cellCenterY) });
-        n.data('posX', snapToGrid(cellCenterX));
-        n.data('posY', snapToGrid(cellCenterY));
-
-        rowMaxH = Math.max(rowMaxH, h);
-
-        // Alternate columns: 0 → 1 → next row
-        col++;
-        if (col >= 2) {
-          col = 0;
-          rowY += rowMaxH + rowGap;
-          rowMaxH = 0;
-        }
-      }
-
-      // Track the bottom of the group for placing unreachable passages below
-      const groupEl = cy.getElementById(GROUP_SPECIAL);
-      if (groupEl.length > 0) {
-        const bb = groupEl.boundingBox();
-        groupBottomY = bb.y2 + GRID_SNAP * 2;
-      } else {
-        groupBottomY = rowY + rowMaxH + GRID_SNAP * 3;
-      }
-    } else {
-      groupBottomY = BOX_ORIGIN_Y + GRID_SNAP * 2;
-    }
-
-    // ── Position Unreachable passages vertically on the LEFT side ───────
-    // Unreachable passages are NOT in a compound group — they stack
-    // vertically (single column) below the special passages box on the
-    // left side of the canvas. This keeps them visible but out of the way
-    // of the main graph flow which expands right and down.
-    if (unreachableIds.length > 0) {
-      const children = unreachableIds.map(id => cy.getElementById(id)).filter(n => n.length > 0);
-
-      // Vertical stack starting below the special box
-      let offsetY = groupBottomY;
-      const unreachableX = BOX_ORIGIN_X + NODE_W / 2; // same left margin as the special box
-
-      for (const n of children) {
-        const h = NODE_H; // standardized height
-        n.position({ x: snapToGrid(unreachableX), y: snapToGrid(offsetY + h / 2) });
-        n.data('posX', snapToGrid(unreachableX));
-        n.data('posY', snapToGrid(offsetY + h / 2));
-        offsetY += h + GRID_SNAP;
-      }
-    }
-
-    // ── Position Start passage to the right of the unreachable column ──
-    // The start passage is the graph anchor. It sits to the right of the
-    // left column (special box + unreachable) at the top of the canvas,
-    // so the graph flows right and down from it — just like Twine.
-    const startNode = cy.nodes().filter((n: any) => n.data('is_start') && !n.data('isGroup'));
-    if (startNode.length > 0) {
-      const sn = startNode[0];
-      const existingPosX = sn.data('posX');
-      const existingPosY = sn.data('posY');
-      // Only reposition if the start passage has no position set at all
-      // (i.e., this is a fresh layout with no saved positions)
-      if (existingPosX == null || existingPosY == null) {
-        sn.position({ x: snapToGrid(START_ANCHOR_X), y: snapToGrid(START_ANCHOR_Y + NODE_H / 2) });
-        sn.data('posX', snapToGrid(START_ANCHOR_X));
-        sn.data('posY', snapToGrid(START_ANCHOR_Y + NODE_H / 2));
-      }
-    }
-  }, []);
-
-  // ── Apply layout ──────────────────────────────────────────────────────────
-  // The `onComplete` callback is invoked after the layout finishes — for
-  // synchronous layouts it fires immediately, for animated layouts it fires
-  // on the Cytoscape `layoutstop` event. This ensures `repositionGroups`
-  // (passed as onComplete from buildGraph) never gets overridden by a
-  // running layout animation.
-  const applyLayout = useCallback((
-    name: string,
-    cy: cytoscape.Core,
-    _positionedIds?: Set<string>,
-    _unpositionedNodes?: any[],
-    onComplete?: () => void,
-  ) => {
-    if (!cy || cy.nodes().length === 0) {
-      onComplete?.();
-      return;
-    }
-
-    if (name === 'position') {
-      cy.nodes().forEach((n: any) => {
-        if (n.data('isGroup')) return;
-        const px = n.data('posX');
-        const py = n.data('posY');
-        if (px != null && py != null) {
-          n.position({ x: px, y: py });
-        }
+    } else if (skipViewportRestoreRef.current) {
+      // Don't restore viewport — a focusNode action set this flag.
+      // The user should be free to pan/zoom after the focus completes.
+      skipViewportRestoreRef.current = false;
+    } else if (savedViewportRef.current) {
+      // Restore previous viewport on subsequent updates
+      requestAnimationFrame(() => {
+        setViewport(savedViewportRef.current!, { duration: 0 });
       });
-
-      const unpos = cy.nodes().filter((n: any) => !n.data('isGroup') && (n.data('posX') == null || n.data('posY') == null));
-      if (unpos.length > 0 && unpos.length < cy.nodes().filter((n: any) => !n.data('isGroup')).length) {
-        const fixed = cy.nodes().filter((n: any) => !n.data('isGroup') && n.data('posX') != null && n.data('posY') != null);
-        const bb = fixed.boundingBox();
-        const offsetX = bb.x2 + 150;
-        const offsetY = bb.y1;
-
-        const subElements: cytoscape.ElementDefinition[] = [];
-        unpos.forEach((n: any) => {
-          subElements.push({ data: { id: n.id(), label: n.data('label') } });
-        });
-        cy.edges().forEach((e: any) => {
-          const src = e.data('source');
-          const tgt = e.data('target');
-          if (unpos.some((n: any) => n.id() === src) && unpos.some((n: any) => n.id() === tgt)) {
-            subElements.push({ data: { id: e.id(), source: src, target: tgt } });
-          }
-        });
-
-        if (subElements.length > 1) {
-          const subCy = cytoscape({ container: undefined, elements: subElements, layout: { name: 'null' } });
-          subCy.layout({ name: 'dagre', rankDir: 'TB', spacingFactor: 1.0, nodeSep: 50, rankSep: 70, animate: false } as any).run();
-          subCy.nodes().forEach((sn: any) => {
-            const mainNode = cy.getElementById(sn.id());
-            if (mainNode.length > 0) {
-              mainNode.position({ x: sn.position().x + offsetX, y: sn.position().y + offsetY });
-            }
-          });
-          subCy.destroy();
-        } else {
-          unpos.forEach((n: any) => { n.position({ x: offsetX, y: offsetY }); });
-        }
-      } else if (unpos.length === cy.nodes().filter((n: any) => !n.data('isGroup')).length) {
-        applyLayout('dagre', cy, _positionedIds, _unpositionedNodes, onComplete);
-        return;
-      }
-
-      onComplete?.();
-      return;
     }
+  }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport]);
 
-    let opts: any;
-    switch (name) {
-      case 'dagre':
-        opts = { name: 'dagre', rankDir: 'TB', spacingFactor: 1.0, nodeSep: 50, rankSep: 70, animate: true, animationDuration: 300 };
-        break;
-      case 'cose':
-        opts = { name: 'cose', animate: true, animationDuration: 400, nodeRepulsion: 10000, idealEdgeLength: 120, gravity: 0.2 };
-        break;
-      default:
-        opts = { name: 'dagre', spacingFactor: 1.0, animate: true };
-    }
-
-    const layoutInst = cy.layout(opts);
-    // Fire onComplete when the animated layout finishes, so that
-    // repositionGroups doesn't get overridden by the animation.
-    if (onComplete) {
-      layoutInst.one('layoutstop', onComplete);
-    }
-    layoutInst.run();
-  }, []);
-
-  // ── Update graph when data changes ────────────────────────────────────────
+  // ── Search / filter ─────────────────────────────────────────────────
   useEffect(() => {
-    if (graphData) {
-      buildGraph(graphData);
-    }
-  }, [graphData, buildGraph]);
-
-  // ── Apply layout when it changes ──────────────────────────────────────────
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || cy.nodes().length === 0 || !currentDataRef.current) return;
-    applyLayout(layout, cy, new Set(), []);
-  }, [layout, applyLayout]);
-
-  // ── Search / filter ───────────────────────────────────────────────────────
-  useEffect(() => {
-    const cy = cyRef.current;
-    if (!cy || !currentDataRef.current) return;
-
     const q = searchQuery.toLowerCase().trim();
-    if (q === '') {
-      cy.elements().removeClass('dimmed highlighted');
-      return;
-    }
 
-    // Dim everything, then highlight matches (skip group parents)
-    cy.nodes().addClass('dimmed');
-    cy.edges().addClass('dimmed');
+    setNodes((nds: Node[]) =>
+      nds.map((n: Node) => {
+        // Skip group nodes
+        if (n.type === 'group') return n;
 
-    const matched = cy.nodes().filter((n: any) => {
-      if (n.data('isGroup')) return false;
-      const label = (n.data('label') || '').toLowerCase();
-      const tags: string[] = n.data('tags') || [];
-      return label.includes(q) || tags.some(t => t.toLowerCase().includes(q));
+        const d = n.data as PassageNodeData;
+
+        if (q === '') {
+          return {
+            ...n,
+            data: { ...d, dimmed: false, highlighted: false },
+          };
+        }
+
+        const label = (d.label || '').toLowerCase();
+        const tags: string[] = d.tags || [];
+        const matches =
+          label.includes(q) || tags.some((t) => t.toLowerCase().includes(q));
+
+        return {
+          ...n,
+          data: {
+            ...d,
+            dimmed: !matches,
+            highlighted: matches,
+          },
+        };
+      }),
+    );
+
+    // Dim non-matching edges
+    setEdges((eds: Edge[]) => {
+      if (q === '') {
+        return eds.map((e: Edge) => ({ ...e, style: undefined }));
+      }
+
+      // Find matching node IDs
+      const matchIds = new Set<string>();
+      const nds = nodes; // read current nodes
+      for (const n of nds) {
+        if (n.type === 'group') continue;
+        const d = n.data as PassageNodeData;
+        const label = (d.label || '').toLowerCase();
+        const tags: string[] = d.tags || [];
+        if (label.includes(q) || tags.some((t) => t.toLowerCase().includes(q))) {
+          matchIds.add(n.id);
+        }
+      }
+
+      return eds.map((e: Edge) => {
+        const connected = matchIds.has(e.source) || matchIds.has(e.target);
+        return {
+          ...e,
+          style: connected ? undefined : { opacity: 0.08 },
+        };
+      });
     });
+  }, [searchQuery, setNodes, setEdges, nodes]);
 
-    matched.removeClass('dimmed').addClass('highlighted');
-    matched.neighborhood('edge').removeClass('dimmed');
-    matched.neighborhood('node').removeClass('dimmed');
-  }, [searchQuery]);
-
-  // ── Fit to view (manual only — triggered by toolbar button) ───────────────
+  // ── Fit to view ─────────────────────────────────────────────────────
   useEffect(() => {
-    const cy = cyRef.current;
-    if (cy && fitRequested > 0) {
-      cy.fit(undefined, 30);
+    if (fitRequested > 0) {
+      fitView({ padding: 0.15, duration: 300 });
     }
-  }, [fitRequested]);
+  }, [fitRequested, fitView]);
 
-  // ── Focus on a passage node (triggered by extension focusNode message) ────
+  // ── Focus on a passage node ─────────────────────────────────────────
   useEffect(() => {
-    if (focusRequested > 0 && focusPassageName) {
-      focusOnNode(focusPassageName);
-    }
-  }, [focusRequested, focusPassageName, focusOnNode]);
+    if (focusRequested <= 0 || !focusPassageName) return;
 
-  // ── Save all positions to workspace ─────────────────────────────────────
-  // When the user clicks "Save", collect the current position of every
-  // non-group node from the Cytoscape instance and send them to the
-  // extension. The extension forwards to the LSP server which writes
-  // {"position":"x,y"} metadata into each passage header.
+    // Prevent viewport restoration from overriding the focus pan
+    skipViewportRestoreRef.current = true;
+
+    // Try to find node by ID, then by label
+    let targetNode = getNode(focusPassageName);
+    if (!targetNode) {
+      const nds = nodes;
+      const found = nds.find((n: Node) => {
+        if (n.type === 'group') return false;
+        const d = n.data as PassageNodeData;
+        return d.label === focusPassageName;
+      });
+      if (found) {
+        targetNode = getNode(found.id);
+      }
+    }
+
+    if (targetNode) {
+      // Instant pan to the focused node — no animation duration.
+      // Animated pans feel sluggish and prevent the user from scrolling
+      // freely after navigation (the animation fights with manual input).
+      fitView({ nodes: [{ id: targetNode.id }], padding: 0.5, duration: 0 });
+
+      // Temporarily highlight the focused node
+      setNodes((nds: Node[]) =>
+        nds.map((n: Node) => {
+          if (n.id === targetNode!.id) {
+            const d = n.data as PassageNodeData;
+            return {
+              ...n,
+              className: 'passage-node--focused',
+              data: { ...d, highlighted: true },
+            };
+          }
+          return n;
+        }),
+      );
+
+      // Remove highlight after 1.5s (shorter to feel responsive)
+      setTimeout(() => {
+        setNodes((nds: Node[]) =>
+          nds.map((n: Node) => {
+            if (n.id === targetNode!.id) {
+              const d = n.data as PassageNodeData;
+              return {
+                ...n,
+                className: undefined,
+                data: { ...d, highlighted: searchQuery ? true : false },
+              };
+            }
+            return n;
+          }),
+        );
+      }, 1500);
+    }
+  }, [focusRequested, focusPassageName, fitView, getNode, nodes, setNodes, searchQuery]);
+
+  // ── Save all positions ──────────────────────────────────────────────
   useEffect(() => {
     if (saveRequested <= 0) return;
-    const cy = cyRef.current;
-    if (!cy) return;
 
     const updates: KnotPositionUpdate[] = [];
-    cy.nodes().forEach((n: any) => {
-      if (n.data('isGroup')) return;
-      const id = n.data('id');
-      const pos = n.position();
-      if (id && pos) {
-        updates.push({
-          passage_name: id,
-          position_x: snapToGrid(pos.x),
-          position_y: snapToGrid(pos.y),
-        });
-      }
-    });
+    const currentNodes = nodes;
+
+    for (const n of currentNodes) {
+      if (n.type === 'group') continue;
+      const d = n.data as PassageNodeData;
+      updates.push({
+        passage_name: n.id,
+        position_x: snapToGrid(n.position.x),
+        position_y: snapToGrid(n.position.y),
+        group: d.group,
+        color: d.metadata_color,  // only write back metadata color, never rendering fallback
+      });
+    }
 
     if (updates.length > 0) {
       vscode.postMessage({ command: 'saveAllPositions', updates });
     }
-  }, [saveRequested]);
+  }, [saveRequested, nodes]);
+
+  // ── Handle node changes (drag end → snap to grid + update positions) ─
+  const handleNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      // Apply all changes first
+      onNodesChange(changes);
+
+      // Process position changes (drag end)
+      const positionChanges = changes.filter(
+        (c): c is NodePositionChange =>
+          c.type === 'position' && c.dragging === false,
+      );
+
+      if (positionChanges.length === 0) return;
+
+      // Snap to grid and collect updates
+      const updates: KnotPositionUpdate[] = [];
+      const snappedPositions = new Map<string, { x: number; y: number }>();
+
+      for (const change of positionChanges) {
+        if (change.position) {
+          const snappedX = snapToGrid(change.position.x);
+          const snappedY = snapToGrid(change.position.y);
+          snappedPositions.set(change.id, { x: snappedX, y: snappedY });
+        }
+      }
+
+      if (snappedPositions.size === 0) return;
+
+      // Apply snapped positions
+      setNodes((nds: Node[]) =>
+        nds.map((n: Node) => {
+          const snapped = snappedPositions.get(n.id);
+          if (snapped) {
+            const d = n.data as PassageNodeData;
+            updates.push({
+              passage_name: n.id,
+              position_x: snapped.x,
+              position_y: snapped.y,
+              group: d.group,
+              color: d.metadata_color,  // only write back metadata color, never rendering fallback
+            });
+            return { ...n, position: { x: snapped.x, y: snapped.y } };
+          }
+          return n;
+        }),
+      );
+
+      debouncedPositionUpdate(updates);
+    },
+    [onNodesChange, setNodes, debouncedPositionUpdate],
+  );
+
+  // ── Node click → open passage ───────────────────────────────────────
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (node.type === 'group') return;
+      const d = node.data as PassageNodeData;
+      if (d.file) {
+        vscode.postMessage({
+          command: 'openPassage',
+          file: d.file,
+          line: d.line || 0,
+        });
+      }
+    },
+    [],
+  );
+
+  // ── Viewport change → save debounced ────────────────────────────────
+  const handleViewportChange = useCallback(() => {
+    try {
+      const vp = getViewport();
+      debouncedViewportUpdate(vp.x, vp.y, vp.zoom);
+    } catch {
+      // React Flow may not be ready
+    }
+  }, [getViewport, debouncedViewportUpdate]);
+
+  // ── MiniMap node color ──────────────────────────────────────────────
+  const miniMapNodeColor = useCallback((node: Node) => {
+    if (node.type === 'group') return '#333344';
+    const d = node.data as PassageNodeData;
+    return d.color || COLORS.normal;
+  }, []);
 
   return (
-    <div
-      ref={containerRef}
-      id="cy"
-      style={{
-        position: 'relative',
-        flex: '1 1 0%',
-        minHeight: 0,
-        width: '100%',
-        overflow: 'hidden',
-      }}
-    />
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      onNodesChange={handleNodesChange}
+      onEdgesChange={onEdgesChange}
+      onNodeClick={handleNodeClick}
+      onViewportChange={handleViewportChange}
+      nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
+      connectionMode={ConnectionMode.Loose}
+      minZoom={MIN_ZOOM}
+      maxZoom={MAX_ZOOM}
+      fitView={false}
+      panOnDrag={true}
+      selectionOnDrag={false}
+      nodesDraggable={true}
+      nodesConnectable={false}
+      elementsSelectable={true}
+      proOptions={{ hideAttribution: true }}
+    >
+      <ArrowMarkers />
+      <MiniMap
+        nodeColor={miniMapNodeColor}
+        maskColor="rgba(0, 0, 0, 0.6)"
+        style={{
+          backgroundColor: 'var(--vscode-sideBar-background, #252536)',
+          border: '1px solid var(--vscode-panel-border, #3a3a4a)',
+          borderRadius: '4px',
+        }}
+      />
+      <Controls
+        showInteractive={false}
+      />
+      <Background variant={BackgroundVariant.Dots} gap={GRID_SNAP} size={1} color="rgba(255,255,255,0.09)" />
+    </ReactFlow>
+  );
+}
+
+// ── Outer StoryMap component (provides ReactFlowProvider) ──────────────────
+
+interface StoryMapProps {
+  graphData: KnotGraphResponse | null;
+  searchQuery: string;
+  fitRequested: number;
+  saveRequested: number;
+  focusRequested: number;
+  focusPassageName: string;
+}
+
+export default function StoryMap(props: StoryMapProps) {
+  return (
+    <div className="storymap-container">
+      <ReactFlowProvider>
+        <StoryMapInner {...props} />
+      </ReactFlowProvider>
+    </div>
   );
 }

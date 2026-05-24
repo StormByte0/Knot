@@ -61,6 +61,9 @@ struct ParsedHeader {
     /// Byte offset where the passage name starts (after `::` and any whitespace).
     /// This is an absolute offset into the source text.
     name_start: usize,
+    /// The raw text after `:: ` (with JSON metadata stripped), used for
+    /// computing accurate tag bracket positions in semantic tokens.
+    raw_after_colons: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +192,7 @@ impl HarlowePlugin {
         results
     }
 
-    /// Parse a single `:: Name [tags]` header line.
+    /// Parse a single `:: Name [tags] {"metadata":"..."}` header line.
     fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
         // Strip the leading `::` and optional whitespace.
         let after_colons = line.strip_prefix("::")?;
@@ -201,21 +204,34 @@ impl HarlowePlugin {
         // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
         let name_start = offset + 2 + whitespace_len;
 
+        // Strip JSON metadata block from end of line BEFORE tag extraction.
+        // Twee 3 format: `:: Name [tags] {"position":"100,200","group":"G"}`
+        // Without this, `rest.ends_with(']')` fails because `}` comes after `]`.
+        let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
+            if rest[brace_start..].trim_end().ends_with('}') {
+                &rest[..brace_start]
+            } else {
+                rest
+            }
+        } else {
+            rest
+        };
+
         // Extract tags if present: `Name [tag1 tag2]`
-        let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
-            if rest.ends_with(']') {
-                let name_part = rest[..bracket_start].trim();
-                let tag_part = &rest[bracket_start + 1..rest.len() - 1];
+        let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
+            if rest_before_json.ends_with(']') {
+                let name_part = rest_before_json[..bracket_start].trim();
+                let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
                 let tags = tag_part
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect();
                 (name_part.to_string(), tags)
             } else {
-                (rest.trim().to_string(), Vec::new())
+                (rest_before_json.trim().to_string(), Vec::new())
             }
         } else {
-            (rest.trim().to_string(), Vec::new())
+            (rest_before_json.trim().to_string(), Vec::new())
         };
 
         if name.is_empty() {
@@ -228,6 +244,7 @@ impl HarlowePlugin {
             header_start: offset,
             header_len: line.len(),
             name_start,
+            raw_after_colons: rest_before_json.to_string(),
         })
     }
 
@@ -896,9 +913,13 @@ impl HarlowePlugin {
             modifier: None,
         });
 
-        // Tags — compute positions relative to bracket start.
-        // Tags are space-separated inside `[tag1 tag2]` after the name.
-        let bracket_start = header.name_start + header.name.len();
+        // Tags — compute positions from the raw text after colons (JSON-stripped).
+        // Find the `[` bracket in the raw text to get accurate tag positions.
+        let bracket_start = if let Some(bs) = header.raw_after_colons.rfind('[') {
+            header.name_start + bs
+        } else {
+            header.name_start + header.name.len()
+        };
         let tags_inner_start = bracket_start + 1; // after `[`
         let mut offset = tags_inner_start;
         for (i, tag) in header.tags.iter().enumerate() {

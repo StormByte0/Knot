@@ -31,6 +31,10 @@ export interface KnotGraphNode {
   is_start?: boolean;
   position_x?: number;
   position_y?: number;
+  /** Group name — used to render bounding boxes around related passages. */
+  group?: string;
+  /** Custom color override from passage metadata. */
+  color?: string;
   var_writes: string[];
   var_reads: string[];
   block?: string;
@@ -61,6 +65,8 @@ export interface KnotPositionUpdate {
   passage_name: string;
   position_x: number;
   position_y: number;
+  group?: string;
+  color?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,9 +77,9 @@ export interface KnotPositionUpdate {
 export type WebviewOutboundMessage =
   | { command: 'openPassage'; file: string; line: number }
   | { command: 'refreshGraph' }
-  | { command: 'openFullView' }
   | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
   | { command: 'saveAllPositions'; updates: KnotPositionUpdate[] }
+  | { command: 'updateViewport'; x: number; y: number; zoom: number }
   | { command: 'log'; level: 'error' | 'warn' | 'info'; message: string };
 
 /** Messages sent FROM the extension TO the webview. */
@@ -88,3 +94,36 @@ export type WebviewInboundMessage =
 /** The VS Code webview API, acquired via acquireVsCodeApi().
  *  The actual ambient declaration is in global.d.ts. */
 export type VsCodeApi = ReturnType<typeof acquireVsCodeApi>;
+
+// ---------------------------------------------------------------------------
+// React Flow node data types
+// ---------------------------------------------------------------------------
+
+export interface PassageNodeData {
+  label: string;
+  file: string;
+  line: number;
+  tags: string[];
+  out_degree: number;
+  in_degree: number;
+  is_special: boolean;
+  is_metadata: boolean;
+  is_unreachable: boolean;
+  is_start: boolean;
+  /** Computed rendering color (for display only, NEVER written back to metadata). */
+  color: string;
+  /** Color from passage metadata (may be undefined). Only THIS is written back. */
+  metadata_color?: string;
+  var_writes: string[];
+  var_reads: string[];
+  group?: string;
+  dimmed: boolean;
+  highlighted: boolean;
+  [key: string]: unknown;
+}
+
+export interface GroupNodeData {
+  label: string;
+  color?: string;
+  [key: string]: unknown;
+}

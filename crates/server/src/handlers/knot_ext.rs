@@ -114,6 +114,10 @@ impl ServerState {
             std::collections::HashMap::new();
         let mut passage_positions: std::collections::HashMap<String, (f64, f64)> =
             std::collections::HashMap::new();
+        let mut passage_groups: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut passage_colors: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for doc in inner.workspace.documents() {
             for passage in &doc.passages {
@@ -125,10 +129,18 @@ impl ServerState {
                     if line.starts_with("::") {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
                         passage_lines.insert(name.clone(), line_num as u32);
-                        // Try to extract position from the header line's JSON metadata
-                        // Twee 3 format: :: Passage Name [tags] {"position":"x,y"}
-                        if let Some(pos) = helpers::parse_passage_position_from_header(line) {
-                            passage_positions.insert(name, pos);
+                        // Try to extract metadata from the header line's JSON block
+                        // Twee 3 format: :: Passage Name [tags] {"position":"x,y","group":"G","color":"#ff6600"}
+                        if let Some(meta) = helpers::parse_passage_metadata_from_header(line) {
+                            if let Some(pos) = meta.position {
+                                passage_positions.insert(name.clone(), pos);
+                            }
+                            if let Some(group) = meta.group {
+                                passage_groups.insert(name.clone(), group);
+                            }
+                            if let Some(color) = meta.color {
+                                passage_colors.insert(name.clone(), color);
+                            }
                         }
                     }
                 }
@@ -187,6 +199,8 @@ impl ServerState {
             &passage_positions,
             &var_writes,
             &var_reads,
+            &passage_groups,
+            &passage_colors,
         );
 
         let nodes: Vec<KnotGraphNode> = export
@@ -205,6 +219,8 @@ impl ServerState {
                 is_unreachable: n.is_unreachable,
                 position_x: n.position.map(|(x, _)| x),
                 position_y: n.position.map(|(_, y)| y),
+                group: n.group,
+                color: n.color,
                 var_writes: n.var_writes,
                 var_reads: n.var_reads,
                 block: n.block,
@@ -615,6 +631,8 @@ impl ServerState {
             &std::collections::HashSet::new(),
             &std::collections::HashMap::new(),
             &var_writes_for_loops,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
             &std::collections::HashMap::new(),
         ).game_loops;
         let game_loops: Vec<KnotGameLoop> = all_game_loops
@@ -1450,7 +1468,11 @@ impl ServerState {
         &self,
         params: KnotUpdatePositionsParams,
     ) -> Result<KnotUpdatePositionsResponse, tower_lsp::jsonrpc::Error> {
-        let inner = self.inner.read().await;
+        // Use a WRITE lock to prevent concurrent position updates from
+        // reading stale open_documents. The old READ lock allowed multiple
+        // updates to see the same stale text, producing duplicate JSON
+        // metadata blocks when their edits were applied sequentially.
+        let mut inner = self.inner.write().await;
 
         // Validate workspace_uri matches our workspace
         if !params.workspace_uri.is_empty() {
@@ -1498,13 +1520,24 @@ impl ServerState {
                 if line.starts_with("::") {
                     let name = helpers::parse_passage_name_from_header(&line[2..]);
                     if name == update.passage_name {
-                        // Use the shared helper to update/add the {"position":"x,y"}
-                        // JSON metadata in the header line.
-                        let new_line = helpers::update_passage_position_in_header(
-                            line,
-                            update.position_x,
-                            update.position_y,
-                        );
+                        // Use the full metadata writer when group or color are
+                        // provided alongside position. This writes the entire
+                        // JSON metadata block (position + group + color), not
+                        // just the position field.
+                        let new_line = if update.group.is_some() || update.color.is_some() {
+                            helpers::update_passage_metadata_in_header(
+                                line,
+                                Some((update.position_x, update.position_y)),
+                                update.group.as_deref().map(Some),
+                                update.color.as_deref().map(Some),
+                            )
+                        } else {
+                            helpers::update_passage_position_in_header(
+                                line,
+                                update.position_x,
+                                update.position_y,
+                            )
+                        };
 
                         let range = lsp_types::Range {
                             start: lsp_types::Position {
@@ -1538,6 +1571,29 @@ impl ServerState {
                     "Could not find header line for passage '{}' in file {}",
                     update.passage_name, file_uri
                 ));
+            }
+        }
+
+        // Optimistically update open_documents with the new header lines
+        // BEFORE dropping the write lock. This prevents concurrent
+        // knot/updatePositions calls from reading stale text and producing
+        // duplicate JSON metadata blocks.
+        for (uri, edits) in &changes {
+            if let Some(text) = inner.open_documents.get_mut(uri) {
+                // Apply edits in reverse line order to preserve offsets
+                let mut sorted_edits: Vec<_> = edits.iter().collect();
+                sorted_edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line));
+
+                for edit in sorted_edits {
+                    let line_idx = edit.range.start.line as usize;
+                    let lines: Vec<&str> = text.lines().collect();
+                    if line_idx < lines.len() {
+                        // Replace the specific line
+                        let mut new_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+                        new_lines[line_idx] = edit.new_text.clone();
+                        *text = new_lines.join("\n");
+                    }
+                }
             }
         }
 
