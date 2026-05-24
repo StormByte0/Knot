@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -16,10 +22,10 @@ import {
   NodeChange,
   NodePositionChange,
   NodeProps,
-  BaseEdge,
   EdgeProps,
-  getSmoothStepPath,
+  getStraightPath,
   ReactFlowProvider,
+  MarkerType,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -36,306 +42,250 @@ import { vscode } from '../App';
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const GRID_SNAP = 20;
-const NODE_WIDTH = 150;
-const NODE_HEIGHT = 36;
-const MIN_ZOOM = 0.15;
+const NODE_W = 160;
+const NODE_H = 40;
+const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4.0;
+// Perpendicular pixel offset for bidirectional edge pairs
+const BIDIR_OFFSET = 7;
 
-// ── Twine-inspired color palette ───────────────────────────────────────────
+// ── Color palette ──────────────────────────────────────────────────────────
 
 const COLORS = {
-  normal: '#3a7ca5',
-  start: '#43a047',
-  special: '#ef6c00',
-  metadata: '#8e24aa',
-  unreachable: '#4a4a4a',
-  broken: '#e53935',
-  edgeNormal: '#7a8a9e',
-  edgeUpstream: '#5c6370',
+  normal:     '#2d6a9f',
+  start:      '#2e7d32',
+  special:    '#e65100',
+  metadata:   '#6a1b9a',
+  unreachable:'#424242',
+  broken:     '#c62828',
+  edgeNav:    '#5a6a7e',
+  edgeUp:     '#3a4555',
+  edgeBroken: '#c62828',
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function snapToGrid(value: number): number {
-  return Math.round(value / GRID_SNAP) * GRID_SNAP;
-}
+function snap(v: number) { return Math.round(v / GRID_SNAP) * GRID_SNAP; }
 
-function getNodeColor(node: KnotGraphNode): string {
-  if (node.color) return node.color;
-  if (node.is_unreachable) return COLORS.unreachable;
-  if (node.is_start || node.id === 'Start') return COLORS.start;
-  if (node.is_metadata) return COLORS.metadata;
-  if (node.is_special) return COLORS.special;
+function nodeColor(n: KnotGraphNode): string {
+  if (n.color) return n.color;
+  if (n.is_unreachable) return COLORS.unreachable;
+  if (n.is_start || n.id === 'Start') return COLORS.start;
+  if (n.is_metadata) return COLORS.metadata;
+  if (n.is_special) return COLORS.special;
   return COLORS.normal;
 }
 
-// ── Debounce utility ───────────────────────────────────────────────────────
-
 function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const debounced = (...args: Parameters<T>) => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), ms);
-  };
-  return debounced as T;
+  let t: ReturnType<typeof setTimeout> | null = null;
+  return ((...args: Parameters<T>) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  }) as T;
+}
+
+// ── Perpendicular offset for a straight line ───────────────────────────────
+// Returns a new (x, y) shifted `dist` pixels perpendicular to the direction
+// from (x1,y1) to (x2,y2).
+function perpOffset(
+  x1: number, y1: number, x2: number, y2: number, dist: number,
+): [number, number] {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  // Perpendicular unit vector: (-dy, dx) / len
+  return [(-dy / len) * dist, (dx / len) * dist];
 }
 
 // ── Custom Node: Passage ───────────────────────────────────────────────────
 
-function PassageNodeComponent({ data }: NodeProps<Node<PassageNodeData>>) {
+function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
   const d = data as PassageNodeData;
   const color = d.color || COLORS.normal;
 
-  const nodeClassNames = [
-    'passage-node',
-    d.is_start && 'passage-node--start',
-    d.is_special && 'passage-node--special',
-    d.is_metadata && 'passage-node--metadata',
-    d.is_unreachable && 'passage-node--unreachable',
-    d.highlighted && 'passage-node--highlighted',
-    d.dimmed && 'passage-node--dimmed',
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const cls = [
+    'pn',
+    d.is_start      && 'pn--start',
+    d.is_special    && 'pn--special',
+    d.is_metadata   && 'pn--metadata',
+    d.is_unreachable && 'pn--unreachable',
+    d.highlighted   && 'pn--highlighted',
+    d.dimmed        && 'pn--dimmed',
+    d.focused       && 'pn--focused',
+  ].filter(Boolean).join(' ');
 
   return (
-    <div
-      className={nodeClassNames}
-      style={{
-        backgroundColor: color,
-        borderColor: d.is_unreachable ? '#3a3a3a' : color,
-      }}
-    >
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{ background: 'transparent', border: 'none', width: 8, height: 8 }}
-      />
-      <span className="passage-node__label" title={d.label}>
-        {d.label}
-      </span>
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{ background: 'transparent', border: 'none', width: 8, height: 8 }}
-      />
+    <div className={cls} style={{ '--node-color': color } as React.CSSProperties}>
+      <Handle type="target" position={Position.Top}    className="pn__handle" />
+      <span className="pn__label" title={d.label}>{d.label}</span>
+      {d.tags?.length > 0 && (
+        <span className="pn__tag-count" title={d.tags.join(', ')}>
+          {d.tags.length}
+        </span>
+      )}
+      <Handle type="source" position={Position.Bottom} className="pn__handle" />
     </div>
   );
 }
 
 // ── Custom Node: Group ─────────────────────────────────────────────────────
 
-function GroupNodeComponent({ data }: NodeProps<Node<GroupNodeData>>) {
-  const d = data as GroupNodeData;
-
+function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
   return (
-    <div className="group-node">
-      <div className="group-node__label">{d.label}</div>
+    <div className="gn">
+      <div className="gn__label">{(data as GroupNodeData).label}</div>
     </div>
   );
 }
 
-// ── Custom Edges ───────────────────────────────────────────────────────────
+// ── Custom straight edge with optional perpendicular offset ────────────────
+// The `data.offsetPx` field shifts the path sideways for bidir pairs.
+// The `data.edgeKind` drives color/dash.
 
-function NavigationEdge(props: EdgeProps) {
-  const [edgePath] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    targetPosition: props.targetPosition,
-    borderRadius: 8,
-  });
-
-  return (
-    <BaseEdge
-      id={props.id}
-      path={edgePath}
-      style={{
-        stroke: COLORS.edgeNormal,
-        strokeWidth: 1.5,
-        opacity: 0.7,
-      }}
-      markerEnd="url(#arrowhead)"
-    />
-  );
+interface StraightEdgeData {
+  edgeKind: 'navigation' | 'upstream' | 'broken';
+  offsetPx: number; // perpendicular offset in pixels (0 = no offset)
 }
 
-function UpstreamEdge(props: EdgeProps) {
-  const [edgePath] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    targetPosition: props.targetPosition,
-    borderRadius: 8,
-  });
+function StraightEdge({
+  id,
+  sourceX, sourceY,
+  targetX, targetY,
+  data,
+  markerEnd,
+}: EdgeProps) {
+  const { edgeKind = 'navigation', offsetPx = 0 } = (data || {}) as unknown as StraightEdgeData;
 
-  return (
-    <BaseEdge
-      id={props.id}
-      path={edgePath}
-      style={{
-        stroke: COLORS.edgeUpstream,
-        strokeWidth: 1.5,
-        strokeDasharray: '5 3',
-        opacity: 0.4,
-      }}
-      markerEnd="url(#arrowhead-upstream)"
-    />
-  );
-}
+  let sx = sourceX;
+  let sy = sourceY;
+  let tx = targetX;
+  let ty = targetY;
 
-function BrokenEdge(props: EdgeProps) {
-  const [edgePath] = getSmoothStepPath({
-    sourceX: props.sourceX,
-    sourceY: props.sourceY,
-    sourcePosition: props.sourcePosition,
-    targetX: props.targetX,
-    targetY: props.targetY,
-    targetPosition: props.targetPosition,
-    borderRadius: 8,
-  });
-
-  return (
-    <BaseEdge
-      id={props.id}
-      path={edgePath}
-      style={{
-        stroke: COLORS.broken,
-        strokeWidth: 1.5,
-        strokeDasharray: '6 3',
-        opacity: 0.9,
-      }}
-      markerEnd="url(#arrowhead-broken)"
-    />
-  );
-}
-
-// ── Node type map ──────────────────────────────────────────────────────────
-
-const nodeTypes = {
-  passage: PassageNodeComponent,
-  group: GroupNodeComponent,
-};
-
-const edgeTypes = {
-  navigation: NavigationEdge,
-  upstream: UpstreamEdge,
-  broken: BrokenEdge,
-};
-
-// ── Dagre layout (fallback for unpositioned nodes) ─────────────────────────
-
-function runDagreLayout(
-  nodes: Node[],
-  edges: Edge[],
-): Map<string, { x: number; y: number }> {
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 50, ranksep: 70, marginx: 40, marginy: 40 });
-
-  for (const node of nodes) {
-    const w = node.type === 'group' ? 300 : NODE_WIDTH;
-    const h = node.type === 'group' ? 200 : NODE_HEIGHT;
-    g.setNode(node.id, { width: w, height: h });
+  if (offsetPx !== 0) {
+    const [ox, oy] = perpOffset(sx, sy, tx, ty, offsetPx);
+    sx += ox; sy += oy;
+    tx += ox; ty += oy;
   }
 
-  for (const edge of edges) {
-    g.setEdge(edge.source, edge.target);
+  const [path] = getStraightPath({ sourceX: sx, sourceY: sy, targetX: tx, targetY: ty });
+
+  let stroke = COLORS.edgeNav;
+  let strokeDash = '';
+  let opacity = 0.65;
+
+  if (edgeKind === 'upstream') {
+    stroke = COLORS.edgeUp;
+    strokeDash = '5 3';
+    opacity = 0.35;
+  } else if (edgeKind === 'broken') {
+    stroke = COLORS.edgeBroken;
+    strokeDash = '6 3';
+    opacity = 0.85;
+  }
+
+  return (
+    <path
+      id={id}
+      d={path}
+      fill="none"
+      stroke={stroke}
+      strokeWidth={1.5}
+      strokeDasharray={strokeDash || undefined}
+      opacity={opacity}
+      markerEnd={markerEnd}
+    />
+  );
+}
+
+// ── Node / edge type maps ──────────────────────────────────────────────────
+
+const nodeTypes = { passage: PassageNode, group: GroupNode };
+const edgeTypes = { straight: StraightEdge };
+
+// ── Dagre layout ───────────────────────────────────────────────────────────
+// Returns a position map for all nodes passed in.
+
+function dagreLayout(
+  nodes: Node[],
+  edges: Edge[],
+  dir: 'TB' | 'LR' = 'TB',
+): Map<string, { x: number; y: number }> {
+  const g = new dagre.graphlib.Graph({ multigraph: true });
+  g.setDefaultEdgeLabel(() => ({}));
+  g.setGraph({
+    rankdir: dir,
+    nodesep: 60,
+    ranksep: 80,
+    marginx: 60,
+    marginy: 60,
+    acyclicer: 'greedy',
+    ranker: 'network-simplex',
+  });
+
+  for (const n of nodes) {
+    g.setNode(n.id, { width: NODE_W + 20, height: NODE_H + 16 });
+  }
+  for (const e of edges) {
+    // multigraph requires a name for each edge
+    g.setEdge(e.source, e.target, {}, e.id);
   }
 
   dagre.layout(g);
 
-  const positions = new Map<string, { x: number; y: number }>();
-  for (const node of nodes) {
-    const pos = g.node(node.id);
-    if (pos) {
-      positions.set(node.id, { x: snapToGrid(pos.x), y: snapToGrid(pos.y) });
-    }
+  const out = new Map<string, { x: number; y: number }>();
+  for (const n of nodes) {
+    const p = g.node(n.id);
+    if (p) out.set(n.id, { x: snap(p.x - NODE_W / 2), y: snap(p.y - NODE_H / 2) });
   }
-
-  return positions;
+  return out;
 }
 
-// ── Build graph data into React Flow nodes and edges ───────────────────────
+// ── Build React Flow elements from KnotGraphResponse ──────────────────────
 
-function buildGraphElements(
-  data: KnotGraphResponse,
-): { nodes: Node[]; edges: Edge[] } {
+function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] } {
   const rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
   const rawEdges = Array.isArray(data?.edges) ? data.edges : [];
 
-  // Collect groups
-  const groupMap = new Map<string, { label: string; members: string[] }>();
+  // ── Groups ────────────────────────────────────────────────────────────
+  const groupMembers = new Map<string, string[]>();
   for (const n of rawNodes) {
     if (n.group) {
-      if (!groupMap.has(n.group)) {
-        groupMap.set(n.group, { label: n.group, members: [] });
-      }
-      groupMap.get(n.group)!.members.push(n.id);
+      if (!groupMembers.has(n.group)) groupMembers.set(n.group, []);
+      groupMembers.get(n.group)!.push(n.id);
     }
   }
 
-  // Only use EXPLICIT groups from passage metadata. No auto-grouping.
-  // Unreachable passages should NOT be lumped into a "Special Passages"
-  // group — that was confusing and hid real structural issues.
+  // ── Identify start & special sets ─────────────────────────────────────
+  const startId = rawNodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start')?.id;
+  const specialSet = new Set<string>(
+    rawNodes
+      .filter(n => (n.is_special || n.is_metadata) && n.id !== startId)
+      .map(n => n.id),
+  );
 
-  // Identify start ID for edge suppression
-  const startId = rawNodes.find(
-    (n) => n.is_start || n.id === 'Start' || n.label === 'Start',
-  )?.id;
+  // ── Detect bidirectional pairs ─────────────────────────────────────────
+  // For each edge A→B, record whether B→A also exists.
+  const edgeSet = new Set<string>(rawEdges.map(e => `${e.source}→${e.target}`));
+  const isBidir = (src: string, tgt: string) =>
+    edgeSet.has(`${src}→${tgt}`) && edgeSet.has(`${tgt}→${src}`);
+  // Track which bidir pairs we've already assigned an offset to
+  const bidirFirst = new Set<string>();
 
-  // Build set of special passage IDs for edge suppression
-  const specialSet = new Set<string>();
-  for (const n of rawNodes) {
-    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
-    if ((n.is_special || n.is_metadata) && !isStart) {
-      specialSet.add(n.id);
-    }
+  // ── Build passage nodes ────────────────────────────────────────────────
+  const positioned: Node[] = [];
+  const unpositioned: Node[] = [];
+  const childToGroup = new Map<string, string>();
+
+  for (const [gid, members] of groupMembers) {
+    for (const mid of members) childToGroup.set(mid, gid);
   }
-
-  // ── Create group nodes ──────────────────────────────────────────────
-  const rfNodes: Node[] = [];
-  const groupChildToParent = new Map<string, string>();
-
-  for (const [groupId, group] of groupMap) {
-    for (const memberId of group.members) {
-      groupChildToParent.set(memberId, groupId);
-    }
-
-    rfNodes.push({
-      id: groupId,
-      type: 'group',
-      position: { x: 0, y: 0 },
-      data: { label: group.label } as GroupNodeData,
-      style: {
-        width: 300,
-        height: 200,
-      },
-      draggable: false,
-      selectable: false,
-    });
-  }
-
-  // ── Create passage nodes ────────────────────────────────────────────
-  const positionedNodes: Node[] = [];
-  const unpositionedNodes: Node[] = [];
 
   for (const n of rawNodes) {
     const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
-    const color = getNodeColor(n);
-    const parentId = groupChildToParent.get(n.id);
-
-    let posX = n.position_x != null ? snapToGrid(n.position_x) : null;
-    let posY = n.position_y != null ? snapToGrid(n.position_y) : null;
-
     const rfNode: Node<PassageNodeData> = {
       id: n.id,
       type: 'passage',
-      position: { x: posX ?? 0, y: posY ?? 0 },
+      position: { x: n.position_x != null ? snap(n.position_x) : 0, y: n.position_y != null ? snap(n.position_y) : 0 },
       data: {
         label: n.label,
         file: n.file,
@@ -347,217 +297,187 @@ function buildGraphElements(
         is_metadata: !!n.is_metadata,
         is_unreachable: !!n.is_unreachable,
         is_start: isStart,
-        color,
-        metadata_color: n.color,  // only the server-provided metadata color
+        color: nodeColor(n),
+        metadata_color: n.color,
         var_writes: n.var_writes || [],
         var_reads: n.var_reads || [],
         group: n.group,
         dimmed: false,
         highlighted: false,
+        focused: false,
       },
-      parentId,
+      parentId: childToGroup.get(n.id),
     };
 
-    if (posX != null && posY != null) {
-      positionedNodes.push(rfNode);
+    if (n.position_x != null && n.position_y != null) {
+      positioned.push(rfNode);
     } else {
-      unpositionedNodes.push(rfNode);
+      unpositioned.push(rfNode);
     }
-
-    rfNodes.push(rfNode);
   }
 
-  // ── Layout unpositioned nodes with dagre ────────────────────────────
-  if (unpositionedNodes.length > 0) {
-    // Build edges for the unpositioned subgraph
-    const nodeIds = new Set(unpositionedNodes.map((n) => n.id));
+  // ── Layout unpositioned nodes with dagre ───────────────────────────────
+  if (unpositioned.length > 0) {
+    const nodeIds = new Set(unpositioned.map(n => n.id));
     const subEdges: Edge[] = rawEdges
-      .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
-      .map((e) => ({
-        id: `${e.source}->${e.target}`,
-        source: e.source,
-        target: e.target,
-      }));
+      .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+      .map((e, i) => ({ id: `dagre-${i}`, source: e.source, target: e.target }));
 
-    const dagrePositions = runDagreLayout(unpositionedNodes, subEdges);
+    const positions = dagreLayout(unpositioned, subEdges);
 
-    // If there are also positioned nodes, offset the dagre layout so it
-    // doesn't overlap with the positioned nodes
-    if (positionedNodes.length > 0) {
-      let maxX = -Infinity;
-      let minY = Infinity;
-      for (const pn of positionedNodes) {
-        if (pn.position.x > maxX) maxX = pn.position.x;
-        if (pn.position.y < minY) minY = pn.position.y;
-      }
-      const offsetX = maxX + NODE_WIDTH + GRID_SNAP * 3;
-      const offsetY = minY;
-
-      for (const un of unpositionedNodes) {
-        const pos = dagrePositions.get(un.id);
-        if (pos) {
-          un.position = {
-            x: pos.x + offsetX,
-            y: pos.y + offsetY,
-          };
-        }
+    // Offset so unpositioned block doesn't overlap positioned nodes
+    let offsetX = 0;
+    if (positioned.length > 0) {
+      const maxX = Math.max(...positioned.map(n => n.position.x)) + NODE_W + GRID_SNAP * 4;
+      const minY = Math.min(...positioned.map(n => n.position.y));
+      offsetX = maxX;
+      for (const n of unpositioned) {
+        const p = positions.get(n.id);
+        if (p) n.position = { x: p.x + offsetX, y: p.y + minY };
       }
     } else {
-      // All nodes are unpositioned — just use dagre positions directly
-      for (const un of unpositionedNodes) {
-        const pos = dagrePositions.get(un.id);
-        if (pos) {
-          un.position = { x: pos.x, y: pos.y };
-        }
+      for (const n of unpositioned) {
+        const p = positions.get(n.id);
+        if (p) n.position = p;
       }
     }
   }
 
-  // ── Position group nodes to encompass their children ────────────────
-  for (const [groupId, group] of groupMap) {
-    const childNodes = rfNodes.filter(
-      (n) => groupChildToParent.get(n.id) === groupId,
-    );
-    if (childNodes.length === 0) continue;
+  // All passage nodes combined
+  const allPassageNodes = [...positioned, ...unpositioned];
 
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
+  // ── Build group container nodes ────────────────────────────────────────
+  const groupNodes: Node[] = [];
+  for (const [gid, members] of groupMembers) {
+    const children = allPassageNodes.filter(n => members.includes(n.id));
+    if (children.length === 0) continue;
 
-    for (const cn of childNodes) {
-      minX = Math.min(minX, cn.position.x - NODE_WIDTH / 2);
-      minY = Math.min(minY, cn.position.y - NODE_HEIGHT / 2);
-      maxX = Math.max(maxX, cn.position.x + NODE_WIDTH / 2);
-      maxY = Math.max(maxY, cn.position.y + NODE_HEIGHT / 2);
-    }
+    const pad = 32;
+    const xs = children.map(n => n.position.x);
+    const ys = children.map(n => n.position.y);
+    const minX = Math.min(...xs) - pad;
+    const minY = Math.min(...ys) - pad - 18; // room for label
+    const maxX = Math.max(...xs) + NODE_W + pad;
+    const maxY = Math.max(...ys) + NODE_H + pad;
 
-    const padding = 30;
-    const groupNode = rfNodes.find((n) => n.id === groupId);
-    if (groupNode) {
-      groupNode.position = {
-        x: snapToGrid(minX - padding),
-        y: snapToGrid(minY - padding - 20), // extra top padding for label
-      };
-      groupNode.style = {
-        width: snapToGrid(maxX - minX + padding * 2),
-        height: snapToGrid(maxY - minY + padding * 2 + 20),
-      };
-    }
-
-    // Offset child positions relative to group
-    if (groupNode) {
-      const gx = groupNode.position.x;
-      const gy = groupNode.position.y;
-      for (const cn of childNodes) {
-        // Children with parentId are positioned absolutely in React Flow
-        // unless the group is a subflow. We use absolute positioning.
-      }
-    }
+    groupNodes.push({
+      id: gid,
+      type: 'group',
+      position: { x: snap(minX), y: snap(minY) },
+      data: { label: gid } as GroupNodeData,
+      style: { width: snap(maxX - minX), height: snap(maxY - minY) },
+      draggable: false,
+      selectable: false,
+      zIndex: -1,
+    });
   }
 
-  // ── Create edges ────────────────────────────────────────────────────
-  const nodeIds = new Set(rawNodes.map((n) => n.id));
+  const rfNodes: Node[] = [...groupNodes, ...allPassageNodes];
+
+  // ── Build edges ────────────────────────────────────────────────────────
+  const nodeIdSet = new Set(rawNodes.map(n => n.id));
   const rfEdges: Edge[] = [];
-  const usedEdgeIds = new Set<string>();
-  let edgeIndex = 0;
+  const usedIds = new Set<string>();
+  let idx = 0;
 
   for (const e of rawEdges) {
-    // Skip edges referencing missing nodes
-    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
-      continue;
+    if (!nodeIdSet.has(e.source) || !nodeIdSet.has(e.target)) continue;
+
+    // Suppress noisy special↔special and special→start edges
+    if (specialSet.has(e.source) && specialSet.has(e.target)) continue;
+    if (specialSet.has(e.source) && e.target === startId) continue;
+
+    let eid = `${e.source}→${e.target}`;
+    if (usedIds.has(eid)) eid = `${eid}_${idx}`;
+    usedIds.add(eid);
+    idx++;
+
+    const bidir = isBidir(e.source, e.target);
+    let offsetPx = 0;
+    if (bidir) {
+      const pairKey = [e.source, e.target].sort().join('↔');
+      if (!bidirFirst.has(pairKey)) {
+        bidirFirst.add(pairKey);
+        offsetPx = BIDIR_OFFSET;
+      } else {
+        offsetPx = -BIDIR_OFFSET;
+      }
     }
 
-    // Edge suppression:
-    // 1. No edges between special passages within the same group
-    // 2. No edges from special group members to Start
-    if (specialSet.has(e.source) && specialSet.has(e.target)) {
-      continue;
-    }
-    if (specialSet.has(e.source) && e.target === startId) {
-      continue;
-    }
+    const edgeKind =
+      e.edge_type === 'upstream' ? 'upstream' :
+      e.edge_type === 'broken'   ? 'broken'   : 'navigation';
 
-    let edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}]`;
-    if (usedEdgeIds.has(edgeId)) {
-      edgeId = `${e.source}->${e.target}[${e.edge_type || 'nav'}_${edgeIndex}]`;
-    }
-    usedEdgeIds.add(edgeId);
-    edgeIndex++;
-
-    // Determine edge type for rendering
-    let edgeType = 'navigation';
-    if (e.edge_type === 'upstream') {
-      edgeType = 'upstream';
-    } else if (e.edge_type === 'broken') {
-      edgeType = 'broken';
-    }
+    const markerColor =
+      edgeKind === 'broken'   ? COLORS.edgeBroken :
+      edgeKind === 'upstream' ? COLORS.edgeUp     : COLORS.edgeNav;
 
     rfEdges.push({
-      id: edgeId,
+      id: eid,
       source: e.source,
       target: e.target,
-      type: edgeType,
-      data: {
-        displayText: e.display_text || null,
+      type: 'straight',
+      data: { edgeKind, offsetPx } as any,
+      markerEnd: {
+        type: MarkerType.Arrow,
+        color: markerColor,
+        width: 14,
+        height: 14,
       },
+      style: { opacity: edgeKind === 'upstream' ? 0.35 : edgeKind === 'broken' ? 0.85 : 0.65 },
     });
   }
 
   return { nodes: rfNodes, edges: rfEdges };
 }
 
-// ── SVG marker definitions for arrowheads ──────────────────────────────────
+// ── Tooltip ────────────────────────────────────────────────────────────────
 
-function ArrowMarkers() {
+interface TooltipState {
+  x: number;
+  y: number;
+  data: PassageNodeData;
+}
+
+function NodeTooltip({ tip }: { tip: TooltipState | null }) {
+  if (!tip) return null;
+  const d = tip.data;
   return (
-    <defs>
-      <marker
-        id="arrowhead"
-        markerWidth="10"
-        markerHeight="7"
-        refX="9"
-        refY="3.5"
-        orient="auto"
-        markerUnits="strokeWidth"
-      >
-        <polygon
-          points="0 0, 10 3.5, 0 7"
-          fill={COLORS.edgeNormal}
-          opacity="0.7"
-        />
-      </marker>
-      <marker
-        id="arrowhead-upstream"
-        markerWidth="10"
-        markerHeight="7"
-        refX="9"
-        refY="3.5"
-        orient="auto"
-        markerUnits="strokeWidth"
-      >
-        <polygon
-          points="0 0, 10 3.5, 0 7"
-          fill={COLORS.edgeUpstream}
-          opacity="0.4"
-        />
-      </marker>
-      <marker
-        id="arrowhead-broken"
-        markerWidth="10"
-        markerHeight="7"
-        refX="9"
-        refY="3.5"
-        orient="auto"
-        markerUnits="strokeWidth"
-      >
-        <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.broken} opacity="0.9" />
-      </marker>
-    </defs>
+    <div
+      className="node-tooltip"
+      style={{ left: tip.x + 14, top: tip.y - 8 }}
+    >
+      <div className="node-tooltip__name">{d.label}</div>
+      {d.tags?.length > 0 && (
+        <div className="node-tooltip__row">
+          <span className="node-tooltip__key">tags</span>
+          <span className="node-tooltip__val">{d.tags.join(', ')}</span>
+        </div>
+      )}
+      <div className="node-tooltip__row">
+        <span className="node-tooltip__key">in / out</span>
+        <span className="node-tooltip__val">{d.in_degree} / {d.out_degree}</span>
+      </div>
+      {d.var_writes?.length > 0 && (
+        <div className="node-tooltip__row">
+          <span className="node-tooltip__key">writes</span>
+          <span className="node-tooltip__val">{d.var_writes.slice(0, 5).join(', ')}{d.var_writes.length > 5 ? '…' : ''}</span>
+        </div>
+      )}
+      {d.var_reads?.length > 0 && (
+        <div className="node-tooltip__row">
+          <span className="node-tooltip__key">reads</span>
+          <span className="node-tooltip__val">{d.var_reads.slice(0, 5).join(', ')}{d.var_reads.length > 5 ? '…' : ''}</span>
+        </div>
+      )}
+      {d.file && (
+        <div className="node-tooltip__file">{d.file.split('/').pop()}</div>
+      )}
+    </div>
   );
 }
 
-// ── Inner StoryMap component (needs ReactFlow context) ─────────────────────
+// ── Inner StoryMap ─────────────────────────────────────────────────────────
 
 interface StoryMapInnerProps {
   graphData: KnotGraphResponse | null;
@@ -580,352 +500,251 @@ function StoryMapInner({
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
 
   const initialFitDoneRef = useRef(false);
   const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
-  const graphDataRef = useRef<KnotGraphResponse | null>(null);
-  // When focusNode is active, skip viewport restoration on the next graph
-  // rebuild so the user's manual panning isn't overridden by the saved
-  // viewport from before the focus action.
   const skipViewportRestoreRef = useRef(false);
+  // Keep a stable ref to nodes for use inside callbacks without stale closure
+  const nodesRef = useRef<Node[]>([]);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
-  // ── Debounced position update ───────────────────────────────────────
+  // ── Debounced message senders ──────────────────────────────────────────
   const debouncedPositionUpdate = useMemo(
-    () =>
-      debounce((updates: KnotPositionUpdate[]) => {
-        if (updates.length > 0) {
-          vscode.postMessage({ command: 'updatePositions', updates });
-        }
-      }, 150),
+    () => debounce((updates: KnotPositionUpdate[]) => {
+      if (updates.length > 0) vscode.postMessage({ command: 'updatePositions', updates });
+    }, 150),
     [],
   );
 
-  // ── Debounced viewport update ───────────────────────────────────────
   const debouncedViewportUpdate = useMemo(
-    () =>
-      debounce((x: number, y: number, zoom: number) => {
-        vscode.postMessage({ command: 'updateViewport', x, y, zoom });
-      }, 500),
+    () => debounce((x: number, y: number, zoom: number) => {
+      vscode.postMessage({ command: 'updateViewport', x, y, zoom });
+    }, 500),
     [],
   );
 
-  // ── Build graph when data changes ───────────────────────────────────
+  // ── Build graph on data change ─────────────────────────────────────────
   useEffect(() => {
     if (!graphData) return;
 
-    // Save current viewport before rebuild
     try {
       const vp = getViewport();
       savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
-    } catch {
-      // React Flow may not be ready yet
-    }
+    } catch { /* not ready yet */ }
 
-    graphDataRef.current = graphData;
-    const { nodes: newNodes, edges: newEdges } = buildGraphElements(graphData);
-
+    const { nodes: newNodes, edges: newEdges } = buildElements(graphData);
     setNodes(newNodes);
     setEdges(newEdges);
 
-    // Fit view on first load
     if (!initialFitDoneRef.current && newNodes.length > 0) {
       initialFitDoneRef.current = true;
-      // Defer fitView so React Flow can measure the nodes first
       requestAnimationFrame(() => {
-        fitView({ padding: 0.15, duration: 400 });
+        fitView({ padding: 0.12, duration: 350 });
       });
     } else if (skipViewportRestoreRef.current) {
-      // Don't restore viewport — a focusNode action set this flag.
-      // The user should be free to pan/zoom after the focus completes.
       skipViewportRestoreRef.current = false;
     } else if (savedViewportRef.current) {
-      // Restore previous viewport on subsequent updates
       requestAnimationFrame(() => {
         setViewport(savedViewportRef.current!, { duration: 0 });
       });
     }
   }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport]);
 
-  // ── Search / filter ─────────────────────────────────────────────────
+  // ── Search filter ──────────────────────────────────────────────────────
   useEffect(() => {
     const q = searchQuery.toLowerCase().trim();
 
-    setNodes((nds: Node[]) =>
-      nds.map((n: Node) => {
-        // Skip group nodes
-        if (n.type === 'group') return n;
-
+    // Compute matching IDs first (using ref — no stale closure)
+    const matchIds = new Set<string>();
+    if (q !== '') {
+      for (const n of nodesRef.current) {
+        if (n.type !== 'passage') continue;
         const d = n.data as PassageNodeData;
-
-        if (q === '') {
-          return {
-            ...n,
-            data: { ...d, dimmed: false, highlighted: false },
-          };
-        }
-
-        const label = (d.label || '').toLowerCase();
-        const tags: string[] = d.tags || [];
-        const matches =
-          label.includes(q) || tags.some((t) => t.toLowerCase().includes(q));
-
-        return {
-          ...n,
-          data: {
-            ...d,
-            dimmed: !matches,
-            highlighted: matches,
-          },
-        };
-      }),
-    );
-
-    // Dim non-matching edges
-    setEdges((eds: Edge[]) => {
-      if (q === '') {
-        return eds.map((e: Edge) => ({ ...e, style: undefined }));
-      }
-
-      // Find matching node IDs
-      const matchIds = new Set<string>();
-      const nds = nodes; // read current nodes
-      for (const n of nds) {
-        if (n.type === 'group') continue;
-        const d = n.data as PassageNodeData;
-        const label = (d.label || '').toLowerCase();
-        const tags: string[] = d.tags || [];
-        if (label.includes(q) || tags.some((t) => t.toLowerCase().includes(q))) {
+        if (
+          (d.label || '').toLowerCase().includes(q) ||
+          (d.tags || []).some(t => t.toLowerCase().includes(q))
+        ) {
           matchIds.add(n.id);
         }
       }
-
-      return eds.map((e: Edge) => {
-        const connected = matchIds.has(e.source) || matchIds.has(e.target);
-        return {
-          ...e,
-          style: connected ? undefined : { opacity: 0.08 },
-        };
-      });
-    });
-  }, [searchQuery, setNodes, setEdges, nodes]);
-
-  // ── Fit to view ─────────────────────────────────────────────────────
-  useEffect(() => {
-    if (fitRequested > 0) {
-      fitView({ padding: 0.15, duration: 300 });
     }
+
+    setNodes(nds => nds.map(n => {
+      if (n.type !== 'passage') return n;
+      const d = n.data as PassageNodeData;
+      if (q === '') return { ...n, data: { ...d, dimmed: false, highlighted: false } };
+      const matches = matchIds.has(n.id);
+      return { ...n, data: { ...d, dimmed: !matches, highlighted: matches } };
+    }));
+
+    setEdges(eds => eds.map(e => {
+      if (q === '') return { ...e, style: undefined };
+      const connected = matchIds.has(e.source) || matchIds.has(e.target);
+      return { ...e, style: { ...e.style, opacity: connected ? undefined : 0.06 } };
+    }));
+  }, [searchQuery, setNodes, setEdges]);
+
+  // ── Fit view ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (fitRequested > 0) fitView({ padding: 0.12, duration: 280 });
   }, [fitRequested, fitView]);
 
-  // ── Focus on a passage node ─────────────────────────────────────────
+  // ── Focus a passage ────────────────────────────────────────────────────
   useEffect(() => {
     if (focusRequested <= 0 || !focusPassageName) return;
-
-    // Prevent viewport restoration from overriding the focus pan
     skipViewportRestoreRef.current = true;
 
-    // Try to find node by ID, then by label
-    let targetNode = getNode(focusPassageName);
-    if (!targetNode) {
-      const nds = nodes;
-      const found = nds.find((n: Node) => {
-        if (n.type === 'group') return false;
+    // Find node by id, then by label
+    const nds = nodesRef.current;
+    let target = getNode(focusPassageName);
+    if (!target) {
+      const found = nds.find(n => n.type === 'passage' && (n.data as PassageNodeData).label === focusPassageName);
+      if (found) target = getNode(found.id);
+    }
+    if (!target) return;
+
+    fitView({ nodes: [{ id: target.id }], padding: 0.4, duration: 0 });
+
+    setNodes(nds => nds.map(n => {
+      if (n.type !== 'passage') return n;
+      const d = n.data as PassageNodeData;
+      return { ...n, data: { ...d, focused: n.id === target!.id } };
+    }));
+
+    setTimeout(() => {
+      setNodes(nds => nds.map(n => {
+        if (n.type !== 'passage') return n;
         const d = n.data as PassageNodeData;
-        return d.label === focusPassageName;
-      });
-      if (found) {
-        targetNode = getNode(found.id);
-      }
-    }
+        return { ...n, data: { ...d, focused: false } };
+      }));
+    }, 1800);
+  }, [focusRequested, focusPassageName, fitView, getNode, setNodes]);
 
-    if (targetNode) {
-      // Instant pan to the focused node — no animation duration.
-      // Animated pans feel sluggish and prevent the user from scrolling
-      // freely after navigation (the animation fights with manual input).
-      fitView({ nodes: [{ id: targetNode.id }], padding: 0.5, duration: 0 });
-
-      // Temporarily highlight the focused node
-      setNodes((nds: Node[]) =>
-        nds.map((n: Node) => {
-          if (n.id === targetNode!.id) {
-            const d = n.data as PassageNodeData;
-            return {
-              ...n,
-              className: 'passage-node--focused',
-              data: { ...d, highlighted: true },
-            };
-          }
-          return n;
-        }),
-      );
-
-      // Remove highlight after 1.5s (shorter to feel responsive)
-      setTimeout(() => {
-        setNodes((nds: Node[]) =>
-          nds.map((n: Node) => {
-            if (n.id === targetNode!.id) {
-              const d = n.data as PassageNodeData;
-              return {
-                ...n,
-                className: undefined,
-                data: { ...d, highlighted: searchQuery ? true : false },
-              };
-            }
-            return n;
-          }),
-        );
-      }, 1500);
-    }
-  }, [focusRequested, focusPassageName, fitView, getNode, nodes, setNodes, searchQuery]);
-
-  // ── Save all positions ──────────────────────────────────────────────
+  // ── Save all positions ─────────────────────────────────────────────────
   useEffect(() => {
     if (saveRequested <= 0) return;
-
-    const updates: KnotPositionUpdate[] = [];
-    const currentNodes = nodes;
-
-    for (const n of currentNodes) {
-      if (n.type === 'group') continue;
-      const d = n.data as PassageNodeData;
-      updates.push({
-        passage_name: n.id,
-        position_x: snapToGrid(n.position.x),
-        position_y: snapToGrid(n.position.y),
-        group: d.group,
-        color: d.metadata_color,  // only write back metadata color, never rendering fallback
+    const updates: KnotPositionUpdate[] = nodesRef.current
+      .filter(n => n.type === 'passage')
+      .map(n => {
+        const d = n.data as PassageNodeData;
+        return {
+          passage_name: n.id,
+          position_x: snap(n.position.x),
+          position_y: snap(n.position.y),
+          group: d.group,
+          color: d.metadata_color,
+        };
       });
-    }
+    if (updates.length > 0) vscode.postMessage({ command: 'saveAllPositions', updates });
+  }, [saveRequested]);
 
-    if (updates.length > 0) {
-      vscode.postMessage({ command: 'saveAllPositions', updates });
-    }
-  }, [saveRequested, nodes]);
+  // ── Node drag end → snap + send position ──────────────────────────────
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    onNodesChange(changes);
 
-  // ── Handle node changes (drag end → snap to grid + update positions) ─
-  const handleNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      // Apply all changes first
-      onNodesChange(changes);
+    const dragEnds = changes.filter(
+      (c): c is NodePositionChange => c.type === 'position' && c.dragging === false && !!c.position,
+    );
+    if (dragEnds.length === 0) return;
 
-      // Process position changes (drag end)
-      const positionChanges = changes.filter(
-        (c): c is NodePositionChange =>
-          c.type === 'position' && c.dragging === false,
-      );
+    const snapped = new Map(dragEnds.map(c => [c.id, { x: snap(c.position!.x), y: snap(c.position!.y) }]));
+    const updates: KnotPositionUpdate[] = [];
 
-      if (positionChanges.length === 0) return;
+    setNodes(nds => nds.map(n => {
+      const s = snapped.get(n.id);
+      if (!s) return n;
+      const d = n.data as PassageNodeData;
+      updates.push({ passage_name: n.id, position_x: s.x, position_y: s.y, group: d.group, color: d.metadata_color });
+      return { ...n, position: s };
+    }));
 
-      // Snap to grid and collect updates
-      const updates: KnotPositionUpdate[] = [];
-      const snappedPositions = new Map<string, { x: number; y: number }>();
+    debouncedPositionUpdate(updates);
+  }, [onNodesChange, setNodes, debouncedPositionUpdate]);
 
-      for (const change of positionChanges) {
-        if (change.position) {
-          const snappedX = snapToGrid(change.position.x);
-          const snappedY = snapToGrid(change.position.y);
-          snappedPositions.set(change.id, { x: snappedX, y: snappedY });
-        }
-      }
+  // ── Node click → open passage ──────────────────────────────────────────
+  const handleNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
+    if (node.type !== 'passage') return;
+    const d = node.data as PassageNodeData;
+    if (d.file) vscode.postMessage({ command: 'openPassage', file: d.file, line: d.line || 0 });
+  }, []);
 
-      if (snappedPositions.size === 0) return;
+  // ── Tooltip ────────────────────────────────────────────────────────────
+  const handleNodeMouseEnter = useCallback((e: React.MouseEvent, node: Node) => {
+    if (node.type !== 'passage') return;
+    setTooltip({ x: e.clientX, y: e.clientY, data: node.data as PassageNodeData });
+  }, []);
 
-      // Apply snapped positions
-      setNodes((nds: Node[]) =>
-        nds.map((n: Node) => {
-          const snapped = snappedPositions.get(n.id);
-          if (snapped) {
-            const d = n.data as PassageNodeData;
-            updates.push({
-              passage_name: n.id,
-              position_x: snapped.x,
-              position_y: snapped.y,
-              group: d.group,
-              color: d.metadata_color,  // only write back metadata color, never rendering fallback
-            });
-            return { ...n, position: { x: snapped.x, y: snapped.y } };
-          }
-          return n;
-        }),
-      );
+  const handleNodeMouseLeave = useCallback(() => {
+    setTooltip(null);
+  }, []);
 
-      debouncedPositionUpdate(updates);
-    },
-    [onNodesChange, setNodes, debouncedPositionUpdate],
-  );
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (tooltip) setTooltip(t => t ? { ...t, x: e.clientX, y: e.clientY } : null);
+  }, [tooltip]);
 
-  // ── Node click → open passage ───────────────────────────────────────
-  const handleNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
-      if (node.type === 'group') return;
-      const d = node.data as PassageNodeData;
-      if (d.file) {
-        vscode.postMessage({
-          command: 'openPassage',
-          file: d.file,
-          line: d.line || 0,
-        });
-      }
-    },
-    [],
-  );
-
-  // ── Viewport change → save debounced ────────────────────────────────
+  // ── Viewport change ────────────────────────────────────────────────────
   const handleViewportChange = useCallback(() => {
     try {
       const vp = getViewport();
       debouncedViewportUpdate(vp.x, vp.y, vp.zoom);
-    } catch {
-      // React Flow may not be ready
-    }
+    } catch { /* not ready */ }
   }, [getViewport, debouncedViewportUpdate]);
 
-  // ── MiniMap node color ──────────────────────────────────────────────
-  const miniMapNodeColor = useCallback((node: Node) => {
-    if (node.type === 'group') return '#333344';
-    const d = node.data as PassageNodeData;
-    return d.color || COLORS.normal;
+  // ── MiniMap color ──────────────────────────────────────────────────────
+  const miniMapColor = useCallback((n: Node) => {
+    if (n.type !== 'passage') return '#2a2a3a';
+    return (n.data as PassageNodeData).color || COLORS.normal;
   }, []);
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={handleNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={handleNodeClick}
-      onViewportChange={handleViewportChange}
-      nodeTypes={nodeTypes}
-      edgeTypes={edgeTypes}
-      connectionMode={ConnectionMode.Loose}
-      minZoom={MIN_ZOOM}
-      maxZoom={MAX_ZOOM}
-      fitView={false}
-      panOnDrag={true}
-      selectionOnDrag={false}
-      nodesDraggable={true}
-      nodesConnectable={false}
-      elementsSelectable={true}
-      proOptions={{ hideAttribution: true }}
-    >
-      <ArrowMarkers />
-      <MiniMap
-        nodeColor={miniMapNodeColor}
-        maskColor="rgba(0, 0, 0, 0.6)"
-        style={{
-          backgroundColor: 'var(--vscode-sideBar-background, #252536)',
-          border: '1px solid var(--vscode-panel-border, #3a3a4a)',
-          borderRadius: '4px',
-        }}
-      />
-      <Controls
-        showInteractive={false}
-      />
-      <Background variant={BackgroundVariant.Dots} gap={GRID_SNAP} size={1} color="rgba(255,255,255,0.09)" />
-    </ReactFlow>
+    <div className="storymap-inner" onMouseMove={handleMouseMove}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={handleNodesChange}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
+        onNodeMouseEnter={handleNodeMouseEnter}
+        onNodeMouseLeave={handleNodeMouseLeave}
+        onViewportChange={handleViewportChange}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        connectionMode={ConnectionMode.Loose}
+        minZoom={MIN_ZOOM}
+        maxZoom={MAX_ZOOM}
+        fitView={false}
+        panOnDrag
+        selectionOnDrag={false}
+        nodesDraggable
+        nodesConnectable={false}
+        elementsSelectable
+        proOptions={{ hideAttribution: true }}
+        defaultEdgeOptions={{ type: 'straight' }}
+      >
+        <MiniMap
+          nodeColor={miniMapColor}
+          maskColor="rgba(0,0,0,0.55)"
+          style={{
+            background: 'var(--vscode-sideBar-background, #1e1e2e)',
+            border: '1px solid #3a3a4a',
+            borderRadius: 4,
+          }}
+        />
+        <Controls showInteractive={false} />
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={GRID_SNAP}
+          size={1}
+          color="rgba(255,255,255,0.07)"
+        />
+      </ReactFlow>
+      <NodeTooltip tip={tooltip} />
+    </div>
   );
 }
 
-// ── Outer StoryMap component (provides ReactFlowProvider) ──────────────────
+// ── Outer component (provides ReactFlowProvider) ───────────────────────────
 
 interface StoryMapProps {
   graphData: KnotGraphResponse | null;

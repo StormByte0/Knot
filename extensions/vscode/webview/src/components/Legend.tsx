@@ -3,13 +3,48 @@ import React from 'react';
 export default function Legend() {
   return (
     <div id="legend">
-      <div className="legend-item"><span className="legend-dot" style={{ background: '#3a7ca5' }}></span> Passage</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: '#43a047', border: '2px solid #fff' }}></span> Start</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: '#ef6c00' }}></span> Special</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: '#8e24aa' }}></span> Metadata</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: '#4a4a4a' }}></span> Unreachable</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: 'transparent', border: '1px dashed #666' }}></span> Group</div>
-      <div className="legend-item"><span className="legend-dot" style={{ background: 'transparent', border: '2px dashed #e53935' }}></span> Broken link</div>
+      <div className="legend-item">
+        <span className="legend-dot" style={{ background: '#2d6a9f' }} />
+        Passage
+      </div>
+      <div className="legend-item">
+        <span className="legend-dot" style={{ background: '#2e7d32', border: '2px solid rgba(255,255,255,0.5)' }} />
+        Start
+      </div>
+      <div className="legend-item">
+        <span className="legend-dot" style={{ background: '#e65100' }} />
+        Special
+      </div>
+      <div className="legend-item">
+        <span className="legend-dot" style={{ background: '#6a1b9a' }} />
+        Metadata
+      </div>
+      <div className="legend-item">
+        <span className="legend-dot" style={{ background: '#424242' }} />
+        Unreachable
+      </div>
+      <div className="legend-item">
+        <span
+          className="legend-dot"
+          style={{
+            background: 'transparent',
+            border: '1.5px dashed #c62828',
+            borderRadius: 2,
+          }}
+        />
+        Broken link
+      </div>
+      <div className="legend-item">
+        <span
+          className="legend-dot"
+          style={{
+            background: 'transparent',
+            border: '1px dashed #3a3a5a',
+            borderRadius: 2,
+          }}
+        />
+        Group
+      </div>
     </div>
   );
 }

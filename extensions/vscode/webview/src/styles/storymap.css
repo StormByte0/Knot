@@ -1,284 +1,391 @@
-/* ── Story Map webview styles ──────────────────────────────────────────────
+/* ── Story Map webview ─────────────────────────────────────────────────────
  *
- * Twine-inspired visual design with VS Code theme integration.
- * Uses React Flow for graph rendering with custom node/edge components.
+ * Design language: dark IDE shell, Twine-inspired passage nodes,
+ * minimal chrome so the graph dominates.
  */
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    overflow: hidden;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  /* Use VS Code's font stack but keep monospace for numbers/meta */
+  font-family: var(--vscode-font-family, 'Segoe UI', system-ui, sans-serif);
+  font-size: 12px;
 }
 
 #root {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+  position: absolute;
+  inset: 0;
 }
 
+/* ── Design tokens ─────────────────────────────────────────────────────── */
 :root {
-    --bg: #1e1e2e;
-    --fg: var(--vscode-editor-foreground, #d4d4d4);
-    --accent: var(--vscode-focusBorder, #007acc);
-    --border: #3a3a4a;
-    --muted: var(--vscode-descriptionForeground, #8b8b8b);
-    --card: var(--vscode-sideBar-background, #252536);
-    --error: var(--vscode-errorForeground, #f14c4c);
+  --bg:        #14141f;
+  --surface:   #1c1c2e;
+  --border:    #2e2e45;
+  --fg:        var(--vscode-editor-foreground, #c8ccd4);
+  --muted:     #5a6070;
+  --accent:    var(--vscode-focusBorder, #3b82f6);
+  --error:     #ef4444;
+
+  /* Passage node tokens — overridden per-node via --node-color */
+  --node-color: #2d6a9f;
+  --node-h: 38px;
+  --node-w: 160px;
+  --node-r: 6px;
 }
 
-/* ── App container ─────────────────────────────────────────────────────── */
+/* ── App shell ─────────────────────────────────────────────────────────── */
 .app-container {
-    background: var(--bg);
-    color: var(--fg);
-    font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-    font-size: 13px;
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
 }
 
 /* ── Toolbar ───────────────────────────────────────────────────────────── */
 #toolbar {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 6px;
-    background: var(--card);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 20;
 }
 
 #toolbar input {
-    flex: 1;
-    min-width: 60px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--fg);
-    padding: 3px 6px;
-    border-radius: 3px;
-    font-size: 11px;
-    outline: none;
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  outline: none;
+  transition: border-color 0.15s;
 }
 #toolbar input:focus { border-color: var(--accent); }
+#toolbar input::placeholder { color: var(--muted); }
 
 #toolbar button {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--fg);
-    padding: 2px 6px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 11px;
-    white-space: nowrap;
-    line-height: 1.4;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
 }
-#toolbar button:hover { background: var(--accent); color: #fff; }
+#toolbar button:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 
-/* ── Story Map container ──────────────────────────────────────────────── */
+/* ── Story Map wrapper ─────────────────────────────────────────────────── */
 .storymap-container {
-    flex: 1 1 0%;
-    min-height: 0;
-    width: 100%;
-    position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  position: relative;
 }
 
-/* ── React Flow overrides ─────────────────────────────────────────────── */
+.storymap-inner {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+/* ── React Flow overrides ──────────────────────────────────────────────── */
 .react-flow {
-    background: var(--bg) !important;
+  background: var(--bg) !important;
 }
 
-.react-flow__pane {
-    cursor: default;
+.react-flow__pane { cursor: default; }
+.react-flow__node  { cursor: pointer; }
+.react-flow__node-group { cursor: default; }
+
+/* Remove the default node selection ring — we style it ourselves */
+.react-flow__node.selected > * {
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--accent) !important;
+  border-radius: var(--node-r);
 }
 
-.react-flow__node {
-    cursor: pointer;
-}
-
-.react-flow__node-group {
-    cursor: default;
-}
-
-/* Controls panel theming */
+/* Controls */
 .react-flow__controls {
-    border-radius: 4px !important;
-    border: 1px solid var(--border) !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+  border-radius: 5px !important;
+  border: 1px solid var(--border) !important;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(0,0,0,.45) !important;
 }
-
 .react-flow__controls-button {
-    background: var(--card) !important;
-    border-color: var(--border) !important;
-    border-bottom: 1px solid var(--border) !important;
-    fill: var(--fg) !important;
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--border) !important;
+  fill: var(--fg) !important;
+  transition: background 0.12s !important;
 }
-
 .react-flow__controls-button:hover {
-    background: var(--accent) !important;
-    fill: #fff !important;
+  background: var(--accent) !important;
+  fill: #fff !important;
 }
 
-/* MiniMap theming */
+/* MiniMap */
 .react-flow__minimap {
-    border-radius: 4px !important;
-    border: 1px solid var(--border) !important;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+  border-radius: 5px !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: 0 2px 10px rgba(0,0,0,.45) !important;
+  /* keep it above the legend */
+  z-index: 6 !important;
 }
 
-/* Attribution hidden via proOptions, but just in case */
-.react-flow__attribution {
-    display: none !important;
+.react-flow__attribution { display: none !important; }
+
+/* Edge labels */
+.react-flow__edge-textbg { fill: var(--bg) !important; }
+.react-flow__edge-text   { fill: var(--muted) !important; font-size: 8px !important; }
+
+/* ── Passage node (.pn) ────────────────────────────────────────────────── */
+/*
+ * Each node gets --node-color injected inline.
+ * We derive the border and glow from it via a translucent overlay trick
+ * so we don't need to calculate lightened/darkened shades in JS.
+ */
+.pn {
+  width: var(--node-w);
+  height: var(--node-h);
+  border-radius: var(--node-r);
+  background: var(--node-color);
+  /* subtle 3-stop gradient: color → slightly darker at bottom */
+  background-image: linear-gradient(160deg, rgba(255,255,255,0.08) 0%, transparent 60%);
+  border: 1.5px solid rgba(255,255,255,0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  position: relative;
+  transition: box-shadow 0.12s, opacity 0.15s, border-color 0.15s;
+  /* Clip label overflow */
+  overflow: hidden;
 }
 
-/* ── Passage Node ─────────────────────────────────────────────────────── */
-.passage-node {
-    width: 150px;
-    height: 36px;
-    border-radius: 18px;
-    border: 2px solid;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: box-shadow 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    position: relative;
+.pn:hover {
+  border-color: rgba(255,255,255,0.45);
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.08), 0 4px 16px rgba(0,0,0,.5);
 }
 
-.passage-node:hover {
-    box-shadow: 0 0 0 2px rgba(255,255,255,0.3);
+/* Handle — invisible, just covers the node connection zone */
+.pn__handle {
+  background: transparent !important;
+  border: none !important;
+  width: 10px !important;
+  height: 10px !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
 }
 
-.passage-node__label {
-    color: #ffffff;
-    font-size: 11px;
-    font-weight: normal;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 130px;
-    text-align: center;
-    pointer-events: none;
-    user-select: none;
+.pn__label {
+  color: rgba(255,255,255,0.95);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 128px;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  letter-spacing: 0.01em;
 }
 
-/* Start passage */
-.passage-node--start {
-    border-width: 3px;
-    border-color: #ffffff !important;
-}
-.passage-node--start .passage-node__label {
-    font-weight: bold;
-}
-
-/* Special passage */
-.passage-node--special {
-    border-style: solid;
-}
-
-/* Metadata passage */
-.passage-node--metadata {
-    border-style: solid;
+/* Tag count badge */
+.pn__tag-count {
+  position: absolute;
+  right: 5px;
+  top: 4px;
+  font-size: 8px;
+  line-height: 1;
+  color: rgba(255,255,255,0.55);
+  background: rgba(0,0,0,0.3);
+  border-radius: 3px;
+  padding: 1px 3px;
+  pointer-events: none;
+  user-select: none;
 }
 
-/* Unreachable passage */
-.passage-node--unreachable {
-    border-color: #3a3a3a !important;
+/* ── Node states ───────────────────────────────────────────────────────── */
+
+/* Start */
+.pn--start {
+  border-width: 2px;
+  border-color: rgba(255,255,255,0.6) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.2);
 }
-.passage-node--unreachable .passage-node__label {
-    color: #aaaaaa;
+.pn--start .pn__label { font-weight: 700; }
+
+/* Unreachable */
+.pn--unreachable {
+  background-image: none;
+  opacity: 0.7;
+}
+.pn--unreachable .pn__label { color: rgba(200,200,200,0.6); }
+
+/* Search — highlighted */
+.pn--highlighted {
+  border-color: #fff !important;
+  border-width: 2px;
+  box-shadow: 0 0 0 3px rgba(255,255,255,0.15) !important;
+  z-index: 10;
 }
 
-/* Highlighted (search match) */
-.passage-node--highlighted {
-    border-color: #ffffff !important;
-    border-width: 3px;
-    z-index: 10;
+/* Search — dimmed */
+.pn--dimmed {
+  opacity: 0.18;
+  pointer-events: none;
 }
 
-/* Dimmed (search filter) */
-.passage-node--dimmed {
-    opacity: 0.2;
+/* Focus (from extension focusNode command) */
+.pn--focused {
+  border-color: var(--accent) !important;
+  border-width: 2px;
+  box-shadow: 0 0 0 4px rgba(59,130,246,0.25), 0 0 18px rgba(59,130,246,0.3) !important;
+  z-index: 20;
 }
 
-/* Focused (from focusNode command) */
-.passage-node--focused {
-    border-color: #007acc !important;
-    border-width: 3px;
-    box-shadow: 0 0 12px rgba(0, 122, 204, 0.5);
-    z-index: 20;
+/* ── Group node (.gn) ──────────────────────────────────────────────────── */
+.gn {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed #3a3a5a;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.015);
+  position: relative;
+}
+.gn__label {
+  position: absolute;
+  top: 4px;
+  left: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4a4a6a;
+  pointer-events: none;
+  user-select: none;
 }
 
-/* ── Group Node ────────────────────────────────────────────────────────── */
-.group-node {
-    width: 100%;
-    height: 100%;
-    border: 1px dashed #555555;
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.02);
-    position: relative;
+/* ── Tooltip ───────────────────────────────────────────────────────────── */
+.node-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  min-width: 140px;
+  max-width: 260px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.55);
+  pointer-events: none;
+  font-size: 11px;
 }
 
-.group-node__label {
-    position: absolute;
-    top: 2px;
-    left: 6px;
-    font-size: 9px;
-    color: #888888;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    pointer-events: none;
-    user-select: none;
+.node-tooltip__name {
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.node-tooltip__row {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.node-tooltip__key {
+  color: var(--muted);
+  flex-shrink: 0;
+  min-width: 36px;
+}
+
+.node-tooltip__val {
+  color: var(--fg);
+  opacity: 0.8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-tooltip__file {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 5px;
+  font-style: italic;
 }
 
 /* ── Status bar ────────────────────────────────────────────────────────── */
 #statusBar {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 3px 8px;
-    background: var(--card);
-    border-top: 1px solid var(--border);
-    font-size: 10px;
-    color: var(--muted);
-    flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 10px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+  letter-spacing: 0.02em;
 }
 
 /* ── Legend ─────────────────────────────────────────────────────────────── */
+/*
+ * Positioned in the bottom-LEFT to avoid overlapping React Flow's
+ * MiniMap (bottom-right) and Controls (bottom-right above minimap).
+ */
 #legend {
-    position: absolute;
-    bottom: 32px;
-    right: 8px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 6px 8px;
-    font-size: 10px;
-    opacity: 0.85;
-    z-index: 5;
+  position: absolute;
+  bottom: 36px;   /* clear status bar */
+  left: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 10px;
+  opacity: 0.82;
+  z-index: 5;
+  transition: opacity 0.15s;
+  pointer-events: none;
 }
-#legend:hover { opacity: 1; }
-#legend .legend-item { display: flex; align-items: center; gap: 5px; margin: 1px 0; color: #b0b8c8; }
-#legend .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+#legend:hover { opacity: 1; pointer-events: auto; }
 
-/* ── Edge label (for display_text on edges) ──────────────────────────── */
-.react-flow__edge-textbg {
-    fill: var(--bg) !important;
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+  color: #8a90a0;
+  white-space: nowrap;
 }
 
-.react-flow__edge-text {
-    fill: var(--muted) !important;
-    font-size: 8px !important;
+.legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
 }
