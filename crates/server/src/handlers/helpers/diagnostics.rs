@@ -11,8 +11,8 @@ use url::Url;
 
 use super::code_actions::extract_variable_name;
 use super::position::{
-    byte_range_to_lsp_range, find_passage_header_range, parse_passage_name_from_header, utf16_len,
-    utf16_len_up_to,
+    byte_range_to_lsp_range, find_passage_name_range,
+    parse_passage_name_from_header, utf16_len, utf16_len_up_to,
 };
 
 // ===========================================================================
@@ -117,8 +117,11 @@ pub(crate) async fn publish_all_diagnostics(
                     default_severity
                 };
 
-                // For graph diagnostics, find the passage header range
-                let range = find_passage_header_range(text, &gd.passage_name);
+                // For graph diagnostics, underline only the passage name
+                // (not the full header line with tags/metadata). This makes
+                // diagnostics more precise and avoids misleading users into
+                // thinking the tags or metadata are the problem.
+                let range = find_passage_name_range(text, &gd.passage_name);
 
                 // Build related information pointing to source or target passages
                 let related_information = build_related_information_for_push(

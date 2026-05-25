@@ -173,6 +173,44 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
     Range::default()
 }
 
+/// Find the LSP Range covering ONLY the passage name (stripped, without
+/// tags, metadata, or the `::` prefix) for a given passage.
+///
+/// This is used by diagnostics to underline just the passage name rather
+/// than the entire header line (which includes `[tags]` and `{metadata}`).
+/// Underlining the full line makes diagnostics harder to read and can
+/// mislead users into thinking the tags or metadata are the problem.
+///
+/// Falls back to the full header range if the name range cannot be
+/// computed (e.g., malformed header).
+pub(crate) fn find_passage_name_range(text: &str, passage_name: &str) -> Range {
+    for (line_idx, line) in text.lines().enumerate() {
+        if line.starts_with("::") {
+            let name = parse_passage_name_from_header(&line[2..]);
+            if name == passage_name {
+                let after_colons = &line[2..];
+                if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
+                    let start_char = utf16_len(&after_colons[..name_range.start]);
+                    let end_char = start_char + utf16_len(&after_colons[name_range.start..name_range.end]);
+                    return Range {
+                        start: Position {
+                            line: line_idx as u32,
+                            character: start_char,
+                        },
+                        end: Position {
+                            line: line_idx as u32,
+                            character: end_char,
+                        },
+                    };
+                }
+                // Fallback: return the full header range
+                return find_passage_header_range(text, passage_name);
+            }
+        }
+    }
+    Range::default()
+}
+
 /// Parse just the passage name from a header (the part after `::`).
 ///
 /// Handles the Twee 3 header format:

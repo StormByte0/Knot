@@ -762,3 +762,140 @@ fn test_semantic_token_positions_header() {
     assert_eq!(first_tag.start, 10, "Tag should start at byte 10, got {}", first_tag.start);
     assert_eq!(first_tag.length, 3, "Tag should have length 3, got {}", first_tag.length);
 }
+
+#[test]
+fn sugarcube_no_space_after_colons_token_positions() {
+    // Regression test: Headers without space after :: (e.g., ::Start instead
+    // of :: Start) should have correct token positions. The name should start
+    // at byte 2 (right after ::), not byte 3.
+    use crate::plugin::{FormatPlugin, SemanticTokenType};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let plugin = SugarCubePlugin::new();
+    let text = "::Start {\"position\":\"420,60\"}\n<<setSceneLoc \"records-desk\">>\n";
+    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    eprintln!("=== No-space-after-colons test ===");
+    for (i, tok) in result.tokens.iter().enumerate() {
+        let safe_start = tok.start.min(text.len());
+        let safe_end = (tok.start + tok.length).min(text.len());
+        let tok_text = &text[safe_start..safe_end];
+        let (line, char) = byte_offset_to_position(text, tok.start);
+        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' -> LSP({}, {})",
+                 i, tok.token_type, tok.start, tok.length, tok_text, line, char);
+    }
+
+    // ::Start {"position":"420,60"}
+    // 0123456789012345678901234567890
+    // :: at bytes 0-1, Start at bytes 2-6
+
+    let prefix_tok = result.tokens.iter().find(|t|
+        matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader)
+    );
+    assert!(prefix_tok.is_some(), "Should have header prefix token");
+    let pt = prefix_tok.unwrap();
+    assert_eq!(pt.start, 0, ":: prefix should start at byte 0, got {}", pt.start);
+    assert_eq!(pt.length, 2, ":: prefix should be 2 bytes");
+
+    let name_tok = result.tokens.iter().find(|t|
+        matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage)
+    );
+    assert!(name_tok.is_some(), "Should have passage name token");
+    let nt = name_tok.unwrap();
+    assert_eq!(nt.start, 2, "Name 'Start' should start at byte 2 (no space after ::), got {}", nt.start);
+    assert_eq!(nt.length, 5, "Name 'Start' should be 5 bytes");
+
+    let (line, char) = byte_offset_to_position(text, nt.start);
+    assert_eq!(line, 0, "Name should be on line 0");
+    assert_eq!(char, 2, "Name should start at char 2 (no space after ::), got {}", char);
+
+    // Body tokens: macro "setSceneLoc" should be at the right position
+    let macro_toks: Vec<_> = result.tokens.iter()
+        .filter(|t| t.token_type == SemanticTokenType::Macro)
+        .collect();
+    assert!(!macro_toks.is_empty(), "Should have Macro tokens in body");
+
+    let set_scene = macro_toks.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        tok_text == "setSceneLoc"
+    });
+    assert!(set_scene.is_some(), "Should find 'setSceneLoc' macro token");
+    let sm = set_scene.unwrap();
+    let (line, char) = byte_offset_to_position(text, sm.start);
+    eprintln!("  setSceneLoc macro at byte {} -> LSP({}, {})", sm.start, line, char);
+    assert_eq!(line, 1, "Macro should be on line 1");
+    assert_eq!(char, 2, "Macro 'setSceneLoc' should start at char 2 on line 1, got {}", char);
+}
+
+#[test]
+fn sugarcube_script_tag_token_positions() {
+    // Regression test: Passages tagged [script] should have Tag tokens
+    // with the TwineCore modifier.
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let plugin = SugarCubePlugin::new();
+    let text = "::MyScript [script] {\"position\":\"100,200\"}\nconsole.log('hello');\n";
+    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    eprintln!("=== Script tag test ===");
+    for (i, tok) in result.tokens.iter().enumerate() {
+        let safe_start = tok.start.min(text.len());
+        let safe_end = (tok.start + tok.length).min(text.len());
+        let tok_text = &text[safe_start..safe_end];
+        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
+                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+    }
+
+    // Should have a Tag token for "script"
+    let tag_toks: Vec<_> = result.tokens.iter()
+        .filter(|t| t.token_type == SemanticTokenType::Tag)
+        .collect();
+    assert!(!tag_toks.is_empty(), "Should have Tag tokens for [script]");
+
+    let script_tag = tag_toks.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        tok_text == "script"
+    });
+    assert!(script_tag.is_some(), "Should find 'script' tag token");
+    let st = script_tag.unwrap();
+    // ::MyScript [script] — ::(0-1) MyScript(2-9) ' '(10) [(11) script(12-17) ](18)
+    assert_eq!(st.start, 12, "'script' tag should start at byte 12, got {}", st.start);
+    assert_eq!(st.length, 6, "'script' tag should be 6 bytes");
+    assert_eq!(st.modifier, Some(SemanticTokenModifier::TwineCore),
+               "'script' tag should have TwineCore modifier");
+}
+
+#[test]
+fn sugarcube_stylesheet_tag_token_positions() {
+    // Regression test: Passages tagged [stylesheet] should have Tag tokens.
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let plugin = SugarCubePlugin::new();
+    let text = "::MyCSS [stylesheet] {\"position\":\"100,200\"}\nbody { color: red; }\n";
+    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    eprintln!("=== Stylesheet tag test ===");
+    for (i, tok) in result.tokens.iter().enumerate() {
+        let safe_start = tok.start.min(text.len());
+        let safe_end = (tok.start + tok.length).min(text.len());
+        let tok_text = &text[safe_start..safe_end];
+        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
+                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+    }
+
+    let tag_toks: Vec<_> = result.tokens.iter()
+        .filter(|t| t.token_type == SemanticTokenType::Tag)
+        .collect();
+    assert!(!tag_toks.is_empty(), "Should have Tag tokens for [stylesheet]");
+
+    let stylesheet_tag = tag_toks.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        tok_text == "stylesheet"
+    });
+    assert!(stylesheet_tag.is_some(), "Should find 'stylesheet' tag token");
+    let st = stylesheet_tag.unwrap();
+    assert_eq!(st.modifier, Some(SemanticTokenModifier::TwineCore),
+               "'stylesheet' tag should have TwineCore modifier");
+}

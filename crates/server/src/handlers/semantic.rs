@@ -352,14 +352,17 @@ pub(crate) async fn semantic_tokens_full(
             let parse_result = plugin.parse(&uri, text);
             let tokens = convert_semantic_tokens(text, &parse_result.tokens);
 
-            // Debug: log the first 20 semantic tokens to help diagnose position
-            // offset issues. This logging is rate-limited by the fact that
-            // semantic_tokens_full is only called on explicit refresh or edit.
+            // Debug: log semantic tokens with position verification to help
+            // diagnose offset issues. This logs the token's LSP position, the
+            // text at that byte offset, AND the text at the LSP character
+            // position on the line — if they differ, there's a conversion bug.
             {
-                let debug_limit = 20.min(tokens.len());
+                let debug_limit = 30.min(tokens.len());
                 tracing::debug!(
                     file = %uri,
                     total_tokens = tokens.len(),
+                    text_len = text.len(),
+                    text_first_100 = &text[..100.min(text.len())],
                     "semantic_tokens_full: generated tokens"
                 );
                 for (i, tok) in tokens.iter().take(debug_limit).enumerate() {
@@ -374,13 +377,25 @@ pub(crate) async fn semantic_tokens_full(
                     } else {
                         ""
                     };
+
+                    // Verify: what text is actually at the LSP position?
+                    let line_text = text.lines().nth(tok.line as usize).unwrap_or("");
+                    let char_end = (tok.start_char as usize + tok.length as usize).min(line_text.len());
+                    let lsp_text = if (tok.start_char as usize) < line_text.len() {
+                        &line_text[tok.start_char as usize..char_end]
+                    } else {
+                        ""
+                    };
+
                     tracing::debug!(
                         token_idx = i,
                         line = tok.line,
                         start_char = tok.start_char,
                         length = tok.length,
                         token_type = tok.token_type,
-                        text = tok_text,
+                        byte_text = tok_text,
+                        lsp_text = lsp_text,
+                        match = tok_text == lsp_text,
                         "semantic token"
                     );
                 }
