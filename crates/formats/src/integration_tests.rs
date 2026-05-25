@@ -532,3 +532,233 @@ fn chapbook_no_variable_tracking() {
     assert!(!plugin.supports_full_variable_tracking());
     assert!(!plugin.supports_partial_variable_tracking());
 }
+
+// ===========================================================================
+// Semantic token position verification tests
+// ===========================================================================
+
+/// Helper: Convert a byte offset in text to (line, character) using the same
+/// logic as the LSP server's `byte_offset_to_position()`.
+fn byte_offset_to_position(text: &str, offset: usize) -> (u32, u32) {
+    let safe_offset = offset.min(text.len());
+    let text_before = &text[..safe_offset];
+
+    let line = if text_before.is_empty() {
+        0u32
+    } else {
+        let line_count = text_before.lines().count() as u32;
+        if text_before.ends_with('\n') {
+            line_count
+        } else {
+            line_count - 1
+        }
+    };
+
+    let last_newline = text_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_text_before_offset = &text[last_newline..safe_offset];
+
+    let character: u32 = line_text_before_offset
+        .chars()
+        .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
+        .sum();
+
+    (line, character)
+}
+
+#[test]
+fn sugarcube_header_token_positions_simple() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let src = ":: Start\nHello world.\n";
+    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+    // :: prefix should be at byte 0 → LSP (0, 0)
+    // Note: "Start" is a core special passage, so it uses SpecialPassageHeader
+    let header_tok = result.tokens.iter().find(|t| 
+        t.token_type == crate::plugin::SemanticTokenType::PassageHeader 
+        || t.token_type == crate::plugin::SemanticTokenType::SpecialPassageHeader
+    );
+    assert!(header_tok.is_some(), "Should have PassageHeader or SpecialPassageHeader token");
+    let ht = header_tok.unwrap();
+    assert_eq!(ht.start, 0, ":: prefix should start at byte 0");
+    assert_eq!(ht.length, 2, ":: prefix should be 2 bytes");
+    let (line, char) = byte_offset_to_position(src, ht.start);
+    assert_eq!(line, 0, ":: prefix should be on line 0");
+    assert_eq!(char, 0, ":: prefix should start at char 0");
+
+    // Passage name "Start" should be at byte 3 → LSP (0, 3)
+    // Note: "Start" is a core special passage, so it uses SpecialPassage
+    let name_tok = result.tokens.iter().find(|t| 
+        t.token_type == crate::plugin::SemanticTokenType::PassageName 
+        || t.token_type == crate::plugin::SemanticTokenType::SpecialPassage
+    );
+    assert!(name_tok.is_some(), "Should have PassageName or SpecialPassage token");
+    let nt = name_tok.unwrap();
+    assert_eq!(nt.start, 3, "Name 'Start' should start at byte 3");
+    assert_eq!(nt.length, 5, "Name 'Start' should be 5 bytes");
+    let (line, char) = byte_offset_to_position(src, nt.start);
+    assert_eq!(line, 0, "Name should be on line 0");
+    assert_eq!(char, 3, "Name should start at char 3");
+}
+
+#[test]
+fn sugarcube_header_token_positions_with_tags() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let src = ":: Forest [dark scary]\nSome content.\n";
+    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+    // Print all tokens for debugging
+    eprintln!("Tokens for: {:?}", src);
+    for tok in &result.tokens {
+        let (line, char) = byte_offset_to_position(src, tok.start);
+        let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
+        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+    }
+
+    // :: Forest [dark scary]
+    // 0123456789012345678901
+    //           111111111122
+    // [ is at byte 10, "dark" starts at byte 11, "scary" starts at byte 16
+
+    // Name "Forest" at byte 3 → LSP (0, 3)
+    let name_tok = result.tokens.iter().find(|t| t.token_type == crate::plugin::SemanticTokenType::PassageName);
+    assert!(name_tok.is_some(), "Should have PassageName token");
+    let nt = name_tok.unwrap();
+    assert_eq!(nt.start, 3, "Name 'Forest' should start at byte 3");
+    let (line, char) = byte_offset_to_position(src, nt.start);
+    assert_eq!(char, 3, "Name 'Forest' should start at char 3");
+
+    // Tags should be present
+    let tag_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
+    assert!(!tag_toks.is_empty(), "Should have Tag tokens");
+
+    if tag_toks.len() >= 2 {
+        // "dark" should be at byte 11 → LSP (0, 11)
+        let (line, char) = byte_offset_to_position(src, tag_toks[0].start);
+        assert_eq!(line, 0, "Tag 'dark' should be on line 0");
+        assert_eq!(char, 11, "Tag 'dark' should start at char 11, got {}", char);
+
+        // "scary" should be at byte 16 → LSP (0, 16)
+        let (line, char) = byte_offset_to_position(src, tag_toks[1].start);
+        assert_eq!(line, 0, "Tag 'scary' should be on line 0");
+        assert_eq!(char, 16, "Tag 'scary' should start at char 16, got {}", char);
+    }
+}
+
+#[test]
+fn sugarcube_header_token_positions_with_tags_and_metadata() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let src = ":: Forest [dark scary] {\"position\":\"100,200\"}\nSome content.\n";
+    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+    eprintln!("Tokens for: {:?}", src);
+    for tok in &result.tokens {
+        let (line, char) = byte_offset_to_position(src, tok.start);
+        let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
+        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+    }
+
+    // :: Forest [dark scary] {"position":"100,200"}
+    // 0123456789012345678901234567890123456789
+    //           1111111111222222222233333333
+    // [ is at byte 10, "dark" at byte 11, "scary" at byte 16
+
+    let tag_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
+    assert!(!tag_toks.is_empty(), "Should have Tag tokens even with metadata");
+
+    if tag_toks.len() >= 2 {
+        let (line, char) = byte_offset_to_position(src, tag_toks[0].start);
+        assert_eq!(char, 11, "Tag 'dark' should start at char 11, got {}", char);
+
+        let (line, char) = byte_offset_to_position(src, tag_toks[1].start);
+        assert_eq!(char, 16, "Tag 'scary' should start at char 16, got {}", char);
+    }
+}
+
+#[test]
+fn sugarcube_body_token_positions() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let src = ":: Start\n<<set $gold to 10>>You have $gold coins.\n:: Forest\nTrees.\n";
+    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+
+    eprintln!("Tokens for: {:?}", src);
+    for tok in &result.tokens {
+        let (line, char) = byte_offset_to_position(src, tok.start);
+        let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
+        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+    }
+
+    // Body starts at byte 9 (after ":: Start\n")
+    // <<set $gold to 10>> starts at byte 9
+    // "set" name starts at byte 11 (after <<)
+    // Expected: macro "set" at LSP (1, 2)
+
+    let macro_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Macro).collect();
+    assert!(!macro_toks.is_empty(), "Should have Macro tokens");
+
+    let set_macro = macro_toks.iter().find(|t| {
+        let tok_text = &src[t.start.min(src.len())..(t.start + t.length).min(src.len())];
+        tok_text == "set"
+    });
+    assert!(set_macro.is_some(), "Should have 'set' macro token");
+    let sm = set_macro.unwrap();
+
+    let (line, char) = byte_offset_to_position(src, sm.start);
+    assert_eq!(line, 1, "Macro 'set' should be on line 1, got {}", line);
+    assert_eq!(char, 2, "Macro 'set' should start at char 2, got {}", char);
+}
+
+#[test]
+fn test_semantic_token_positions_header() {
+    use crate::plugin::{FormatPlugin, SemanticTokenType};
+    use crate::sugarcube::SugarCubePlugin;
+    
+    let plugin = SugarCubePlugin::new();
+    let text = ":: Start [tag] {\"position\":\"100,200\"}\n<<set $x to 5>>\n:: End\n";
+    
+    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+    
+    // Debug: print all tokens with their positions
+    for (i, tok) in result.tokens.iter().enumerate() {
+        let safe_start = tok.start.min(text.len());
+        let safe_end = (tok.start + tok.length).min(text.len());
+        let tok_text = &text[safe_start..safe_end];
+        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}", 
+                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+    }
+    
+    // Verify header tokens for ":: Start [tag]"
+    // Byte positions in the text:
+    // 0: ':', 1: ':', 2: ' ', 3: 'S', 4: 't', 5: 'a', 6: 'r', 7: 't',
+    // 8: ' ', 9: '[', 10: 't', 11: 'a', 12: 'g', 13: ']'
+    
+    // The :: prefix should be at byte 0, length 2
+    let prefix_tokens: Vec<_> = result.tokens.iter()
+        .filter(|t| matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader))
+        .collect();
+    assert!(!prefix_tokens.is_empty(), "Should have at least one passage header prefix token");
+    let first_prefix = prefix_tokens[0];
+    assert_eq!(first_prefix.start, 0, ":: prefix should start at byte 0, got {}", first_prefix.start);
+    assert_eq!(first_prefix.length, 2, ":: prefix should have length 2");
+    
+    // The passage name "Start" should be at byte 3, length 5
+    let name_tokens: Vec<_> = result.tokens.iter()
+        .filter(|t| matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage))
+        .collect();
+    assert!(!name_tokens.is_empty(), "Should have at least one passage name token");
+    let first_name = name_tokens[0];
+    assert_eq!(first_name.start, 3, "Passage name should start at byte 3, got {}", first_name.start);
+    assert_eq!(first_name.length, 5, "Passage name should have length 5, got {}", first_name.length);
+    
+    // The tag "tag" should be at byte 10, length 3
+    let tag_tokens: Vec<_> = result.tokens.iter()
+        .filter(|t| matches!(t.token_type, SemanticTokenType::Tag))
+        .collect();
+    assert!(!tag_tokens.is_empty(), "Should have at least one tag token");
+    let first_tag = tag_tokens[0];
+    assert_eq!(first_tag.start, 10, "Tag should start at byte 10, got {}", first_tag.start);
+    assert_eq!(first_tag.length, 3, "Tag should have length 3, got {}", first_tag.length);
+}

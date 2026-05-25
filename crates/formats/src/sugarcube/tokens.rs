@@ -64,7 +64,7 @@ use super::links::{
 };
 use super::vars::{RE_SET_MACRO, RE_VAR};
 use super::blocks;
-use super::lexer::ParsedHeader;
+use crate::header::TweeHeader;
 use super::macros;
 use knot_core::passage::SpecialPassageLayer;
 
@@ -773,6 +773,11 @@ pub(crate) struct HeaderTokenContext {
     /// The layer of the special passage (TwineCore, LegacyCore, StoryFormat).
     /// `None` for regular (user-defined) passages.
     pub layer: Option<SpecialPassageLayer>,
+    /// Pre-computed semantic token modifiers for each tag in `header.tags`.
+    /// Each entry is `Some(TwineCore)`, `Some(StoryFormat)`, or `None`
+    /// (custom/user-defined tag). Populated by the format plugin's `parse()`
+    /// method using `classify_tag()` before calling `header_tokens()`.
+    pub tag_modifiers: Vec<Option<SemanticTokenModifier>>,
 }
 
 /// Generate semantic tokens for passage headers.
@@ -793,7 +798,7 @@ pub(crate) struct HeaderTokenContext {
 /// This gives themes three levels of visual differentiation:
 /// 1. Regular vs. special (different token types)
 /// 2. Twine-core vs. story-format (different modifiers)
-pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> Vec<SemanticToken> {
+pub(crate) fn header_tokens(header: &TweeHeader, ctx: &HeaderTokenContext) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
     let (prefix_type, name_type, layer_modifier) = if ctx.is_special {
@@ -834,7 +839,7 @@ pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> 
     // Tags — compute actual positions by scanning the header line.
     // The header line is: `:: Name [tag1 tag2] {metadata}`
     // We need to find the `[` bracket and then scan inside it.
-    tokens.extend(tag_tokens_from_header(header));
+    tokens.extend(tag_tokens_from_header(header, &ctx.tag_modifiers));
 
     tokens
 }
@@ -851,57 +856,78 @@ pub(crate) fn header_tokens(header: &ParsedHeader, ctx: &HeaderTokenContext) -> 
 /// doesn't match (due to whitespace handling differences between this
 /// manual scan and the lexer's `split_whitespace()`), the token is
 /// skipped rather than producing an incorrect one.
-fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
+///
+/// `tag_modifiers` provides the semantic token modifier for each tag
+/// (from `classify_tag()`), enabling themes to distinguish special tags
+/// like `[script]`, `[widget]`, `[startup]` from custom tags like
+/// `[dark]`, `[forest]`.
+fn tag_tokens_from_header(header: &TweeHeader, tag_modifiers: &[Option<SemanticTokenModifier>]) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
     if header.tags.is_empty() {
         return tokens;
     }
 
-    let raw = &header.raw_after_colons;
+    // Use tags_raw which is the text after `::` + whitespace with JSON metadata
+    // stripped but `[tag]` blocks intact. This allows us to find the `[` bracket
+    // and compute accurate tag positions.
+    let raw = &header.tags_raw;
 
-    // Strip trailing JSON metadata (same logic as parse_header_line).
-    let raw_before_json = if let Some(brace_start) = raw.rfind('{') {
-        if raw.trim_end().ends_with('}') {
-            &raw[..brace_start]
-        } else {
-            raw
-        }
-    } else {
-        raw
+    // Find the first `[` bracket position for tag scanning
+    let bracket_pos_in_raw = match raw.find('[') {
+        Some(pos) => pos,
+        None => return tokens,
     };
 
-    let bracket_pos_in_raw = match raw_before_json.rfind('[') {
-        Some(pos) if raw_before_json.trim_end().ends_with(']') => pos,
-        _ => return tokens,
-    };
-
-    let bracket_start_abs = header.header_start + 2 + bracket_pos_in_raw;
+    // Compute absolute bracket position: header_start + 2 (::) + whitespace + bracket_pos_in_raw
+    // name_start = header_start + 2 + ws_len, so ws_len = name_start - header_start - 2
+    let ws_len = header.name_start - header.header_start - 2;
+    let bracket_start_abs = header.header_start + 2 + ws_len + bracket_pos_in_raw;
     let tags_inner_start = bracket_start_abs + 1;
 
-    let close_bracket_pos = raw_before_json.rfind(']').unwrap_or(raw_before_json.len());
-    let tags_text = &raw_before_json[bracket_pos_in_raw + 1..close_bracket_pos];
+    // Collect all tag text from all `[...]` blocks
+    let mut all_tag_text = String::new();
+    let mut scan_pos = bracket_pos_in_raw;
+    let bytes = raw.as_bytes();
+    while scan_pos < bytes.len() {
+        if bytes[scan_pos] == b'[' {
+            let start = scan_pos + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b']' {
+                end += 1;
+            }
+            if end < bytes.len() {
+                if !all_tag_text.is_empty() {
+                    all_tag_text.push(' ');
+                }
+                all_tag_text.push_str(&raw[start..end]);
+                scan_pos = end + 1;
+            } else {
+                break;
+            }
+        } else {
+            scan_pos += 1;
+        }
+    }
 
     let mut tag_idx = 0;
     let mut in_tag = false;
     let mut tag_start = 0usize;
 
-    // Use byte iteration since tags are ASCII identifiers.
-    for (i, ch) in tags_text.char_indices() {
+    for (i, ch) in all_tag_text.char_indices() {
         if ch.is_whitespace() {
             if in_tag {
-                // End of current tag — verify content before emitting.
-                let tag_start_rel = tag_start - tags_inner_start;
-                let tag_end_rel = i;
-                if tag_end_rel <= tags_text.len() && tag_idx < header.tags.len() {
-                    let extracted = tags_text[tag_start_rel..tag_end_rel].trim();
+                let tag_end = i;
+                if tag_idx < header.tags.len() {
+                    let extracted = all_tag_text[tag_start..tag_end].trim();
                     if extracted == header.tags[tag_idx] {
+                        let tag_start_abs = tags_inner_start + tag_start;
                         let tag_end_abs = tags_inner_start + i;
                         tokens.push(SemanticToken {
-                            start: tag_start,
-                            length: tag_end_abs - tag_start,
+                            start: tag_start_abs,
+                            length: tag_end_abs - tag_start_abs,
                             token_type: SemanticTokenType::Tag,
-                            modifier: None,
+                            modifier: tag_modifiers.get(tag_idx).copied().flatten(),
                         });
                     }
                     tag_idx += 1;
@@ -909,22 +935,22 @@ fn tag_tokens_from_header(header: &ParsedHeader) -> Vec<SemanticToken> {
                 in_tag = false;
             }
         } else if !in_tag {
-            tag_start = tags_inner_start + i;
+            tag_start = i;
             in_tag = true;
         }
     }
 
     // Handle the last tag (if no trailing whitespace)
     if in_tag && tag_idx < header.tags.len() {
-        let tag_start_rel = tag_start - tags_inner_start;
-        let extracted = tags_text[tag_start_rel..].trim();
+        let extracted = all_tag_text[tag_start..].trim();
         if extracted == header.tags[tag_idx] {
-            let tag_end_abs = tags_inner_start + tags_text.len();
+            let tag_start_abs = tags_inner_start + tag_start;
+            let tag_end_abs = tags_inner_start + all_tag_text.len();
             tokens.push(SemanticToken {
-                start: tag_start,
-                length: tag_end_abs - tag_start,
+                start: tag_start_abs,
+                length: tag_end_abs - tag_start_abs,
                 token_type: SemanticTokenType::Tag,
-                modifier: None,
+                modifier: tag_modifiers.get(tag_idx).copied().flatten(),
             });
         }
     }

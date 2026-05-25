@@ -189,7 +189,8 @@ mod tests {
     #[test]
     fn test_update_position_decimal() {
         let result = update_passage_position_in_header(":: Start", 100.5, 200.75);
-        assert!(result.contains("{\"position\":\"100.5,200.75\"}"), "Result: {}", result);
+        // format_coord uses .2 precision for non-integer values
+        assert!(result.contains("{\"position\":\"100.50,200.75\"}"), "Result: {}", result);
     }
 
     // -----------------------------------------------------------------------

@@ -20,6 +20,7 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
@@ -60,22 +61,6 @@ enum TemplateSegment {
 }
 
 // ---------------------------------------------------------------------------
-// Parsed header
-// ---------------------------------------------------------------------------
-
-/// The result of parsing a single passage header line.
-struct ParsedHeader {
-    name: String,
-    tags: Vec<String>,
-    /// Byte offset where the header line starts.
-    header_start: usize,
-    /// Byte offset where the header line ends (exclusive, before newline).
-    header_end: usize,
-    /// Byte offset where the passage name starts (after `::` and any whitespace).
-    name_start: usize,
-}
-
-// ---------------------------------------------------------------------------
 // Compiled regexes (module-level LazyLock)
 // ---------------------------------------------------------------------------
 
@@ -100,12 +85,10 @@ static RE_WSS_VAR_READ: LazyLock<Regex> =
 /// Regex for window.story.state variable writes: `window.story.state.variableName =`
 static RE_WSS_VAR_WRITE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
-/// Regex for passage headers.
-/// Matches: `:: Name [tags] {"metadata":"..."}` or `:: Name [tags]` or `:: Name`
-/// The JSON metadata block is optional and stripped before name/tag extraction.
-/// Updated to handle optional JSON metadata block after tags (or after name if no tags).
-static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*(?:\{.*\})?\s*$").unwrap());
+/// Detect passage header lines: starts with `::` followed by at least one
+/// non-whitespace character. Actual parsing done by unified parser.
+static RE_HEADER_DETECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -132,44 +115,20 @@ impl SnowmanPlugin {
 
     /// Split source into passages using proper byte-offset tracking.
     ///
-    /// Returns a list of `(ParsedHeader, body_text)` pairs. The body text is
+    /// Returns a list of `(TweeHeader, body_text)` pairs. The body text is
     /// the raw text between the end of this header line and the start of the
     /// next header (or end of file).
-    fn split_passages<'a>(&self, text: &'a str) -> Vec<(ParsedHeader, &'a str)> {
-        let mut headers: Vec<ParsedHeader> = Vec::new();
+    fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
+        // Collect header spans: (line_start, line_end) for each detected header line.
+        let mut header_spans: Vec<(usize, usize)> = Vec::new();
         let mut byte_offset = 0;
 
         for line in text.lines() {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if let Some(caps) = RE_HEADER.captures(line) {
-                let name_match = caps.get(1).unwrap();
-                let name = name_match.as_str().trim().to_string();
-                let tags = caps
-                    .get(2)
-                    .map(|m| {
-                        m.as_str()
-                            .split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                // Compute name_start: offset of the captured name group in source text.
-                // The regex capture starts after `:: ` prefix, but may include leading
-                // whitespace. We compute the actual name start by finding the name
-                // within the capture.
-                let capture_start = line_start + name_match.start();
-                let capture_text = name_match.as_str();
-                let ws_len = capture_text.len() - capture_text.trim_start().len();
-                let name_start = capture_start + ws_len;
-                headers.push(ParsedHeader {
-                    name,
-                    tags,
-                    header_start: line_start,
-                    header_end: line_end,
-                    name_start,
-                });
+            if RE_HEADER_DETECT.is_match(line) {
+                header_spans.push((line_start, line_end));
             }
 
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
@@ -177,32 +136,27 @@ impl SnowmanPlugin {
             byte_offset = line_end + newline_len;
         }
 
-        // Build passage bodies
+        // Build passage bodies and parse headers via the unified parser.
         let mut results = Vec::new();
-        for header in headers.into_iter() {
-            // Body starts after the header line + its trailing newline (CRLF = 2, LF = 1)
-            let newline_len = if text.get(header.header_end..header.header_end + 2) == Some("\r\n") { 2 } else if header.header_end < text.len() { 1 } else { 0 };
-            let body_start = header.header_end + newline_len;
+        for &(line_start, line_end) in &header_spans {
+            let header_line = &text[line_start..line_end];
 
-            // Body ends at the start of the next header, or end of text
-            // We need to find the next header start. Since we consumed headers,
-            // we use a different approach: scan the remaining text.
-            let body_end = {
-                // Look for the next `::` at the start of a line
-                let remaining = &text[body_start..];
-                let mut found = text.len();
-                let mut off = 0;
-                for line in remaining.lines() {
-                    let line_off = off;
-                    let nl_len = if remaining.get(line_off + line.len()..line_off + line.len() + 2) == Some("\r\n") { 2 } else if line_off + line.len() < remaining.len() { 1 } else { 0 };
-                    off = line_off + line.len() + nl_len;
-                    if line.starts_with("::") {
-                        found = body_start + line_off;
-                        break;
-                    }
-                }
-                found
+            // Use the unified header parser for content extraction.
+            let header = match header::parse_twee_header(header_line, line_start) {
+                Some(h) => h,
+                None => continue,
             };
+
+            // Body starts after the header line + its trailing newline (CRLF = 2, LF = 1)
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            let body_start = line_end + newline_len;
+
+            // Body ends at the start of the next header, or end of text.
+            let body_end = header_spans
+                .iter()
+                .find(|&&(s, _)| s > line_start)
+                .map(|&(s, _)| s)
+                .unwrap_or(text.len());
 
             let body = text.get(body_start..body_end).unwrap_or("");
             results.push((header, body));
@@ -919,7 +873,12 @@ impl FormatPlugin for SnowmanPlugin {
         let raw_passages = self.split_passages(text);
 
         for (header, body) in &raw_passages {
-            let body_offset = header.header_end + 1;
+            let header_line_end = text[header.header_start..]
+                .find('\n')
+                .map(|i| header.header_start + i)
+                .unwrap_or(text.len());
+            let newline_len = if text.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < text.len() { 1 } else { 0 };
+            let body_offset = header_line_end + newline_len;
 
             // Determine if this is a special passage using the unified
             // classification system. Tags are checked FIRST (per the
@@ -975,6 +934,28 @@ impl FormatPlugin for SnowmanPlugin {
                     token_type: name_type,
                     modifier: None,
                 });
+
+                // Tag tokens with classification modifiers
+                if !header.tags.is_empty() {
+                    let bracket_start = header.tags_raw.find('[')
+                        .map(|bs| header.name_start + bs)
+                        .unwrap_or(header.name_start + header.name_text_raw.len());
+                    let tags_inner_start = bracket_start + 1;
+                    let mut offset = tags_inner_start;
+                    for tag in &header.tags {
+                        let modifier = self.classify_tag(tag);
+                        if offset > tags_inner_start {
+                            offset += 1;
+                        }
+                        tokens.push(SemanticToken {
+                            start: offset,
+                            length: tag.len(),
+                            token_type: SemanticTokenType::Tag,
+                            modifier,
+                        });
+                        offset += tag.len();
+                    }
+                }
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
@@ -1002,6 +983,28 @@ impl FormatPlugin for SnowmanPlugin {
                     token_type: name_type,
                     modifier: None,
                 });
+
+                // Tag tokens with classification modifiers
+                if !header.tags.is_empty() {
+                    let bracket_start = header.tags_raw.find('[')
+                        .map(|bs| header.name_start + bs)
+                        .unwrap_or(header.name_start + header.name_text_raw.len());
+                    let tags_inner_start = bracket_start + 1;
+                    let mut offset = tags_inner_start;
+                    for tag in &header.tags {
+                        let modifier = self.classify_tag(tag);
+                        if offset > tags_inner_start {
+                            offset += 1;
+                        }
+                        tokens.push(SemanticToken {
+                            start: offset,
+                            length: tag.len(),
+                            token_type: SemanticTokenType::Tag,
+                            modifier,
+                        });
+                        offset += tag.len();
+                    }
+                }
 
                 // Body tokens.
                 tokens.extend(self.body_tokens(body, body_offset));

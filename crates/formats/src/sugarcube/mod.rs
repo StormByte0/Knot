@@ -99,7 +99,16 @@ impl FormatPlugin for SugarCubePlugin {
         let raw_passages = lexer::split_passages(text);
 
         for (header, body) in &raw_passages {
-            let body_offset = header.header_start + header.header_len;
+            // Compute body_offset: after the header line's content.
+            // The header line in source text ends at the next newline.
+            // We find the end of the header line by searching for \n from header_start.
+            let header_line_end = text[header.header_start..]
+                .find('\n')
+                .map(|i| header.header_start + i)
+                .unwrap_or(text.len());
+            // Body starts after the \n (1 byte) or \r\n (2 bytes)
+            let newline_len = if text.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < text.len() { 1 } else { 0 };
+            let body_offset = header_line_end + newline_len;
 
             // Determine if this is a special passage using the unified
             // classification system. Tags are checked FIRST (per the
@@ -114,7 +123,7 @@ impl FormatPlugin for SugarCubePlugin {
             };
 
             passage.tags = header.tags.clone();
-            passage.position = header.position;
+            passage.position = lexer::position_from_header(header);
 
             // ── Context-aware parsing ──────────────────────────────────────
             // Detect script and stylesheet passages. These contain non-Twine
@@ -157,9 +166,11 @@ impl FormatPlugin for SugarCubePlugin {
 
                 // Semantic tokens: header + PassageRef tokens for implicit refs
                 let layer = special_def.as_ref().map(|d| d.layer);
+                let tag_mods = header.tags.iter().map(|t| self.classify_tag(t)).collect();
                 tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
                     is_special: true,
                     layer,
+                    tag_modifiers: tag_mods,
                 }));
 
                 // PassageRef tokens for implicit passage references in script code
@@ -201,9 +212,11 @@ impl FormatPlugin for SugarCubePlugin {
 
                 // Semantic tokens: header (SpecialPassage type)
                 let layer = special_def.as_ref().map(|d| d.layer);
+                let tag_mods = header.tags.iter().map(|t| self.classify_tag(t)).collect();
                 tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
                     is_special: true,
                     layer,
+                    tag_modifiers: tag_mods,
                 }));
 
                 // No blanket body tokens for stylesheets — let TextMate
@@ -232,9 +245,11 @@ impl FormatPlugin for SugarCubePlugin {
 
                 // Semantic tokens: header (SpecialPassage type)
                 let layer = special_def.as_ref().map(|d| d.layer);
+                let tag_mods = header.tags.iter().map(|t| self.classify_tag(t)).collect();
                 tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
                     is_special: true,
                     layer,
+                    tag_modifiers: tag_mods,
                 }));
 
                 // StoryInterface body tokens: emit PassageRef tokens for
@@ -303,9 +318,11 @@ impl FormatPlugin for SugarCubePlugin {
                     || passage.is_script_passage()
                     || passage.is_stylesheet_passage();
                 let layer = special_def.as_ref().map(|d| d.layer);
+                let tag_mods = header.tags.iter().map(|t| self.classify_tag(t)).collect();
                 tokens.extend(tokens::header_tokens(header, &tokens::HeaderTokenContext {
                     is_special: is_special_for_tokens,
                     layer,
+                    tag_modifiers: tag_mods,
                 }));
 
                 // Semantic tokens for body (filter comment-embedded tokens)
@@ -1334,8 +1351,6 @@ mod tests {
         // TwineCore passages should NOT be in SugarCube's own list
         assert!(!sc_names.contains(&"StoryTitle"), "StoryTitle is TwineCore, not SugarCube");
         assert!(!sc_names.contains(&"StoryData"), "StoryData is TwineCore, not SugarCube");
-        assert!(!sc_names.contains(&"Story JavaScript"), "Story JavaScript is TwineCore, not SugarCube");
-        assert!(!sc_names.contains(&"Story Stylesheet"), "Story Stylesheet is TwineCore, not SugarCube");
 
         // But they should be available through all_special_passages()
         let plugin = SugarCubePlugin::new();
@@ -1344,8 +1359,11 @@ mod tests {
 
         assert!(all_names.contains(&"StoryTitle"), "StoryTitle should be in merged registry");
         assert!(all_names.contains(&"StoryData"), "StoryData should be in merged registry");
-        assert!(all_names.contains(&"Story JavaScript"), "Story JavaScript should be in merged registry");
-        assert!(all_names.contains(&"Story Stylesheet"), "Story Stylesheet should be in merged registry");
+        // Core tags are tag-matched: "script", "stylesheet", "style"
+        // (not "Story JavaScript" / "Story Stylesheet" as passage names)
+        assert!(all_names.contains(&"script"), "script tag should be in merged registry");
+        assert!(all_names.contains(&"stylesheet"), "stylesheet tag should be in merged registry");
+        assert!(all_names.contains(&"Start"), "Start should be in merged registry");
         assert!(all_names.contains(&"StoryInit"), "StoryInit should be in merged registry");
     }
 

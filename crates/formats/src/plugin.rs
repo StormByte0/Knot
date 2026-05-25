@@ -417,21 +417,20 @@ pub trait FormatPlugin: Send + Sync {
             }
         }
 
-        // ── Step 3: Format name-matched definitions ───────────────────
-        // SugarCube's StoryInit, PassageHeader, etc. These are singleton
-        // passages identified by exact name.
-        for def in &all_defs {
-            if def.match_strategy == knot_core::passage::MatchStrategy::Name
-                && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
-            {
-                return Some(def.clone());
-            }
-        }
-
-        // ── Step 4: Format tag-matched definitions ────────────────────
+        // ── Step 3: Format tag-matched definitions ────────────────────
         // [init], [widget] for SugarCube; [header], [footer],
         // [startup] for Harlowe. The passage name is user-defined.
+        //
+        // Tags take priority over format names for two reasons:
+        // 1. Consistency: core tags already take priority over format names
+        //    (step 2 before step 4). Format tags should follow the same
+        //    pattern so the classification rule is uniform.
+        // 2. Grouping: tags like [script] and [stylesheet] group passages
+        //    by behavior regardless of name. Format tags like [startup]
+        //    and [widget] serve the same purpose — a passage tagged
+        //    [startup] is a startup passage regardless of its name.
+        //    E.g., `:: PassageHeader [startup]` is a startup passage,
+        //    not a chrome interceptor.
         for tag in passage_tags {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
@@ -442,6 +441,19 @@ pub trait FormatPlugin: Send + Sync {
                     matched.name = passage_name.to_string();
                     return Some(matched);
                 }
+            }
+        }
+
+        // ── Step 4: Format name-matched definitions ───────────────────
+        // SugarCube's StoryInit, PassageHeader, etc. These are singleton
+        // passages identified by exact name. Checked AFTER format tags
+        // so that tag-based grouping takes priority over name matching.
+        for def in &all_defs {
+            if def.match_strategy == knot_core::passage::MatchStrategy::Name
+                && def.name == passage_name
+                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+            {
+                return Some(def.clone());
             }
         }
 
@@ -465,8 +477,8 @@ pub trait FormatPlugin: Send + Sync {
     /// 2. `CoreNamed` — Start (core name-matched non-metadata)
     /// 3. `CoreTagged` — [script], [stylesheet], [style] (core tags)
     /// 4. `CoreLegacy` — "script"/"stylesheet" as names (Twine 1)
-    /// 5. `FormatNamed` — StoryInit, PassageHeader, etc. (format names)
-    /// 6. `FormatTagged` — [init], [widget], etc. (format tags)
+    /// 5. `FormatTagged` — [init], [widget], [startup], etc. (format tags)
+    /// 6. `FormatNamed` — StoryInit, PassageHeader, etc. (format names)
     /// 7. `Regular` — No match
     fn classify_passage_category(
         &self,
@@ -506,20 +518,10 @@ pub trait FormatPlugin: Send + Sync {
             }
         }
 
-        // ── Step 3: Format name-matched definitions ───────────────────
-        for def in &all_defs {
-            if def.match_strategy == knot_core::passage::MatchStrategy::Name
-                && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
-            {
-                return (Some(def.clone()), PassageCategory::FormatNamed);
-            }
-        }
-
-        // ── Step 4: Format tag-matched definitions ────────────────────
-        // Tags are checked BEFORE classifying as Regular, ensuring that
-        // special-tagged passages are never missed even though they have
-        // user-defined names.
+        // ── Step 3: Format tag-matched definitions ────────────────────
+        // Tags take priority over format names (same pattern as core tags
+        // taking priority over format names in step 2). See classify_passage()
+        // for the detailed rationale.
         for tag in passage_tags {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
@@ -533,9 +535,77 @@ pub trait FormatPlugin: Send + Sync {
             }
         }
 
+        // ── Step 4: Format name-matched definitions ───────────────────
+        // Checked AFTER format tags so tag-based grouping takes priority.
+        for def in &all_defs {
+            if def.match_strategy == knot_core::passage::MatchStrategy::Name
+                && def.name == passage_name
+                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+            {
+                return (Some(def.clone()), PassageCategory::FormatNamed);
+            }
+        }
+
         (None, PassageCategory::Regular)
     }
     fn display_name(&self) -> &str;
+
+    // -----------------------------------------------------------------------
+    // Tag classification (semantic token modifiers)
+    // -----------------------------------------------------------------------
+
+    /// Classify a tag against known special tag definitions.
+    ///
+    /// Returns the appropriate `SemanticTokenModifier` if the tag matches a
+    /// known special tag, or `None` for custom (user-defined) tags.
+    ///
+    /// This is used by tag semantic token generation to visually distinguish
+    /// special tags like `[script]`, `[widget]`, `[startup]` from custom tags
+    /// like `[dark]`, `[forest]`, `[myTag]`. Themes can then color special
+    /// tags differently from custom tags.
+    ///
+    /// ## Priority (same as `classify_passage`)
+    ///
+    /// 1. Core tags (`[script]`, `[stylesheet]`, `[style]`) → `TwineCore`
+    /// 2. Format-specific tags (`[init]`, `[widget]`, `[startup]`, etc.)
+    ///    → `StoryFormat`
+    /// 3. Custom tags → `None`
+    ///
+    /// ## Format Isolation
+    ///
+    /// This method checks core tags first (from `twine_core_special_passages()`)
+    /// then delegates to the format plugin's `tag_matched_special_passages()`
+    /// for format-specific tags. Format plugins should NOT override this
+    /// method — the default implementation is format-isolation-compliant.
+    fn classify_tag(&self, tag: &str) -> Option<SemanticTokenModifier> {
+        // Step 1: Core tags — [script], [stylesheet], [style]
+        for def in knot_core::passage::twine_core_special_passages() {
+            if def.match_strategy == knot_core::passage::MatchStrategy::Tag
+                && tag.eq_ignore_ascii_case(&def.name)
+            {
+                return Some(SemanticTokenModifier::TwineCore);
+            }
+        }
+
+        // Step 2: Legacy core tags (same as core for modifier purposes)
+        for def in knot_core::passage::legacy_core_special_passages() {
+            if def.match_strategy == knot_core::passage::MatchStrategy::Tag
+                && tag.eq_ignore_ascii_case(&def.name)
+            {
+                return Some(SemanticTokenModifier::TwineCore);
+            }
+        }
+
+        // Step 3: Format-specific tags
+        for def in self.tag_matched_special_passages() {
+            if tag.eq_ignore_ascii_case(&def.name) {
+                return Some(SemanticTokenModifier::StoryFormat);
+            }
+        }
+
+        // Not a known special tag — custom/user-defined
+        None
+    }
 
     // -----------------------------------------------------------------------
     // Macro catalog (optional)

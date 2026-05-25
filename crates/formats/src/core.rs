@@ -22,6 +22,7 @@ use knot_core::passage::{
 };
 use url::Url;
 
+use crate::header::{self, TweeHeader};
 use crate::plugin::{FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 // ---------------------------------------------------------------------------
@@ -37,8 +38,11 @@ static RE_LINK_ARROW: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
 static RE_LINK_PIPE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
-static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?(?:\s+\{[^}]*\})*\s*$").unwrap());
+/// Detect passage header lines: starts with `::` followed by at least one
+/// non-whitespace character. The actual name/tag/metadata extraction is done
+/// by the unified `parse_twee_header()` in `crate::header`.
+static RE_HEADER_DETECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -66,7 +70,7 @@ impl TwineCorePlugin {
     // Passage splitting (byte-offset tracking)
     // -----------------------------------------------------------------------
 
-    fn split_passages<'a>(&self, text: &'a str) -> Vec<(ParsedHeader, &'a str)> {
+    fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
         let mut results = Vec::new();
         let mut header_spans: Vec<(usize, usize)> = Vec::new();
         let mut byte_offset = 0;
@@ -75,7 +79,7 @@ impl TwineCorePlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if RE_HEADER.is_match(line) {
+            if RE_HEADER_DETECT.is_match(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -88,7 +92,7 @@ impl TwineCorePlugin {
 
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
             let header_line = &text[header_start..header_end];
-            let parsed = Self::parse_header_line(header_line, header_start);
+            let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line's newline (CRLF = 2, LF = 1).
             let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") { 2 } else if header_end < text.len() { 1 } else { 0 };
@@ -106,53 +110,6 @@ impl TwineCorePlugin {
         }
 
         results
-    }
-
-    fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
-        let rest = line.strip_prefix("::")?;
-        let rest = rest.trim_start().trim_end_matches('\r');
-
-        // Strip JSON metadata blocks from the end of the line.
-        // Twee 3 format supports optional JSON metadata after tags:
-        //   :: PassageName [tags] {"position":"100,200"}
-        // The metadata must be stripped before extracting the passage name
-        // and tags, otherwise it pollutes the name and breaks passage
-        // lookup. This mirrors the SugarCube lexer's parse_header_line().
-        let mut cleaned = rest.to_string();
-        loop {
-            let trimmed = cleaned.trim_end();
-            if let Some(brace_start) = trimmed.rfind('{') {
-                if trimmed[brace_start..].trim_end().ends_with('}') {
-                    cleaned = trimmed[..brace_start].trim_end().to_string();
-                    continue;
-                }
-            }
-            break;
-        }
-        let rest = cleaned.as_str();
-
-        let (name, tags) = if let Some(bracket_start) = rest.rfind('[') {
-            if rest.ends_with(']') {
-                let name_part = rest[..bracket_start].trim();
-                let tag_part = &rest[bracket_start + 1..rest.len() - 1];
-                let tags = tag_part.split_whitespace().map(|s| s.to_string()).collect();
-                (name_part.to_string(), tags)
-            } else {
-                (rest.trim().to_string(), Vec::new())
-            }
-        } else {
-            (rest.trim().to_string(), Vec::new())
-        };
-
-        if name.is_empty() {
-            return None;
-        }
-
-        Some(ParsedHeader {
-            name,
-            tags,
-            header_start: offset,
-        })
     }
 
     // -----------------------------------------------------------------------
@@ -238,54 +195,27 @@ impl TwineCorePlugin {
             modifier: prefix_modifier,
         });
 
-        // Passage name token
-        if let Some(rest) = header_line.strip_prefix("::") {
-            let trimmed = rest.trim_start();
-            let ws_len = rest.len() - trimmed.len();
-            // Strip trailing JSON metadata blocks before finding name length,
-            // mirroring parse_header_line()'s stripping logic. Without this,
-            // {"position":"x,y"} would be included in the name token.
-            let mut cleaned = trimmed.to_string();
-            loop {
-                let t = cleaned.trim_end_matches('\r').trim_end();
-                if let Some(brace_start) = t.rfind('{') {
-                    if t[brace_start..].trim_end().ends_with('}') {
-                        cleaned = t[..brace_start].trim_end().to_string();
-                        continue;
-                    }
-                }
-                break;
+        // Passage name token — use the unified header parser to find the
+        // exact name span. This correctly handles multiple [tags] and
+        // {} metadata blocks.
+        if let Some(after_colons) = header_line.strip_prefix("::") {
+            if let Some(name_range) = header::passage_name_range_in_header(after_colons) {
+                let name_type = if is_special {
+                    SemanticTokenType::SpecialPassage
+                } else {
+                    SemanticTokenType::PassageName
+                };
+                tokens.push(SemanticToken {
+                    start: header_offset + 2 + name_range.start,
+                    length: name_range.end - name_range.start,
+                    token_type: name_type,
+                    modifier: prefix_modifier,
+                });
             }
-            let name_len = if let Some(bracket_pos) = cleaned.find('[') {
-                cleaned[..bracket_pos].trim().len()
-            } else {
-                cleaned.trim().len()
-            };
-            let name_type = if is_special {
-                SemanticTokenType::SpecialPassage
-            } else {
-                SemanticTokenType::PassageName
-            };
-            tokens.push(SemanticToken {
-                start: header_offset + 2 + ws_len,
-                length: name_len,
-                token_type: name_type,
-                modifier: prefix_modifier,
-            });
         }
 
         tokens
     }
-}
-
-// ---------------------------------------------------------------------------
-// Internal header type
-// ---------------------------------------------------------------------------
-
-struct ParsedHeader {
-    name: String,
-    tags: Vec<String>,
-    header_start: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +252,31 @@ impl FormatPlugin for TwineCorePlugin {
                 header.header_start,
                 is_special,
             ));
+
+            // Tag tokens — compute positions from the parsed header.
+            // Core tags ([script], [stylesheet], [style]) get TwineCore
+            // modifier; custom tags get None. This lets themes visually
+            // distinguish special core tags from user-defined tags.
+            if !header.tags.is_empty() {
+                let bracket_start = header.tags_raw.find('[')
+                    .map(|bs| header.name_start + bs)
+                    .unwrap_or(header.name_start + header.name_text_raw.len());
+                let tags_inner_start = bracket_start + 1; // after `[`
+                let mut offset = tags_inner_start;
+                for tag in &header.tags {
+                    let modifier = self.classify_tag(tag);
+                    if offset > tags_inner_start {
+                        offset += 1; // space between tags
+                    }
+                    tokens.push(SemanticToken {
+                        start: offset,
+                        length: tag.len(),
+                        token_type: SemanticTokenType::Tag,
+                        modifier,
+                    });
+                    offset += tag.len();
+                }
+            }
 
             // Build link tokens
             let body_offset = header.header_start

@@ -219,13 +219,20 @@ pub(crate) async fn document_symbol(
             // Compute the selection range to cover ONLY the passage name
             // (after `::` + whitespace, before `[` tags or `{` JSON metadata).
             // This must be contained within the full range.
-            let after_colons = line[2..].trim_start();
-            let whitespace_after_colons = line[2..].len() - after_colons.len();
-            let name_end_offset = after_colons.find(|c: char| c == '[' || c == '{')
-                .unwrap_or(after_colons.len());
-            let name_part = &after_colons[..name_end_offset].trim_end();
-            let sel_start_char = 2 + helpers::utf16_len(&line[2..2 + whitespace_after_colons]);
-            let sel_end_char = sel_start_char + helpers::utf16_len(name_part);
+            //
+            // Use the unified header parser for accurate name range computation
+            // that correctly handles multiple [tags] and {} metadata blocks.
+            let after_colons = &line[2..];
+            let (sel_start_char, sel_end_char) =
+                if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
+                    let start = 2 + helpers::utf16_len(&after_colons[..name_range.start]);
+                    let end = start + helpers::utf16_len(&after_colons[name_range.start..name_range.end]);
+                    (start, end)
+                } else {
+                    // Fallback: use the whole after-colons portion
+                    let start = 2 + helpers::utf16_len(&after_colons[..after_colons.len() - after_colons.trim_start().len()]);
+                    (start, helpers::utf16_len(line))
+                };
 
             // Ensure range.end is at least as far as selectionRange.end
             // when the passage is a single-line passage (end_line == line_idx).
@@ -344,6 +351,41 @@ pub(crate) async fn semantic_tokens_full(
         if let Some(plugin) = inner.format_registry.get(&format) {
             let parse_result = plugin.parse(&uri, text);
             let tokens = convert_semantic_tokens(text, &parse_result.tokens);
+
+            // Debug: log the first 20 semantic tokens to help diagnose position
+            // offset issues. This logging is rate-limited by the fact that
+            // semantic_tokens_full is only called on explicit refresh or edit.
+            {
+                let debug_limit = 20.min(tokens.len());
+                tracing::debug!(
+                    file = %uri,
+                    total_tokens = tokens.len(),
+                    "semantic_tokens_full: generated tokens"
+                );
+                for (i, tok) in tokens.iter().take(debug_limit).enumerate() {
+                    let safe_start = parse_result.tokens.get(i)
+                        .map(|pt| pt.start.min(text.len()))
+                        .unwrap_or(0);
+                    let safe_end = parse_result.tokens.get(i)
+                        .map(|pt| (pt.start + pt.length).min(text.len()))
+                        .unwrap_or(0);
+                    let tok_text = if safe_start < safe_end && safe_end <= text.len() {
+                        &text[safe_start..safe_end]
+                    } else {
+                        ""
+                    };
+                    tracing::debug!(
+                        token_idx = i,
+                        line = tok.line,
+                        start_char = tok.start_char,
+                        length = tok.length,
+                        token_type = tok.token_type,
+                        text = tok_text,
+                        "semantic token"
+                    );
+                }
+            }
+
             let data = encode_semantic_tokens(&tokens);
 
             // Add result_id based on document version for delta support

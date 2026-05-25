@@ -30,6 +30,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
@@ -48,9 +49,11 @@ static RE_LINK_ARROW: LazyLock<Regex> =
 /// Regex for pipe links: `[[Display|Target]]`
 static RE_LINK_PIPE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
-/// Regex for passage headers: `:: Name [tags]`
-static RE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*(.+?)(?:\s+\[([^\]]*)\])?\s*$").unwrap());
+/// Detect passage header lines: starts with `::` followed by at least one
+/// non-whitespace character. The actual name/tag/metadata extraction is done
+/// by the unified `parse_twee_header()` in `crate::header`.
+static RE_HEADER_DETECT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
 /// Regex for state variable writes: `state.varName =`
 static RE_STATE_WRITE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
@@ -60,22 +63,6 @@ static RE_STATE_READ: LazyLock<Regex> =
 /// Regex for `[modify]` key-value lines: `key: value`
 static RE_MODIFY_KV: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").unwrap());
-
-// ---------------------------------------------------------------------------
-// Parsed header
-// ---------------------------------------------------------------------------
-
-/// The result of parsing a single passage header line with byte-offset tracking.
-struct ParsedHeader {
-    name: String,
-    tags: Vec<String>,
-    /// Byte offset where the header line starts in the source text.
-    header_start: usize,
-    /// Byte length of the header line (not including trailing newline).
-    header_len: usize,
-    /// Byte offset where the passage name starts (after `::` and any whitespace).
-    name_start: usize,
-}
 
 // ---------------------------------------------------------------------------
 // Template segment
@@ -123,8 +110,8 @@ impl ChapbookPlugin {
     // -----------------------------------------------------------------------
 
     /// Parse passage headers from the full source text using byte-offset tracking.
-    fn split_passages<'a>(&self, text: &'a str) -> Vec<(ParsedHeader, &'a str)> {
-        let mut results: Vec<(ParsedHeader, &str)> = Vec::new();
+    fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
+        let mut results: Vec<(TweeHeader, &str)> = Vec::new();
         let mut header_spans: Vec<(usize, usize)> = Vec::new();
         let mut byte_offset = 0;
 
@@ -133,7 +120,7 @@ impl ChapbookPlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if RE_HEADER.is_match(line) {
+            if RE_HEADER_DETECT.is_match(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -147,7 +134,7 @@ impl ChapbookPlugin {
         // Build passage bodies from header spans.
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
             let header_line = &text[header_start..header_end];
-            let parsed = self.parse_header_line(header_line, header_start);
+            let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line's newline (CRLF = 2, LF = 1).
             let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") { 2 } else if header_end < text.len() { 1 } else { 0 };
@@ -167,55 +154,6 @@ impl ChapbookPlugin {
         results
     }
 
-    /// Parse a single `:: Name [tags] {"metadata":"..."}` header line.
-    fn parse_header_line(&self, line: &str, offset: usize) -> Option<ParsedHeader> {
-        let after_colons = line.strip_prefix("::")?;
-        let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-        // Defensive: trim trailing \r in case of CRLF input outside the
-        // text.lines() path (e.g., if called from a different code path).
-        let rest = after_colons.trim_start().trim_end_matches('\r');
-
-        // Strip JSON metadata block from end of line BEFORE tag extraction.
-        // Twee 3 format: `:: Name [tags] {"position":"100,200","group":"G"}`
-        // Without this, `rest.ends_with(']')` fails because `}` comes after `]`.
-        let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
-            if rest[brace_start..].trim_end().ends_with('}') {
-                &rest[..brace_start]
-            } else {
-                rest
-            }
-        } else {
-            rest
-        };
-
-        let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
-            if rest_before_json.ends_with(']') {
-                let name_part = rest_before_json[..bracket_start].trim();
-                let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
-                let tags = tag_part
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
-                (name_part.to_string(), tags)
-            } else {
-                (rest_before_json.trim().to_string(), Vec::new())
-            }
-        } else {
-            (rest_before_json.trim().to_string(), Vec::new())
-        };
-
-        if name.is_empty() {
-            return None;
-        }
-
-        Some(ParsedHeader {
-            name,
-            tags,
-            header_start: offset,
-            header_len: line.len(),
-            name_start: offset + 2 + whitespace_len,
-        })
-    }
 
     // -----------------------------------------------------------------------
     // Pass 2: Body analysis
@@ -811,7 +749,11 @@ impl FormatPlugin for ChapbookPlugin {
         let raw_passages = self.split_passages(text);
 
         for (header, body) in &raw_passages {
-            let body_offset = header.header_start + header.header_len + 1; // +1 for newline after header
+            let body_offset = header.header_start
+                + text[header.header_start..]
+                    .find('\n')
+                    .unwrap_or(text[header.header_start..].len())
+                + 1;
 
             // Determine if this is a special passage using the unified
             // classification system. Tags are checked FIRST (per the
@@ -863,6 +805,28 @@ impl FormatPlugin for ChapbookPlugin {
                     token_type: name_type,
                     modifier: None,
                 });
+
+                // Tag tokens with classification modifiers
+                if !header.tags.is_empty() {
+                    let bracket_start = header.tags_raw.find('[')
+                        .map(|bs| header.name_start + bs)
+                        .unwrap_or(header.name_start + header.name_text_raw.len());
+                    let tags_inner_start = bracket_start + 1;
+                    let mut offset = tags_inner_start;
+                    for tag in &header.tags {
+                        let modifier = self.classify_tag(tag);
+                        if offset > tags_inner_start {
+                            offset += 1;
+                        }
+                        tokens.push(SemanticToken {
+                            start: offset,
+                            length: tag.len(),
+                            token_type: SemanticTokenType::Tag,
+                            modifier,
+                        });
+                        offset += tag.len();
+                    }
+                }
             } else {
                 // Extract links
                 passage.links = self.extract_links(body, body_offset);
@@ -914,6 +878,28 @@ impl FormatPlugin for ChapbookPlugin {
                     token_type: name_type,
                     modifier: None,
                 });
+
+                // Tag tokens with classification modifiers
+                if !header.tags.is_empty() {
+                    let bracket_start = header.tags_raw.find('[')
+                        .map(|bs| header.name_start + bs)
+                        .unwrap_or(header.name_start + header.name_text_raw.len());
+                    let tags_inner_start = bracket_start + 1;
+                    let mut offset = tags_inner_start;
+                    for tag in &header.tags {
+                        let modifier = self.classify_tag(tag);
+                        if offset > tags_inner_start {
+                            offset += 1;
+                        }
+                        tokens.push(SemanticToken {
+                            start: offset,
+                            length: tag.len(),
+                            token_type: SemanticTokenType::Tag,
+                            modifier,
+                        });
+                        offset += tag.len();
+                    }
+                }
 
                 // Semantic tokens for body.
                 tokens.extend(self.body_tokens(body, body_offset));

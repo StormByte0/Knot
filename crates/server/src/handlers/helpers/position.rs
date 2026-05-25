@@ -177,42 +177,14 @@ pub(crate) fn find_passage_header_range(text: &str, passage_name: &str) -> Range
 ///
 /// Handles the Twee 3 header format:
 /// - JSON metadata: `:: Name [tags] {"position":"x,y"}`
+/// - Multiple tag blocks: `:: Name [tag1] [tag2]`
 /// - Bare headers: `:: Name`
 ///
-/// The stripping order matches the format plugins' `parse_header_line`:
-/// first strip `{...}` JSON metadata, then `[...]` tags.
-/// This ensures the server's header parsing always produces the same name
+/// Delegates to the unified `knot_formats::header::extract_passage_name()`
+/// so that the server's header parsing always produces the same name
 /// that the format plugin stored during workspace indexing.
 pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
-    // Trim trailing \r for CRLF robustness — mirrors the format plugins'
-    // parse_header_line() CRLF fix.
-    let header = header.trim().trim_end_matches('\r');
-
-    // Strip JSON metadata block first: :: Name [tags] {"position":"100,200"}
-    // The metadata must be the last thing on the line and start with '{'.
-    // This mirrors the format plugins' parse_header_line() logic.
-    let header = if let Some(brace_start) = header.rfind('{') {
-        if header.ends_with('}') {
-            header[..brace_start].trim()
-        } else {
-            header
-        }
-    } else {
-        header
-    };
-
-    // Strip tag brackets: :: Name [tag1 tag2]
-    // Use rfind('[') + ends_with(']') to match the lexer's tag detection,
-    // avoiding false matches on '[' characters inside passage names.
-    if let Some(bracket_start) = header.rfind('[') {
-        if header.ends_with(']') {
-            header[..bracket_start].trim().to_string()
-        } else {
-            header.to_string()
-        }
-    } else {
-        header.to_string()
-    }
+    knot_formats::header::extract_passage_name(header)
 }
 
 /// Parse the position from a passage header line's JSON metadata block.
@@ -249,15 +221,15 @@ pub(crate) struct PassageMetadata {
 ///
 /// Returns `None` if no valid JSON metadata block is found on the line.
 pub(crate) fn parse_passage_metadata_from_header(line: &str) -> Option<PassageMetadata> {
-    // Find the JSON metadata block at the end of the line
-    let brace_start = line.rfind('{')?;
-    let after_brace = &line[brace_start..];
-    if !after_brace.trim_end().ends_with('}') {
-        return None;
-    }
-
-    // Try to parse as JSON
-    let json_val: serde_json::Value = serde_json::from_str(after_brace).ok()?;
+    // Use the unified header parser's JSON block extraction. This correctly
+    // handles: nested JSON, multiple `[tag]` blocks, custom tags with braces,
+    // CRLF line endings, and avoids matching `{...}` that isn't valid JSON.
+    //
+    // The old `rfind('{')` approach could match braces inside tag text or
+    // passage names, and couldn't handle nested objects like
+    // `{"position":"1,2","data":{"x":1}}`.
+    let (_rest, json_str) = knot_formats::header::extract_json_block_public(line.trim_end())?;
+    let json_val: serde_json::Value = serde_json::from_str(&json_str).ok()?;
 
     // Extract position
     let position = {
@@ -340,32 +312,35 @@ pub(crate) fn update_passage_metadata_in_header(
         }
     }
 
-    // Strip ALL trailing JSON metadata blocks from the line. This repairs
-    // duplication damage from the old race condition where multiple
-    // position updates could pile up JSON blocks before open_documents
-    // was updated. We keep only the last (most recent) block's data and
-    // merge it with the new values being written.
+    // Strip trailing JSON metadata blocks using the unified header parser.
+    // This repairs duplication damage from the old race condition where
+    // multiple position updates could pile up JSON blocks before
+    // open_documents was updated. We keep only the last (most recent)
+    // block's data and merge it with the new values being written.
     //
     // Example input:  `:: Name [tags] {"position":"1,2"} {"position":"3,4"}`
     // After stripping: `:: Name [tags]`  +  merged JSON with latest values
+    //
+    // Using the unified parser ensures we correctly handle:
+    // - Nested JSON objects
+    // - Custom tags with braces in them (e.g., [tag{stuff}])
+    // - Multiple `[tag1] [tag2]` blocks before the JSON
     let mut stripped_line = line;
     let mut existing_json: Option<serde_json::Value> = None;
 
-    // Peel off JSON blocks from right to left, keeping only the last one
+    // Peel off JSON blocks from right to left, keeping only the last one.
+    // The unified parser validates each block as proper JSON before stripping.
     loop {
-        if let Some(brace_start) = stripped_line.rfind('{') {
-            let after_brace = &stripped_line[brace_start..];
-            if after_brace.trim_end().ends_with('}') {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(after_brace) {
-                    // Keep the last (rightmost) block's data — it has the
-                    // most recent position/group/color values.
-                    if existing_json.is_none() {
-                        existing_json = Some(parsed);
-                    }
-                    // Strip this block and continue scanning for more
-                    stripped_line = stripped_line[..brace_start].trim_end();
-                    continue;
+        if let Some((rest, json_str)) = knot_formats::header::extract_json_block_public(stripped_line.trim_end()) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                // Keep the last (rightmost) block's data — it has the
+                // most recent position/group/color values.
+                if existing_json.is_none() {
+                    existing_json = Some(parsed);
                 }
+                // Strip this block and continue scanning for more
+                stripped_line = rest;
+                continue;
             }
         }
         break;

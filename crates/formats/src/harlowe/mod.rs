@@ -22,6 +22,7 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
@@ -44,26 +45,6 @@ enum TweeToken {
     /// A newline.
     #[token("\n")]
     Newline,
-}
-
-// ---------------------------------------------------------------------------
-// Parsed header
-// ---------------------------------------------------------------------------
-
-/// The result of parsing a single passage header line.
-struct ParsedHeader {
-    name: String,
-    tags: Vec<String>,
-    /// Byte offset where the header line starts.
-    header_start: usize,
-    /// Byte length of the header line (including trailing newline if present).
-    header_len: usize,
-    /// Byte offset where the passage name starts (after `::` and any whitespace).
-    /// This is an absolute offset into the source text.
-    name_start: usize,
-    /// The raw text after `:: ` (with JSON metadata stripped), used for
-    /// computing accurate tag bracket positions in semantic tokens.
-    raw_after_colons: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,10 +122,10 @@ impl HarlowePlugin {
     /// Parse passage headers from the full source text using a logos-based
     /// lexer for byte-offset accuracy.
     ///
-    /// Returns a list of `(ParsedHeader, body_text)` pairs. The body text is
+    /// Returns a list of `(TweeHeader, body_text)` pairs. The body text is
     /// the raw text between the end of this header line and the start of the
     /// next header (or end of file).
-    fn split_passages<'a>(&self, text: &'a str) -> Vec<(ParsedHeader, &'a str)> {
+    fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
         let mut lex = logos::Lexer::new(text);
         let mut header_spans: Vec<(usize, usize)> = Vec::new();
 
@@ -161,19 +142,19 @@ impl HarlowePlugin {
             }
         }
 
-        let mut results: Vec<(ParsedHeader, &'a str)> = Vec::new();
+        let mut results: Vec<(TweeHeader, &'a str)> = Vec::new();
 
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
             let mut header_line = &text[header_start..header_end];
             // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
-            // Strip it so that parse_header_line() receives clean content and
+            // Strip it so that parse_twee_header() receives clean content and
             // body_offset calculation is correct.
             let trailing_cr = header_line.ends_with('\r');
             if trailing_cr {
                 header_line = &header_line[..header_line.len() - 1];
             }
             let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
-            let parsed = Self::parse_header_line(header_line, header_start);
+            let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line (skip trailing newline).
             let body_start = adjusted_header_end;
@@ -192,61 +173,6 @@ impl HarlowePlugin {
         results
     }
 
-    /// Parse a single `:: Name [tags] {"metadata":"..."}` header line.
-    fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
-        // Strip the leading `::` and optional whitespace.
-        let after_colons = line.strip_prefix("::")?;
-        let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-        // Trim trailing \r — the Logos regex `::[^\n]*` includes \r on CRLF
-        // line endings, causing `ends_with(']')` to fail.
-        let rest = after_colons.trim_start().trim_end_matches('\r');
-
-        // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
-        let name_start = offset + 2 + whitespace_len;
-
-        // Strip JSON metadata block from end of line BEFORE tag extraction.
-        // Twee 3 format: `:: Name [tags] {"position":"100,200","group":"G"}`
-        // Without this, `rest.ends_with(']')` fails because `}` comes after `]`.
-        let rest_before_json = if let Some(brace_start) = rest.rfind('{') {
-            if rest[brace_start..].trim_end().ends_with('}') {
-                &rest[..brace_start]
-            } else {
-                rest
-            }
-        } else {
-            rest
-        };
-
-        // Extract tags if present: `Name [tag1 tag2]`
-        let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
-            if rest_before_json.ends_with(']') {
-                let name_part = rest_before_json[..bracket_start].trim();
-                let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
-                let tags = tag_part
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
-                (name_part.to_string(), tags)
-            } else {
-                (rest_before_json.trim().to_string(), Vec::new())
-            }
-        } else {
-            (rest_before_json.trim().to_string(), Vec::new())
-        };
-
-        if name.is_empty() {
-            return None;
-        }
-
-        Some(ParsedHeader {
-            name,
-            tags,
-            header_start: offset,
-            header_len: line.len(),
-            name_start,
-            raw_after_colons: rest_before_json.to_string(),
-        })
-    }
 
     // -----------------------------------------------------------------------
     // Pass 2: Body analysis
@@ -888,7 +814,7 @@ impl HarlowePlugin {
     /// Generate semantic tokens for passage headers.
     /// Uses `PassageName` for regular passage names (distinct from `::` prefix)
     /// and `SpecialPassage`/`SpecialPassageHeader` for special passages.
-    fn header_tokens(&self, header: &ParsedHeader, is_special: bool) -> Vec<SemanticToken> {
+    fn header_tokens(&self, header: &TweeHeader, is_special: bool) -> Vec<SemanticToken> {
         let mut tokens = Vec::new();
 
         let (prefix_type, name_type) = if is_special {
@@ -914,23 +840,31 @@ impl HarlowePlugin {
         });
 
         // Tags — compute positions from the raw text after colons (JSON-stripped).
-        // Find the `[` bracket in the raw text to get accurate tag positions.
-        let bracket_start = if let Some(bs) = header.raw_after_colons.rfind('[') {
+        // Use `tags_raw` which preserves `[tag]` blocks (unlike `name_text_raw`
+        // which strips them). This ensures `find('[')` actually finds the bracket,
+        // giving correct tag positions regardless of whitespace between name and `[`.
+        //
+        // Each tag gets a modifier based on `classify_tag()`:
+        // - Core tags ([script], [stylesheet]) → TwineCore
+        // - Format tags ([startup], [header], [footer]) → StoryFormat
+        // - Custom tags → None
+        let bracket_start = if let Some(bs) = header.tags_raw.find('[') {
             header.name_start + bs
         } else {
-            header.name_start + header.name.len()
+            header.name_start + header.name_text_raw.len()
         };
         let tags_inner_start = bracket_start + 1; // after `[`
         let mut offset = tags_inner_start;
-        for (i, tag) in header.tags.iter().enumerate() {
-            if i > 0 {
+        for tag in &header.tags {
+            let modifier = self.classify_tag(tag);
+            if offset > tags_inner_start {
                 offset += 1; // space between tags
             }
             tokens.push(SemanticToken {
                 start: offset,
                 length: tag.len(),
                 token_type: SemanticTokenType::Tag,
-                modifier: None,
+                modifier,
             });
             offset += tag.len();
         }
@@ -1184,7 +1118,11 @@ impl FormatPlugin for HarlowePlugin {
         let raw_passages = self.split_passages(text);
 
         for (header, body) in &raw_passages {
-            let body_offset = header.header_start + header.header_len;
+            let body_offset = header.header_start
+                + text[header.header_start..]
+                    .find('\n')
+                    .unwrap_or(text[header.header_start..].len())
+                + 1;
 
             // Determine if this is a special passage using the unified
             // classification system. Tags are checked FIRST (per the

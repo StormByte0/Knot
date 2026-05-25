@@ -1,8 +1,13 @@
 //! Logos lexer and header parsing for SugarCube.
 //!
-//! Contains the [`TweeToken`] enum, [`ParsedHeader`] struct, and the
-//! passage-splitting logic that uses the Logos lexer to detect passage
-//! boundaries in twee source files.
+//! Contains the [`TweeToken`] enum and the passage-splitting logic that uses
+//! the Logos lexer to detect passage boundaries in twee source files.
+//!
+//! Header parsing (name, tags, metadata extraction) delegates to the unified
+//! `crate::header::parse_twee_header()` so that all format plugins share the
+//! same parsing logic for the Twee 3 header format.
+
+use crate::header::{self, TweeHeader};
 
 /// A token produced by the Logos lexer for twee source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, logos::Logos)]
@@ -20,38 +25,13 @@ pub(crate) enum TweeToken {
     Newline,
 }
 
-/// The result of parsing a single passage header line.
-pub(crate) struct ParsedHeader {
-    /// The passage name extracted from the header.
-    pub name: String,
-    /// Tags parsed from the `[tag1 tag2]` suffix, if any.
-    pub tags: Vec<String>,
-    /// Byte offset where the header line starts.
-    pub header_start: usize,
-    /// Byte length of the header line (including trailing newline if present).
-    pub header_len: usize,
-    /// Byte offset where the passage name starts (after `::` and any whitespace).
-    /// This is an absolute offset into the source text.
-    pub name_start: usize,
-    /// The (x, y) position of this passage on the Twine canvas, parsed from
-    /// the header metadata JSON block (e.g., `{"position":"100,200"}`).
-    pub position: Option<(f64, f64)>,
-    /// The raw header line text (after `::`, before CRLF stripping for
-    /// display, but with CRLF stripped). Used by semantic token generation
-    /// to find exact byte positions of tags inside the `[...]` bracket.
-    pub raw_after_colons: String,
-}
-
 /// Parse passage headers from the full source text.
 ///
-/// Returns a list of `(ParsedHeader, body_text)` pairs. The body text is the
+/// Returns a list of `(TweeHeader, body_text)` pairs. The body text is the
 /// raw text between the end of this header line and the start of the next
 /// header (or end of file).
-pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
+pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
     let mut lex = logos::Lexer::new(text);
-    let mut results: Vec<(ParsedHeader, &str)> = Vec::new();
-
-    // Collect (header_start, header_end_inclusive) for each passage header.
     let mut header_spans: Vec<(usize, usize)> = Vec::new();
 
     while let Some(tok) = lex.next() {
@@ -67,11 +47,12 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
         }
     }
 
-    // Build passage bodies.
+    let mut results: Vec<(TweeHeader, &str)> = Vec::new();
+
     for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
         let mut header_line = &text[header_start..header_end];
         // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
-        // Strip it so that parse_header_line() receives clean content and
+        // Strip it so that parse_twee_header() receives clean content and
         // body_offset calculation is correct.
         let trailing_cr = header_line.ends_with('\r');
         if trailing_cr {
@@ -79,7 +60,7 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
         }
         // Adjust header_end to exclude the \r for correct body_offset
         let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
-        let parsed = parse_header_line(header_line, header_start);
+        let parsed = header::parse_twee_header(header_line, header_start);
 
         // Body starts after the header line (skip trailing newline).
         let body_start = adjusted_header_end;
@@ -98,99 +79,30 @@ pub(crate) fn split_passages(text: &str) -> Vec<(ParsedHeader, &str)> {
     results
 }
 
-/// Parse a single `:: Name [tags] {"metadata"}` header line.
-///
-/// Supports the Twee 3 extended header format with optional JSON metadata
-/// block after tags. The metadata can include a `"position"` field in the
-/// format `"x,y"` (as Twine 2 serialises it) or as a JSON object
-/// `{"x":100,"y":200}`.
-pub(crate) fn parse_header_line(line: &str, offset: usize) -> Option<ParsedHeader> {
-    // Strip the leading `::` and optional whitespace.
-    let after_colons = line.strip_prefix("::")?;
-    let whitespace_len = after_colons.len() - after_colons.trim_start().len();
-    // Trim trailing \r — the Logos regex `::[^\n]*` includes \r on CRLF
-    // line endings, causing `ends_with(']')` and `ends_with('}')` checks
-    // to fail. This makes header parsing robust on both LF and CRLF files.
-    let rest = after_colons.trim_start().trim_end_matches('\r');
-
-    // The passage name starts at the absolute byte offset of `::` + 2 + whitespace
-    let name_start = offset + 2 + whitespace_len;
-
-    // Check for JSON metadata block at the end: `{"position":"100,200"}`
-    // The metadata block must be the last thing on the line and start with `{`.
-    let (rest_before_json, json_str): (&str, Option<&str>) = if let Some(brace_start) = rest.rfind('{') {
-        if rest.trim_end().ends_with('}') {
-            let before = rest[..brace_start].trim_end();
-            let json = &rest[brace_start..];
-            (before, Some(json))
-        } else {
-            (rest, None)
-        }
-    } else {
-        (rest, None)
-    };
-
-    // Parse position from JSON metadata block
-    let position = json_str.and_then(|json| parse_position_from_metadata(json));
-
-    // Extract tags if present: `Name [tag1 tag2]`
-    let (name, tags) = if let Some(bracket_start) = rest_before_json.rfind('[') {
-        if rest_before_json.ends_with(']') {
-            let name_part = rest_before_json[..bracket_start].trim();
-            let tag_part = &rest_before_json[bracket_start + 1..rest_before_json.len() - 1];
-            let tags = tag_part
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            (name_part.to_string(), tags)
-        } else {
-            (rest_before_json.trim().to_string(), Vec::new())
-        }
-    } else {
-        (rest_before_json.trim().to_string(), Vec::new())
-    };
-
-    if name.is_empty() {
-        return None;
-    }
-
-    // Store the raw text after `::` (with CRLF stripped) so that semantic
-    // token generation can find exact tag positions by scanning for `[`.
-    let raw_after_colons = after_colons.trim_end_matches('\r').to_string();
-
-    Some(ParsedHeader {
-        name,
-        tags,
-        header_start: offset,
-        header_len: line.len(),
-        name_start,
-        position,
-        raw_after_colons,
-    })
-}
-
-/// Parse a `"position"` value from a passage header metadata JSON block.
+/// Extract the position from a `TweeHeader`'s metadata JSON block, if present.
 ///
 /// Twine 2 serialises position as a string `"x,y"` (e.g., `"100,200"`).
 /// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
 /// Both formats are supported.
+pub(crate) fn position_from_header(header: &TweeHeader) -> Option<(f64, f64)> {
+    let json_str = header.metadata_json.as_ref()?;
+    parse_position_from_metadata(json_str)
+}
+
+/// Parse a `"position"` value from a passage header metadata JSON block.
 fn parse_position_from_metadata(json: &str) -> Option<(f64, f64)> {
-    // Try to parse as a JSON value (flexible approach)
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
-        if let Some(pos_str) = val.get("position").and_then(|v| v.as_str()) {
-            // Format: "position": "x,y"
-            let parts: Vec<&str> = pos_str.split(',').collect();
-            if parts.len() == 2 {
-                let x = parts[0].trim().parse::<f64>().ok()?;
-                let y = parts[1].trim().parse::<f64>().ok()?;
-                return Some((x, y));
-            }
-        } else if let Some(pos_obj) = val.get("position").and_then(|v| v.as_object()) {
-            // Format: "position": {"x": 100, "y": 200}
-            let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
-            let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
+    let val = serde_json::from_str::<serde_json::Value>(json).ok()?;
+    if let Some(pos_str) = val.get("position").and_then(|v| v.as_str()) {
+        let parts: Vec<&str> = pos_str.split(',').collect();
+        if parts.len() == 2 {
+            let x = parts[0].trim().parse::<f64>().ok()?;
+            let y = parts[1].trim().parse::<f64>().ok()?;
             return Some((x, y));
         }
+    } else if let Some(pos_obj) = val.get("position").and_then(|v| v.as_object()) {
+        let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
+        let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
+        return Some((x, y));
     }
     None
 }
