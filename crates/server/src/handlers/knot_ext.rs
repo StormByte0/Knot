@@ -1472,7 +1472,7 @@ impl ServerState {
         // reading stale open_documents. The old READ lock allowed multiple
         // updates to see the same stale text, producing duplicate JSON
         // metadata blocks when their edits were applied sequentially.
-        let mut inner = self.inner.write().await;
+        let inner = self.inner.write().await;
 
         // Validate workspace_uri matches our workspace
         if !params.workspace_uri.is_empty() {

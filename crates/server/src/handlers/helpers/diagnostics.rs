@@ -360,6 +360,7 @@ pub(crate) fn find_link_locations(
 }
 
 /// Find the definition location of a passage (for unreachable passage related info).
+#[allow(dead_code)]
 pub(crate) fn find_definition_location(
     open_documents: &HashMap<Url, String>,
     passage_name: &str,
@@ -387,6 +388,7 @@ pub(crate) fn find_definition_location(
 }
 
 /// Find all definition locations of a passage name (for duplicate passage diagnostics).
+#[allow(dead_code)]
 pub(crate) fn find_all_definition_locations(
     open_documents: &HashMap<Url, String>,
     passage_name: &str,

@@ -206,16 +206,59 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
 // Keyword / Boolean / Namespace token helpers
 // ---------------------------------------------------------------------------
 
+/// Compute the body-relative byte ranges of all macro argument regions.
+///
+/// Keywords, booleans, and namespaces should only be highlighted when they
+/// appear inside `<<macro args>>` constructs. In passage body plaintext,
+/// words like "to", "and", "or", "not" are just prose — highlighting them
+/// as SugarCube operators is overfitting.
+///
+/// Returns a sorted list of `(args_start, args_end)` byte ranges relative
+/// to `body` (not the document). The ranges cover the trimmed argument
+/// text after the macro name, before the closing `>>`.
+fn macro_arg_ranges(body: &str) -> Vec<(usize, usize)> {
+    let parsed = blocks::scan_macros(body);
+    let mut ranges = Vec::new();
+    for m in &parsed {
+        // Skip close tags — they have no arguments
+        if m.name.starts_with('/') {
+            continue;
+        }
+        let name_end_in_body = m.name_start + m.name_len;
+        let range_end = m.end.saturating_sub(2);
+        if name_end_in_body >= range_end {
+            continue; // Degenerate macro (name extends past closing >>)
+        }
+        let body_after_name = &body[name_end_in_body..range_end];
+        let trimmed_start = body_after_name.len() - body_after_name.trim_start().len();
+        let args_start = name_end_in_body + trimmed_start;
+        let args_end = range_end;
+        if args_start < args_end {
+            ranges.push((args_start, args_end));
+        }
+    }
+    ranges
+}
+
+/// Check whether a byte position falls within any of the given ranges.
+fn is_in_ranges(pos: usize, ranges: &[(usize, usize)]) -> bool {
+    ranges.iter().any(|&(start, end)| pos >= start && pos < end)
+}
+
 /// Generate Keyword semantic tokens for SugarCube keywords inside macros.
 ///
 /// Keywords like `to`, `is`, `eq`, `gt`, `and`, `or`, `not` appear as
 /// standalone words inside `<<set>>`, `<<if>>`, etc. We match them as
-/// whole words surrounded by whitespace or macro delimiters to avoid
-/// false positives.
+/// whole words surrounded by whitespace or macro delimiters **only within
+/// macro argument regions**. Keywords in passage body plaintext are NOT
+/// highlighted — they are just prose text, not SugarCube operators.
 fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
+
+    // Restrict scanning to macro argument regions only.
+    let arg_ranges = macro_arg_ranges(body);
 
     for keyword in SUGARCUBE_KEYWORDS {
         let kw_bytes = keyword.as_bytes();
@@ -226,6 +269,12 @@ fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
         while pos + kw_len <= len {
             // Quick check: does the keyword start here?
             if &bytes[pos..pos + kw_len] == kw_bytes {
+                // Only highlight if this position is inside a macro argument
+                if !is_in_ranges(pos, &arg_ranges) {
+                    pos += 1;
+                    continue;
+                }
+
                 // Check word boundaries
                 let before_ok = pos == 0
                     || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
@@ -253,10 +302,16 @@ fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 }
 
 /// Generate Boolean semantic tokens for `true` and `false` literals.
+///
+/// Only matches within macro argument regions — boolean literals in passage
+/// body plaintext are not SugarCube syntax.
 fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
+
+    // Restrict scanning to macro argument regions only.
+    let arg_ranges = macro_arg_ranges(body);
 
     for boolean in SUGARCUBE_BOOLEANS {
         let bool_bytes = boolean.as_bytes();
@@ -265,6 +320,11 @@ fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
         let mut pos = 0;
         while pos + bool_len <= len {
             if &bytes[pos..pos + bool_len] == bool_bytes {
+                if !is_in_ranges(pos, &arg_ranges) {
+                    pos += 1;
+                    continue;
+                }
+
                 let before_ok = pos == 0
                     || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
                 let after_pos = pos + bool_len;
@@ -292,11 +352,16 @@ fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 /// Generate Namespace semantic tokens for SugarCube global objects.
 ///
 /// Objects like `State`, `Engine`, `Story` are highlighted as namespaces
-/// so themes can give them a distinct "API object" color.
+/// so themes can give them a distinct "API object" color. Only matches
+/// within macro argument regions — namespace references in passage body
+/// plaintext are not SugarCube API calls.
 fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
+
+    // Restrict scanning to macro argument regions only.
+    let arg_ranges = macro_arg_ranges(body);
 
     for ns in SUGARCUBE_NAMESPACES {
         let ns_bytes = ns.as_bytes();
@@ -306,6 +371,11 @@ fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
         let mut pos = 0;
         while pos + ns_len <= len {
             if &bytes[pos..pos + ns_len] == ns_bytes {
+                if !is_in_ranges(pos, &arg_ranges) {
+                    pos += 1;
+                    continue;
+                }
+
                 // Check that this is a standalone word (not part of a longer identifier)
                 let before_ok = pos == 0
                     || !bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_';
@@ -522,12 +592,17 @@ pub(crate) fn string_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
 
 /// Generate Operator semantic tokens for SugarCube compound assignment operators.
 ///
-/// Detects `+=`, `-=`, `*=`, `/=`, `%=` inside macro argument lists.
+/// Detects `+=`, `-=`, `*=`, `/=`, `%=` inside macro argument lists only.
 /// These are format-specific operators that TextMate doesn't know about.
+/// Outside macros (in passage body plaintext), these sequences are not
+/// SugarCube operators and should not be highlighted.
 pub(crate) fn operator_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
+
+    // Restrict scanning to macro argument regions only.
+    let arg_ranges = macro_arg_ranges(body);
 
     for op in SUGARCUBE_OPERATORS {
         let op_bytes = op.as_bytes();
@@ -536,12 +611,14 @@ pub(crate) fn operator_tokens(body: &str, body_offset: usize) -> Vec<SemanticTok
         let mut pos = 0;
         while pos + op_len <= len {
             if &bytes[pos..pos + op_len] == op_bytes {
-                tokens.push(SemanticToken {
-                    start: body_offset + pos,
-                    length: op_len,
-                    token_type: SemanticTokenType::Operator,
-                    modifier: None,
-                });
+                if is_in_ranges(pos, &arg_ranges) {
+                    tokens.push(SemanticToken {
+                        start: body_offset + pos,
+                        length: op_len,
+                        token_type: SemanticTokenType::Operator,
+                        modifier: None,
+                    });
+                }
                 pos += op_len;
             } else {
                 pos += 1;

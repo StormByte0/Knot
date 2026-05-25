@@ -63,13 +63,31 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
         let parsed = header::parse_twee_header(header_line, header_start);
 
         // Body starts after the header line (skip trailing newline).
+        //
+        // The Logos regex `::[^\n]*` matches up to (but not including) `\n`.
+        // For LF files, `adjusted_header_end` points at the `\n` character.
+        // For CRLF files, it points at the `\r` (since we stripped it above).
+        //
+        // We must skip past the newline sequence so that `body_text` does NOT
+        // include the leading newline. This is critical because `body_offset`
+        // in the format plugin's `parse()` method is computed as the position
+        // AFTER the newline. If `body_text` includes the newline, every body
+        // token's byte offset will be shifted by +1 (LF) or +2 (CRLF).
         let body_start = adjusted_header_end;
+        let newline_skip = if text.get(body_start..body_start + 2) == Some("\r\n") {
+            2
+        } else if body_start < text.len() && text.as_bytes()[body_start] == b'\n' {
+            1
+        } else {
+            0
+        };
+        let body_content_start = body_start + newline_skip;
         let body_end = if i + 1 < header_spans.len() {
             header_spans[i + 1].0
         } else {
             text.len()
         };
-        let body_text = text.get(body_start..body_end).unwrap_or("");
+        let body_text = text.get(body_content_start..body_end).unwrap_or("");
 
         if let Some(hdr) = parsed {
             results.push((hdr, body_text));
