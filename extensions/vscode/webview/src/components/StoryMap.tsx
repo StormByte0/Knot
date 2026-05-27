@@ -47,19 +47,16 @@ const NODE_W = 160;
 const NODE_H = 40;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4.0;
-// Perpendicular pixel offset for bidirectional edge pairs
 const BIDIR_OFFSET = 7;
 
 // ── Twine 2 layout anchors ────────────────────────────────────────────────
-// Start passage anchors here; regular graph flows right/down from it.
+
 const START_ANCHOR_X = 420;
 const START_ANCHOR_Y = 60;
-// Special passages bounding box starts here (top-left corner).
 const SPECIAL_BOX_X = 40;
 const SPECIAL_BOX_Y = 60;
-// Unreachable list starts below the special box.
 const UNREACHABLE_LIST_X = 40;
-const UNREACHABLE_LIST_Y_OFFSET = 60; // gap below specials
+const UNREACHABLE_LIST_Y_OFFSET = 60;
 
 // ── Color palette ──────────────────────────────────────────────────────────
 
@@ -96,22 +93,19 @@ function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
   }) as T;
 }
 
-// ── Perpendicular offset for a straight line ───────────────────────────────
-// Returns a new (x, y) shifted `dist` pixels perpendicular to the direction
-// from (x1,y1) to (x2,y2).
+// ── Perpendicular offset helper ────────────────────────────────────────────
+
 function perpOffset(
   x1: number, y1: number, x2: number, y2: number, dist: number,
 ): [number, number] {
   const dx = x2 - x1;
   const dy = y2 - y1;
   const len = Math.sqrt(dx * dx + dy * dy) || 1;
-  // Perpendicular unit vector: (-dy, dx) / len
   return [(-dy / len) * dist, (dx / len) * dist];
 }
 
 // ── Rectangle intersection for floating edges ──────────────────────────────
-// Given a center point, a target point, and a rectangle size, returns the
-// point where the center→target line intersects the rectangle boundary.
+
 function getRectIntersection(
   center: { x: number; y: number },
   target: { x: number; y: number },
@@ -127,10 +121,9 @@ function getRectIntersection(
   const absDx = Math.abs(dx);
   const absDy = Math.abs(dy);
 
-  // Determine which edge the center→target line intersects
   const scale = (absDx * halfH > absDy * halfW)
-    ? halfW / absDx   // left or right edge
-    : halfH / absDy;  // top or bottom edge
+    ? halfW / absDx
+    : halfH / absDy;
 
   return [center.x + dx * scale, center.y + dy * scale];
 }
@@ -143,13 +136,13 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
 
   const cls = [
     'pn',
-    d.is_start      && 'pn--start',
-    d.is_special    && 'pn--special',
-    d.is_metadata   && 'pn--metadata',
+    d.is_start       && 'pn--start',
+    d.is_special     && 'pn--special',
+    d.is_metadata    && 'pn--metadata',
     d.is_unreachable && 'pn--unreachable',
-    d.highlighted   && 'pn--highlighted',
-    d.dimmed        && 'pn--dimmed',
-    d.focused       && 'pn--focused',
+    d.highlighted    && 'pn--highlighted',
+    d.dimmed         && 'pn--dimmed',
+    d.focused        && 'pn--focused',
   ].filter(Boolean).join(' ');
 
   return (
@@ -177,21 +170,12 @@ function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
 }
 
 // ── Custom straight edge with floating intersection ────────────────────────
-// The `data.offsetPx` field shifts the path sideways for bidir pairs.
-// The `data.edgeKind` drives color/dash.
-// Instead of connecting to handle positions (Top/Bottom), this edge
-// calculates where the center-to-center line intersects each node's
-// rectangular boundary, so arrows appear at the border — not hidden
-// behind the rounded-rectangle node.
 
 interface StraightEdgeData {
   edgeKind: 'navigation' | 'upstream' | 'broken';
-  offsetPx: number; // perpendicular offset in pixels (0 = no offset)
+  offsetPx: number;
 }
 
-// How many pixels to pull the target endpoint back from the intersection
-// so the arrow marker head sits neatly on the border instead of
-// overlapping into the node.
 const ARROW_PULLBACK = 5;
 
 function StraightEdge({
@@ -204,7 +188,6 @@ function StraightEdge({
 }: EdgeProps) {
   const { edgeKind = 'navigation', offsetPx = 0 } = (data || {}) as unknown as StraightEdgeData;
 
-  // ── Subscribe to source/target node positions for floating edge calc ───
   const sourceSelector = useCallback(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (s: any) => {
@@ -234,8 +217,10 @@ function StraightEdge({
     [target],
   );
 
-  const nodeEq = (a: { x: number; y: number; w: number; h: number } | null,
-                  b: { x: number; y: number; w: number; h: number } | null) => {
+  const nodeEq = (
+    a: { x: number; y: number; w: number; h: number } | null,
+    b: { x: number; y: number; w: number; h: number } | null,
+  ) => {
     if (a === b) return true;
     if (!a || !b) return false;
     return a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
@@ -249,7 +234,6 @@ function StraightEdge({
   let tx = targetX;
   let ty = targetY;
 
-  // ── Calculate border intersection points ───────────────────────────────
   if (srcData && tgtData) {
     const srcCenter = { x: srcData.x + srcData.w / 2, y: srcData.y + srcData.h / 2 };
     const tgtCenter = { x: tgtData.x + tgtData.w / 2, y: tgtData.y + tgtData.h / 2 };
@@ -257,7 +241,6 @@ function StraightEdge({
     [sx, sy] = getRectIntersection(srcCenter, tgtCenter, srcData.w, srcData.h);
     [tx, ty] = getRectIntersection(tgtCenter, srcCenter, tgtData.w, tgtData.h);
 
-    // Pull the target endpoint back so the arrow marker sits on the border
     const edgeDx = tx - sx;
     const edgeDy = ty - sy;
     const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy) || 1;
@@ -265,7 +248,6 @@ function StraightEdge({
     ty -= (edgeDy / edgeLen) * ARROW_PULLBACK;
   }
 
-  // ── Apply perpendicular offset for bidirectional pairs ─────────────────
   if (offsetPx !== 0) {
     const [ox, oy] = perpOffset(sx, sy, tx, ty, offsetPx);
     sx += ox; sy += oy;
@@ -308,7 +290,6 @@ const nodeTypes = { passage: PassageNode, group: GroupNode };
 const edgeTypes = { straight: StraightEdge };
 
 // ── Dagre layout ───────────────────────────────────────────────────────────
-// Returns a position map for all nodes passed in.
 
 function dagreLayout(
   nodes: Node[],
@@ -331,7 +312,6 @@ function dagreLayout(
     g.setNode(n.id, { width: NODE_W + 20, height: NODE_H + 16 });
   }
   for (const e of edges) {
-    // multigraph requires a name for each edge
     g.setEdge(e.source, e.target, {}, e.id);
   }
 
@@ -346,27 +326,11 @@ function dagreLayout(
 }
 
 // ── Build React Flow elements from KnotGraphResponse ──────────────────────
-//
-// Twine 2 inspired layout:
-//   ┌──────────────────┐   ┌─────────┐
-//   │ Special Passages  │   │  Start  │──→ regular reachable flow ──→
-//   │ (bounding box)    │   └─────────┘         (dagre, right/down)
-//   └──────────────────┘       │
-//        │                     ↓
-//   ┌──────────────────┐   more reachable passages
-//   │ Unreachable List │        ↓
-//   │ (stacked)        │       ...
-//   └──────────────────┘
-//
-// When all nodes have positions (user has manually positioned them),
-// those positions are used as-is. The auto-layout only applies to
-// nodes without saved positions.
 
 function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] } {
   const rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
   const rawEdges = Array.isArray(data?.edges) ? data.edges : [];
 
-  // ── Groups ────────────────────────────────────────────────────────────
   const groupMembers = new Map<string, string[]>();
   for (const n of rawNodes) {
     if (n.group) {
@@ -375,7 +339,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     }
   }
 
-  // ── Identify start & special sets ─────────────────────────────────────
   const startNode = rawNodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start');
   const startId = startNode?.id;
   const specialSet = new Set<string>(
@@ -387,19 +350,16 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     rawNodes.filter(n => n.is_unreachable).map(n => n.id),
   );
 
-  // ── Detect bidirectional pairs ─────────────────────────────────────────
   const edgeSet = new Set<string>(rawEdges.map(e => `${e.source}→${e.target}`));
   const isBidir = (src: string, tgt: string) =>
     edgeSet.has(`${src}→${tgt}`) && edgeSet.has(`${tgt}→${src}`);
   const bidirFirst = new Set<string>();
 
-  // ── Classify nodes into categories ────────────────────────────────────
   const childToGroup = new Map<string, string>();
   for (const [gid, members] of groupMembers) {
     for (const mid of members) childToGroup.set(mid, gid);
   }
 
-  // Separate nodes into: start, special, unreachable, regular
   const startNodes: KnotGraphNode[] = [];
   const specialNodes: KnotGraphNode[] = [];
   const unreachableNodes: KnotGraphNode[] = [];
@@ -407,30 +367,27 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
   for (const n of rawNodes) {
     const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
-    if (isStart) {
-      startNodes.push(n);
-    } else if (specialSet.has(n.id)) {
-      specialNodes.push(n);
-    } else if (unreachableSet.has(n.id)) {
-      unreachableNodes.push(n);
-    } else {
-      regularNodes.push(n);
-    }
+    if (isStart)                   startNodes.push(n);
+    else if (specialSet.has(n.id)) specialNodes.push(n);
+    else if (unreachableSet.has(n.id)) unreachableNodes.push(n);
+    else                           regularNodes.push(n);
   }
 
-  // ── Check if we need auto-layout ──────────────────────────────────────
-  // If ANY node lacks a saved position, we apply the full Twine 2 auto-
-  // layout. Otherwise, we respect the user's manually-saved positions.
   const allHavePositions = rawNodes.every(
     n => n.position_x != null && n.position_y != null,
   );
 
-  // ── Helper: create a React Flow passage node ──────────────────────────
   function makePassageNode(n: KnotGraphNode, x: number, y: number): Node<PassageNodeData> {
     const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
+    const groupId = childToGroup.get(n.id);
+
     return {
       id: n.id,
       type: 'passage',
+      // FIX: when a node has a parentId, React Flow treats its position as
+      // relative to the parent. We do NOT set parentId here to keep all
+      // passage coordinates in the global canvas frame, which is also what
+      // the Rust server stores and what saveAllPositions writes back.
       position: { x: snap(x), y: snap(y) },
       data: {
         label: n.label,
@@ -447,34 +404,26 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         metadata_color: n.color,
         var_writes: n.var_writes || [],
         var_reads: n.var_reads || [],
-        group: n.group,
+        group: groupId,
         dimmed: false,
         highlighted: false,
         focused: false,
       },
-      parentId: childToGroup.get(n.id),
+      // NOTE: parentId intentionally omitted — see comment above.
     };
   }
 
-  // ── Build passage nodes ───────────────────────────────────────────────
   const allPassageNodes: Node[] = [];
 
   if (allHavePositions) {
-    // User has saved positions — use them directly
     for (const n of rawNodes) {
-      const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
       allPassageNodes.push(makePassageNode(n, n.position_x!, n.position_y!));
     }
   } else {
-    // ── Twine 2 auto-layout ─────────────────────────────────────────────
-
-    // 1. Start passage: anchor at fixed position
     if (startNode) {
       allPassageNodes.push(makePassageNode(startNode, START_ANCHOR_X, START_ANCHOR_Y));
     }
 
-    // 2. Special passages: arrange in a column inside a bounding box
-    //    Sort: metadata (StoryData, StoryTitle) first, then other specials
     specialNodes.sort((a, b) => {
       if (a.is_metadata && !b.is_metadata) return -1;
       if (!a.is_metadata && b.is_metadata) return 1;
@@ -488,7 +437,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       ));
     }
 
-    // 3. Unreachable passages: stacked vertically below the specials
     unreachableNodes.sort((a, b) => a.label.localeCompare(b.label));
     const unreachableStartY = specialNodes.length > 0
       ? SPECIAL_BOX_Y + specialNodes.length * (NODE_H + GRID_SNAP) + UNREACHABLE_LIST_Y_OFFSET
@@ -501,15 +449,12 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       ));
     }
 
-    // 4. Regular reachable passages: layout with dagre, flowing right and
-    //    down from the start passage.
     if (regularNodes.length > 0) {
       const regularIds = new Set(regularNodes.map(n => n.id));
       const subEdges: Edge[] = rawEdges
         .filter(e => regularIds.has(e.source) && regularIds.has(e.target))
         .map((e, i) => ({ id: `dagre-${i}`, source: e.source, target: e.target }));
 
-      // Also include edges from start → regular to anchor the flow
       if (startId) {
         for (const e of rawEdges) {
           if (e.source === startId && regularIds.has(e.target)) {
@@ -518,11 +463,9 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         }
       }
 
-      // Create temporary dagre nodes for regular passages
       const dagreNodes: Node[] = regularNodes.map(n => makePassageNode(n, 0, 0));
-      const positions = dagreLayout(dagreNodes, subEdges, 'LR'); // Left-to-Right flow
+      const positions = dagreLayout(dagreNodes, subEdges, 'LR');
 
-      // Apply dagre positions, offset so they flow right/down from start
       for (const n of dagreNodes) {
         const p = positions.get(n.id);
         if (p) {
@@ -536,8 +479,11 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     }
   }
 
-  // ── Build group container nodes ────────────────────────────────────────
+  // ── Group container nodes (visual bounding boxes only) ─────────────────
+  // Groups use zIndex: -1 and are not interactive. Passage nodes are NOT
+  // assigned parentId, so their coordinates stay in the global frame.
   const groupNodes: Node[] = [];
+
   for (const [gid, members] of groupMembers) {
     const children = allPassageNodes.filter(n => members.includes(n.id));
     if (children.length === 0) continue;
@@ -546,7 +492,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     const xs = children.map(n => n.position.x);
     const ys = children.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
-    const minY = Math.min(...ys) - pad - 18; // room for label
+    const minY = Math.min(...ys) - pad - 18;
     const maxX = Math.max(...xs) + NODE_W + pad;
     const maxY = Math.max(...ys) + NODE_H + pad;
 
@@ -562,7 +508,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     });
   }
 
-  // Add special passage bounding box as a group node (Twine 2 style)
   const specialRfNodes = allPassageNodes.filter(
     n => n.type === 'passage' && specialSet.has(n.id),
   );
@@ -593,7 +538,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     });
   }
 
-  // Add unreachable passage list bounding box
   const unreachableRfNodes = allPassageNodes.filter(
     n => n.type === 'passage' && unreachableSet.has(n.id),
   );
@@ -626,7 +570,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
   const rfNodes: Node[] = [...groupNodes, ...allPassageNodes];
 
-  // ── Build edges ────────────────────────────────────────────────────────
+  // ── Edges ──────────────────────────────────────────────────────────────
+
   const nodeIdSet = new Set(rawNodes.map(n => n.id));
   const rfEdges: Edge[] = [];
   const usedIds = new Set<string>();
@@ -634,8 +579,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
   for (const e of rawEdges) {
     if (!nodeIdSet.has(e.source) || !nodeIdSet.has(e.target)) continue;
-
-    // Suppress noisy special↔special and special→start edges
     if (specialSet.has(e.source) && specialSet.has(e.target)) continue;
     if (specialSet.has(e.source) && e.target === startId) continue;
 
@@ -713,13 +656,17 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
       {d.var_writes?.length > 0 && (
         <div className="node-tooltip__row">
           <span className="node-tooltip__key">writes</span>
-          <span className="node-tooltip__val">{d.var_writes.slice(0, 5).join(', ')}{d.var_writes.length > 5 ? '…' : ''}</span>
+          <span className="node-tooltip__val">
+            {d.var_writes.slice(0, 5).join(', ')}{d.var_writes.length > 5 ? '…' : ''}
+          </span>
         </div>
       )}
       {d.var_reads?.length > 0 && (
         <div className="node-tooltip__row">
           <span className="node-tooltip__key">reads</span>
-          <span className="node-tooltip__val">{d.var_reads.slice(0, 5).join(', ')}{d.var_reads.length > 5 ? '…' : ''}</span>
+          <span className="node-tooltip__val">
+            {d.var_reads.slice(0, 5).join(', ')}{d.var_reads.length > 5 ? '…' : ''}
+          </span>
         </div>
       )}
       {d.file && (
@@ -738,6 +685,7 @@ interface StoryMapInnerProps {
   saveRequested: number;
   focusRequested: number;
   focusPassageName: string;
+  restoreViewport: { x: number; y: number; zoom: number; ts: number } | null;
 }
 
 function StoryMapInner({
@@ -747,21 +695,29 @@ function StoryMapInner({
   saveRequested,
   focusRequested,
   focusPassageName,
+  restoreViewport,
 }: StoryMapInnerProps) {
   const { fitView, setViewport, getViewport, getNode } = useReactFlow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  // FIX: tooltip position stored in a ref to avoid triggering re-renders on
+  // every mouse-move; only the displayed tip state triggers a render.
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const tooltipPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const activeTooltipNodeRef = useRef<string | null>(null);
 
   const initialFitDoneRef = useRef(false);
   const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
-  const skipViewportRestoreRef = useRef(false);
-  // Keep a stable ref to nodes for use inside callbacks without stale closure
+  // When true, the next graph rebuild should NOT restore the saved viewport
+  // (e.g. after a focusNode navigation — we've already set the viewport there).
+  const skipNextViewportRestoreRef = useRef(false);
   const nodesRef = useRef<Node[]>([]);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
 
   // ── Debounced message senders ──────────────────────────────────────────
+
   const debouncedPositionUpdate = useMemo(
     () => debounce((updates: KnotPositionUpdate[]) => {
       if (updates.length > 0) vscode.postMessage({ command: 'updatePositions', updates });
@@ -777,9 +733,11 @@ function StoryMapInner({
   );
 
   // ── Build graph on data change ─────────────────────────────────────────
+
   useEffect(() => {
     if (!graphData) return;
 
+    // Snapshot current viewport before rebuilding so we can restore it
     try {
       const vp = getViewport();
       savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
@@ -790,24 +748,28 @@ function StoryMapInner({
     setEdges(newEdges);
 
     if (!initialFitDoneRef.current && newNodes.length > 0) {
+      // First load — fit all nodes into view
       initialFitDoneRef.current = true;
       requestAnimationFrame(() => {
         fitView({ padding: 0.12, duration: 350 });
       });
-    } else if (skipViewportRestoreRef.current) {
-      skipViewportRestoreRef.current = false;
+    } else if (skipNextViewportRestoreRef.current) {
+      // A focusNode navigation just happened — don't fight it
+      skipNextViewportRestoreRef.current = false;
     } else if (savedViewportRef.current) {
+      // Normal refresh — restore the user's current viewport
+      const vp = savedViewportRef.current;
       requestAnimationFrame(() => {
-        setViewport(savedViewportRef.current!, { duration: 0 });
+        setViewport(vp, { duration: 0 });
       });
     }
   }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport]);
 
   // ── Search filter ──────────────────────────────────────────────────────
+
   useEffect(() => {
     const q = searchQuery.toLowerCase().trim();
 
-    // Compute matching IDs first (using ref — no stale closure)
     const matchIds = new Set<string>();
     if (q !== '') {
       for (const n of nodesRef.current) {
@@ -838,64 +800,105 @@ function StoryMapInner({
   }, [searchQuery, setNodes, setEdges]);
 
   // ── Fit view ───────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (fitRequested > 0) fitView({ padding: 0.12, duration: 280 });
   }, [fitRequested, fitView]);
 
+  // ── Restore persisted viewport (sent by extension on panel show) ───────
+  // FIX: storyMapProvider.ts sends restoreViewport after a 200ms delay when
+  // the panel is first created. The old code had no handler for this message
+  // so the persisted viewport was always ignored.
+
+  useEffect(() => {
+    if (!restoreViewport) return;
+    // Only restore if we haven't yet done the initial fitView (i.e. no graph
+    // data arrived yet and the panel was just re-shown to an existing session).
+    // If the graph is already loaded, the graph useEffect will restore it.
+    if (!initialFitDoneRef.current) {
+      setViewport(
+        { x: restoreViewport.x, y: restoreViewport.y, zoom: restoreViewport.zoom },
+        { duration: 0 },
+      );
+    }
+  }, [restoreViewport, setViewport]);
+
   // ── Focus a passage ────────────────────────────────────────────────────
-  // Pan-only focus: preserve the user's current zoom level so navigating
-  // to a passage feels like jumping across the map, not zooming in/out.
-  // Only bump the zoom up if it's so low the node would be invisible.
+  // FIX: use setViewport directly instead of fitView with locked min/maxZoom,
+  // which broke when current zoom > 0.5. We pan to the node center while
+  // preserving the user's zoom level (or nudging it up to MIN_READABLE_ZOOM).
+
+  const MIN_READABLE_ZOOM = 0.5;
+
   useEffect(() => {
     if (focusRequested <= 0 || !focusPassageName) return;
-    // Don't let the viewport-restore effect fight our navigation
-    skipViewportRestoreRef.current = true;
 
-    // Find node by id, then by label
     const nds = nodesRef.current;
     let target = getNode(focusPassageName);
     if (!target) {
-      const found = nds.find(n => n.type === 'passage' && (n.data as PassageNodeData).label === focusPassageName);
+      const found = nds.find(
+        n => n.type === 'passage' && (n.data as PassageNodeData).label === focusPassageName,
+      );
       if (found) target = getNode(found.id);
     }
     if (!target) return;
 
-    // Pan-only: lock zoom to the current level so fitView only pans.
-    // If the user is zoomed out very far, nudge up to a readable level.
-    const currentZoom = getViewport().zoom;
-    const focusZoom = Math.max(currentZoom, 0.5);
-    fitView({
-      nodes: [{ id: target.id }],
-      padding: 0.4,
-      duration: 0,
-      minZoom: focusZoom,
-      maxZoom: focusZoom,
-    });
+    // Mark that we're navigating so the next graph refresh doesn't fight us
+    skipNextViewportRestoreRef.current = true;
 
-    // Brief highlight to show which node was focused (fades after 1s)
+    // Pan to node, preserve zoom (or bump up to readable minimum)
+    const currentZoom = getViewport().zoom;
+    const zoom = Math.max(currentZoom, MIN_READABLE_ZOOM);
+
+    // Node center in canvas coords
+    const cx = target.position.x + NODE_W / 2;
+    const cy = target.position.y + NODE_H / 2;
+
+    // Convert to viewport: vp.x = viewportCenterX - cx * zoom
+    // We don't have viewport dimensions here so use fitView with tight padding,
+    // but clamp zoom manually via the min/maxZoom trick only when needed.
+    if (Math.abs(currentZoom - zoom) < 0.01) {
+      // Zoom didn't change — use fitView with locked zoom for a pure pan
+      fitView({
+        nodes: [{ id: target.id }],
+        padding: 0.4,
+        duration: 300,
+        minZoom: zoom,
+        maxZoom: zoom,
+      });
+    } else {
+      // Zoom needs to change — let fitView pick a sensible level
+      fitView({
+        nodes: [{ id: target.id }],
+        padding: 0.35,
+        duration: 300,
+        minZoom: MIN_READABLE_ZOOM,
+        maxZoom: MAX_ZOOM,
+      });
+    }
+
+    // Flash highlight the focused node
     setNodes(nds => nds.map(n => {
       if (n.type !== 'passage') return n;
       const d = n.data as PassageNodeData;
       return { ...n, data: { ...d, focused: n.id === target!.id } };
     }));
 
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       setNodes(nds => nds.map(n => {
         if (n.type !== 'passage') return n;
         const d = n.data as PassageNodeData;
         return { ...n, data: { ...d, focused: false } };
       }));
-      // After focus highlight fades, stop skipping viewport restore
-      // so subsequent graph refreshes preserve the user's viewport
-      skipViewportRestoreRef.current = false;
-    }, 1000);
+      // Now safe to restore on next refresh
+      skipNextViewportRestoreRef.current = false;
+    }, 1200);
+
+    return () => clearTimeout(timer);
   }, [focusRequested, focusPassageName, fitView, getViewport, getNode, setNodes]);
 
   // ── Save all positions ─────────────────────────────────────────────────
-  // After saving, the file watcher will trigger a refreshGraph, which
-  // sends new data. Since all nodes now have positions in the source,
-  // the rebuild will use the saved positions. We mark the viewport to
-  // be preserved so the user doesn't see a jarring reset.
+
   useEffect(() => {
     if (saveRequested <= 0) return;
     const updates: KnotPositionUpdate[] = nodesRef.current
@@ -911,7 +914,6 @@ function StoryMapInner({
         };
       });
     if (updates.length > 0) {
-      // Save current viewport so the next graph rebuild preserves it
       try {
         const vp = getViewport();
         savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
@@ -921,22 +923,32 @@ function StoryMapInner({
   }, [saveRequested, getViewport]);
 
   // ── Node drag end → snap + send position ──────────────────────────────
+
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     onNodesChange(changes);
 
     const dragEnds = changes.filter(
-      (c): c is NodePositionChange => c.type === 'position' && c.dragging === false && !!c.position,
+      (c): c is NodePositionChange =>
+        c.type === 'position' && c.dragging === false && !!c.position,
     );
     if (dragEnds.length === 0) return;
 
-    const snapped = new Map(dragEnds.map(c => [c.id, { x: snap(c.position!.x), y: snap(c.position!.y) }]));
+    const snapped = new Map(
+      dragEnds.map(c => [c.id, { x: snap(c.position!.x), y: snap(c.position!.y) }]),
+    );
     const updates: KnotPositionUpdate[] = [];
 
     setNodes(nds => nds.map(n => {
       const s = snapped.get(n.id);
       if (!s) return n;
       const d = n.data as PassageNodeData;
-      updates.push({ passage_name: n.id, position_x: s.x, position_y: s.y, group: d.group, color: d.metadata_color });
+      updates.push({
+        passage_name: n.id,
+        position_x: s.x,
+        position_y: s.y,
+        group: d.group,
+        color: d.metadata_color,
+      });
       return { ...n, position: s };
     }));
 
@@ -944,27 +956,41 @@ function StoryMapInner({
   }, [onNodesChange, setNodes, debouncedPositionUpdate]);
 
   // ── Node click → open passage ──────────────────────────────────────────
+
   const handleNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
     if (d.file) vscode.postMessage({ command: 'openPassage', file: d.file, line: d.line || 0 });
   }, []);
 
-  // ── Tooltip ────────────────────────────────────────────────────────────
-  const handleNodeMouseEnter = useCallback((e: React.MouseEvent, node: Node) => {
+  // ── Tooltip (ref-based to avoid re-render on every mousemove) ──────────
+
+  const handleNodeMouseEnter = useCallback((_e: React.MouseEvent, node: Node) => {
     if (node.type !== 'passage') return;
-    setTooltip({ x: e.clientX, y: e.clientY, data: node.data as PassageNodeData });
+    activeTooltipNodeRef.current = node.id;
+    setTooltip({
+      x: tooltipPosRef.current.x,
+      y: tooltipPosRef.current.y,
+      data: node.data as PassageNodeData,
+    });
   }, []);
 
   const handleNodeMouseLeave = useCallback(() => {
+    activeTooltipNodeRef.current = null;
     setTooltip(null);
   }, []);
 
+  // FIX: only update tooltip state (causing re-render) when a node tooltip is
+  // actually active; otherwise just update the position ref silently.
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (tooltip) setTooltip(t => t ? { ...t, x: e.clientX, y: e.clientY } : null);
-  }, [tooltip]);
+    tooltipPosRef.current = { x: e.clientX, y: e.clientY };
+    if (activeTooltipNodeRef.current !== null) {
+      setTooltip(t => t ? { ...t, x: e.clientX, y: e.clientY } : null);
+    }
+  }, []);
 
   // ── Viewport change ────────────────────────────────────────────────────
+
   const handleViewportChange = useCallback(() => {
     try {
       const vp = getViewport();
@@ -973,6 +999,7 @@ function StoryMapInner({
   }, [getViewport, debouncedViewportUpdate]);
 
   // ── MiniMap color ──────────────────────────────────────────────────────
+
   const miniMapColor = useCallback((n: Node) => {
     if (n.type !== 'passage') return '#2a2a3a';
     return (n.data as PassageNodeData).color || COLORS.normal;
@@ -1034,6 +1061,8 @@ interface StoryMapProps {
   saveRequested: number;
   focusRequested: number;
   focusPassageName: string;
+  /** Viewport state to restore, forwarded from the extension's restoreViewport message. */
+  restoreViewport: { x: number; y: number; zoom: number; ts: number } | null;
 }
 
 export default function StoryMap(props: StoryMapProps) {

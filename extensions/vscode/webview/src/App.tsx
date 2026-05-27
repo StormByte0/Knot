@@ -10,10 +10,6 @@ const vscode: VsCodeApi = acquireVsCodeApi();
 export { vscode };
 
 // ── Console-to-extension logging bridge ─────────────────────────────────────
-// Override console.error and console.warn so that webview errors/warnings are
-// also posted to the VS Code extension, which forwards them to a dedicated
-// output channel. This makes webview errors visible in "Knot Story Map" output
-// instead of being silently lost.
 
 const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
@@ -47,7 +43,6 @@ console.warn = (...args: any[]) => {
   } catch { /* best effort */ }
 };
 
-// Also capture unhandled errors and promise rejections
 window.addEventListener('error', (event) => {
   try {
     vscode.postMessage({
@@ -69,8 +64,6 @@ window.addEventListener('unhandledrejection', (event) => {
 });
 
 // ── Error Boundary ──────────────────────────────────────────────────────────
-// Catches render errors in the React tree and displays them instead of
-// crashing silently to a blank screen.
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -126,32 +119,61 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [stats, setStats] = useState({ nodes: 0, edges: 0, broken: 0 });
 
+  // FIX: restoreViewport is sent by the extension after panel creation to
+  // re-apply the workspace-persisted viewport. We store it and forward it
+  // to StoryMap via a dedicated prop pair (timestamp + payload).
+  const [restoreViewport, setRestoreViewport] = useState<
+    { x: number; y: number; zoom: number; ts: number } | null
+  >(null);
+
   // Listen for messages from the extension
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      const msg: WebviewInboundMessage = event.data;
+      const msg = event.data as WebviewInboundMessage & {
+        command: string;
+        [key: string]: unknown;
+      };
+
       switch (msg.command) {
-        case 'updateGraph':
-          console.log('[StoryMap] Received updateGraph:', msg.data?.nodes?.length, 'nodes,', msg.data?.edges?.length, 'edges');
-          setGraphData(msg.data);
-          // Compute stats
-          const nodes = msg.data?.nodes?.length ?? 0;
-          const edges = msg.data?.edges?.length ?? 0;
-          const broken = msg.data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
+        case 'updateGraph': {
+          const data = (msg as any).data as KnotGraphResponse;
+          console.log(
+            '[StoryMap] Received updateGraph:',
+            data?.nodes?.length,
+            'nodes,',
+            data?.edges?.length,
+            'edges',
+          );
+          setGraphData(data);
+          const nodes = data?.nodes?.length ?? 0;
+          const edges = data?.edges?.length ?? 0;
+          const broken = data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
           setStats({ nodes, edges, broken });
           break;
-        case 'focusNode':
-          // The extension wants us to focus on a specific passage node.
-          setFocusPassageName(msg.passageName);
+        }
+        case 'focusNode': {
+          const passageName = (msg as any).passageName as string;
+          setFocusPassageName(passageName);
           setFocusRequested(Date.now());
           break;
+        }
+        // FIX: handle viewport restore sent by storyMapProvider.ts after
+        // a short delay when the panel is (re)shown.
+        case 'restoreViewport': {
+          const { x, y, zoom } = msg as any;
+          if (typeof x === 'number' && typeof y === 'number' && typeof zoom === 'number') {
+            setRestoreViewport({ x, y, zoom, ts: Date.now() });
+          }
+          break;
+        }
       }
     };
+
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, []);
 
-  // Request initial graph data
+  // Request initial graph data on mount
   useEffect(() => {
     console.log('[StoryMap] App mounted, requesting initial graph data');
     vscode.postMessage({ command: 'refreshGraph' });
@@ -171,14 +193,12 @@ export default function App() {
     setSearchQuery(query);
   }, []);
 
-  // Save all current node positions to the workspace.
   const [saveRequested, setSaveRequested] = useState(0);
 
   const handleSavePositions = useCallback(() => {
     setSaveRequested(Date.now());
   }, []);
 
-  // Focus on a passage node — triggered by extension message.
   const [focusRequested, setFocusRequested] = useState(0);
   const [focusPassageName, setFocusPassageName] = useState('');
 
@@ -199,6 +219,7 @@ export default function App() {
           saveRequested={saveRequested}
           focusRequested={focusRequested}
           focusPassageName={focusPassageName}
+          restoreViewport={restoreViewport}
         />
         <Legend />
         <div id="statusBar">

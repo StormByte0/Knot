@@ -1,11 +1,7 @@
 //! Shared type definitions for the Knot Story Map webview.
-//!
-//! These interfaces mirror the extension-side types from types.ts.
-//! They represent the data contracts between the VS Code extension
-//! and the React webview.
 
 // ---------------------------------------------------------------------------
-// Graph types (matches extension-side KnotGraphResponse)
+// Graph types
 // ---------------------------------------------------------------------------
 
 export interface KnotGraphResponse {
@@ -26,14 +22,10 @@ export interface KnotGraphNode {
   is_special: boolean;
   is_metadata: boolean;
   is_unreachable: boolean;
-  /** True if this is the story's start passage (from StoryData).
-   *  Older servers may not send this; client falls back to name heuristic. */
   is_start?: boolean;
   position_x?: number;
   position_y?: number;
-  /** Group name — used to render bounding boxes around related passages. */
   group?: string;
-  /** Custom color override from passage metadata. */
   color?: string;
   var_writes: string[];
   var_reads: string[];
@@ -48,7 +40,7 @@ export interface KnotGraphEdge {
 }
 
 // ---------------------------------------------------------------------------
-// Game loop types (matches extension-side KnotGameLoop)
+// Game loop types
 // ---------------------------------------------------------------------------
 
 export interface KnotGameLoop {
@@ -58,7 +50,7 @@ export interface KnotGameLoop {
 }
 
 // ---------------------------------------------------------------------------
-// Position update types (matches extension-side KnotPositionUpdate)
+// Position update types
 // ---------------------------------------------------------------------------
 
 export interface KnotPositionUpdate {
@@ -73,7 +65,6 @@ export interface KnotPositionUpdate {
 // VS Code webview message types
 // ---------------------------------------------------------------------------
 
-/** Messages sent FROM the webview TO the extension. */
 export type WebviewOutboundMessage =
   | { command: 'openPassage'; file: string; line: number }
   | { command: 'refreshGraph' }
@@ -85,14 +76,14 @@ export type WebviewOutboundMessage =
 /** Messages sent FROM the extension TO the webview. */
 export type WebviewInboundMessage =
   | { command: 'updateGraph'; data: KnotGraphResponse }
-  | { command: 'focusNode'; passageName: string };
+  | { command: 'focusNode'; passageName: string }
+  // FIX: restoreViewport was sent by storyMapProvider.ts but never handled
+  | { command: 'restoreViewport'; x: number; y: number; zoom: number };
 
 // ---------------------------------------------------------------------------
 // VS Code API type
 // ---------------------------------------------------------------------------
 
-/** The VS Code webview API, acquired via acquireVsCodeApi().
- *  The actual ambient declaration is in global.d.ts. */
 export type VsCodeApi = ReturnType<typeof acquireVsCodeApi>;
 
 // ---------------------------------------------------------------------------
@@ -110,15 +101,18 @@ export interface PassageNodeData {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
-  /** Computed rendering color (for display only, NEVER written back to metadata). */
+  /** Computed rendering color (display only — never written back to metadata). */
   color: string;
-  /** Color from passage metadata (may be undefined). Only THIS is written back. */
+  /** Color from passage metadata (may be undefined). Only this is written back. */
   metadata_color?: string;
   var_writes: string[];
   var_reads: string[];
   group?: string;
   dimmed: boolean;
   highlighted: boolean;
+  // FIX: was missing from type definition — present in buildElements but
+  // absent here caused TypeScript to accept it only via the index signature.
+  focused: boolean;
   [key: string]: unknown;
 }
 
