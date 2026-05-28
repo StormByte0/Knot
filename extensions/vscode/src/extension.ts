@@ -348,14 +348,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     // Find the document in the visible editors or workspace
                     const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
                     if (doc && doc.languageId !== languageId) {
-                        vscode.languages.setTextDocumentLanguage(doc, languageId).then(
-                            () => {
-                                console.log(`[Knot] Switched ${docUri} to language: ${languageId}`);
-                            },
-                            (err: unknown) => {
-                                console.warn(`[Knot] Failed to switch language for ${docUri}: ${err}`);
-                            }
-                        );
+                        vscode.languages.setTextDocumentLanguage(doc, languageId);
                     }
                 } catch (e) {
                     console.warn(`[Knot] Error processing format notification for ${docUri}: ${e}`);
@@ -384,10 +377,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // be used for decoration updates beyond what the standard refresh covers.
     client.onNotification(
         { method: 'knot/refreshSemanticTokens' },
-        (params: KnotRefreshSemanticTokensParams) => {
-            const reason = params.reason || 'unknown';
-            console.log(`[Knot] Refreshing semantic tokens for ${params.document_uris.length} document(s) (reason: ${reason})`);
-
+        (_params: KnotRefreshSemanticTokensParams) => {
             // Trigger VS Code's built-in semantic token refresh for all
             // visible editors. VS Code doesn't provide a per-document
             // semantic token refresh API, so we refresh all visible
@@ -498,12 +488,6 @@ export async function activate(context: vscode.ExtensionContext) {
             refreshStoryMap();
             // Update debug view with passage under cursor
             updateDebugViewForEditor(editor);
-            // Refresh variable flow view
-            if (variableFlowProvider) {
-                variableFlowProvider.refresh();
-            }
-            // Refresh workspace profile
-            profileViewProvider?.refresh();
         }
     });
 

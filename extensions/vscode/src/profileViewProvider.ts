@@ -16,20 +16,21 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
     private _view?: vscode.WebviewView;
     private _client: KnotLanguageClient | null = null;
-    /** Retry count for initial load — polls up to 15 times (30 seconds). */
     private _initialRetryCount = 0;
     private _initialRetryTimer: ReturnType<typeof setTimeout> | null = null;
-    /** Debounce timer for refresh calls triggered by file changes etc. */
+    private static readonly MAX_INITIAL_RETRIES = 15;
+    private static readonly INITIAL_RETRY_MS = 2000;
     private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private static readonly DEBOUNCE_MS = 500;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
     /** Set the language client reference. */
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
-        console.log('[Knot Profile] setClient called, client running:', client?.isRunning());
-        // Always kick off an initial load attempt when the client arrives.
-        this._startInitialLoad();
+        if (this._view) {
+            this._startInitialPolling();
+        }
     }
 
     /** Resolve the webview view. */
@@ -57,113 +58,63 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             }
         });
 
-        console.log('[Knot Profile] resolveWebviewView called, client set:', !!this._client, 'running:', this._client?.isRunning());
-        // Kick off an initial load attempt — the view is now visible.
-        this._startInitialLoad();
+        if (this._client) {
+            this._startInitialPolling();
+        }
     }
 
-    /**
-     * Start the initial load polling loop.
-     * Tries every 2 seconds, up to 15 attempts (30 seconds total).
-     * Succeeds as soon as the server responds with profile data.
-     */
-    private _startInitialLoad() {
-        // Don't start if already loaded or already retrying
-        if (this._initialRetryCount >= 15) {
+    /** Start polling until the server is ready and data is fetched. */
+    private _startInitialPolling() {
+        this._initialRetryCount = 0;
+        this._pollInitial();
+    }
+
+    private async _pollInitial() {
+        if (this._initialRetryCount >= ProfileViewProvider.MAX_INITIAL_RETRIES) {
             return;
         }
-        // Cancel any existing retry timer
-        if (this._initialRetryTimer) {
-            clearTimeout(this._initialRetryTimer);
-            this._initialRetryTimer = null;
-        }
-        // Fire immediately
-        this._doInitialAttempt();
-    }
-
-    private async _doInitialAttempt() {
+        this._initialRetryCount++;
         const clientReady = this._client && this._client.isRunning();
         const viewReady = !!this._view;
-        console.log(`[Knot Profile] Initial attempt #${this._initialRetryCount + 1}, clientReady=${clientReady}, viewReady=${viewReady}`);
-
-        if (!clientReady || !viewReady) {
-            // Not ready yet — schedule retry
-            this._initialRetryCount++;
-            if (this._initialRetryCount < 15) {
-                this._initialRetryTimer = setTimeout(() => {
-                    this._initialRetryTimer = null;
-                    this._doInitialAttempt();
-                }, 2000);
-            } else {
-                console.warn('[Knot Profile] Giving up after 15 retries — server never became ready');
-                // Show error state
-                if (this._view) {
-                    this._view.webview.postMessage({
-                        command: 'updateProfile',
-                        data: null,
-                        error: 'Language server did not become ready. Try restarting the Knot server.',
-                    });
-                }
-            }
-            return;
-        }
-
-        // Client and view are both ready — attempt the actual fetch
-        const success = await this._fetchAndPost();
-        if (!success) {
-            // The request itself failed — retry a few more times
-            this._initialRetryCount++;
-            if (this._initialRetryCount < 15) {
-                this._initialRetryTimer = setTimeout(() => {
-                    this._initialRetryTimer = null;
-                    this._doInitialAttempt();
-                }, 2000);
+        if (clientReady && viewReady) {
+            const gotData = await this._fetchAndPost();
+            if (!gotData) {
+                this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
             }
         } else {
-            // Success — reset retry count
-            this._initialRetryCount = 15; // Mark as "done"
+            this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
         }
     }
 
     /** Refresh profile data from the language server (debounced). */
-    public async refresh() {
-        // Debounce: coalesce rapid calls (file watcher, editor change, etc.)
+    public refresh() {
         if (this._debounceTimer) {
             clearTimeout(this._debounceTimer);
         }
         this._debounceTimer = setTimeout(() => {
             this._debounceTimer = null;
             this._fetchAndPost();
-        }, 500);
+        }, ProfileViewProvider.DEBOUNCE_MS);
     }
 
-    /**
-     * Core fetch logic — send knot/profile request and post result to webview.
-     * Returns true on success, false on failure.
-     */
+    /** Core fetch — returns true if data was obtained. */
     private async _fetchAndPost(): Promise<boolean> {
         if (!this._client || !this._client.isRunning()) {
-            console.warn('[Knot Profile] _fetchAndPost: client not running');
             return false;
         }
-
         if (!this._view) {
-            console.warn('[Knot Profile] _fetchAndPost: view not resolved');
             return false;
         }
 
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders || workspaceFolders.length === 0) {
-            console.warn('[Knot Profile] _fetchAndPost: no workspace folders');
             return false;
         }
 
         try {
-            console.log('[Knot Profile] Sending knot/profile request...');
             const result = await this._client.sendRequest<KnotProfileResponse>('knot/profile', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
-            console.log('[Knot Profile] Got profile data:', result ? `passage_count=${result.passage_count}` : 'null');
 
             if (this._view) {
                 this._view.webview.postMessage({
@@ -173,7 +124,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             }
             return true;
         } catch (e) {
-            console.error('[Knot Profile] Failed to fetch profile:', e);
+            console.error('[Knot] Failed to fetch profile:', e);
             if (this._view) {
                 this._view.webview.postMessage({
                     command: 'updateProfile',
