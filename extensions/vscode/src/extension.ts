@@ -325,10 +325,12 @@ export async function activate(context: vscode.ExtensionContext) {
     storyMapPanel = new StoryMapPanelManager(context.extensionUri, context);
     context.subscriptions.push(storyMapPanel);
 
-    // Register the Story Map launch card in the sidebar
+    // Register the Story Map launch view in the sidebar (TreeDataProvider)
+    // This provides an always-visible icon button in the view header
+    // that opens the Story Map, even when the section is collapsed.
     const storyMapLaunch = new StoryMapLaunchProvider(context.extensionUri);
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(
+        vscode.window.registerTreeDataProvider(
             StoryMapLaunchProvider.viewType,
             storyMapLaunch,
         )

@@ -206,7 +206,6 @@
     "views": {
       "knot-container": [
         {
-          "type": "webview",
           "id": "knot.storyMapLaunch",
           "name": "Story Map",
           "icon": "$(graph)",
@@ -235,6 +234,13 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "knot.storyMapLaunch",
+        "contents": "Visualize your story structure as an interactive graph.\n[Open Story Map](command:knot.openStoryMap)",
+        "when": ""
+      }
+    ],
     "menus": {
       "editor/context": [
         {
@@ -248,6 +254,13 @@
           "command": "knot.openStoryMap",
           "when": "resourceLangId == twee",
           "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "knot.openStoryMap",
+          "when": "view == knot.storyMapLaunch",
+          "group": "navigation@1"
         }
       ]
     },

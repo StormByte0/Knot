@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 
 interface VsCodeApi {
-  postMessage(msg: any): void;
+  postMessage(msg: import('./types').WebviewOutboundMessage): void;
   getState(): unknown;
   setState(state: unknown): void;
 }

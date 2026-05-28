@@ -90,7 +90,15 @@ export type VsCodeApi = ReturnType<typeof acquireVsCodeApi>;
 // React Flow node data types
 // ---------------------------------------------------------------------------
 
-export interface PassageNodeData {
+/** Node data for a passage node in the Story Map graph.
+ *
+ *  Satisfies `Record<string, unknown>` so it can be used as React Flow's
+ *  `Node<T>` generic parameter (which requires `T extends Record<string, unknown>`).
+ *  Unlike the previous `[key: string]: unknown` index signature, this explicit
+ *  satisfaction preserves full type-checking — misspelled or missing properties
+ *  will be caught at compile time rather than silently accepted.
+ */
+export interface PassageNodeData extends Record<string, unknown> {
   label: string;
   file: string;
   line: number;
@@ -110,14 +118,11 @@ export interface PassageNodeData {
   group?: string;
   dimmed: boolean;
   highlighted: boolean;
-  // FIX: was missing from type definition — present in buildElements but
-  // absent here caused TypeScript to accept it only via the index signature.
   focused: boolean;
-  [key: string]: unknown;
 }
 
-export interface GroupNodeData {
+/** Node data for a group container in the Story Map graph. */
+export interface GroupNodeData extends Record<string, unknown> {
   label: string;
   color?: string;
-  [key: string]: unknown;
 }

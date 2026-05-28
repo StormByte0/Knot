@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react';
-import { VsCodeApi, KnotGraphResponse, WebviewInboundMessage } from './types';
+import { VsCodeApi, KnotGraphResponse, WebviewInboundMessage, WebviewOutboundMessage } from './types';
 import StoryMap from './components/StoryMap';
 import Toolbar from './components/Toolbar';
 import Legend from './components/Legend';
@@ -14,7 +14,7 @@ export { vscode };
 const originalConsoleError = console.error;
 const originalConsoleWarn = console.warn;
 
-console.error = (...args: any[]) => {
+console.error = (...args: unknown[]) => {
   originalConsoleError.apply(console, args);
   try {
     vscode.postMessage({
@@ -22,21 +22,21 @@ console.error = (...args: any[]) => {
       level: 'error',
       message: args.map(a => {
         if (a instanceof Error) return a.stack || a.message;
-        if (typeof a === 'object') try { return JSON.stringify(a); } catch { return String(a); }
+        if (typeof a === 'object' && a !== null) try { return JSON.stringify(a); } catch { return String(a); }
         return String(a);
       }).join(' '),
     });
   } catch { /* best effort */ }
 };
 
-console.warn = (...args: any[]) => {
+console.warn = (...args: unknown[]) => {
   originalConsoleWarn.apply(console, args);
   try {
     vscode.postMessage({
       command: 'log',
       level: 'warn',
       message: args.map(a => {
-        if (typeof a === 'object') try { return JSON.stringify(a); } catch { return String(a); }
+        if (typeof a === 'object' && a !== null) try { return JSON.stringify(a); } catch { return String(a); }
         return String(a);
       }).join(' '),
     });
@@ -129,42 +129,36 @@ export default function App() {
   // Listen for messages from the extension
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      const msg = event.data as WebviewInboundMessage & {
-        command: string;
-        [key: string]: unknown;
-      };
+      const msg = event.data as WebviewInboundMessage;
 
-      switch (msg.command) {
-        case 'updateGraph': {
-          const data = (msg as any).data as KnotGraphResponse;
-          console.log(
-            '[StoryMap] Received updateGraph:',
-            data?.nodes?.length,
-            'nodes,',
-            data?.edges?.length,
-            'edges',
-          );
-          setGraphData(data);
-          const nodes = data?.nodes?.length ?? 0;
-          const edges = data?.edges?.length ?? 0;
-          const broken = data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
-          setStats({ nodes, edges, broken });
-          break;
-        }
-        case 'focusNode': {
-          const passageName = (msg as any).passageName as string;
-          setFocusPassageName(passageName);
-          setFocusRequested(Date.now());
-          break;
-        }
-        // FIX: handle viewport restore sent by storyMapProvider.ts after
-        // a short delay when the panel is (re)shown.
-        case 'restoreViewport': {
-          const { x, y, zoom } = msg as any;
-          if (typeof x === 'number' && typeof y === 'number' && typeof zoom === 'number') {
-            setRestoreViewport({ x, y, zoom, ts: Date.now() });
+      if (msg && typeof msg === 'object' && 'command' in msg) {
+        switch (msg.command) {
+          case 'updateGraph': {
+            const data = msg.data;
+            console.log(
+              '[StoryMap] Received updateGraph:',
+              data?.nodes?.length,
+              'nodes,',
+              data?.edges?.length,
+              'edges',
+            );
+            setGraphData(data);
+            const nodes = data?.nodes?.length ?? 0;
+            const edges = data?.edges?.length ?? 0;
+            const broken = data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
+            setStats({ nodes, edges, broken });
+            break;
           }
-          break;
+          case 'focusNode': {
+            setFocusPassageName(msg.passageName);
+            setFocusRequested(Date.now());
+            break;
+          }
+          case 'restoreViewport': {
+            const { x, y, zoom } = msg;
+            setRestoreViewport({ x, y, zoom, ts: Date.now() });
+            break;
+          }
         }
       }
     };

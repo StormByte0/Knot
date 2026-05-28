@@ -27,6 +27,8 @@ import {
   ReactFlowProvider,
   MarkerType,
   useStore,
+  type InternalNode,
+  type ReactFlowState,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -85,7 +87,7 @@ function nodeColor(n: KnotGraphNode): string {
   return COLORS.normal;
 }
 
-function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): T {
+function debounce<T extends (...args: never[]) => void>(fn: T, ms: number): T {
   let t: ReturnType<typeof setTimeout> | null = null;
   return ((...args: Parameters<T>) => {
     if (t) clearTimeout(t);
@@ -169,6 +171,31 @@ function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
   );
 }
 
+// ── React Flow store selector types ────────────────────────────────────────
+
+/** Shape extracted from a React Flow InternalNode for edge geometry. */
+interface NodeGeometry {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Build a store selector that reads a node's absolute position + measured size. */
+function makeNodeGeometrySelector(
+  nodeId: string,
+  store: ReactFlowState,
+): NodeGeometry | null {
+  const n = store.nodeLookup?.get(nodeId) as InternalNode | undefined;
+  if (!n) return null;
+  return {
+    x: n.internals?.positionAbsolute?.x ?? 0,
+    y: n.internals?.positionAbsolute?.y ?? 0,
+    w: n.measured?.width ?? NODE_W,
+    h: n.measured?.height ?? NODE_H,
+  };
+}
+
 // ── Custom straight edge with floating intersection ────────────────────────
 
 interface StraightEdgeData {
@@ -186,40 +213,20 @@ function StraightEdge({
   data,
   markerEnd,
 }: EdgeProps) {
-  const { edgeKind = 'navigation', offsetPx = 0 } = (data || {}) as unknown as StraightEdgeData;
+  const { edgeKind = 'navigation', offsetPx = 0 } = (data ?? {}) as unknown as StraightEdgeData;
 
   const sourceSelector = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (s: any) => {
-      const n = s.nodeLookup?.get(source);
-      if (!n) return null;
-      return {
-        x: n.internals?.positionAbsolute?.x ?? 0,
-        y: n.internals?.positionAbsolute?.y ?? 0,
-        w: n.measured?.width ?? NODE_W,
-        h: n.measured?.height ?? NODE_H,
-      };
-    },
+    (s: ReactFlowState) => makeNodeGeometrySelector(source, s),
     [source],
   );
   const targetSelector = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (s: any) => {
-      const n = s.nodeLookup?.get(target);
-      if (!n) return null;
-      return {
-        x: n.internals?.positionAbsolute?.x ?? 0,
-        y: n.internals?.positionAbsolute?.y ?? 0,
-        w: n.measured?.width ?? NODE_W,
-        h: n.measured?.height ?? NODE_H,
-      };
-    },
+    (s: ReactFlowState) => makeNodeGeometrySelector(target, s),
     [target],
   );
 
   const nodeEq = (
-    a: { x: number; y: number; w: number; h: number } | null,
-    b: { x: number; y: number; w: number; h: number } | null,
+    a: NodeGeometry | null,
+    b: NodeGeometry | null,
   ) => {
     if (a === b) return true;
     if (!a || !b) return false;
@@ -612,7 +619,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       source: e.source,
       target: e.target,
       type: 'straight',
-      data: { edgeKind, offsetPx } as any,
+      data: { edgeKind, offsetPx } as unknown as Record<string, unknown>,
       markerEnd: {
         type: MarkerType.Arrow,
         color: markerColor,
