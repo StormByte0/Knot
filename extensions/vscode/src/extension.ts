@@ -367,7 +367,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // the newly detected format. Without this, editors that were
             // already open before format detection complete may show stale
             // or empty tokens.
-            try { vscode.commands.executeCommand('editor.action.semanticTokens.refresh'); } catch { /* not available in all VS Code versions */ }
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh').then(undefined, () => {});
             refreshDecorationsForOpenEditors();
         }
     );
@@ -393,7 +393,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // semantic token refresh API, so we refresh all visible
             // editors. This is the same mechanism that
             // `workspace/semanticTokens/refresh` uses under the hood.
-            try { vscode.commands.executeCommand('editor.action.semanticTokens.refresh'); } catch { /* not available in all VS Code versions */ }
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh').then(undefined, () => {});
 
             // Also refresh decorations for the affected documents, since
             // broken link highlights and gutter badges may have changed.

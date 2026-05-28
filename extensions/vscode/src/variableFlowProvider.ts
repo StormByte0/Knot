@@ -627,12 +627,17 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         }
 
         function goBack() {
-            if (navStack.length === 0) return;
-            var prev = navStack.pop();
-            var v = findVariableByFullName(prev.variableFullName);
-            if (v) {
-                currentView = { variable: v, selectedPassage: prev.selectedPassage };
+            if (navStack.length > 0) {
+                var prev = navStack.pop();
+                var v = findVariableByFullName(prev.variableFullName);
+                if (v) {
+                    currentView = { variable: v, selectedPassage: prev.selectedPassage };
+                } else {
+                    currentView = null;
+                }
             } else {
+                // At root→variable level, navStack is empty but we still need
+                // to go back to the root variable list.
                 currentView = null;
             }
             render();
@@ -779,7 +784,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             // Toolbar
             html += '<div class="toolbar">';
             html += '<button data-action="goHome" title="Home">&#x2302;</button>';
-            html += '<button data-action="goBack" title="Back"' + (navStack.length === 0 ? ' disabled' : '') + '>&#x2190;</button>';
+            html += '<button data-action="goBack" title="Back"' + (!currentView ? ' disabled' : '') + '>&#x2190;</button>';
             html += '<input class="filter-input" type="text" placeholder="Filter..." value="' + esc(currentFilter) + '" />';
             html += '<button data-action="refresh" title="Refresh">&#x21BB;</button>';
             html += '</div>';
