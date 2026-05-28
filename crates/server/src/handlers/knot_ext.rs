@@ -1385,6 +1385,51 @@ impl ServerState {
             .filter
             .map(|f| f.into_iter().collect());
 
+        // Build a lookup set of variables written in this passage (used for
+        // last_written_in resolution in the read list).
+        let written_names: std::collections::HashSet<String> = passage
+            .persistent_variable_inits()
+            .map(|v| v.name.clone())
+            .collect();
+
+        // Backward-trace helper: find the last passage that wrote a given
+        // variable before the current passage entry. Walks predecessors in
+        // BFS order and returns the first passage that initializes the var.
+        // Returns None if no writer is found within the search depth.
+        let max_backward_depth = 10usize;
+        let find_last_writer = |var_name: &str| -> Option<String> {
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(params.at_passage.clone());
+            let mut frontier: Vec<String> = workspace
+                .graph
+                .incoming_neighbors(&params.at_passage);
+
+            for _ in 0..max_backward_depth {
+                let mut next_frontier = Vec::new();
+                for pred_name in &frontier {
+                    if visited.contains(pred_name) { continue; }
+                    visited.insert(pred_name.clone());
+
+                    // Check if this predecessor writes the variable
+                    if let Some((_, _pred_passage)) = workspace.find_passage(pred_name) {
+                        if _pred_passage.persistent_variable_inits().any(|v| v.name == var_name) {
+                            return Some(pred_name.clone());
+                        }
+                    }
+
+                    // Add predecessor's predecessors to the next frontier
+                    for grandpred in workspace.graph.incoming_neighbors(pred_name) {
+                        if !visited.contains(&grandpred) {
+                            next_frontier.push(grandpred);
+                        }
+                    }
+                }
+                frontier = next_frontier;
+                if frontier.is_empty() { break; }
+            }
+            None
+        };
+
         // Build initialized-at-entry list
         let initialized_at_entry: Vec<KnotWatchVariable> = entry_init
             .iter()
@@ -1395,7 +1440,7 @@ impl ServerState {
                 name: v.clone(),
                 is_temporary: false,
                 file_uri: doc_uri.clone(),
-                last_written_in: None, // Could be enhanced with backward tracing
+                last_written_in: find_last_writer(v),
             })
             .collect();
 
@@ -1419,11 +1464,21 @@ impl ServerState {
             .filter(|v| {
                 filter_set.as_ref().is_none_or(|f| f.contains(&v.name))
             })
-            .map(|v| KnotWatchVariable {
-                name: v.name.clone(),
-                is_temporary: v.is_temporary,
-                file_uri: doc_uri.clone(),
-                last_written_in: None,
+            .map(|v| {
+                let last_writer = if written_names.contains(&v.name) {
+                    // Variable is both written and read in this passage;
+                    // the write happens before the read (or the analysis
+                    // would have flagged it as potentially uninitialized).
+                    Some(params.at_passage.clone())
+                } else {
+                    find_last_writer(&v.name)
+                };
+                KnotWatchVariable {
+                    name: v.name.clone(),
+                    is_temporary: v.is_temporary,
+                    file_uri: doc_uri.clone(),
+                    last_written_in: last_writer,
+                }
             })
             .collect();
 

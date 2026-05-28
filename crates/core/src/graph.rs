@@ -1089,6 +1089,16 @@ pub struct GraphNodeExport {
     pub color: Option<String>,
     /// Block assignment for this node (placeholder for future block
     /// detection). `None` means no block has been assigned yet.
+    ///
+    /// TODO: Implement logical block grouping. The block field is intended
+    /// to simplify the graph by creating virtual logical blocks — contiguous
+    /// passages that form a coherent unit in the story's control flow (e.g.,
+    /// a branching dialogue tree, a mini-game sequence, a conditional
+    /// section). When implemented, each block will group related nodes
+    /// so that the graph can be collapsed/expanded at the block level,
+    /// and variable flow tracking can scope analysis to a block's boundary.
+    /// This will revolutionize the current tracking system by enabling
+    /// block-scoped variable flow analysis instead of passage-scoped only.
     #[serde(default)]
     pub block: Option<String>,
 }

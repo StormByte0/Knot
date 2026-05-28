@@ -368,25 +368,21 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register custom notification handler for knot/refreshSemanticTokens
     // When the server detects that semantic tokens may be stale in other
     // documents (e.g., cross-file link resolution changes, format detection),
-    // it sends this notification. We trigger VS Code's semantic token refresh
-    // so that the editor re-requests tokens for the affected documents.
-    //
-    // This complements the standard `workspace/semanticTokens/refresh` request
-    // that the server also sends — that mechanism is handled automatically by
-    // vscode-languageclient. This handler provides additional coverage and can
-    // be used for decoration updates beyond what the standard refresh covers.
+    // it sends this notification. The standard `workspace/semanticTokens/refresh`
+    // request (also sent by the server) is handled automatically by
+    // vscode-languageclient and triggers semantic token re-fetching. This
+    // handler covers the additional need to refresh custom decorations
+    // (broken link highlights, gutter badges) that are not part of the
+    // semantic token system.
     client.onNotification(
         { method: 'knot/refreshSemanticTokens' },
         (_params: KnotRefreshSemanticTokensParams) => {
-            // Trigger VS Code's built-in semantic token refresh for all
-            // visible editors. VS Code doesn't provide a per-document
-            // semantic token refresh API, so we refresh all visible
-            // editors. This is the same mechanism that
-            // `workspace/semanticTokens/refresh` uses under the hood.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh').then(undefined, () => {});
-
-            // Also refresh decorations for the affected documents, since
+            // Refresh decorations for the affected documents, since
             // broken link highlights and gutter badges may have changed.
+            // Note: We do NOT call editor.action.semanticTokens.refresh here
+            // because the server already sends workspace/semanticTokens/refresh
+            // alongside this notification, and the language client handles
+            // that automatically. Calling it again would be redundant.
             refreshDecorationsForOpenEditors();
         }
     );
