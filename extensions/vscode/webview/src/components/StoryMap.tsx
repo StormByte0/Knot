@@ -967,7 +967,7 @@ function StoryMapInner({
   const handleNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
-    if (d.file) vscode.postMessage({ command: 'openPassage', file: d.file, line: d.line || 0 });
+    if (d.file) vscode.postMessage({ command: 'openPassage', file: d.file, line: d.line || 0, passageName: d.label });
   }, []);
 
   // ── Tooltip (ref-based to avoid re-render on every mousemove) ──────────

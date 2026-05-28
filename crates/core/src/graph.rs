@@ -774,7 +774,7 @@ impl PassageGraph {
     /// persistent variable writes. The client can use this to distinguish
     /// game loops with mutation (normal interaction patterns) from those
     /// without (potential infinite loops) visually.
-    fn detect_game_loops_for_export(
+    pub fn detect_game_loops_for_export(
         &self,
         var_writes: &std::collections::HashMap<String, Vec<String>>,
     ) -> Vec<GameLoopExport> {

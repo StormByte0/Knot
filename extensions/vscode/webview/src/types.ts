@@ -66,7 +66,7 @@ export interface KnotPositionUpdate {
 // ---------------------------------------------------------------------------
 
 export type WebviewOutboundMessage =
-  | { command: 'openPassage'; file: string; line: number }
+  | { command: 'openPassage'; file: string; line: number; passageName: string }
   | { command: 'refreshGraph' }
   | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
   | { command: 'saveAllPositions'; updates: KnotPositionUpdate[] }

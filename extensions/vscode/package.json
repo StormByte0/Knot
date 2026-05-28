@@ -237,8 +237,8 @@
     "viewsWelcome": [
       {
         "view": "knot.storyMapLaunch",
-        "contents": "Visualize your story structure as an interactive graph.\n[Open Story Map](command:knot.openStoryMap)",
-        "when": ""
+        "contents": "[Open Story Map](command:knot.openStoryMap)\n\nVisualize your story structure as an interactive graph.",
+        "when": "true"
       }
     ],
     "menus": {
@@ -260,6 +260,11 @@
         {
           "command": "knot.openStoryMap",
           "when": "view == knot.storyMapLaunch",
+          "group": "navigation@1"
+        },
+        {
+          "command": "knot.openStoryMap",
+          "when": "view == knot.debugView",
           "group": "navigation@1"
         }
       ]

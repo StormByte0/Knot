@@ -18,11 +18,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { StoryMapPanelManager } from './storyMapProvider';
-import { StoryMapLaunchProvider } from './storyMapLaunchProvider';
 import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
+import { StoryMapLaunchProvider } from './storyMapLaunchProvider';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse, KnotRefreshSemanticTokensParams } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
@@ -82,6 +82,84 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
     }
 
     return serverPath;
+}
+
+// ---------------------------------------------------------------------------
+// Passage name extraction
+// ---------------------------------------------------------------------------
+
+/** All recognized Twee language IDs in the extension. */
+const TWEE_LANGUAGE_IDS = ['twee', 'twee-sugarcube', 'twee-harlowe', 'twee-chapbook', 'twee-snowman'];
+
+/** Check whether a language ID is any Twee variant. */
+function isTweeLanguage(languageId: string): boolean {
+    return TWEE_LANGUAGE_IDS.includes(languageId);
+}
+
+/**
+ * Extract the passage name from a `::` header line.
+ *
+ * A Twee passage header has the form:
+ *   `:: Name [tag1 tag2] {"position":"100,200","size":"200,150"}`
+ *
+ * This function strips the `::` prefix, removes any `[tag]` blocks,
+ * removes any `{JSON}` metadata blocks, and trims whitespace — matching
+ * the Rust-side `extract_passage_name()` in `knot_formats::header`.
+ */
+function extractPassageName(headerLine: string): string {
+    // Strip the `::` prefix
+    let name = headerLine.replace(/^::\s*/, '');
+
+    // Strip JSON metadata blocks `{...}` — handle nested braces
+    name = stripJsonBlock(name);
+
+    // Strip tag blocks `[...]`
+    name = stripTagBlock(name);
+
+    return name.trim();
+}
+
+/**
+ * Remove the first `{...}` JSON metadata block from a string.
+ * Uses brace counting to handle nested objects, and validates the
+ * extracted JSON with a parse check before removing.
+ */
+function stripJsonBlock(s: string): string {
+    const start = s.indexOf('{');
+    if (start < 0) { return s; }
+
+    let depth = 0;
+    for (let i = start; i < s.length; i++) {
+        if (s[i] === '{') { depth++; }
+        else if (s[i] === '}') {
+            depth--;
+            if (depth === 0) {
+                // Validate that the extracted block is valid JSON
+                const candidate = s.substring(start, i + 1);
+                try {
+                    JSON.parse(candidate);
+                    // Valid JSON — remove it
+                    return s.substring(0, start) + s.substring(i + 1);
+                } catch {
+                    // Not valid JSON — leave as-is
+                    return s;
+                }
+            }
+        }
+    }
+    return s;
+}
+
+/**
+ * Remove the first `[...]` tag block from a string.
+ * Only strips if the block contains no nested brackets (simple tags).
+ */
+function stripTagBlock(s: string): string {
+    const start = s.indexOf('[');
+    if (start < 0) { return s; }
+    const end = s.indexOf(']', start);
+    if (end < 0) { return s; }
+    return s.substring(0, start) + s.substring(end + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +253,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     statusBarItem.tooltip = 'Knot: Click to open Story Map';
                     refreshStoryMap();
                     variableFlowProvider?.refresh();
+                    profileViewProvider?.refresh();
 
                     // Fetch profile data for status bar enrichment
                     (async () => {
@@ -185,10 +264,11 @@ export async function activate(context: vscode.ExtensionContext) {
                                     workspace_uri: wsFolders[0].uri.toString(),
                                 });
                                 if (statusBarItem && profile) {
+                                    const name = profile.story_name || 'Untitled';
                                     const fmt = profile.format || 'Unknown';
                                     const passages = profile.passage_count || 0;
-                                    statusBarItem.text = `$(graph) Knot: ${fmt} | ${passages} passages`;
-                                    statusBarItem.tooltip = `Knot IDE — ${fmt}${profile.format_version ? ' v' + profile.format_version : ''} | ${passages} passages, ${profile.total_word_count || 0} words`;
+                                    statusBarItem.text = `$(graph) ${name} | ${passages} passages`;
+                                    statusBarItem.tooltip = `Knot IDE — ${name} | ${fmt}${profile.format_version ? ' v' + profile.format_version : ''} | ${passages} passages, ${profile.total_word_count || 0} words`;
                                 }
                             }
                         } catch {
@@ -287,7 +367,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // the newly detected format. Without this, editors that were
             // already open before format detection complete may show stale
             // or empty tokens.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+            try { vscode.commands.executeCommand('editor.action.semanticTokens.refresh'); } catch { /* not available in all VS Code versions */ }
             refreshDecorationsForOpenEditors();
         }
     );
@@ -313,7 +393,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // semantic token refresh API, so we refresh all visible
             // editors. This is the same mechanism that
             // `workspace/semanticTokens/refresh` uses under the hood.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+            try { vscode.commands.executeCommand('editor.action.semanticTokens.refresh'); } catch { /* not available in all VS Code versions */ }
 
             // Also refresh decorations for the affected documents, since
             // broken link highlights and gutter badges may have changed.
@@ -325,14 +405,12 @@ export async function activate(context: vscode.ExtensionContext) {
     storyMapPanel = new StoryMapPanelManager(context.extensionUri, context);
     context.subscriptions.push(storyMapPanel);
 
-    // Register the Story Map launch view in the sidebar (TreeDataProvider)
-    // This provides an always-visible icon button in the view header
-    // that opens the Story Map, even when the section is collapsed.
-    const storyMapLaunch = new StoryMapLaunchProvider(context.extensionUri);
+    // Register the Story Map Launch sidebar view (tree + welcome content)
+    const storyMapLaunchProvider = new StoryMapLaunchProvider(context.extensionUri);
     context.subscriptions.push(
         vscode.window.registerTreeDataProvider(
             StoryMapLaunchProvider.viewType,
-            storyMapLaunch,
+            storyMapLaunchProvider,
         )
     );
 
@@ -377,6 +455,7 @@ export async function activate(context: vscode.ExtensionContext) {
         // Wire up the story map to the language client
         if (storyMapPanel) {
             storyMapPanel.setClient(client);
+            storyMapPanel.setDebugViewProvider(debugViewProvider);
         }
         if (debugViewProvider) {
             debugViewProvider.setClient(client);
@@ -408,14 +487,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Auto-refresh the Story Map when Twee files change
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{tw,twee}');
-    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
-    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
-    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); });
+    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
+    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
+    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
     context.subscriptions.push(watcher);
 
     // Also refresh on active editor change (for live updates)
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-        if (editor && editor.document.languageId === 'twee') {
+        if (editor && isTweeLanguage(editor.document.languageId)) {
             refreshStoryMap();
             // Update debug view with passage under cursor
             updateDebugViewForEditor(editor);
@@ -423,12 +502,14 @@ export async function activate(context: vscode.ExtensionContext) {
             if (variableFlowProvider) {
                 variableFlowProvider.refresh();
             }
+            // Refresh workspace profile
+            profileViewProvider?.refresh();
         }
     });
 
     // Update debug view on cursor position change
     vscode.window.onDidChangeTextEditorSelection((event) => {
-        if (event.textEditor.document.languageId === 'twee') {
+        if (isTweeLanguage(event.textEditor.document.languageId)) {
             updateDebugViewForEditor(event.textEditor);
         }
     });
@@ -688,13 +769,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                     for (let i = 0; i <= position.line; i++) {
                         const line = lines[i];
                         if (line.startsWith('::')) {
-                            // Parse passage name (remove tags if present)
-                            let name = line.substring(2).trim();
-                            const bracketIdx = name.indexOf('[');
-                            if (bracketIdx > 0) {
-                                name = name.substring(0, bracketIdx).trim();
-                            }
-                            currentPassage = name;
+                            currentPassage = extractPassageName(line);
                         }
                     }
                     passageName = currentPassage;
@@ -854,11 +929,11 @@ function registerCommands(context: vscode.ExtensionContext) {
 
             // First, search open documents
             for (const doc of vscode.workspace.textDocuments) {
-                if (doc.languageId !== 'twee') { continue; }
+                if (!isTweeLanguage(doc.languageId)) { continue; }
                 for (let i = 0; i < doc.lineCount; i++) {
                     const line = doc.lineAt(i).text;
                     if (line.startsWith('::')) {
-                        const name = line.substring(2).trim().split('[')[0].trim();
+                        const name = extractPassageName(line);
                         if (name === passageName) {
                             // If a target line is provided, navigate to that line;
                             // otherwise, select the passage header line.
@@ -883,7 +958,7 @@ function registerCommands(context: vscode.ExtensionContext) {
                     for (let i = 0; i < doc.lineCount; i++) {
                         const line = doc.lineAt(i).text;
                         if (line.startsWith('::')) {
-                            const name = line.substring(2).trim().split('[')[0].trim();
+                            const name = extractPassageName(line);
                             if (name === passageName) {
                                 const selectionLine = (targetLine !== undefined && targetLine > 0)
                                     ? targetLine
@@ -1169,7 +1244,7 @@ function registerDecorations(context: vscode.ExtensionContext) {
 
     // Update decorations on active editor change and document changes
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-        if (editor && editor.document.languageId === 'twee') {
+        if (editor && isTweeLanguage(editor.document.languageId)) {
             updateDecorations(editor);
         }
     }, null, context.subscriptions);
@@ -1191,7 +1266,7 @@ function registerDecorations(context: vscode.ExtensionContext) {
     }, null, context.subscriptions);
 
     // Initial update
-    if (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.languageId === 'twee') {
+    if (vscode.window.activeTextEditor && isTweeLanguage(vscode.window.activeTextEditor.document.languageId)) {
         updateDecorations(vscode.window.activeTextEditor);
     }
 }
@@ -1199,7 +1274,7 @@ function registerDecorations(context: vscode.ExtensionContext) {
 /** Update decorations for the given editor based on workspace analysis. */
 async function updateDecorations(editor: vscode.TextEditor) {
     if (!client || !client.isRunning()) { return; }
-    if (editor.document.languageId !== 'twee') { return; }
+    if (!isTweeLanguage(editor.document.languageId)) { return; }
 
     const text = editor.document.getText();
     const lines = text.split('\n');
@@ -1537,7 +1612,7 @@ function updateDebugViewForEditor(editor: vscode.TextEditor) {
     if (!debugViewProvider) { return; }
 
     const document = editor.document;
-    if (document.languageId !== 'twee') { return; }
+    if (!isTweeLanguage(document.languageId)) { return; }
 
     const position = editor.selection.active;
     const text = document.getText();
@@ -1548,7 +1623,7 @@ function updateDebugViewForEditor(editor: vscode.TextEditor) {
     for (let i = position.line; i >= 0; i--) {
         const line = lines[i];
         if (line.startsWith('::')) {
-            passageName = line.substring(2).trim().split('[')[0].trim();
+            passageName = extractPassageName(line);
             break;
         }
     }

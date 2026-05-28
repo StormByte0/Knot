@@ -1,29 +1,20 @@
-//! Variable Flow View provider for the Knot extension.
+//! Variable Tracking View provider for the Knot extension.
 //!
-//! This module implements a VS Code sidebar webview panel that displays
-//! variable flow / dataflow information for the workspace using a
-//! **drill-down navigation** pattern instead of a crammed tree view.
+//! Three-zone sidebar webview panel:
 //!
-//! For SugarCube, `$player.hp` maps to `State.variables.player.hp`.
-//! Variables are navigated via drill-down levels:
+//! **Zone 1 — Navigation**: Breadcrumb path, home/back buttons, summary.
+//! **Zone 2 — Passage List**: All passages referencing the selected variable,
+//!   sorted by BFS reachability from StoryInit.
+//! **Zone 3 — Detail**: Individual references for the selected passage.
 //!
-//! **Level 0 — Variable List**: Shows all top-level state variables
-//! (`$gold`, `$player`, `$hp`, etc.) as clickable rows.
-//!
-//! **Level 1 — Variable Detail**: Shows breadcrumb + variable details +
-//! properties as clickable items that drill deeper.
-//!
-//! **Level 2+ — Property Detail**: Shows breadcrumb + property details +
-//! sub-properties as clickable items.
-//!
-//! Navigation is managed entirely in the webview; the extension host
-//! only sends data and handles `openPassage` requests.
+//! Format-agnostic: no `$` prefix, no `State.variables`, no format-specific
+//! syntax. Variable names are extracted identifiers only.
 
 import * as vscode from 'vscode';
 import { KnotLanguageClient, KnotVariableFlowResponse } from './types';
 
 // ---------------------------------------------------------------------------
-// Variable Flow View webview provider (drill-down design)
+// Variable Tracking View webview provider (three-zone design)
 // ---------------------------------------------------------------------------
 
 export class VariableFlowProvider implements vscode.WebviewViewProvider {
@@ -33,6 +24,12 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
     private _client: KnotLanguageClient | null = null;
     private _flowData: KnotVariableFlowResponse | null = null;
     private _filter: string = '';
+    private _refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private static readonly DEBOUNCE_MS = 500;
+    private static readonly MAX_INITIAL_RETRIES = 15;
+    private static readonly INITIAL_RETRY_MS = 2000;
+    private _initialRetryCount = 0;
+    private _initialRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -40,7 +37,58 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
         if (this._view) {
-            this.refresh();
+            this._startInitialPolling();
+        }
+    }
+
+    /** Start polling until the server is ready and data is fetched. */
+    private _startInitialPolling() {
+        this._initialRetryCount = 0;
+        this._pollInitial();
+    }
+
+    private async _pollInitial() {
+        if (this._initialRetryCount >= VariableFlowProvider.MAX_INITIAL_RETRIES) {
+            return;
+        }
+        this._initialRetryCount++;
+        const clientReady = this._client && this._client.isRunning();
+        const viewReady = !!this._view;
+        if (clientReady && viewReady) {
+            const gotData = await this._fetchAndPost();
+            if (!gotData) {
+                this._initialRetryTimer = setTimeout(() => this._pollInitial(), VariableFlowProvider.INITIAL_RETRY_MS);
+            }
+        } else {
+            this._initialRetryTimer = setTimeout(() => this._pollInitial(), VariableFlowProvider.INITIAL_RETRY_MS);
+        }
+    }
+
+    /** Core fetch — returns true if data was obtained. */
+    private async _fetchAndPost(): Promise<boolean> {
+        if (!this._client || !this._client.isRunning()) {
+            return false;
+        }
+        if (!this._view) {
+            return false;
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            return false;
+        }
+
+        try {
+            const result = await this._client.sendRequest<KnotVariableFlowResponse>('knot/variableFlow', {
+                workspace_uri: workspaceFolders[0].uri.toString(),
+            });
+
+            this._flowData = result;
+            this._postFlowData();
+            return true;
+        } catch (e) {
+            console.error('[Knot] Failed to fetch variable flow:', e);
+            return false;
         }
     }
 
@@ -78,37 +126,23 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 }
-                // drillDown, drillUp, drillTo are handled entirely
-                // in the webview JavaScript — no round-trip needed.
             }
         });
 
         if (this._client) {
-            this.refresh();
+            this._startInitialPolling();
         }
     }
 
-    /** Refresh variable flow data from the language server. */
-    public async refresh() {
-        if (!this._client || !this._client.isRunning()) {
-            return;
+    /** Refresh variable flow data from the language server (debounced). */
+    public refresh() {
+        if (this._refreshDebounceTimer) {
+            clearTimeout(this._refreshDebounceTimer);
         }
-
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) {
-            return;
-        }
-
-        try {
-            const result = await this._client.sendRequest<KnotVariableFlowResponse>('knot/variableFlow', {
-                workspace_uri: workspaceFolders[0].uri.toString(),
-            });
-
-            this._flowData = result;
-            this._postFlowData();
-        } catch (e) {
-            console.error('[Knot] Failed to fetch variable flow:', e);
-        }
+        this._refreshDebounceTimer = setTimeout(() => {
+            this._refreshDebounceTimer = null;
+            this._fetchAndPost();
+        }, VariableFlowProvider.DEBOUNCE_MS);
     }
 
     /** Post the current flow data (with filter applied) to the webview. */
@@ -122,15 +156,15 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Generate the HTML for the webview with drill-down navigation. */
+    /** Generate the HTML for the webview with three-zone layout. */
     private _getHtmlForWebview(_webview: vscode.Webview): string {
-        return `<!DOCTYPE html>
+        return /*html*/`<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knot Variable Flow</title>
+    <title>Knot Variable Tracking</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -144,8 +178,8 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             --hover: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04));
             --error: var(--vscode-errorForeground, #f14c4c);
             --success: #66bb6a;
+            --warning: #e0a526;
             --prop-color: #ce9178;
-            --state-path-color: #6a9955;
         }
 
         body {
@@ -156,7 +190,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             padding: 0;
         }
 
-        /* ── Toolbar ──────────────────────────────────────────────── */
+        /* -- Toolbar -- */
 
         .toolbar {
             display: flex;
@@ -164,8 +198,6 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             padding: 6px 8px;
             align-items: center;
             border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
             background: var(--bg);
             z-index: 10;
         }
@@ -174,28 +206,17 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             background: var(--card);
             border: 1px solid var(--border);
             color: var(--fg);
-            padding: 3px 10px;
+            padding: 3px 8px;
             border-radius: 3px;
             cursor: pointer;
-            font-size: 11px;
-            white-space: nowrap;
+            font-size: 12px;
             flex-shrink: 0;
+            line-height: 1;
         }
 
-        .toolbar button:hover {
-            background: var(--accent);
-            color: white;
-        }
-
-        .toolbar button:disabled {
-            opacity: 0.4;
-            cursor: default;
-        }
-
-        .toolbar button:disabled:hover {
-            background: var(--card);
-            color: var(--fg);
-        }
+        .toolbar button:hover { background: var(--accent); color: white; }
+        .toolbar button:disabled { opacity: 0.4; cursor: default; }
+        .toolbar button:disabled:hover { background: var(--card); color: var(--fg); }
 
         .filter-input {
             flex: 1;
@@ -209,30 +230,24 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
             outline: none;
         }
+        .filter-input:focus { border-color: var(--accent); }
+        .filter-input::placeholder { color: var(--muted); }
 
-        .filter-input:focus {
-            border-color: var(--accent);
-        }
+        /* -- Zone 1: Navigation -- */
 
-        .filter-input::placeholder {
-            color: var(--muted);
-        }
-
-        /* ── Breadcrumb bar ───────────────────────────────────────── */
-
-        .breadcrumb-bar {
-            display: flex;
-            align-items: center;
-            padding: 5px 10px;
+        .zone-nav {
+            padding: 6px 10px;
             background: var(--card);
             border-bottom: 1px solid var(--border);
-            gap: 2px;
-            flex-wrap: wrap;
-            min-height: 26px;
         }
 
-        .breadcrumb-bar.hidden {
-            display: none;
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-wrap: wrap;
+            min-height: 20px;
+            margin-bottom: 4px;
         }
 
         .crumb {
@@ -243,22 +258,9 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             border-radius: 2px;
             white-space: nowrap;
         }
-
-        .crumb:hover {
-            background: var(--hover);
-            text-decoration: underline;
-        }
-
-        .crumb.current {
-            color: var(--fg);
-            cursor: default;
-            font-weight: 600;
-        }
-
-        .crumb.current:hover {
-            background: transparent;
-            text-decoration: none;
-        }
+        .crumb:hover { background: var(--hover); text-decoration: underline; }
+        .crumb.current { color: var(--fg); cursor: default; font-weight: 600; }
+        .crumb.current:hover { background: transparent; text-decoration: none; }
 
         .crumb-sep {
             color: var(--muted);
@@ -267,56 +269,164 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             margin: 0 1px;
         }
 
-        /* ── Content area ─────────────────────────────────────────── */
-
-        .content-area {
-            padding: 4px 0;
+        .nav-buttons {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 4px;
         }
 
-        .section-label {
+        .nav-buttons button {
+            background: var(--card);
+            border: 1px solid var(--border);
+            color: var(--fg);
+            padding: 2px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .nav-buttons button:hover { background: var(--accent); color: white; }
+        .nav-buttons button:disabled { opacity: 0.4; cursor: default; }
+        .nav-buttons button:disabled:hover { background: var(--card); color: var(--fg); }
+
+        .summary-line {
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* -- Zone 2: Passage List -- */
+
+        .zone-passages {
+            border-bottom: 1px solid var(--border);
+            max-height: 40vh;
+            overflow-y: auto;
+        }
+
+        .passage-row {
+            display: flex;
+            align-items: center;
+            padding: 4px 12px;
+            gap: 6px;
+            cursor: pointer;
+            transition: background 0.1s ease;
+        }
+        .passage-row:hover { background: var(--hover); }
+        .passage-row.selected { background: var(--hover); border-left: 2px solid var(--accent); padding-left: 10px; }
+
+        .passage-chevron {
+            color: var(--muted);
+            font-size: 9px;
+            width: 10px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .passage-name {
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0;
+        }
+
+        .passage-loop {
+            color: var(--warning);
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+
+        .passage-refs {
+            margin-left: auto;
+            font-size: 10px;
+            color: var(--muted);
+            flex-shrink: 0;
+        }
+
+        .passage-flag {
+            font-size: 9px;
+            color: var(--warning);
+            flex-shrink: 0;
+        }
+
+        .unreachable-sep {
+            padding: 4px 12px;
             font-size: 10px;
             font-weight: 600;
             color: var(--muted);
             text-transform: uppercase;
-            letter-spacing: 0.4px;
-            padding: 6px 12px 3px;
+            letter-spacing: 0.3px;
+            border-top: 1px solid var(--border);
         }
 
-        .item-count {
+        /* -- Zone 3: Detail -- */
+
+        .zone-detail {
+            padding: 6px 0;
+        }
+
+        .detail-passage-header {
+            padding: 4px 12px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--fg);
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 2px;
+        }
+
+        .ref-row {
+            display: flex;
+            align-items: center;
+            padding: 3px 12px 3px 20px;
+            gap: 6px;
+        }
+
+        .ref-type {
             font-size: 10px;
-            color: var(--muted);
-            padding: 2px 12px 4px;
+            font-weight: 600;
+            width: 18px;
+            text-align: center;
+            flex-shrink: 0;
         }
+        .ref-type.write { color: var(--success); }
+        .ref-type.read { color: var(--accent); }
 
-        /* ── Clickable row (variable or property) ─────────────────── */
+        .ref-line {
+            font-size: 11px;
+            color: var(--accent);
+            cursor: pointer;
+            font-family: monospace;
+        }
+        .ref-line:hover { text-decoration: underline; }
 
-        .drill-row {
+        .ref-flag {
+            font-size: 9px;
+            padding: 0 4px;
+            border-radius: 2px;
+        }
+        .ref-flag.struct-def { background: rgba(102,187,106,0.15); color: var(--success); }
+        .ref-flag.reassign { background: rgba(224,165,38,0.15); color: var(--warning); }
+        .ref-flag.type-conflict { background: rgba(241,76,76,0.15); color: var(--error); }
+
+        /* -- Root variable list -- */
+
+        .var-row {
             display: flex;
             align-items: center;
             padding: 5px 12px;
             gap: 8px;
             cursor: pointer;
-            border-bottom: 1px solid transparent;
             transition: background 0.1s ease;
         }
+        .var-row:hover { background: var(--hover); }
 
-        .drill-row:hover {
-            background: var(--hover);
-        }
-
-        .drill-row:active {
-            background: rgba(255,255,255,0.07);
-        }
-
-        .drill-row .row-chevron {
+        .var-chevron {
             color: var(--muted);
             font-size: 9px;
-            flex-shrink: 0;
             width: 10px;
             text-align: center;
+            flex-shrink: 0;
         }
 
-        .drill-row .row-name {
+        .var-name {
             font-family: monospace;
             font-size: 12px;
             font-weight: 600;
@@ -327,662 +437,554 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             min-width: 0;
         }
 
-        .drill-row .row-name .dollar {
-            color: var(--accent);
+        .var-meta {
+            margin-left: auto;
+            display: flex;
+            gap: 6px;
+            font-size: 10px;
+            color: var(--muted);
+            flex-shrink: 0;
+            align-items: center;
         }
-
-        .drill-row .row-name .dot-prefix {
-            color: var(--prop-color);
-        }
-
-        /* ── Badges ───────────────────────────────────────────────── */
 
         .badge {
             display: inline-block;
-            padding: 1px 6px;
+            padding: 1px 5px;
             border-radius: 3px;
             font-size: 9px;
             font-weight: 500;
             flex-shrink: 0;
         }
+        .badge-warning { background: rgba(224,165,38,0.15); color: var(--warning); }
+        .badge-error { background: rgba(241,76,76,0.15); color: var(--error); }
+        .badge-info { background: rgba(139,139,139,0.2); color: var(--muted); }
 
-        .badge-init {
-            background: rgba(102, 187, 106, 0.15);
-            color: var(--success);
+        /* -- Children sublist in root -- */
+
+        .child-row {
+            display: flex;
+            align-items: center;
+            padding: 3px 12px 3px 28px;
+            gap: 6px;
+            cursor: pointer;
+            transition: background 0.1s ease;
         }
+        .child-row:hover { background: var(--hover); }
 
-        .badge-unused {
-            background: rgba(241, 76, 76, 0.15);
-            color: var(--error);
-        }
-
-        .badge-temp {
-            background: rgba(139, 139, 139, 0.2);
-            color: var(--muted);
-        }
-
-        .badge-props {
-            background: rgba(206, 145, 120, 0.15);
+        .child-prefix {
+            font-family: monospace;
+            font-size: 11px;
             color: var(--prop-color);
         }
 
-        /* ── Counts (right-aligned in rows) ───────────────────────── */
+        .child-name {
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--fg);
+        }
 
-        .row-counts {
+        .child-meta {
             margin-left: auto;
-            display: flex;
-            gap: 8px;
             font-size: 10px;
             color: var(--muted);
             flex-shrink: 0;
         }
 
-        .row-counts .cw {
-            color: var(--success);
-        }
-
-        .row-counts .cr {
-            color: var(--accent);
-        }
-
-        /* ── Detail view (variable detail / property detail) ──────── */
-
-        .detail-header {
-            padding: 8px 12px 4px;
-            font-family: monospace;
-            font-size: 14px;
-            font-weight: 700;
-            word-break: break-all;
-        }
-
-        .detail-header .dollar {
-            color: var(--accent);
-        }
-
-        .detail-header .dot-prefix {
-            color: var(--prop-color);
-        }
-
-        .detail-state-path {
-            padding: 0 12px 6px;
-            font-family: monospace;
-            font-size: 10px;
-            color: var(--state-path-color);
-            opacity: 0.85;
-            word-break: break-all;
-        }
-
-        .detail-badges {
-            display: flex;
-            gap: 4px;
-            padding: 0 12px 6px;
-            flex-wrap: wrap;
-        }
-
-        .detail-section {
-            padding: 4px 12px;
-        }
-
-        .detail-section + .detail-section {
-            border-top: 1px solid var(--border);
-            margin-top: 2px;
-            padding-top: 6px;
-        }
-
-        .detail-section-title {
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.3px;
-            margin-bottom: 4px;
-        }
-
-        .passage-link {
-            display: inline-block;
-            color: var(--accent);
-            cursor: pointer;
-            font-size: 11px;
-            padding: 2px 4px;
-            border-radius: 2px;
-        }
-
-        .passage-link:hover {
-            text-decoration: underline;
-            background: rgba(0, 122, 204, 0.08);
-        }
-
-        .passage-link .line-num {
-            color: var(--muted);
-            font-size: 10px;
-            margin-left: 2px;
-        }
-
-        .passage-list {
-            list-style: none;
-        }
-
-        .passage-list li {
-            padding: 1px 0;
-        }
-
-        .no-passages {
-            font-size: 10px;
-            color: var(--muted);
-            font-style: italic;
-        }
-
-        /* ── Properties section within a detail view ──────────────── */
-
-        .props-section {
-            padding: 4px 0;
-        }
-
-        .props-section .section-label {
-            padding: 6px 12px 3px;
-        }
-
-        /* ── Empty state ──────────────────────────────────────────── */
+        /* -- Empty / loading states -- */
 
         .empty-state {
             text-align: center;
             color: var(--muted);
             padding: 24px 12px;
+            font-size: 11px;
         }
 
-        .empty-state .empty-icon {
-            font-size: 24px;
-            margin-bottom: 6px;
-            opacity: 0.5;
+        .section-label {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 6px 12px 3px;
         }
     </style>
 </head>
 <body>
     <div id="root">
-        <div class="empty-state">Loading variable flow&hellip;</div>
+        <div class="empty-state">Loading variables...</div>
     </div>
 
     <script>
-        const vscode = acquireVsCodeApi();
+        var vscode = acquireVsCodeApi();
 
-        // ── State ────────────────────────────────────────────────────
-        let flowData = null;      // KnotVariableFlowResponse
-        let currentFilter = '';
-        /** Navigation stack. Each entry = { type, key, data }.
-         *  type: 'root' | 'variable' | 'property'
-         *  key:  unique identifier (variable name or property full_name)
-         *  data: the KnotVariableInfo or KnotVariableProperty object
-         */
-        let navStack = [];        // previous levels
-        let currentLevel = null;  // { type, key, data } — what we're viewing now
+        // -- Event delegation --
+        document.addEventListener('click', function(e) {
+            var actionEl = e.target.closest('[data-action]');
+            if (actionEl) {
+                var action = actionEl.dataset.action;
+                if (action === 'refresh') { vscode.postMessage({ command: 'refresh' }); }
+                else if (action === 'goHome') { goHome(); }
+                else if (action === 'goBack') { goBack(); }
+                else if (action === 'drillTo') { drillTo(parseInt(actionEl.dataset.level || '0', 10)); }
+                else if (action === 'drillVariable') { drillVariable(actionEl.dataset.name); }
+                else if (action === 'drillChild') { drillChild(actionEl.dataset.fullname); }
+                else if (action === 'selectPassage') { selectPassage(actionEl.dataset.passage); }
+                return;
+            }
+            var lineEl = e.target.closest('[data-passage][data-line]');
+            if (lineEl) {
+                vscode.postMessage({ command: 'openPassage', name: lineEl.dataset.passage, line: parseInt(lineEl.dataset.line || '0', 10) });
+            }
+        });
 
-        // ── Helpers ──────────────────────────────────────────────────
+        // -- Filter input delegation --
+        document.addEventListener('input', function(e) {
+            if (e.target.classList && e.target.classList.contains('filter-input')) {
+                vscode.postMessage({ command: 'filterVariable', filter: e.target.value });
+            }
+        });
+
+        // -- State --
+        var flowData = null;
+        var currentFilter = '';
+
+        // Navigation stack: array of { variableFullName, selectedPassage, scrollOffset }
+        var navStack = [];
+        // Current view: { variable: KnotVariableInfo, selectedPassage: string|null } or null (root list)
+        var currentView = null;
+
+        // -- Helpers --
 
         function esc(str) {
-            const d = document.createElement('div');
+            var d = document.createElement('div');
             d.textContent = str;
             return d.innerHTML;
         }
 
-        function openPassage(name, line) {
-            vscode.postMessage({ command: 'openPassage', name: name, line: line ?? 0 });
-        }
-
-        function onFilterChange(value) {
-            vscode.postMessage({ command: 'filterVariable', filter: value });
-        }
-
-        /** Find a top-level variable by name from flowData. */
-        function findVariable(name) {
+        function findVariableByFullName(fullName) {
             if (!flowData) return null;
-            return (flowData.variables || []).find(v => v.name === name) || null;
+            return findInList(flowData.variables || [], fullName);
         }
 
-        /** Find a property inside a variable or property by full_name (recursive). */
-        function findProperty(container, fullName) {
-            if (!container || !container.properties) return null;
-            for (const p of container.properties) {
-                if (p.full_name === fullName) return p;
-                const found = findProperty(p, fullName);
-                if (found) return found;
+        function findInList(list, fullName) {
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].full_name === fullName) return list[i];
+                if (list[i].children && list[i].children.length > 0) {
+                    var found = findInList(list[i].children, fullName);
+                    if (found) return found;
+                }
             }
             return null;
         }
 
-        /** Check if a variable or property has any match in its subtree. */
-        function matchesFilter(item, lowerFilter) {
-            if (!lowerFilter) return true;
-            // Check own names
-            if ((item.name || '').toLowerCase().includes(lowerFilter)) return true;
-            if ((item.full_name || '').toLowerCase().includes(lowerFilter)) return true;
-            if ((item.state_path || '').toLowerCase().includes(lowerFilter)) return true;
-            // Check children recursively
-            if (item.properties) {
-                for (const p of item.properties) {
-                    if (matchesFilter(p, lowerFilter)) return true;
+        function matchesFilter(item, lf) {
+            if (!lf) return true;
+            if ((item.name || '').toLowerCase().indexOf(lf) >= 0) return true;
+            if ((item.full_name || '').toLowerCase().indexOf(lf) >= 0) return true;
+            if (item.children) {
+                for (var i = 0; i < item.children.length; i++) {
+                    if (matchesFilter(item.children[i], lf)) return true;
                 }
             }
             return false;
         }
 
-        /** Build the breadcrumb segments from navStack + currentLevel. */
-        function getBreadcrumbSegments() {
-            const segs = [];
-            segs.push({ label: 'State.variables', level: -1 }); // root
-            for (let i = 0; i < navStack.length; i++) {
-                const entry = navStack[i];
-                segs.push({ label: entry.type === 'variable' ? entry.key : '.' + entry.data.name, level: i });
+        // -- Navigation --
+
+        function drillVariable(varName) {
+            var v = findVariableByFullName(varName);
+            if (!v) return;
+            // Push current state
+            if (currentView) {
+                navStack.push({
+                    variableFullName: currentView.variable.full_name,
+                    selectedPassage: currentView.selectedPassage,
+                    scrollOffset: 0
+                });
             }
-            if (currentLevel) {
-                segs.push({ label: currentLevel.type === 'variable' ? currentLevel.key : '.' + currentLevel.data.name, level: navStack.length, current: true });
+            currentView = {
+                variable: v,
+                selectedPassage: v.passages && v.passages.length > 0 ? v.passages[0].passage_name : null
+            };
+            render();
+        }
+
+        function drillChild(fullName) {
+            var v = findVariableByFullName(fullName);
+            if (!v) return;
+            if (currentView) {
+                navStack.push({
+                    variableFullName: currentView.variable.full_name,
+                    selectedPassage: currentView.selectedPassage,
+                    scrollOffset: 0
+                });
             }
+            currentView = {
+                variable: v,
+                selectedPassage: v.passages && v.passages.length > 0 ? v.passages[0].passage_name : null
+            };
+            render();
+        }
+
+        function goBack() {
+            if (navStack.length === 0) return;
+            var prev = navStack.pop();
+            var v = findVariableByFullName(prev.variableFullName);
+            if (v) {
+                currentView = { variable: v, selectedPassage: prev.selectedPassage };
+            } else {
+                currentView = null;
+            }
+            render();
+        }
+
+        function goHome() {
+            navStack = [];
+            currentView = null;
+            render();
+        }
+
+        function drillTo(levelIdx) {
+            if (levelIdx < 0 || levelIdx >= navStack.length) {
+                goHome();
+                return;
+            }
+            var target = navStack[levelIdx];
+            navStack = navStack.slice(0, levelIdx);
+            var v = findVariableByFullName(target.variableFullName);
+            if (v) {
+                currentView = { variable: v, selectedPassage: target.selectedPassage };
+            } else {
+                currentView = null;
+            }
+            render();
+        }
+
+        function selectPassage(passageName) {
+            if (currentView) {
+                currentView.selectedPassage = passageName;
+                render();
+            }
+        }
+
+        // -- Breadcrumb --
+
+        function buildBreadcrumb() {
+            var segs = [];
+            segs.push({ label: 'Variables', level: -1, current: !currentView });
+            for (var i = 0; i < navStack.length; i++) {
+                var entry = navStack[i];
+                var name = entry.variableFullName;
+                var parts = name.split('.');
+                segs.push({ label: parts[parts.length - 1], level: i, current: false });
+            }
+            if (currentView) {
+                var cn = currentView.variable.full_name.split('.');
+                segs.push({ label: cn[cn.length - 1], level: navStack.length, current: true });
+            }
+
+            // Truncation: if more than 4 segments, collapse middle
+            if (segs.length > 4) {
+                var first = segs[0];
+                var last = segs[segs.length - 1];
+                var mid = segs[segs.length - 2];
+                segs = [first, { label: '...', level: -2, current: false }, mid, last];
+            }
+
             return segs;
         }
 
-        // ── Navigation ───────────────────────────────────────────────
+        // -- Flag rendering --
 
-        /** Drill down into a variable (from root list). */
-        function drillDownToVariable(varName) {
-            const v = findVariable(varName);
-            if (!v) return;
-            // Push current root as "root" level
-            navStack.push({ type: 'root', key: null, data: null });
-            currentLevel = { type: 'variable', key: varName, data: v };
-            render();
-        }
-
-        /** Drill down into a property from the current level. */
-        function drillDownToProperty(fullName) {
-            if (!currentLevel) return;
-            const parent = currentLevel.data;
-            const prop = findProperty(parent, fullName);
-            if (!prop) return;
-            navStack.push(currentLevel);
-            currentLevel = { type: 'property', key: fullName, data: prop };
-            render();
-        }
-
-        /** Go up one level. */
-        function drillUp() {
-            if (navStack.length === 0) return;
-            const prev = navStack.pop();
-            if (prev.type === 'root') {
-                currentLevel = null;
-            } else {
-                currentLevel = prev;
+        function renderFlags(flags) {
+            if (!flags || flags.length === 0) return '';
+            var html = '';
+            for (var i = 0; i < flags.length; i++) {
+                var f = flags[i];
+                var cls = 'badge-info';
+                if (f.flag_type === 'unused' || f.flag_type === 'write-only') cls = 'badge-error';
+                else if (f.flag_type === 'single-use') cls = 'badge-warning';
+                html += '<span class="badge ' + cls + '" title="' + esc(f.message) + '">' + esc(f.flag_type) + '</span>';
             }
-            render();
+            return html;
         }
 
-        /** Jump to a specific breadcrumb level. levelIdx = -1 means root. */
-        function drillTo(levelIdx) {
-            if (levelIdx === -1) {
-                navStack = [];
-                currentLevel = null;
-                render();
-                return;
-            }
-            // levelIdx corresponds to the index in navStack
-            if (levelIdx < 0 || levelIdx >= navStack.length) return;
-            const target = navStack[levelIdx];
-            navStack = navStack.slice(0, levelIdx);
-            if (target.type === 'root') {
-                currentLevel = null;
-            } else {
-                currentLevel = target;
-            }
-            render();
-        }
-
-        // ── Rendering ────────────────────────────────────────────────
+        // -- Rendering --
 
         function render() {
-            if (!currentLevel) {
+            if (!currentView) {
                 renderRootList();
-            } else if (currentLevel.type === 'variable') {
-                renderVariableDetail(currentLevel.data);
-            } else if (currentLevel.type === 'property') {
-                renderPropertyDetail(currentLevel.data);
+            } else {
+                renderVariableView();
             }
         }
 
-        /** Level 0: Variable list. */
         function renderRootList() {
-            const root = document.getElementById('root');
-            let html = '';
+            var root = document.getElementById('root');
+            var html = '';
 
             // Toolbar
             html += '<div class="toolbar">';
-            html += '<button disabled title="Back">&#x2190;</button>';
-            html += '<input class="filter-input" type="text" placeholder="Filter variables..." value="' + esc(currentFilter) + '" oninput="onFilterChange(this.value)" />';
-            html += '<button onclick="vscode.postMessage({command:\\'refresh\\'})" title="Refresh">&#x21BB;</button>';
+            html += '<button data-action="goHome" title="Home" disabled>&#x2302;</button>';
+            html += '<button data-action="goBack" title="Back" disabled>&#x2190;</button>';
+            html += '<input class="filter-input" type="text" placeholder="Filter variables..." value="' + esc(currentFilter) + '" />';
+            html += '<button data-action="refresh" title="Refresh">&#x21BB;</button>';
             html += '</div>';
 
-            // Breadcrumb (hidden at root)
-            html += '<div class="breadcrumb-bar hidden"></div>';
-
-            // Content
-            html += '<div class="content-area">';
-
-            let variables = flowData ? (flowData.variables || []) : [];
-
-            // Apply filter
+            var variables = flowData ? (flowData.variables || []) : [];
             if (currentFilter) {
-                const lf = currentFilter.toLowerCase();
-                variables = variables.filter(v => matchesFilter(v, lf));
+                var lf = currentFilter.toLowerCase();
+                variables = variables.filter(function(v) { return matchesFilter(v, lf); });
             }
 
-            html += '<div class="item-count">' + variables.length + ' variable' + (variables.length !== 1 ? 's' : '') + (currentFilter ? ' (filtered)' : '') + '</div>';
+            html += '<div class="section-label">' + variables.length + ' variable' + (variables.length !== 1 ? 's' : '') + '</div>';
 
             if (variables.length === 0) {
-                html += '<div class="empty-state"><div class="empty-icon">&#x1F50D;</div>' + (currentFilter ? 'No variables match filter' : 'No variables found') + '</div>';
+                html += '<div class="empty-state">' + (currentFilter ? 'No variables match filter' : 'No variables found') + '</div>';
             } else {
-                for (const v of variables) {
-                    const displayName = v.name.startsWith('$') ? v.name.substring(1) : v.name;
-                    html += '<div class="drill-row" onclick="drillDownToVariable(\\'' + esc(v.name).replace(/'/g, "\\'") + '\\')">';
-                    html += '<span class="row-chevron">&#x25B6;</span>';
-                    html += '<span class="row-name"><span class="dollar">$</span>' + esc(displayName) + '</span>';
-
-                    // Badges (compact — only show most important ones)
-                    if (v.initialized_at_start) {
-                        html += '<span class="badge badge-init">init</span>';
-                    }
-                    if (v.is_unused) {
-                        html += '<span class="badge badge-unused">unused</span>';
-                    }
-                    if (v.is_temporary) {
-                        html += '<span class="badge badge-temp">temp</span>';
-                    }
-                    if (v.properties && v.properties.length > 0) {
-                        html += '<span class="badge badge-props">' + v.properties.length + ' prop' + (v.properties.length !== 1 ? 's' : '') + '</span>';
-                    }
-
-                    // Counts
-                    html += '<span class="row-counts">';
-                    html += '<span class="cw" title="Written">W:' + v.written_in.length + '</span>';
-                    html += '<span class="cr" title="Read">R:' + v.read_in.length + '</span>';
+                for (var i = 0; i < variables.length; i++) {
+                    var v = variables[i];
+                    html += '<div class="var-row" data-action="drillVariable" data-name="' + esc(v.full_name) + '">';
+                    html += '<span class="var-chevron">&#x25B6;</span>';
+                    html += '<span class="var-name">' + esc(v.name) + '</span>';
+                    html += '<span class="var-meta">';
+                    html += renderFlags(v.flags);
+                    html += '<span>' + v.ref_count + ' ref' + (v.ref_count !== 1 ? 's' : '') + ' &middot; ' + v.passage_count + ' passage' + (v.passage_count !== 1 ? 's' : '') + '</span>';
                     html += '</span>';
-
                     html += '</div>';
+
+                    // Show direct children inline
+                    if (v.children && v.children.length > 0) {
+                        for (var j = 0; j < v.children.length; j++) {
+                            var c = v.children[j];
+                            html += '<div class="child-row" data-action="drillChild" data-fullname="' + esc(c.full_name) + '">';
+                            html += '<span class="child-prefix">.</span>';
+                            html += '<span class="child-name">' + esc(c.name) + '</span>';
+                            html += '<span class="child-meta">' + c.ref_count + ' ref' + (c.ref_count !== 1 ? 's' : '') + '</span>';
+                            html += '</div>';
+                        }
+                    }
                 }
             }
 
-            html += '</div>'; // .content-area
             root.innerHTML = html;
             restoreFilterFocus();
         }
 
-        /** Level 1: Variable detail. */
-        function renderVariableDetail(v) {
-            const root = document.getElementById('root');
-            let html = '';
+        function renderVariableView() {
+            var root = document.getElementById('root');
+            var v = currentView.variable;
+            var html = '';
 
             // Toolbar
             html += '<div class="toolbar">';
-            html += '<button onclick="drillUp()" title="Back">&#x2190;</button>';
-            html += '<input class="filter-input" type="text" placeholder="Filter..." value="' + esc(currentFilter) + '" oninput="onFilterChange(this.value)" />';
-            html += '<button onclick="vscode.postMessage({command:\\'refresh\\'})" title="Refresh">&#x21BB;</button>';
+            html += '<button data-action="goHome" title="Home">&#x2302;</button>';
+            html += '<button data-action="goBack" title="Back"' + (navStack.length === 0 ? ' disabled' : '') + '>&#x2190;</button>';
+            html += '<input class="filter-input" type="text" placeholder="Filter..." value="' + esc(currentFilter) + '" />';
+            html += '<button data-action="refresh" title="Refresh">&#x21BB;</button>';
             html += '</div>';
+
+            // Zone 1: Navigation
+            html += '<div class="zone-nav">';
 
             // Breadcrumb
-            html += renderBreadcrumb();
-
-            // Content
-            html += '<div class="content-area">';
-
-            const displayName = v.name.startsWith('$') ? v.name.substring(1) : v.name;
-
-            // Header
-            html += '<div class="detail-header"><span class="dollar">$</span>' + esc(displayName) + '</div>';
-            html += '<div class="detail-state-path">' + esc(v.state_path) + '</div>';
-
-            // Badges
-            html += '<div class="detail-badges">';
-            if (v.initialized_at_start) {
-                html += '<span class="badge badge-init">Initialized at start</span>';
-            }
-            if (v.is_unused) {
-                html += '<span class="badge badge-unused">Unused</span>';
-            }
-            if (v.is_temporary) {
-                html += '<span class="badge badge-temp">Temporary</span>';
-            }
-            html += '</div>';
-
-            // Written in
-            html += '<div class="detail-section">';
-            html += '<div class="detail-section-title">Written in (' + v.written_in.length + ')</div>';
-            if (v.written_in.length > 0) {
-                html += '<ul class="passage-list">';
-                for (const loc of v.written_in) {
-                    html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\', ' + loc.line + ')">' + esc(loc.passage_name) + (loc.line > 0 ? '<span class="line-num">:' + loc.line + '</span>' : '') + '</span></li>';
+            var segs = buildBreadcrumb();
+            html += '<div class="breadcrumb">';
+            for (var i = 0; i < segs.length; i++) {
+                if (i > 0) html += '<span class="crumb-sep">&#x276F;</span>';
+                var s = segs[i];
+                if (s.current) {
+                    html += '<span class="crumb current">' + esc(s.label) + '</span>';
+                } else if (s.level === -1) {
+                    html += '<span class="crumb" data-action="goHome">' + esc(s.label) + '</span>';
+                } else {
+                    html += '<span class="crumb" data-action="drillTo" data-level="' + s.level + '">' + esc(s.label) + '</span>';
                 }
-                html += '</ul>';
-            } else {
-                html += '<span class="no-passages">Never written</span>';
             }
             html += '</div>';
 
-            // Read in
-            html += '<div class="detail-section">';
-            html += '<div class="detail-section-title">Read in (' + v.read_in.length + ')</div>';
-            if (v.read_in.length > 0) {
-                html += '<ul class="passage-list">';
-                for (const loc of v.read_in) {
-                    html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\', ' + loc.line + ')">' + esc(loc.passage_name) + (loc.line > 0 ? '<span class="line-num">:' + loc.line + '</span>' : '') + '</span></li>';
+            // Summary
+            html += '<div class="summary-line">' + v.passage_count + ' passage' + (v.passage_count !== 1 ? 's' : '') + ' &middot; ' + v.ref_count + ' ref' + (v.ref_count !== 1 ? 's' : '') + '</div>';
+
+            // Flags
+            if (v.flags && v.flags.length > 0) {
+                html += '<div style="margin-top:2px">' + renderFlags(v.flags) + '</div>';
+            }
+
+            // Children list (for drill-down)
+            if (v.children && v.children.length > 0) {
+                html += '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">';
+                for (var ci = 0; ci < v.children.length; ci++) {
+                    var ch = v.children[ci];
+                    html += '<span class="crumb" data-action="drillChild" data-fullname="' + esc(ch.full_name) + '" title="' + esc(ch.full_name) + ': ' + ch.ref_count + ' refs">.' + esc(ch.name) + '</span>';
                 }
-                html += '</ul>';
-            } else {
-                html += '<span class="no-passages">Never read</span>';
-            }
-            html += '</div>';
-
-            // Properties
-            if (v.properties && v.properties.length > 0) {
-                html += renderPropertyList(v.properties);
-            }
-
-            html += '</div>'; // .content-area
-            root.innerHTML = html;
-            restoreFilterFocus();
-        }
-
-        /** Level 2+: Property detail. */
-        function renderPropertyDetail(p) {
-            const root = document.getElementById('root');
-            let html = '';
-
-            // Toolbar
-            html += '<div class="toolbar">';
-            html += '<button onclick="drillUp()" title="Back">&#x2190;</button>';
-            html += '<input class="filter-input" type="text" placeholder="Filter..." value="' + esc(currentFilter) + '" oninput="onFilterChange(this.value)" />';
-            html += '<button onclick="vscode.postMessage({command:\\'refresh\\'})" title="Refresh">&#x21BB;</button>';
-            html += '</div>';
-
-            // Breadcrumb
-            html += renderBreadcrumb();
-
-            // Content
-            html += '<div class="content-area">';
-
-            // Header — show full_name with dot prefix styled
-            const nameParts = p.full_name.split('.');
-            const lastPart = nameParts[nameParts.length - 1];
-            html += '<div class="detail-header"><span class="dot-prefix">.</span>' + esc(lastPart) + '</div>';
-            html += '<div class="detail-state-path">' + esc(p.state_path) + '</div>';
-
-            // Written in
-            html += '<div class="detail-section">';
-            html += '<div class="detail-section-title">Written in (' + p.written_in.length + ')</div>';
-            if (p.written_in.length > 0) {
-                html += '<ul class="passage-list">';
-                for (const loc of p.written_in) {
-                    html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\', ' + loc.line + ')">' + esc(loc.passage_name) + (loc.line > 0 ? '<span class="line-num">:' + loc.line + '</span>' : '') + '</span></li>';
-                }
-                html += '</ul>';
-            } else {
-                html += '<span class="no-passages">Never written</span>';
-            }
-            html += '</div>';
-
-            // Read in
-            html += '<div class="detail-section">';
-            html += '<div class="detail-section-title">Read in (' + p.read_in.length + ')</div>';
-            if (p.read_in.length > 0) {
-                html += '<ul class="passage-list">';
-                for (const loc of p.read_in) {
-                    html += '<li><span class="passage-link" onclick="openPassage(\\'' + esc(loc.passage_name).replace(/'/g, "\\'") + '\\', ' + loc.line + ')">' + esc(loc.passage_name) + (loc.line > 0 ? '<span class="line-num">:' + loc.line + '</span>' : '') + '</span></li>';
-                }
-                html += '</ul>';
-            } else {
-                html += '<span class="no-passages">Never read</span>';
-            }
-            html += '</div>';
-
-            // Sub-properties
-            if (p.properties && p.properties.length > 0) {
-                html += renderPropertyList(p.properties);
-            }
-
-            html += '</div>'; // .content-area
-            root.innerHTML = html;
-            restoreFilterFocus();
-        }
-
-        /** Render a list of property rows (clickable to drill down). */
-        function renderPropertyList(properties) {
-            let html = '<div class="props-section">';
-
-            // Apply filter
-            let filtered = properties;
-            if (currentFilter) {
-                const lf = currentFilter.toLowerCase();
-                filtered = properties.filter(p => matchesFilter(p, lf));
-            }
-
-            html += '<div class="section-label">Properties (' + filtered.length + ')</div>';
-
-            for (const p of filtered) {
-                const propDisplayName = '.' + p.name;
-                html += '<div class="drill-row" onclick="drillDownToProperty(\\'' + esc(p.full_name).replace(/'/g, "\\'") + '\\')">';
-                html += '<span class="row-chevron">&#x25B6;</span>';
-                html += '<span class="row-name"><span class="dot-prefix">.</span>' + esc(p.name) + '</span>';
-
-                // Show sub-property count badge if any
-                if (p.properties && p.properties.length > 0) {
-                    html += '<span class="badge badge-props">' + p.properties.length + ' sub</span>';
-                }
-
-                // Counts
-                html += '<span class="row-counts">';
-                html += '<span class="cw" title="Written">W:' + p.written_in.length + '</span>';
-                html += '<span class="cr" title="Read">R:' + p.read_in.length + '</span>';
-                html += '</span>';
-
                 html += '</div>';
             }
 
-            html += '</div>';
-            return html;
-        }
+            html += '</div>'; // .zone-nav
 
-        /** Render the breadcrumb bar. */
-        function renderBreadcrumb() {
-            const segs = getBreadcrumbSegments();
-            if (segs.length <= 1) {
-                return '<div class="breadcrumb-bar hidden"></div>';
-            }
+            // Zone 2: Passage List
+            html += '<div class="zone-passages">';
 
-            let html = '<div class="breadcrumb-bar">';
-            for (let i = 0; i < segs.length; i++) {
-                const s = segs[i];
-                if (i > 0) {
-                    html += '<span class="crumb-sep">&#x276F;</span>';
-                }
-                if (s.current) {
-                    html += '<span class="crumb current">' + esc(s.label) + '</span>';
+            var passages = v.passages || [];
+            var reachablePassages = [];
+            var unreachablePassages = [];
+            for (var pi = 0; pi < passages.length; pi++) {
+                if (passages[pi].reachable) {
+                    reachablePassages.push(passages[pi]);
                 } else {
-                    html += '<span class="crumb" onclick="drillTo(' + s.level + ')">' + esc(s.label) + '</span>';
+                    unreachablePassages.push(passages[pi]);
                 }
             }
+
+            // Render reachable passages
+            for (var ri = 0; ri < reachablePassages.length; ri++) {
+                html += renderPassageRow(reachablePassages[ri], currentView.selectedPassage);
+            }
+
+            // Render unreachable separator + passages
+            if (unreachablePassages.length > 0) {
+                html += '<div class="unreachable-sep">Unreachable</div>';
+                for (var ui = 0; ui < unreachablePassages.length; ui++) {
+                    html += renderPassageRow(unreachablePassages[ui], currentView.selectedPassage);
+                }
+            }
+
+            if (passages.length === 0) {
+                html += '<div class="empty-state">No references found</div>';
+            }
+
+            html += '</div>'; // .zone-passages
+
+            // Zone 3: Detail
+            html += '<div class="zone-detail">';
+            var selectedPassage = null;
+            if (currentView.selectedPassage) {
+                for (var si = 0; si < passages.length; si++) {
+                    if (passages[si].passage_name === currentView.selectedPassage) {
+                        selectedPassage = passages[si];
+                        break;
+                    }
+                }
+            }
+
+            if (selectedPassage && selectedPassage.references && selectedPassage.references.length > 0) {
+                html += '<div class="detail-passage-header">' + esc(selectedPassage.passage_name) + '</div>';
+                for (var li = 0; li < selectedPassage.references.length; li++) {
+                    var ref = selectedPassage.references[li];
+                    html += '<div class="ref-row">';
+                    html += '<span class="ref-type ' + (ref.is_write ? 'write' : 'read') + '">' + (ref.is_write ? 'W' : 'R') + '</span>';
+                    html += '<span class="ref-line" data-passage="' + esc(selectedPassage.passage_name) + '" data-line="' + ref.line + '">line ' + ref.line + '</span>';
+                    if (ref.is_struct_def) html += '<span class="ref-flag struct-def">struct def</span>';
+                    if (ref.is_reassign) html += '<span class="ref-flag reassign">reassign</span>';
+                    if (ref.type_conflict) html += '<span class="ref-flag type-conflict">type conflict</span>';
+                    html += '</div>';
+                }
+            } else if (currentView.selectedPassage) {
+                html += '<div class="detail-passage-header">' + esc(currentView.selectedPassage) + '</div>';
+                html += '<div class="empty-state">No direct references in this passage</div>';
+            } else {
+                html += '<div class="empty-state">Select a passage above</div>';
+            }
+
+            html += '</div>'; // .zone-detail
+
+            root.innerHTML = html;
+            restoreFilterFocus();
+        }
+
+        function renderPassageRow(p, selectedPassage) {
+            var isSelected = (p.passage_name === selectedPassage);
+            var html = '<div class="passage-row' + (isSelected ? ' selected' : '') + '" data-action="selectPassage" data-passage="' + esc(p.passage_name) + '">';
+            html += '<span class="passage-chevron">' + (isSelected ? '&#x25BC;' : '&#x25B6;') + '</span>';
+            html += '<span class="passage-name">' + esc(p.passage_name) + '</span>';
+            if (p.in_loop) html += '<span class="passage-loop" title="This passage is part of a loop">&#x1F501;</span>';
+            // Flags for struct def / reassign in references
+            var hasStructDef = false;
+            var hasReassign = false;
+            var hasConflict = false;
+            if (p.references) {
+                for (var i = 0; i < p.references.length; i++) {
+                    if (p.references[i].is_struct_def) hasStructDef = true;
+                    if (p.references[i].is_reassign) hasReassign = true;
+                    if (p.references[i].type_conflict) hasConflict = true;
+                }
+            }
+            if (hasStructDef) html += '<span class="passage-flag">&#x26A0; struct</span>';
+            if (hasReassign) html += '<span class="passage-flag">&#x26A0; reassign</span>';
+            if (hasConflict) html += '<span class="passage-flag">&#x26A0; conflict</span>';
+            html += '<span class="passage-refs">' + p.total_refs + ' ref' + (p.total_refs !== 1 ? 's' : '') + '</span>';
             html += '</div>';
             return html;
         }
 
-        /** Restore filter input focus after render. */
         function restoreFilterFocus() {
-            const inp = document.querySelector('.filter-input');
+            var inp = document.querySelector('.filter-input');
             if (inp && currentFilter) {
                 inp.focus();
                 inp.setSelectionRange(currentFilter.length, currentFilter.length);
             }
         }
 
-        // ── Message handling ─────────────────────────────────────────
+        // -- Data refresh --
 
-        /** When new data arrives from the extension host, refresh the
-         *  navigation state references so drilled-down views point to the
-         *  latest data objects. */
         function refreshNavState() {
             if (!flowData) {
                 navStack = [];
-                currentLevel = null;
+                currentView = null;
                 return;
             }
-            // Rebuild navStack references
-            const newStack = [];
-            for (const entry of navStack) {
-                if (entry.type === 'root') {
-                    newStack.push({ type: 'root', key: null, data: null });
-                } else if (entry.type === 'variable') {
-                    const v = findVariable(entry.key);
-                    if (v) {
-                        newStack.push({ type: 'variable', key: entry.key, data: v });
-                    }
-                } else if (entry.type === 'property') {
-                    // Need to find the property — it belongs to the parent in the previous stack entry
-                    const parentEntry = newStack.length > 0 ? newStack[newStack.length - 1] : null;
-                    const parent = parentEntry ? parentEntry.data : null;
-                    if (parent) {
-                        const p = findProperty(parent, entry.key);
-                        if (p) {
-                            newStack.push({ type: 'property', key: entry.key, data: p });
-                        }
-                    }
+
+            // Rebuild navStack
+            var newStack = [];
+            for (var i = 0; i < navStack.length; i++) {
+                var entry = navStack[i];
+                var v = findVariableByFullName(entry.variableFullName);
+                if (v) {
+                    newStack.push({
+                        variableFullName: entry.variableFullName,
+                        selectedPassage: entry.selectedPassage,
+                        scrollOffset: 0
+                    });
                 }
             }
             navStack = newStack;
 
-            // Rebuild currentLevel
-            if (currentLevel) {
-                if (currentLevel.type === 'variable') {
-                    const v = findVariable(currentLevel.key);
-                    currentLevel = v ? { type: 'variable', key: currentLevel.key, data: v } : null;
-                } else if (currentLevel.type === 'property') {
-                    const parentEntry = navStack.length > 0 ? navStack[navStack.length - 1] : null;
-                    const parent = parentEntry ? parentEntry.data : null;
-                    if (parent) {
-                        const p = findProperty(parent, currentLevel.key);
-                        currentLevel = p ? { type: 'property', key: currentLevel.key, data: p } : null;
-                    } else {
-                        currentLevel = null;
+            // Rebuild currentView
+            if (currentView) {
+                var cv = findVariableByFullName(currentView.variable.full_name);
+                if (cv) {
+                    currentView.variable = cv;
+                    // Keep selectedPassage if it still exists
+                    if (currentView.selectedPassage) {
+                        var found = false;
+                        for (var i = 0; i < (cv.passages || []).length; i++) {
+                            if (cv.passages[i].passage_name === currentView.selectedPassage) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found && cv.passages && cv.passages.length > 0) {
+                            currentView.selectedPassage = cv.passages[0].passage_name;
+                        }
                     }
+                } else {
+                    currentView = null;
                 }
             }
 
-            // If currentLevel became null and stack has entries, pop back
-            if (!currentLevel && navStack.length > 0) {
-                const prev = navStack.pop();
-                if (prev.type === 'root') {
-                    currentLevel = null;
-                } else {
-                    currentLevel = prev;
+            // If currentView became null and stack has entries, pop back
+            if (!currentView && navStack.length > 0) {
+                var prev = navStack.pop();
+                var pv = findVariableByFullName(prev.variableFullName);
+                if (pv) {
+                    currentView = { variable: pv, selectedPassage: prev.selectedPassage };
                 }
             }
         }
 
-        window.addEventListener('message', (event) => {
-            const message = event.data;
+        window.addEventListener('message', function(event) {
+            var message = event.data;
             if (message.command === 'updateVariableFlow') {
                 flowData = message.data;
                 currentFilter = message.filter || '';

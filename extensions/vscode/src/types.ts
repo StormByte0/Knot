@@ -95,8 +95,12 @@ export interface KnotProfileResponse {
     dead_end_count: number;
     variable_count: number;
     variable_issue_count: number;
+    /** The story/project name (from StoryTitle passage body). */
+    story_name?: string;
     format: string;
     format_version?: string;
+    /** The IFID (Interactive Fiction IDentifier) from StoryData. */
+    ifid?: string;
     has_story_data: boolean;
     total_word_count: number;
     link_distribution: KnotLinkDistribution;
@@ -140,74 +144,29 @@ export interface KnotStructuralBalance {
 }
 
 // ---------------------------------------------------------------------------
-// Debug types (matches Rust-side KnotDebugResponse)
+// Passage diagnostics types (matches Rust-side KnotPassageDiagnosticsResponse)
 // ---------------------------------------------------------------------------
 
-export interface KnotDebugResponse {
+export interface KnotPassageDiagnosticsResponse {
     passage_name: string;
     file_uri: string;
     is_reachable: boolean;
     is_special: boolean;
     is_metadata: boolean;
-    variables_written: KnotDebugVariable[];
-    variables_read: KnotDebugVariable[];
-    initialized_at_entry: string[];
-    outgoing_links: KnotDebugLink[];
-    incoming_links: KnotDebugLink[];
-    predecessors: string[];
-    successors: string[];
-    game_loops: KnotGameLoop[];
-    diagnostics: KnotDebugDiagnostic[];
+    outgoing_links: KnotPassageLink[];
+    incoming_links: KnotPassageLink[];
+    diagnostics: KnotPassageDiagnostic[];
 }
 
-export interface KnotDebugVariable {
-    name: string;
-    is_temporary: boolean;
-}
-
-export interface KnotDebugLink {
+export interface KnotPassageLink {
     passage_name: string;
     display_text?: string;
     target_exists: boolean;
 }
 
-export interface KnotDebugDiagnostic {
+export interface KnotPassageDiagnostic {
     kind: string;
     message: string;
-}
-
-// ---------------------------------------------------------------------------
-// Trace types (matches Rust-side KnotTraceResponse)
-// ---------------------------------------------------------------------------
-
-export interface KnotTraceStep {
-    passage_name: string;
-    depth: number;
-    variables_written: string[];
-    available_links: string[];
-    is_loop: boolean;
-}
-
-export interface KnotTraceResponse {
-    steps: KnotTraceStep[];
-    truncated: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Step-over types (matches Rust-side KnotStepOverResponse)
-// ---------------------------------------------------------------------------
-
-export interface KnotStepChoice {
-    passage_name: string;
-    display_text: string | null;
-    target_exists: boolean;
-}
-
-export interface KnotStepOverResponse {
-    from_passage: string;
-    choices: KnotStepChoice[];
-    variables_written: string[];
-    variables_read: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -230,18 +189,6 @@ export interface KnotWatchVariablesResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Breakpoint types (matches Rust-side KnotBreakpointsResponse)
-// ---------------------------------------------------------------------------
-
-export interface KnotBreakpointInfo {
-    passage_name: string;
-    passage_exists: boolean;
-    file_uri: string | null;
-    incoming_links: number;
-    outgoing_links: number;
-}
-
-// ---------------------------------------------------------------------------
 // Variable flow types (matches Rust-side KnotVariableFlowResponse)
 // ---------------------------------------------------------------------------
 
@@ -255,33 +202,63 @@ export interface KnotVariableFlowResponse {
 }
 
 export interface KnotVariableInfo {
+    /** Variable name without format-specific prefix (e.g., "player", "gold"). */
     name: string;
-    state_path: string;
+    /** Full dot-notation path (e.g., "player", "player.hp"). */
+    full_name: string;
+    /** Whether this variable is temporary (per-passage only). */
     is_temporary: boolean;
-    written_in: KnotVariableLocation[];
-    read_in: KnotVariableLocation[];
-    initialized_at_start: boolean;
-    is_unused: boolean;
-    properties: KnotVariableProperty[];
+    /** Total references including children (bubbled up). */
+    ref_count: number;
+    /** Number of distinct passages referencing this variable (including children). */
+    passage_count: number;
+    /** Whether this variable has child properties. */
+    has_children: boolean;
+    /** The type from StoryInit definition, if known. */
+    struct_type?: string;
+    /** Flags for this variable (unused, write-only, single-use). */
+    flags: VariableFlag[];
+    /** Child properties (recursive). */
+    children: KnotVariableInfo[];
+    /** References grouped by passage, in reachability order. */
+    passages: KnotVariablePassage[];
 }
 
-export interface KnotVariableProperty {
-    name: string;
-    full_name: string;
-    state_path: string;
-    written_in: KnotVariableLocation[];
-    read_in: KnotVariableLocation[];
-    properties: KnotVariableProperty[];
+export interface KnotVariablePassage {
+    /** The passage name. */
+    passage_name: string;
+    /** BFS depth from StoryInit (0 = StoryInit itself). */
+    depth: number;
+    /** Whether this passage is reachable from StoryInit. */
+    reachable: boolean;
+    /** Whether this passage is part of a story graph loop. */
+    in_loop: boolean;
+    /** Total refs in this passage (including children for parent variables). */
+    total_refs: number;
+    /** Individual references in this passage. */
+    references: KnotVariableLocation[];
 }
 
 export interface KnotVariableLocation {
-    passage_name: string;
-    file_uri: string;
+    /** Whether this is a write or read. */
     is_write: boolean;
-    /** The 0-based line number within the file where this usage occurs.
-     *  Enables "goto" navigation to a specific line within a passage.
-     *  Defaults to 0 when not yet computed. */
+    /** The 0-based line number within the file. */
     line: number;
+    /** The file URI containing this usage. */
+    file_uri: string;
+    /** Whether this is the initial structure definition (StoryInit). */
+    is_struct_def: boolean;
+    /** Whether this reassigns the whole variable (overwrites all children). */
+    is_reassign: boolean;
+    /** Whether this conflicts with the StoryInit type definition. */
+    type_conflict: boolean;
+}
+
+export interface VariableFlag {
+    /** The flag type: "unused", "write-only", or "single-use". */
+    flag_type: string;
+    /** A human-readable tip for the user. */
+    message: string;
 }
 
 // ---------------------------------------------------------------------------

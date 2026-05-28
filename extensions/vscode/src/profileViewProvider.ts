@@ -16,15 +16,20 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
     private _view?: vscode.WebviewView;
     private _client: KnotLanguageClient | null = null;
+    /** Retry count for initial load — polls up to 15 times (30 seconds). */
+    private _initialRetryCount = 0;
+    private _initialRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Debounce timer for refresh calls triggered by file changes etc. */
+    private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
     /** Set the language client reference. */
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
-        if (this._view) {
-            this.refresh();
-        }
+        console.log('[Knot Profile] setClient called, client running:', client?.isRunning());
+        // Always kick off an initial load attempt when the client arrives.
+        this._startInitialLoad();
     }
 
     /** Resolve the webview view. */
@@ -45,32 +50,120 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (message) => {
             switch (message.command) {
                 case 'refresh': {
+                    this._initialRetryCount = 0;
                     await this.refresh();
                     break;
                 }
             }
         });
 
-        if (this._client) {
-            this.refresh();
+        console.log('[Knot Profile] resolveWebviewView called, client set:', !!this._client, 'running:', this._client?.isRunning());
+        // Kick off an initial load attempt — the view is now visible.
+        this._startInitialLoad();
+    }
+
+    /**
+     * Start the initial load polling loop.
+     * Tries every 2 seconds, up to 15 attempts (30 seconds total).
+     * Succeeds as soon as the server responds with profile data.
+     */
+    private _startInitialLoad() {
+        // Don't start if already loaded or already retrying
+        if (this._initialRetryCount >= 15) {
+            return;
+        }
+        // Cancel any existing retry timer
+        if (this._initialRetryTimer) {
+            clearTimeout(this._initialRetryTimer);
+            this._initialRetryTimer = null;
+        }
+        // Fire immediately
+        this._doInitialAttempt();
+    }
+
+    private async _doInitialAttempt() {
+        const clientReady = this._client && this._client.isRunning();
+        const viewReady = !!this._view;
+        console.log(`[Knot Profile] Initial attempt #${this._initialRetryCount + 1}, clientReady=${clientReady}, viewReady=${viewReady}`);
+
+        if (!clientReady || !viewReady) {
+            // Not ready yet — schedule retry
+            this._initialRetryCount++;
+            if (this._initialRetryCount < 15) {
+                this._initialRetryTimer = setTimeout(() => {
+                    this._initialRetryTimer = null;
+                    this._doInitialAttempt();
+                }, 2000);
+            } else {
+                console.warn('[Knot Profile] Giving up after 15 retries — server never became ready');
+                // Show error state
+                if (this._view) {
+                    this._view.webview.postMessage({
+                        command: 'updateProfile',
+                        data: null,
+                        error: 'Language server did not become ready. Try restarting the Knot server.',
+                    });
+                }
+            }
+            return;
+        }
+
+        // Client and view are both ready — attempt the actual fetch
+        const success = await this._fetchAndPost();
+        if (!success) {
+            // The request itself failed — retry a few more times
+            this._initialRetryCount++;
+            if (this._initialRetryCount < 15) {
+                this._initialRetryTimer = setTimeout(() => {
+                    this._initialRetryTimer = null;
+                    this._doInitialAttempt();
+                }, 2000);
+            }
+        } else {
+            // Success — reset retry count
+            this._initialRetryCount = 15; // Mark as "done"
         }
     }
 
-    /** Refresh profile data from the language server. */
+    /** Refresh profile data from the language server (debounced). */
     public async refresh() {
+        // Debounce: coalesce rapid calls (file watcher, editor change, etc.)
+        if (this._debounceTimer) {
+            clearTimeout(this._debounceTimer);
+        }
+        this._debounceTimer = setTimeout(() => {
+            this._debounceTimer = null;
+            this._fetchAndPost();
+        }, 500);
+    }
+
+    /**
+     * Core fetch logic — send knot/profile request and post result to webview.
+     * Returns true on success, false on failure.
+     */
+    private async _fetchAndPost(): Promise<boolean> {
         if (!this._client || !this._client.isRunning()) {
-            return;
+            console.warn('[Knot Profile] _fetchAndPost: client not running');
+            return false;
+        }
+
+        if (!this._view) {
+            console.warn('[Knot Profile] _fetchAndPost: view not resolved');
+            return false;
         }
 
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders || workspaceFolders.length === 0) {
-            return;
+            console.warn('[Knot Profile] _fetchAndPost: no workspace folders');
+            return false;
         }
 
         try {
+            console.log('[Knot Profile] Sending knot/profile request...');
             const result = await this._client.sendRequest<KnotProfileResponse>('knot/profile', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
+            console.log('[Knot Profile] Got profile data:', result ? `passage_count=${result.passage_count}` : 'null');
 
             if (this._view) {
                 this._view.webview.postMessage({
@@ -78,8 +171,17 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
                     data: result,
                 });
             }
+            return true;
         } catch (e) {
-            console.error('[Knot] Failed to fetch profile:', e);
+            console.error('[Knot Profile] Failed to fetch profile:', e);
+            if (this._view) {
+                this._view.webview.postMessage({
+                    command: 'updateProfile',
+                    data: null,
+                    error: String(e),
+                });
+            }
+            return false;
         }
     }
 
@@ -260,10 +362,25 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     <script>
         const vscode = acquireVsCodeApi();
 
+        // Event delegation: handle clicks on [data-action] buttons
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (btn) {
+                const action = btn.dataset.action;
+                if (action === 'refresh') {
+                    vscode.postMessage({ command: 'refresh' });
+                }
+            }
+        });
+
         window.addEventListener('message', (event) => {
             const message = event.data;
             if (message.command === 'updateProfile') {
-                renderProfile(message.data);
+                if (message.error || !message.data) {
+                    renderError(message.error || 'No data received from server');
+                } else {
+                    renderProfile(message.data);
+                }
             }
         });
 
@@ -273,14 +390,37 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             return div.innerHTML;
         }
 
+        function renderError(errMsg) {
+            const content = document.getElementById('content');
+            let html = '';
+            html += '<div class="toolbar">';
+            html += '<button data-action="refresh">Retry</button>';
+            html += '</div>';
+            html += '<div class="empty-state">';
+            html += '<div style="color:var(--warning);margin-bottom:8px;">Unable to load workspace profile</div>';
+            html += '<div style="font-size:10px;color:var(--muted);">' + esc(errMsg) + '</div>';
+            html += '</div>';
+            content.innerHTML = html;
+        }
+
         function renderProfile(d) {
             const content = document.getElementById('content');
             let html = '';
 
             // Toolbar
             html += '<div class="toolbar">';
-            html += '<button onclick="vscode.postMessage({command: \'refresh\'})">Refresh</button>';
+            html += '<button data-action="refresh">Refresh</button>';
             html += '</div>';
+
+            // Story name (prominent header)
+            if (d.story_name) {
+                html += '<div class="section">';
+                html += '<div style="font-size:16px;font-weight:700;line-height:1.3;margin-bottom:4px;">' + esc(d.story_name) + '</div>';
+                if (d.ifid) {
+                    html += '<div style="font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all;">IFID: ' + esc(d.ifid) + '</div>';
+                }
+                html += '</div>';
+            }
 
             // Format info
             html += '<div class="section">';

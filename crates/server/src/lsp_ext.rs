@@ -130,71 +130,80 @@ pub struct KnotVariableFlowResponse {
 
 /// Information about a single variable's usage across passages.
 ///
-/// In SugarCube, `$var` maps to `State.variables.var`. Dot-notation references
-/// like `$player.name` map to `State.variables.player.name`. This struct
-/// represents the base variable and its known properties as a tree, reflecting
-/// the hierarchical structure of `State.variables`.
+/// Format-agnostic: no `$` prefix, no `State.variables` path. Just the
+/// extracted identifier name. Properties are children of the same type.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotVariableInfo {
-    /// The dollar-prefixed variable name (e.g., "$gold", "$player").
+    /// The variable name without format-specific prefix (e.g., "player", "gold").
     pub name: String,
-    /// The full State.variables path (e.g., "State.variables.gold",
-    /// "State.variables.player").
-    pub state_path: String,
+    /// The full dot-notation path (e.g., "player", "player.hp", "player.inventory.sword").
+    pub full_name: String,
     /// Whether this variable is temporary (per-passage only).
     pub is_temporary: bool,
-    /// Passages where this variable is written.
-    pub written_in: Vec<KnotVariableLocation>,
-    /// Passages where this variable is read.
-    pub read_in: Vec<KnotVariableLocation>,
-    /// Whether this variable is definitely initialized from the start
-    /// (e.g., via StoryInit).
-    pub initialized_at_start: bool,
-    /// Whether this variable is never read (unused write).
-    pub is_unused: bool,
-    /// Known dot-notation properties of this variable.
-    /// For `$player`, this would contain entries for `name`, `hp`, etc.
-    /// Each property may itself have sub-properties (e.g., `$player.inventory.sword`
-    /// means `inventory` has a sub-property `sword`).
-    pub properties: Vec<KnotVariableProperty>,
+    /// Total references including children (bubbled up).
+    pub ref_count: u32,
+    /// Number of distinct passages referencing this variable (including children).
+    pub passage_count: u32,
+    /// Whether this variable has child properties.
+    pub has_children: bool,
+    /// The type from StoryInit definition, if known (e.g., "object", "number", "string").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub struct_type: Option<String>,
+    /// Flags for this variable (unused, write-only, single-use).
+    #[serde(default)]
+    pub flags: Vec<VariableFlag>,
+    /// Child properties (recursive).
+    #[serde(default)]
+    pub children: Vec<KnotVariableInfo>,
+    /// References grouped by passage, in reachability order.
+    #[serde(default)]
+    pub passages: Vec<KnotVariablePassage>,
 }
 
-/// A known property of a state variable, reflecting the tree structure
-/// of `State.variables`.
-///
-/// For example, if `$player.name` and `$player.hp` are used, the `$player`
-/// variable will have two properties: `name` and `hp`. Each property tracks
-/// where it is read and written independently of the parent variable.
+/// References to a variable grouped by passage, ordered by BFS reachability.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotVariableProperty {
-    /// The property name without the parent path (e.g., "name", "hp").
-    pub name: String,
-    /// The full dollar-prefixed path (e.g., "$player.name", "$player.hp").
-    pub full_name: String,
-    /// The full State.variables path (e.g., "State.variables.player.name").
-    pub state_path: String,
-    /// Passages where this property is written.
-    pub written_in: Vec<KnotVariableLocation>,
-    /// Passages where this property is read.
-    pub read_in: Vec<KnotVariableLocation>,
-    /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
-    /// property would have `sword` as a sub-property).
-    pub properties: Vec<KnotVariableProperty>,
-}
-
-/// Location where a variable is used within a passage.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotVariableLocation {
+pub struct KnotVariablePassage {
     /// The passage name.
     pub passage_name: String,
-    /// The file URI containing this usage.
-    pub file_uri: String,
+    /// BFS depth from StoryInit (0 = StoryInit itself).
+    pub depth: u32,
+    /// Whether this passage is reachable from StoryInit.
+    pub reachable: bool,
+    /// Whether this passage is part of a story graph loop.
+    pub in_loop: bool,
+    /// Total refs in this passage (including children for parent variables).
+    pub total_refs: u32,
+    /// Individual references in this passage.
+    pub references: Vec<KnotVariableLocation>,
+}
+
+/// Location where a variable is referenced within a passage.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVariableLocation {
     /// Whether this is a write or read.
     pub is_write: bool,
-    /// The 0-based line number within the file where this usage occurs.
-    /// Enables "goto" navigation to a specific line within a passage,
-    /// not just the passage header. Defaults to 0 when not yet computed.
+    /// The 0-based line number within the file.
     pub line: u32,
+    /// The file URI containing this usage.
+    pub file_uri: String,
+    /// Whether this is the initial structure definition (StoryInit).
+    #[serde(default)]
+    pub is_struct_def: bool,
+    /// Whether this reassigns the whole variable (overwrites all children).
+    #[serde(default)]
+    pub is_reassign: bool,
+    /// Whether this conflicts with the StoryInit type definition.
+    #[serde(default)]
+    pub type_conflict: bool,
+}
+
+/// A flag on a variable indicating usage issues.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VariableFlag {
+    /// The flag type: "unused", "write-only", or "single-use".
+    pub flag_type: String,
+    /// A human-readable tip for the user.
+    pub message: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -335,21 +344,25 @@ impl Notification for KnotBuildOutputNotification {
 }
 
 // ---------------------------------------------------------------------------
-// knot/debug — get debug information about a passage
+// knot/passageDiagnostics — get diagnostic information about a passage
 // ---------------------------------------------------------------------------
 
-/// Request: `knot/debug` — get debug information about a passage.
+/// Request: `knot/passageDiagnostics` — get diagnostic information about a passage.
+///
+/// Returns linter issues (errors, warnings, info, hints), link connections,
+/// and passage metadata (special, reachable). Variable data is available
+/// separately via `knot/watchVariables` and `knot/variableFlow`.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotDebugParams {
+pub struct KnotPassageDiagnosticsParams {
     /// The URI of the workspace root.
     pub workspace_uri: String,
-    /// The passage name to debug.
+    /// The passage name to inspect.
     pub passage_name: String,
 }
 
-/// Response: `knot/debug`
+/// Response: `knot/passageDiagnostics`
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotDebugResponse {
+pub struct KnotPassageDiagnosticsResponse {
     /// The passage name.
     pub passage_name: String,
     /// The file URI containing this passage.
@@ -360,38 +373,17 @@ pub struct KnotDebugResponse {
     pub is_special: bool,
     /// Whether this passage is a metadata passage.
     pub is_metadata: bool,
-    /// Variables written in this passage.
-    pub variables_written: Vec<KnotDebugVariable>,
-    /// Variables read in this passage.
-    pub variables_read: Vec<KnotDebugVariable>,
-    /// Variables that are definitely initialized at this passage's entry.
-    pub initialized_at_entry: Vec<String>,
     /// Outgoing links from this passage.
-    pub outgoing_links: Vec<KnotDebugLink>,
+    pub outgoing_links: Vec<KnotPassageLink>,
     /// Incoming links to this passage.
-    pub incoming_links: Vec<KnotDebugLink>,
-    /// Passages that can reach this one (predecessors in the graph).
-    pub predecessors: Vec<String>,
-    /// Passages reachable from this one (successors in the graph).
-    pub successors: Vec<String>,
-    /// Game loops this passage participates in.
-    pub game_loops: Vec<KnotGameLoop>,
+    pub incoming_links: Vec<KnotPassageLink>,
     /// Diagnostic messages associated with this passage.
-    pub diagnostics: Vec<KnotDebugDiagnostic>,
+    pub diagnostics: Vec<KnotPassageDiagnostic>,
 }
 
-/// Variable info for debug response.
+/// Link info for passage diagnostics response.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotDebugVariable {
-    /// Variable name.
-    pub name: String,
-    /// Whether this is a temporary variable.
-    pub is_temporary: bool,
-}
-
-/// Link info for debug response.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotDebugLink {
+pub struct KnotPassageLink {
     /// Target/source passage name.
     pub passage_name: String,
     /// Display text of the link.
@@ -400,58 +392,16 @@ pub struct KnotDebugLink {
     pub target_exists: bool,
 }
 
-/// Diagnostic info for debug response.
+/// Diagnostic info for passage diagnostics response.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotDebugDiagnostic {
+pub struct KnotPassageDiagnostic {
     /// The diagnostic kind.
     pub kind: String,
     /// The diagnostic message.
     pub message: String,
 }
 
-// ---------------------------------------------------------------------------
-// knot/trace — simulate execution starting from a passage
-// ---------------------------------------------------------------------------
 
-/// Request: `knot/trace` — simulate execution starting from a passage.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotTraceParams {
-    /// The URI of the workspace root.
-    pub workspace_uri: String,
-    /// The passage name to start tracing from.
-    pub start_passage: String,
-    /// Maximum depth to trace (prevents infinite traces).
-    #[serde(default = "default_max_depth")]
-    pub max_depth: u32,
-}
-
-fn default_max_depth() -> u32 {
-    50
-}
-
-/// Response: `knot/trace`
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotTraceResponse {
-    /// The execution trace steps.
-    pub steps: Vec<KnotTraceStep>,
-    /// Whether the trace was truncated due to max_depth.
-    pub truncated: bool,
-}
-
-/// A single step in the execution trace.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotTraceStep {
-    /// The passage name at this step.
-    pub passage_name: String,
-    /// The depth in the trace (0 = start passage).
-    pub depth: u32,
-    /// Variables written at this step.
-    pub variables_written: Vec<String>,
-    /// Links available at this step (choices the player can make).
-    pub available_links: Vec<String>,
-    /// Whether this step represents a loop back to a previously visited passage.
-    pub is_loop: bool,
-}
 
 // ---------------------------------------------------------------------------
 // knot/profile — get workspace profiling statistics
@@ -495,10 +445,14 @@ pub struct KnotProfileResponse {
     pub variable_count: u32,
     /// Number of variables with potential issues (uninitialized, unused, redundant).
     pub variable_issue_count: u32,
+    /// The story/project name (from StoryTitle passage body).
+    pub story_name: Option<String>,
     /// Per-format information.
     pub format: String,
     /// Format version.
     pub format_version: Option<String>,
+    /// The IFID (Interactive Fiction IDentifier) from StoryData.
+    pub ifid: Option<String>,
     /// Whether the workspace has StoryData.
     pub has_story_data: bool,
     /// Total word count across all passages (approximate).
@@ -601,80 +555,7 @@ pub struct KnotCompilerDetectResponse {
     pub compiler_path: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// knot/breakpoints — manage debug breakpoints on passages
-// ---------------------------------------------------------------------------
 
-/// Request: `knot/breakpoints` — set or list debug breakpoints.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotBreakpointsParams {
-    /// The URI of the workspace root.
-    pub workspace_uri: String,
-    /// If provided, set the breakpoint list to these passage names.
-    /// If omitted, return the current breakpoint list without modifying it.
-    pub set_breakpoints: Option<Vec<String>>,
-    /// If true, clear all breakpoints.
-    pub clear_all: Option<bool>,
-}
-
-/// Response: `knot/breakpoints`
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotBreakpointsResponse {
-    /// Current list of breakpoint passage names.
-    pub breakpoints: Vec<KnotBreakpointInfo>,
-}
-
-/// Information about a single breakpoint.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotBreakpointInfo {
-    /// The passage name where the breakpoint is set.
-    pub passage_name: String,
-    /// Whether the passage exists in the workspace.
-    pub passage_exists: bool,
-    /// The file URI of the passage (if it exists).
-    pub file_uri: Option<String>,
-    /// Number of incoming links to this passage.
-    pub incoming_links: u32,
-    /// Number of outgoing links from this passage.
-    pub outgoing_links: u32,
-}
-
-// ---------------------------------------------------------------------------
-// knot/stepOver — simulate a single step from a passage (next passage choices)
-// ---------------------------------------------------------------------------
-
-/// Request: `knot/stepOver` — get the next choices from a passage.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotStepOverParams {
-    /// The URI of the workspace root.
-    pub workspace_uri: String,
-    /// The passage name to step from.
-    pub from_passage: String,
-}
-
-/// Response: `knot/stepOver`
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotStepOverResponse {
-    /// The passage we stepped from.
-    pub from_passage: String,
-    /// Available choices (outgoing links) from this passage.
-    pub choices: Vec<KnotStepChoice>,
-    /// Variables written in this passage.
-    pub variables_written: Vec<String>,
-    /// Variables read in this passage.
-    pub variables_read: Vec<String>,
-}
-
-/// A single choice (outgoing link) in a step-over.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct KnotStepChoice {
-    /// The target passage name.
-    pub passage_name: String,
-    /// Display text of the link (if any).
-    pub display_text: Option<String>,
-    /// Whether the target passage exists.
-    pub target_exists: bool,
-}
 
 // ---------------------------------------------------------------------------
 // knot/watchVariables — watch specific variables across passages

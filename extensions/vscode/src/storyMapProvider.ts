@@ -24,6 +24,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
+import { DebugViewProvider } from './debugViewProvider';
 
 // ---------------------------------------------------------------------------
 // Story Map output channel — shared across all instances
@@ -69,6 +70,7 @@ export class StoryMapPanelManager {
     private _extensionUri: vscode.Uri;
     private _context: vscode.ExtensionContext;
     private _graphData: KnotGraphResponse | null = null;
+    private _debugViewProvider: DebugViewProvider | null = null;
 
     constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this._extensionUri = extensionUri;
@@ -91,6 +93,11 @@ export class StoryMapPanelManager {
         if (this._panel) {
             this.refreshGraph();
         }
+    }
+
+    /** Set the debug view provider reference for passage diagnostics sync. */
+    public setDebugViewProvider(provider: DebugViewProvider | null) {
+        this._debugViewProvider = provider;
     }
 
     /** Check if the panel is currently visible. */
@@ -196,7 +203,7 @@ export class StoryMapPanelManager {
         panel.webview.onDidReceiveMessage(async (message) => {
             switch (message.command) {
                 case 'openPassage': {
-                    const { file, line } = message;
+                    const { file, line, passageName } = message;
                     if (file) {
                         const uri = vscode.Uri.parse(file);
                         const doc = await vscode.workspace.openTextDocument(uri);
@@ -206,6 +213,10 @@ export class StoryMapPanelManager {
                             viewColumn: targetColumn,
                             selection: new vscode.Range(line, 0, line, 200),
                         });
+                        // Update passage diagnostics for the clicked node
+                        if (passageName && this._debugViewProvider) {
+                            this._debugViewProvider.updateForPassage(passageName);
+                        }
                     }
                     break;
                 }

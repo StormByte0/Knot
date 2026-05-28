@@ -69,8 +69,6 @@ pub struct ServerStateInner {
     /// re-parses so that `did_change` can always use the authoritative client
     /// version.
     pub doc_versions: HashMap<Url, i32>,
-    /// Debug breakpoints — set of passage names where breakpoints are active.
-    pub breakpoints: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +111,6 @@ impl ServerState {
                 open_documents: HashMap::new(),
                 format_diagnostics: HashMap::new(),
                 doc_versions: HashMap::new(),
-                breakpoints: Vec::new(),
             }),
             shutting_down: AtomicBool::new(false),
         }

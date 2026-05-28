@@ -332,7 +332,7 @@ export class PlayModeProvider {
         }
 
         try {
-            const result = await this._client.sendRequest('knot/debug', {
+            const result = await this._client.sendRequest('knot/passageDiagnostics', {
                 passage_name: passageName,
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
@@ -536,11 +536,19 @@ export class PlayModeProvider {
         <div class="error-icon">&#x26A0;</div>
         <div>Build Failed</div>
         <div class="error-message">${escapedMsg}</div>
-        <button class="retry-btn" onclick="vscode.postMessage({command:'restart'})">Retry Build</button>
+        <button class="retry-btn" data-action="restart">Retry Build</button>
     </div>
 </html>
 <script>
     const vscode = acquireVsCodeApi();
+    document.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-action]');
+        if (el) {
+            const action = el.dataset.action;
+            if (action === 'restart') { vscode.postMessage({ command: 'restart' }); }
+            else if (action === 'openPassage') { vscode.postMessage({ command: 'openPassage', name: el.dataset.passage }); }
+        }
+    });
 </script>
 </html>`;
     }
@@ -1105,7 +1113,7 @@ export class PlayModeProvider {
                 html += '<div class="debug-row"><span class="label">Outgoing links</span><span class="value">' + data.links.length + '</span></div>';
                 for (const link of data.links) {
                     const broken = !link.target_exists ? ' broken' : '';
-                    html += '<div class="debug-link-item' + broken + '" onclick="vscode.postMessage({command:\\'openPassage\\',name:\\'' + esc(link.passage_name || link.target || link.name || '') + '\\'})">' + esc(link.passage_name || link.target || link.name || link.display_text || 'unknown') + (link.display_text ? ' (' + esc(link.display_text) + ')' : '') + (!link.target_exists ? ' &#x26A0; broken' : '') + '</div>';
+                    html += '<div class="debug-link-item' + broken + '" data-action="openPassage" data-passage="' + esc(link.passage_name || link.target || link.name || '') + '">' + esc(link.passage_name || link.target || link.name || link.display_text || 'unknown') + (link.display_text ? ' (' + esc(link.display_text) + ')' : '') + (!link.target_exists ? ' &#x26A0; broken' : '') + '</div>';
                 }
                 html += '</div>';
             }
