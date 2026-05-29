@@ -51,18 +51,7 @@ export interface KnotGraphNode {
     var_writes: string[];
     /** Persistent variable names read in this passage. */
     var_reads: string[];
-    /** Block assignment placeholder for future block detection.
-     *
-     *  TODO: Implement logical block grouping. The block field is intended
-     *  to simplify the graph by creating virtual logical blocks — contiguous
-     *  passages that form a coherent unit in the story's control flow (e.g.,
-     *  a branching dialogue tree, a mini-game sequence, a conditional section).
-     *  When implemented, each block will group related nodes so that the graph
-     *  can be collapsed/expanded at the block level, and variable flow tracking
-     *  can scope analysis to a block's boundary. This will revolutionize the
-     *  current tracking system by enabling block-scoped variable flow analysis
-     *  instead of passage-scoped only.
-     */
+    /** Block assignment placeholder for future block detection. */
     block?: string;
 }
 
@@ -147,7 +136,7 @@ export interface KnotComplexityMetrics {
 
 export interface KnotStructuralBalance {
     dead_end_ratio: number;
-    orphaned_ratio: number;
+    unreachable_ratio: number;
     is_well_connected: boolean;
     connected_components: number;
     diameter: number;
@@ -181,16 +170,8 @@ export interface KnotPassageDiagnostic {
 }
 
 // ---------------------------------------------------------------------------
-// Variable watch types (matches Rust-side KnotWatchVariablesParams/Response)
+// Variable watch types (matches Rust-side KnotWatchVariablesResponse)
 // ---------------------------------------------------------------------------
-
-/** Request params for knot/watchVariables. */
-export interface KnotWatchVariablesParams {
-    workspace_uri: string;
-    at_passage: string;
-    /** Optional: filter to specific variable names. */
-    filter?: string[];
-}
 
 export interface KnotWatchVariable {
     name: string;
@@ -213,6 +194,7 @@ export interface KnotWatchVariablesResponse {
 
 export interface KnotVariableFlowParams {
     workspace_uri: string;
+    variable_name?: string;
 }
 
 export interface KnotVariableFlowResponse {
@@ -220,63 +202,33 @@ export interface KnotVariableFlowResponse {
 }
 
 export interface KnotVariableInfo {
-    /** Variable name without format-specific prefix (e.g., "player", "gold"). */
     name: string;
-    /** Full dot-notation path (e.g., "player", "player.hp"). */
-    full_name: string;
-    /** Whether this variable is temporary (per-passage only). */
+    state_path: string;
     is_temporary: boolean;
-    /** Total references including children (bubbled up). */
-    ref_count: number;
-    /** Number of distinct passages referencing this variable (including children). */
-    passage_count: number;
-    /** Whether this variable has child properties. */
-    has_children: boolean;
-    /** The type from StoryInit definition, if known. */
-    struct_type?: string;
-    /** Flags for this variable (unused, write-only, single-use). */
-    flags: VariableFlag[];
-    /** Child properties (recursive). */
-    children: KnotVariableInfo[];
-    /** References grouped by passage, in reachability order. */
-    passages: KnotVariablePassage[];
+    written_in: KnotVariableLocation[];
+    read_in: KnotVariableLocation[];
+    initialized_at_start: boolean;
+    is_unused: boolean;
+    properties: KnotVariableProperty[];
 }
 
-export interface KnotVariablePassage {
-    /** The passage name. */
-    passage_name: string;
-    /** BFS depth from StoryInit (0 = StoryInit itself). */
-    depth: number;
-    /** Whether this passage is reachable from StoryInit. */
-    reachable: boolean;
-    /** Whether this passage is part of a story graph loop. */
-    in_loop: boolean;
-    /** Total refs in this passage (including children for parent variables). */
-    total_refs: number;
-    /** Individual references in this passage. */
-    references: KnotVariableLocation[];
+export interface KnotVariableProperty {
+    name: string;
+    full_name: string;
+    state_path: string;
+    written_in: KnotVariableLocation[];
+    read_in: KnotVariableLocation[];
+    properties: KnotVariableProperty[];
 }
 
 export interface KnotVariableLocation {
-    /** Whether this is a write or read. */
-    is_write: boolean;
-    /** The 0-based line number within the file. */
-    line: number;
-    /** The file URI containing this usage. */
+    passage_name: string;
     file_uri: string;
-    /** Whether this is the initial structure definition (StoryInit). */
-    is_struct_def: boolean;
-    /** Whether this reassigns the whole variable (overwrites all children). */
-    is_reassign: boolean;
-    /** Whether this conflicts with the StoryInit type definition. */
-    type_conflict: boolean;
-}
-
-export interface VariableFlag {
-    /** The flag type: "unused", "write-only", or "single-use". */
-    flag_type: string;
-    /** A human-readable tip for the user. */
-    message: string;
+    is_write: boolean;
+    /** The 0-based line number within the file where this usage occurs.
+     *  Enables "goto" navigation to a specific line within a passage.
+     *  Defaults to 0 when not yet computed. */
+    line: number;
 }
 
 // ---------------------------------------------------------------------------

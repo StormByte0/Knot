@@ -22,7 +22,6 @@ import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
-import { StoryMapLaunchProvider } from './storyMapLaunchProvider';
 import * as navigation from './navigation';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse, KnotRefreshSemanticTokensParams } from './types';
 
@@ -406,15 +405,6 @@ export async function activate(context: vscode.ExtensionContext) {
     storyMapPanel = new StoryMapPanelManager(context.extensionUri, context);
     context.subscriptions.push(storyMapPanel);
 
-    // Register the Story Map Launch sidebar view (tree + welcome content)
-    const storyMapLaunchProvider = new StoryMapLaunchProvider(context.extensionUri);
-    context.subscriptions.push(
-        vscode.window.registerTreeDataProvider(
-            StoryMapLaunchProvider.viewType,
-            storyMapLaunchProvider,
-        )
-    );
-
     // Register the Debug View webview provider (sidebar panel)
     debugViewProvider = new DebugViewProvider(context.extensionUri);
     context.subscriptions.push(
@@ -461,6 +451,10 @@ export async function activate(context: vscode.ExtensionContext) {
         // Wire up the centralized navigation module with view references
         navigation.setStoryMapPanel(storyMapPanel);
         navigation.setDebugViewProvider(debugViewProvider);
+
+        // Guard against files opening in the StoryMap's column
+        navigation.registerViewColumnGuard(context.subscriptions);
+
         if (debugViewProvider) {
             debugViewProvider.setClient(client);
         }

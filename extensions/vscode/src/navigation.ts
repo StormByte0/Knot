@@ -88,6 +88,53 @@ export function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined)
 }
 
 // ---------------------------------------------------------------------------
+// ViewColumn guard — prevent VSCode from opening files in the StoryMap's column
+// ---------------------------------------------------------------------------
+
+/**
+ * Register an `onDidChangeActiveTextEditor` listener that redirects any
+ * text editor that lands in the StoryMap's column to a different column.
+ *
+ * When the user drags or clicks the background of the StoryMap webview,
+ * VSCode makes it the "active editor." Subsequent file-explorer clicks
+ * then open files in the StoryMap's column, hiding it behind a new tab.
+ *
+ * This guard detects that situation and re-opens the file in a
+ * non-graph column, then re-reveals the StoryMap so it stays visible.
+ */
+export function registerViewColumnGuard(context: vscode.Disposable[]): void {
+    context.push(
+        vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+            if (!editor || !_storyMapPanel) { return; }
+
+            const graphColumn = _storyMapPanel.viewColumn;
+            if (graphColumn === undefined) { return; }
+
+            // Only act if the new text editor landed in the StoryMap's column
+            if (editor.viewColumn !== graphColumn) { return; }
+
+            // Find a better column for this file
+            const targetColumn = findTargetViewColumn(graphColumn);
+            if (!targetColumn || targetColumn === graphColumn) { return; }
+
+            // Re-show the document in the correct column
+            try {
+                await vscode.window.showTextDocument(editor.document, {
+                    preview: true,
+                    viewColumn: targetColumn,
+                    selection: editor.selection,
+                });
+
+                // Re-reveal the StoryMap so it stays visible
+                _storyMapPanel.reveal();
+            } catch {
+                // If the editor was already disposed, just ignore
+            }
+        })
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Central navigation function
 // ---------------------------------------------------------------------------
 

@@ -206,12 +206,6 @@
     "views": {
       "knot-container": [
         {
-          "id": "knot.storyMapLaunch",
-          "name": "Story Map",
-          "icon": "$(graph)",
-          "visibility": "visible"
-        },
-        {
           "type": "webview",
           "id": "knot.debugView",
           "name": "Passage Diagnostics",
@@ -234,13 +228,7 @@
         }
       ]
     },
-    "viewsWelcome": [
-      {
-        "view": "knot.storyMapLaunch",
-        "contents": "[Open Story Map](command:knot.openStoryMap)\n\nVisualize your story structure as an interactive graph.",
-        "when": "true"
-      }
-    ],
+    "viewsWelcome": [],
     "menus": {
       "editor/context": [
         {
@@ -256,13 +244,7 @@
           "group": "navigation"
         }
       ],
-      "view/title": [
-        {
-          "command": "knot.openStoryMap",
-          "when": "view == knot.storyMapLaunch",
-          "group": "navigation@1"
-        }
-      ]
+      "view/title": []
     },
     "configuration": {
       "title": "Knot",
@@ -399,18 +381,6 @@
           ],
           "default": "warning",
           "description": "Severity for invalid passage name diagnostics."
-        },
-        "knot.diagnostics.orphaned-passage": {
-          "type": "string",
-          "enum": [
-            "error",
-            "warning",
-            "info",
-            "hint",
-            "off"
-          ],
-          "default": "info",
-          "description": "Severity for orphaned passage diagnostics (only one incoming link)."
         },
         "knot.diagnostics.complex-passage": {
           "type": "string",

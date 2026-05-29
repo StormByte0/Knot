@@ -189,7 +189,7 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
         DiagnosticKind::EmptyPassage => DiagnosticSeverity::HINT,
         DiagnosticKind::DeadEndPassage => DiagnosticSeverity::INFORMATION,
         DiagnosticKind::InvalidPassageName => DiagnosticSeverity::WARNING,
-        DiagnosticKind::OrphanedPassage => DiagnosticSeverity::INFORMATION,
+        // OrphanedPassage removed — subsumed by UnreachablePassage
         DiagnosticKind::ComplexPassage => DiagnosticSeverity::HINT,
         DiagnosticKind::LargePassage => DiagnosticSeverity::HINT,
         DiagnosticKind::MissingStartLink => DiagnosticSeverity::WARNING,

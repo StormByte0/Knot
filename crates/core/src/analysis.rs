@@ -112,7 +112,9 @@ impl AnalysisEngine {
         diagnostics.extend(Self::detect_empty_passages(workspace));
         diagnostics.extend(Self::detect_dead_end_passages(workspace));
         diagnostics.extend(Self::detect_invalid_passage_names(workspace));
-        diagnostics.extend(Self::detect_orphaned_passages(workspace));
+        // OrphanedPassage detection removed — subsumed by UnreachablePassage.
+        // Every passage with zero incoming links is unreachable from Start;
+        // the only exception (Start itself) is a false positive.
         diagnostics.extend(Self::detect_complex_passages(workspace));
         diagnostics.extend(Self::detect_large_passages(workspace));
         diagnostics.extend(Self::detect_missing_start_link(workspace, start_passage));
@@ -147,6 +149,19 @@ impl AnalysisEngine {
         }
 
         diagnostics
+    }
+
+    /// Collect variable operations per passage across all documents.
+    fn collect_passage_vars(workspace: &Workspace) -> HashMap<String, Vec<&VarOp>> {
+        let mut vars = HashMap::new();
+        for doc in workspace.documents() {
+            for passage in &doc.passages {
+                vars.entry(passage.name.clone())
+                    .or_insert_with(Vec::new)
+                    .extend(passage.vars.iter());
+            }
+        }
+        vars
     }
 
     /// Perform forward dataflow analysis to detect variable issues.
@@ -351,40 +366,6 @@ impl AnalysisEngine {
                         message: format!(
                             "Passage name '{}' contains characters that may cause linking issues (: / \\ * ? \" < > | # @ ;)",
                             name
-                        ),
-                    });
-                }
-            }
-        }
-
-        diagnostics
-    }
-
-    /// Detect orphaned passages — passages with no incoming links.
-    ///
-    /// A true orphaned passage is one that has zero incoming links, meaning
-    /// no other passage in the workspace links to it. This almost always
-    /// indicates a dead branch or a passage the author forgot to connect.
-    /// Passages with exactly one incoming link are NOT flagged, since that
-    /// is the normal state for linear narrative chains.
-    fn detect_orphaned_passages(workspace: &Workspace) -> Vec<GraphDiagnostic> {
-        let mut diagnostics = Vec::new();
-
-        for doc in workspace.documents() {
-            for passage in &doc.passages {
-                if passage.is_metadata() || passage.is_special {
-                    continue;
-                }
-
-                let incoming = workspace.graph.incoming_neighbors(&passage.name);
-                if incoming.is_empty() {
-                    diagnostics.push(GraphDiagnostic {
-                        passage_name: passage.name.clone(),
-                        file_uri: doc.uri.to_string(),
-                        kind: DiagnosticKind::OrphanedPassage,
-                        message: format!(
-                            "Passage '{}' has no incoming links — no other passage links to it",
-                            passage.name,
                         ),
                     });
                 }
@@ -601,6 +582,11 @@ impl AnalysisEngine {
         seed_init: &InitSet,
     ) -> HashMap<String, PassageFlowState> {
         Self::run_dataflow(workspace, start_passage, passage_data, seed_init)
+    }
+
+    /// Collect variable operations per passage as references.
+    pub fn collect_passage_vars_as_ref(workspace: &Workspace) -> HashMap<String, Vec<&VarOp>> {
+        Self::collect_passage_vars(workspace)
     }
 
     /// Run the forward dataflow worklist algorithm.

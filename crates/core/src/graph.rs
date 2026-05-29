@@ -255,8 +255,10 @@ pub enum DiagnosticKind {
     DeadEndPassage,
     /// A passage name contains spaces or special characters.
     InvalidPassageName,
-    /// A passage has no incoming links from any other passage (orphaned).
-    OrphanedPassage,
+    // NOTE: OrphanedPassage removed — subsumed by UnreachablePassage.
+    // Every passage with zero incoming links is also unreachable from
+    // Start (the sole exception being Start itself, which is a false
+    // positive).  Keeping both produced duplicate diagnostics.
     /// A passage has a high cyclomatic complexity (too many links or
     /// conditionals, making it hard to follow or test).
     ComplexPassage,
@@ -774,7 +776,7 @@ impl PassageGraph {
     /// persistent variable writes. The client can use this to distinguish
     /// game loops with mutation (normal interaction patterns) from those
     /// without (potential infinite loops) visually.
-    pub fn detect_game_loops_for_export(
+    fn detect_game_loops_for_export(
         &self,
         var_writes: &std::collections::HashMap<String, Vec<String>>,
     ) -> Vec<GameLoopExport> {
@@ -876,6 +878,39 @@ impl PassageGraph {
         }
 
         best.map(|(idx, _, _)| self.graph[idx].name.clone())
+    }
+
+    /// Export the graph as a serializable structure for the Story Map webview.
+    ///
+    /// This is a convenience wrapper that calls `export_graph_with_metadata`
+    /// with empty tag and unreachable data.
+    pub fn export_graph(&self) -> GraphExport {
+        self.export_graph_with_metadata(
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    /// Full graph export with variable summaries (convenience wrapper
+    /// without group/color metadata).
+    pub fn export_graph_with_vars(
+        &self,
+        passage_tags: &std::collections::HashMap<String, Vec<String>>,
+        unreachable: &std::collections::HashSet<String>,
+        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
+        var_writes: &std::collections::HashMap<String, Vec<String>>,
+        var_reads: &std::collections::HashMap<String, Vec<String>>,
+    ) -> GraphExport {
+        self.export_graph_with_metadata_and_vars(
+            passage_tags,
+            unreachable,
+            passage_positions,
+            var_writes,
+            var_reads,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )
     }
 
     /// Get the number of passages in the graph.
@@ -1056,16 +1091,6 @@ pub struct GraphNodeExport {
     pub color: Option<String>,
     /// Block assignment for this node (placeholder for future block
     /// detection). `None` means no block has been assigned yet.
-    ///
-    /// TODO: Implement logical block grouping. The block field is intended
-    /// to simplify the graph by creating virtual logical blocks — contiguous
-    /// passages that form a coherent unit in the story's control flow (e.g.,
-    /// a branching dialogue tree, a mini-game sequence, a conditional
-    /// section). When implemented, each block will group related nodes
-    /// so that the graph can be collapsed/expanded at the block level,
-    /// and variable flow tracking can scope analysis to a block's boundary.
-    /// This will revolutionize the current tracking system by enabling
-    /// block-scoped variable flow analysis instead of passage-scoped only.
     #[serde(default)]
     pub block: Option<String>,
 }

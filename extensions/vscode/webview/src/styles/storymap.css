@@ -403,3 +403,23 @@ html, body {
   border-radius: 3px;
   flex-shrink: 0;
 }
+
+.legend-edge {
+  width: 20px;
+  height: 0;
+  border-top: 2px solid #5a6a7e;
+  flex-shrink: 0;
+  margin: 0 1px;
+}
+
+.legend-section {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5a5a7a;
+  margin-top: 6px;
+  margin-bottom: 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 5px;
+}

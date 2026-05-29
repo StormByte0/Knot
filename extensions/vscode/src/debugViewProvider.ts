@@ -352,7 +352,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
             const k = kind.toLowerCase();
             if (k.includes('error') || k === 'brokenlink' || k === 'duplicatepassagename' || k === 'duplicatestorydata' || k === 'missingstartpassage' || k === 'unsupportedformat') return 'error';
             if (k.includes('warning') || k === 'invalidpassagename' || k === 'missingstartlink' || k === 'uninitializedvariable' || k === 'unreachablepassage') return 'warning';
-            if (k.includes('info') || k === 'deadendpassage' || k === 'orphanedpassage') return 'info';
+            if (k.includes('info') || k === 'deadendpassage') return 'info';
             return 'hint';
         }
 

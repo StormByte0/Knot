@@ -77,16 +77,6 @@ pub struct KnotGraphNode {
     pub color: Option<String>,
     /// Block assignment for this node (placeholder for future block
     /// detection). `None` means no block has been assigned yet.
-    ///
-    /// TODO: Implement logical block grouping. The block field is intended
-    /// to simplify the graph by creating virtual logical blocks — contiguous
-    /// passages that form a coherent unit in the story's control flow (e.g.,
-    /// a branching dialogue tree, a mini-game sequence, a conditional
-    /// section). When implemented, each block will group related nodes
-    /// so that the graph can be collapsed/expanded at the block level,
-    /// and variable flow tracking can scope analysis to a block's boundary.
-    /// This will revolutionize the current tracking system by enabling
-    /// block-scoped variable flow analysis instead of passage-scoped only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block: Option<String>,
 }
@@ -126,6 +116,9 @@ pub struct KnotGameLoop {
 pub struct KnotVariableFlowParams {
     /// The URI of the workspace root.
     pub workspace_uri: String,
+    /// Optional: filter to a specific variable name (e.g., "$gold").
+    /// If omitted, returns data for all variables.
+    pub variable_name: Option<String>,
 }
 
 /// Response: `knot/variableFlow`
@@ -137,80 +130,71 @@ pub struct KnotVariableFlowResponse {
 
 /// Information about a single variable's usage across passages.
 ///
-/// Format-agnostic: no `$` prefix, no `State.variables` path. Just the
-/// extracted identifier name. Properties are children of the same type.
+/// In SugarCube, `$var` maps to `State.variables.var`. Dot-notation references
+/// like `$player.name` map to `State.variables.player.name`. This struct
+/// represents the base variable and its known properties as a tree, reflecting
+/// the hierarchical structure of `State.variables`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotVariableInfo {
-    /// The variable name without format-specific prefix (e.g., "player", "gold").
+    /// The dollar-prefixed variable name (e.g., "$gold", "$player").
     pub name: String,
-    /// The full dot-notation path (e.g., "player", "player.hp", "player.inventory.sword").
-    pub full_name: String,
+    /// The full State.variables path (e.g., "State.variables.gold",
+    /// "State.variables.player").
+    pub state_path: String,
     /// Whether this variable is temporary (per-passage only).
     pub is_temporary: bool,
-    /// Total references including children (bubbled up).
-    pub ref_count: u32,
-    /// Number of distinct passages referencing this variable (including children).
-    pub passage_count: u32,
-    /// Whether this variable has child properties.
-    pub has_children: bool,
-    /// The type from StoryInit definition, if known (e.g., "object", "number", "string").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub struct_type: Option<String>,
-    /// Flags for this variable (unused, write-only, single-use).
-    #[serde(default)]
-    pub flags: Vec<VariableFlag>,
-    /// Child properties (recursive).
-    #[serde(default)]
-    pub children: Vec<KnotVariableInfo>,
-    /// References grouped by passage, in reachability order.
-    #[serde(default)]
-    pub passages: Vec<KnotVariablePassage>,
+    /// Passages where this variable is written.
+    pub written_in: Vec<KnotVariableLocation>,
+    /// Passages where this variable is read.
+    pub read_in: Vec<KnotVariableLocation>,
+    /// Whether this variable is definitely initialized from the start
+    /// (e.g., via StoryInit).
+    pub initialized_at_start: bool,
+    /// Whether this variable is never read (unused write).
+    pub is_unused: bool,
+    /// Known dot-notation properties of this variable.
+    /// For `$player`, this would contain entries for `name`, `hp`, etc.
+    /// Each property may itself have sub-properties (e.g., `$player.inventory.sword`
+    /// means `inventory` has a sub-property `sword`).
+    pub properties: Vec<KnotVariableProperty>,
 }
 
-/// References to a variable grouped by passage, ordered by BFS reachability.
+/// A known property of a state variable, reflecting the tree structure
+/// of `State.variables`.
+///
+/// For example, if `$player.name` and `$player.hp` are used, the `$player`
+/// variable will have two properties: `name` and `hp`. Each property tracks
+/// where it is read and written independently of the parent variable.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct KnotVariablePassage {
-    /// The passage name.
-    pub passage_name: String,
-    /// BFS depth from StoryInit (0 = StoryInit itself).
-    pub depth: u32,
-    /// Whether this passage is reachable from StoryInit.
-    pub reachable: bool,
-    /// Whether this passage is part of a story graph loop.
-    pub in_loop: bool,
-    /// Total refs in this passage (including children for parent variables).
-    pub total_refs: u32,
-    /// Individual references in this passage.
-    pub references: Vec<KnotVariableLocation>,
+pub struct KnotVariableProperty {
+    /// The property name without the parent path (e.g., "name", "hp").
+    pub name: String,
+    /// The full dollar-prefixed path (e.g., "$player.name", "$player.hp").
+    pub full_name: String,
+    /// The full State.variables path (e.g., "State.variables.player.name").
+    pub state_path: String,
+    /// Passages where this property is written.
+    pub written_in: Vec<KnotVariableLocation>,
+    /// Passages where this property is read.
+    pub read_in: Vec<KnotVariableLocation>,
+    /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
+    /// property would have `sword` as a sub-property).
+    pub properties: Vec<KnotVariableProperty>,
 }
 
-/// Location where a variable is referenced within a passage.
+/// Location where a variable is used within a passage.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotVariableLocation {
-    /// Whether this is a write or read.
-    pub is_write: bool,
-    /// The 0-based line number within the file.
-    pub line: u32,
+    /// The passage name.
+    pub passage_name: String,
     /// The file URI containing this usage.
     pub file_uri: String,
-    /// Whether this is the initial structure definition (StoryInit).
-    #[serde(default)]
-    pub is_struct_def: bool,
-    /// Whether this reassigns the whole variable (overwrites all children).
-    #[serde(default)]
-    pub is_reassign: bool,
-    /// Whether this conflicts with the StoryInit type definition.
-    #[serde(default)]
-    pub type_conflict: bool,
-}
-
-/// A flag on a variable indicating usage issues.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VariableFlag {
-    /// The flag type: "unused", "write-only", or "single-use".
-    pub flag_type: String,
-    /// A human-readable tip for the user.
-    pub message: String,
+    /// Whether this is a write or read.
+    pub is_write: bool,
+    /// The 0-based line number within the file where this usage occurs.
+    /// Enables "goto" navigation to a specific line within a passage,
+    /// not just the passage header. Defaults to 0 when not yet computed.
+    pub line: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -526,8 +510,8 @@ pub struct KnotComplexityMetrics {
 pub struct KnotStructuralBalance {
     /// Ratio of dead-end passages to total passages.
     pub dead_end_ratio: f64,
-    /// Ratio of orphaned passages (1 incoming link) to total passages.
-    pub orphaned_ratio: f64,
+    /// Ratio of unreachable passages (0 incoming links or no path from Start) to total passages.
+    pub unreachable_ratio: f64,
     /// Whether the graph is well-connected (no isolated components).
     pub is_well_connected: bool,
     /// Number of connected components.

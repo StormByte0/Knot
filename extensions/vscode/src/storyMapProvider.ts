@@ -107,6 +107,13 @@ export class StoryMapPanelManager {
         return this._panel?.viewColumn;
     }
 
+    /** Reveal the panel without changing focus (used by ViewColumn guard). */
+    public reveal(): void {
+        if (this._panel) {
+            this._panel.reveal(this._panel.viewColumn, true); // preserveFocus = true
+        }
+    }
+
     /** Open or reveal the Story Map panel. Single-instance: opening a new
      *  one closes the old one. */
     public async show() {

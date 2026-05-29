@@ -16,12 +16,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
     private _view?: vscode.WebviewView;
     private _client: KnotLanguageClient | null = null;
-    private _initialRetryCount = 0;
-    private _initialRetryTimer: ReturnType<typeof setTimeout> | null = null;
-    private static readonly MAX_INITIAL_RETRIES = 15;
-    private static readonly INITIAL_RETRY_MS = 2000;
-    private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    private static readonly DEBOUNCE_MS = 500;
+    private _refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -29,7 +24,13 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
         if (this._view) {
-            this._startInitialPolling();
+            this.refresh();
+        } else {
+            // View hasn't resolved yet — schedule a deferred refresh so that
+            // when the view does appear it won't be stuck at "Loading...".
+            // The resolveWebviewView handler also calls refresh(), but this
+            // covers the case where the client becomes ready *after* resolve.
+            this._scheduleRefresh(500);
         }
     }
 
@@ -51,7 +52,6 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (message) => {
             switch (message.command) {
                 case 'refresh': {
-                    this._initialRetryCount = 0;
                     await this.refresh();
                     break;
                 }
@@ -59,56 +59,41 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         });
 
         if (this._client) {
-            this._startInitialPolling();
+            this.refresh();
+        } else {
+            // Client not ready yet — schedule a deferred refresh. The
+            // setClient handler also calls refresh(), but this covers the
+            // case where the view resolves *after* the client is set but
+            // before the server has finished starting.
+            this._scheduleRefresh(1000);
+            this._scheduleRefresh(3000);
         }
     }
 
-    /** Start polling until the server is ready and data is fetched. */
-    private _startInitialPolling() {
-        this._initialRetryCount = 0;
-        this._pollInitial();
+    /** Schedule a debounced refresh. */
+    private _scheduleRefresh(delayMs: number) {
+        if (this._refreshDebounceTimer) {
+            clearTimeout(this._refreshDebounceTimer);
+        }
+        this._refreshDebounceTimer = setTimeout(() => {
+            this._refreshDebounceTimer = null;
+            this.refresh();
+        }, delayMs);
     }
 
-    private async _pollInitial() {
-        if (this._initialRetryCount >= ProfileViewProvider.MAX_INITIAL_RETRIES) {
+    /** Refresh profile data from the language server. */
+    public async refresh() {
+        if (!this._client || !this._client.isRunning()) {
             return;
         }
-        this._initialRetryCount++;
-        const clientReady = this._client && this._client.isRunning();
-        const viewReady = !!this._view;
-        if (clientReady && viewReady) {
-            const gotData = await this._fetchAndPost();
-            if (!gotData) {
-                this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
-            }
-        } else {
-            this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
-        }
-    }
 
-    /** Refresh profile data from the language server (debounced). */
-    public refresh() {
-        if (this._debounceTimer) {
-            clearTimeout(this._debounceTimer);
-        }
-        this._debounceTimer = setTimeout(() => {
-            this._debounceTimer = null;
-            this._fetchAndPost();
-        }, ProfileViewProvider.DEBOUNCE_MS);
-    }
-
-    /** Core fetch — returns true if data was obtained. */
-    private async _fetchAndPost(): Promise<boolean> {
-        if (!this._client || !this._client.isRunning()) {
-            return false;
-        }
         if (!this._view) {
-            return false;
+            return;
         }
 
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders || workspaceFolders.length === 0) {
-            return false;
+            return;
         }
 
         try {
@@ -122,9 +107,9 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
                     data: result,
                 });
             }
-            return true;
         } catch (e) {
             console.error('[Knot] Failed to fetch profile:', e);
+            // Show an error state in the webview instead of staying at "Loading..."
             if (this._view) {
                 this._view.webview.postMessage({
                     command: 'updateProfile',
@@ -132,7 +117,6 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
                     error: String(e),
                 });
             }
-            return false;
         }
     }
 
@@ -313,17 +297,6 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     <script>
         const vscode = acquireVsCodeApi();
 
-        // Event delegation: handle clicks on [data-action] buttons
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('[data-action]');
-            if (btn) {
-                const action = btn.dataset.action;
-                if (action === 'refresh') {
-                    vscode.postMessage({ command: 'refresh' });
-                }
-            }
-        });
-
         window.addEventListener('message', (event) => {
             const message = event.data;
             if (message.command === 'updateProfile') {
@@ -345,7 +318,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             const content = document.getElementById('content');
             let html = '';
             html += '<div class="toolbar">';
-            html += '<button data-action="refresh">Retry</button>';
+            html += '<button onclick="vscode.postMessage({command: \'refresh\'})">Retry</button>';
             html += '</div>';
             html += '<div class="empty-state">';
             html += '<div style="color:var(--warning);margin-bottom:8px;">Unable to load workspace profile</div>';
@@ -360,7 +333,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
             // Toolbar
             html += '<div class="toolbar">';
-            html += '<button data-action="refresh">Refresh</button>';
+            html += '<button onclick="vscode.postMessage({command: \'refresh\'})">Refresh</button>';
             html += '</div>';
 
             // Story name (prominent header)
@@ -449,7 +422,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
                 const connColor = d.structural_balance.is_well_connected ? 'success' : 'warning';
                 html += '<div class="stat-grid">';
                 html += makeCard((d.structural_balance.dead_end_ratio * 100).toFixed(0) + '%', 'Dead-end ratio', d.structural_balance.dead_end_ratio > 0.3 ? 'warning' : 'success');
-                html += makeCard((d.structural_balance.orphaned_ratio * 100).toFixed(0) + '%', 'Orphan ratio', d.structural_balance.orphaned_ratio > 0.3 ? 'warning' : 'success');
+                html += makeCard((d.structural_balance.unreachable_ratio * 100).toFixed(0) + '%', 'Unreachable ratio', d.structural_balance.unreachable_ratio > 0.3 ? 'warning' : 'success');
                 html += makeCard(d.structural_balance.connected_components, 'Components', d.structural_balance.connected_components > 1 ? 'warning' : connColor);
                 html += makeCard(d.structural_balance.diameter, 'Diameter');
                 html += '</div>';

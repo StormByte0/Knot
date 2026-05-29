@@ -69,9 +69,12 @@ const COLORS = {
   metadata:   '#6a1b9a',
   unreachable:'#bf6900',
   broken:     '#c62828',
-  edgeNav:    '#5a6a7e',
-  edgeUp:     '#3a4555',
-  edgeBroken: '#c62828',
+  edgeNav:    '#5a6a7e',   // [[Target]] — player-choice navigation
+  edgeJump:   '#6a4c93',   // <<goto>> — unconditional redirect
+  edgeCall:   '#1b8a6b',   // <<widget>> — pushdown call-return
+  edgeInclude:'#2e86ab',   // <<include>> — inline inclusion
+  edgeUp:     '#3a4555',   // Special passage lifecycle chain
+  edgeBroken: '#c62828',   // Target passage doesn't exist
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -199,7 +202,7 @@ function makeNodeGeometrySelector(
 // ── Custom straight edge with floating intersection ────────────────────────
 
 interface StraightEdgeData {
-  edgeKind: 'navigation' | 'upstream' | 'broken';
+  edgeKind: 'navigation' | 'upstream' | 'broken' | 'jump' | 'call' | 'include';
   offsetPx: number;
 }
 
@@ -275,6 +278,18 @@ function StraightEdge({
     stroke = COLORS.edgeBroken;
     strokeDash = '6 3';
     opacity = 0.85;
+  } else if (edgeKind === 'jump') {
+    stroke = COLORS.edgeJump;
+    strokeDash = '8 4';
+    opacity = 0.70;
+  } else if (edgeKind === 'call') {
+    stroke = COLORS.edgeCall;
+    strokeDash = '3 2';
+    opacity = 0.60;
+  } else if (edgeKind === 'include') {
+    stroke = COLORS.edgeInclude;
+    strokeDash = '4 2 1 2';
+    opacity = 0.60;
   }
 
   return (
@@ -608,11 +623,17 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
     const edgeKind =
       e.edge_type === 'upstream' ? 'upstream' :
-      e.edge_type === 'broken'   ? 'broken'   : 'navigation';
+      e.edge_type === 'broken'   ? 'broken'   :
+      e.edge_type === 'jump'     ? 'jump'     :
+      e.edge_type === 'call'     ? 'call'     :
+      e.edge_type === 'include'  ? 'include'  : 'navigation';
 
     const markerColor =
-      edgeKind === 'broken'   ? COLORS.edgeBroken :
-      edgeKind === 'upstream' ? COLORS.edgeUp     : COLORS.edgeNav;
+      edgeKind === 'broken'   ? COLORS.edgeBroken  :
+      edgeKind === 'upstream' ? COLORS.edgeUp      :
+      edgeKind === 'jump'     ? COLORS.edgeJump    :
+      edgeKind === 'call'     ? COLORS.edgeCall    :
+      edgeKind === 'include'  ? COLORS.edgeInclude : COLORS.edgeNav;
 
     rfEdges.push({
       id: eid,

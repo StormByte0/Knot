@@ -396,7 +396,7 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
     }
 
     // Fetch VS Code diagnostic settings via workspace/configuration
-    let diag_keys: [(&str, &str); 12] = [
+    let diag_keys: [(&str, &str); 11] = [
         ("BrokenLink", "broken-link"),
         ("UnreachablePassage", "unreachable-passage"),
         ("UninitializedVariable", "uninitialized-variable"),
@@ -406,7 +406,7 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
         ("EmptyPassage", "empty-passage"),
         ("DeadEndPassage", "dead-end-passage"),
         ("InvalidPassageName", "invalid-passage-name"),
-        ("OrphanedPassage", "orphaned-passage"),
+        // OrphanedPassage removed — subsumed by UnreachablePassage
         ("ComplexPassage", "complex-passage"),
         ("LargePassage", "large-passage"),
     ];

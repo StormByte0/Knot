@@ -10,397 +10,33 @@ use knot_core::{AnalysisEngine, Block};
 use lsp_types::{TextEdit as LspTextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 
-// ---------------------------------------------------------------------------
-// Variable flow conversion helpers
-// ---------------------------------------------------------------------------
-
-/// Strip the `$` or `_` sigil prefix from a variable name.
-fn strip_dollar_prefix(name: &str) -> String {
-    if name.starts_with('$') || name.starts_with('_') {
-        name[1..].to_string()
-    } else {
-        name.to_string()
-    }
-}
-
-/// Compute BFS reachability depths for all passages reachable from the
-/// start passage and special passages with outgoing edges (same seed logic
-/// as `detect_unreachable`). Returns a map of passage name → BFS depth.
-fn compute_bfs_depths(workspace: &knot_core::Workspace, start_passage: &str) -> std::collections::HashMap<String, u32> {
-    let mut depths: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-
-    // Seed BFS from the start passage
-    if workspace.graph.contains_passage(start_passage) {
-        depths.insert(start_passage.to_string(), 0);
-        queue.push_back(start_passage.to_string());
-    }
-
-    // Seed from special passages with outgoing edges to user passages
-    // (same logic as detect_unreachable — handles StoryInterface,
-    // StoryInit with <<goto>>, PassageHeader/Footer, etc.)
-    for name in workspace.graph.passage_names() {
-        let is_special_non_meta = workspace
-            .graph
-            .get_passage(&name)
-            .map_or(false, |n| n.is_special && !n.is_metadata);
-        if !is_special_non_meta {
-            continue;
-        }
-        // Check if this special passage has outgoing edges to non-special passages
-        let has_user_refs = workspace
-            .graph
-            .outgoing_neighbors(&name)
-            .iter()
-            .any(|neighbor| {
-                workspace
-                    .graph
-                    .get_passage(neighbor)
-                    .map_or(false, |n| !n.is_special)
-            });
-        if has_user_refs && !depths.contains_key(&name) {
-            depths.insert(name.clone(), 0);
-            queue.push_back(name);
-        }
-    }
-
-    // BFS
-    while let Some(name) = queue.pop_front() {
-        let current_depth = *depths.get(&name).unwrap_or(&0);
-        for neighbor in workspace.graph.outgoing_neighbors(&name) {
-            if !depths.contains_key(&neighbor) {
-                depths.insert(neighbor.clone(), current_depth + 1);
-                queue.push_back(neighbor);
-            }
-        }
-    }
-
-    depths
-}
-
-/// Compute the set of passage names that participate in any game loop.
-fn compute_loop_members(workspace: &knot_core::Workspace) -> std::collections::HashSet<String> {
-    let mut var_writes: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    for doc in workspace.documents() {
-        for passage in &doc.passages {
-            let writes: Vec<String> = passage
-                .persistent_variable_inits()
-                .map(|v| v.name.clone())
-                .collect();
-            if !writes.is_empty() {
-                var_writes.insert(passage.name.clone(), writes);
-            }
-        }
-    }
-    let game_loops = workspace.graph.detect_game_loops_for_export(&var_writes);
-    game_loops
-        .iter()
-        .flat_map(|gl| gl.members.iter().cloned())
-        .collect()
-}
-
-/// Sort passages by: reachable first (desc), then depth ascending, then
-/// passage name ascending.
-fn sort_passages(passages: &mut [KnotVariablePassage]) {
-    passages.sort_by(|a, b| {
-        b.reachable
-            .cmp(&a.reachable)
-            .then(a.depth.cmp(&b.depth))
-            .then(a.passage_name.cmp(&b.passage_name))
-    });
-}
-
-/// Build `KnotVariablePassage` list from own references (written_in + read_in).
-fn build_own_passages(
-    written_in: Vec<knot_formats::types::VariableUsageLocation>,
-    read_in: Vec<knot_formats::types::VariableUsageLocation>,
-    depths: &std::collections::HashMap<String, u32>,
-    reachable_set: &std::collections::HashSet<String>,
-    loop_members: &std::collections::HashSet<String>,
-) -> Vec<KnotVariablePassage> {
-    // Combine all references
-    let mut all_refs: Vec<(knot_formats::types::VariableUsageLocation, bool)> = Vec::new();
-    for loc in written_in {
-        all_refs.push((loc, true));
-    }
-    for loc in read_in {
-        all_refs.push((loc, false));
-    }
-
-    // Group by passage
-    let mut passage_map: std::collections::BTreeMap<String, Vec<KnotVariableLocation>> =
-        std::collections::BTreeMap::new();
-    for (loc, is_write) in &all_refs {
-        passage_map
-            .entry(loc.passage_name.clone())
-            .or_default()
-            .push(KnotVariableLocation {
-                is_write: *is_write,
-                line: loc.line,
-                file_uri: loc.file_uri.clone(),
-                is_struct_def: false,
-                is_reassign: false,
-                type_conflict: false,
-            });
-    }
-
-    // Build KnotVariablePassage list
-    let mut passages: Vec<KnotVariablePassage> = passage_map
+/// Recursively convert format-agnostic `VariablePropertyNode` instances
+/// to LSP wire type `KnotVariableProperty`. This is a pure mechanical
+/// translation with no format-specific logic.
+fn convert_properties(
+    props: Vec<knot_formats::types::VariablePropertyNode>,
+) -> Vec<KnotVariableProperty> {
+    props
         .into_iter()
-        .map(|(passage_name, refs)| {
-            let depth = depths.get(&passage_name).copied().unwrap_or(u32::MAX);
-            let reachable = reachable_set.contains(&passage_name);
-            let in_loop = loop_members.contains(&passage_name);
-            KnotVariablePassage {
-                passage_name,
-                depth,
-                reachable,
-                in_loop,
-                total_refs: refs.len() as u32,
-                references: refs,
-            }
+        .map(|p| KnotVariableProperty {
+            name: p.name,
+            full_name: p.full_name,
+            state_path: p.state_path,
+            written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+                line: l.line,
+            }).collect(),
+            read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+                line: l.line,
+            }).collect(),
+            properties: convert_properties(p.properties),
         })
-        .collect();
-
-    sort_passages(&mut passages);
-    passages
-}
-
-/// Mark the first write in StoryInit as `is_struct_def`.
-fn mark_struct_def(passages: &mut [KnotVariablePassage]) {
-    for passage in passages.iter_mut() {
-        if passage.passage_name == "StoryInit" {
-            if let Some(first_write) = passage.references.iter_mut().find(|r| r.is_write) {
-                first_write.is_struct_def = true;
-            }
-        }
-    }
-}
-
-/// Mark reassigns: if the variable has children (is an object) and has a
-/// direct write in a non-StoryInit passage, that write is a reassign.
-fn mark_reassigns(passages: &mut [KnotVariablePassage], has_children: bool) {
-    if !has_children {
-        return;
-    }
-    for passage in passages.iter_mut() {
-        if passage.passage_name != "StoryInit" {
-            for r in &mut passage.references {
-                if r.is_write {
-                    r.is_reassign = true;
-                }
-            }
-        }
-    }
-}
-
-/// Bubble up children's passages into the parent's passages list.
-///
-/// For parent variables, the passages list includes passages where any child
-/// is referenced (bubbled up). `total_refs` for a passage is the sum of own
-/// refs + all children's refs in that passage. Individual child references
-/// are NOT added to the parent's `references` list.
-fn bubble_up_children(
-    own_passages: &mut Vec<KnotVariablePassage>,
-    children: &[KnotVariableInfo],
-) {
-    let mut merged: std::collections::HashMap<String, KnotVariablePassage> =
-        std::collections::HashMap::new();
-
-    // Add own passages
-    for p in own_passages.drain(..) {
-        match merged.get_mut(&p.passage_name) {
-            Some(existing) => {
-                existing.total_refs += p.total_refs;
-                existing.references.extend(p.references);
-            }
-            None => {
-                merged.insert(p.passage_name.clone(), p);
-            }
-        }
-    }
-
-    // Add children's passages (bubbled up) — only add total_refs, NOT individual references
-    for child in children {
-        for child_passage in &child.passages {
-            merged
-                .entry(child_passage.passage_name.clone())
-                .and_modify(|existing| {
-                    existing.total_refs += child_passage.total_refs;
-                })
-                .or_insert(KnotVariablePassage {
-                    passage_name: child_passage.passage_name.clone(),
-                    depth: child_passage.depth,
-                    reachable: child_passage.reachable,
-                    in_loop: child_passage.in_loop,
-                    total_refs: child_passage.total_refs,
-                    references: Vec::new(),
-                });
-        }
-    }
-
-    // Re-sort
-    let mut result: Vec<KnotVariablePassage> = merged.into_values().collect();
-    sort_passages(&mut result);
-
-    *own_passages = result;
-}
-
-/// Compute diagnostic flags for a variable based on its own references.
-fn compute_flags(var: &KnotVariableInfo) -> Vec<VariableFlag> {
-    let mut flags = Vec::new();
-
-    // Count only OWN references (not bubbled-up children refs)
-    let own_writes: u32 = var
-        .passages
-        .iter()
-        .flat_map(|p| p.references.iter())
-        .filter(|r| r.is_write)
-        .count() as u32;
-    let own_reads: u32 = var
-        .passages
-        .iter()
-        .flat_map(|p| p.references.iter())
-        .filter(|r| !r.is_write)
-        .count() as u32;
-    let own_passage_count: u32 = var
-        .passages
-        .iter()
-        .filter(|p| !p.references.is_empty())
-        .count() as u32;
-
-    if own_writes > 0 && own_reads == 0 {
-        flags.push(VariableFlag {
-            flag_type: "write-only".to_string(),
-            message: "Written but never read. Consider a temp variable.".to_string(),
-        });
-    } else if own_writes == 0 && own_reads == 0 && !var.has_children {
-        // Only flag as "unused" if the variable has no children that are used.
-        // Variables referenced only via children aren't truly unused.
-        flags.push(VariableFlag {
-            flag_type: "unused".to_string(),
-            message: "Defined but never referenced.".to_string(),
-        });
-    } else if own_passage_count == 1 && own_writes + own_reads > 0 {
-        flags.push(VariableFlag {
-            flag_type: "single-use".to_string(),
-            message: "Only used in one passage. Consider a temp variable if persistence isn't needed."
-                .to_string(),
-        });
-    }
-
-    flags
-}
-
-/// Recursively convert a `VariablePropertyNode` to `KnotVariableInfo`.
-fn convert_property_node(
-    prop: knot_formats::types::VariablePropertyNode,
-    depths: &std::collections::HashMap<String, u32>,
-    reachable_set: &std::collections::HashSet<String>,
-    loop_members: &std::collections::HashSet<String>,
-    parent_full_name: &str,
-) -> KnotVariableInfo {
-    let name = strip_dollar_prefix(&prop.name);
-    let full_name = format!("{}.{}", parent_full_name, name);
-
-    // Convert sub-properties recursively
-    let children: Vec<KnotVariableInfo> = prop
-        .properties
-        .into_iter()
-        .map(|p| convert_property_node(p, depths, reachable_set, loop_members, &full_name))
-        .collect();
-
-    let has_children = !children.is_empty();
-    let struct_type = if has_children {
-        Some("object".to_string())
-    } else {
-        None
-    };
-
-    // Build own passages from written_in + read_in
-    let mut own_passages = build_own_passages(prop.written_in, prop.read_in, depths, reachable_set, loop_members);
-
-    // Mark StoryInit first write as struct_def
-    mark_struct_def(&mut own_passages);
-
-    // Bubble up children passages
-    bubble_up_children(&mut own_passages, &children);
-
-    let ref_count = own_passages.iter().map(|p| p.total_refs).sum();
-    let passage_count = own_passages.len() as u32;
-
-    let mut var = KnotVariableInfo {
-        name,
-        full_name,
-        is_temporary: false, // properties are never temporary
-        ref_count,
-        passage_count,
-        has_children,
-        struct_type,
-        flags: Vec::new(),
-        children,
-        passages: own_passages,
-    };
-
-    var.flags = compute_flags(&var);
-    var
-}
-
-/// Recursively convert a `VariableTreeNode` to `KnotVariableInfo`.
-fn convert_variable_node(
-    node: knot_formats::types::VariableTreeNode,
-    depths: &std::collections::HashMap<String, u32>,
-    reachable_set: &std::collections::HashSet<String>,
-    loop_members: &std::collections::HashSet<String>,
-) -> KnotVariableInfo {
-    let name = strip_dollar_prefix(&node.name);
-    let full_name = name.clone(); // top-level: full_name == stripped name
-
-    // Convert properties to children recursively
-    let children: Vec<KnotVariableInfo> = node
-        .properties
-        .into_iter()
-        .map(|p| convert_property_node(p, depths, reachable_set, loop_members, &full_name))
-        .collect();
-
-    let has_children = !children.is_empty();
-    let struct_type = if has_children {
-        Some("object".to_string())
-    } else {
-        None
-    };
-
-    // Build own passages from written_in + read_in
-    let mut own_passages = build_own_passages(node.written_in, node.read_in, depths, reachable_set, loop_members);
-
-    // Mark StoryInit first write as struct_def
-    mark_struct_def(&mut own_passages);
-
-    // Mark reassigns for object variables with writes outside StoryInit
-    mark_reassigns(&mut own_passages, has_children);
-
-    // Bubble up children passages
-    bubble_up_children(&mut own_passages, &children);
-
-    let ref_count = own_passages.iter().map(|p| p.total_refs).sum();
-    let passage_count = own_passages.len() as u32;
-
-    let mut var = KnotVariableInfo {
-        name,
-        full_name,
-        is_temporary: node.is_temporary,
-        ref_count,
-        passage_count,
-        has_children,
-        struct_type,
-        flags: Vec::new(),
-        children,
-        passages: own_passages,
-    };
-
-    var.flags = compute_flags(&var);
-    var
+        .collect()
 }
 
 impl ServerState {
@@ -782,9 +418,9 @@ impl ServerState {
     ///
     /// Delegates to the format plugin's `build_variable_tree()` method, which
     /// produces format-agnostic `VariableTreeNode` instances. The server then
-    /// converts these to the new recursive `KnotVariableInfo` wire type,
-    /// enriching each passage entry with BFS reachability depth, loop
-    /// membership, and diagnostic flags.
+    /// performs a **pure mechanical translation** to LSP wire types — no
+    /// format-specific logic (no `VarAccessKind` matching, no hardcoded
+    /// `"State.variables"` strings) lives here.
     pub async fn knot_variable_flow(
         &self,
         params: KnotVariableFlowParams,
@@ -818,6 +454,7 @@ impl ServerState {
 
         // Delegate tree construction to the format plugin.
         // The plugin returns format-agnostic VariableTreeNode instances.
+        // The server only does a mechanical translation to LSP wire types.
         let tree_nodes = if let Some(p) = plugin {
             let source_text = crate::state::DocumentCache(&inner.open_documents);
             p.build_variable_tree(workspace, &source_text)
@@ -825,28 +462,35 @@ impl ServerState {
             Vec::new()
         };
 
-        // Compute BFS reachability depths for all passages
-        let start_passage = workspace
-            .metadata
-            .as_ref()
-            .map(|m| m.start_passage.as_str())
-            .unwrap_or("Start");
-        let depths = compute_bfs_depths(workspace, start_passage);
-        let reachable_set: std::collections::HashSet<String> = depths.keys().cloned().collect();
-
-        // Compute which passages are in loops
-        let loop_members = compute_loop_members(workspace);
-
-        // Convert tree nodes to new KnotVariableInfo format.
-        // Filter out temporary variables — the Variable Tracking panel only
-        // shows persistent variables.
+        // Pure mechanical translation: format-agnostic tree → LSP wire types.
+        // No VarAccessKind matching, no "State.variables" hardcoding.
         let variables: Vec<KnotVariableInfo> = tree_nodes
             .into_iter()
-            .filter(|node| !node.is_temporary)
-            .map(|node| convert_variable_node(node, &depths, &reachable_set, &loop_members))
+            .map(|node| KnotVariableInfo {
+                name: node.name,
+                state_path: node.state_path,
+                is_temporary: node.is_temporary,
+                written_in: node.written_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                    line: l.line,
+                }).collect(),
+                read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                    line: l.line,
+                }).collect(),
+                initialized_at_start: node.initialized_at_start,
+                is_unused: node.is_unused,
+                properties: convert_properties(node.properties),
+            })
             .collect();
 
-        Ok(KnotVariableFlowResponse { variables })
+        Ok(KnotVariableFlowResponse {
+            variables,
+        })
     }
 
     /// `knot/passageDiagnostics` — return diagnostic information about a specific passage.
@@ -988,7 +632,7 @@ impl ServerState {
         let mut metadata_passage_count: u32 = 0;
         let mut total_word_count: u32 = 0;
         let mut dead_end_count: u32 = 0;
-        let mut orphaned_count: u32 = 0;
+        let mut unreachable_orphan_count: u32 = 0;
 
         let mut all_variables: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut var_writes_for_loops: std::collections::HashMap<String, Vec<String>> =
@@ -1034,10 +678,12 @@ impl ServerState {
                         }
                     }
 
-                    // Orphan detection (0 incoming links)
+                    // Unreachable-orphan detection (0 incoming links, not special)
+                    // These are a subset of unreachable passages — the most
+                    // severe case where nothing links to the passage at all.
                     let in_count = workspace.graph.incoming_neighbors(&passage.name).len();
                     if in_count == 0 && !passage.is_special {
-                        orphaned_count += 1;
+                        unreachable_orphan_count += 1;
                     }
                 }
 
@@ -1203,7 +849,7 @@ impl ServerState {
         };
 
         let dead_end_ratio = dead_end_count as f64 / non_meta_count as f64;
-        let orphaned_ratio = orphaned_count as f64 / non_meta_count as f64;
+        let unreachable_ratio = unreachable_orphan_count as f64 / non_meta_count as f64;
 
         // Compute connected components using graph
         let connected_components = helpers::compute_connected_components(workspace);
@@ -1254,7 +900,7 @@ impl ServerState {
             },
             structural_balance: KnotStructuralBalance {
                 dead_end_ratio,
-                orphaned_ratio,
+                unreachable_ratio,
                 is_well_connected,
                 connected_components,
                 diameter,
@@ -1385,51 +1031,6 @@ impl ServerState {
             .filter
             .map(|f| f.into_iter().collect());
 
-        // Build a lookup set of variables written in this passage (used for
-        // last_written_in resolution in the read list).
-        let written_names: std::collections::HashSet<String> = passage
-            .persistent_variable_inits()
-            .map(|v| v.name.clone())
-            .collect();
-
-        // Backward-trace helper: find the last passage that wrote a given
-        // variable before the current passage entry. Walks predecessors in
-        // BFS order and returns the first passage that initializes the var.
-        // Returns None if no writer is found within the search depth.
-        let max_backward_depth = 10usize;
-        let find_last_writer = |var_name: &str| -> Option<String> {
-            let mut visited = std::collections::HashSet::new();
-            visited.insert(params.at_passage.clone());
-            let mut frontier: Vec<String> = workspace
-                .graph
-                .incoming_neighbors(&params.at_passage);
-
-            for _ in 0..max_backward_depth {
-                let mut next_frontier = Vec::new();
-                for pred_name in &frontier {
-                    if visited.contains(pred_name) { continue; }
-                    visited.insert(pred_name.clone());
-
-                    // Check if this predecessor writes the variable
-                    if let Some((_, _pred_passage)) = workspace.find_passage(pred_name) {
-                        if _pred_passage.persistent_variable_inits().any(|v| v.name == var_name) {
-                            return Some(pred_name.clone());
-                        }
-                    }
-
-                    // Add predecessor's predecessors to the next frontier
-                    for grandpred in workspace.graph.incoming_neighbors(pred_name) {
-                        if !visited.contains(&grandpred) {
-                            next_frontier.push(grandpred);
-                        }
-                    }
-                }
-                frontier = next_frontier;
-                if frontier.is_empty() { break; }
-            }
-            None
-        };
-
         // Build initialized-at-entry list
         let initialized_at_entry: Vec<KnotWatchVariable> = entry_init
             .iter()
@@ -1440,7 +1041,7 @@ impl ServerState {
                 name: v.clone(),
                 is_temporary: false,
                 file_uri: doc_uri.clone(),
-                last_written_in: find_last_writer(v),
+                last_written_in: None, // Could be enhanced with backward tracing
             })
             .collect();
 
@@ -1464,21 +1065,11 @@ impl ServerState {
             .filter(|v| {
                 filter_set.as_ref().is_none_or(|f| f.contains(&v.name))
             })
-            .map(|v| {
-                let last_writer = if written_names.contains(&v.name) {
-                    // Variable is both written and read in this passage;
-                    // the write happens before the read (or the analysis
-                    // would have flagged it as potentially uninitialized).
-                    Some(params.at_passage.clone())
-                } else {
-                    find_last_writer(&v.name)
-                };
-                KnotWatchVariable {
-                    name: v.name.clone(),
-                    is_temporary: v.is_temporary,
-                    file_uri: doc_uri.clone(),
-                    last_written_in: last_writer,
-                }
+            .map(|v| KnotWatchVariable {
+                name: v.name.clone(),
+                is_temporary: v.is_temporary,
+                file_uri: doc_uri.clone(),
+                last_written_in: None,
             })
             .collect();
 
@@ -1516,6 +1107,7 @@ impl ServerState {
         })
     }
 
+    /// `knot/reindexWorkspace` — trigger a full re-index of the workspace.
     /// `knot/generateIfid` — generate a new IFID (Interactive Fiction IDentifier).
     ///
     /// IFIDs are UUIDs in uppercase per the Twine/Twee specification.
