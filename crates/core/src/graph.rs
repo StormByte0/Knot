@@ -878,39 +878,6 @@ impl PassageGraph {
         best.map(|(idx, _, _)| self.graph[idx].name.clone())
     }
 
-    /// Export the graph as a serializable structure for the Story Map webview.
-    ///
-    /// This is a convenience wrapper that calls `export_graph_with_metadata`
-    /// with empty tag and unreachable data.
-    pub fn export_graph(&self) -> GraphExport {
-        self.export_graph_with_metadata(
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
-            &std::collections::HashMap::new(),
-        )
-    }
-
-    /// Full graph export with variable summaries (convenience wrapper
-    /// without group/color metadata).
-    pub fn export_graph_with_vars(
-        &self,
-        passage_tags: &std::collections::HashMap<String, Vec<String>>,
-        unreachable: &std::collections::HashSet<String>,
-        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
-        var_writes: &std::collections::HashMap<String, Vec<String>>,
-        var_reads: &std::collections::HashMap<String, Vec<String>>,
-    ) -> GraphExport {
-        self.export_graph_with_metadata_and_vars(
-            passage_tags,
-            unreachable,
-            passage_positions,
-            var_writes,
-            var_reads,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-        )
-    }
-
     /// Get the number of passages in the graph.
     pub fn passage_count(&self) -> usize {
         self.graph.node_count()

@@ -1516,7 +1516,6 @@ impl ServerState {
         })
     }
 
-    /// `knot/reindexWorkspace` — trigger a full re-index of the workspace.
     /// `knot/generateIfid` — generate a new IFID (Interactive Fiction IDentifier).
     ///
     /// IFIDs are UUIDs in uppercase per the Twine/Twee specification.

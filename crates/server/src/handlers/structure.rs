@@ -55,10 +55,6 @@ pub(crate) async fn folding_range(
             all_events.extend(plugin.scan_line_for_macro_events(line, line_idx as u32));
         }
 
-        // Handle folding modifiers (e.g., <<else>>, <<elseif>>) — these split
-        // a macro block into sub-folds
-        let modifier_names = plugin.folding_modifier_names();
-
         for event in all_events {
             if event.is_open {
                 open_stack.push((event.name, event.line));
@@ -81,29 +77,6 @@ pub(crate) async fn folding_range(
             }
         }
 
-        // If the format has folding modifiers, scan for sub-folds within blocks
-        if !modifier_names.is_empty() {
-            // Re-scan for modifier positions within the already-identified ranges
-            // This creates sub-folds for <<else>>/<<elseif>> within <<if>> blocks
-            let mut modifier_events: Vec<(u32, String)> = Vec::new(); // (line, name)
-            for (line_idx, line) in lines.iter().enumerate() {
-                // Check each modifier pattern
-                for mod_name in &modifier_names {
-                    // Simple string search for the modifier in format-specific syntax
-                    let label = plugin.format_macro_label(mod_name);
-                    if line.contains(&label) {
-                        modifier_events.push((line_idx as u32, mod_name.to_string()));
-                    }
-                }
-            }
-
-            // Create sub-folds: from open/modifier to next modifier or close
-            // This is a simplified approach — we find modifier lines and create
-            // folds from the previous boundary (open or modifier) to the next modifier
-            // Note: This overlaps with the main block folds, so we only add sub-folds
-            // that are strictly within an existing block fold range.
-            let _ = modifier_events; // suppress unused warning; sub-fold logic TBD
-        }
     }
 
     if ranges.is_empty() {
@@ -232,7 +205,7 @@ pub(crate) async fn selection_range(
         }
 
         // Level 2: Passage body range
-        if let Some(name) = helpers::find_passage_at_position(text, *position) {
+        if helpers::find_passage_at_position(text, *position).is_some() {
             let header_line = position.line;
             let lines: Vec<&str> = text.lines().collect();
             let end_line = lines[(header_line as usize) + 1..]
@@ -251,8 +224,6 @@ pub(crate) async fn selection_range(
                 start: Position { line: header_line, character: 0 },
                 end: Position { line: end_line, character: 0 },
             });
-
-            let _ = name; // used above
         }
 
         // Build the linked SelectionRange list (innermost first)

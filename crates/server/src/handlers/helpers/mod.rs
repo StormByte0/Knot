@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn test_diagnostic_severity_defaults() {
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::BrokenLink), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnreachablePassage), DiagnosticSeverity::HINT);
+        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnreachablePassage), DiagnosticSeverity::WARNING);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UninitializedVariable), DiagnosticSeverity::WARNING);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnusedVariable), DiagnosticSeverity::HINT);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::RedundantWrite), DiagnosticSeverity::HINT);

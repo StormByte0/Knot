@@ -261,11 +261,6 @@
           "command": "knot.openStoryMap",
           "when": "view == knot.storyMapLaunch",
           "group": "navigation@1"
-        },
-        {
-          "command": "knot.openStoryMap",
-          "when": "view == knot.debugView",
-          "group": "navigation@1"
         }
       ]
     },
@@ -318,7 +313,7 @@
             "hint",
             "off"
           ],
-          "default": "hint",
+          "default": "warning",
           "description": "Severity for unreachable passage diagnostics."
         },
         "knot.diagnostics.uninitialized-variable": {

@@ -20,7 +20,7 @@ export default function Legend() {
         Metadata
       </div>
       <div className="legend-item">
-        <span className="legend-dot" style={{ background: '#424242' }} />
+        <span className="legend-dot" style={{ background: '#bf6900' }} />
         Unreachable
       </div>
       <div className="legend-item">

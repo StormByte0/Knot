@@ -149,19 +149,6 @@ impl AnalysisEngine {
         diagnostics
     }
 
-    /// Collect variable operations per passage across all documents.
-    fn collect_passage_vars(workspace: &Workspace) -> HashMap<String, Vec<&VarOp>> {
-        let mut vars = HashMap::new();
-        for doc in workspace.documents() {
-            for passage in &doc.passages {
-                vars.entry(passage.name.clone())
-                    .or_insert_with(Vec::new)
-                    .extend(passage.vars.iter());
-            }
-        }
-        vars
-    }
-
     /// Perform forward dataflow analysis to detect variable issues.
     ///
     /// This replaces the previous simplified BFS with a proper worklist
@@ -614,11 +601,6 @@ impl AnalysisEngine {
         seed_init: &InitSet,
     ) -> HashMap<String, PassageFlowState> {
         Self::run_dataflow(workspace, start_passage, passage_data, seed_init)
-    }
-
-    /// Collect variable operations per passage as references.
-    pub fn collect_passage_vars_as_ref(workspace: &Workspace) -> HashMap<String, Vec<&VarOp>> {
-        Self::collect_passage_vars(workspace)
     }
 
     /// Run the forward dataflow worklist algorithm.

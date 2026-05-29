@@ -16,7 +16,6 @@ pub(crate) async fn code_action(
         return Ok(None);
     }
 
-    let _uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
     // Resolve the startup passage name from the format plugin

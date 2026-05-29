@@ -23,6 +23,7 @@ import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import { StoryMapLaunchProvider } from './storyMapLaunchProvider';
+import * as navigation from './navigation';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse, KnotRefreshSemanticTokensParams } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
@@ -348,7 +349,14 @@ export async function activate(context: vscode.ExtensionContext) {
                     // Find the document in the visible editors or workspace
                     const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
                     if (doc && doc.languageId !== languageId) {
-                        vscode.languages.setTextDocumentLanguage(doc, languageId);
+                        vscode.languages.setTextDocumentLanguage(doc, languageId).then(
+                            () => {
+                                console.log(`[Knot] Switched ${docUri} to language: ${languageId}`);
+                            },
+                            (err: unknown) => {
+                                console.warn(`[Knot] Failed to switch language for ${docUri}: ${err}`);
+                            }
+                        );
                     }
                 } catch (e) {
                     console.warn(`[Knot] Error processing format notification for ${docUri}: ${e}`);
@@ -360,7 +368,7 @@ export async function activate(context: vscode.ExtensionContext) {
             // the newly detected format. Without this, editors that were
             // already open before format detection complete may show stale
             // or empty tokens.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh').then(undefined, () => {});
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
             refreshDecorationsForOpenEditors();
         }
     );
@@ -368,21 +376,28 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register custom notification handler for knot/refreshSemanticTokens
     // When the server detects that semantic tokens may be stale in other
     // documents (e.g., cross-file link resolution changes, format detection),
-    // it sends this notification. The standard `workspace/semanticTokens/refresh`
-    // request (also sent by the server) is handled automatically by
-    // vscode-languageclient and triggers semantic token re-fetching. This
-    // handler covers the additional need to refresh custom decorations
-    // (broken link highlights, gutter badges) that are not part of the
-    // semantic token system.
+    // it sends this notification. We trigger VS Code's semantic token refresh
+    // so that the editor re-requests tokens for the affected documents.
+    //
+    // This complements the standard `workspace/semanticTokens/refresh` request
+    // that the server also sends — that mechanism is handled automatically by
+    // vscode-languageclient. This handler provides additional coverage and can
+    // be used for decoration updates beyond what the standard refresh covers.
     client.onNotification(
         { method: 'knot/refreshSemanticTokens' },
-        (_params: KnotRefreshSemanticTokensParams) => {
-            // Refresh decorations for the affected documents, since
+        (params: KnotRefreshSemanticTokensParams) => {
+            const reason = params.reason || 'unknown';
+            console.log(`[Knot] Refreshing semantic tokens for ${params.document_uris.length} document(s) (reason: ${reason})`);
+
+            // Trigger VS Code's built-in semantic token refresh for all
+            // visible editors. VS Code doesn't provide a per-document
+            // semantic token refresh API, so we refresh all visible
+            // editors. This is the same mechanism that
+            // `workspace/semanticTokens/refresh` uses under the hood.
+            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
+
+            // Also refresh decorations for the affected documents, since
             // broken link highlights and gutter badges may have changed.
-            // Note: We do NOT call editor.action.semanticTokens.refresh here
-            // because the server already sends workspace/semanticTokens/refresh
-            // alongside this notification, and the language client handles
-            // that automatically. Calling it again would be redundant.
             refreshDecorationsForOpenEditors();
         }
     );
@@ -441,8 +456,11 @@ export async function activate(context: vscode.ExtensionContext) {
         // Wire up the story map to the language client
         if (storyMapPanel) {
             storyMapPanel.setClient(client);
-            storyMapPanel.setDebugViewProvider(debugViewProvider);
         }
+
+        // Wire up the centralized navigation module with view references
+        navigation.setStoryMapPanel(storyMapPanel);
+        navigation.setDebugViewProvider(debugViewProvider);
         if (debugViewProvider) {
             debugViewProvider.setClient(client);
         }
@@ -484,6 +502,12 @@ export async function activate(context: vscode.ExtensionContext) {
             refreshStoryMap();
             // Update debug view with passage under cursor
             updateDebugViewForEditor(editor);
+            // Refresh variable flow view
+            if (variableFlowProvider) {
+                variableFlowProvider.refresh();
+            }
+            // Refresh workspace profile
+            profileViewProvider?.refresh();
         }
     });
 
@@ -500,52 +524,6 @@ async function refreshStoryMap() {
     if (storyMapPanel) {
         storyMapPanel.refreshGraph();
     }
-}
-
-/**
- * Find the best ViewColumn for opening a passage from the Story Map.
- *
- * Logic:
- * - If the graph panel has no viewColumn (sidebar or detached window),
- *   open in the default active editor (no split).
- * - If the graph is in a tab in the same window, find an existing
- *   non-graph column to reuse.
- * - If no non-graph editors exist and the graph is in column 2+,
- *   open in column 1 (reusing the empty slot rather than creating a
- *   third column via ViewColumn.Beside).
- * - If the graph is in column 1 and no other editors exist, create
- *   a column beside it (ViewColumn.Beside) — this is the expected
- *   layout: editor left, graph right.
- * - This prevents creating a new split for every passage click.
- */
-function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
-    // Sidebar or detached window → use default active editor
-    if (!graphColumn) {
-        return undefined;
-    }
-
-    // Check if there are text editors in columns other than the graph's
-    const nonGraphEditors = vscode.window.visibleTextEditors.filter(
-        e => e.viewColumn !== undefined && e.viewColumn !== graphColumn
-    );
-
-    if (nonGraphEditors.length > 0) {
-        // Reuse the first available non-graph column
-        return nonGraphEditors[0].viewColumn;
-    }
-
-    // No other editors exist. If the graph is in column 2+, put the
-    // passage in column 1 (the graph already claimed column 2, so
-    // column 1 is empty and available). This avoids creating a third
-    // column via ViewColumn.Beside which would waste screen space.
-    if (graphColumn > vscode.ViewColumn.One) {
-        return vscode.ViewColumn.One;
-    }
-
-    // Graph is in column 1 — create a column beside it so the passage
-    // opens in column 2. This is the standard layout: editor right of
-    // graph, or graph left of editor.
-    return vscode.ViewColumn.Beside;
 }
 
 // ---------------------------------------------------------------------------
@@ -894,69 +872,14 @@ function registerCommands(context: vscode.ExtensionContext) {
     );
 
     // Open Passage by Name (used by debug view, diagnostics, etc.)
-    // Also tells the Story Map to focus on the passage node so the
-    // graph view stays in sync with the editor.
+    // Delegates to the centralized navigation module which handles
+    // StoryMap focus, DebugView sync, and smart ViewColumn placement.
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string, targetLine?: number) => {
             if (!client || !client.isRunning()) {
                 return;
             }
-
-            // Tell the active Story Map to focus on this passage node.
-            if (storyMapPanel) {
-                storyMapPanel.focusNode(passageName);
-            }
-
-            // First, search open documents
-            for (const doc of vscode.workspace.textDocuments) {
-                if (!isTweeLanguage(doc.languageId)) { continue; }
-                for (let i = 0; i < doc.lineCount; i++) {
-                    const line = doc.lineAt(i).text;
-                    if (line.startsWith('::')) {
-                        const name = extractPassageName(line);
-                        if (name === passageName) {
-                            // If a target line is provided, navigate to that line;
-                            // otherwise, select the passage header line.
-                            const selectionLine = (targetLine !== undefined && targetLine > 0)
-                                ? targetLine
-                                : i;
-                            await vscode.window.showTextDocument(doc, {
-                                preview: true,
-                                selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
-                            });
-                            return;
-                        }
-                    }
-                }
-            }
-
-            // If not found in open documents, search all workspace files
-            const files = await vscode.workspace.findFiles('**/*.{tw,twee}');
-            for (const fileUri of files) {
-                try {
-                    const doc = await vscode.workspace.openTextDocument(fileUri);
-                    for (let i = 0; i < doc.lineCount; i++) {
-                        const line = doc.lineAt(i).text;
-                        if (line.startsWith('::')) {
-                            const name = extractPassageName(line);
-                            if (name === passageName) {
-                                const selectionLine = (targetLine !== undefined && targetLine > 0)
-                                    ? targetLine
-                                    : i;
-                                await vscode.window.showTextDocument(doc, {
-                                    preview: true,
-                                    selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
-                                });
-                                return;
-                            }
-                        }
-                    }
-                } catch {
-                    // Skip files that can't be opened
-                }
-            }
-
-            vscode.window.showWarningMessage(`Knot: Passage '${passageName}' not found in workspace.`);
+            await navigation.navigateToPassage(passageName, targetLine);
         })
     );
 
@@ -1206,11 +1129,11 @@ function registerDecorations(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(passageDecorationType);
 
-    // Faded text for unreachable passages
+    // Faded text for unreachable passages — amber tint to signal warning
     unreachableDecorationType = vscode.window.createTextEditorDecorationType({
-        opacity: '0.4',
+        opacity: '0.5',
         overviewRulerLane: vscode.OverviewRulerLane.Left,
-        overviewRulerColor: 'rgba(102, 102, 102, 0.4)', // Gray
+        overviewRulerColor: 'rgba(230, 81, 0, 0.5)', // Amber/warning
     });
     context.subscriptions.push(unreachableDecorationType);
 
@@ -1610,5 +1533,10 @@ function updateDebugViewForEditor(editor: vscode.TextEditor) {
 
     if (passageName) {
         debugViewProvider.updateForPassage(passageName);
+        // Sync StoryMap focus when cursor moves to a different passage
+        // (debounced by updateForPassage's early-return on same passage)
+        if (storyMapPanel) {
+            storyMapPanel.focusNode(passageName);
+        }
     }
 }

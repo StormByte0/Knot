@@ -11,7 +11,7 @@
 //! syntax. Variable names are extracted identifiers only.
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotVariableFlowResponse } from './types';
+import { KnotLanguageClient, KnotVariableFlowParams, KnotVariableFlowResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Variable Tracking View webview provider (three-zone design)
@@ -81,7 +81,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         try {
             const result = await this._client.sendRequest<KnotVariableFlowResponse>('knot/variableFlow', {
                 workspace_uri: workspaceFolders[0].uri.toString(),
-            });
+            } as KnotVariableFlowParams);
 
             this._flowData = result;
             this._postFlowData();

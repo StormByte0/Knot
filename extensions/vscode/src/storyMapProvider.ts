@@ -24,7 +24,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
-import { DebugViewProvider } from './debugViewProvider';
+import { navigateToPassage, findTargetViewColumn } from './navigation';
 
 // ---------------------------------------------------------------------------
 // Story Map output channel — shared across all instances
@@ -70,7 +70,6 @@ export class StoryMapPanelManager {
     private _extensionUri: vscode.Uri;
     private _context: vscode.ExtensionContext;
     private _graphData: KnotGraphResponse | null = null;
-    private _debugViewProvider: DebugViewProvider | null = null;
 
     constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this._extensionUri = extensionUri;
@@ -95,10 +94,8 @@ export class StoryMapPanelManager {
         }
     }
 
-    /** Set the debug view provider reference for passage diagnostics sync. */
-    public setDebugViewProvider(provider: DebugViewProvider | null) {
-        this._debugViewProvider = provider;
-    }
+    // setDebugViewProvider removed — cross-view sync is now handled by
+    // the centralized navigation module (navigation.ts).
 
     /** Check if the panel is currently visible. */
     public isVisible(): boolean {
@@ -204,19 +201,23 @@ export class StoryMapPanelManager {
             switch (message.command) {
                 case 'openPassage': {
                     const { file, line, passageName } = message;
-                    if (file) {
+                    if (passageName) {
+                        // Use centralized navigation — handles ViewColumn
+                        // placement, StoryMap focus, and DebugView sync.
+                        // The StoryMap already knows which passage was clicked
+                        // (it IS the source), so focusNode is a no-op inside
+                        // navigateToPassage when the panel is already focused.
+                        await navigateToPassage(passageName, line ?? undefined);
+                    } else if (file) {
+                        // Fallback: file-only navigation (no passage name)
                         const uri = vscode.Uri.parse(file);
                         const doc = await vscode.workspace.openTextDocument(uri);
-                        const targetColumn = this._findTargetViewColumn(panel.viewColumn);
+                        const targetColumn = findTargetViewColumn(panel.viewColumn);
                         await vscode.window.showTextDocument(doc, {
                             preview: true,
                             viewColumn: targetColumn,
-                            selection: new vscode.Range(line, 0, line, 200),
+                            selection: new vscode.Range(line || 0, 0, line || 0, 200),
                         });
-                        // Update passage diagnostics for the clicked node
-                        if (passageName && this._debugViewProvider) {
-                            this._debugViewProvider.updateForPassage(passageName);
-                        }
                     }
                     break;
                 }
@@ -328,25 +329,10 @@ export class StoryMapPanelManager {
      * - If the graph is in column 1 and no other editors exist, create a
      *   column beside it (ViewColumn.Beside).
      */
-    private _findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined): vscode.ViewColumn | undefined {
-        if (!graphColumn) {
-            return undefined;
-        }
+    // _findTargetViewColumn removed — use the shared findTargetViewColumn()
+    // from navigation.ts instead. Kept as a thin wrapper for the fallback
+    // file-only navigation path above.
 
-        const nonGraphEditors = vscode.window.visibleTextEditors.filter(
-            e => e.viewColumn !== undefined && e.viewColumn !== graphColumn
-        );
-
-        if (nonGraphEditors.length > 0) {
-            return nonGraphEditors[0].viewColumn;
-        }
-
-        if (graphColumn > vscode.ViewColumn.One) {
-            return vscode.ViewColumn.One;
-        }
-
-        return vscode.ViewColumn.Beside;
-    }
 
     /** Generate HTML for the webview.
      *

@@ -8,13 +8,11 @@
 //! 1. **Passage Overview** — name, badges (special, reachable), refresh
 //! 2. **Issues** — linter output sorted by severity
 //! 3. **Connections** — outgoing and incoming links with status
-//! 4. **Variable State** — variable dataflow info from knot/watchVariables
 
 import * as vscode from 'vscode';
 import {
     KnotLanguageClient,
     KnotPassageDiagnosticsResponse,
-    KnotWatchVariablesResponse,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -94,19 +92,12 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
         }
 
         try {
-            // Fetch both passage diagnostics and variable watch data in parallel
-            const [diagResult, watchResult] = await Promise.all([
-                this._client.sendRequest<KnotPassageDiagnosticsResponse>('knot/passageDiagnostics', {
-                    workspace_uri: workspaceFolders[0].uri.toString(),
-                    passage_name: this._currentPassage,
-                }),
-                this._client.sendRequest<KnotWatchVariablesResponse>('knot/watchVariables', {
-                    workspace_uri: workspaceFolders[0].uri.toString(),
-                    at_passage: this._currentPassage,
-                }).catch(() => null), // Non-critical: graceful fallback if not supported
-            ]);
+            const result = await this._client.sendRequest<KnotPassageDiagnosticsResponse>('knot/passageDiagnostics', {
+                workspace_uri: workspaceFolders[0].uri.toString(),
+                passage_name: this._currentPassage,
+            });
 
-            this._postDiagnosticsData(diagResult, watchResult);
+            this._postDiagnosticsData(result);
         } catch (e) {
             console.error('[Knot] Failed to fetch passage diagnostics:', e);
         }
@@ -122,21 +113,12 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Post the diagnostics data (with optional variable watch data) to the webview. */
-    private _postDiagnosticsData(data: KnotPassageDiagnosticsResponse, watchData: KnotWatchVariablesResponse | null) {
+    /** Post the diagnostics data to the webview. */
+    private _postDiagnosticsData(data: KnotPassageDiagnosticsResponse) {
         if (this._view) {
             this._view.webview.postMessage({
                 command: 'updateDiagnostics',
-                data: {
-                    state: 'loaded',
-                    ...data,
-                    variable_watch: watchData ? {
-                        initialized_at_entry: watchData.initialized_at_entry,
-                        written_in_passage: watchData.written_in_passage,
-                        read_in_passage: watchData.read_in_passage,
-                        potentially_uninitialized: watchData.potentially_uninitialized,
-                    } : null,
-                },
+                data: { state: 'loaded', ...data },
             });
         }
     }
@@ -211,7 +193,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
 
         .badge-special { background: #ffb74d; color: #000; }
         .badge-metadata { background: #ce93d8; color: #000; }
-        .badge-unreachable { background: #666; color: #fff; }
+        .badge-unreachable { background: #e65100; color: #fff; }
         .badge-reachable { background: #66bb6a; color: #000; }
 
         .refresh-btn {
@@ -343,55 +325,6 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
             color: var(--muted);
             font-size: 10px;
         }
-
-        /* ── Variable State ────────────────────────────── */
-        .var-list { list-style: none; }
-
-        .var-list li {
-            padding: 2px 0;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            font-size: 11px;
-        }
-
-        .var-name {
-            color: var(--fg);
-            font-family: var(--vscode-editor-font-family, 'Consolas', monospace);
-            font-size: 11px;
-        }
-
-        .var-source {
-            color: var(--muted);
-            font-size: 10px;
-        }
-
-        .var-badge {
-            display: inline-block;
-            padding: 0 4px;
-            border-radius: 2px;
-            font-size: 9px;
-            font-weight: 600;
-            margin-left: 2px;
-        }
-
-        .var-badge-temp { background: rgba(206, 147, 216, 0.25); color: #ce93d8; }
-        .var-badge-uninit { background: rgba(241, 76, 76, 0.25); color: var(--error); }
-
-        .var-section-label {
-            font-size: 10px;
-            color: var(--muted);
-            margin-top: 4px;
-            margin-bottom: 2px;
-            padding-left: 2px;
-        }
-
-        .var-ok {
-            text-align: center;
-            color: var(--muted);
-            padding: 6px 0;
-            font-size: 11px;
-        }
     </style>
 </head>
 <body>
@@ -401,22 +334,6 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
 
     <script>
         const vscode = acquireVsCodeApi();
-
-        // Event delegation: handle clicks on [data-action] and [data-passage] elements
-        document.addEventListener('click', (e) => {
-            const actionEl = e.target.closest('[data-action]');
-            if (actionEl) {
-                const action = actionEl.dataset.action;
-                if (action === 'refresh') {
-                    vscode.postMessage({ command: 'refresh' });
-                }
-                return;
-            }
-            const passageEl = e.target.closest('[data-passage]');
-            if (passageEl) {
-                vscode.postMessage({ command: 'openPassage', name: passageEl.dataset.passage });
-            }
-        });
 
         window.addEventListener('message', (event) => {
             const message = event.data;
@@ -434,7 +351,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
         function diagSeverity(kind) {
             const k = kind.toLowerCase();
             if (k.includes('error') || k === 'brokenlink' || k === 'duplicatepassagename' || k === 'duplicatestorydata' || k === 'missingstartpassage' || k === 'unsupportedformat') return 'error';
-            if (k.includes('warning') || k === 'invalidpassagename' || k === 'missingstartlink' || k === 'uninitializedvariable') return 'warning';
+            if (k.includes('warning') || k === 'invalidpassagename' || k === 'missingstartlink' || k === 'uninitializedvariable' || k === 'unreachablepassage') return 'warning';
             if (k.includes('info') || k === 'deadendpassage' || k === 'orphanedpassage') return 'info';
             return 'hint';
         }
@@ -446,6 +363,10 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                 case 'info': return '\\u2139';
                 default: return '\\u25CF';
             }
+        }
+
+        function openPassageCmd(name) {
+            return "vscode.postMessage({command: 'openPassage', name: '" + esc(name).replace(/'/g, "\\'") + "'})";
         }
 
         function renderDiagnostics(data) {
@@ -461,7 +382,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
             // ── Passage overview header ─────────────────
             html += '<div class="passage-header">';
             html += '<span class="passage-name">' + esc(data.passage_name) + '</span>';
-            html += '<button class="refresh-btn" data-action="refresh" title="Refresh">\\u21BB</button>';
+            html += '<button class="refresh-btn" onclick="vscode.postMessage({command: \\'refresh\\'})" title="Refresh">\\u21BB</button>';
             html += '</div>';
 
             // ── Badges row ──────────────────────────────
@@ -524,7 +445,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                         const label = l.display_text ? esc(l.display_text) : esc(l.passage_name);
                         html += '<li>';
                         html += '<span class="link-arrow">\\u2192</span> ';
-                        html += '<span class="' + cls + '" data-passage="' + esc(l.passage_name) + '">' + label + '</span>';
+                        html += '<span class="' + cls + '" onclick="' + openPassageCmd(l.passage_name) + '">' + label + '</span>';
                         if (l.display_text && l.passage_name !== l.display_text) {
                             html += ' <span style="color:var(--muted);font-size:10px;">\\u2192 ' + esc(l.passage_name) + '</span>';
                         }
@@ -540,85 +461,10 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                     for (const l of data.incoming_links) {
                         html += '<li>';
                         html += '<span class="link-arrow">\\u2190</span> ';
-                        html += '<span class="link-item" data-passage="' + esc(l.passage_name) + '">' + esc(l.passage_name) + '</span>';
+                        html += '<span class="link-item" onclick="' + openPassageCmd(l.passage_name) + '">' + esc(l.passage_name) + '</span>';
                         html += '</li>';
                     }
                     html += '</ul>';
-                }
-
-                html += '</div>';
-            }
-
-            // ── Variable State (from knot/watchVariables) ──
-            const vw = data.variable_watch;
-            if (vw) {
-                const initCount = vw.initialized_at_entry.length;
-                const writeCount = vw.written_in_passage.length;
-                const readCount = vw.read_in_passage.length;
-                const uninitCount = vw.potentially_uninitialized.length;
-                const totalVars = initCount + writeCount + readCount + uninitCount;
-
-                html += '<div class="section">';
-                html += '<div class="section-title">Variable State';
-                html += ' <span class="count">' + totalVars + '</span>';
-                html += '</div>';
-
-                if (totalVars === 0) {
-                    html += '<div class="var-ok">No variable activity in this passage</div>';
-                } else {
-                    // Initialized at entry
-                    if (initCount > 0) {
-                        html += '<div class="var-section-label">Initialized at entry:</div>';
-                        html += '<ul class="var-list">';
-                        for (const v of vw.initialized_at_entry) {
-                            html += '<li>';
-                            html += '<span class="var-name">' + esc(v.name) + '</span>';
-                            if (v.is_temporary) html += '<span class="var-badge var-badge-temp">temp</span>';
-                            if (v.last_written_in) html += '<span class="var-source">from ' + esc(v.last_written_in) + '</span>';
-                            html += '</li>';
-                        }
-                        html += '</ul>';
-                    }
-
-                    // Written in passage
-                    if (writeCount > 0) {
-                        html += '<div class="var-section-label">Written here:</div>';
-                        html += '<ul class="var-list">';
-                        for (const v of vw.written_in_passage) {
-                            html += '<li>';
-                            html += '<span class="var-name">' + esc(v.name) + '</span>';
-                            if (v.is_temporary) html += '<span class="var-badge var-badge-temp">temp</span>';
-                            html += '</li>';
-                        }
-                        html += '</ul>';
-                    }
-
-                    // Read in passage
-                    if (readCount > 0) {
-                        html += '<div class="var-section-label">Read here:</div>';
-                        html += '<ul class="var-list">';
-                        for (const v of vw.read_in_passage) {
-                            html += '<li>';
-                            html += '<span class="var-name">' + esc(v.name) + '</span>';
-                            if (v.is_temporary) html += '<span class="var-badge var-badge-temp">temp</span>';
-                            if (v.last_written_in) html += '<span class="var-source">from ' + esc(v.last_written_in) + '</span>';
-                            html += '</li>';
-                        }
-                        html += '</ul>';
-                    }
-
-                    // Potentially uninitialized
-                    if (uninitCount > 0) {
-                        html += '<div class="var-section-label">Potentially uninitialized:</div>';
-                        html += '<ul class="var-list">';
-                        for (const v of vw.potentially_uninitialized) {
-                            html += '<li>';
-                            html += '<span class="var-name">' + esc(v.name) + '</span>';
-                            html += '<span class="var-badge var-badge-uninit">uninit</span>';
-                            html += '</li>';
-                        }
-                        html += '</ul>';
-                    }
                 }
 
                 html += '</div>';

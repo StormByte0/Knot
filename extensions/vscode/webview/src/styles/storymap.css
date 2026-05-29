@@ -241,10 +241,10 @@ html, body {
 
 .pn--unreachable {
   background-image: none;
-  opacity: 0.6;
+  opacity: 0.75;
   border-style: dashed;
 }
-.pn--unreachable .pn__label { color: rgba(200,200,200,0.55); }
+.pn--unreachable .pn__label { color: rgba(230, 180, 120, 0.85); }
 
 .pn--highlighted {
   border-color: #fff !important;

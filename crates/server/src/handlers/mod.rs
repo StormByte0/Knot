@@ -16,7 +16,6 @@ pub mod helpers;
 pub mod hover;
 pub mod knot_ext;
 pub mod lifecycle;
-pub mod macros;
 pub mod navigation;
 pub mod semantic;
 pub mod structure;

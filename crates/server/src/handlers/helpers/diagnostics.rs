@@ -177,7 +177,7 @@ pub(crate) async fn publish_all_diagnostics(
 pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSeverity {
     match kind {
         DiagnosticKind::BrokenLink => DiagnosticSeverity::WARNING,
-        DiagnosticKind::UnreachablePassage => DiagnosticSeverity::HINT,
+        DiagnosticKind::UnreachablePassage => DiagnosticSeverity::WARNING,
         DiagnosticKind::UninitializedVariable => DiagnosticSeverity::WARNING,
         DiagnosticKind::UnusedVariable => DiagnosticSeverity::HINT,
         DiagnosticKind::RedundantWrite => DiagnosticSeverity::HINT,
