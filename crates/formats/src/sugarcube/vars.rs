@@ -1487,6 +1487,15 @@ pub(crate) fn build_state_variable_registry(
                 // parse the object body to discover its property keys. This handles
                 // cases like `$ITEMS = { "plain-bra-white": { name: "...", ... } }`
                 // where properties are defined inline rather than accessed via dot notation.
+                //
+                // ## Attribute-first model
+                //
+                // In the attribute-first model, a write like `$ITEMS = { "step1": { "step2": "happy" } }`
+                // is NOT a write to `$ITEMS`. It is a write to the LEAF node `step2` with value
+                // `"happy"`. We decompose the base-level `Assign` into individual `PropertyWrite`
+                // entries for each leaf path in the object literal. Parent nodes then aggregate
+                // their children's references for display/navigation purposes.
+                let mut decomposed_into_leaves = false;
                 if matches!(location.kind, VarAccessKind::Assign) {
                     if let Some(obj_props) = extract_object_literal_properties_for_var(
                         passage, &var.name,
@@ -1500,25 +1509,54 @@ pub(crate) fn build_state_variable_registry(
                                 entry.known_properties.insert(full_child_path);
                             }
                         }
-                    }
-                }
 
-                // Record the location in the appropriate list
-                match &location.kind {
-                    VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
-                        entry.write_locations.push(location);
-                        // If this is in a special passage that contributes_variables,
-                        // mark the variable as seeded by special
+                        // Attribute-first: decompose the Assign into PropertyWrite entries
+                        // for each LEAF path. A leaf path has no children (empty HashSet).
+                        // For example, `$ITEMS = { "step1": { "step2": "happy" } }` produces
+                        // a single PropertyWrite { path: "step1.step2" } instead of an Assign.
+                        let leaf_paths: Vec<String> = obj_props.iter()
+                            .filter(|(_, children)| children.is_empty())
+                            .map(|(path, _)| path.clone())
+                            .collect();
+
+                        if !leaf_paths.is_empty() {
+                            for leaf_path in &leaf_paths {
+                                entry.write_locations.push(VarLocation {
+                                    passage_name: location.passage_name.clone(),
+                                    file_uri: location.file_uri.clone(),
+                                    span: location.span.clone(),
+                                    kind: VarAccessKind::PropertyWrite { path: leaf_path.clone() },
+                                });
+                            }
+                            decomposed_into_leaves = true;
+                        }
+
                         if is_special_seeding {
                             entry.seeded_by_special = true;
                         }
                     }
-                    VarAccessKind::Read | VarAccessKind::PropertyRead { .. } => {
-                        entry.read_locations.push(location);
-                    }
-                    VarAccessKind::Unset => {
-                        // Unset doesn't go in either list, but we could track it
-                        // separately in the future if needed
+                }
+
+                // Record the location in the appropriate list.
+                // If the Assign was decomposed into leaf PropertyWrite entries,
+                // skip the original Assign — the leaf entries carry the references.
+                if !decomposed_into_leaves {
+                    match &location.kind {
+                        VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
+                            entry.write_locations.push(location);
+                            // If this is in a special passage that contributes_variables,
+                            // mark the variable as seeded by special
+                            if is_special_seeding {
+                                entry.seeded_by_special = true;
+                            }
+                        }
+                        VarAccessKind::Read | VarAccessKind::PropertyRead { .. } => {
+                            entry.read_locations.push(location);
+                        }
+                        VarAccessKind::Unset => {
+                            // Unset doesn't go in either list, but we could track it
+                            // separately in the future if needed
+                        }
                     }
                 }
             }
@@ -2414,10 +2452,33 @@ pub(crate) fn build_variable_tree(
         let base_name = &state_var.base_name;
         let state_path = format!("State.variables.{}", base_name);
 
-        // Build write/read locations for the base variable.
-        // Include both base-level Assign/Read AND PropertyWrite/PropertyRead
-        // so the root node shows aggregated references from all child properties.
+        // Determine the kind for this variable from the shape map
+        let kind = shape_map.get(dollar_name).cloned().unwrap_or(PropertyKind::Unknown);
+
+        // Build property tree from known_properties.
+        // The tree is built with the attribute-first model: leaf nodes get their
+        // direct write/read locations, then aggregate_locations_upward() rolls
+        // them up to parent nodes for navigation.
+        let properties = build_property_tree(
+            dollar_name,
+            &state_var.known_properties,
+            &state_var.write_locations,
+            &state_var.read_locations,
+            workspace,
+            &shape_map,
+        );
+
+        // Build write/read locations for the root variable.
+        // In the attribute-first model:
+        //   - Base-level Assign/Read entries belong to the root only
+        //     (they are NOT spread to child properties)
+        //   - PropertyWrite/PropertyRead entries belong to leaf nodes
+        //     and are aggregated up through the property tree
+        //   - The root's written_in/read_in combines its own direct
+        //     entries with aggregated entries from the property tree
         let mut written_in: Vec<VariableUsageLocation> = Vec::new();
+
+        // Add base-level Assign entries (scalar writes like `$gold to 10`)
         for loc in &state_var.write_locations {
             let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
             match &loc.kind {
@@ -2429,22 +2490,18 @@ pub(crate) fn build_variable_tree(
                         line,
                     });
                 }
-                VarAccessKind::PropertyWrite { .. } => {
-                    // Aggregate property writes into the root node for
-                    // navigation convenience (the user can see all write
-                    // sites from the root without expanding children)
-                    written_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: true,
-                        line,
-                    });
-                }
                 _ => {}
             }
         }
 
+        // Add aggregated property writes from the property tree
+        for prop in &properties {
+            written_in.extend(prop.written_in.iter().cloned());
+        }
+
         let mut read_in: Vec<VariableUsageLocation> = Vec::new();
+
+        // Add base-level Read entries (reading the whole variable, e.g., `$ITEMS` in prose)
         for loc in &state_var.read_locations {
             let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
             match &loc.kind {
@@ -2456,33 +2513,16 @@ pub(crate) fn build_variable_tree(
                         line,
                     });
                 }
-                VarAccessKind::PropertyRead { .. } => {
-                    // Aggregate property reads into the root node
-                    read_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: false,
-                        line,
-                    });
-                }
                 _ => {}
             }
         }
 
+        // Add aggregated property reads from the property tree
+        for prop in &properties {
+            read_in.extend(prop.read_in.iter().cloned());
+        }
+
         let is_unused = !written_in.is_empty() && read_in.is_empty();
-
-        // Determine the kind for this variable from the shape map
-        let kind = shape_map.get(dollar_name).cloned().unwrap_or(PropertyKind::Unknown);
-
-        // Build property tree from known_properties
-        let properties = build_property_tree(
-            dollar_name,
-            &state_var.known_properties,
-            &state_var.write_locations,
-            &state_var.read_locations,
-            workspace,
-            &shape_map,
-        );
 
         variables.push(VariableTreeNode {
             name: dollar_name.clone(),
@@ -2515,13 +2555,22 @@ pub(crate) fn build_variable_tree(
 ///   .shield
 /// ```
 ///
-/// ## Fix: intermediate node attribution
+/// ## Attribute-first model
 ///
-/// Previous versions only matched locations where `path == prop_name`, which
-/// meant `$player.state.stress` (path = "state.stress") was never attributed
-/// to the intermediate `.state` node. Now we also match
-/// `path.starts_with("prop_name.")` so that writes/reads to deeper paths
-/// bubble up to their intermediate parent nodes.
+/// In the attribute-first model, references belong to the **leaf nodes** first.
+/// Parent nodes **aggregate** their children's references for display/navigation.
+/// This means:
+///
+/// - **Leaf nodes** show their **direct** write/read locations only
+///   (PropertyWrite/PropertyRead where `path == prop_name` exactly)
+/// - **Parent nodes** show **aggregated** references from all descendants,
+///   computed by the `aggregate_locations_upward()` pass after the tree is built
+/// - Base-level `Assign`/`Read` entries are NOT spread to child properties —
+///   they belong to the root variable only
+///
+/// For example, `$ITEMS = { "sword": { "name": "Iron Sword" } }` produces
+/// one leaf: `sword.name`. The write location is attributed to `sword.name`
+/// directly, then aggregated up to `sword` and `$ITEMS` for navigation.
 fn build_property_tree(
     dollar_name: &str,
     known_properties: &HashSet<String>,
@@ -2563,17 +2612,16 @@ fn build_property_tree(
         };
         let state_path = format!("State.variables.{}.{}", base_without_sigil, prop_name);
 
-        // Collect write locations for this property.
-        // Match three sources:
-        //   1. PropertyWrite where path == prop_name (direct property write)
-        //   2. PropertyWrite where path.starts_with("prop_name.") (nested property write)
-        //   3. Base-level Assign on the parent variable (e.g., `<<set $ITEMS = {...}>>`
-        //      implicitly writes all child properties)
+        // Collect DIRECT write locations for this property only.
+        // In the attribute-first model, only exact path matches are attributed
+        // directly to this property node. Parent-level aggregation happens later
+        // via `aggregate_locations_upward()`.
         let mut prop_written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in write_locations {
             match &loc.kind {
                 VarAccessKind::PropertyWrite { path } => {
-                    if path == &prop_name || path.starts_with(&format!("{}.", prop_name)) {
+                    // Only exact match — leaf nodes get their direct writes
+                    if path == &prop_name {
                         prop_written_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
@@ -2582,26 +2630,21 @@ fn build_property_tree(
                         });
                     }
                 }
-                VarAccessKind::Assign => {
-                    // A base-level assignment like `<<set $ITEMS = {...}>>` implicitly
-                    // writes all child properties. Attribute the write to this property.
-                    prop_written_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: true,
-                        line: compute_line_from_offset(workspace, &loc.file_uri, loc.span.start),
-                    });
-                }
+                // Base-level Assign is NOT attributed to child properties.
+                // Object literal Assigns have been decomposed into leaf PropertyWrite
+                // entries by build_state_variable_registry(). Scalar Assigns belong
+                // to the root variable only.
                 _ => {}
             }
         }
 
-        // Collect read locations for this property (same matching logic, plus base-level reads)
+        // Collect DIRECT read locations for this property (exact match only)
         let mut prop_read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in read_locations {
             match &loc.kind {
                 VarAccessKind::PropertyRead { path } => {
-                    if path == &prop_name || path.starts_with(&format!("{}.", prop_name)) {
+                    // Only exact match — leaf nodes get their direct reads
+                    if path == &prop_name {
                         prop_read_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
@@ -2610,16 +2653,8 @@ fn build_property_tree(
                         });
                     }
                 }
-                VarAccessKind::Read => {
-                    // A base-level read like `$ITEMS` implicitly reads all properties.
-                    // Attribute the read to this property.
-                    prop_read_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: false,
-                        line: compute_line_from_offset(workspace, &loc.file_uri, loc.span.start),
-                    });
-                }
+                // Base-level Read is NOT attributed to child properties.
+                // A `$ITEMS` reference reads the whole object, not individual props.
                 _ => {}
             }
         }
@@ -2639,18 +2674,15 @@ fn build_property_tree(
             Vec::new()
         } else {
             let sub_set: HashSet<String> = sub_paths.into_iter().collect();
-            // Filter write/read locations for sub-paths.
-            // Include both PropertyWrite paths (with prefix stripping) AND base-level
-            // Assign/Read locations (which implicitly apply to all sub-properties).
+            // Filter write/read locations for sub-paths (prefix match for recursion).
+            // Only PropertyWrite/PropertyRead entries with paths that start with
+            // "prop_name." are passed down. Base-level Assign/Read entries are NOT
+            // passed to sub-trees — they belong to the root only.
             let sub_writes: Vec<VarLocation> = write_locations
                 .iter()
                 .filter(|loc| match &loc.kind {
                     VarAccessKind::PropertyWrite { path } => {
                         path.starts_with(&format!("{}.", prop_name))
-                    }
-                    VarAccessKind::Assign => {
-                        // Base-level assignments implicitly write all sub-properties
-                        true
                     }
                     _ => false,
                 })
@@ -2661,8 +2693,6 @@ fn build_property_tree(
                         let new_path = path.strip_prefix(&format!("{}.", prop_name)).unwrap_or(path).to_string();
                         loc.kind = VarAccessKind::PropertyWrite { path: new_path };
                     }
-                    // Assign kind is left as-is — it means "base-level assignment" and
-                    // applies to all child properties in the recursive tree
                     loc
                 })
                 .collect();
@@ -2672,10 +2702,6 @@ fn build_property_tree(
                 .filter(|loc| match &loc.kind {
                     VarAccessKind::PropertyRead { path } => {
                         path.starts_with(&format!("{}.", prop_name))
-                    }
-                    VarAccessKind::Read => {
-                        // Base-level reads implicitly read all sub-properties
-                        true
                     }
                     _ => false,
                 })
@@ -2736,7 +2762,54 @@ fn build_property_tree(
         });
     }
 
+    // Attribute-first: aggregate children's locations upward so parent nodes
+    // display the total reference count for navigation purposes.
+    for node in &mut result {
+        aggregate_locations_upward(node);
+    }
+
     result
+}
+
+/// Aggregate children's write/read locations upward into parent nodes.
+///
+/// In the attribute-first model, references belong to leaf nodes first.
+/// This function walks the tree bottom-up, collecting each parent's
+/// descendant locations into its own lists for navigation display.
+///
+/// After this pass:
+/// - **Leaf nodes** retain only their direct write/read locations
+/// - **Parent nodes** contain their own direct locations PLUS all
+///   locations from their descendants
+///
+/// This enables the drill-down navigation pattern: the root shows the total
+/// reference count, and as the user expands deeper nodes, the count decreases
+/// until reaching a leaf with its specific instances.
+fn aggregate_locations_upward(node: &mut crate::types::VariablePropertyNode) {
+    // First, recurse into children (bottom-up)
+    for child in &mut node.properties {
+        aggregate_locations_upward(child);
+    }
+    if let Some(shape) = &mut node.element_shape {
+        aggregate_locations_upward(shape);
+    }
+
+    // Now aggregate children's locations into this node.
+    // We collect all locations from children without deduplication —
+    // each leaf write is a distinct reference, even if multiple leaves
+    // share the same source line (e.g., from a single object literal
+    // assignment). The UI can handle display deduplication if needed.
+    let mut child_writes: Vec<crate::types::VariableUsageLocation> = Vec::new();
+    let mut child_reads: Vec<crate::types::VariableUsageLocation> = Vec::new();
+
+    for child in &node.properties {
+        child_writes.extend(child.written_in.iter().cloned());
+        child_reads.extend(child.read_in.iter().cloned());
+    }
+
+    // Append aggregated locations to the node's lists
+    node.written_in.extend(child_writes);
+    node.read_in.extend(child_reads);
 }
 
 // ---------------------------------------------------------------------------

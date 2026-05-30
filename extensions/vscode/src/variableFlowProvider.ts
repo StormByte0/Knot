@@ -136,6 +136,36 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
         entry.reads.push(loc);
     }
 
+    // Build passages array — same structure as transformVariable so that
+    // the three-zone drill-down view works for property nodes too.
+    // Without this, drilling into a child property shows "No references found"
+    // even though ref_count is non-zero.
+    const passages = Array.from(passageMap.values()).map(p => {
+        const references = [
+            ...p.writes.map(w => ({
+                is_write: true,
+                line: w.line,
+                is_struct_def: false,
+                is_reassign: false,
+                type_conflict: false,
+            })),
+            ...p.reads.map(r => ({
+                is_write: false,
+                line: r.line,
+                is_struct_def: false,
+                is_reassign: false,
+                type_conflict: false,
+            })),
+        ];
+        return {
+            passage_name: p.passage_name,
+            reachable: true,
+            total_refs: references.length,
+            in_loop: false,
+            references,
+        };
+    });
+
     const totalWrites = (p.written_in || []).length;
     const totalReads = (p.read_in || []).length;
 
@@ -147,6 +177,7 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
         state_path: p.state_path,
         ref_count: totalWrites + totalReads,
         passage_count: Array.from(passageMap.keys()).length,
+        passages,
         children,
     };
 }
@@ -564,8 +595,7 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             display: flex;
             align-items: center;
             padding: 5px 12px;
-            gap: 8px;
-            cursor: pointer;
+            gap: 4px;
             transition: background 0.1s ease;
         }
         .var-row:hover { background: var(--hover); }
@@ -573,10 +603,30 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         .var-chevron {
             color: var(--muted);
             font-size: 9px;
-            width: 10px;
-            text-align: center;
+            width: 14px;
+            height: 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             flex-shrink: 0;
+            cursor: pointer;
+            border-radius: 2px;
+            transition: background 0.1s ease, transform 0.15s ease;
+            user-select: none;
         }
+        .var-chevron:hover { background: rgba(255,255,255,0.08); }
+        .var-chevron.expanded { transform: rotate(90deg); }
+        .var-chevron.leaf { cursor: default; opacity: 0.4; }
+        .var-chevron.leaf:hover { background: transparent; }
+
+        .var-name-wrap {
+            flex: 1;
+            min-width: 0;
+            cursor: pointer;
+            padding: 1px 4px;
+            border-radius: 2px;
+        }
+        .var-name-wrap:hover { background: rgba(255,255,255,0.04); }
 
         .var-name {
             font-family: monospace;
@@ -613,6 +663,10 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
 
         /* -- Children sublist in root -- */
 
+        .var-children {
+            overflow: hidden;
+        }
+
         .child-row {
             display: flex;
             align-items: center;
@@ -622,6 +676,34 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             transition: background 0.1s ease;
         }
         .child-row:hover { background: var(--hover); }
+
+        .child-chevron {
+            color: var(--muted);
+            font-size: 8px;
+            width: 12px;
+            height: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            cursor: pointer;
+            border-radius: 2px;
+            transition: background 0.1s ease, transform 0.15s ease;
+            user-select: none;
+        }
+        .child-chevron:hover { background: rgba(255,255,255,0.08); }
+        .child-chevron.expanded { transform: rotate(90deg); }
+        .child-chevron.leaf { cursor: default; opacity: 0.4; }
+        .child-chevron.leaf:hover { background: transparent; }
+
+        .child-name-wrap {
+            flex: 1;
+            min-width: 0;
+            cursor: pointer;
+            padding: 1px 2px;
+            border-radius: 2px;
+        }
+        .child-name-wrap:hover { background: rgba(255,255,255,0.04); }
 
         .child-prefix {
             font-family: monospace;
@@ -641,6 +723,16 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             color: var(--muted);
             flex-shrink: 0;
         }
+
+        .grandchild-row {
+            display: flex;
+            align-items: center;
+            padding: 2px 12px 2px 44px;
+            gap: 5px;
+            cursor: pointer;
+            transition: background 0.1s ease;
+        }
+        .grandchild-row:hover { background: var(--hover); }
 
         /* -- Empty / loading states -- */
 
@@ -671,6 +763,17 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
 
         // -- Event delegation --
         document.addEventListener('click', function(e) {
+            // Check for chevron clicks first (before the broader data-action handler)
+            var chevronEl = e.target.closest('.var-chevron[data-fullname]');
+            if (chevronEl && !chevronEl.classList.contains('leaf')) {
+                toggleExpand(chevronEl.dataset.fullname);
+                return;
+            }
+            var childChevronEl = e.target.closest('.child-chevron[data-fullname]');
+            if (childChevronEl && !childChevronEl.classList.contains('leaf')) {
+                toggleExpand(childChevronEl.dataset.fullname);
+                return;
+            }
             var actionEl = e.target.closest('[data-action]');
             if (actionEl) {
                 var action = actionEl.dataset.action;
@@ -704,6 +807,9 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         var navStack = [];
         // Current view: { variable: KnotVariableInfo, selectedPassage: string|null } or null (root list)
         var currentView = null;
+
+        // Expanded nodes tracking: Set of full_name values that are expanded
+        var expandedNodes = new Set();
 
         // -- Helpers --
 
@@ -824,6 +930,15 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             }
         }
 
+        function toggleExpand(fullName) {
+            if (expandedNodes.has(fullName)) {
+                expandedNodes.delete(fullName);
+            } else {
+                expandedNodes.add(fullName);
+            }
+            render();
+        }
+
         // -- Breadcrumb --
 
         function buildBreadcrumb() {
@@ -901,31 +1016,65 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             } else {
                 for (var i = 0; i < variables.length; i++) {
                     var v = variables[i];
-                    html += '<div class="var-row" data-action="drillVariable" data-name="' + esc(v.full_name) + '">';
-                    html += '<span class="var-chevron">&#x25B6;</span>';
+                    var hasChildren = v.children && v.children.length > 0;
+                    var isExpanded = expandedNodes.has(v.full_name);
+
+                    // Variable row with separate chevron and name click targets
+                    html += '<div class="var-row">';
+                    html += '<span class="var-chevron' + (isExpanded ? ' expanded' : '') + (!hasChildren ? ' leaf' : '') + '" data-fullname="' + esc(v.full_name) + '" title="' + (hasChildren ? (isExpanded ? 'Collapse' : 'Expand') : 'No children') + '">&#x25B6;</span>';
+                    html += '<span class="var-name-wrap" data-action="drillVariable" data-name="' + esc(v.full_name) + '" title="View references for ' + esc(v.name) + '">';
                     html += '<span class="var-name">' + esc(v.name) + '</span>';
+                    html += '</span>';
                     html += '<span class="var-meta">';
                     html += renderFlags(v.flags);
                     html += '<span>' + v.ref_count + ' ref' + (v.ref_count !== 1 ? 's' : '') + ' &middot; ' + v.passage_count + ' passage' + (v.passage_count !== 1 ? 's' : '') + '</span>';
                     html += '</span>';
                     html += '</div>';
 
-                    // Show direct children inline
-                    if (v.children && v.children.length > 0) {
+                    // Children — only rendered when expanded
+                    if (hasChildren && isExpanded) {
+                        html += '<div class="var-children">';
                         for (var j = 0; j < v.children.length; j++) {
-                            var c = v.children[j];
-                            html += '<div class="child-row" data-action="drillChild" data-fullname="' + esc(c.full_name) + '">';
-                            html += '<span class="child-prefix">.</span>';
-                            html += '<span class="child-name">' + esc(c.name) + '</span>';
-                            html += '<span class="child-meta">' + c.ref_count + ' ref' + (c.ref_count !== 1 ? 's' : '') + '</span>';
-                            html += '</div>';
+                            html += renderChildRow(v.children[j]);
                         }
+                        html += '</div>';
                     }
                 }
             }
 
             root.innerHTML = html;
             restoreFilterFocus();
+        }
+
+        function renderChildRow(c) {
+            var html = '';
+            var hasGrandchildren = c.children && c.children.length > 0;
+            var isExpanded = expandedNodes.has(c.full_name);
+
+            html += '<div class="child-row">';
+            html += '<span class="child-chevron' + (isExpanded ? ' expanded' : '') + (!hasGrandchildren ? ' leaf' : '') + '" data-fullname="' + esc(c.full_name) + '" title="' + (hasGrandchildren ? (isExpanded ? 'Collapse' : 'Expand') : 'No children') + '">&#x25B6;</span>';
+            html += '<span class="child-prefix">.</span>';
+            html += '<span class="child-name-wrap" data-action="drillChild" data-fullname="' + esc(c.full_name) + '" title="View references for ' + esc(c.full_name) + '">';
+            html += '<span class="child-name">' + esc(c.name) + '</span>';
+            html += '</span>';
+            html += '<span class="child-meta">' + c.ref_count + ' ref' + (c.ref_count !== 1 ? 's' : '') + '</span>';
+            html += '</div>';
+
+            // Grandchildren — only rendered when expanded
+            if (hasGrandchildren && isExpanded) {
+                html += '<div class="var-children">';
+                for (var k = 0; k < c.children.length; k++) {
+                    var gc = c.children[k];
+                    html += '<div class="grandchild-row" data-action="drillChild" data-fullname="' + esc(gc.full_name) + '" title="View references for ' + esc(gc.full_name) + '">';
+                    html += '<span class="child-prefix">.</span>';
+                    html += '<span class="child-name">' + esc(gc.name) + '</span>';
+                    html += '<span class="child-meta">' + gc.ref_count + ' ref' + (gc.ref_count !== 1 ? 's' : '') + '</span>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+
+            return html;
         }
 
         function renderVariableView() {
