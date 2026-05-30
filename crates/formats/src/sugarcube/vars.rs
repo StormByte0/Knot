@@ -1585,47 +1585,70 @@ fn extract_object_literal_properties_for_var(
     passage: &knot_core::passage::Passage,
     var_name: &str,
 ) -> Option<HashMap<String, HashSet<String>>> {
-    // Reconstruct passage body text from parsed blocks for regex scanning
-    let body: String = passage.body.iter().map(|block| match block {
-        knot_core::passage::Block::Text { content, .. } => content.clone(),
-        knot_core::passage::Block::Macro { name, args, .. } => {
-            let mut s = String::with_capacity(name.len() + args.len() + 8);
-            s.push_str("<<");
-            s.push_str(name);
-            if !args.is_empty() {
-                s.push(' ');
-                s.push_str(args);
-            }
-            s.push_str(">>");
-            s
-        }
-        knot_core::passage::Block::Expression { content, .. } => content.clone(),
-        knot_core::passage::Block::Heading { content, .. } => content.clone(),
-        knot_core::passage::Block::Incomplete { content, .. } => content.clone(),
-    }).collect::<Vec<String>>().join("\n");
-
-    // Strip the $ sigil for matching against regex capture group
+    // Strip the $ sigil for matching
     let var_name_without_sigil = if var_name.starts_with('$') {
         &var_name[1..]
     } else {
         var_name
     };
 
-    // Search for <<set $var = {...}>> or <<set $var to {...}>>
-    for caps in RE_SET_OBJECT_LITERAL.captures_iter(&body) {
-        let captured_name = caps.get(1).unwrap().as_str();
-        if captured_name != var_name_without_sigil {
-            continue;
+    // Directly iterate over Block::Macro entries instead of reconstructing
+    // the full body text. This is more robust because the macro args field
+    // already contains the complete argument text (including multi-line
+    // object literals), avoiding any issues with block reconstruction
+    // and re-parsing.
+    for block in &passage.body {
+        if let knot_core::passage::Block::Macro { name, args, .. } = block {
+            if name != "set" {
+                continue;
+            }
+
+            // Reconstruct just this macro for regex matching:
+            // <<set args>>
+            let macro_text = if args.is_empty() {
+                format!("<<{}>>", name)
+            } else {
+                format!("<<{} {}>>", name, args)
+            };
+
+            // Search for <<set $var = {...}>> or <<set $var to {...}>>
+            for caps in RE_SET_OBJECT_LITERAL.captures_iter(&macro_text) {
+                let captured_name = caps.get(1).unwrap().as_str();
+                if captured_name != var_name_without_sigil {
+                    continue;
+                }
+
+                // Find the opening brace in the args string and extract
+                // the balanced object body directly from args. The args
+                // field contains everything between the macro name and the
+                // closing >>, so it has the full object literal without
+                // the >> delimiter that could interfere with brace matching.
+                if let Some(brace_pos) = args.find('{') {
+                    if let Some((inner, _end_pos)) = extract_balanced_braces(args, brace_pos) {
+                        let keys = extract_object_keys(&inner);
+                        return Some(keys);
+                    }
+                }
+            }
         }
+        // Also check Text blocks (e.g., for raw-body special passages
+        // that store content as a single Block::Text)
+        if let knot_core::passage::Block::Text { content, .. } = block {
+            for caps in RE_SET_OBJECT_LITERAL.captures_iter(content) {
+                let captured_name = caps.get(1).unwrap().as_str();
+                if captured_name != var_name_without_sigil {
+                    continue;
+                }
 
-        // Find the opening brace and extract the balanced object body
-        let full_match = caps.get(0).unwrap();
-        let brace_pos = full_match.as_str().find('{')?;
-        let abs_brace_pos = full_match.start() + brace_pos;
+                let full_match = caps.get(0).unwrap();
+                let brace_pos = full_match.as_str().find('{')?;
+                let abs_brace_pos = full_match.start() + brace_pos;
 
-        if let Some((inner, _end_pos)) = extract_balanced_braces(&body, abs_brace_pos) {
-            let keys = extract_object_keys(&inner);
-            return Some(keys);
+                if let Some((inner, _end_pos)) = extract_balanced_braces(content, abs_brace_pos) {
+                    let keys = extract_object_keys(&inner);
+                    return Some(keys);
+                }
+            }
         }
     }
 
@@ -2229,128 +2252,143 @@ pub(crate) fn infer_variable_shapes(
             if passage.is_metadata() {
                 continue;
             }
-            // Reconstruct passage body text from parsed blocks for regex scanning.
-            // The body is stored as structured Block objects, but shape inference
-            // needs the raw text to match patterns like `<<set $var to {}>>`.
-            let body: String = passage.body.iter().map(|block| match block {
-                knot_core::passage::Block::Text { content, .. } => content.clone(),
-                knot_core::passage::Block::Macro { name, args, .. } => {
-                    let mut s = String::with_capacity(name.len() + args.len() + 8);
-                    s.push_str("<<");
-                    s.push_str(name);
-                    if !args.is_empty() {
-                        s.push(' ');
-                        s.push_str(args);
+
+            // Iterate over passage body blocks directly instead of reconstructing
+            // the full body text. This is more robust because Block::Macro args
+            // already contain the complete argument text (including multi-line
+            // object literals), and Block::Text content contains raw text for
+            // passages that store content as a single text block.
+            for block in &passage.body {
+                // Collect the text to scan from each block type
+                let text_to_scan: Option<&str> = match block {
+                    knot_core::passage::Block::Macro { name, args, .. } => {
+                        // For macros, reconstruct just this one macro for regex
+                        // matching: <<name args>>. This avoids issues with
+                        // multi-line args being split across blocks.
+                        if name == "set" {
+                            Some(args)
+                        } else {
+                            None
+                        }
                     }
-                    s.push_str(">>");
-                    s
-                }
-                knot_core::passage::Block::Expression { content, .. } => content.clone(),
-                knot_core::passage::Block::Heading { content, .. } => content.clone(),
-                knot_core::passage::Block::Incomplete { content, .. } => content.clone(),
-            }).collect::<Vec<String>>().join("\n");
+                    knot_core::passage::Block::Text { content, .. } => {
+                        Some(content)
+                    }
+                    _ => None,
+                };
 
-            // Detect object literal assignments: <<set $var to {}>> or <<set $var = {}>>
-            for caps in RE_SET_OBJECT_LITERAL.captures_iter(&body) {
-                let var_name = format!("${}", caps.get(1).unwrap().as_str());
-                shapes.entry(var_name.clone()).or_insert(PropertyKind::Object);
+                let Some(scan_text) = text_to_scan else { continue };
 
-                // Also extract sub-properties from the object literal body
-                // to mark them as Object if they contain nested objects
-                let full_match = caps.get(0).unwrap();
-                if let Some(brace_pos) = full_match.as_str().find('{') {
-                    let abs_brace_pos = full_match.start() + brace_pos;
-                    if let Some((inner, _)) = extract_balanced_braces(&body, abs_brace_pos) {
-                        let keys = extract_object_keys(&inner);
-                        for (key, children) in &keys {
-                            let full_prop = format!("{}.{}", var_name, key);
-                            // If the property has children, it's an Object
-                            if !children.is_empty() {
-                                shapes.entry(full_prop.clone())
-                                    .and_modify(|existing| {
-                                        if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                            *existing = PropertyKind::Object;
+                // Detect object literal assignments: <<set $var to {}>> or <<set $var = {}>>
+                // We reconstruct the full macro syntax for regex matching
+                let macro_text = match block {
+                    knot_core::passage::Block::Macro { name, .. } => {
+                        format!("<<{} {}>>", name, scan_text)
+                    }
+                    _ => scan_text.to_string(),
+                };
+
+                for caps in RE_SET_OBJECT_LITERAL.captures_iter(&macro_text) {
+                    let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                    shapes.entry(var_name.clone()).or_insert(PropertyKind::Object);
+
+                    // Also extract sub-properties from the object literal body
+                    // to mark them as Object if they contain nested objects.
+                    // Use the scan_text (args for macros, content for text blocks)
+                    // for balanced brace extraction, which avoids the >> delimiter.
+                    if let Some(brace_pos) = scan_text.find('{') {
+                        if let Some((inner, _)) = extract_balanced_braces(scan_text, brace_pos) {
+                            let keys = extract_object_keys(&inner);
+                            for (key, children) in &keys {
+                                let full_prop = format!("{}.{}", var_name, key);
+                                // If the property has children, it's an Object
+                                if !children.is_empty() {
+                                    shapes.entry(full_prop.clone())
+                                        .and_modify(|existing| {
+                                            if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                                *existing = PropertyKind::Object;
+                                            }
+                                        })
+                                        .or_insert(PropertyKind::Object);
+                                }
+                                // Also mark deeper nested properties as Object
+                                for child in children {
+                                    let full_child = format!("{}.{}", full_prop, child);
+                                    // Check if this child itself has children (from the keys map)
+                                    if let Some(grandchildren) = keys.get(&format!("{}.{}", key, child)) {
+                                        if !grandchildren.is_empty() {
+                                            shapes.entry(full_child)
+                                                .and_modify(|existing| {
+                                                    if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                                        *existing = PropertyKind::Object;
+                                                    }
+                                                })
+                                                .or_insert(PropertyKind::Object);
                                         }
-                                    })
-                                    .or_insert(PropertyKind::Object);
-                            }
-                            // Also mark deeper nested properties as Object
-                            for child in children {
-                                let full_child = format!("{}.{}", full_prop, child);
-                                // Check if this child itself has children (from the keys map)
-                                if let Some(grandchildren) = keys.get(&format!("{}.{}", key, child)) {
-                                    if !grandchildren.is_empty() {
-                                        shapes.entry(full_child)
-                                            .and_modify(|existing| {
-                                                if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                                    *existing = PropertyKind::Object;
-                                                }
-                                            })
-                                            .or_insert(PropertyKind::Object);
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Detect array literal assignments: <<set $var to []>> or <<set $var = []>>
-            for caps in RE_SET_ARRAY_LITERAL.captures_iter(&body) {
-                let var_name = format!("${}", caps.get(1).unwrap().as_str());
-                shapes.entry(var_name).or_insert(PropertyKind::Array);
-            }
-
-            // Detect bracket-index access: $var[index] or $var.prop[index]
-            // This indicates the base variable is an array
-            for caps in RE_VAR_INDEX_ACCESS.captures_iter(&body) {
-                let base_path = caps.get(1).unwrap().as_str();
-                let dollar_name = format!("${}", base_path);
-
-                // The variable (or property) before the brackets is an Array
-                // Widen from Unknown/Scalar to Array, but don't downgrade Object to Array
-                shapes.entry(dollar_name.clone())
-                    .and_modify(|existing| {
-                        if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                            *existing = PropertyKind::Array;
-                        }
-                    })
-                    .or_insert(PropertyKind::Array);
-            }
-
-            // Detect dot-path accesses: if $var.prop is seen, $var is at least Object
-            for caps in RE_VAR_DOT_PATH.captures_iter(&body) {
-                let full_path = caps.get(1).unwrap().as_str();
-                let _dollar_name = format!("${}", full_path);
-
-                // Skip $$ escape
-                let full_match = caps.get(0).unwrap();
-                if full_match.start() > 0 && body.as_bytes()[full_match.start() - 1] == b'$' {
-                    continue;
+                // Detect array literal assignments: <<set $var to []>> or <<set $var = []>>
+                for caps in RE_SET_ARRAY_LITERAL.captures_iter(&macro_text) {
+                    let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                    shapes.entry(var_name).or_insert(PropertyKind::Array);
                 }
 
-                // If the path has dots, the parent is Object
-                if let Some(dot_pos) = full_path.find('.') {
-                    let parent = format!("${}", &full_path[..dot_pos]);
-                    shapes.entry(parent)
+                // Detect bracket-index access: $var[index] or $var.prop[index]
+                // This indicates the base variable is an array
+                for caps in RE_VAR_INDEX_ACCESS.captures_iter(scan_text) {
+                    let base_path = caps.get(1).unwrap().as_str();
+                    let dollar_name = format!("${}", base_path);
+
+                    // The variable (or property) before the brackets is an Array
+                    // Widen from Unknown/Scalar to Array, but don't downgrade Object to Array
+                    shapes.entry(dollar_name.clone())
                         .and_modify(|existing| {
                             if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                *existing = PropertyKind::Object;
+                                *existing = PropertyKind::Array;
                             }
                         })
-                        .or_insert(PropertyKind::Object);
+                        .or_insert(PropertyKind::Array);
+                }
 
-                    // Also mark intermediate paths as Object
-                    let segments: Vec<&str> = full_path.split('.').collect();
-                    for i in 1..segments.len().saturating_sub(1) {
-                        let intermediate = format!("${}", segments[..=i].join("."));
-                        shapes.entry(intermediate)
+                // Detect dot-path accesses: if $var.prop is seen, $var is at least Object
+                for caps in RE_VAR_DOT_PATH.captures_iter(scan_text) {
+                    let full_path = caps.get(1).unwrap().as_str();
+                    let _dollar_name = format!("${}", full_path);
+
+                    // Skip $$ escape
+                    let full_match = caps.get(0).unwrap();
+                    if full_match.start() > 0 && scan_text.as_bytes()[full_match.start() - 1] == b'$' {
+                        continue;
+                    }
+
+                    // If the path has dots, the parent is Object
+                    if let Some(dot_pos) = full_path.find('.') {
+                        let parent = format!("${}", &full_path[..dot_pos]);
+                        shapes.entry(parent)
                             .and_modify(|existing| {
                                 if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
                                     *existing = PropertyKind::Object;
                                 }
                             })
                             .or_insert(PropertyKind::Object);
+
+                        // Also mark intermediate paths as Object
+                        let segments: Vec<&str> = full_path.split('.').collect();
+                        for i in 1..segments.len().saturating_sub(1) {
+                            let intermediate = format!("${}", segments[..=i].join("."));
+                            shapes.entry(intermediate)
+                                .and_modify(|existing| {
+                                    if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                        *existing = PropertyKind::Object;
+                                    }
+                                })
+                                .or_insert(PropertyKind::Object);
+                        }
                     }
                 }
             }
@@ -2376,31 +2414,58 @@ pub(crate) fn build_variable_tree(
         let base_name = &state_var.base_name;
         let state_path = format!("State.variables.{}", base_name);
 
-        // Build write/read locations for the base variable
-        // (only base-level Assign/Read, not property accesses)
+        // Build write/read locations for the base variable.
+        // Include both base-level Assign/Read AND PropertyWrite/PropertyRead
+        // so the root node shows aggregated references from all child properties.
         let mut written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.write_locations {
-            if matches!(loc.kind, VarAccessKind::Assign) {
-                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
-                written_in.push(VariableUsageLocation {
-                    passage_name: loc.passage_name.clone(),
-                    file_uri: loc.file_uri.clone(),
-                    is_write: true,
-                    line,
-                });
+            let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+            match &loc.kind {
+                VarAccessKind::Assign => {
+                    written_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: true,
+                        line,
+                    });
+                }
+                VarAccessKind::PropertyWrite { .. } => {
+                    // Aggregate property writes into the root node for
+                    // navigation convenience (the user can see all write
+                    // sites from the root without expanding children)
+                    written_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: true,
+                        line,
+                    });
+                }
+                _ => {}
             }
         }
 
         let mut read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in &state_var.read_locations {
-            if matches!(loc.kind, VarAccessKind::Read) {
-                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
-                read_in.push(VariableUsageLocation {
-                    passage_name: loc.passage_name.clone(),
-                    file_uri: loc.file_uri.clone(),
-                    is_write: false,
-                    line,
-                });
+            let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+            match &loc.kind {
+                VarAccessKind::Read => {
+                    read_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: false,
+                        line,
+                    });
+                }
+                VarAccessKind::PropertyRead { .. } => {
+                    // Aggregate property reads into the root node
+                    read_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: false,
+                        line,
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -2834,5 +2899,219 @@ mod sidebar_tests {
         assert!(keys.contains_key("player.state"), "Should have 'player.state' path");
         assert!(keys["player.state"].contains("stress"), "player.state should have 'stress' child");
         assert!(keys["player.state"].contains("energy"), "player.state should have 'energy' child");
+    }
+
+    /// Test Bug 1 fix: `extract_object_literal_properties_for_var` should
+    /// extract properties from a `Block::Macro` entry when the passage body
+    /// contains `<<set $ITEMS to { ... }>>`.
+    #[test]
+    fn test_extract_object_literal_from_macro_block() {
+        use crate::sugarcube::blocks;
+
+        let body = r#"<<set $ITEMS to {
+    "plain-bra-white": {
+        name: "White Cotton Bra",
+        category: "apparel"
+    },
+    "pencil-skirt": {
+        name: "Navy Pencil Skirt"
+    }
+}>>"#;
+
+        let macros = blocks::extract_macros(body, 0);
+        let blocks = blocks::build_body_blocks(body, 0, &macros);
+
+        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
+        passage.body = blocks;
+
+        let result = extract_object_literal_properties_for_var(&passage, "$ITEMS");
+        assert!(result.is_some(), "Should extract properties from macro block");
+
+        let keys = result.unwrap();
+        assert!(keys.contains_key("plain-bra-white"), "Should find 'plain-bra-white' key");
+        assert!(keys.contains_key("pencil-skirt"), "Should find 'pencil-skirt' key");
+        assert!(keys["plain-bra-white"].contains("name"), "plain-bra-white should have 'name' child");
+        assert!(keys["plain-bra-white"].contains("category"), "plain-bra-white should have 'category' child");
+        assert!(keys["pencil-skirt"].contains("name"), "pencil-skirt should have 'name' child");
+
+        // Deep paths should also be present
+        assert!(keys.contains_key("plain-bra-white.name"), "Should have 'plain-bra-white.name' path");
+        assert!(keys.contains_key("plain-bra-white.category"), "Should have 'plain-bra-white.category' path");
+        assert!(keys.contains_key("pencil-skirt.name"), "Should have 'pencil-skirt.name' path");
+    }
+
+    /// Test that `extract_object_literal_properties_for_var` also works
+    /// with `=` assignment syntax.
+    #[test]
+    fn test_extract_object_literal_eq_syntax() {
+        use crate::sugarcube::blocks;
+
+        let body = r#"<<set $config = {
+    debug: true,
+    version: "1.0"
+}>>"#;
+
+        let macros = blocks::extract_macros(body, 0);
+        let blocks = blocks::build_body_blocks(body, 0, &macros);
+
+        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
+        passage.body = blocks;
+
+        let result = extract_object_literal_properties_for_var(&passage, "$config");
+        assert!(result.is_some(), "Should extract properties from = syntax macro");
+
+        let keys = result.unwrap();
+        assert!(keys.contains_key("debug"), "Should find 'debug' key");
+        assert!(keys.contains_key("version"), "Should find 'version' key");
+    }
+
+    /// Test that `extract_object_literal_properties_for_var` works with
+    /// a passage that stores content as a single Block::Text (e.g., raw body).
+    #[test]
+    fn test_extract_object_literal_from_text_block() {
+        let body = r#"<<set $ITEMS to {
+    "sword": { name: "Iron Sword" }
+}>>"#;
+
+        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
+        passage.body = vec![knot_core::passage::Block::Text {
+            content: body.to_string(),
+            span: 0..body.len(),
+        }];
+
+        let result = extract_object_literal_properties_for_var(&passage, "$ITEMS");
+        assert!(result.is_some(), "Should extract properties from text block");
+
+        let keys = result.unwrap();
+        assert!(keys.contains_key("sword"), "Should find 'sword' key");
+        assert!(keys["sword"].contains("name"), "sword should have 'name' child");
+    }
+
+    /// Test that `extract_object_literal_properties_for_var` returns None
+    /// for a variable that is not assigned an object literal.
+    #[test]
+    fn test_extract_object_literal_no_match() {
+        use crate::sugarcube::blocks;
+
+        let body = r#"<<set $count to 5>><<set $name to "hello">>"#;
+        let macros = blocks::extract_macros(body, 0);
+        let blocks = blocks::build_body_blocks(body, 0, &macros);
+
+        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
+        passage.body = blocks;
+
+        let result = extract_object_literal_properties_for_var(&passage, "$count");
+        assert!(result.is_none(), "Should return None for non-object assignment");
+    }
+
+    /// Test Bug 2 fix: Property nodes in the tree should have reference
+    /// information (written_in, read_in) populated, not empty.
+    #[test]
+    fn test_property_tree_has_references() {
+        // Build a passage that assigns an object literal to $player
+        // and then accesses a sub-property
+        let body = r#"<<set $player to {
+    state: {
+        stress: 0,
+        energy: 100
+    },
+    name: "Alice"
+}>><<set $player.state.stress to 5>>"#;
+
+        let vars = extract_vars(body, 0);
+
+        // Verify we have both $player (Assign) and $player.state.stress (PropertyWrite)
+        let has_player_assign = vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Init);
+        let has_stress_write = vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Init);
+        assert!(has_player_assign, "Should detect $player assignment");
+        assert!(has_stress_write, "Should detect $player.state.stress write");
+
+        // Now build a passage and workspace to test the full pipeline
+        use crate::sugarcube::blocks;
+        let macros = blocks::extract_macros(body, 0);
+        let blocks_list = blocks::build_body_blocks(body, 0, &macros);
+
+        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
+        passage.body = blocks_list;
+        passage.vars = vars;
+
+        // Build a minimal workspace
+        let mut doc = knot_core::document::Document::new(
+            url::Url::parse("file:///test.twee").unwrap(),
+            knot_core::passage::StoryFormat::SugarCube,
+        );
+        doc.passages.push(passage);
+        let mut workspace = knot_core::Workspace::new(url::Url::parse("file:///").unwrap());
+        workspace.insert_document(doc);
+
+        // Build the variable tree
+        let tree = build_variable_tree(&workspace);
+
+        // Find $player in the tree
+        let player_node = tree.iter().find(|n| n.name == "$player");
+        assert!(player_node.is_some(), "$player should be in the variable tree");
+        let player_node = player_node.unwrap();
+
+        // The root node should have properties
+        assert!(!player_node.properties.is_empty(),
+            "$player should have child properties, got: {:?}", player_node.properties);
+
+        // Find the 'state' property
+        let state_prop = player_node.properties.iter().find(|p| p.name == "state");
+        assert!(state_prop.is_some(), "$player should have 'state' property");
+        let state_prop = state_prop.unwrap();
+
+        // The state property should have sub-properties
+        assert!(!state_prop.properties.is_empty(),
+            ".state should have sub-properties (stress, energy)");
+
+        // The state property should have write references
+        // (at least from the base Assign and from the PropertyWrite)
+        assert!(!state_prop.written_in.is_empty(),
+            ".state should have write references, got written_in = {:?}", state_prop.written_in);
+
+        // Find the 'stress' property under 'state'
+        let stress_prop = state_prop.properties.iter().find(|p| p.name == "stress");
+        assert!(stress_prop.is_some(), ".state should have 'stress' property");
+        let stress_prop = stress_prop.unwrap();
+
+        // The stress property should have write references
+        assert!(!stress_prop.written_in.is_empty(),
+            ".stress should have write references, got written_in = {:?}", stress_prop.written_in);
+    }
+
+    /// Test that root node aggregates references from child properties.
+    #[test]
+    fn test_root_node_aggregates_child_references() {
+        let body = r#"<<set $player to { name: "Alice" }>><<set $player.name to "Bob">>"#;
+
+        let vars = extract_vars(body, 0);
+        use crate::sugarcube::blocks;
+        let macros = blocks::extract_macros(body, 0);
+        let blocks_list = blocks::build_body_blocks(body, 0, &macros);
+
+        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
+        passage.body = blocks_list;
+        passage.vars = vars;
+
+        let mut doc = knot_core::document::Document::new(
+            url::Url::parse("file:///test.twee").unwrap(),
+            knot_core::passage::StoryFormat::SugarCube,
+        );
+        doc.passages.push(passage);
+        let mut workspace = knot_core::Workspace::new(url::Url::parse("file:///").unwrap());
+        workspace.insert_document(doc);
+
+        let tree = build_variable_tree(&workspace);
+
+        let player_node = tree.iter().find(|n| n.name == "$player");
+        assert!(player_node.is_some(), "$player should be in the variable tree");
+        let player_node = player_node.unwrap();
+
+        // Root node should have both the base Assign and the PropertyWrite
+        // aggregated into its written_in list
+        assert!(player_node.written_in.len() >= 2,
+            "$player root should aggregate both Assign and PropertyWrite references, got {} references",
+            player_node.written_in.len());
     }
 }

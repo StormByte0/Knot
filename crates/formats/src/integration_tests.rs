@@ -626,7 +626,7 @@ fn sugarcube_header_token_positions_with_tags() {
     assert!(name_tok.is_some(), "Should have PassageName token");
     let nt = name_tok.unwrap();
     assert_eq!(nt.start, 3, "Name 'Forest' should start at byte 3");
-    let (line, char) = byte_offset_to_position(src, nt.start);
+    let (_line, char) = byte_offset_to_position(src, nt.start);
     assert_eq!(char, 3, "Name 'Forest' should start at char 3");
 
     // Tags should be present
@@ -669,10 +669,10 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
     assert!(!tag_toks.is_empty(), "Should have Tag tokens even with metadata");
 
     if tag_toks.len() >= 2 {
-        let (line, char) = byte_offset_to_position(src, tag_toks[0].start);
+        let (_line, char) = byte_offset_to_position(src, tag_toks[0].start);
         assert_eq!(char, 11, "Tag 'dark' should start at char 11, got {}", char);
 
-        let (line, char) = byte_offset_to_position(src, tag_toks[1].start);
+        let (_line, char) = byte_offset_to_position(src, tag_toks[1].start);
         assert_eq!(char, 16, "Tag 'scary' should start at char 16, got {}", char);
     }
 }
