@@ -65,7 +65,6 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             // setClient handler also calls refresh(), but this covers the
             // case where the view resolves *after* the client is set but
             // before the server has finished starting.
-            this._scheduleRefresh(1000);
             this._scheduleRefresh(3000);
         }
     }

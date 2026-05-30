@@ -255,10 +255,6 @@ pub enum DiagnosticKind {
     DeadEndPassage,
     /// A passage name contains spaces or special characters.
     InvalidPassageName,
-    // NOTE: OrphanedPassage removed — subsumed by UnreachablePassage.
-    // Every passage with zero incoming links is also unreachable from
-    // Start (the sole exception being Start itself, which is a false
-    // positive).  Keeping both produced duplicate diagnostics.
     /// A passage has a high cyclomatic complexity (too many links or
     /// conditionals, making it hard to follow or test).
     ComplexPassage,
@@ -742,7 +738,6 @@ impl PassageGraph {
                     color: passage_colors.get(&node.name).cloned(),
                     var_writes: var_writes.get(&node.name).cloned().unwrap_or_default(),
                     var_reads: var_reads.get(&node.name).cloned().unwrap_or_default(),
-                    block: None,
                 }
             })
             .collect();
@@ -878,39 +873,6 @@ impl PassageGraph {
         }
 
         best.map(|(idx, _, _)| self.graph[idx].name.clone())
-    }
-
-    /// Export the graph as a serializable structure for the Story Map webview.
-    ///
-    /// This is a convenience wrapper that calls `export_graph_with_metadata`
-    /// with empty tag and unreachable data.
-    pub fn export_graph(&self) -> GraphExport {
-        self.export_graph_with_metadata(
-            &std::collections::HashMap::new(),
-            &std::collections::HashSet::new(),
-            &std::collections::HashMap::new(),
-        )
-    }
-
-    /// Full graph export with variable summaries (convenience wrapper
-    /// without group/color metadata).
-    pub fn export_graph_with_vars(
-        &self,
-        passage_tags: &std::collections::HashMap<String, Vec<String>>,
-        unreachable: &std::collections::HashSet<String>,
-        passage_positions: &std::collections::HashMap<String, (f64, f64)>,
-        var_writes: &std::collections::HashMap<String, Vec<String>>,
-        var_reads: &std::collections::HashMap<String, Vec<String>>,
-    ) -> GraphExport {
-        self.export_graph_with_metadata_and_vars(
-            passage_tags,
-            unreachable,
-            passage_positions,
-            var_writes,
-            var_reads,
-            &std::collections::HashMap::new(),
-            &std::collections::HashMap::new(),
-        )
     }
 
     /// Get the number of passages in the graph.
@@ -1089,10 +1051,6 @@ pub struct GraphNodeExport {
     /// Overrides the default category-based color.
     #[serde(default)]
     pub color: Option<String>,
-    /// Block assignment for this node (placeholder for future block
-    /// detection). `None` means no block has been assigned yet.
-    #[serde(default)]
-    pub block: Option<String>,
 }
 
 /// A single edge in the exported graph.

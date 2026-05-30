@@ -23,7 +23,8 @@ import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotGraphResponse, KnotIndexProgress, KnotBuildOutput, KnotVariableFlowResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotUpdatePositionsResponse, KnotRefreshSemanticTokensParams } from './types';
+import { isTweeLanguage, extractPassageName } from './utils';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams } from './types';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -85,84 +86,6 @@ async function getServerPath(context: vscode.ExtensionContext): Promise<string |
 }
 
 // ---------------------------------------------------------------------------
-// Passage name extraction
-// ---------------------------------------------------------------------------
-
-/** All recognized Twee language IDs in the extension. */
-const TWEE_LANGUAGE_IDS = ['twee', 'twee-sugarcube', 'twee-harlowe', 'twee-chapbook', 'twee-snowman'];
-
-/** Check whether a language ID is any Twee variant. */
-function isTweeLanguage(languageId: string): boolean {
-    return TWEE_LANGUAGE_IDS.includes(languageId);
-}
-
-/**
- * Extract the passage name from a `::` header line.
- *
- * A Twee passage header has the form:
- *   `:: Name [tag1 tag2] {"position":"100,200","size":"200,150"}`
- *
- * This function strips the `::` prefix, removes any `[tag]` blocks,
- * removes any `{JSON}` metadata blocks, and trims whitespace — matching
- * the Rust-side `extract_passage_name()` in `knot_formats::header`.
- */
-function extractPassageName(headerLine: string): string {
-    // Strip the `::` prefix
-    let name = headerLine.replace(/^::\s*/, '');
-
-    // Strip JSON metadata blocks `{...}` — handle nested braces
-    name = stripJsonBlock(name);
-
-    // Strip tag blocks `[...]`
-    name = stripTagBlock(name);
-
-    return name.trim();
-}
-
-/**
- * Remove the first `{...}` JSON metadata block from a string.
- * Uses brace counting to handle nested objects, and validates the
- * extracted JSON with a parse check before removing.
- */
-function stripJsonBlock(s: string): string {
-    const start = s.indexOf('{');
-    if (start < 0) { return s; }
-
-    let depth = 0;
-    for (let i = start; i < s.length; i++) {
-        if (s[i] === '{') { depth++; }
-        else if (s[i] === '}') {
-            depth--;
-            if (depth === 0) {
-                // Validate that the extracted block is valid JSON
-                const candidate = s.substring(start, i + 1);
-                try {
-                    JSON.parse(candidate);
-                    // Valid JSON — remove it
-                    return s.substring(0, start) + s.substring(i + 1);
-                } catch {
-                    // Not valid JSON — leave as-is
-                    return s;
-                }
-            }
-        }
-    }
-    return s;
-}
-
-/**
- * Remove the first `[...]` tag block from a string.
- * Only strips if the block contains no nested brackets (simple tags).
- */
-function stripTagBlock(s: string): string {
-    const start = s.indexOf('[');
-    if (start < 0) { return s; }
-    const end = s.indexOf(']', start);
-    if (end < 0) { return s; }
-    return s.substring(0, start) + s.substring(end + 1);
-}
-
-// ---------------------------------------------------------------------------
 // Extension activation
 // ---------------------------------------------------------------------------
 
@@ -181,13 +104,12 @@ let passageDecorationType: vscode.TextEditorDecorationType | null = null;
 let unreachableDecorationType: vscode.TextEditorDecorationType | null = null;
 let linkDecorationType: vscode.TextEditorDecorationType | null = null;
 let decorationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let profileRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ── Story Map Panel Manager (SINGLE INSTANCE) ──────────────────────────────
 // One graph view at a time. The StoryMapPanelManager handles the lifecycle.
-let _extensionContext: vscode.ExtensionContext | null = null;
 
 export async function activate(context: vscode.ExtensionContext) {
-    _extensionContext = context;
     const useRustServer = vscode.workspace
         .getConfiguration('knot')
         .get<boolean>('experimental.rustServer', true);
@@ -324,7 +246,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // to activate the correct TextMate grammar for syntax highlighting.
     client.onNotification(
         { method: 'knot/formatDetected' },
-        (params: { format: string; document_uris: string[] }) => {
+        (params: KnotFormatDetectedParams) => {
             // Map format names from the server to VS Code language IDs.
             // "Core" means no format was detected — keep the base 'twee'
             // language ID so the default TextMate grammar is used.
@@ -431,6 +353,8 @@ export async function activate(context: vscode.ExtensionContext) {
             variableFlowProvider,
         )
     );
+    // Ensure timers are cleaned up on extension deactivation
+    context.subscriptions.push({ dispose: () => variableFlowProvider?.dispose() });
 
     // Create the Play Mode provider — now requires context for storage URI
     playModeProvider = new PlayModeProvider(context.extensionUri, context);
@@ -485,9 +409,18 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Auto-refresh the Story Map when Twee files change
     const watcher = vscode.workspace.createFileSystemWatcher('**/*.{tw,twee}');
-    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
-    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
-    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); profileViewProvider?.refresh(); });
+    function debouncedProfileRefresh() {
+        if (profileRefreshDebounceTimer) {
+            clearTimeout(profileRefreshDebounceTimer);
+        }
+        profileRefreshDebounceTimer = setTimeout(() => {
+            profileRefreshDebounceTimer = null;
+            profileViewProvider?.refresh();
+        }, 500);
+    }
+    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
+    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
+    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
     context.subscriptions.push(watcher);
 
     // Also refresh on active editor change (for live updates)
@@ -501,7 +434,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 variableFlowProvider.refresh();
             }
             // Refresh workspace profile
-            profileViewProvider?.refresh();
+            debouncedProfileRefresh();
         }
     });
 
@@ -1106,7 +1039,7 @@ function registerLanguageStatus(context: vscode.ExtensionContext) {
 /** Refresh decorations for all currently visible twee editors. */
 function refreshDecorationsForOpenEditors() {
     for (const editor of vscode.window.visibleTextEditors) {
-        if (editor.document.languageId.startsWith('twee')) {
+        if (isTweeLanguage(editor.document.languageId)) {
             updateDecorations(editor);
         }
     }
@@ -1218,11 +1151,7 @@ async function updateDecorations(editor: vscode.TextEditor) {
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i];
                     if (line.startsWith('::')) {
-                        let name = line.substring(2).trim();
-                        const bracketIdx = name.indexOf('[');
-                        if (bracketIdx > 0) {
-                            name = name.substring(0, bracketIdx).trim();
-                        }
+                        const name = extractPassageName(line);
                         if (unreachableNames.has(name)) {
                             // Find end of this passage (next :: or end of file)
                             let endLine = i + 1;

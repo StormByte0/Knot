@@ -1058,6 +1058,27 @@ pub trait FormatPlugin: Send + Sync {
         HashMap::new()
     }
 
+    /// Build a shape-aware property map for dot-notation completion.
+    ///
+    /// Returns a map from dollar-prefixed variable name to `PropertyMapEntry`,
+    /// which includes the set of immediate child properties AND the structural
+    /// kind (Object, Array, Scalar, Unknown). For arrays, also includes the
+    /// element shape so that `$items[0].` completions work correctly.
+    ///
+    /// The default implementation delegates to `build_object_property_map()`
+    /// and marks everything as `PropertyKind::Unknown`.
+    fn build_shape_aware_property_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
+        use crate::types::{PropertyKind, PropertyMapEntry};
+        let basic = self.build_object_property_map(workspace);
+        basic.into_iter().map(|(key, children)| {
+            (key, PropertyMapEntry {
+                children,
+                kind: PropertyKind::Unknown,
+                element_shape: None,
+            })
+        }).collect()
+    }
+
     // -----------------------------------------------------------------------
     // State variable registry & diagnostics (optional)
     // -----------------------------------------------------------------------

@@ -7,6 +7,7 @@
 //! from the `FormatRegistry`. No format-specific data is imported directly.
 
 use crate::handlers::helpers;
+use crate::handlers::macros;
 use crate::state::ServerState;
 use knot_formats::plugin::FormatPlugin;
 use knot_formats::types::MacroArgKind;
@@ -277,8 +278,10 @@ pub(crate) async fn completion_resolve(
             "macro" => {
                 if let Some(plugin) = plugin {
                     if let Some(mdef) = plugin.find_macro(name) {
+                        let kind = macros::classify(mdef.name, mdef, plugin);
                         let mut doc_markdown = format!(
-                            "**{}**\n\n{}",
+                            "**{}** `{}`\n\n{}",
+                            macros::hover_kind_label(kind),
                             plugin.format_macro_label(mdef.name),
                             mdef.description
                         );
@@ -287,13 +290,17 @@ pub(crate) async fn completion_resolve(
                                 doc_markdown.push_str(&format!("\n\n⚠ **Deprecated**: {}", msg));
                             }
                         }
+                        // Add kind-specific note (e.g., "Close with <</if>>")
+                        if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
+                            doc_markdown.push_str(&format!("\n\n{}", note));
+                        }
                         // Add arg info
                         if let Some(args) = mdef.args {
                             if !args.is_empty() {
                                 doc_markdown.push_str("\n\n**Parameters:**\n");
                                 for arg in args {
                                     let req = if arg.is_required { " (required)" } else { "" };
-                                    let kind = match arg.kind {
+                                    let kind_str = match arg.kind {
                                         MacroArgKind::Expression => "expr",
                                         MacroArgKind::String => "string",
                                         MacroArgKind::Selector => "selector",
@@ -302,7 +309,7 @@ pub(crate) async fn completion_resolve(
                                     let flags = if arg.is_passage_ref { " 🔗passage" } else { "" };
                                     doc_markdown.push_str(&format!(
                                         "- `{}{}`: {}{}\n",
-                                        arg.label, req, kind, flags
+                                        arg.label, req, kind_str, flags
                                     ));
                                 }
                             }
@@ -329,18 +336,26 @@ pub(crate) async fn completion_resolve(
 // ===========================================================================
 
 /// Build macro completion items using the format plugin's macro catalog.
+///
+/// Uses the `macros` handler's classification system to determine:
+/// - `CompletionItemKind` (KEYWORD for operator macros, SNIPPET for
+///   blocks/control-flow, FUNCTION for statements/identifiers)
+/// - Sort priority (control-flow and blocks first, then keywords, then
+///   statements)
+/// - Category label with kind annotation
 fn build_macro_completions(plugin: &dyn FormatPlugin) -> Vec<CompletionItem> {
     let mut items = Vec::new();
 
     for mdef in plugin.builtin_macros() {
+        let kind = macros::classify(mdef.name, mdef, plugin);
         let snippet = plugin.build_macro_snippet(mdef.name, mdef.has_body);
         let category = mdef.category.to_string();
 
         items.push(CompletionItem {
             label: plugin.format_macro_label(mdef.name),
-            kind: Some(CompletionItemKind::FUNCTION),
-            detail: Some(format!("[{}] {}", category, mdef.description)),
-            sort_text: Some(format!("2_{:06}_{}", 0, mdef.name)),
+            kind: Some(macros::completion_item_kind(kind)),
+            detail: Some(format!("[{}] {} — {}", category, kind, mdef.description)),
+            sort_text: Some(macros::sort_text(kind, mdef.name)),
             filter_text: Some(mdef.name.to_string()),
             insert_text: Some(snippet),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
@@ -614,46 +629,105 @@ fn global_property_completion(prop: &GlobalProperty) -> CompletionItem {
 
 /// Try variable dot-notation completion after a dot.
 ///
-/// E.g., after `$item.` offers `sword`, `shield` (one layer deep).
+/// Supports deep nesting (e.g., `$player.state.`) and array-index
+/// completions (e.g., `$items[0].`). Uses the format plugin's
+/// shape-aware property map to distinguish Object from Array variables,
+/// offering array methods (`.length`, `.push`) for arrays and
+/// child properties for objects.
 fn try_variable_dot_completion(
     before_cursor: &str,
     workspace: &knot_core::Workspace,
     plugin: &dyn FormatPlugin,
 ) -> Option<Vec<CompletionItem>> {
+    use knot_formats::types::PropertyKind;
+
     // Find the text before the dot
     let before_dot = before_cursor.trim_end_matches('.');
 
-    // Check if this looks like a variable reference with a dot
-    // e.g., "$item" in "$item."
-    let var_name = before_dot
-        .rsplit(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+    // Extract the variable path: could be "$item" or "$player.state" or "$items[0]"
+    // We need to find the full dollar-prefixed path before the final "."
+    let var_path = before_dot
+        .rsplit(|c: char| !c.is_alphanumeric() && c != '_' && c != '$' && c != '.' && c != '[' && c != ']')
         .next()?;
 
-    // Check if this looks like a variable reference with a dot.
-    // Use the format plugin's variable sigils instead of hardcoding `$`.
+    // Must start with a variable sigil
     let sigils: Vec<char> = plugin.variable_sigils().iter().map(|s| s.sigil).collect();
-    if sigils.is_empty() || !sigils.iter().any(|s| var_name.starts_with(*s)) {
+    if sigils.is_empty() || !sigils.iter().any(|s| var_path.starts_with(*s)) {
         return None;
     }
 
-    // Build the property map from the format plugin
-    let prop_map = plugin.build_object_property_map(workspace);
+    // Build the shape-aware property map
+    let shape_map = plugin.build_shape_aware_property_map(workspace);
 
-    let properties = prop_map.get(var_name)?;
+    // Look up the variable path in the property map.
+    // For "$player.state", we need to walk the map:
+    //   "$player" → { children: {"state"}, kind: Object }
+    //   "$player.state" → { children: {"stress"}, kind: Object }
+    let entry = shape_map.get(var_path)?;
 
-    let items: Vec<CompletionItem> = properties
-        .iter()
-        .enumerate()
-        .map(|(i, prop)| CompletionItem {
-            label: prop.clone(),
-            kind: Some(CompletionItemKind::PROPERTY),
-            detail: Some(format!("Property of {}", var_name)),
-            sort_text: Some(format!("0_{:06}_{}", i, prop)),
-            insert_text: Some(prop.clone()),
-            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            ..Default::default()
-        })
-        .collect();
+    let mut items: Vec<CompletionItem> = Vec::new();
+
+    match entry.kind {
+        PropertyKind::Array => {
+            // For arrays, offer array methods/properties instead of element properties.
+            // Element properties are accessed via `$items[0].prop`.
+            let array_props = [".length", ".push()", ".pop()", ".shift()", ".unshift()", ".includes()", ".indexOf()", ".splice()"];
+            for (i, prop) in array_props.iter().enumerate() {
+                let method_name = prop.trim_start_matches('.');
+                let is_method = prop.ends_with("()");
+                items.push(CompletionItem {
+                    label: method_name.to_string(),
+                    kind: Some(if is_method { CompletionItemKind::METHOD } else { CompletionItemKind::PROPERTY }),
+                    detail: Some(format!("Array {} of {}", if is_method { "method" } else { "property" }, var_path)),
+                    sort_text: Some(format!("0_{:06}_{}", i, prop)),
+                    insert_text: Some(method_name.to_string()),
+                    insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                    ..Default::default()
+                });
+            }
+
+            // Also offer element properties if element_shape is available
+            if let Some(ref element_shape) = entry.element_shape {
+                for (i, child) in element_shape.children.iter().enumerate() {
+                    items.push(CompletionItem {
+                        label: format!("[0].{}", child),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some(format!("Element property of {}", var_path)),
+                        sort_text: Some(format!("1_{:06}_{}", i, child)),
+                        insert_text: Some(format!("[0].{}", child)),
+                        insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        PropertyKind::Object | PropertyKind::Unknown => {
+            // For objects (and unknowns with children), offer child properties
+            for (i, child) in entry.children.iter().enumerate() {
+                // Check if this child is itself an object or array (for detail text)
+                let child_path = format!("{}.{}", var_path, child);
+                let child_kind = shape_map.get(&child_path).map(|e| e.kind.clone()).unwrap_or(PropertyKind::Unknown);
+                let detail = match child_kind {
+                    PropertyKind::Object => format!("Object property of {}", var_path),
+                    PropertyKind::Array => format!("Array property of {}", var_path),
+                    PropertyKind::Scalar => format!("Property of {}", var_path),
+                    PropertyKind::Unknown => format!("Property of {}", var_path),
+                };
+                items.push(CompletionItem {
+                    label: child.clone(),
+                    kind: Some(CompletionItemKind::PROPERTY),
+                    detail: Some(detail),
+                    sort_text: Some(format!("0_{:06}_{}", i, child)),
+                    insert_text: Some(child.clone()),
+                    insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                    ..Default::default()
+                });
+            }
+        }
+        PropertyKind::Scalar => {
+            // Scalars don't have properties — no completions
+        }
+    }
 
     if items.is_empty() {
         None

@@ -11,7 +11,145 @@
 //! syntax. Variable names are extracted identifiers only.
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotVariableFlowParams, KnotVariableFlowResponse } from './types';
+import { KnotLanguageClient, KnotVariableFlowParams, KnotVariableFlowResponse, KnotVariableInfo, KnotVariableProperty, KnotVariableLocation } from './types';
+
+// ---------------------------------------------------------------------------
+// Server → Webview data transformation
+// ---------------------------------------------------------------------------
+
+/**
+ * Transform the server's flat variable response into the nested format
+ * the webview expects for its three-zone rendering.
+ *
+ * Server provides: KnotVariableInfo with flat written_in/read_in arrays.
+ * Webview expects: nested passages array, computed flags, ref counts, etc.
+ */
+function transformVariableFlow(data: KnotVariableFlowResponse): Record<string, unknown> {
+    const variables = (data.variables || []).map(transformVariable);
+    return { variables };
+}
+
+function transformVariable(v: KnotVariableInfo): Record<string, unknown> {
+    // Merge written_in and read_in into a passages map
+    const passageMap = new Map<string, {
+        passage_name: string;
+        writes: KnotVariableLocation[];
+        reads: KnotVariableLocation[];
+    }>();
+
+    for (const loc of v.written_in || []) {
+        let entry = passageMap.get(loc.passage_name);
+        if (!entry) {
+            entry = { passage_name: loc.passage_name, writes: [], reads: [] };
+            passageMap.set(loc.passage_name, entry);
+        }
+        entry.writes.push(loc);
+    }
+    for (const loc of v.read_in || []) {
+        let entry = passageMap.get(loc.passage_name);
+        if (!entry) {
+            entry = { passage_name: loc.passage_name, writes: [], reads: [] };
+            passageMap.set(loc.passage_name, entry);
+        }
+        entry.reads.push(loc);
+    }
+
+    // Build passages array with references
+    const passages = Array.from(passageMap.values()).map(p => {
+        const references = [
+            ...p.writes.map(w => ({
+                is_write: true,
+                line: w.line,
+                is_struct_def: false,
+                is_reassign: false,
+                type_conflict: false,
+            })),
+            ...p.reads.map(r => ({
+                is_write: false,
+                line: r.line,
+                is_struct_def: false,
+                is_reassign: false,
+                type_conflict: false,
+            })),
+        ];
+        return {
+            passage_name: p.passage_name,
+            reachable: true,
+            total_refs: references.length,
+            in_loop: false,
+            references,
+        };
+    });
+
+    // Compute flags
+    const flags: Array<{ flag_type: string; message: string }> = [];
+    if (v.is_unused) {
+        flags.push({ flag_type: 'unused', message: 'This variable is written but never read' });
+    }
+    if (!v.initialized_at_start && (v.written_in || []).length > 0) {
+        flags.push({ flag_type: 'single-use', message: 'Variable may not be initialized before first use' });
+    }
+
+    // Count total refs
+    const totalWrites = (v.written_in || []).length;
+    const totalReads = (v.read_in || []).length;
+
+    // Transform children (properties)
+    const children = (v.properties || []).map(transformProperty);
+
+    return {
+        name: v.name,
+        full_name: v.name,
+        state_path: v.state_path,
+        is_temporary: v.is_temporary,
+        passage_count: passages.length,
+        ref_count: totalWrites + totalReads,
+        initialized_at_start: v.initialized_at_start,
+        is_unused: v.is_unused,
+        flags,
+        passages,
+        children,
+    };
+}
+
+function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
+    const passageMap = new Map<string, {
+        passage_name: string;
+        writes: KnotVariableLocation[];
+        reads: KnotVariableLocation[];
+    }>();
+
+    for (const loc of p.written_in || []) {
+        let entry = passageMap.get(loc.passage_name);
+        if (!entry) {
+            entry = { passage_name: loc.passage_name, writes: [], reads: [] };
+            passageMap.set(loc.passage_name, entry);
+        }
+        entry.writes.push(loc);
+    }
+    for (const loc of p.read_in || []) {
+        let entry = passageMap.get(loc.passage_name);
+        if (!entry) {
+            entry = { passage_name: loc.passage_name, writes: [], reads: [] };
+            passageMap.set(loc.passage_name, entry);
+        }
+        entry.reads.push(loc);
+    }
+
+    const totalWrites = (p.written_in || []).length;
+    const totalReads = (p.read_in || []).length;
+
+    const children = (p.properties || []).map(transformProperty);
+
+    return {
+        name: p.name,
+        full_name: p.full_name,
+        state_path: p.state_path,
+        ref_count: totalWrites + totalReads,
+        passage_count: Array.from(passageMap.keys()).length,
+        children,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Variable Tracking View webview provider (three-zone design)
@@ -64,6 +202,18 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /** Clean up pending timers when the provider is disposed. */
+    public dispose() {
+        if (this._initialRetryTimer) {
+            clearTimeout(this._initialRetryTimer);
+            this._initialRetryTimer = null;
+        }
+        if (this._refreshDebounceTimer) {
+            clearTimeout(this._refreshDebounceTimer);
+            this._refreshDebounceTimer = null;
+        }
+    }
+
     /** Core fetch — returns true if data was obtained. */
     private async _fetchAndPost(): Promise<boolean> {
         if (!this._client || !this._client.isRunning()) {
@@ -83,7 +233,9 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             } as KnotVariableFlowParams);
 
-            this._flowData = result;
+            // Transform the server's flat response into the nested format
+            // the webview expects for its three-zone rendering
+            this._flowData = transformVariableFlow(result) as unknown as KnotVariableFlowResponse;
             this._postFlowData();
             return true;
         } catch (e) {

@@ -189,7 +189,6 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
         DiagnosticKind::EmptyPassage => DiagnosticSeverity::HINT,
         DiagnosticKind::DeadEndPassage => DiagnosticSeverity::INFORMATION,
         DiagnosticKind::InvalidPassageName => DiagnosticSeverity::WARNING,
-        // OrphanedPassage removed — subsumed by UnreachablePassage
         DiagnosticKind::ComplexPassage => DiagnosticSeverity::HINT,
         DiagnosticKind::LargePassage => DiagnosticSeverity::HINT,
         DiagnosticKind::MissingStartLink => DiagnosticSeverity::WARNING,
@@ -220,7 +219,7 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
 pub(crate) fn compute_format_variable_diagnostics(
     workspace: &Workspace,
     registry: &fmt_plugin::FormatRegistry,
-    format: StoryFormat,
+    format: &StoryFormat,
 ) -> Vec<knot_core::FormatVariableDiagnostic> {
     use knot_core::graph::DiagnosticKind;
     use knot_formats::types::VariableDiagnosticKind;
@@ -231,7 +230,7 @@ pub(crate) fn compute_format_variable_diagnostics(
         .map(|m| m.start_passage.as_str())
         .unwrap_or("Start");
 
-    let Some(plugin) = registry.get(&format) else {
+    let Some(plugin) = registry.get(format) else {
         return Vec::new();
     };
 
@@ -277,8 +276,42 @@ pub(crate) fn analyze_with_format_vars(
     registry: &fmt_plugin::FormatRegistry,
 ) -> Vec<knot_core::graph::GraphDiagnostic> {
     let format = workspace.resolve_format();
-    let format_var_diags = compute_format_variable_diagnostics(workspace, registry, format);
-    AnalysisEngine::analyze_with_format_diagnostics(workspace, format_var_diags)
+    let format_var_diags = compute_format_variable_diagnostics(workspace, registry, &format);
+    let mut diagnostics = AnalysisEngine::analyze_with_format_diagnostics(workspace, format_var_diags);
+
+    // Emit UnsupportedFormat diagnostic when the story format is "Core"
+    // (meaning no recognized format was detected). This alerts the user
+    // that format-specific features (macros, variables, etc.) won't work.
+    if format == knot_core::passage::StoryFormat::Core {
+        if let Some(story_data) = workspace.metadata.as_ref() {
+            // There is a StoryData but the format wasn't recognized
+            let format_display = match &story_data.format {
+                knot_core::passage::StoryFormat::Core => "Core (no format specified)".to_string(),
+                other => other.to_string(),
+            };
+            diagnostics.push(knot_core::graph::GraphDiagnostic {
+                passage_name: "StoryData".to_string(),
+                file_uri: String::new(),
+                kind: knot_core::graph::DiagnosticKind::UnsupportedFormat,
+                message: format!(
+                    "Story format '{}' is not supported. Supported formats: SugarCube, Harlowe, Chapbook, Snowman.",
+                    format_display
+                ),
+            });
+        } else if workspace.passage_count() > 0 {
+            // No StoryData at all, but there are passages — the user should
+            // add a StoryData passage to declare a story format so that
+            // format-specific features (macros, variables, etc.) work.
+            diagnostics.push(knot_core::graph::GraphDiagnostic {
+                passage_name: String::new(),
+                file_uri: String::new(),
+                kind: knot_core::graph::DiagnosticKind::UnsupportedFormat,
+                message: "No StoryData passage found. Add a StoryData passage to declare a story format (SugarCube, Harlowe, Chapbook, or Snowman) for format-specific features.".to_string(),
+            });
+        }
+    }
+
+    diagnostics
 }
 
 // ===========================================================================
@@ -360,7 +393,6 @@ pub(crate) fn find_link_locations(
 }
 
 /// Find the definition location of a passage (for unreachable passage related info).
-#[allow(dead_code)]
 pub(crate) fn find_definition_location(
     open_documents: &HashMap<Url, String>,
     passage_name: &str,
@@ -388,7 +420,6 @@ pub(crate) fn find_definition_location(
 }
 
 /// Find all definition locations of a passage name (for duplicate passage diagnostics).
-#[allow(dead_code)]
 pub(crate) fn find_all_definition_locations(
     open_documents: &HashMap<Url, String>,
     passage_name: &str,

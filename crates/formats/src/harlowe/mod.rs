@@ -1155,17 +1155,11 @@ impl FormatPlugin for HarlowePlugin {
             if is_script {
                 // Script passages: store as raw text, skip Harlowe-specific parsing.
                 // Format-specific implicit passage refs can be added here in the future.
-                passage.body = vec![Block::Text {
-                    content: body.to_string(),
-                    span: body_offset..body_offset + body.len(),
-                }];
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
                 tokens.extend(self.header_tokens(header, true));
             } else if is_stylesheet {
                 // Stylesheet passages: no link extraction, no variable extraction.
-                passage.body = vec![Block::Text {
-                    content: body.to_string(),
-                    span: body_offset..body_offset + body.len(),
-                }];
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
                 tokens.extend(self.header_tokens(header, true));
             } else {
                 // Extract body elements using Harlowe-specific parsing.
@@ -1221,10 +1215,7 @@ impl FormatPlugin for HarlowePlugin {
 
         if is_script || is_stylesheet {
             // Script/stylesheet passages: store as raw text.
-            passage.body = vec![Block::Text {
-                content: passage_text.to_string(),
-                span: 0..passage_text.len(),
-            }];
+            passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         } else {
             passage.links = self.extract_links(passage_text, 0);
             passage.vars = self.extract_vars(passage_text, 0);

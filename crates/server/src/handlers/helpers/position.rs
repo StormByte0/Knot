@@ -225,23 +225,6 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     knot_formats::header::extract_passage_name(header)
 }
 
-/// Parse the position from a passage header line's JSON metadata block.
-///
-/// Twee 3 format supports position metadata as a JSON object after tags:
-/// `:: Passage Name [tags] {"position":"100,200"}`
-///
-/// The position is stored in the "position" field as a string "x,y".
-/// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
-/// Both formats are supported.
-///
-/// This is a convenience wrapper around [`parse_passage_metadata_from_header`]
-/// that extracts only the position. Callers that also need `group` or
-/// `color` should use `parse_passage_metadata_from_header` directly.
-#[allow(dead_code)]
-pub(crate) fn parse_passage_position_from_header(line: &str) -> Option<(f64, f64)> {
-    parse_passage_metadata_from_header(line).and_then(|meta| meta.position)
-}
-
 /// Parsed passage metadata from the header line's JSON block.
 ///
 /// The JSON block can contain `position`, `group`, and `color` properties,
@@ -621,4 +604,56 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
         }
     }
     None
+}
+
+/// Find the variable name at the given cursor position in the text.
+/// Returns the variable name (with the `$` sigil) if the cursor is
+/// on a `$variable` reference, or `None` otherwise.
+pub(crate) fn find_variable_at_position(text: &str, position: Position) -> Option<String> {
+    let line_idx = position.line as usize;
+    let line = text.lines().nth(line_idx)?;
+    let char_idx = position.character as usize;
+
+    // Scan backwards from the cursor to find the `$` sigil
+    let mut start = char_idx;
+    while start > 0 && line.as_bytes().get(start - 1).map_or(false, |&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        start -= 1;
+    }
+
+    // Check if the character before the identifier is a variable sigil
+    if start > 0 && line.as_bytes().get(start - 1) == Some(&b'$') {
+        let var_name = &line[start..char_idx.max(start)];
+        if !var_name.is_empty() {
+            return Some(format!("${}", var_name));
+        }
+    }
+
+    None
+}
+
+/// Find the byte offset of the first line of a passage's body
+/// (the line AFTER the `:: Name` header line).
+/// Returns 0 if the passage header is not found.
+pub(crate) fn find_passage_start_offset(text: &str, passage_name: &str) -> usize {
+    let mut offset = 0;
+    for line in text.lines() {
+        if line.starts_with("::") {
+            let name = parse_passage_name_from_header(&line[2..]);
+            if name == passage_name {
+                // The header line itself — the body starts after this line
+                return offset + line.len() + 1; // +1 for the newline
+            }
+        }
+        offset += line.len() + 1; // +1 for the newline
+    }
+    0
+}
+
+/// Convert a byte offset to an LSP Position, returning None if the
+/// offset is out of bounds (unlike the panicking version).
+pub(crate) fn byte_offset_to_position_safe(text: &str, byte_offset: usize) -> Option<Position> {
+    if byte_offset > text.len() {
+        return None;
+    }
+    Some(byte_offset_to_position(text, byte_offset))
 }

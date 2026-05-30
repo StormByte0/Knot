@@ -26,8 +26,6 @@ tsconfig.json
 !media/storymap/**
 
 # Keep the existing media assets
-!media/cytoscape.min.js
-!media/cytoscape-dagre.min.js
 !media/passage-icon.svg
 !media/icon.png
 
@@ -41,5 +39,3 @@ tsconfig.json
 # Documentation (not needed in package)
 README.md
 CHANGELOG.md
-CONTRIBUTING.md
-ARCHITECTURE.md

@@ -911,51 +911,20 @@ impl FormatPlugin for SnowmanPlugin {
             if is_script || is_stylesheet {
                 // Script/stylesheet passages: store as raw text, skip
                 // Snowman-specific template segment parsing.
-                passage.body = vec![Block::Text {
-                    content: body.to_string(),
-                    span: body_offset..body_offset + body.len(),
-                }];
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
 
-                // Header tokens.
-                let (prefix_type, name_type) = if special_def.is_some() {
-                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
-                } else {
-                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
-                };
-                tokens.push(SemanticToken {
-                    start: header.header_start,
-                    length: 2,
-                    token_type: prefix_type,
-                    modifier: None,
-                });
-                tokens.push(SemanticToken {
-                    start: header.name_start,
-                    length: header.name.len(),
-                    token_type: name_type,
-                    modifier: None,
-                });
-
-                // Tag tokens with classification modifiers
-                if !header.tags.is_empty() {
-                    let bracket_start = header.tags_raw.find('[')
-                        .map(|bs| header.name_start + bs)
-                        .unwrap_or(header.name_start + header.name_text_raw.len());
-                    let tags_inner_start = bracket_start + 1;
-                    let mut offset = tags_inner_start;
-                    for tag in &header.tags {
-                        let modifier = self.classify_tag(tag);
-                        if offset > tags_inner_start {
-                            offset += 1;
-                        }
-                        tokens.push(SemanticToken {
-                            start: offset,
-                            length: tag.len(),
-                            token_type: SemanticTokenType::Tag,
-                            modifier,
-                        });
-                        offset += tag.len();
-                    }
-                }
+                // Header + tag tokens.
+                // Use core_specials helpers for correct token types and layer
+                // modifiers — this fixes the bug where tag-matched core passages
+                // (e.g., [script], [stylesheet]) got PassageHeader/PassageName
+                // instead of SpecialPassageHeader/SpecialPassage.
+                let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
+                tokens.extend(crate::core_specials::build_special_header_tokens(
+                    header.name_start,
+                    header.name.len(),
+                    layer,
+                ));
+                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
@@ -964,47 +933,35 @@ impl FormatPlugin for SnowmanPlugin {
                 let segments = self.parse_template_segments(body, body_offset);
                 passage.body = self.build_blocks(&segments);
 
-                // Header tokens. Use distinct types for `::` prefix vs passage name,
-                // and SpecialPassage variants for special passages.
-                let (prefix_type, name_type) = if special_def.is_some() {
-                    (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+                // Header + tag tokens.
+                // Use core_specials helpers for correct token types and layer
+                // modifiers for special passages (both name-matched and
+                // tag-matched core passages).
+                let is_special_for_tokens = crate::core_specials::is_special_for_tokens(
+                    self, &header.name, &header.tags, special_def.as_ref(),
+                );
+                if is_special_for_tokens {
+                    let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
+                    tokens.extend(crate::core_specials::build_special_header_tokens(
+                        header.name_start,
+                        header.name.len(),
+                        layer,
+                    ));
                 } else {
-                    (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
-                };
-                tokens.push(SemanticToken {
-                    start: header.header_start,
-                    length: 2,
-                    token_type: prefix_type,
-                    modifier: None,
-                });
-                tokens.push(SemanticToken {
-                    start: header.name_start,
-                    length: header.name.len(),
-                    token_type: name_type,
-                    modifier: None,
-                });
-
-                // Tag tokens with classification modifiers
-                if !header.tags.is_empty() {
-                    let bracket_start = header.tags_raw.find('[')
-                        .map(|bs| header.name_start + bs)
-                        .unwrap_or(header.name_start + header.name_text_raw.len());
-                    let tags_inner_start = bracket_start + 1;
-                    let mut offset = tags_inner_start;
-                    for tag in &header.tags {
-                        let modifier = self.classify_tag(tag);
-                        if offset > tags_inner_start {
-                            offset += 1;
-                        }
-                        tokens.push(SemanticToken {
-                            start: offset,
-                            length: tag.len(),
-                            token_type: SemanticTokenType::Tag,
-                            modifier,
-                        });
-                        offset += tag.len();
-                    }
+                    tokens.push(SemanticToken {
+                        start: header.header_start,
+                        length: 2,
+                        token_type: SemanticTokenType::PassageHeader,
+                        modifier: None,
+                    });
+                    tokens.push(SemanticToken {
+                        start: header.name_start,
+                        length: header.name.len(),
+                        token_type: SemanticTokenType::PassageName,
+                        modifier: None,
+                    });
                 }
+                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
 
                 // Body tokens.
                 tokens.extend(self.body_tokens(body, body_offset));
@@ -1053,10 +1010,7 @@ impl FormatPlugin for SnowmanPlugin {
 
         if is_script || is_stylesheet {
             // Script/stylesheet passages: store as raw text.
-            passage.body = vec![Block::Text {
-                content: passage_text.to_string(),
-                span: 0..passage_text.len(),
-            }];
+            passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         } else {
             passage.links = self.extract_links(passage_text, 0);
             passage.vars = self.extract_vars(passage_text, 0);

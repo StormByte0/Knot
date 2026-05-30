@@ -22,14 +22,13 @@ export interface KnotGraphNode {
   is_special: boolean;
   is_metadata: boolean;
   is_unreachable: boolean;
-  is_start?: boolean;
+  is_start: boolean;
   position_x?: number;
   position_y?: number;
   group?: string;
   color?: string;
   var_writes: string[];
   var_reads: string[];
-  block?: string;
 }
 
 export interface KnotGraphEdge {

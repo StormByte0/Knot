@@ -925,9 +925,17 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "back",
-            description: "Return to the previous passage.",
+            description: "Return to the previous passage, optionally a specific one.",
             has_body: false,
-            args: None,
+            args: Some(&[MacroArgDef {
+                    position: 0,
+                    label: "passage",
+                    is_passage_ref: true,
+                    is_selector: false,
+                    is_variable: false,
+                    is_required: false,
+                    kind: String,
+                }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Navigation,
@@ -936,9 +944,17 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "return",
-            description: "Navigate using browser history.",
+            description: "Navigate using browser history, optionally to a specific passage.",
             has_body: false,
-            args: None,
+            args: Some(&[MacroArgDef {
+                    position: 0,
+                    label: "passage",
+                    is_passage_ref: true,
+                    is_selector: false,
+                    is_variable: false,
+                    is_required: false,
+                    kind: String,
+                }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Navigation,
@@ -1293,7 +1309,7 @@ pub fn macro_parent_constraints() -> HashMap<&'static str, HashSet<&'static str>
 
 /// Macros that can navigate to a passage dynamically (variable args, runtime resolution).
 pub fn dynamic_navigation_macros() -> HashSet<&'static str> {
-    ["goto", "include", "link", "button", "replace", "append", "prepend"]
+    ["goto", "include", "link", "button", "replace", "append", "prepend", "return", "back"]
         .into_iter()
         .collect()
 }

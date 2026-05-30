@@ -84,7 +84,7 @@ function snap(v: number) { return Math.round(v / GRID_SNAP) * GRID_SNAP; }
 function nodeColor(n: KnotGraphNode): string {
   if (n.color) return n.color;
   if (n.is_unreachable) return COLORS.unreachable;
-  if (n.is_start || n.id === 'Start') return COLORS.start;
+  if (n.is_start) return COLORS.start;
   if (n.is_metadata) return COLORS.metadata;
   if (n.is_special) return COLORS.special;
   return COLORS.normal;
@@ -361,7 +361,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     }
   }
 
-  const startNode = rawNodes.find(n => n.is_start || n.id === 'Start' || n.label === 'Start');
+  const startNode = rawNodes.find(n => n.is_start);
   const startId = startNode?.id;
   const specialSet = new Set<string>(
     rawNodes
@@ -382,14 +382,12 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     for (const mid of members) childToGroup.set(mid, gid);
   }
 
-  const startNodes: KnotGraphNode[] = [];
   const specialNodes: KnotGraphNode[] = [];
   const unreachableNodes: KnotGraphNode[] = [];
   const regularNodes: KnotGraphNode[] = [];
 
   for (const n of rawNodes) {
-    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
-    if (isStart)                   startNodes.push(n);
+    if (n.is_start)                { /* startNode is already captured above; skip */ }
     else if (specialSet.has(n.id)) specialNodes.push(n);
     else if (unreachableSet.has(n.id)) unreachableNodes.push(n);
     else                           regularNodes.push(n);
@@ -400,9 +398,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   );
 
   function makePassageNode(n: KnotGraphNode, x: number, y: number): Node<PassageNodeData> {
-    const isStart = n.is_start || n.id === 'Start' || n.label === 'Start';
     const groupId = childToGroup.get(n.id);
-
     return {
       id: n.id,
       type: 'passage',
@@ -421,7 +417,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         is_special: !!n.is_special,
         is_metadata: !!n.is_metadata,
         is_unreachable: !!n.is_unreachable,
-        is_start: isStart,
+        is_start: !!n.is_start,
         color: nodeColor(n),
         metadata_color: n.color,
         var_writes: n.var_writes || [],

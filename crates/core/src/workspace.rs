@@ -20,6 +20,43 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use url::Url;
 
+/// A user-defined special passage declaration from `.vscode/knot.json`.
+///
+/// This is the config-file representation, which gets converted to a
+/// full `SpecialPassageDef` during classification. Only the essential
+/// fields are exposed to keep the configuration simple.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSpecialPassageDef {
+    /// The passage name to match (exact, case-sensitive).
+    /// Mutually exclusive with `tag`; one must be set.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The passage tag to match (e.g., "sidebar" for `[sidebar]` passages).
+    /// Mutually exclusive with `name`; one must be set.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// The behavior category for this special passage.
+    /// Defaults to "Custom" if not specified.
+    #[serde(default = "default_user_behavior")]
+    pub behavior: String,
+    /// Whether this passage contributes variables to the dataflow analysis.
+    /// Defaults to true for startup/custom behaviors.
+    #[serde(default = "default_true")]
+    pub contributes_variables: bool,
+    /// Whether this passage should appear in the passage graph.
+    /// Defaults to true.
+    #[serde(default = "default_true")]
+    pub participates_in_graph: bool,
+}
+
+fn default_user_behavior() -> String {
+    "Custom".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Knot-specific workspace configuration.
 /// Loaded from `.vscode/knot.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +80,22 @@ pub struct KnotConfig {
     /// modifying source files.
     #[serde(default)]
     pub format: Option<String>,
+    /// User-defined special passages. Each entry declares a passage that
+    /// should be treated as special, with a matching strategy, behavior,
+    /// and other properties. These are merged with the format plugin's
+    /// built-in special passages during classification.
+    ///
+    /// Example `.vscode/knot.json`:
+    /// ```json
+    /// {
+    ///   "special_passages": [
+    ///     { "name": "MyInit", "behavior": "startup" },
+    ///     { "tag": "sidebar", "behavior": "chrome" }
+    ///   ]
+    /// }
+    /// ```
+    #[serde(default)]
+    pub special_passages: Vec<UserSpecialPassageDef>,
 }
 
 

@@ -295,11 +295,14 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
 
                 // Classify the edge type based on the macro name.
                 // <<goto>> is an unconditional redirect (Jump), <<include>>
-                // is a passage inclusion (Include). Everything else (<<link>>,
-                // <<button>>, <<actions>>, etc.) is a player-choice navigation.
+                // is a passage inclusion (Include). <<return>> and <<back>>
+                // with a passage name argument are also navigation links.
+                // Everything else (<<link>>, <<button>>, <<actions>>,
+                // etc.) is a player-choice navigation.
                 let edge_type_hint = match macro_name {
                     "goto" => Some(knot_core::graph::EdgeType::Jump),
                     "include" => Some(knot_core::graph::EdgeType::Include),
+                    "return" | "back" => Some(knot_core::graph::EdgeType::Navigation),
                     _ => None,
                 };
 

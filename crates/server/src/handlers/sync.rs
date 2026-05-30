@@ -406,7 +406,6 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
         ("EmptyPassage", "empty-passage"),
         ("DeadEndPassage", "dead-end-passage"),
         ("InvalidPassageName", "invalid-passage-name"),
-        // OrphanedPassage removed — subsumed by UnreachablePassage
         ("ComplexPassage", "complex-passage"),
         ("LargePassage", "large-passage"),
     ];

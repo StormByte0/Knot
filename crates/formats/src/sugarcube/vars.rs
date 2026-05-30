@@ -170,6 +170,12 @@ pub(crate) static RE_IF_MACRO: LazyLock<Regex> =
 pub(crate) static RE_CAPTURE_MACRO: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<<capture\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
+/// `<<capture $var.prop.path ...>>` — capture macro with dot-path variable.
+/// Captures the full dot-path variable name (e.g., `$player.state.stress`).
+pub(crate) static RE_CAPTURE_MACRO_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<capture\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)"
+).unwrap());
+
 /// `$var =` — JS-style assignment of a persistent SugarCube variable
 /// within `<<run>>` macro bodies. Must be filtered in code to exclude
 /// `==`/`===` comparisons and compound assignments (`+=`, etc.).
@@ -180,6 +186,312 @@ pub(crate) static RE_JS_VAR_ASSIGN: LazyLock<Regex> =
 /// within `<<run>>` macro bodies (also `-=`, `*=`, `/=`, `%=`).
 pub(crate) static RE_JS_VAR_COMPOUND: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
+
+// ---------------------------------------------------------------------------
+// Dot-path assignment regexes
+// ---------------------------------------------------------------------------
+
+/// `<<set $var.prop.path to ...>>` — TwineScript `to` assignment for dot-path vars.
+/// Captures the full dot-path variable name (e.g., `$player.state.stress`).
+pub(crate) static RE_SET_MACRO_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s+to\b"
+).unwrap());
+
+/// `<<set $var.prop.path = ...>>` — JavaScript `=` assignment for dot-path vars.
+/// Captures the full dot-path variable name.
+pub(crate) static RE_SET_MACRO_EQ_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s*="
+).unwrap());
+
+/// `<<set $var.prop.path += ...>>` — Compound assignment for dot-path vars.
+pub(crate) static RE_SET_MACRO_COMPOUND_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s*([\+\-\*\/%])="
+).unwrap());
+
+/// `<<set $var to {}>>` or `<<set $var = {}>>` — Object literal assignment.
+/// Indicates the variable holds a JSON-like object.
+pub(crate) static RE_SET_OBJECT_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+(?:to|=)\s*\{"
+).unwrap());
+
+/// `<<set $var to []>>` or `<<set $var = []>>` — Array literal assignment.
+/// Indicates the variable holds an array.
+pub(crate) static RE_SET_ARRAY_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+(?:to|=)\s*\["
+).unwrap());
+
+/// Extract object literal property keys from a JavaScript/SugarCube object body.
+///
+/// Given the text between `{` and `}` of an object literal, this function
+/// extracts all top-level property keys (both quoted and unquoted) and
+/// recurses into nested object values to discover sub-properties.
+///
+/// Returns a map from each top-level key name to its set of known child keys
+/// (empty set if the value is a scalar). For example:
+///
+/// ```js
+/// {
+///   "plain-bra-white": {
+///     name: "White Cotton Bra",
+///     tags: ["underwear","basic"]
+///   },
+///   "pencil-skirt": {
+///     name: "Navy Pencil Skirt"
+///   }
+/// }
+/// ```
+///
+/// produces:
+/// ```text
+/// "plain-bra-white" → {"name", "tags"}
+/// "pencil-skirt" → {"name"}
+/// ```
+///
+/// The function handles:
+/// - Quoted keys: `"key-name"` or `'key-name'`
+/// - Bare (identifier) keys: `name`, `category`
+/// - Comments (`/* ... */` and `// ...`) are skipped
+/// - String values are skipped (not parsed as objects)
+/// - Nested objects: their keys become children
+fn extract_object_keys(body: &str) -> HashMap<String, HashSet<String>> {
+    let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+    let bytes = body.as_bytes();
+    let len = bytes.len();
+    let mut pos = 0;
+
+    while pos < len {
+        // Skip whitespace and commas
+        if bytes[pos].is_ascii_whitespace() || bytes[pos] == b',' {
+            pos += 1;
+            continue;
+        }
+
+        // Skip block comments /* ... */
+        if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
+            if let Some(end) = body[pos + 2..].find("*/") {
+                pos += 2 + end + 2;
+                continue;
+            }
+            break; // unterminated comment
+        }
+
+        // Skip line comments // ...
+        if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
+            if let Some(newline) = body[pos + 2..].find('\n') {
+                pos += 2 + newline + 1;
+                continue;
+            }
+            break; // unterminated comment to end
+        }
+
+        // Extract the key
+        let key = if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+            // Quoted key
+            let quote = bytes[pos];
+            let start = pos + 1;
+            let mut end = start;
+            while end < len {
+                if bytes[end] == b'\\' && end + 1 < len {
+                    end += 2; // skip escaped char
+                } else if bytes[end] == quote {
+                    break;
+                } else {
+                    end += 1;
+                }
+            }
+            let key_str = body[start..end].to_string();
+            pos = end + 1; // skip closing quote
+            key_str
+        } else if bytes[pos].is_ascii_alphabetic() || bytes[pos] == b'_' || bytes[pos] == b'$' {
+            // Bare identifier key
+            let start = pos;
+            while pos < len && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_' || bytes[pos] == b'$') {
+                pos += 1;
+            }
+            body[start..pos].to_string()
+        } else {
+            // Unknown character, skip
+            pos += 1;
+            continue;
+        };
+
+        // Skip whitespace and colon
+        while pos < len && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b':') {
+            pos += 1;
+        }
+
+        // Now we're at the value. Determine what it is.
+        // Skip whitespace
+        while pos < len && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        if pos < len && bytes[pos] == b'{' {
+            // Value is an object — extract its keys as children
+            let obj_body = extract_balanced_braces(body, pos);
+            if let Some((inner, end_pos)) = obj_body {
+                let children = extract_object_keys(&inner);
+                let child_names: HashSet<String> = children.keys().cloned().collect();
+                result.insert(key.clone(), child_names);
+
+                // Also insert nested children's children for deep property tracking
+                for (child_key, grandchild_keys) in children {
+                    let full_child_path = format!("{}.{}", key, child_key);
+                    result.insert(full_child_path, grandchild_keys);
+                }
+
+                pos = end_pos;
+            } else {
+                // Unbalanced braces — just mark as object
+                result.insert(key, HashSet::new());
+                break;
+            }
+        } else if pos < len && bytes[pos] == b'[' {
+            // Value is an array — skip over it (we don't extract array element shapes here)
+            let arr_body = extract_balanced_brackets(body, pos);
+            if let Some(end_pos) = arr_body {
+                pos = end_pos;
+            } else {
+                break;
+            }
+            // Don't add array values as properties
+            result.insert(key, HashSet::new());
+        } else {
+            // Scalar value (string, number, boolean, null, etc.) or expression
+            // Skip to the next comma or closing brace
+            result.insert(key, HashSet::new());
+            // Advance past the value
+            let mut depth = 0;
+            while pos < len {
+                if bytes[pos] == b'{' || bytes[pos] == b'[' || bytes[pos] == b'(' {
+                    depth += 1;
+                } else if bytes[pos] == b'}' || bytes[pos] == b']' || bytes[pos] == b')' {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                } else if bytes[pos] == b',' && depth == 0 {
+                    break;
+                } else if bytes[pos] == b'"' || bytes[pos] == b'\'' {
+                    // Skip string literal
+                    let quote = bytes[pos];
+                    pos += 1;
+                    while pos < len {
+                        if bytes[pos] == b'\\' && pos + 1 < len {
+                            pos += 2;
+                        } else if bytes[pos] == quote {
+                            break;
+                        } else {
+                            pos += 1;
+                        }
+                    }
+                }
+                pos += 1;
+            }
+        }
+    }
+
+    result
+}
+
+/// Extract the content between balanced `{` and `}` starting at `start_pos`.
+///
+/// Returns `Some((inner_content, end_position))` where `inner_content` is the
+/// text between the opening and closing braces, and `end_position` is the
+/// position after the closing `}`. Returns `None` if braces are unbalanced.
+fn extract_balanced_braces(text: &str, start_pos: usize) -> Option<(String, usize)> {
+    let bytes = text.as_bytes();
+    if start_pos >= bytes.len() || bytes[start_pos] != b'{' {
+        return None;
+    }
+
+    let mut depth = 0;
+    let mut pos = start_pos;
+    let mut in_string: Option<u8> = None;
+
+    while pos < bytes.len() {
+        if let Some(quote) = in_string {
+            if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
+                pos += 2;
+                continue;
+            }
+            if bytes[pos] == quote {
+                in_string = None;
+            }
+            pos += 1;
+            continue;
+        }
+
+        match bytes[pos] {
+            b'"' | b'\'' => {
+                in_string = Some(bytes[pos]);
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = text[start_pos + 1..pos].to_string();
+                    return Some((inner, pos + 1));
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    None
+}
+
+/// Extract balanced `[` and `]` starting at `start_pos`.
+///
+/// Returns `Some(end_position)` after the closing `]`, or `None` if unbalanced.
+fn extract_balanced_brackets(text: &str, start_pos: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if start_pos >= bytes.len() || bytes[start_pos] != b'[' {
+        return None;
+    }
+
+    let mut depth = 0;
+    let mut pos = start_pos;
+    let mut in_string: Option<u8> = None;
+
+    while pos < bytes.len() {
+        if let Some(quote) = in_string {
+            if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
+                pos += 2;
+                continue;
+            }
+            if bytes[pos] == quote {
+                in_string = None;
+            }
+            pos += 1;
+            continue;
+        }
+
+        match bytes[pos] {
+            b'"' | b'\'' => {
+                in_string = Some(bytes[pos]);
+            }
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(pos + 1);
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    None
+}
+
+/// `$var[index]` or `$var.prop[index]` — array index access (read or write).
+/// Captures the base variable path and the index expression.
+pub(crate) static RE_VAR_INDEX_ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+    r"\$([A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)*)\[([^\]]+)\]"
+).unwrap());
 
 // ---------------------------------------------------------------------------
 // Variable extraction
@@ -196,7 +508,9 @@ pub(crate) static RE_JS_VAR_COMPOUND: LazyLock<Regex> =
 /// ## Detected patterns
 ///
 /// - `<<set $var to ...>>` / `<<set $var = ...>>` — base assignment
+/// - `<<set $var.prop.path to ...>>` / `<<set $var.prop.path = ...>>` — dot-path assignment (WRITE)
 /// - `<<set $var += ...>>` — compound assignment (also `-=`, `*=`, `/=`, `%=`)
+/// - `<<set $var.prop.path += ...>>` — dot-path compound assignment (WRITE)
 /// - `<<capture $var ...>>` — capture/assign a variable (WRITE)
 /// - `<<run $var = value>>` — JS assignment inside `<<run>>` macro (WRITE)
 /// - `<<run $var += value>>` — JS compound assignment inside `<<run>>` (WRITE)
@@ -220,6 +534,114 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     let mut vars = Vec::new();
     let mut init_spans: Vec<Range<usize>> = Vec::new();
     let mut unset_spans: Vec<Range<usize>> = Vec::new();
+    let mut dot_path_init_spans: Vec<Range<usize>> = Vec::new(); // spans for dot-path inits
+
+    // ── Dot-path assignment detection (must run before base-level) ────
+    // These patterns capture the FULL dot-path variable name (e.g.,
+    // `$player.state.stress`) so that property attribution works correctly
+    // in the sidebar variable tree and in completions.
+    //
+    // <<set $var.prop.path to ...>>
+    for caps in RE_SET_MACRO_DOT.captures_iter(body) {
+        let full = caps.get(0).unwrap();
+        let var_name = caps.get(1).unwrap().as_str();
+        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + var_name.len();
+
+        // Skip $$ escape markup
+        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
+            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
+        });
+        if is_dollar_escape {
+            continue;
+        }
+
+        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_dup {
+            vars.push(VarOp {
+                name: var_name.to_string(),
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+            init_spans.push(var_start..var_end);
+            dot_path_init_spans.push(var_start..var_end);
+        }
+    }
+
+    // <<set $var.prop.path = ...>> (but NOT compound like +=)
+    for caps in RE_SET_MACRO_EQ_DOT.captures_iter(body) {
+        let full = caps.get(0).unwrap();
+        let var_name = caps.get(1).unwrap().as_str();
+        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + var_name.len();
+
+        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
+            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
+        });
+        if is_dollar_escape {
+            continue;
+        }
+
+        // Skip if this is a compound assignment (already handled below)
+        let is_compound = RE_SET_MACRO_COMPOUND_DOT.captures_iter(body).any(|cc| {
+            cc.get(0).unwrap().start() == full.start()
+        });
+        if is_compound {
+            continue;
+        }
+
+        // Skip == or ===
+        let after_match = body.get(full.end()..).unwrap_or("");
+        if after_match.starts_with('=') {
+            continue;
+        }
+
+        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_dup {
+            vars.push(VarOp {
+                name: var_name.to_string(),
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+            init_spans.push(var_start..var_end);
+            dot_path_init_spans.push(var_start..var_end);
+        }
+    }
+
+    // <<set $var.prop.path += ...>> etc.
+    for caps in RE_SET_MACRO_COMPOUND_DOT.captures_iter(body) {
+        let full = caps.get(0).unwrap();
+        let var_name = caps.get(1).unwrap().as_str();
+        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + var_name.len();
+
+        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
+            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
+        });
+        if is_dollar_escape {
+            continue;
+        }
+
+        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_dup {
+            vars.push(VarOp {
+                name: var_name.to_string(),
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+            init_spans.push(var_start..var_end);
+            dot_path_init_spans.push(var_start..var_end);
+        }
+    }
 
     // ── Assignment detection: <<set $var to ...>> ─────────────────────
     for caps in RE_SET_MACRO.captures_iter(body) {
@@ -306,7 +728,44 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         }
     }
 
-    // ── Capture macro: <<capture $var ...>> — WRITE ──────────────────
+    // ── Capture macro: <<capture $var.prop.path ...>> — WRITE (dot-path) ──
+    // Must run before the base-level capture to register the full dot-path
+    // span in init_spans, preventing the base-level scan from creating a
+    // spurious `$player` Init when the real reference is `$player.state.stress`.
+    for caps in RE_CAPTURE_MACRO_DOT.captures_iter(body) {
+        let full = caps.get(0).unwrap();
+        let var_name = caps.get(1).unwrap().as_str();
+        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
+        let var_end = var_start + var_name.len();
+
+        // Skip $$ escape markup
+        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
+            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
+        });
+        if is_dollar_escape {
+            continue;
+        }
+
+        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
+            var_start >= s.start && var_end <= s.end
+        });
+        if !is_dup {
+            vars.push(VarOp {
+                name: var_name.to_string(),
+                kind: VarKind::Init,
+                span: var_start..var_end,
+                is_temporary: false,
+            });
+            init_spans.push(var_start..var_end);
+            dot_path_init_spans.push(var_start..var_end);
+        }
+    }
+
+    // ── Capture macro: <<capture $var ...>> — WRITE (base-level) ──────
+    // NOTE: RE_CAPTURE_MACRO only captures the base variable name (no dots),
+    // so for `<<capture $player.state.stress>>` it captures just `$player`.
+    // We must skip these when the variable is actually part of a longer
+    // dot-path reference. The RE_CAPTURE_MACRO_DOT scan above handles those.
     for caps in RE_CAPTURE_MACRO.captures_iter(body) {
         let m = caps.get(0).unwrap();
         let var_match = caps.get(1).unwrap();
@@ -314,10 +773,21 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
         let var_end = var_start + name.len();
 
+        // Skip if this base-level capture is actually part of a longer
+        // dot-path (handled by RE_CAPTURE_MACRO_DOT above)
+        let is_dot_subspan = RE_CAPTURE_MACRO_DOT
+            .captures_iter(body)
+            .any(|dcaps| {
+                let dfull = dcaps.get(0).unwrap();
+                let dot_start = body_offset + dfull.start() + dfull.as_str().find('$').unwrap_or(0);
+                let dot_end = body_offset + dfull.end();
+                var_start >= dot_start && var_end < dot_end
+            });
+
         let is_dup = init_spans.iter().any(|s| {
             var_start >= s.start && var_end <= s.end
         });
-        if !is_dup {
+        if !is_dup && !is_dot_subspan {
             vars.push(VarOp {
                 name,
                 kind: VarKind::Init,
@@ -329,12 +799,30 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     }
 
     // ── Conditional macros: <<if $var>>, <<elseif $var>>, <<when $var>> — READ ──
+    // NOTE: RE_IF_MACRO only captures the base variable name (no dots),
+    // so for `<<if $player.state.stress>>` it captures just `$player`.
+    // We must skip these when the variable is actually part of a longer
+    // dot-path reference — otherwise a spurious root-level read is created
+    // that pollutes the sidebar variable tree.
     for caps in RE_IF_MACRO.captures_iter(body) {
         let m = caps.get(0).unwrap();
         let var_match = caps.get(1).unwrap();
         let name = format!("${}", var_match.as_str());
         let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
         let var_end = var_start + name.len();
+
+        // Skip if this variable reference is actually part of a longer
+        // dot-path (e.g., `<<if $player.state.stress>>` — the RE_IF_MACRO
+        // only captures `$player` but the real reference is `$player.state.stress`).
+        // The RE_VAR_DOT_PATH scan below will capture the full path instead.
+        let is_dot_subspan = RE_VAR_DOT_PATH
+            .captures_iter(body)
+            .any(|dcaps| {
+                let dfull = dcaps.get(0).unwrap();
+                let dot_start = body_offset + dfull.start();
+                let dot_end = body_offset + dfull.end();
+                var_start >= dot_start && var_end < dot_end
+            });
 
         // Only record if not already recorded at this exact span (avoids
         // double-counting with the general RE_VAR scan below)
@@ -346,7 +834,7 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         let is_init = init_spans.iter().any(|s| {
             var_start >= s.start && var_end <= s.end
         });
-        if !is_already && !is_init {
+        if !is_already && !is_init && !is_dot_subspan {
             vars.push(VarOp {
                 name,
                 kind: VarKind::Read,
@@ -994,6 +1482,27 @@ pub(crate) fn build_state_variable_registry(
                     entry.known_properties.insert(path.clone());
                 }
 
+                // Also extract properties from object literal assignments.
+                // When we see `<<set $var to {...}>>` or `<<set $var = {...}>>`,
+                // parse the object body to discover its property keys. This handles
+                // cases like `$ITEMS = { "plain-bra-white": { name: "...", ... } }`
+                // where properties are defined inline rather than accessed via dot notation.
+                if matches!(location.kind, VarAccessKind::Assign) {
+                    if let Some(obj_props) = extract_object_literal_properties_for_var(
+                        passage, &var.name,
+                    ) {
+                        // Add the extracted keys as known properties
+                        for (prop_path, children) in &obj_props {
+                            entry.known_properties.insert(prop_path.clone());
+                            // Also add intermediate paths for nested objects
+                            for child in children {
+                                let full_child_path = format!("{}.{}", prop_path, child);
+                                entry.known_properties.insert(full_child_path);
+                            }
+                        }
+                    }
+                }
+
                 // Record the location in the appropriate list
                 match &location.kind {
                     VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
@@ -1053,6 +1562,74 @@ fn parse_var_name(name: &str) -> (String, String, Option<String>) {
         };
         (base_name, dollar_name, None)
     }
+}
+
+/// Extract property keys from an object literal assignment in a passage body.
+///
+/// Given a variable name (e.g., `$ITEMS`) and a passage, this function scans
+/// the passage body for `<<set $ITEMS = {...}>>` or `<<set $ITEMS to {...}>>`
+/// patterns. If found, it parses the object literal body and returns a map
+/// from property key name to its child key set (for nested objects).
+///
+/// This handles the case where all properties are defined inline in the
+/// object literal rather than accessed via dot notation — e.g.:
+/// ```twee
+/// <<set $ITEMS = {
+///   "plain-bra-white": {
+///     name: "White Cotton Bra",
+///     category: "apparel"
+///   }
+/// }>>
+/// ```
+fn extract_object_literal_properties_for_var(
+    passage: &knot_core::passage::Passage,
+    var_name: &str,
+) -> Option<HashMap<String, HashSet<String>>> {
+    // Reconstruct passage body text from parsed blocks for regex scanning
+    let body: String = passage.body.iter().map(|block| match block {
+        knot_core::passage::Block::Text { content, .. } => content.clone(),
+        knot_core::passage::Block::Macro { name, args, .. } => {
+            let mut s = String::with_capacity(name.len() + args.len() + 8);
+            s.push_str("<<");
+            s.push_str(name);
+            if !args.is_empty() {
+                s.push(' ');
+                s.push_str(args);
+            }
+            s.push_str(">>");
+            s
+        }
+        knot_core::passage::Block::Expression { content, .. } => content.clone(),
+        knot_core::passage::Block::Heading { content, .. } => content.clone(),
+        knot_core::passage::Block::Incomplete { content, .. } => content.clone(),
+    }).collect::<Vec<String>>().join("\n");
+
+    // Strip the $ sigil for matching against regex capture group
+    let var_name_without_sigil = if var_name.starts_with('$') {
+        &var_name[1..]
+    } else {
+        var_name
+    };
+
+    // Search for <<set $var = {...}>> or <<set $var to {...}>>
+    for caps in RE_SET_OBJECT_LITERAL.captures_iter(&body) {
+        let captured_name = caps.get(1).unwrap().as_str();
+        if captured_name != var_name_without_sigil {
+            continue;
+        }
+
+        // Find the opening brace and extract the balanced object body
+        let full_match = caps.get(0).unwrap();
+        let brace_pos = full_match.as_str().find('{')?;
+        let abs_brace_pos = full_match.start() + brace_pos;
+
+        if let Some((inner, _end_pos)) = extract_balanced_braces(&body, abs_brace_pos) {
+            let keys = extract_object_keys(&inner);
+            return Some(keys);
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1628,12 +2205,170 @@ fn compute_line_from_offset(
     0
 }
 
+/// Infer the structural kind (Object, Array, Scalar) of each variable and
+/// property from assignment patterns observed in the source code.
+///
+/// Scans all passages for patterns like:
+/// - `<<set $var to {}>>` / `<<set $var = {}>>` → Object
+/// - `<<set $var to []>>` / `<<set $var = []>>` → Array
+/// - `$var[index]` → Array (the base variable)
+/// - `$var.prop` (dot access) → the parent is Object
+/// - `<<set $var to 100>>` → Scalar (if no other evidence)
+///
+/// Returns a map from dollar-prefixed variable name (or full dot-path for
+/// properties) to its inferred `PropertyKind`.
+pub(crate) fn infer_variable_shapes(
+    workspace: &knot_core::Workspace,
+) -> HashMap<String, crate::types::PropertyKind> {
+    use crate::types::PropertyKind;
+
+    let mut shapes: HashMap<String, PropertyKind> = HashMap::new();
+
+    for doc in workspace.documents() {
+        for passage in &doc.passages {
+            if passage.is_metadata() {
+                continue;
+            }
+            // Reconstruct passage body text from parsed blocks for regex scanning.
+            // The body is stored as structured Block objects, but shape inference
+            // needs the raw text to match patterns like `<<set $var to {}>>`.
+            let body: String = passage.body.iter().map(|block| match block {
+                knot_core::passage::Block::Text { content, .. } => content.clone(),
+                knot_core::passage::Block::Macro { name, args, .. } => {
+                    let mut s = String::with_capacity(name.len() + args.len() + 8);
+                    s.push_str("<<");
+                    s.push_str(name);
+                    if !args.is_empty() {
+                        s.push(' ');
+                        s.push_str(args);
+                    }
+                    s.push_str(">>");
+                    s
+                }
+                knot_core::passage::Block::Expression { content, .. } => content.clone(),
+                knot_core::passage::Block::Heading { content, .. } => content.clone(),
+                knot_core::passage::Block::Incomplete { content, .. } => content.clone(),
+            }).collect::<Vec<String>>().join("\n");
+
+            // Detect object literal assignments: <<set $var to {}>> or <<set $var = {}>>
+            for caps in RE_SET_OBJECT_LITERAL.captures_iter(&body) {
+                let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                shapes.entry(var_name.clone()).or_insert(PropertyKind::Object);
+
+                // Also extract sub-properties from the object literal body
+                // to mark them as Object if they contain nested objects
+                let full_match = caps.get(0).unwrap();
+                if let Some(brace_pos) = full_match.as_str().find('{') {
+                    let abs_brace_pos = full_match.start() + brace_pos;
+                    if let Some((inner, _)) = extract_balanced_braces(&body, abs_brace_pos) {
+                        let keys = extract_object_keys(&inner);
+                        for (key, children) in &keys {
+                            let full_prop = format!("{}.{}", var_name, key);
+                            // If the property has children, it's an Object
+                            if !children.is_empty() {
+                                shapes.entry(full_prop.clone())
+                                    .and_modify(|existing| {
+                                        if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                            *existing = PropertyKind::Object;
+                                        }
+                                    })
+                                    .or_insert(PropertyKind::Object);
+                            }
+                            // Also mark deeper nested properties as Object
+                            for child in children {
+                                let full_child = format!("{}.{}", full_prop, child);
+                                // Check if this child itself has children (from the keys map)
+                                if let Some(grandchildren) = keys.get(&format!("{}.{}", key, child)) {
+                                    if !grandchildren.is_empty() {
+                                        shapes.entry(full_child)
+                                            .and_modify(|existing| {
+                                                if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                                    *existing = PropertyKind::Object;
+                                                }
+                                            })
+                                            .or_insert(PropertyKind::Object);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Detect array literal assignments: <<set $var to []>> or <<set $var = []>>
+            for caps in RE_SET_ARRAY_LITERAL.captures_iter(&body) {
+                let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                shapes.entry(var_name).or_insert(PropertyKind::Array);
+            }
+
+            // Detect bracket-index access: $var[index] or $var.prop[index]
+            // This indicates the base variable is an array
+            for caps in RE_VAR_INDEX_ACCESS.captures_iter(&body) {
+                let base_path = caps.get(1).unwrap().as_str();
+                let dollar_name = format!("${}", base_path);
+
+                // The variable (or property) before the brackets is an Array
+                // Widen from Unknown/Scalar to Array, but don't downgrade Object to Array
+                shapes.entry(dollar_name.clone())
+                    .and_modify(|existing| {
+                        if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                            *existing = PropertyKind::Array;
+                        }
+                    })
+                    .or_insert(PropertyKind::Array);
+            }
+
+            // Detect dot-path accesses: if $var.prop is seen, $var is at least Object
+            for caps in RE_VAR_DOT_PATH.captures_iter(&body) {
+                let full_path = caps.get(1).unwrap().as_str();
+                let _dollar_name = format!("${}", full_path);
+
+                // Skip $$ escape
+                let full_match = caps.get(0).unwrap();
+                if full_match.start() > 0 && body.as_bytes()[full_match.start() - 1] == b'$' {
+                    continue;
+                }
+
+                // If the path has dots, the parent is Object
+                if let Some(dot_pos) = full_path.find('.') {
+                    let parent = format!("${}", &full_path[..dot_pos]);
+                    shapes.entry(parent)
+                        .and_modify(|existing| {
+                            if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                *existing = PropertyKind::Object;
+                            }
+                        })
+                        .or_insert(PropertyKind::Object);
+
+                    // Also mark intermediate paths as Object
+                    let segments: Vec<&str> = full_path.split('.').collect();
+                    for i in 1..segments.len().saturating_sub(1) {
+                        let intermediate = format!("${}", segments[..=i].join("."));
+                        shapes.entry(intermediate)
+                            .and_modify(|existing| {
+                                if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
+                                    *existing = PropertyKind::Object;
+                                }
+                            })
+                            .or_insert(PropertyKind::Object);
+                    }
+                }
+            }
+        }
+    }
+
+    shapes
+}
+
 pub(crate) fn build_variable_tree(
     workspace: &knot_core::Workspace,
 ) -> Vec<crate::types::VariableTreeNode> {
-    use crate::types::{VariableTreeNode, VariableUsageLocation};
+    use crate::types::{PropertyKind, VariableTreeNode, VariableUsageLocation};
 
     let registry = build_state_variable_registry(workspace);
+
+    // Build shape inferences from assignment patterns across all passages
+    let shape_map = infer_variable_shapes(workspace);
 
     let mut variables: Vec<VariableTreeNode> = Vec::new();
 
@@ -1671,6 +2406,9 @@ pub(crate) fn build_variable_tree(
 
         let is_unused = !written_in.is_empty() && read_in.is_empty();
 
+        // Determine the kind for this variable from the shape map
+        let kind = shape_map.get(dollar_name).cloned().unwrap_or(PropertyKind::Unknown);
+
         // Build property tree from known_properties
         let properties = build_property_tree(
             dollar_name,
@@ -1678,6 +2416,7 @@ pub(crate) fn build_variable_tree(
             &state_var.write_locations,
             &state_var.read_locations,
             workspace,
+            &shape_map,
         );
 
         variables.push(VariableTreeNode {
@@ -1689,6 +2428,7 @@ pub(crate) fn build_variable_tree(
             initialized_at_start: state_var.seeded_by_special,
             is_unused,
             properties,
+            kind,
         });
     }
 
@@ -1709,14 +2449,23 @@ pub(crate) fn build_variable_tree(
 ///   .sword
 ///   .shield
 /// ```
+///
+/// ## Fix: intermediate node attribution
+///
+/// Previous versions only matched locations where `path == prop_name`, which
+/// meant `$player.state.stress` (path = "state.stress") was never attributed
+/// to the intermediate `.state` node. Now we also match
+/// `path.starts_with("prop_name.")` so that writes/reads to deeper paths
+/// bubble up to their intermediate parent nodes.
 fn build_property_tree(
     dollar_name: &str,
     known_properties: &HashSet<String>,
     write_locations: &[VarLocation],
     read_locations: &[VarLocation],
     workspace: &knot_core::Workspace,
+    shape_map: &HashMap<String, crate::types::PropertyKind>,
 ) -> Vec<crate::types::VariablePropertyNode> {
-    use crate::types::{VariablePropertyNode, VariableUsageLocation};
+    use crate::types::{PropertyKind, VariablePropertyNode, VariableUsageLocation};
 
     // Collect immediate children (first segment of each path)
     let mut children: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -1749,12 +2498,17 @@ fn build_property_tree(
         };
         let state_path = format!("State.variables.{}.{}", base_without_sigil, prop_name);
 
-        // Collect write locations for this specific property path
+        // Collect write locations for this property.
+        // Match three sources:
+        //   1. PropertyWrite where path == prop_name (direct property write)
+        //   2. PropertyWrite where path.starts_with("prop_name.") (nested property write)
+        //   3. Base-level Assign on the parent variable (e.g., `<<set $ITEMS = {...}>>`
+        //      implicitly writes all child properties)
         let mut prop_written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in write_locations {
             match &loc.kind {
                 VarAccessKind::PropertyWrite { path } => {
-                    if path == &prop_name {
+                    if path == &prop_name || path.starts_with(&format!("{}.", prop_name)) {
                         prop_written_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
@@ -1763,16 +2517,26 @@ fn build_property_tree(
                         });
                     }
                 }
+                VarAccessKind::Assign => {
+                    // A base-level assignment like `<<set $ITEMS = {...}>>` implicitly
+                    // writes all child properties. Attribute the write to this property.
+                    prop_written_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: true,
+                        line: compute_line_from_offset(workspace, &loc.file_uri, loc.span.start),
+                    });
+                }
                 _ => {}
             }
         }
 
-        // Collect read locations for this specific property path
+        // Collect read locations for this property (same matching logic, plus base-level reads)
         let mut prop_read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in read_locations {
             match &loc.kind {
                 VarAccessKind::PropertyRead { path } => {
-                    if path == &prop_name {
+                    if path == &prop_name || path.starts_with(&format!("{}.", prop_name)) {
                         prop_read_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
                             file_uri: loc.file_uri.clone(),
@@ -1781,31 +2545,59 @@ fn build_property_tree(
                         });
                     }
                 }
+                VarAccessKind::Read => {
+                    // A base-level read like `$ITEMS` implicitly reads all properties.
+                    // Attribute the read to this property.
+                    prop_read_in.push(VariableUsageLocation {
+                        passage_name: loc.passage_name.clone(),
+                        file_uri: loc.file_uri.clone(),
+                        is_write: false,
+                        line: compute_line_from_offset(workspace, &loc.file_uri, loc.span.start),
+                    });
+                }
                 _ => {}
             }
         }
+
+        // Determine the kind for this property from the shape map
+        let kind = shape_map.get(&full_name).cloned().unwrap_or_else(|| {
+            // Infer kind from structure: if it has children, it's an Object
+            if !sub_paths.is_empty() {
+                PropertyKind::Object
+            } else {
+                PropertyKind::Unknown
+            }
+        });
 
         // Build sub-properties recursively
         let sub_properties = if sub_paths.is_empty() {
             Vec::new()
         } else {
             let sub_set: HashSet<String> = sub_paths.into_iter().collect();
-            // Filter write/read locations for sub-paths
+            // Filter write/read locations for sub-paths.
+            // Include both PropertyWrite paths (with prefix stripping) AND base-level
+            // Assign/Read locations (which implicitly apply to all sub-properties).
             let sub_writes: Vec<VarLocation> = write_locations
                 .iter()
                 .filter(|loc| match &loc.kind {
                     VarAccessKind::PropertyWrite { path } => {
                         path.starts_with(&format!("{}.", prop_name))
                     }
+                    VarAccessKind::Assign => {
+                        // Base-level assignments implicitly write all sub-properties
+                        true
+                    }
                     _ => false,
                 })
                 .cloned()
                 .map(|mut loc| {
-                    // Adjust path: strip the "prop_name." prefix
+                    // Adjust path: strip the "prop_name." prefix for PropertyWrite
                     if let VarAccessKind::PropertyWrite { path } = &loc.kind {
                         let new_path = path.strip_prefix(&format!("{}.", prop_name)).unwrap_or(path).to_string();
                         loc.kind = VarAccessKind::PropertyWrite { path: new_path };
                     }
+                    // Assign kind is left as-is — it means "base-level assignment" and
+                    // applies to all child properties in the recursive tree
                     loc
                 })
                 .collect();
@@ -1815,6 +2607,10 @@ fn build_property_tree(
                 .filter(|loc| match &loc.kind {
                     VarAccessKind::PropertyRead { path } => {
                         path.starts_with(&format!("{}.", prop_name))
+                    }
+                    VarAccessKind::Read => {
+                        // Base-level reads implicitly read all sub-properties
+                        true
                     }
                     _ => false,
                 })
@@ -1835,7 +2631,26 @@ fn build_property_tree(
                 &sub_writes,
                 &sub_reads,
                 workspace,
+                shape_map,
             )
+        };
+
+        // For Array-kind properties, build the element_shape from sub-properties
+        // (the sub-properties represent the shape of each element)
+        let element_shape = if kind == PropertyKind::Array && !sub_properties.is_empty() {
+            Some(Box::new(VariablePropertyNode {
+                name: "[0]".to_string(),
+                full_name: format!("{}[0]", full_name),
+                state_path: format!("{}[0]", state_path),
+                line: 0,
+                written_in: Vec::new(),
+                read_in: Vec::new(),
+                properties: sub_properties.clone(),
+                kind: PropertyKind::Object,
+                element_shape: None,
+            }))
+        } else {
+            None
         };
 
         result.push(VariablePropertyNode {
@@ -1851,8 +2666,173 @@ fn build_property_tree(
             written_in: prop_written_in,
             read_in: prop_read_in,
             properties: sub_properties,
+            kind,
+            element_shape,
         });
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Tests for sidebar attribution bug fixes
+// ---------------------------------------------------------------------------
+
+
+#[cfg(test)]
+mod sidebar_tests {
+    use super::*;
+
+    /// Test that `<<if $player.state.stress>>` does NOT produce a spurious
+    /// `$player` base-level Read. The only Read should be for the full
+    /// dot-path `$player.state.stress`.
+    #[test]
+    fn test_if_macro_dot_path_no_spurious_root_read() {
+        let body = "<<if $player.state.stress>>stressed<</if>>";
+        let vars = extract_vars(body, 0);
+
+        // Should NOT have a $player base-level read
+        let player_base_reads: Vec<_> = vars.iter()
+            .filter(|v| v.name == "$player" && v.kind == VarKind::Read)
+            .collect();
+        assert!(
+            player_base_reads.is_empty(),
+            "RE_IF_MACRO should NOT produce a spurious '$player' base-level Read for <<if $player.state.stress>>. \
+             Found: {:?}", player_base_reads
+        );
+
+        // Should have the full dot-path read
+        assert!(
+            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Read),
+            "Should have a '$player.state.stress' Read from RE_VAR_DOT_PATH"
+        );
+    }
+
+    /// Test that `<<elseif $player.state.stress>>` also avoids the spurious read.
+    #[test]
+    fn test_elseif_macro_dot_path_no_spurious_root_read() {
+        let body = "<<if $x>><<elseif $player.state.stress>>stressed<</if>>";
+        let vars = extract_vars(body, 0);
+
+        let player_base_reads: Vec<_> = vars.iter()
+            .filter(|v| v.name == "$player" && v.kind == VarKind::Read)
+            .collect();
+        assert!(
+            player_base_reads.is_empty(),
+            "RE_IF_MACRO (elseif) should NOT produce a spurious '$player' Read. Found: {:?}",
+            player_base_reads
+        );
+
+        assert!(
+            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Read),
+            "Should have a '$player.state.stress' Read"
+        );
+    }
+
+    /// Test that `<<capture $player.state.stress>>` produces the full dot-path
+    /// Init, NOT a spurious `$player` base-level Init.
+    #[test]
+    fn test_capture_macro_dot_path_no_spurious_root_write() {
+        let body = "<<capture $player.state.stress>><</capture>>";
+        let vars = extract_vars(body, 0);
+
+        // Should NOT have a $player base-level Init from the capture macro
+        let player_base_inits: Vec<_> = vars.iter()
+            .filter(|v| v.name == "$player" && v.kind == VarKind::Init)
+            .collect();
+        assert!(
+            player_base_inits.is_empty(),
+            "RE_CAPTURE_MACRO should NOT produce a spurious '$player' base-level Init for <<capture $player.state.stress>>. \
+             Found: {:?}", player_base_inits
+        );
+
+        // Should have the full dot-path Init
+        assert!(
+            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Init),
+            "Should have a '$player.state.stress' Init from RE_CAPTURE_MACRO_DOT"
+        );
+    }
+
+    /// Test that base-level `<<if $player>>` still works correctly
+    /// (not a dot-path, so the normal behavior is fine).
+    #[test]
+    fn test_if_macro_base_var_still_works() {
+        let body = "<<if $player>>exists<</if>>";
+        let vars = extract_vars(body, 0);
+
+        assert!(
+            vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Read),
+            "Base-level <<if $player>> should still produce a '$player' Read"
+        );
+    }
+
+    /// Test that base-level `<<capture $player>>` still works correctly.
+    #[test]
+    fn test_capture_macro_base_var_still_works() {
+        let body = "<<capture $player>><</capture>>";
+        let vars = extract_vars(body, 0);
+
+        assert!(
+            vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Init),
+            "Base-level <<capture $player>> should still produce a '$player' Init"
+        );
+    }
+
+    /// Test that `extract_object_keys` correctly parses a simple object literal.
+    #[test]
+    fn test_extract_object_keys_simple() {
+        let body = r#""plain-bra-white": {
+            name: "White Cotton Bra",
+            category: "apparel"
+        },
+        "pencil-skirt": {
+            name: "Navy Pencil Skirt"
+        }"#;
+        let keys = extract_object_keys(body);
+
+        assert!(keys.contains_key("plain-bra-white"), "Should extract 'plain-bra-white' key");
+        assert!(keys.contains_key("pencil-skirt"), "Should extract 'pencil-skirt' key");
+        assert!(keys["plain-bra-white"].contains("name"), "plain-bra-white should have 'name' child");
+        assert!(keys["plain-bra-white"].contains("category"), "plain-bra-white should have 'category' child");
+        assert!(keys["pencil-skirt"].contains("name"), "pencil-skirt should have 'name' child");
+    }
+
+    /// Test that `extract_object_keys` handles comments inside object literals.
+    #[test]
+    fn test_extract_object_keys_with_comments() {
+        let body = r#"/* -- SECTION -- */
+        "item1": {
+            name: "Item 1" // comment
+        },
+        // line comment
+        "item2": {
+            name: "Item 2"
+        }"#;
+        let keys = extract_object_keys(body);
+
+        assert!(keys.contains_key("item1"), "Should extract 'item1' key despite comments");
+        assert!(keys.contains_key("item2"), "Should extract 'item2' key despite comments");
+        assert!(keys["item1"].contains("name"), "item1 should have 'name' child");
+    }
+
+    /// Test that `extract_object_keys` handles deeply nested objects.
+    #[test]
+    fn test_extract_object_keys_deep_nesting() {
+        let body = r#""player": {
+            "state": {
+                "stress": 0,
+                "energy": 100
+            },
+            "name": "Alice"
+        }"#;
+        let keys = extract_object_keys(body);
+
+        assert!(keys.contains_key("player"), "Should extract 'player' key");
+        assert!(keys["player"].contains("state"), "player should have 'state' child");
+        assert!(keys["player"].contains("name"), "player should have 'name' child");
+        // Deep path tracking
+        assert!(keys.contains_key("player.state"), "Should have 'player.state' path");
+        assert!(keys["player.state"].contains("stress"), "player.state should have 'stress' child");
+        assert!(keys["player.state"].contains("energy"), "player.state should have 'energy' child");
+    }
 }

@@ -17,6 +17,7 @@
 //!    a target line within the passage.
 
 import * as vscode from 'vscode';
+import { isTweeLanguage, extractPassageName } from './utils';
 
 // ---------------------------------------------------------------------------
 // Re-exports: shared state set during activation
@@ -225,57 +226,4 @@ export async function navigateToPassage(passageName: string, targetLine?: number
 
     vscode.window.showWarningMessage(`Knot: Passage '${passageName}' not found in workspace.`);
     return false;
-}
-
-// ---------------------------------------------------------------------------
-// Shared utilities (duplicated from extension.ts to avoid circular imports)
-// ---------------------------------------------------------------------------
-
-const TWEE_LANGUAGE_IDS = ['twee', 'twee-sugarcube', 'twee-harlowe', 'twee-chapbook', 'twee-snowman'];
-
-function isTweeLanguage(languageId: string): boolean {
-    return TWEE_LANGUAGE_IDS.includes(languageId);
-}
-
-/**
- * Extract the passage name from a `::` header line.
- *
- * Strips `::` prefix, `[tag]` blocks, and `{JSON}` metadata blocks,
- * matching the Rust-side `extract_passage_name()`.
- */
-function extractPassageName(headerLine: string): string {
-    let name = headerLine.replace(/^::\s*/, '');
-    name = stripJsonBlock(name);
-    name = stripTagBlock(name);
-    return name.trim();
-}
-
-function stripJsonBlock(s: string): string {
-    const start = s.indexOf('{');
-    if (start < 0) { return s; }
-    let depth = 0;
-    for (let i = start; i < s.length; i++) {
-        if (s[i] === '{') { depth++; }
-        else if (s[i] === '}') {
-            depth--;
-            if (depth === 0) {
-                const candidate = s.substring(start, i + 1);
-                try {
-                    JSON.parse(candidate);
-                    return s.substring(0, start) + s.substring(i + 1);
-                } catch {
-                    return s;
-                }
-            }
-        }
-    }
-    return s;
-}
-
-function stripTagBlock(s: string): string {
-    const start = s.indexOf('[');
-    if (start < 0) { return s; }
-    const end = s.indexOf(']', start);
-    if (end < 0) { return s; }
-    return s.substring(0, start) + s.substring(end + 1);
 }

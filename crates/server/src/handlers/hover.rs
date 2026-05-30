@@ -16,6 +16,7 @@
 //! in this file — all syntax-specific logic lives in the format plugin.
 
 use crate::handlers::helpers;
+use crate::handlers::macros;
 use crate::state::ServerState;
 use knot_formats::plugin as fmt_plugin;
 use knot_formats::types::MacroArgKind;
@@ -164,18 +165,22 @@ fn try_macro_hover(
     let macro_info = plugin.find_macro_at_position(line, byte_pos)?;
 
     if let Some(mdef) = plugin.find_macro(&macro_info.name) {
-        // Use the format plugin's label formatting — no hardcoded <<>>
-        let mut hover_text = format!(
-            "**Macro** `{}`\n\n{}",
-            plugin.format_macro_label(mdef.name),
-            mdef.description
-        );
+        // Use the macros handler's classification for kind-aware hover
+        let kind = macros::classify(mdef.name, mdef, plugin);
+
+        let mut hover_text = macros::hover_header(kind, &plugin.format_macro_label(mdef.name));
+        hover_text.push_str(&format!("\n\n{}", mdef.description));
 
         // Add deprecation warning
         if mdef.deprecated {
             if let Some(msg) = mdef.deprecation_message {
                 hover_text.push_str(&format!("\n\n⚠ **Deprecated**: {}", msg));
             }
+        }
+
+        // Add kind-specific note (e.g., "Close with <</if>>")
+        if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
+            hover_text.push_str(&format!("\n\n{}", note));
         }
 
         // Add parameter info

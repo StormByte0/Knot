@@ -23,7 +23,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsParams, KnotUpdatePositionsResponse } from './types';
+import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsResponse } from './types';
 import { navigateToPassage, findTargetViewColumn } from './navigation';
 
 // ---------------------------------------------------------------------------
@@ -96,11 +96,6 @@ export class StoryMapPanelManager {
 
     // setDebugViewProvider removed — cross-view sync is now handled by
     // the centralized navigation module (navigation.ts).
-
-    /** Check if the panel is currently visible. */
-    public isVisible(): boolean {
-        return this._panel !== null && this._panel.visible;
-    }
 
     /** Get the panel's view column, if open. */
     public get viewColumn(): vscode.ViewColumn | undefined {
@@ -336,11 +331,6 @@ export class StoryMapPanelManager {
      * - If the graph is in column 1 and no other editors exist, create a
      *   column beside it (ViewColumn.Beside).
      */
-    // _findTargetViewColumn removed — use the shared findTargetViewColumn()
-    // from navigation.ts instead. Kept as a thin wrapper for the fallback
-    // file-only navigation path above.
-
-
     /** Generate HTML for the webview.
      *
      *  This loads the pre-built React application from `media/storymap/`.

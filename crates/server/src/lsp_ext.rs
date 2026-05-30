@@ -57,6 +57,8 @@ pub struct KnotGraphNode {
     pub is_metadata: bool,
     /// Whether this passage is unreachable from the start passage.
     pub is_unreachable: bool,
+    /// Whether this is the story's start passage (parsed from StoryData).
+    pub is_start: bool,
     /// The x-coordinate of the passage in the Twine visual editor, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_x: Option<f64>,
@@ -75,10 +77,6 @@ pub struct KnotGraphNode {
     /// Node color from passage header metadata (hex or named).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Block assignment for this node (placeholder for future block
-    /// detection). `None` means no block has been assigned yet.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub block: Option<String>,
 }
 
 /// A directed edge (link) between two passages.
@@ -157,6 +155,9 @@ pub struct KnotVariableInfo {
     /// Each property may itself have sub-properties (e.g., `$player.inventory.sword`
     /// means `inventory` has a sub-property `sword`).
     pub properties: Vec<KnotVariableProperty>,
+    /// The structural kind of this variable: "scalar", "object", "array", or "unknown".
+    /// Inferred from assignment patterns (e.g., `<<set $var to {}>>` → "object").
+    pub kind: String,
 }
 
 /// A known property of a state variable, reflecting the tree structure
@@ -180,6 +181,13 @@ pub struct KnotVariableProperty {
     /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
     /// property would have `sword` as a sub-property).
     pub properties: Vec<KnotVariableProperty>,
+    /// The structural kind of this property: "scalar", "object", "array", or "unknown".
+    /// Inferred from assignment patterns.
+    pub kind: String,
+    /// For array-kind properties: the shape of each array element.
+    /// `None` means the element shape is unknown (scalar or mixed).
+    /// Contains a virtual KnotVariableProperty representing the element's structure.
+    pub element_shape: Option<Box<KnotVariableProperty>>,
 }
 
 /// Location where a variable is used within a passage.

@@ -18,23 +18,60 @@ fn convert_properties(
 ) -> Vec<KnotVariableProperty> {
     props
         .into_iter()
-        .map(|p| KnotVariableProperty {
-            name: p.name,
-            full_name: p.full_name,
-            state_path: p.state_path,
-            written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
-                passage_name: l.passage_name,
-                file_uri: l.file_uri,
-                is_write: l.is_write,
-                line: l.line,
-            }).collect(),
-            read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
-                passage_name: l.passage_name,
-                file_uri: l.file_uri,
-                is_write: l.is_write,
-                line: l.line,
-            }).collect(),
-            properties: convert_properties(p.properties),
+        .map(|p| {
+            let kind_str = match p.kind {
+                knot_formats::types::PropertyKind::Scalar => "scalar",
+                knot_formats::types::PropertyKind::Object => "object",
+                knot_formats::types::PropertyKind::Array => "array",
+                knot_formats::types::PropertyKind::Unknown => "unknown",
+            };
+            let element_shape = p.element_shape.map(|shape| {
+                Box::new(KnotVariableProperty {
+                    name: shape.name,
+                    full_name: shape.full_name,
+                    state_path: shape.state_path,
+                    written_in: shape.written_in.into_iter().map(|l| KnotVariableLocation {
+                        passage_name: l.passage_name,
+                        file_uri: l.file_uri,
+                        is_write: l.is_write,
+                        line: l.line,
+                    }).collect(),
+                    read_in: shape.read_in.into_iter().map(|l| KnotVariableLocation {
+                        passage_name: l.passage_name,
+                        file_uri: l.file_uri,
+                        is_write: l.is_write,
+                        line: l.line,
+                    }).collect(),
+                    properties: convert_properties(shape.properties),
+                    kind: match shape.kind {
+                        knot_formats::types::PropertyKind::Scalar => "scalar".to_string(),
+                        knot_formats::types::PropertyKind::Object => "object".to_string(),
+                        knot_formats::types::PropertyKind::Array => "array".to_string(),
+                        knot_formats::types::PropertyKind::Unknown => "unknown".to_string(),
+                    },
+                    element_shape: None, // nested element_shape not needed yet
+                })
+            });
+            KnotVariableProperty {
+                name: p.name,
+                full_name: p.full_name,
+                state_path: p.state_path,
+                written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                    line: l.line,
+                }).collect(),
+                read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
+                    passage_name: l.passage_name,
+                    file_uri: l.file_uri,
+                    is_write: l.is_write,
+                    line: l.line,
+                }).collect(),
+                properties: convert_properties(p.properties),
+                kind: kind_str.to_string(),
+                element_shape,
+            }
         })
         .collect()
 }
@@ -217,13 +254,13 @@ impl ServerState {
                 is_special: n.is_special,
                 is_metadata: n.is_metadata,
                 is_unreachable: n.is_unreachable,
+                is_start: n.label == start_passage,
                 position_x: n.position.map(|(x, _)| x),
                 position_y: n.position.map(|(_, y)| y),
                 group: n.group,
                 color: n.color,
                 var_writes: n.var_writes,
                 var_reads: n.var_reads,
-                block: n.block,
             })
             .collect();
 
@@ -466,25 +503,34 @@ impl ServerState {
         // No VarAccessKind matching, no "State.variables" hardcoding.
         let variables: Vec<KnotVariableInfo> = tree_nodes
             .into_iter()
-            .map(|node| KnotVariableInfo {
-                name: node.name,
-                state_path: node.state_path,
-                is_temporary: node.is_temporary,
-                written_in: node.written_in.into_iter().map(|l| KnotVariableLocation {
-                    passage_name: l.passage_name,
-                    file_uri: l.file_uri,
-                    is_write: l.is_write,
-                    line: l.line,
-                }).collect(),
-                read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
-                    passage_name: l.passage_name,
-                    file_uri: l.file_uri,
-                    is_write: l.is_write,
-                    line: l.line,
-                }).collect(),
-                initialized_at_start: node.initialized_at_start,
-                is_unused: node.is_unused,
-                properties: convert_properties(node.properties),
+            .map(|node| {
+                let kind_str = match node.kind {
+                    knot_formats::types::PropertyKind::Scalar => "scalar",
+                    knot_formats::types::PropertyKind::Object => "object",
+                    knot_formats::types::PropertyKind::Array => "array",
+                    knot_formats::types::PropertyKind::Unknown => "unknown",
+                };
+                KnotVariableInfo {
+                    name: node.name,
+                    state_path: node.state_path,
+                    is_temporary: node.is_temporary,
+                    written_in: node.written_in.into_iter().map(|l| KnotVariableLocation {
+                        passage_name: l.passage_name,
+                        file_uri: l.file_uri,
+                        is_write: l.is_write,
+                        line: l.line,
+                    }).collect(),
+                    read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
+                        passage_name: l.passage_name,
+                        file_uri: l.file_uri,
+                        is_write: l.is_write,
+                        line: l.line,
+                    }).collect(),
+                    initialized_at_start: node.initialized_at_start,
+                    is_unused: node.is_unused,
+                    properties: convert_properties(node.properties),
+                    kind: kind_str.to_string(),
+                }
             })
             .collect();
 

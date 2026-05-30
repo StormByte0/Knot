@@ -52,7 +52,6 @@ mod tests {
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::EmptyPassage), DiagnosticSeverity::HINT);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::DeadEndPassage), DiagnosticSeverity::INFORMATION);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::InvalidPassageName), DiagnosticSeverity::WARNING);
-        // OrphanedPassage removed — subsumed by UnreachablePassage
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::ComplexPassage), DiagnosticSeverity::HINT);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::LargePassage), DiagnosticSeverity::HINT);
         assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::MissingStartLink), DiagnosticSeverity::WARNING);
@@ -108,46 +107,6 @@ mod tests {
             parse_passage_name_from_header("Story JavaScript [script] {\"position\":\"100,200\"}"),
             "Story JavaScript"
         );
-    }
-
-    // -----------------------------------------------------------------------
-    // parse_passage_position_from_header
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_parse_position_from_header_string_format() {
-        let pos = parse_passage_position_from_header(":: Start {\"position\":\"100,200\"}");
-        assert_eq!(pos, Some((100.0, 200.0)));
-    }
-
-    #[test]
-    fn test_parse_position_from_header_with_tags() {
-        let pos = parse_passage_position_from_header(":: Start [important] {\"position\":\"50,75\"}");
-        assert_eq!(pos, Some((50.0, 75.0)));
-    }
-
-    #[test]
-    fn test_parse_position_from_header_object_format() {
-        let pos = parse_passage_position_from_header(":: Start {\"position\":{\"x\":100,\"y\":200}}");
-        assert_eq!(pos, Some((100.0, 200.0)));
-    }
-
-    #[test]
-    fn test_parse_position_from_header_no_position() {
-        let pos = parse_passage_position_from_header(":: Start");
-        assert_eq!(pos, None);
-    }
-
-    #[test]
-    fn test_parse_position_from_header_json_no_position() {
-        let pos = parse_passage_position_from_header(":: Start {\"ifid\":\"ABC\"}");
-        assert_eq!(pos, None);
-    }
-
-    #[test]
-    fn test_parse_position_from_header_decimal() {
-        let pos = parse_passage_position_from_header(":: Start {\"position\":\"100.5,200.75\"}");
-        assert_eq!(pos, Some((100.5, 200.75)));
     }
 
     // -----------------------------------------------------------------------

@@ -172,7 +172,7 @@ pub enum SpecialPassageLayer {
     /// [init], [widget] for SugarCube; [header], [footer], [startup]
     /// for Harlowe). Defined by the active format plugin.
     StoryFormat,
-    /// User-defined special passages (not yet implemented).
+    /// User-defined special passages declared in `.vscode/knot.json`.
     UserDefined,
 }
 
@@ -468,6 +468,47 @@ pub struct ScaffoldInfo {
     /// An empty string means the passage body is left empty for the user.
     #[serde(default)]
     pub default_content: String,
+}
+
+impl SpecialPassageDef {
+    /// Create a `SpecialPassageDef` from a user configuration entry.
+    ///
+    /// This converts the simplified config format into the full definition
+    /// used by the classification pipeline. If the behavior string doesn't
+    /// match a known behavior, it becomes `Custom(behavior_string)`.
+    pub fn from_user_config(user: &crate::workspace::UserSpecialPassageDef) -> Option<Self> {
+        let match_strategy = if user.name.is_some() {
+            MatchStrategy::Name
+        } else if user.tag.is_some() {
+            MatchStrategy::Tag
+        } else {
+            return None; // Must have either name or tag
+        };
+
+        let name = user.name.clone().unwrap_or_else(|| user.tag.clone().unwrap_or_default());
+        let behavior = match user.behavior.to_lowercase().as_str() {
+            "startup" => SpecialPassageBehavior::Startup,
+            "chrome" => SpecialPassageBehavior::Chrome,
+            "chrome_interceptor" => SpecialPassageBehavior::ChromeInterceptor,
+            "script_injection" | "script" => SpecialPassageBehavior::ScriptInjection,
+            "style_injection" | "style" => SpecialPassageBehavior::StyleInjection,
+            "structure_template" => SpecialPassageBehavior::StructureTemplate,
+            "metadata" => SpecialPassageBehavior::Metadata,
+            "passage_ready" => SpecialPassageBehavior::PassageReady,
+            other => SpecialPassageBehavior::Custom(other.to_string()),
+        };
+
+        Some(SpecialPassageDef {
+            name,
+            match_strategy,
+            behavior,
+            contributes_variables: user.contributes_variables,
+            participates_in_graph: user.participates_in_graph,
+            execution_priority: None,
+            layer: SpecialPassageLayer::UserDefined,
+            scaffold: None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react';
-import { VsCodeApi, KnotGraphResponse, WebviewInboundMessage, WebviewOutboundMessage } from './types';
+import { useState, useEffect, useCallback, Component, ReactNode } from 'react';
+import { VsCodeApi, KnotGraphResponse, WebviewInboundMessage } from './types';
 import StoryMap from './components/StoryMap';
 import Toolbar from './components/Toolbar';
 import Legend from './components/Legend';

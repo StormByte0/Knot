@@ -36,9 +36,8 @@ export interface KnotGraphNode {
     is_special: boolean;
     is_metadata: boolean;
     is_unreachable: boolean;
-    /** True if this is the story's start passage (parsed from StoryData).
-     *  Not yet populated by the server — client falls back to name heuristic. */
-    is_start?: boolean;
+    /** True if this is the story's start passage (parsed from StoryData). */
+    is_start: boolean;
     /** The x-coordinate of the passage in the Twine visual editor, if available. */
     position_x?: number;
     /** The y-coordinate of the passage in the Twine visual editor, if available. */
@@ -51,8 +50,6 @@ export interface KnotGraphNode {
     var_writes: string[];
     /** Persistent variable names read in this passage. */
     var_reads: string[];
-    /** Block assignment placeholder for future block detection. */
-    block?: string;
 }
 
 export interface KnotGraphEdge {
@@ -167,25 +164,6 @@ export interface KnotPassageLink {
 export interface KnotPassageDiagnostic {
     kind: string;
     message: string;
-}
-
-// ---------------------------------------------------------------------------
-// Variable watch types (matches Rust-side KnotWatchVariablesResponse)
-// ---------------------------------------------------------------------------
-
-export interface KnotWatchVariable {
-    name: string;
-    is_temporary: boolean;
-    file_uri: string;
-    last_written_in: string | null;
-}
-
-export interface KnotWatchVariablesResponse {
-    at_passage: string;
-    initialized_at_entry: KnotWatchVariable[];
-    written_in_passage: KnotWatchVariable[];
-    read_in_passage: KnotWatchVariable[];
-    potentially_uninitialized: KnotWatchVariable[];
 }
 
 // ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@
 //! still get core Twine engine highlights and handlers.
 
 use knot_core::passage::{
-    Block, Link, Passage, SpecialPassageDef, StoryFormat,
+    Link, Passage, SpecialPassageDef, StoryFormat,
 };
 use url::Url;
 
@@ -294,10 +294,7 @@ impl FormatPlugin for TwineCorePlugin {
             }
 
             // Build body text blocks
-            let body_blocks = vec![Block::Text {
-                content: body_text.to_string(),
-                span: body_offset..(body_offset + body_text.len()),
-            }];
+            let body_blocks = crate::core_specials::raw_body_blocks(body_text, body_offset);
 
             let links = Self::extract_links(body_text, body_offset);
 
@@ -333,10 +330,7 @@ impl FormatPlugin for TwineCorePlugin {
 
         let mut passage = Passage::new(passage_name.to_string(), 0..passage_text.len());
         passage.tags = passage_tags.to_vec();
-        passage.body = vec![Block::Text {
-            content: passage_text.to_string(),
-            span: 0..passage_text.len(),
-        }];
+        passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         passage.links = links;
         passage.vars = Vec::new();
         passage.is_special = is_special;

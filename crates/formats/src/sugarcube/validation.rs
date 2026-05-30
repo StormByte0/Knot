@@ -202,6 +202,7 @@ fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<
 #[derive(Debug)]
 struct MacroEvent {
     /// Byte offset of the event within the body.
+    /// Retained for future span-based diagnostics; currently unused by the validation pass.
     #[allow(dead_code)]
     offset: usize,
     /// Macro name (without `/` prefix for close tags).

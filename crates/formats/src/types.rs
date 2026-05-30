@@ -348,6 +348,47 @@ pub enum VariableDiagnosticKind {
 // Variable tree types (format-agnostic)
 // ---------------------------------------------------------------------------
 
+/// The structural kind of a variable or property — affects completions and
+/// how the variable tree is displayed. Inferred from assignment patterns
+/// observed in the source code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertyKind {
+    /// A scalar value (string, number, boolean, null). No children.
+    Scalar,
+    /// An object with named properties. Children are property nodes.
+    Object,
+    /// An array. Children represent the shape of each element; the
+    /// `element_shape` field on `VariablePropertyNode` describes what
+    /// each array element looks like for completion purposes.
+    Array,
+    /// Unknown — no assignment has been observed that reveals the shape.
+    /// This is the default before any type inference runs.
+    Unknown,
+}
+
+impl Default for PropertyKind {
+    fn default() -> Self {
+        PropertyKind::Unknown
+    }
+}
+
+/// A shape-aware entry in the property map, used for dot-notation completions.
+///
+/// For each variable (e.g., `$player`), this entry records:
+/// - The set of immediate child properties (e.g., {"name", "hp", "state"})
+/// - The structural kind (Object, Array, Scalar, or Unknown)
+/// - For arrays, the element shape so that `$items[0].` completions work
+#[derive(Debug, Clone)]
+pub struct PropertyMapEntry {
+    /// Immediate child property names (e.g., {"name", "hp"} for `$player`).
+    pub children: HashSet<String>,
+    /// The structural kind of this variable or property.
+    pub kind: PropertyKind,
+    /// For Array-kind entries: the shape of each array element.
+    /// `None` means the element shape is unknown (scalar or mixed).
+    pub element_shape: Option<Box<PropertyMapEntry>>,
+}
+
 /// A simplified usage location for tree output — just passage and file info.
 ///
 /// This is the format-agnostic version of `VarLocation`. Format plugins
@@ -400,6 +441,9 @@ pub struct VariableTreeNode {
     /// state hierarchy (e.g., `$player.name`, `$player.hp` are children
     /// of `$player`). Each property may itself have sub-properties.
     pub properties: Vec<VariablePropertyNode>,
+    /// The structural kind of this variable — inferred from assignments.
+    /// Affects completions and how the tree is displayed.
+    pub kind: PropertyKind,
 }
 
 /// A property node in the variable tree, reflecting the hierarchical structure
@@ -432,4 +476,13 @@ pub struct VariablePropertyNode {
     /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
     /// property would have `sword` as a sub-property).
     pub properties: Vec<VariablePropertyNode>,
+    /// The structural kind of this property — inferred from assignments.
+    /// For arrays, `element_shape` describes what each array element looks like.
+    pub kind: PropertyKind,
+    /// For Array-kind properties: the shape of each array element.
+    /// `None` means the element shape is unknown (scalar or mixed).
+    /// `Some` contains a property node representing the element's structure.
+    /// For example, if `$items` is an array and `$items[0].name` is seen,
+    /// element_shape would be a virtual node with `.name` as a child.
+    pub element_shape: Option<Box<VariablePropertyNode>>,
 }

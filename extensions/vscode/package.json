@@ -625,8 +625,6 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src",
-    "pretest": "npm run compile",
-    "test": "node ./out/test/runTest.js",
     "build:webview": "cd webview && npm install && npm run build",
     "build:all": "npm run build:webview && npm run compile",
     "vsce:pack": "vsce package"

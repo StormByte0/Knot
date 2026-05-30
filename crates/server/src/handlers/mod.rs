@@ -16,6 +16,7 @@ pub mod helpers;
 pub mod hover;
 pub mod knot_ext;
 pub mod lifecycle;
+pub mod macros;
 pub mod navigation;
 pub mod semantic;
 pub mod structure;
@@ -270,9 +271,4 @@ impl LanguageServer for ServerState {
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>, tower_lsp::jsonrpc::Error> {
         call_hierarchy::outgoing_calls(self, params).await
     }
-
-    // NOTE: The pull-diagnostic handler (`textDocument/diagnostic`) is intentionally
-    // removed. The server uses the push model (`publish_diagnostics`) exclusively.
-    // Running both models simultaneously causes VS Code to display every diagnostic
-    // twice, which makes errors and warnings appear duplicated in hover.
 }
