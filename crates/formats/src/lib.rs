@@ -47,6 +47,8 @@ pub use types::{
     VirtualDocument, VirtualSection, VirtualSectionKind, LineMapping,
     StartupAlias, AliasResolution,
     UserCallable, UserCallableKind, PassageInfo,
+    PropertyKind, PropertyMapEntry,
+    PassageVarRef,
 };
 pub use virtual_doc::VirtualDocHooks;
 

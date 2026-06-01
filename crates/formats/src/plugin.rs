@@ -1058,6 +1058,22 @@ pub trait FormatPlugin: Send + Sync {
         HashMap::new()
     }
 
+    /// Build a shape-aware property map for dot-notation completion.
+    ///
+    /// This enriches the basic `build_object_property_map()` with structural
+    /// type information (`PropertyKind`: Scalar, Object, Array, Unknown) and
+    /// array element shapes. The completion handler uses this to offer:
+    /// - Array methods (`.length`, `.push()`) for Array-kind variables
+    /// - Child properties for Object-kind variables
+    /// - No completions for Scalar-kind variables
+    /// - Element property completions via `[0].prop` for arrays with known element shape
+    ///
+    /// The default implementation returns an empty map (no shape-aware completion).
+    /// Format plugins that support dot-notation completion should override this.
+    fn build_shape_aware_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
+        HashMap::new()
+    }
+
     // -----------------------------------------------------------------------
     // State variable registry & diagnostics (optional)
     // -----------------------------------------------------------------------
@@ -1284,6 +1300,35 @@ pub trait FormatPlugin: Send + Sync {
         } else {
             Some(vdoc)
         }
+    }
+
+    /// Extract variable references for a specific passage from the virtual document.
+    ///
+    /// This is the format-agnostic entry point used by passage diagnostics to
+    /// show which variables are read/written in a passage, with exact line
+    /// numbers mapped from the virtual document back to the original source.
+    ///
+    /// The default implementation:
+    /// 1. Builds the virtual document via `build_virtual_document()`
+    /// 2. Extracts all variable accesses from the virtual document
+    /// 3. Filters for the requested passage
+    /// 4. Returns format-agnostic `PassageVarRef` instances with line numbers
+    ///
+    /// Format plugins that need custom extraction logic (e.g., SugarCube's
+    /// alias resolution) should override this method. Format plugins that
+    /// don't support virtual documents should use the fallback path.
+    ///
+    /// Returns an empty Vec if the format doesn't support variable tracking
+    /// or the passage has no variable references.
+    fn extract_passage_variable_refs(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn SourceTextProvider,
+        passage_name: &str,
+    ) -> Vec<crate::types::PassageVarRef> {
+        // Default: no variable references (formats must override to provide them)
+        let _ = (workspace, source_text, passage_name);
+        Vec::new()
     }
 }
 

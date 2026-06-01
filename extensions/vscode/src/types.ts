@@ -153,6 +153,9 @@ export interface KnotPassageDiagnosticsResponse {
     outgoing_links: KnotPassageLink[];
     incoming_links: KnotPassageLink[];
     diagnostics: KnotPassageDiagnostic[];
+    /** Variable references (reads and writes) in this passage,
+     *  resolved from the virtual document with exact line numbers. */
+    variable_references: KnotVariableReference[];
 }
 
 export interface KnotPassageLink {
@@ -164,6 +167,20 @@ export interface KnotPassageLink {
 export interface KnotPassageDiagnostic {
     kind: string;
     message: string;
+}
+
+/** A variable reference (read or write) within a passage. */
+export interface KnotVariableReference {
+    /** The variable name (e.g., "$gold", "$player.name"). */
+    variable_name: string;
+    /** Whether this is a write (true) or read (false). */
+    is_write: boolean;
+    /** The 0-based line number within the source file. */
+    line: number;
+    /** The file URI containing this reference. */
+    file_uri: string;
+    /** The passage name where this reference occurs. */
+    passage_name: string;
 }
 
 // ---------------------------------------------------------------------------

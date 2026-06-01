@@ -916,6 +916,125 @@ pub(crate) fn extract_object_property_map(
 // State variable registry
 // ---------------------------------------------------------------------------
 
+/// Build a shape-aware property map that enriches the basic child-name map
+/// with structural type information (`PropertyKind`) and array element shapes.
+///
+/// This is consumed by the completion handler for dot-notation completion.
+/// It infers the kind of each variable from its assignment patterns:
+/// - `<<set $var to {}>>` or `$var.prop = val` → Object
+/// - `<<set $var to []>>` or `$var[0]` → Array
+/// - `<<set $var to 42>>` or no children → Scalar
+/// - No assignment patterns found → Unknown
+///
+/// For arrays, if element properties can be determined from `$var[0].prop`
+/// patterns, they are stored in `element_shape`.
+pub(crate) fn build_shape_aware_property_map(
+    workspace: &knot_core::Workspace,
+) -> HashMap<String, crate::types::PropertyMapEntry> {
+    use crate::types::{PropertyKind, PropertyMapEntry};
+
+    // Build the basic property map first
+    let vars_by_passage: Vec<Vec<&VarOp>> = workspace
+        .documents()
+        .flat_map(|doc| doc.passages.iter().map(|p| p.vars.iter().collect()))
+        .collect();
+    let basic_map = extract_object_property_map(&vars_by_passage);
+
+    // Build the state variable registry for kind inference
+    let registry = build_state_variable_registry(workspace);
+
+    let mut result: HashMap<String, PropertyMapEntry> = HashMap::new();
+
+    // For each base variable in the registry, determine its kind and children
+    for (dollar_name, state_var) in &registry {
+        let kind = infer_variable_kind_from_properties(dollar_name, &state_var.known_properties, &basic_map);
+        let children: Vec<String> = basic_map
+            .get(dollar_name)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default();
+
+        // For arrays, try to determine element shape from bracket-notation patterns
+        let element_shape = if kind == PropertyKind::Array {
+            infer_array_element_shape(dollar_name, &basic_map)
+        } else {
+            None
+        };
+
+        result.insert(dollar_name.clone(), PropertyMapEntry {
+            kind,
+            children,
+            element_shape,
+        });
+    }
+
+    // Also add entries for nested property paths (e.g., "$player.state")
+    // that appear as keys in the basic map but aren't base variables
+    for (path, children_set) in &basic_map {
+        if result.contains_key(path) {
+            continue; // Already added as a base variable
+        }
+        // Infer kind from whether this path has children
+        let kind = if children_set.is_empty() {
+            PropertyKind::Scalar
+        } else {
+            // Has children → likely an object property
+            PropertyKind::Object
+        };
+        let children: Vec<String> = children_set.iter().cloned().collect();
+
+        result.insert(path.clone(), PropertyMapEntry {
+            kind,
+            children,
+            element_shape: None,
+        });
+    }
+
+    result
+}
+
+/// Infer the `PropertyKind` of a base variable from its known properties
+/// and the basic property map.
+fn infer_variable_kind_from_properties(
+    dollar_name: &str,
+    known_properties: &HashSet<String>,
+    basic_map: &HashMap<String, HashSet<String>>,
+) -> crate::types::PropertyKind {
+    use crate::types::PropertyKind;
+
+    // If the variable has known dot-notation properties, it's an Object
+    if !known_properties.is_empty() {
+        // Check if any property suggests an array (numeric-like keys or [*] patterns)
+        // For now, if it has named properties, treat it as Object
+        return PropertyKind::Object;
+    }
+
+    // Check if the variable has children in the basic map
+    if let Some(children) = basic_map.get(dollar_name) {
+        if !children.is_empty() {
+            return PropertyKind::Object;
+        }
+    }
+
+    // No properties or children → likely Scalar
+    PropertyKind::Scalar
+}
+
+/// For an array variable, try to infer the element shape from bracket-notation
+/// patterns in the basic property map (e.g., `$items[0].name` → element has `name`).
+///
+/// Returns `Some(PropertyMapEntry)` if element properties can be determined,
+/// `None` if the element shape is unknown.
+fn infer_array_element_shape(
+    _dollar_name: &str,
+    _basic_map: &HashMap<String, HashSet<String>>,
+) -> Option<Box<crate::types::PropertyMapEntry>> {
+    // TODO: Implement bracket-notation element shape inference.
+    // This requires scanning for patterns like `$var[0].prop` and
+    // collecting common properties across all indexed accesses.
+    // For now, return None (unknown element shape).
+    None
+}
+
 /// Build a registry of all SugarCube state variables across the workspace.
 ///
 /// This scans all passages for persistent variable references (`$var`,
@@ -1635,6 +1754,13 @@ pub(crate) fn build_variable_tree(
 
     let registry = build_state_variable_registry(workspace);
 
+    // Build basic property map for kind inference
+    let vars_by_passage: Vec<Vec<&VarOp>> = workspace
+        .documents()
+        .flat_map(|doc| doc.passages.iter().map(|p| p.vars.iter().collect()))
+        .collect();
+    let basic_map = extract_object_property_map(&vars_by_passage);
+
     let mut variables: Vec<VariableTreeNode> = Vec::new();
 
     for (dollar_name, state_var) in &registry {
@@ -1689,6 +1815,12 @@ pub(crate) fn build_variable_tree(
             initialized_at_start: state_var.seeded_by_special,
             is_unused,
             properties,
+            kind: infer_variable_kind_from_properties(
+                dollar_name,
+                &state_var.known_properties,
+                &basic_map,
+            ),
+            element_shape: None, // TODO: Populated by virtual doc path when available
         });
     }
 
@@ -1838,6 +1970,7 @@ fn build_property_tree(
             )
         };
 
+        let has_sub_properties = !sub_properties.is_empty();
         result.push(VariablePropertyNode {
             name: prop_name,
             full_name,
@@ -1851,6 +1984,13 @@ fn build_property_tree(
             written_in: prop_written_in,
             read_in: prop_read_in,
             properties: sub_properties,
+            kind: if has_sub_properties {
+                crate::types::PropertyKind::Object
+            } else {
+                crate::types::PropertyKind::Scalar
+            },
+            element_shape: None, // TODO: Populated by virtual doc path when available
+            coverage: None,      // TODO: Populated by coverage analysis
         });
     }
 
@@ -1975,6 +2115,13 @@ pub(crate) fn build_variable_tree_from_virtual_doc(
         }
     }
 
+    // Build basic property map for kind inference
+    let vars_by_passage: Vec<Vec<&VarOp>> = workspace
+        .documents()
+        .flat_map(|doc| doc.passages.iter().map(|p| p.vars.iter().collect()))
+        .collect();
+    let basic_map = extract_object_property_map(&vars_by_passage);
+
     // Build the variable tree from the merged registry (same as build_variable_tree)
     let mut variables: Vec<VariableTreeNode> = Vec::new();
 
@@ -2027,6 +2174,12 @@ pub(crate) fn build_variable_tree_from_virtual_doc(
             initialized_at_start: state_var.seeded_by_special,
             is_unused,
             properties,
+            kind: infer_variable_kind_from_properties(
+                dollar_name,
+                &state_var.known_properties,
+                &basic_map,
+            ),
+            element_shape: None, // TODO: Populated by virtual doc path when available
         });
     }
 

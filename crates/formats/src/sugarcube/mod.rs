@@ -978,6 +978,10 @@ impl FormatPlugin for SugarCubePlugin {
         vars::extract_object_property_map(&vars_by_passage)
     }
 
+    fn build_shape_aware_property_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
+        vars::build_shape_aware_property_map(workspace)
+    }
+
     // -------------------------------------------------------------------
     // State variable registry & diagnostics
     // -------------------------------------------------------------------
@@ -1044,6 +1048,53 @@ impl FormatPlugin for SugarCubePlugin {
         passages: &[crate::types::PassageInfo],
     ) -> Vec<crate::types::UserCallable> {
         virtual_doc::extract_user_callables(passages)
+    }
+
+    // -------------------------------------------------------------------
+    // Passage variable references (virtual document → passage diagnostics)
+    // -------------------------------------------------------------------
+
+    fn extract_passage_variable_refs(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn crate::plugin::SourceTextProvider,
+        passage_name: &str,
+    ) -> Vec<crate::types::PassageVarRef> {
+        let vdoc = self.build_virtual_document(workspace, source_text);
+        if let Some(vdoc) = vdoc {
+            let accesses = virtual_doc::extract_virtual_var_accesses(&vdoc);
+            accesses
+                .into_iter()
+                .filter(|a| a.passage_name == passage_name)
+                .map(|a| crate::types::PassageVarRef {
+                    variable_name: a.dollar_name,
+                    is_write: a.is_write,
+                    line: a.original_line,
+                    file_uri: a.file_uri,
+                    passage_name: a.passage_name,
+                })
+                .collect()
+        } else {
+            // Fallback: use per-passage vars
+            let mut refs = Vec::new();
+            for doc in workspace.documents() {
+                for passage in &doc.passages {
+                    if passage.name != passage_name {
+                        continue;
+                    }
+                    for var in &passage.vars {
+                        refs.push(crate::types::PassageVarRef {
+                            variable_name: var.name.clone(),
+                            is_write: matches!(var.kind, knot_core::passage::VarKind::Init),
+                            line: 0,
+                            file_uri: doc.uri.to_string(),
+                            passage_name: passage.name.clone(),
+                        });
+                    }
+                }
+            }
+            refs
+        }
     }
 }
 

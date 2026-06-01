@@ -392,6 +392,11 @@ pub struct KnotPassageDiagnosticsResponse {
     pub incoming_links: Vec<KnotPassageLink>,
     /// Diagnostic messages associated with this passage.
     pub diagnostics: Vec<KnotPassageDiagnostic>,
+    /// Variable references (reads and writes) in this passage,
+    /// resolved from the virtual document with exact line numbers.
+    /// Enables the client to show where each variable is read/written
+    /// and navigate to the specific source line.
+    pub variable_references: Vec<KnotVariableReference>,
 }
 
 /// Link info for passage diagnostics response.
@@ -412,6 +417,25 @@ pub struct KnotPassageDiagnostic {
     pub kind: String,
     /// The diagnostic message.
     pub message: String,
+}
+
+/// A variable reference (read or write) within a passage.
+///
+/// Used by the passage diagnostics response to show which variables
+/// are read/written in a passage, with exact line numbers so the
+/// client can navigate to the specific source line.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVariableReference {
+    /// The dollar-prefixed variable name (e.g., "$gold", "$player.name").
+    pub variable_name: String,
+    /// Whether this is a write (true) or read (false).
+    pub is_write: bool,
+    /// The 0-based line number within the source file.
+    pub line: u32,
+    /// The file URI containing this reference.
+    pub file_uri: String,
+    /// The passage name where this reference occurs.
+    pub passage_name: String,
 }
 
 

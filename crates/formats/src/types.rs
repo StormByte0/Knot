@@ -535,6 +535,49 @@ pub enum VariableDiagnosticKind {
 }
 
 // ---------------------------------------------------------------------------
+// Shape-aware property map types
+// ---------------------------------------------------------------------------
+
+/// The structural kind of a variable or property, inferred from assignment
+/// patterns and usage across the workspace.
+///
+/// This enables the completion handler to offer different completions for
+/// arrays (`.length`, `.push()`) vs objects (child properties) vs scalars
+/// (no dot completions).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PropertyKind {
+    /// A scalar value (number, string, boolean). No child properties.
+    Scalar,
+    /// An object with named child properties (e.g., `$player` with `.name`, `.hp`).
+    Object,
+    /// An array with indexed elements. Element shape may be known via `element_shape`.
+    Array,
+    /// Kind could not be determined (no assignment patterns found).
+    Unknown,
+}
+
+/// An entry in the shape-aware property map, describing the structural kind
+/// and immediate children of a variable path.
+///
+/// This is produced by `FormatPlugin::build_shape_aware_property_map()` and
+/// consumed by the completion handler for dot-notation completion. It enriches
+/// the basic `HashSet<String>` from `build_object_property_map()` with type
+/// information that allows distinguishing arrays from objects from scalars.
+#[derive(Debug, Clone)]
+pub struct PropertyMapEntry {
+    /// The structural kind of this variable/property path.
+    pub kind: PropertyKind,
+    /// Immediate child property names (e.g., `["name", "hp"]` for `$player`).
+    /// Empty for scalars and arrays (arrays use `element_shape` instead).
+    pub children: Vec<String>,
+    /// For arrays: the shape of each element, if known.
+    /// Contains a virtual `PropertyMapEntry` representing `[*]` — the
+    /// common structure across all observed array elements.
+    /// `None` for non-array types or arrays with unknown element shape.
+    pub element_shape: Option<Box<PropertyMapEntry>>,
+}
+
+// ---------------------------------------------------------------------------
 // Variable tree types (format-agnostic)
 // ---------------------------------------------------------------------------
 
@@ -590,6 +633,14 @@ pub struct VariableTreeNode {
     /// state hierarchy (e.g., `$player.name`, `$player.hp` are children
     /// of `$player`). Each property may itself have sub-properties.
     pub properties: Vec<VariablePropertyNode>,
+    /// The structural kind of this variable: scalar, object, array, or unknown.
+    /// Inferred from assignment patterns (e.g., `<<set $var to {}>>` → Object).
+    pub kind: PropertyKind,
+    /// For Array-kind root variables: the shape of each array element.
+    /// Contains a virtual `VariablePropertyNode` representing the `[*]` element
+    /// structure. `None` for non-array root variables or arrays with unknown
+    /// element shape.
+    pub element_shape: Option<Box<VariablePropertyNode>>,
 }
 
 /// A property node in the variable tree, reflecting the hierarchical structure
@@ -622,4 +673,48 @@ pub struct VariablePropertyNode {
     /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
     /// property would have `sword` as a sub-property).
     pub properties: Vec<VariablePropertyNode>,
+    /// The structural kind of this property: scalar, object, array, or unknown.
+    /// Inferred from assignment patterns.
+    pub kind: PropertyKind,
+    /// For array-kind properties: the shape of each array element.
+    /// Contains a virtual `VariablePropertyNode` representing the `[*]` element
+    /// structure. `None` for non-array properties or arrays with unknown element shape.
+    pub element_shape: Option<Box<VariablePropertyNode>>,
+    /// For `[*]` property nodes: coverage annotation for irregular arrays.
+    /// Format: "present_in/total" (e.g., "3/5" means property exists in 3 of 5 elements).
+    /// `None` for non-array properties or regular arrays (100% coverage).
+    /// Only set when coverage < 100%.
+    pub coverage: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Passage variable reference types (format-agnostic)
+// ---------------------------------------------------------------------------
+
+/// A variable reference (read or write) within a specific passage.
+///
+/// This is the format-agnostic representation produced by
+/// `FormatPlugin::extract_passage_variable_refs()`. The server converts
+/// these directly to LSP wire types without any format-specific logic.
+///
+/// The `line` field comes from the virtual document's `LineMapping`,
+/// which maps virtual document line numbers back to original source file
+/// line numbers — this is the "deref index" from virtual docs to normal
+/// files that enables showing exact read/write lines in the UI.
+#[derive(Debug, Clone)]
+pub struct PassageVarRef {
+    /// The variable name in format-specific notation (e.g., "$gold",
+    /// "$player.name" in SugarCube). The server passes this through
+    /// without interpretation.
+    pub variable_name: String,
+    /// Whether this is a write (true) or read (false).
+    pub is_write: bool,
+    /// The 0-based line number within the original source file.
+    /// Derived from the virtual document's line map, which maps
+    /// virtual line positions back to original source locations.
+    pub line: u32,
+    /// The file URI containing this reference.
+    pub file_uri: String,
+    /// The passage name where this reference occurs.
+    pub passage_name: String,
 }

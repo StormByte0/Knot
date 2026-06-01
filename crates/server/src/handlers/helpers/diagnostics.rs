@@ -1,5 +1,6 @@
 //! Diagnostic publishing, severity mapping, format-delegated variable analysis,
-//! related-information construction, and special passage seed supplementation.
+//! related-information construction, special passage seed supplementation,
+//! and passage variable reference extraction from virtual documents.
 
 use knot_core::graph::DiagnosticKind;
 use knot_core::passage::StoryFormat;
@@ -8,6 +9,9 @@ use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
 use std::collections::HashMap;
 use url::Url;
+
+use crate::lsp_ext::KnotVariableReference;
+use crate::state::DocumentCache;
 
 use super::code_actions::extract_variable_name;
 use super::position::{
@@ -527,4 +531,60 @@ pub(crate) fn supplement_seed_with_format_specials(
         core_seed.extend(format_seeds);
     }
     core_seed
+}
+
+// ===========================================================================
+// Passage variable reference extraction (virtual document → passage diagnostics)
+// ===========================================================================
+
+/// Build variable references for a specific passage using the format plugin's
+/// virtual document extraction.
+///
+/// This is the wiring between the virtual document system and passage diagnostics.
+/// It:
+/// 1. Delegates to the format plugin's `extract_passage_variable_refs()` method
+/// 2. The format plugin builds the virtual document, extracts variable accesses,
+///    and filters for the requested passage
+/// 3. The returned `PassageVarRef` entries carry line numbers from the virtual
+///    document's line map (which maps virtual lines back to original source
+///    file lines)
+///
+/// The line numbers come from the virtual document's `LineMapping`, which
+/// is the "deref index" from virtual doc positions back to the normal file.
+/// This is what enables showing exact read/write lines in the passage
+/// diagnostics panel.
+pub(crate) fn build_passage_variable_references(
+    workspace: &Workspace,
+    format_registry: &fmt_plugin::FormatRegistry,
+    open_documents: &HashMap<Url, String>,
+    passage_name: &str,
+) -> Vec<KnotVariableReference> {
+    let format = workspace.resolve_format();
+    let Some(plugin) = format_registry.get(&format) else {
+        return Vec::new();
+    };
+
+    // Use the format plugin's extraction (format-isolation-compliant)
+    let source_text = DocumentCache(open_documents);
+    let var_refs = plugin.extract_passage_variable_refs(workspace, &source_text, passage_name);
+
+    // Pure mechanical translation: format-agnostic PassageVarRef → LSP wire type
+    let mut references: Vec<KnotVariableReference> = var_refs
+        .into_iter()
+        .map(|r| KnotVariableReference {
+            variable_name: r.variable_name,
+            is_write: r.is_write,
+            line: r.line,
+            file_uri: r.file_uri,
+            passage_name: r.passage_name,
+        })
+        .collect();
+
+    // Sort by line number for display, then by variable name
+    references.sort_by(|a, b| {
+        a.line.cmp(&b.line)
+            .then_with(|| a.variable_name.cmp(&b.variable_name))
+    });
+
+    references
 }

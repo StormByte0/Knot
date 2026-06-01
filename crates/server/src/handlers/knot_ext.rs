@@ -523,8 +523,9 @@ impl ServerState {
 
     /// `knot/passageDiagnostics` — return diagnostic information about a specific passage.
     ///
-    /// Returns linter issues, link connections, and passage metadata.
-    /// Variable data is available separately via `knot/watchVariables`.
+    /// Returns linter issues, link connections, passage metadata, and
+    /// variable references (reads/writes with line numbers) resolved from
+    /// the virtual document.
     pub async fn knot_passage_diagnostics(
         &self,
         params: KnotPassageDiagnosticsParams,
@@ -561,6 +562,7 @@ impl ServerState {
                         kind: "NotFound".to_string(),
                         message: format!("Passage '{}' not found in workspace", name),
                     }],
+                    variable_references: Vec::new(),
                 });
             }
         };
@@ -614,6 +616,18 @@ impl ServerState {
             })
             .collect();
 
+        // ── Variable references (from virtual document) ──────────────────
+        // Build the virtual document via the format plugin and extract
+        // variable accesses filtered for this passage. This gives us exact
+        // line numbers for each read/write, enabling "go to reference" from
+        // the passage diagnostics panel.
+        let variable_references = helpers::build_passage_variable_references(
+            workspace,
+            &inner.format_registry,
+            &inner.open_documents,
+            &params.passage_name,
+        );
+
         Ok(KnotPassageDiagnosticsResponse {
             passage_name: params.passage_name,
             file_uri,
@@ -623,6 +637,7 @@ impl ServerState {
             outgoing_links,
             incoming_links,
             diagnostics,
+            variable_references,
         })
     }
 
