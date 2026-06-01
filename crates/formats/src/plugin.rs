@@ -1058,27 +1058,6 @@ pub trait FormatPlugin: Send + Sync {
         HashMap::new()
     }
 
-    /// Build a shape-aware property map for dot-notation completion.
-    ///
-    /// Returns a map from dollar-prefixed variable name to `PropertyMapEntry`,
-    /// which includes the set of immediate child properties AND the structural
-    /// kind (Object, Array, Scalar, Unknown). For arrays, also includes the
-    /// element shape so that `$items[0].` completions work correctly.
-    ///
-    /// The default implementation delegates to `build_object_property_map()`
-    /// and marks everything as `PropertyKind::Unknown`.
-    fn build_shape_aware_property_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
-        use crate::types::{PropertyKind, PropertyMapEntry};
-        let basic = self.build_object_property_map(workspace);
-        basic.into_iter().map(|(key, children)| {
-            (key, PropertyMapEntry {
-                children,
-                kind: PropertyKind::Unknown,
-                element_shape: None,
-            })
-        }).collect()
-    }
-
     // -----------------------------------------------------------------------
     // State variable registry & diagnostics (optional)
     // -----------------------------------------------------------------------
@@ -1184,6 +1163,165 @@ pub trait FormatPlugin: Send + Sync {
         _source_text: &dyn SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
         Vec::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Virtual document (optional)
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Virtual document hooks (optional — format-specific extension points)
+    //
+    // These hooks enable the core virtual document builder to work across
+    // all four formats. The core builder handles format-agnostic concerns
+    // (script passage collection, concatenation, line mapping), while
+    // each format plugin provides its own alias extraction patterns and
+    // macro→JS translation through these hooks.
+    // -----------------------------------------------------------------------
+
+    /// Extract startup aliases from the unified script section.
+    ///
+    /// Called after all `[script]` passages are concatenated into a single
+    /// section. The format plugin should strip JS comments and apply its
+    /// own regex patterns to find alias definitions.
+    ///
+    /// - **SugarCube**: `var v = State.variables`, `var g = gs()`,
+    ///   `var x = State.variables.propName`, `function reg(name) { ... }`
+    /// - **Snowman**: `var s = window.story.state`
+    /// - **Chapbook**: `var s = state`
+    /// - **Harlowe**: No JS state API → empty Vec
+    fn extract_startup_aliases(
+        &self,
+        _sections: &[crate::types::VirtualSection],
+    ) -> Vec<crate::types::StartupAlias> {
+        Vec::new()
+    }
+
+    /// Check if a passage body contains variable-affecting content.
+    ///
+    /// The format plugin decides what counts. This is used to determine
+    /// whether a non-script passage should get its own virtual section.
+    ///
+    /// - **SugarCube**: Checks for `<<set>>`, `<<run>>`, `$`, etc.
+    /// - **Harlowe**: Checks for `(set:)`, `(put:)`, `$`, etc.
+    /// - **Snowman**: Checks for `s.`, `window.story.state.`
+    /// - **Chapbook**: Checks for `state.`, `{{...}}`
+    fn has_variable_affecting_content(&self, _passage_body: &str) -> bool {
+        false
+    }
+
+    /// Translate a passage body to JavaScript.
+    ///
+    /// The format plugin should convert its format-specific variable syntax
+    /// to JavaScript that uses the format's state accessor path. Return
+    /// `None` if the passage cannot be translated.
+    ///
+    /// The `callables` parameter provides the list of user-defined callables
+    /// (custom macros and widgets) so the translator can recognize invocations
+    /// like `<<useItem matchbox>>` as function calls.
+    ///
+    /// - **SugarCube**: `<<set $x to 5>>` → `State.variables.x = 5;`
+    /// - **Harlowe**: `(set: $x to 5)` → translated JS
+    /// - **Snowman**: `<%= s.x %>` → pass-through (already JS)
+    /// - **Chapbook**: `[javascript] state.x = 5;` → pass-through
+    fn translate_passage_to_js(
+        &self,
+        _passage_body: &str,
+        _callables: &[crate::types::UserCallable],
+    ) -> Option<String> {
+        None
+    }
+
+    /// Extract user-defined callables from all passages.
+    ///
+    /// Called after the unified script section is built. The format plugin
+    /// should scan for custom macro definitions (e.g., SugarCube's
+    /// `Macro.add('name', { handler: ... })`) and widget definitions
+    /// (e.g., `<<widget name>>...<</widget>>`).
+    ///
+    /// - **SugarCube**: Scans script passages for `Macro.add()` and
+    ///   widget-tagged passages for `<<widget>>` definitions.
+    /// - **Other formats**: Return empty Vec (no custom macro support).
+    fn extract_user_callables(
+        &self,
+        _passages: &[crate::types::PassageInfo],
+    ) -> Vec<crate::types::UserCallable> {
+        Vec::new()
+    }
+
+    /// Build a virtual document that unifies all passages into a sectioned
+    /// JavaScript representation.
+    ///
+    /// The virtual document is the foundation for cross-passage variable
+    /// tracking with deep alias resolution. It:
+    /// 1. Concatenates all `[script]` passages into a unified JS section
+    /// 2. Translates macro passages to JS using format-specific hooks
+    /// 3. Extracts startup aliases from the script section
+    /// 4. Maps every virtual line back to the original source location
+    ///
+    /// The default implementation delegates to the core builder
+    /// (`virtual_doc::build_core_virtual_document`) using this plugin's
+    /// virtual document hooks. Formats that support variable tracking
+    /// should override the hook methods (`extract_startup_aliases`,
+    /// `has_variable_affecting_content`, `translate_passage_to_js`) instead
+    /// of overriding this method directly.
+    ///
+    /// Returns `None` if no format-specific hooks are implemented (the
+    /// default no-op hooks produce an empty document with no sections).
+    fn build_virtual_document(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn SourceTextProvider,
+    ) -> Option<crate::types::VirtualDocument> where Self: Sized {
+        use crate::virtual_doc::build_core_virtual_document;
+
+        // Check if the format plugin has implemented any virtual doc hooks.
+        // If none are overridden, the default no-op hooks produce an empty
+        // document, so we return None to avoid creating a useless vdoc.
+        let vdoc = build_core_virtual_document(workspace, source_text, self);
+        if vdoc.sections.is_empty() {
+            None
+        } else {
+            Some(vdoc)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blanket impl: FormatPlugin implements VirtualDocHooks
+// ---------------------------------------------------------------------------
+// This allows the core virtual document builder to accept any FormatPlugin
+// as its hooks provider. The builder calls the trait's hook methods
+// (extract_startup_aliases, has_variable_affecting_content,
+// translate_passage_to_js) which each format plugin overrides with
+// format-specific logic.
+// ---------------------------------------------------------------------------
+
+impl<T: FormatPlugin + ?Sized> crate::virtual_doc::VirtualDocHooks for T {
+    fn extract_startup_aliases(
+        &self,
+        sections: &[crate::types::VirtualSection],
+    ) -> Vec<crate::types::StartupAlias> {
+        FormatPlugin::extract_startup_aliases(self, sections)
+    }
+
+    fn has_variable_affecting_content(&self, passage_body: &str) -> bool {
+        FormatPlugin::has_variable_affecting_content(self, passage_body)
+    }
+
+    fn translate_passage_to_js(
+        &self,
+        passage_body: &str,
+        callables: &[crate::types::UserCallable],
+    ) -> Option<String> {
+        FormatPlugin::translate_passage_to_js(self, passage_body, callables)
+    }
+
+    fn extract_user_callables(
+        &self,
+        passages: &[crate::types::PassageInfo],
+    ) -> Vec<crate::types::UserCallable> {
+        FormatPlugin::extract_user_callables(self, passages)
     }
 }
 

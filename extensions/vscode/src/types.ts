@@ -187,7 +187,12 @@ export interface KnotVariableInfo {
     read_in: KnotVariableLocation[];
     initialized_at_start: boolean;
     is_unused: boolean;
+    /** The structural kind: "scalar", "object", "array", or "unknown". */
+    kind: string;
     properties: KnotVariableProperty[];
+    /** For Array-kind root variables: the shape of each array element.
+     *  Contains a virtual [*] node whose children describe element properties. */
+    element_shape?: KnotVariableProperty;
 }
 
 export interface KnotVariableProperty {
@@ -197,6 +202,12 @@ export interface KnotVariableProperty {
     written_in: KnotVariableLocation[];
     read_in: KnotVariableLocation[];
     properties: KnotVariableProperty[];
+    /** The structural kind: "scalar", "object", "array", or "unknown". */
+    kind: string;
+    /** For array-kind properties: the shape of each array element. */
+    element_shape?: KnotVariableProperty;
+    /** Coverage annotation for irregular arrays (e.g., "3/5"). */
+    coverage?: string;
 }
 
 export interface KnotVariableLocation {

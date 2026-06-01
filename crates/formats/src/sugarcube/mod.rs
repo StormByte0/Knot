@@ -22,6 +22,7 @@ pub mod validation;
 pub mod blocks;
 pub mod special_passages;
 pub mod comments;
+pub mod virtual_doc;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
@@ -159,7 +160,10 @@ impl FormatPlugin for SugarCubePlugin {
                 // Filter vars inside comments
                 passage.vars.retain(|var| !comments::is_in_comment(&comment_spans, &var.span));
 
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
 
                 // Semantic tokens: header + PassageRef tokens for implicit refs
                 let layer = special_def.as_ref().map(|d| d.layer);
@@ -202,7 +206,10 @@ impl FormatPlugin for SugarCubePlugin {
                 // CSS only supports /* */ comments, which are already
                 // covered by find_block_comment_spans(). We don't need
                 // // line comment detection in stylesheets.
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
 
                 // Semantic tokens: header (SpecialPassage type)
                 let layer = special_def.as_ref().map(|d| d.layer);
@@ -232,7 +239,10 @@ impl FormatPlugin for SugarCubePlugin {
                 raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
                 passage.links = raw_links;
 
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
+                passage.body = vec![knot_core::passage::Block::Text {
+                    content: body.to_string(),
+                    span: body_offset..body_offset + body.len(),
+                }];
 
                 // Semantic tokens: header (SpecialPassage type)
                 let layer = special_def.as_ref().map(|d| d.layer);
@@ -448,9 +458,15 @@ impl FormatPlugin for SugarCubePlugin {
             passage.vars = vars::extract_vars(passage_text, 0);
             passage.vars.retain(|var| !comments::is_in_comment(&comment_spans, &var.span));
 
-            passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
         } else if is_stylesheet {
-            passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
         } else if is_interface {
             // StoryInterface: HTML content, only implicit refs
             let comment_spans = comments::find_all_comment_spans(passage_text, false);
@@ -458,7 +474,10 @@ impl FormatPlugin for SugarCubePlugin {
             raw_links.retain(|link| !comments::is_in_comment(&comment_spans, &link.span));
             passage.links = raw_links;
 
-            passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
+            passage.body = vec![knot_core::passage::Block::Text {
+                content: passage_text.to_string(),
+                span: 0..passage_text.len(),
+            }];
         } else {
             let comment_spans = comments::find_all_comment_spans(passage_text, false);
 
@@ -959,54 +978,6 @@ impl FormatPlugin for SugarCubePlugin {
         vars::extract_object_property_map(&vars_by_passage)
     }
 
-    fn build_shape_aware_property_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
-        use crate::types::{PropertyKind, PropertyMapEntry};
-
-        // Get the basic property map
-        let vars_by_passage: Vec<Vec<&VarOp>> = workspace
-            .documents()
-            .flat_map(|doc| doc.passages.iter().map(|p| p.vars.iter().collect()))
-            .collect();
-        let basic = vars::extract_object_property_map(&vars_by_passage);
-
-        // Get shape inferences
-        let shapes = vars::infer_variable_shapes(workspace);
-
-        basic.into_iter().map(|(key, children)| {
-            let kind = shapes.get(&key).cloned().unwrap_or_else(|| {
-                // Infer from structure: if it has children, it's Object
-                if !children.is_empty() {
-                    PropertyKind::Object
-                } else {
-                    PropertyKind::Unknown
-                }
-            });
-
-            // Build element shape for arrays
-            let element_shape = if kind == PropertyKind::Array {
-                // For arrays, the children represent the shape of each element.
-                // Build a virtual PropertyMapEntry for the element.
-                if !children.is_empty() {
-                    Some(Box::new(PropertyMapEntry {
-                        children: children.clone(),
-                        kind: PropertyKind::Object,
-                        element_shape: None,
-                    }))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            (key, PropertyMapEntry {
-                children,
-                kind,
-                element_shape,
-            })
-        }).collect()
-    }
-
     // -------------------------------------------------------------------
     // State variable registry & diagnostics
     // -------------------------------------------------------------------
@@ -1034,9 +1005,45 @@ impl FormatPlugin for SugarCubePlugin {
     fn build_variable_tree(
         &self,
         workspace: &knot_core::Workspace,
-        _source_text: &dyn crate::plugin::SourceTextProvider,
+        source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
-        vars::build_variable_tree(workspace)
+        // Build the virtual document first, then use it for extraction
+        let vdoc = self.build_virtual_document(workspace, source_text);
+        if let Some(vdoc) = vdoc {
+            vars::build_variable_tree_from_virtual_doc(workspace, &vdoc)
+        } else {
+            vars::build_variable_tree(workspace)
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Virtual document hooks (SugarCube-specific)
+    // -------------------------------------------------------------------
+
+    fn extract_startup_aliases(
+        &self,
+        sections: &[crate::types::VirtualSection],
+    ) -> Vec<crate::types::StartupAlias> {
+        virtual_doc::extract_startup_aliases(sections)
+    }
+
+    fn has_variable_affecting_content(&self, passage_body: &str) -> bool {
+        virtual_doc::has_variable_macros(passage_body)
+    }
+
+    fn translate_passage_to_js(
+        &self,
+        passage_body: &str,
+        callables: &[crate::types::UserCallable],
+    ) -> Option<String> {
+        Some(virtual_doc::translate_macros_to_js(passage_body, callables))
+    }
+
+    fn extract_user_callables(
+        &self,
+        passages: &[crate::types::PassageInfo],
+    ) -> Vec<crate::types::UserCallable> {
+        virtual_doc::extract_user_callables(passages)
     }
 }
 

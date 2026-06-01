@@ -34,6 +34,196 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
+// Virtual document types
+// ---------------------------------------------------------------------------
+
+/// The kind of a virtual document section.
+///
+/// Script passages are concatenated into a single unified section (they share
+/// both scope and deterministic execution order at startup). Macro passages
+/// are translated to JS but kept as individual sections (they share scope
+/// with scripts but execute non-deterministically based on player choices).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VirtualSectionKind {
+    /// All `[script]` passages concatenated in SugarCube execution order.
+    /// These execute at startup in a deterministic sequence, sharing a single
+    /// JS scope. This section is the source of startup alias definitions.
+    UnifiedScript,
+    /// A single macro passage translated to JS via `OperatorNormalization`.
+    /// These execute when the player visits the passage — non-deterministic
+    /// order, but they share the same JS scope as the script section.
+    MacroTranslated {
+        /// The original passage name (before translation to JS).
+        passage_name: String,
+    },
+}
+
+/// A section within a virtual document.
+///
+/// Each section corresponds to one or more source passages and contains
+/// JavaScript text (either original JS from `[script]` passages, or
+/// translated JS from macro passages). The section tracks which passage
+/// and which original line each virtual line came from.
+#[derive(Debug, Clone)]
+pub struct VirtualSection {
+    /// The kind of this section (unified script or translated macro).
+    pub kind: VirtualSectionKind,
+    /// The JavaScript source text of this section.
+    pub source_text: String,
+    /// Line-level mapping from virtual line number (0-based, relative to
+    /// this section's start) to the original source passage and line.
+    pub line_map: Vec<LineMapping>,
+}
+
+/// Maps a virtual document line back to its original source location.
+///
+/// This is the critical piece that enables "go to definition" and hover
+/// from virtual document analysis results back to the actual source files.
+#[derive(Debug, Clone)]
+pub struct LineMapping {
+    /// The passage name where this line originated.
+    pub passage_name: String,
+    /// The file URI where this passage lives.
+    pub file_uri: String,
+    /// The 0-based line number within the original source file.
+    pub original_line: u32,
+}
+
+/// An alias extracted from the startup script section.
+///
+/// In SugarCube, JavaScript in `[script]` passages can create aliases to
+/// `State.variables` or to specific state properties. These aliases persist
+/// for the entire game session and are used by both script and macro passages.
+/// The virtual document's startup alias table captures these so that macro
+/// sections can resolve them.
+#[derive(Debug, Clone)]
+pub struct StartupAlias {
+    /// The alias identifier (e.g., `g` for `var g = gs()`).
+    pub alias_name: String,
+    /// What this alias resolves to.
+    pub resolution: AliasResolution,
+    /// The virtual line number (0-based) where this alias is defined.
+    pub defined_at_line: u32,
+}
+
+/// What a startup alias resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AliasResolution {
+    /// The alias points to the entire `State.variables` object.
+    /// (e.g., `var v = State.variables` or `var g = gs()`)
+    StateVariables,
+    /// The alias points to a specific property of `State.variables`.
+    /// (e.g., `var profiles = State.variables.uiProfiles`)
+    StateVariableProperty {
+        /// The base variable name without `$` sigil.
+        base_name: String,
+        /// Optional dot-path after the base name.
+        property_path: Option<String>,
+    },
+    /// The alias points to a known SugarCube getter function.
+    /// (e.g., `reg` from `var reg = State.variables.reg` or a custom
+    /// `function(name) { return State.variables[name]; }` pattern)
+    GetterFunction,
+}
+
+/// The virtual document — a unified JS representation of all passage code.
+///
+/// This is the foundation for cross-passage variable tracking. It contains:
+/// - A unified script section (all `[script]` passages concatenated)
+/// - Individual macro sections (each macro passage translated to JS)
+/// - A startup alias table (extracted from the script section)
+/// - Line mappings back to original source locations
+///
+/// The virtual document enables:
+/// 1. **Deep alias resolution**: `gs()` in scripts → `State.variables` →
+///    `g.x` in macros resolves to `State.variables.x`
+/// 2. **Macro-to-JS translation**: `<<set $x to 5>>` → `State.variables.x = 5`
+///    using `OperatorNormalization`
+/// 3. **Unified path-centric analysis**: All sections produce normalized
+///    access paths that feed into the same reference counter
+#[derive(Debug, Clone)]
+pub struct VirtualDocument {
+    /// All sections in the virtual document, in order.
+    /// The unified script section comes first (if any script passages exist),
+    /// followed by individual macro sections.
+    pub sections: Vec<VirtualSection>,
+    /// The startup alias table, extracted from the unified script section.
+    /// These aliases are available in ALL sections (both script and macro)
+    /// because SugarCube's JS scope is shared across the entire game session.
+    pub startup_aliases: Vec<StartupAlias>,
+    /// User-defined callables (custom macros and widgets) extracted from
+    /// the workspace. These are used by the translator to recognize
+    /// `<<macroName args>>` invocations as function calls.
+    pub user_callables: Vec<UserCallable>,
+}
+
+// ---------------------------------------------------------------------------
+// User-defined callable types (custom macros & widgets)
+// ---------------------------------------------------------------------------
+
+/// The kind of a user-defined callable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UserCallableKind {
+    /// Custom macro defined via `Macro.add('name', { handler: function() { ... } })`.
+    CustomMacro,
+    /// Widget defined via `<<widget name>>...<</widget>>` in a [widget]-tagged passage.
+    Widget,
+}
+
+/// A user-defined callable (custom macro or widget) that can be invoked
+/// like a function from macro passages.
+///
+/// Custom macros are defined in `[script]` passages using SugarCube's
+/// `Macro.add()` API. Widgets are defined in `[widget]`-tagged passages
+/// using `<<widget name>>...<</widget>>`.
+///
+/// When the translator encounters `<<useItem matchbox>>`, it looks up
+/// `useItem` in the user callables and translates it to a function call:
+/// `useItem(matchbox);`. The arguments are mapped positionally to the
+/// `this.args[N]` references in the handler body (for custom macros) or
+/// the `<<args>>` / `$args` references in the widget body.
+#[derive(Debug, Clone)]
+pub struct UserCallable {
+    /// The callable name (e.g., "useItem" for `Macro.add('useItem', ...)`).
+    pub name: String,
+    /// The kind of callable (custom macro or widget).
+    pub kind: UserCallableKind,
+    /// Number of arguments this callable accepts, if known.
+    /// For custom macros, derived from `this.args[N]` usage in the handler.
+    /// For widgets, defaults to variadic (None) unless explicitly annotated.
+    pub arg_count: Option<usize>,
+    /// The passage name where this callable is defined.
+    pub defined_in: String,
+    /// The file URI where this callable is defined.
+    pub file_uri: String,
+    /// The 0-based line number where this callable is defined.
+    pub defined_at_line: u32,
+    /// The body of the callable's handler/widget code (for analysis of
+    /// variable effects). For custom macros, this is the `handler` function
+    /// body. For widgets, this is the content between `<<widget>>` and
+    /// `<</widget>>`.
+    pub body: Option<String>,
+}
+
+/// Minimal passage info passed to the `extract_user_callables` hook.
+///
+/// The core virtual document builder collects this information from all
+/// passages and passes it to the format plugin so it can detect custom
+/// macro definitions (in script passages) and widget definitions (in
+/// widget-tagged passages).
+#[derive(Debug, Clone)]
+pub struct PassageInfo {
+    /// The passage name.
+    pub name: String,
+    /// The file URI where this passage lives.
+    pub file_uri: String,
+    /// The passage tags (e.g., ["script"], ["widget"]).
+    pub tags: Vec<String>,
+    /// The passage body text.
+    pub body_text: String,
+}
+
+// ---------------------------------------------------------------------------
 // Macro catalog types
 // ---------------------------------------------------------------------------
 
@@ -348,47 +538,6 @@ pub enum VariableDiagnosticKind {
 // Variable tree types (format-agnostic)
 // ---------------------------------------------------------------------------
 
-/// The structural kind of a variable or property — affects completions and
-/// how the variable tree is displayed. Inferred from assignment patterns
-/// observed in the source code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PropertyKind {
-    /// A scalar value (string, number, boolean, null). No children.
-    Scalar,
-    /// An object with named properties. Children are property nodes.
-    Object,
-    /// An array. Children represent the shape of each element; the
-    /// `element_shape` field on `VariablePropertyNode` describes what
-    /// each array element looks like for completion purposes.
-    Array,
-    /// Unknown — no assignment has been observed that reveals the shape.
-    /// This is the default before any type inference runs.
-    Unknown,
-}
-
-impl Default for PropertyKind {
-    fn default() -> Self {
-        PropertyKind::Unknown
-    }
-}
-
-/// A shape-aware entry in the property map, used for dot-notation completions.
-///
-/// For each variable (e.g., `$player`), this entry records:
-/// - The set of immediate child properties (e.g., {"name", "hp", "state"})
-/// - The structural kind (Object, Array, Scalar, or Unknown)
-/// - For arrays, the element shape so that `$items[0].` completions work
-#[derive(Debug, Clone)]
-pub struct PropertyMapEntry {
-    /// Immediate child property names (e.g., {"name", "hp"} for `$player`).
-    pub children: HashSet<String>,
-    /// The structural kind of this variable or property.
-    pub kind: PropertyKind,
-    /// For Array-kind entries: the shape of each array element.
-    /// `None` means the element shape is unknown (scalar or mixed).
-    pub element_shape: Option<Box<PropertyMapEntry>>,
-}
-
 /// A simplified usage location for tree output — just passage and file info.
 ///
 /// This is the format-agnostic version of `VarLocation`. Format plugins
@@ -441,9 +590,6 @@ pub struct VariableTreeNode {
     /// state hierarchy (e.g., `$player.name`, `$player.hp` are children
     /// of `$player`). Each property may itself have sub-properties.
     pub properties: Vec<VariablePropertyNode>,
-    /// The structural kind of this variable — inferred from assignments.
-    /// Affects completions and how the tree is displayed.
-    pub kind: PropertyKind,
 }
 
 /// A property node in the variable tree, reflecting the hierarchical structure
@@ -476,13 +622,4 @@ pub struct VariablePropertyNode {
     /// Sub-properties (e.g., for `$player.inventory.sword`, the `inventory`
     /// property would have `sword` as a sub-property).
     pub properties: Vec<VariablePropertyNode>,
-    /// The structural kind of this property — inferred from assignments.
-    /// For arrays, `element_shape` describes what each array element looks like.
-    pub kind: PropertyKind,
-    /// For Array-kind properties: the shape of each array element.
-    /// `None` means the element shape is unknown (scalar or mixed).
-    /// `Some` contains a property node representing the element's structure.
-    /// For example, if `$items` is an array and `$items[0].name` is seen,
-    /// element_shape would be a virtual node with `.name` as a child.
-    pub element_shape: Option<Box<VariablePropertyNode>>,
 }

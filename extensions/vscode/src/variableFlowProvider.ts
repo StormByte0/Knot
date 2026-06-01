@@ -94,11 +94,21 @@ function transformVariable(v: KnotVariableInfo): Record<string, unknown> {
     const totalWrites = (v.written_in || []).length;
     const totalReads = (v.read_in || []).length;
 
-    // Transform children (properties)
-    const children = (v.properties || []).map(transformProperty);
+    // For Array-kind root variables, the children come from element_shape.[*]
+    // For Object/Unknown root variables, children come from properties directly
+    let children: Record<string, unknown>[];
+    let elementShape: Record<string, unknown> | null = null;
+
+    if (v.kind === 'array' && v.element_shape) {
+        // Array root variable: element_shape contains the [*] virtual node
+        elementShape = transformProperty(v.element_shape);
+        children = (v.element_shape.properties || []).map(transformProperty);
+    } else {
+        children = (v.properties || []).map(transformProperty);
+    }
 
     return {
-        name: v.name,
+        name: v.name.startsWith('$') ? v.name.slice(1) : v.name,
         full_name: v.name,
         state_path: v.state_path,
         is_temporary: v.is_temporary,
@@ -109,6 +119,8 @@ function transformVariable(v: KnotVariableInfo): Record<string, unknown> {
         flags,
         passages,
         children,
+        elementShape,
+        kind: v.kind || 'unknown',
     };
 }
 
@@ -169,7 +181,19 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
     const totalWrites = (p.written_in || []).length;
     const totalReads = (p.read_in || []).length;
 
-    const children = (p.properties || []).map(transformProperty);
+    // For Array-kind properties, children come from element_shape.[*]
+    // (same pattern as Array root variables in transformVariable).
+    // For Object/Unknown properties, children come from properties directly.
+    let children: Record<string, unknown>[];
+    let elementShape: Record<string, unknown> | null = null;
+
+    if (p.kind === 'array' && p.element_shape) {
+        elementShape = transformProperty(p.element_shape);
+        children = (p.element_shape.properties || []).map(transformProperty);
+    } else {
+        children = (p.properties || []).map(transformProperty);
+        elementShape = p.element_shape ? transformProperty(p.element_shape) : null;
+    }
 
     return {
         name: p.name,
@@ -179,6 +203,9 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
         passage_count: Array.from(passageMap.keys()).length,
         passages,
         children,
+        elementShape,
+        coverage: p.coverage || null,
+        kind: p.kind || 'unknown',
     };
 }
 
@@ -639,6 +666,22 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             min-width: 0;
         }
 
+        .var-kind-badge {
+            font-family: monospace;
+            font-size: 9px;
+            font-weight: 400;
+            color: var(--muted);
+            margin-left: 3px;
+            opacity: 0.7;
+        }
+
+        .coverage-badge {
+            font-family: monospace;
+            font-size: 9px;
+            color: #e8a838;
+            margin-left: 2px;
+        }
+
         .var-meta {
             margin-left: auto;
             display: flex;
@@ -831,6 +874,11 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     var found = findInList(list[i].children, fullName);
                     if (found) return found;
                 }
+                // Also search in elementShape children (for array root variables)
+                if (list[i].elementShape && list[i].elementShape.children && list[i].elementShape.children.length > 0) {
+                    var found = findInList(list[i].elementShape.children, fullName);
+                    if (found) return found;
+                }
             }
             return null;
         }
@@ -842,6 +890,11 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             if (item.children) {
                 for (var i = 0; i < item.children.length; i++) {
                     if (matchesFilter(item.children[i], lf)) return true;
+                }
+            }
+            if (item.elementShape && item.elementShape.children) {
+                for (var i = 0; i < item.elementShape.children.length; i++) {
+                    if (matchesFilter(item.elementShape.children[i], lf)) return true;
                 }
             }
             return false;
@@ -1016,7 +1069,8 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             } else {
                 for (var i = 0; i < variables.length; i++) {
                     var v = variables[i];
-                    var hasChildren = v.children && v.children.length > 0;
+                    var isArrRoot = v.kind === 'array' && v.elementShape;
+                    var hasChildren = (v.children && v.children.length > 0) || isArrRoot;
                     var isExpanded = expandedNodes.has(v.full_name);
 
                     // Variable row with separate chevron and name click targets
@@ -1024,6 +1078,11 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     html += '<span class="var-chevron' + (isExpanded ? ' expanded' : '') + (!hasChildren ? ' leaf' : '') + '" data-fullname="' + esc(v.full_name) + '" title="' + (hasChildren ? (isExpanded ? 'Collapse' : 'Expand') : 'No children') + '">&#x25B6;</span>';
                     html += '<span class="var-name-wrap" data-action="drillVariable" data-name="' + esc(v.full_name) + '" title="View references for ' + esc(v.name) + '">';
                     html += '<span class="var-name">' + esc(v.name) + '</span>';
+                    if (v.kind === 'array') {
+                        html += '<span class="var-kind-badge">[ ]</span>';
+                    } else if (v.kind === 'object') {
+                        html += '<span class="var-kind-badge">{ }</span>';
+                    }
                     html += '</span>';
                     html += '<span class="var-meta">';
                     html += renderFlags(v.flags);
@@ -1034,8 +1093,15 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     // Children — only rendered when expanded
                     if (hasChildren && isExpanded) {
                         html += '<div class="var-children">';
-                        for (var j = 0; j < v.children.length; j++) {
-                            html += renderChildRow(v.children[j]);
+                        // For array root vars, children come from elementShape with [*] prefix
+                        if (isArrRoot && v.elementShape && v.elementShape.children) {
+                            for (var j = 0; j < v.elementShape.children.length; j++) {
+                                html += renderArrayElementChild(v.elementShape.children[j], v.full_name);
+                            }
+                        } else {
+                            for (var j = 0; j < (v.children || []).length; j++) {
+                                html += renderChildRow(v.children[j]);
+                            }
                         }
                         html += '</div>';
                     }
@@ -1046,9 +1112,71 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             restoreFilterFocus();
         }
 
+        /** Render a child row for array element properties (with [*] prefix). */
+        function renderArrayElementChild(c, parentFullName) {
+            var html = '';
+            var hasGrandchildren = c.children && c.children.length > 0;
+            // For arrays, element_shape children are also grandchildren
+            if (!hasGrandchildren && c.elementShape && c.elementShape.children && c.elementShape.children.length > 0) {
+                hasGrandchildren = true;
+            }
+            // Use the full_name from the property node for expansion tracking
+            var childFullName = c.full_name || (parentFullName + '[*].' + c.name);
+            var isExpanded = expandedNodes.has(childFullName);
+
+            html += '<div class="child-row">';
+            html += '<span class="child-chevron' + (isExpanded ? ' expanded' : '') + (!hasGrandchildren ? ' leaf' : '') + '" data-fullname="' + esc(childFullName) + '" title="' + (hasGrandchildren ? (isExpanded ? 'Collapse' : 'Expand') : 'No children') + '">&#x25B6;</span>';
+            html += '<span class="child-prefix">[*].</span>';
+            html += '<span class="child-name-wrap" data-action="drillChild" data-fullname="' + esc(childFullName) + '" title="View references for ' + esc(childFullName) + '">';
+            html += '<span class="child-name">' + esc(c.name) + '</span>';
+            if (c.kind === 'array') {
+                html += '<span class="var-kind-badge">[ ]</span>';
+            }
+            if (c.coverage) {
+                html += '<span class="coverage-badge">' + esc(c.coverage) + '</span>';
+            }
+            html += '</span>';
+            html += '<span class="child-meta">' + c.ref_count + ' ref' + (c.ref_count !== 1 ? 's' : '') + '</span>';
+            html += '</div>';
+
+            // Grandchildren — only rendered when expanded
+            if (hasGrandchildren && isExpanded) {
+                html += '<div class="var-children">';
+                // If this child has its own element_shape (nested array), render those
+                if (c.elementShape && c.elementShape.children) {
+                    for (var k = 0; k < c.elementShape.children.length; k++) {
+                        var gc = c.elementShape.children[k];
+                        html += renderArrayElementChild(gc, childFullName);
+                    }
+                }
+                // Regular grandchildren
+                for (var k = 0; k < (c.children || []).length; k++) {
+                    var gc = c.children[k];
+                    html += '<div class="grandchild-row" data-action="drillChild" data-fullname="' + esc(gc.full_name) + '" title="View references for ' + esc(gc.full_name) + '">';
+                    html += '<span class="child-prefix">.</span>';
+                    html += '<span class="child-name">' + esc(gc.name) + '</span>';
+                    if (gc.kind === 'array') {
+                        html += '<span class="var-kind-badge">[ ]</span>';
+                    }
+                    if (gc.coverage) {
+                        html += '<span class="coverage-badge">' + esc(gc.coverage) + '</span>';
+                    }
+                    html += '<span class="child-meta">' + gc.ref_count + ' ref' + (gc.ref_count !== 1 ? 's' : '') + '</span>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+
+            return html;
+        }
+
         function renderChildRow(c) {
             var html = '';
             var hasGrandchildren = c.children && c.children.length > 0;
+            // For arrays, element_shape children are also grandchildren
+            if (!hasGrandchildren && c.elementShape && c.elementShape.children && c.elementShape.children.length > 0) {
+                hasGrandchildren = true;
+            }
             var isExpanded = expandedNodes.has(c.full_name);
 
             html += '<div class="child-row">';
@@ -1056,6 +1184,12 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             html += '<span class="child-prefix">.</span>';
             html += '<span class="child-name-wrap" data-action="drillChild" data-fullname="' + esc(c.full_name) + '" title="View references for ' + esc(c.full_name) + '">';
             html += '<span class="child-name">' + esc(c.name) + '</span>';
+            if (c.kind === 'array') {
+                html += '<span class="var-kind-badge">[ ]</span>';
+            }
+            if (c.coverage) {
+                html += '<span class="coverage-badge">' + esc(c.coverage) + '</span>';
+            }
             html += '</span>';
             html += '<span class="child-meta">' + c.ref_count + ' ref' + (c.ref_count !== 1 ? 's' : '') + '</span>';
             html += '</div>';
@@ -1118,11 +1252,14 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             }
 
             // Children list (for drill-down)
-            if (v.children && v.children.length > 0) {
+            var isArrDrill = v.kind === 'array' && v.elementShape;
+            var drillChildren = isArrDrill ? (v.elementShape.children || []) : (v.children || []);
+            if (drillChildren.length > 0) {
                 html += '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px">';
-                for (var ci = 0; ci < v.children.length; ci++) {
-                    var ch = v.children[ci];
-                    html += '<span class="crumb" data-action="drillChild" data-fullname="' + esc(ch.full_name) + '" title="' + esc(ch.full_name) + ': ' + ch.ref_count + ' refs">.' + esc(ch.name) + '</span>';
+                for (var ci = 0; ci < drillChildren.length; ci++) {
+                    var ch = drillChildren[ci];
+                    var prefix = isArrDrill ? '[*].' : '.';
+                    html += '<span class="crumb" data-action="drillChild" data-fullname="' + esc(ch.full_name) + '" title="' + esc(ch.full_name) + ': ' + ch.ref_count + ' refs">' + prefix + esc(ch.name) + '</span>';
                 }
                 html += '</div>';
             }

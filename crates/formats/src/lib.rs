@@ -33,6 +33,7 @@ pub mod types;
 pub mod header;
 pub mod core_specials;
 pub mod core;
+pub mod virtual_doc;
 pub mod sugarcube;
 pub mod harlowe;
 pub mod chapbook;
@@ -43,7 +44,11 @@ pub use types::{
     MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
     ResolvedNavLink,
+    VirtualDocument, VirtualSection, VirtualSectionKind, LineMapping,
+    StartupAlias, AliasResolution,
+    UserCallable, UserCallableKind, PassageInfo,
 };
+pub use virtual_doc::VirtualDocHooks;
 
 #[cfg(test)]
 mod integration_tests;

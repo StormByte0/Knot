@@ -36,7 +36,7 @@
 //! analysis, which replaces the traditional "uninitialized variable" detection
 //! that is incorrect for SugarCube's persistent state model.
 
-use crate::types::{StateVariable, VarAccessKind, VarLocation};
+use crate::types::{StateVariable, VarAccessKind, VarLocation, VirtualDocument, VirtualSectionKind};
 use knot_core::passage::{VarKind, VarOp};
 use std::sync::LazyLock;
 use regex::Regex;
@@ -170,12 +170,6 @@ pub(crate) static RE_IF_MACRO: LazyLock<Regex> =
 pub(crate) static RE_CAPTURE_MACRO: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<<capture\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)").unwrap());
 
-/// `<<capture $var.prop.path ...>>` — capture macro with dot-path variable.
-/// Captures the full dot-path variable name (e.g., `$player.state.stress`).
-pub(crate) static RE_CAPTURE_MACRO_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<capture\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)"
-).unwrap());
-
 /// `$var =` — JS-style assignment of a persistent SugarCube variable
 /// within `<<run>>` macro bodies. Must be filtered in code to exclude
 /// `==`/`===` comparisons and compound assignments (`+=`, etc.).
@@ -186,312 +180,6 @@ pub(crate) static RE_JS_VAR_ASSIGN: LazyLock<Regex> =
 /// within `<<run>>` macro bodies (also `-=`, `*=`, `/=`, `%=`).
 pub(crate) static RE_JS_VAR_COMPOUND: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s*([\+\-\*\/%])=").unwrap());
-
-// ---------------------------------------------------------------------------
-// Dot-path assignment regexes
-// ---------------------------------------------------------------------------
-
-/// `<<set $var.prop.path to ...>>` — TwineScript `to` assignment for dot-path vars.
-/// Captures the full dot-path variable name (e.g., `$player.state.stress`).
-pub(crate) static RE_SET_MACRO_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s+to\b"
-).unwrap());
-
-/// `<<set $var.prop.path = ...>>` — JavaScript `=` assignment for dot-path vars.
-/// Captures the full dot-path variable name.
-pub(crate) static RE_SET_MACRO_EQ_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s*="
-).unwrap());
-
-/// `<<set $var.prop.path += ...>>` — Compound assignment for dot-path vars.
-pub(crate) static RE_SET_MACRO_COMPOUND_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<set\s+(\$[A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)+)\s*([\+\-\*\/%])="
-).unwrap());
-
-/// `<<set $var to {}>>` or `<<set $var = {}>>` — Object literal assignment.
-/// Indicates the variable holds a JSON-like object.
-pub(crate) static RE_SET_OBJECT_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+(?:to|=)\s*\{"
-).unwrap());
-
-/// `<<set $var to []>>` or `<<set $var = []>>` — Array literal assignment.
-/// Indicates the variable holds an array.
-pub(crate) static RE_SET_ARRAY_LITERAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"<<set\s+\$([A-Za-z\$_][A-Za-z0-9\$_]*)\s+(?:to|=)\s*\["
-).unwrap());
-
-/// Extract object literal property keys from a JavaScript/SugarCube object body.
-///
-/// Given the text between `{` and `}` of an object literal, this function
-/// extracts all top-level property keys (both quoted and unquoted) and
-/// recurses into nested object values to discover sub-properties.
-///
-/// Returns a map from each top-level key name to its set of known child keys
-/// (empty set if the value is a scalar). For example:
-///
-/// ```js
-/// {
-///   "plain-bra-white": {
-///     name: "White Cotton Bra",
-///     tags: ["underwear","basic"]
-///   },
-///   "pencil-skirt": {
-///     name: "Navy Pencil Skirt"
-///   }
-/// }
-/// ```
-///
-/// produces:
-/// ```text
-/// "plain-bra-white" → {"name", "tags"}
-/// "pencil-skirt" → {"name"}
-/// ```
-///
-/// The function handles:
-/// - Quoted keys: `"key-name"` or `'key-name'`
-/// - Bare (identifier) keys: `name`, `category`
-/// - Comments (`/* ... */` and `// ...`) are skipped
-/// - String values are skipped (not parsed as objects)
-/// - Nested objects: their keys become children
-fn extract_object_keys(body: &str) -> HashMap<String, HashSet<String>> {
-    let mut result: HashMap<String, HashSet<String>> = HashMap::new();
-    let bytes = body.as_bytes();
-    let len = bytes.len();
-    let mut pos = 0;
-
-    while pos < len {
-        // Skip whitespace and commas
-        if bytes[pos].is_ascii_whitespace() || bytes[pos] == b',' {
-            pos += 1;
-            continue;
-        }
-
-        // Skip block comments /* ... */
-        if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'*' {
-            if let Some(end) = body[pos + 2..].find("*/") {
-                pos += 2 + end + 2;
-                continue;
-            }
-            break; // unterminated comment
-        }
-
-        // Skip line comments // ...
-        if pos + 1 < len && bytes[pos] == b'/' && bytes[pos + 1] == b'/' {
-            if let Some(newline) = body[pos + 2..].find('\n') {
-                pos += 2 + newline + 1;
-                continue;
-            }
-            break; // unterminated comment to end
-        }
-
-        // Extract the key
-        let key = if bytes[pos] == b'"' || bytes[pos] == b'\'' {
-            // Quoted key
-            let quote = bytes[pos];
-            let start = pos + 1;
-            let mut end = start;
-            while end < len {
-                if bytes[end] == b'\\' && end + 1 < len {
-                    end += 2; // skip escaped char
-                } else if bytes[end] == quote {
-                    break;
-                } else {
-                    end += 1;
-                }
-            }
-            let key_str = body[start..end].to_string();
-            pos = end + 1; // skip closing quote
-            key_str
-        } else if bytes[pos].is_ascii_alphabetic() || bytes[pos] == b'_' || bytes[pos] == b'$' {
-            // Bare identifier key
-            let start = pos;
-            while pos < len && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_' || bytes[pos] == b'$') {
-                pos += 1;
-            }
-            body[start..pos].to_string()
-        } else {
-            // Unknown character, skip
-            pos += 1;
-            continue;
-        };
-
-        // Skip whitespace and colon
-        while pos < len && (bytes[pos].is_ascii_whitespace() || bytes[pos] == b':') {
-            pos += 1;
-        }
-
-        // Now we're at the value. Determine what it is.
-        // Skip whitespace
-        while pos < len && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
-
-        if pos < len && bytes[pos] == b'{' {
-            // Value is an object — extract its keys as children
-            let obj_body = extract_balanced_braces(body, pos);
-            if let Some((inner, end_pos)) = obj_body {
-                let children = extract_object_keys(&inner);
-                let child_names: HashSet<String> = children.keys().cloned().collect();
-                result.insert(key.clone(), child_names);
-
-                // Also insert nested children's children for deep property tracking
-                for (child_key, grandchild_keys) in children {
-                    let full_child_path = format!("{}.{}", key, child_key);
-                    result.insert(full_child_path, grandchild_keys);
-                }
-
-                pos = end_pos;
-            } else {
-                // Unbalanced braces — just mark as object
-                result.insert(key, HashSet::new());
-                break;
-            }
-        } else if pos < len && bytes[pos] == b'[' {
-            // Value is an array — skip over it (we don't extract array element shapes here)
-            let arr_body = extract_balanced_brackets(body, pos);
-            if let Some(end_pos) = arr_body {
-                pos = end_pos;
-            } else {
-                break;
-            }
-            // Don't add array values as properties
-            result.insert(key, HashSet::new());
-        } else {
-            // Scalar value (string, number, boolean, null, etc.) or expression
-            // Skip to the next comma or closing brace
-            result.insert(key, HashSet::new());
-            // Advance past the value
-            let mut depth = 0;
-            while pos < len {
-                if bytes[pos] == b'{' || bytes[pos] == b'[' || bytes[pos] == b'(' {
-                    depth += 1;
-                } else if bytes[pos] == b'}' || bytes[pos] == b']' || bytes[pos] == b')' {
-                    if depth == 0 {
-                        break;
-                    }
-                    depth -= 1;
-                } else if bytes[pos] == b',' && depth == 0 {
-                    break;
-                } else if bytes[pos] == b'"' || bytes[pos] == b'\'' {
-                    // Skip string literal
-                    let quote = bytes[pos];
-                    pos += 1;
-                    while pos < len {
-                        if bytes[pos] == b'\\' && pos + 1 < len {
-                            pos += 2;
-                        } else if bytes[pos] == quote {
-                            break;
-                        } else {
-                            pos += 1;
-                        }
-                    }
-                }
-                pos += 1;
-            }
-        }
-    }
-
-    result
-}
-
-/// Extract the content between balanced `{` and `}` starting at `start_pos`.
-///
-/// Returns `Some((inner_content, end_position))` where `inner_content` is the
-/// text between the opening and closing braces, and `end_position` is the
-/// position after the closing `}`. Returns `None` if braces are unbalanced.
-fn extract_balanced_braces(text: &str, start_pos: usize) -> Option<(String, usize)> {
-    let bytes = text.as_bytes();
-    if start_pos >= bytes.len() || bytes[start_pos] != b'{' {
-        return None;
-    }
-
-    let mut depth = 0;
-    let mut pos = start_pos;
-    let mut in_string: Option<u8> = None;
-
-    while pos < bytes.len() {
-        if let Some(quote) = in_string {
-            if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
-                pos += 2;
-                continue;
-            }
-            if bytes[pos] == quote {
-                in_string = None;
-            }
-            pos += 1;
-            continue;
-        }
-
-        match bytes[pos] {
-            b'"' | b'\'' => {
-                in_string = Some(bytes[pos]);
-            }
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    let inner = text[start_pos + 1..pos].to_string();
-                    return Some((inner, pos + 1));
-                }
-            }
-            _ => {}
-        }
-        pos += 1;
-    }
-
-    None
-}
-
-/// Extract balanced `[` and `]` starting at `start_pos`.
-///
-/// Returns `Some(end_position)` after the closing `]`, or `None` if unbalanced.
-fn extract_balanced_brackets(text: &str, start_pos: usize) -> Option<usize> {
-    let bytes = text.as_bytes();
-    if start_pos >= bytes.len() || bytes[start_pos] != b'[' {
-        return None;
-    }
-
-    let mut depth = 0;
-    let mut pos = start_pos;
-    let mut in_string: Option<u8> = None;
-
-    while pos < bytes.len() {
-        if let Some(quote) = in_string {
-            if bytes[pos] == b'\\' && pos + 1 < bytes.len() {
-                pos += 2;
-                continue;
-            }
-            if bytes[pos] == quote {
-                in_string = None;
-            }
-            pos += 1;
-            continue;
-        }
-
-        match bytes[pos] {
-            b'"' | b'\'' => {
-                in_string = Some(bytes[pos]);
-            }
-            b'[' => depth += 1,
-            b']' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(pos + 1);
-                }
-            }
-            _ => {}
-        }
-        pos += 1;
-    }
-
-    None
-}
-
-/// `$var[index]` or `$var.prop[index]` — array index access (read or write).
-/// Captures the base variable path and the index expression.
-pub(crate) static RE_VAR_INDEX_ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"\$([A-Za-z\$_][A-Za-z0-9\$_]*(?:\.[A-Za-z\$_][A-Za-z0-9\$_]*)*)\[([^\]]+)\]"
-).unwrap());
 
 // ---------------------------------------------------------------------------
 // Variable extraction
@@ -508,9 +196,7 @@ pub(crate) static RE_VAR_INDEX_ACCESS: LazyLock<Regex> = LazyLock::new(|| Regex:
 /// ## Detected patterns
 ///
 /// - `<<set $var to ...>>` / `<<set $var = ...>>` — base assignment
-/// - `<<set $var.prop.path to ...>>` / `<<set $var.prop.path = ...>>` — dot-path assignment (WRITE)
 /// - `<<set $var += ...>>` — compound assignment (also `-=`, `*=`, `/=`, `%=`)
-/// - `<<set $var.prop.path += ...>>` — dot-path compound assignment (WRITE)
 /// - `<<capture $var ...>>` — capture/assign a variable (WRITE)
 /// - `<<run $var = value>>` — JS assignment inside `<<run>>` macro (WRITE)
 /// - `<<run $var += value>>` — JS compound assignment inside `<<run>>` (WRITE)
@@ -534,114 +220,6 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     let mut vars = Vec::new();
     let mut init_spans: Vec<Range<usize>> = Vec::new();
     let mut unset_spans: Vec<Range<usize>> = Vec::new();
-    let mut dot_path_init_spans: Vec<Range<usize>> = Vec::new(); // spans for dot-path inits
-
-    // ── Dot-path assignment detection (must run before base-level) ────
-    // These patterns capture the FULL dot-path variable name (e.g.,
-    // `$player.state.stress`) so that property attribution works correctly
-    // in the sidebar variable tree and in completions.
-    //
-    // <<set $var.prop.path to ...>>
-    for caps in RE_SET_MACRO_DOT.captures_iter(body) {
-        let full = caps.get(0).unwrap();
-        let var_name = caps.get(1).unwrap().as_str();
-        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
-        let var_end = var_start + var_name.len();
-
-        // Skip $$ escape markup
-        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
-            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
-        });
-        if is_dollar_escape {
-            continue;
-        }
-
-        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
-            var_start >= s.start && var_end <= s.end
-        });
-        if !is_dup {
-            vars.push(VarOp {
-                name: var_name.to_string(),
-                kind: VarKind::Init,
-                span: var_start..var_end,
-                is_temporary: false,
-            });
-            init_spans.push(var_start..var_end);
-            dot_path_init_spans.push(var_start..var_end);
-        }
-    }
-
-    // <<set $var.prop.path = ...>> (but NOT compound like +=)
-    for caps in RE_SET_MACRO_EQ_DOT.captures_iter(body) {
-        let full = caps.get(0).unwrap();
-        let var_name = caps.get(1).unwrap().as_str();
-        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
-        let var_end = var_start + var_name.len();
-
-        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
-            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
-        });
-        if is_dollar_escape {
-            continue;
-        }
-
-        // Skip if this is a compound assignment (already handled below)
-        let is_compound = RE_SET_MACRO_COMPOUND_DOT.captures_iter(body).any(|cc| {
-            cc.get(0).unwrap().start() == full.start()
-        });
-        if is_compound {
-            continue;
-        }
-
-        // Skip == or ===
-        let after_match = body.get(full.end()..).unwrap_or("");
-        if after_match.starts_with('=') {
-            continue;
-        }
-
-        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
-            var_start >= s.start && var_end <= s.end
-        });
-        if !is_dup {
-            vars.push(VarOp {
-                name: var_name.to_string(),
-                kind: VarKind::Init,
-                span: var_start..var_end,
-                is_temporary: false,
-            });
-            init_spans.push(var_start..var_end);
-            dot_path_init_spans.push(var_start..var_end);
-        }
-    }
-
-    // <<set $var.prop.path += ...>> etc.
-    for caps in RE_SET_MACRO_COMPOUND_DOT.captures_iter(body) {
-        let full = caps.get(0).unwrap();
-        let var_name = caps.get(1).unwrap().as_str();
-        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
-        let var_end = var_start + var_name.len();
-
-        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
-            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
-        });
-        if is_dollar_escape {
-            continue;
-        }
-
-        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
-            var_start >= s.start && var_end <= s.end
-        });
-        if !is_dup {
-            vars.push(VarOp {
-                name: var_name.to_string(),
-                kind: VarKind::Init,
-                span: var_start..var_end,
-                is_temporary: false,
-            });
-            init_spans.push(var_start..var_end);
-            dot_path_init_spans.push(var_start..var_end);
-        }
-    }
 
     // ── Assignment detection: <<set $var to ...>> ─────────────────────
     for caps in RE_SET_MACRO.captures_iter(body) {
@@ -728,44 +306,7 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         }
     }
 
-    // ── Capture macro: <<capture $var.prop.path ...>> — WRITE (dot-path) ──
-    // Must run before the base-level capture to register the full dot-path
-    // span in init_spans, preventing the base-level scan from creating a
-    // spurious `$player` Init when the real reference is `$player.state.stress`.
-    for caps in RE_CAPTURE_MACRO_DOT.captures_iter(body) {
-        let full = caps.get(0).unwrap();
-        let var_name = caps.get(1).unwrap().as_str();
-        let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
-        let var_end = var_start + var_name.len();
-
-        // Skip $$ escape markup
-        let is_dollar_escape = full.as_str().find('$').map_or(false, |pos| {
-            pos > 0 && full.as_str().as_bytes()[pos - 1] == b'$'
-        });
-        if is_dollar_escape {
-            continue;
-        }
-
-        let is_dup = init_spans.iter().chain(dot_path_init_spans.iter()).any(|s| {
-            var_start >= s.start && var_end <= s.end
-        });
-        if !is_dup {
-            vars.push(VarOp {
-                name: var_name.to_string(),
-                kind: VarKind::Init,
-                span: var_start..var_end,
-                is_temporary: false,
-            });
-            init_spans.push(var_start..var_end);
-            dot_path_init_spans.push(var_start..var_end);
-        }
-    }
-
-    // ── Capture macro: <<capture $var ...>> — WRITE (base-level) ──────
-    // NOTE: RE_CAPTURE_MACRO only captures the base variable name (no dots),
-    // so for `<<capture $player.state.stress>>` it captures just `$player`.
-    // We must skip these when the variable is actually part of a longer
-    // dot-path reference. The RE_CAPTURE_MACRO_DOT scan above handles those.
+    // ── Capture macro: <<capture $var ...>> — WRITE ──────────────────
     for caps in RE_CAPTURE_MACRO.captures_iter(body) {
         let m = caps.get(0).unwrap();
         let var_match = caps.get(1).unwrap();
@@ -773,21 +314,10 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
         let var_end = var_start + name.len();
 
-        // Skip if this base-level capture is actually part of a longer
-        // dot-path (handled by RE_CAPTURE_MACRO_DOT above)
-        let is_dot_subspan = RE_CAPTURE_MACRO_DOT
-            .captures_iter(body)
-            .any(|dcaps| {
-                let dfull = dcaps.get(0).unwrap();
-                let dot_start = body_offset + dfull.start() + dfull.as_str().find('$').unwrap_or(0);
-                let dot_end = body_offset + dfull.end();
-                var_start >= dot_start && var_end < dot_end
-            });
-
         let is_dup = init_spans.iter().any(|s| {
             var_start >= s.start && var_end <= s.end
         });
-        if !is_dup && !is_dot_subspan {
+        if !is_dup {
             vars.push(VarOp {
                 name,
                 kind: VarKind::Init,
@@ -799,30 +329,12 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     }
 
     // ── Conditional macros: <<if $var>>, <<elseif $var>>, <<when $var>> — READ ──
-    // NOTE: RE_IF_MACRO only captures the base variable name (no dots),
-    // so for `<<if $player.state.stress>>` it captures just `$player`.
-    // We must skip these when the variable is actually part of a longer
-    // dot-path reference — otherwise a spurious root-level read is created
-    // that pollutes the sidebar variable tree.
     for caps in RE_IF_MACRO.captures_iter(body) {
         let m = caps.get(0).unwrap();
         let var_match = caps.get(1).unwrap();
         let name = format!("${}", var_match.as_str());
         let var_start = body_offset + m.start() + m.as_str().find('$').unwrap_or(0);
         let var_end = var_start + name.len();
-
-        // Skip if this variable reference is actually part of a longer
-        // dot-path (e.g., `<<if $player.state.stress>>` — the RE_IF_MACRO
-        // only captures `$player` but the real reference is `$player.state.stress`).
-        // The RE_VAR_DOT_PATH scan below will capture the full path instead.
-        let is_dot_subspan = RE_VAR_DOT_PATH
-            .captures_iter(body)
-            .any(|dcaps| {
-                let dfull = dcaps.get(0).unwrap();
-                let dot_start = body_offset + dfull.start();
-                let dot_end = body_offset + dfull.end();
-                var_start >= dot_start && var_end < dot_end
-            });
 
         // Only record if not already recorded at this exact span (avoids
         // double-counting with the general RE_VAR scan below)
@@ -834,7 +346,7 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
         let is_init = init_spans.iter().any(|s| {
             var_start >= s.start && var_end <= s.end
         });
-        if !is_already && !is_init && !is_dot_subspan {
+        if !is_already && !is_init {
             vars.push(VarOp {
                 name,
                 kind: VarKind::Read,
@@ -1482,81 +994,22 @@ pub(crate) fn build_state_variable_registry(
                     entry.known_properties.insert(path.clone());
                 }
 
-                // Also extract properties from object literal assignments.
-                // When we see `<<set $var to {...}>>` or `<<set $var = {...}>>`,
-                // parse the object body to discover its property keys. This handles
-                // cases like `$ITEMS = { "plain-bra-white": { name: "...", ... } }`
-                // where properties are defined inline rather than accessed via dot notation.
-                //
-                // ## Attribute-first model
-                //
-                // In the attribute-first model, a write like `$ITEMS = { "step1": { "step2": "happy" } }`
-                // is NOT a write to `$ITEMS`. It is a write to the LEAF node `step2` with value
-                // `"happy"`. We decompose the base-level `Assign` into individual `PropertyWrite`
-                // entries for each leaf path in the object literal. Parent nodes then aggregate
-                // their children's references for display/navigation purposes.
-                let mut decomposed_into_leaves = false;
-                if matches!(location.kind, VarAccessKind::Assign) {
-                    if let Some(obj_props) = extract_object_literal_properties_for_var(
-                        passage, &var.name,
-                    ) {
-                        // Add the extracted keys as known properties
-                        for (prop_path, children) in &obj_props {
-                            entry.known_properties.insert(prop_path.clone());
-                            // Also add intermediate paths for nested objects
-                            for child in children {
-                                let full_child_path = format!("{}.{}", prop_path, child);
-                                entry.known_properties.insert(full_child_path);
-                            }
-                        }
-
-                        // Attribute-first: decompose the Assign into PropertyWrite entries
-                        // for each LEAF path. A leaf path has no children (empty HashSet).
-                        // For example, `$ITEMS = { "step1": { "step2": "happy" } }` produces
-                        // a single PropertyWrite { path: "step1.step2" } instead of an Assign.
-                        let leaf_paths: Vec<String> = obj_props.iter()
-                            .filter(|(_, children)| children.is_empty())
-                            .map(|(path, _)| path.clone())
-                            .collect();
-
-                        if !leaf_paths.is_empty() {
-                            for leaf_path in &leaf_paths {
-                                entry.write_locations.push(VarLocation {
-                                    passage_name: location.passage_name.clone(),
-                                    file_uri: location.file_uri.clone(),
-                                    span: location.span.clone(),
-                                    kind: VarAccessKind::PropertyWrite { path: leaf_path.clone() },
-                                });
-                            }
-                            decomposed_into_leaves = true;
-                        }
-
+                // Record the location in the appropriate list
+                match &location.kind {
+                    VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
+                        entry.write_locations.push(location);
+                        // If this is in a special passage that contributes_variables,
+                        // mark the variable as seeded by special
                         if is_special_seeding {
                             entry.seeded_by_special = true;
                         }
                     }
-                }
-
-                // Record the location in the appropriate list.
-                // If the Assign was decomposed into leaf PropertyWrite entries,
-                // skip the original Assign — the leaf entries carry the references.
-                if !decomposed_into_leaves {
-                    match &location.kind {
-                        VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
-                            entry.write_locations.push(location);
-                            // If this is in a special passage that contributes_variables,
-                            // mark the variable as seeded by special
-                            if is_special_seeding {
-                                entry.seeded_by_special = true;
-                            }
-                        }
-                        VarAccessKind::Read | VarAccessKind::PropertyRead { .. } => {
-                            entry.read_locations.push(location);
-                        }
-                        VarAccessKind::Unset => {
-                            // Unset doesn't go in either list, but we could track it
-                            // separately in the future if needed
-                        }
+                    VarAccessKind::Read | VarAccessKind::PropertyRead { .. } => {
+                        entry.read_locations.push(location);
+                    }
+                    VarAccessKind::Unset => {
+                        // Unset doesn't go in either list, but we could track it
+                        // separately in the future if needed
                     }
                 }
             }
@@ -1600,97 +1053,6 @@ fn parse_var_name(name: &str) -> (String, String, Option<String>) {
         };
         (base_name, dollar_name, None)
     }
-}
-
-/// Extract property keys from an object literal assignment in a passage body.
-///
-/// Given a variable name (e.g., `$ITEMS`) and a passage, this function scans
-/// the passage body for `<<set $ITEMS = {...}>>` or `<<set $ITEMS to {...}>>`
-/// patterns. If found, it parses the object literal body and returns a map
-/// from property key name to its child key set (for nested objects).
-///
-/// This handles the case where all properties are defined inline in the
-/// object literal rather than accessed via dot notation — e.g.:
-/// ```twee
-/// <<set $ITEMS = {
-///   "plain-bra-white": {
-///     name: "White Cotton Bra",
-///     category: "apparel"
-///   }
-/// }>>
-/// ```
-fn extract_object_literal_properties_for_var(
-    passage: &knot_core::passage::Passage,
-    var_name: &str,
-) -> Option<HashMap<String, HashSet<String>>> {
-    // Strip the $ sigil for matching
-    let var_name_without_sigil = if var_name.starts_with('$') {
-        &var_name[1..]
-    } else {
-        var_name
-    };
-
-    // Directly iterate over Block::Macro entries instead of reconstructing
-    // the full body text. This is more robust because the macro args field
-    // already contains the complete argument text (including multi-line
-    // object literals), avoiding any issues with block reconstruction
-    // and re-parsing.
-    for block in &passage.body {
-        if let knot_core::passage::Block::Macro { name, args, .. } = block {
-            if name != "set" {
-                continue;
-            }
-
-            // Reconstruct just this macro for regex matching:
-            // <<set args>>
-            let macro_text = if args.is_empty() {
-                format!("<<{}>>", name)
-            } else {
-                format!("<<{} {}>>", name, args)
-            };
-
-            // Search for <<set $var = {...}>> or <<set $var to {...}>>
-            for caps in RE_SET_OBJECT_LITERAL.captures_iter(&macro_text) {
-                let captured_name = caps.get(1).unwrap().as_str();
-                if captured_name != var_name_without_sigil {
-                    continue;
-                }
-
-                // Find the opening brace in the args string and extract
-                // the balanced object body directly from args. The args
-                // field contains everything between the macro name and the
-                // closing >>, so it has the full object literal without
-                // the >> delimiter that could interfere with brace matching.
-                if let Some(brace_pos) = args.find('{') {
-                    if let Some((inner, _end_pos)) = extract_balanced_braces(args, brace_pos) {
-                        let keys = extract_object_keys(&inner);
-                        return Some(keys);
-                    }
-                }
-            }
-        }
-        // Also check Text blocks (e.g., for raw-body special passages
-        // that store content as a single Block::Text)
-        if let knot_core::passage::Block::Text { content, .. } = block {
-            for caps in RE_SET_OBJECT_LITERAL.captures_iter(content) {
-                let captured_name = caps.get(1).unwrap().as_str();
-                if captured_name != var_name_without_sigil {
-                    continue;
-                }
-
-                let full_match = caps.get(0).unwrap();
-                let brace_pos = full_match.as_str().find('{')?;
-                let abs_brace_pos = full_match.start() + brace_pos;
-
-                if let Some((inner, _end_pos)) = extract_balanced_braces(content, abs_brace_pos) {
-                    let keys = extract_object_keys(&inner);
-                    return Some(keys);
-                }
-            }
-        }
-    }
-
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,185 +1628,12 @@ fn compute_line_from_offset(
     0
 }
 
-/// Infer the structural kind (Object, Array, Scalar) of each variable and
-/// property from assignment patterns observed in the source code.
-///
-/// Scans all passages for patterns like:
-/// - `<<set $var to {}>>` / `<<set $var = {}>>` → Object
-/// - `<<set $var to []>>` / `<<set $var = []>>` → Array
-/// - `$var[index]` → Array (the base variable)
-/// - `$var.prop` (dot access) → the parent is Object
-/// - `<<set $var to 100>>` → Scalar (if no other evidence)
-///
-/// Returns a map from dollar-prefixed variable name (or full dot-path for
-/// properties) to its inferred `PropertyKind`.
-pub(crate) fn infer_variable_shapes(
-    workspace: &knot_core::Workspace,
-) -> HashMap<String, crate::types::PropertyKind> {
-    use crate::types::PropertyKind;
-
-    let mut shapes: HashMap<String, PropertyKind> = HashMap::new();
-
-    for doc in workspace.documents() {
-        for passage in &doc.passages {
-            if passage.is_metadata() {
-                continue;
-            }
-
-            // Iterate over passage body blocks directly instead of reconstructing
-            // the full body text. This is more robust because Block::Macro args
-            // already contain the complete argument text (including multi-line
-            // object literals), and Block::Text content contains raw text for
-            // passages that store content as a single text block.
-            for block in &passage.body {
-                // Collect the text to scan from each block type
-                let text_to_scan: Option<&str> = match block {
-                    knot_core::passage::Block::Macro { name, args, .. } => {
-                        // For macros, reconstruct just this one macro for regex
-                        // matching: <<name args>>. This avoids issues with
-                        // multi-line args being split across blocks.
-                        if name == "set" {
-                            Some(args)
-                        } else {
-                            None
-                        }
-                    }
-                    knot_core::passage::Block::Text { content, .. } => {
-                        Some(content)
-                    }
-                    _ => None,
-                };
-
-                let Some(scan_text) = text_to_scan else { continue };
-
-                // Detect object literal assignments: <<set $var to {}>> or <<set $var = {}>>
-                // We reconstruct the full macro syntax for regex matching
-                let macro_text = match block {
-                    knot_core::passage::Block::Macro { name, .. } => {
-                        format!("<<{} {}>>", name, scan_text)
-                    }
-                    _ => scan_text.to_string(),
-                };
-
-                for caps in RE_SET_OBJECT_LITERAL.captures_iter(&macro_text) {
-                    let var_name = format!("${}", caps.get(1).unwrap().as_str());
-                    shapes.entry(var_name.clone()).or_insert(PropertyKind::Object);
-
-                    // Also extract sub-properties from the object literal body
-                    // to mark them as Object if they contain nested objects.
-                    // Use the scan_text (args for macros, content for text blocks)
-                    // for balanced brace extraction, which avoids the >> delimiter.
-                    if let Some(brace_pos) = scan_text.find('{') {
-                        if let Some((inner, _)) = extract_balanced_braces(scan_text, brace_pos) {
-                            let keys = extract_object_keys(&inner);
-                            for (key, children) in &keys {
-                                let full_prop = format!("{}.{}", var_name, key);
-                                // If the property has children, it's an Object
-                                if !children.is_empty() {
-                                    shapes.entry(full_prop.clone())
-                                        .and_modify(|existing| {
-                                            if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                                *existing = PropertyKind::Object;
-                                            }
-                                        })
-                                        .or_insert(PropertyKind::Object);
-                                }
-                                // Also mark deeper nested properties as Object
-                                for child in children {
-                                    let full_child = format!("{}.{}", full_prop, child);
-                                    // Check if this child itself has children (from the keys map)
-                                    if let Some(grandchildren) = keys.get(&format!("{}.{}", key, child)) {
-                                        if !grandchildren.is_empty() {
-                                            shapes.entry(full_child)
-                                                .and_modify(|existing| {
-                                                    if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                                        *existing = PropertyKind::Object;
-                                                    }
-                                                })
-                                                .or_insert(PropertyKind::Object);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Detect array literal assignments: <<set $var to []>> or <<set $var = []>>
-                for caps in RE_SET_ARRAY_LITERAL.captures_iter(&macro_text) {
-                    let var_name = format!("${}", caps.get(1).unwrap().as_str());
-                    shapes.entry(var_name).or_insert(PropertyKind::Array);
-                }
-
-                // Detect bracket-index access: $var[index] or $var.prop[index]
-                // This indicates the base variable is an array
-                for caps in RE_VAR_INDEX_ACCESS.captures_iter(scan_text) {
-                    let base_path = caps.get(1).unwrap().as_str();
-                    let dollar_name = format!("${}", base_path);
-
-                    // The variable (or property) before the brackets is an Array
-                    // Widen from Unknown/Scalar to Array, but don't downgrade Object to Array
-                    shapes.entry(dollar_name.clone())
-                        .and_modify(|existing| {
-                            if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                *existing = PropertyKind::Array;
-                            }
-                        })
-                        .or_insert(PropertyKind::Array);
-                }
-
-                // Detect dot-path accesses: if $var.prop is seen, $var is at least Object
-                for caps in RE_VAR_DOT_PATH.captures_iter(scan_text) {
-                    let full_path = caps.get(1).unwrap().as_str();
-                    let _dollar_name = format!("${}", full_path);
-
-                    // Skip $$ escape
-                    let full_match = caps.get(0).unwrap();
-                    if full_match.start() > 0 && scan_text.as_bytes()[full_match.start() - 1] == b'$' {
-                        continue;
-                    }
-
-                    // If the path has dots, the parent is Object
-                    if let Some(dot_pos) = full_path.find('.') {
-                        let parent = format!("${}", &full_path[..dot_pos]);
-                        shapes.entry(parent)
-                            .and_modify(|existing| {
-                                if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                    *existing = PropertyKind::Object;
-                                }
-                            })
-                            .or_insert(PropertyKind::Object);
-
-                        // Also mark intermediate paths as Object
-                        let segments: Vec<&str> = full_path.split('.').collect();
-                        for i in 1..segments.len().saturating_sub(1) {
-                            let intermediate = format!("${}", segments[..=i].join("."));
-                            shapes.entry(intermediate)
-                                .and_modify(|existing| {
-                                    if *existing == PropertyKind::Unknown || *existing == PropertyKind::Scalar {
-                                        *existing = PropertyKind::Object;
-                                    }
-                                })
-                                .or_insert(PropertyKind::Object);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    shapes
-}
-
 pub(crate) fn build_variable_tree(
     workspace: &knot_core::Workspace,
 ) -> Vec<crate::types::VariableTreeNode> {
-    use crate::types::{PropertyKind, VariableTreeNode, VariableUsageLocation};
+    use crate::types::{VariableTreeNode, VariableUsageLocation};
 
     let registry = build_state_variable_registry(workspace);
-
-    // Build shape inferences from assignment patterns across all passages
-    let shape_map = infer_variable_shapes(workspace);
 
     let mut variables: Vec<VariableTreeNode> = Vec::new();
 
@@ -2452,77 +1641,44 @@ pub(crate) fn build_variable_tree(
         let base_name = &state_var.base_name;
         let state_path = format!("State.variables.{}", base_name);
 
-        // Determine the kind for this variable from the shape map
-        let kind = shape_map.get(dollar_name).cloned().unwrap_or(PropertyKind::Unknown);
+        // Build write/read locations for the base variable
+        // (only base-level Assign/Read, not property accesses)
+        let mut written_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.write_locations {
+            if matches!(loc.kind, VarAccessKind::Assign) {
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                written_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: true,
+                    line,
+                });
+            }
+        }
 
-        // Build property tree from known_properties.
-        // The tree is built with the attribute-first model: leaf nodes get their
-        // direct write/read locations, then aggregate_locations_upward() rolls
-        // them up to parent nodes for navigation.
+        let mut read_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.read_locations {
+            if matches!(loc.kind, VarAccessKind::Read) {
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                read_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: false,
+                    line,
+                });
+            }
+        }
+
+        let is_unused = !written_in.is_empty() && read_in.is_empty();
+
+        // Build property tree from known_properties
         let properties = build_property_tree(
             dollar_name,
             &state_var.known_properties,
             &state_var.write_locations,
             &state_var.read_locations,
             workspace,
-            &shape_map,
         );
-
-        // Build write/read locations for the root variable.
-        // In the attribute-first model:
-        //   - Base-level Assign/Read entries belong to the root only
-        //     (they are NOT spread to child properties)
-        //   - PropertyWrite/PropertyRead entries belong to leaf nodes
-        //     and are aggregated up through the property tree
-        //   - The root's written_in/read_in combines its own direct
-        //     entries with aggregated entries from the property tree
-        let mut written_in: Vec<VariableUsageLocation> = Vec::new();
-
-        // Add base-level Assign entries (scalar writes like `$gold to 10`)
-        for loc in &state_var.write_locations {
-            let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
-            match &loc.kind {
-                VarAccessKind::Assign => {
-                    written_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: true,
-                        line,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // Add aggregated property writes from the property tree
-        for prop in &properties {
-            written_in.extend(prop.written_in.iter().cloned());
-        }
-
-        let mut read_in: Vec<VariableUsageLocation> = Vec::new();
-
-        // Add base-level Read entries (reading the whole variable, e.g., `$ITEMS` in prose)
-        for loc in &state_var.read_locations {
-            let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
-            match &loc.kind {
-                VarAccessKind::Read => {
-                    read_in.push(VariableUsageLocation {
-                        passage_name: loc.passage_name.clone(),
-                        file_uri: loc.file_uri.clone(),
-                        is_write: false,
-                        line,
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // Add aggregated property reads from the property tree
-        for prop in &properties {
-            read_in.extend(prop.read_in.iter().cloned());
-        }
-
-        let is_unused = !written_in.is_empty() && read_in.is_empty();
 
         variables.push(VariableTreeNode {
             name: dollar_name.clone(),
@@ -2533,7 +1689,6 @@ pub(crate) fn build_variable_tree(
             initialized_at_start: state_var.seeded_by_special,
             is_unused,
             properties,
-            kind,
         });
     }
 
@@ -2554,32 +1709,14 @@ pub(crate) fn build_variable_tree(
 ///   .sword
 ///   .shield
 /// ```
-///
-/// ## Attribute-first model
-///
-/// In the attribute-first model, references belong to the **leaf nodes** first.
-/// Parent nodes **aggregate** their children's references for display/navigation.
-/// This means:
-///
-/// - **Leaf nodes** show their **direct** write/read locations only
-///   (PropertyWrite/PropertyRead where `path == prop_name` exactly)
-/// - **Parent nodes** show **aggregated** references from all descendants,
-///   computed by the `aggregate_locations_upward()` pass after the tree is built
-/// - Base-level `Assign`/`Read` entries are NOT spread to child properties —
-///   they belong to the root variable only
-///
-/// For example, `$ITEMS = { "sword": { "name": "Iron Sword" } }` produces
-/// one leaf: `sword.name`. The write location is attributed to `sword.name`
-/// directly, then aggregated up to `sword` and `$ITEMS` for navigation.
 fn build_property_tree(
     dollar_name: &str,
     known_properties: &HashSet<String>,
     write_locations: &[VarLocation],
     read_locations: &[VarLocation],
     workspace: &knot_core::Workspace,
-    shape_map: &HashMap<String, crate::types::PropertyKind>,
 ) -> Vec<crate::types::VariablePropertyNode> {
-    use crate::types::{PropertyKind, VariablePropertyNode, VariableUsageLocation};
+    use crate::types::{VariablePropertyNode, VariableUsageLocation};
 
     // Collect immediate children (first segment of each path)
     let mut children: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -2612,15 +1749,11 @@ fn build_property_tree(
         };
         let state_path = format!("State.variables.{}.{}", base_without_sigil, prop_name);
 
-        // Collect DIRECT write locations for this property only.
-        // In the attribute-first model, only exact path matches are attributed
-        // directly to this property node. Parent-level aggregation happens later
-        // via `aggregate_locations_upward()`.
+        // Collect write locations for this specific property path
         let mut prop_written_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in write_locations {
             match &loc.kind {
                 VarAccessKind::PropertyWrite { path } => {
-                    // Only exact match — leaf nodes get their direct writes
                     if path == &prop_name {
                         prop_written_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
@@ -2630,20 +1763,15 @@ fn build_property_tree(
                         });
                     }
                 }
-                // Base-level Assign is NOT attributed to child properties.
-                // Object literal Assigns have been decomposed into leaf PropertyWrite
-                // entries by build_state_variable_registry(). Scalar Assigns belong
-                // to the root variable only.
                 _ => {}
             }
         }
 
-        // Collect DIRECT read locations for this property (exact match only)
+        // Collect read locations for this specific property path
         let mut prop_read_in: Vec<VariableUsageLocation> = Vec::new();
         for loc in read_locations {
             match &loc.kind {
                 VarAccessKind::PropertyRead { path } => {
-                    // Only exact match — leaf nodes get their direct reads
                     if path == &prop_name {
                         prop_read_in.push(VariableUsageLocation {
                             passage_name: loc.passage_name.clone(),
@@ -2653,31 +1781,16 @@ fn build_property_tree(
                         });
                     }
                 }
-                // Base-level Read is NOT attributed to child properties.
-                // A `$ITEMS` reference reads the whole object, not individual props.
                 _ => {}
             }
         }
-
-        // Determine the kind for this property from the shape map
-        let kind = shape_map.get(&full_name).cloned().unwrap_or_else(|| {
-            // Infer kind from structure: if it has children, it's an Object
-            if !sub_paths.is_empty() {
-                PropertyKind::Object
-            } else {
-                PropertyKind::Unknown
-            }
-        });
 
         // Build sub-properties recursively
         let sub_properties = if sub_paths.is_empty() {
             Vec::new()
         } else {
             let sub_set: HashSet<String> = sub_paths.into_iter().collect();
-            // Filter write/read locations for sub-paths (prefix match for recursion).
-            // Only PropertyWrite/PropertyRead entries with paths that start with
-            // "prop_name." are passed down. Base-level Assign/Read entries are NOT
-            // passed to sub-trees — they belong to the root only.
+            // Filter write/read locations for sub-paths
             let sub_writes: Vec<VarLocation> = write_locations
                 .iter()
                 .filter(|loc| match &loc.kind {
@@ -2688,7 +1801,7 @@ fn build_property_tree(
                 })
                 .cloned()
                 .map(|mut loc| {
-                    // Adjust path: strip the "prop_name." prefix for PropertyWrite
+                    // Adjust path: strip the "prop_name." prefix
                     if let VarAccessKind::PropertyWrite { path } = &loc.kind {
                         let new_path = path.strip_prefix(&format!("{}.", prop_name)).unwrap_or(path).to_string();
                         loc.kind = VarAccessKind::PropertyWrite { path: new_path };
@@ -2722,26 +1835,7 @@ fn build_property_tree(
                 &sub_writes,
                 &sub_reads,
                 workspace,
-                shape_map,
             )
-        };
-
-        // For Array-kind properties, build the element_shape from sub-properties
-        // (the sub-properties represent the shape of each element)
-        let element_shape = if kind == PropertyKind::Array && !sub_properties.is_empty() {
-            Some(Box::new(VariablePropertyNode {
-                name: "[0]".to_string(),
-                full_name: format!("{}[0]", full_name),
-                state_path: format!("{}[0]", state_path),
-                line: 0,
-                written_in: Vec::new(),
-                read_in: Vec::new(),
-                properties: sub_properties.clone(),
-                kind: PropertyKind::Object,
-                element_shape: None,
-            }))
-        } else {
-            None
         };
 
         result.push(VariablePropertyNode {
@@ -2757,434 +1851,185 @@ fn build_property_tree(
             written_in: prop_written_in,
             read_in: prop_read_in,
             properties: sub_properties,
-            kind,
-            element_shape,
         });
-    }
-
-    // Attribute-first: aggregate children's locations upward so parent nodes
-    // display the total reference count for navigation purposes.
-    for node in &mut result {
-        aggregate_locations_upward(node);
     }
 
     result
 }
 
-/// Aggregate children's write/read locations upward into parent nodes.
-///
-/// In the attribute-first model, references belong to leaf nodes first.
-/// This function walks the tree bottom-up, collecting each parent's
-/// descendant locations into its own lists for navigation display.
-///
-/// After this pass:
-/// - **Leaf nodes** retain only their direct write/read locations
-/// - **Parent nodes** contain their own direct locations PLUS all
-///   locations from their descendants
-///
-/// This enables the drill-down navigation pattern: the root shows the total
-/// reference count, and as the user expands deeper nodes, the count decreases
-/// until reaching a leaf with its specific instances.
-fn aggregate_locations_upward(node: &mut crate::types::VariablePropertyNode) {
-    // First, recurse into children (bottom-up)
-    for child in &mut node.properties {
-        aggregate_locations_upward(child);
-    }
-    if let Some(shape) = &mut node.element_shape {
-        aggregate_locations_upward(shape);
-    }
-
-    // Now aggregate children's locations into this node.
-    // We collect all locations from children without deduplication —
-    // each leaf write is a distinct reference, even if multiple leaves
-    // share the same source line (e.g., from a single object literal
-    // assignment). The UI can handle display deduplication if needed.
-    let mut child_writes: Vec<crate::types::VariableUsageLocation> = Vec::new();
-    let mut child_reads: Vec<crate::types::VariableUsageLocation> = Vec::new();
-
-    for child in &node.properties {
-        child_writes.extend(child.written_in.iter().cloned());
-        child_reads.extend(child.read_in.iter().cloned());
-    }
-
-    // Append aggregated locations to the node's lists
-    node.written_in.extend(child_writes);
-    node.read_in.extend(child_reads);
-}
-
 // ---------------------------------------------------------------------------
-// Tests for sidebar attribution bug fixes
+// Virtual document-based variable tree
 // ---------------------------------------------------------------------------
 
+/// Build the variable tree using the virtual document for cross-passage
+/// alias resolution and unified extraction.
+///
+/// This function combines:
+/// 1. The traditional per-passage extraction (which handles `$var` syntax)
+/// 2. The virtual document extraction (which handles JS aliases, `gs()`,
+///    `reg()`, and other cross-passage patterns)
+///
+/// The virtual document accesses are merged into the traditional registry,
+/// providing both complete coverage and proper reference counting.
+pub(crate) fn build_variable_tree_from_virtual_doc(
+    workspace: &knot_core::Workspace,
+    vdoc: &VirtualDocument,
+) -> Vec<crate::types::VariableTreeNode> {
+    use crate::types::{VariableTreeNode, VariableUsageLocation};
+    use super::virtual_doc::extract_virtual_var_accesses;
 
-#[cfg(test)]
-mod sidebar_tests {
-    use super::*;
+    // First, build the traditional registry from per-passage extraction.
+    // This handles all the $var patterns that the virtual doc doesn't cover
+    // (naked $var in text, <<set>> macros, etc.)
+    let mut registry = build_state_variable_registry(workspace);
 
-    /// Test that `<<if $player.state.stress>>` does NOT produce a spurious
-    /// `$player` base-level Read. The only Read should be for the full
-    /// dot-path `$player.state.stress`.
-    #[test]
-    fn test_if_macro_dot_path_no_spurious_root_read() {
-        let body = "<<if $player.state.stress>>stressed<</if>>";
-        let vars = extract_vars(body, 0);
+    // Then, extract from the virtual document and merge into the registry.
+    // This adds references discovered through JS alias resolution and
+    // macro-to-JS translation that the per-passage extraction misses.
+    let vdoc_accesses = extract_virtual_var_accesses(vdoc);
 
-        // Should NOT have a $player base-level read
-        let player_base_reads: Vec<_> = vars.iter()
-            .filter(|v| v.name == "$player" && v.kind == VarKind::Read)
-            .collect();
-        assert!(
-            player_base_reads.is_empty(),
-            "RE_IF_MACRO should NOT produce a spurious '$player' base-level Read for <<if $player.state.stress>>. \
-             Found: {:?}", player_base_reads
+    for access in &vdoc_accesses {
+        // Parse the dollar_name to get base + property path
+        let (base_name, dollar_name, property_path) = parse_var_name(&access.dollar_name);
+
+        let entry = registry.entry(dollar_name.clone()).or_insert_with(|| {
+            StateVariable {
+                base_name: base_name.clone(),
+                dollar_name: dollar_name.clone(),
+                known_properties: HashSet::new(),
+                write_locations: Vec::new(),
+                read_locations: Vec::new(),
+                first_available: None,
+                seeded_by_special: false,
+            }
+        });
+
+        // Track known properties
+        if let Some(ref path) = property_path {
+            entry.known_properties.insert(path.clone());
+        }
+
+        // Create a VarLocation for this access
+        let access_kind = if access.is_write {
+            if let Some(ref path) = property_path {
+                VarAccessKind::PropertyWrite { path: path.clone() }
+            } else {
+                VarAccessKind::Assign
+            }
+        } else {
+            if let Some(ref path) = property_path {
+                VarAccessKind::PropertyRead { path: path.clone() }
+            } else {
+                VarAccessKind::Read
+            }
+        };
+
+        let location = VarLocation {
+            passage_name: access.passage_name.clone(),
+            file_uri: access.file_uri.clone(),
+            span: 0..0, // Virtual doc accesses don't have byte spans in original source
+            kind: access_kind,
+        };
+
+        if access.is_write {
+            // Check for duplicates — avoid adding the same write twice
+            // (the traditional extraction may have already found it)
+            let is_dup = entry.write_locations.iter().any(|loc| {
+                loc.passage_name == location.passage_name
+                    && loc.kind == location.kind
+                    && match (&loc.kind, &location.kind) {
+                        (VarAccessKind::PropertyWrite { path: p1 }, VarAccessKind::PropertyWrite { path: p2 }) => p1 == p2,
+                        (VarAccessKind::Assign, VarAccessKind::Assign) => true,
+                        _ => false,
+                    }
+            });
+            if !is_dup {
+                entry.write_locations.push(location);
+            }
+        } else {
+            let is_dup = entry.read_locations.iter().any(|loc| {
+                loc.passage_name == location.passage_name
+                    && loc.kind == location.kind
+                    && match (&loc.kind, &location.kind) {
+                        (VarAccessKind::PropertyRead { path: p1 }, VarAccessKind::PropertyRead { path: p2 }) => p1 == p2,
+                        (VarAccessKind::Read, VarAccessKind::Read) => true,
+                        _ => false,
+                    }
+            });
+            if !is_dup {
+                entry.read_locations.push(location);
+            }
+        }
+
+        // Mark as seeded by special if the access comes from a script passage
+        // (virtual doc section kind tells us this)
+        for section in &vdoc.sections {
+            if section.kind == VirtualSectionKind::UnifiedScript {
+                // Check if this access's passage is in the script section
+                if let Some(mapping) = section.line_map.first() {
+                    if mapping.passage_name == access.passage_name {
+                        entry.seeded_by_special = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Build the variable tree from the merged registry (same as build_variable_tree)
+    let mut variables: Vec<VariableTreeNode> = Vec::new();
+
+    for (dollar_name, state_var) in &registry {
+        let base_name = &state_var.base_name;
+        let state_path = format!("State.variables.{}", base_name);
+
+        let mut written_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.write_locations {
+            if matches!(loc.kind, VarAccessKind::Assign) {
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                written_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: true,
+                    line,
+                });
+            }
+        }
+
+        let mut read_in: Vec<VariableUsageLocation> = Vec::new();
+        for loc in &state_var.read_locations {
+            if matches!(loc.kind, VarAccessKind::Read) {
+                let line = compute_line_from_offset(workspace, &loc.file_uri, loc.span.start);
+                read_in.push(VariableUsageLocation {
+                    passage_name: loc.passage_name.clone(),
+                    file_uri: loc.file_uri.clone(),
+                    is_write: false,
+                    line,
+                });
+            }
+        }
+
+        let is_unused = !written_in.is_empty() && read_in.is_empty();
+
+        let properties = build_property_tree(
+            dollar_name,
+            &state_var.known_properties,
+            &state_var.write_locations,
+            &state_var.read_locations,
+            workspace,
         );
 
-        // Should have the full dot-path read
-        assert!(
-            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Read),
-            "Should have a '$player.state.stress' Read from RE_VAR_DOT_PATH"
-        );
+        variables.push(VariableTreeNode {
+            name: dollar_name.clone(),
+            state_path,
+            is_temporary: false,
+            written_in,
+            read_in,
+            initialized_at_start: state_var.seeded_by_special,
+            is_unused,
+            properties,
+        });
     }
 
-    /// Test that `<<elseif $player.state.stress>>` also avoids the spurious read.
-    #[test]
-    fn test_elseif_macro_dot_path_no_spurious_root_read() {
-        let body = "<<if $x>><<elseif $player.state.stress>>stressed<</if>>";
-        let vars = extract_vars(body, 0);
-
-        let player_base_reads: Vec<_> = vars.iter()
-            .filter(|v| v.name == "$player" && v.kind == VarKind::Read)
-            .collect();
-        assert!(
-            player_base_reads.is_empty(),
-            "RE_IF_MACRO (elseif) should NOT produce a spurious '$player' Read. Found: {:?}",
-            player_base_reads
-        );
-
-        assert!(
-            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Read),
-            "Should have a '$player.state.stress' Read"
-        );
-    }
-
-    /// Test that `<<capture $player.state.stress>>` produces the full dot-path
-    /// Init, NOT a spurious `$player` base-level Init.
-    #[test]
-    fn test_capture_macro_dot_path_no_spurious_root_write() {
-        let body = "<<capture $player.state.stress>><</capture>>";
-        let vars = extract_vars(body, 0);
-
-        // Should NOT have a $player base-level Init from the capture macro
-        let player_base_inits: Vec<_> = vars.iter()
-            .filter(|v| v.name == "$player" && v.kind == VarKind::Init)
-            .collect();
-        assert!(
-            player_base_inits.is_empty(),
-            "RE_CAPTURE_MACRO should NOT produce a spurious '$player' base-level Init for <<capture $player.state.stress>>. \
-             Found: {:?}", player_base_inits
-        );
-
-        // Should have the full dot-path Init
-        assert!(
-            vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Init),
-            "Should have a '$player.state.stress' Init from RE_CAPTURE_MACRO_DOT"
-        );
-    }
-
-    /// Test that base-level `<<if $player>>` still works correctly
-    /// (not a dot-path, so the normal behavior is fine).
-    #[test]
-    fn test_if_macro_base_var_still_works() {
-        let body = "<<if $player>>exists<</if>>";
-        let vars = extract_vars(body, 0);
-
-        assert!(
-            vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Read),
-            "Base-level <<if $player>> should still produce a '$player' Read"
-        );
-    }
-
-    /// Test that base-level `<<capture $player>>` still works correctly.
-    #[test]
-    fn test_capture_macro_base_var_still_works() {
-        let body = "<<capture $player>><</capture>>";
-        let vars = extract_vars(body, 0);
-
-        assert!(
-            vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Init),
-            "Base-level <<capture $player>> should still produce a '$player' Init"
-        );
-    }
-
-    /// Test that `extract_object_keys` correctly parses a simple object literal.
-    #[test]
-    fn test_extract_object_keys_simple() {
-        let body = r#""plain-bra-white": {
-            name: "White Cotton Bra",
-            category: "apparel"
-        },
-        "pencil-skirt": {
-            name: "Navy Pencil Skirt"
-        }"#;
-        let keys = extract_object_keys(body);
-
-        assert!(keys.contains_key("plain-bra-white"), "Should extract 'plain-bra-white' key");
-        assert!(keys.contains_key("pencil-skirt"), "Should extract 'pencil-skirt' key");
-        assert!(keys["plain-bra-white"].contains("name"), "plain-bra-white should have 'name' child");
-        assert!(keys["plain-bra-white"].contains("category"), "plain-bra-white should have 'category' child");
-        assert!(keys["pencil-skirt"].contains("name"), "pencil-skirt should have 'name' child");
-    }
-
-    /// Test that `extract_object_keys` handles comments inside object literals.
-    #[test]
-    fn test_extract_object_keys_with_comments() {
-        let body = r#"/* -- SECTION -- */
-        "item1": {
-            name: "Item 1" // comment
-        },
-        // line comment
-        "item2": {
-            name: "Item 2"
-        }"#;
-        let keys = extract_object_keys(body);
-
-        assert!(keys.contains_key("item1"), "Should extract 'item1' key despite comments");
-        assert!(keys.contains_key("item2"), "Should extract 'item2' key despite comments");
-        assert!(keys["item1"].contains("name"), "item1 should have 'name' child");
-    }
-
-    /// Test that `extract_object_keys` handles deeply nested objects.
-    #[test]
-    fn test_extract_object_keys_deep_nesting() {
-        let body = r#""player": {
-            "state": {
-                "stress": 0,
-                "energy": 100
-            },
-            "name": "Alice"
-        }"#;
-        let keys = extract_object_keys(body);
-
-        assert!(keys.contains_key("player"), "Should extract 'player' key");
-        assert!(keys["player"].contains("state"), "player should have 'state' child");
-        assert!(keys["player"].contains("name"), "player should have 'name' child");
-        // Deep path tracking
-        assert!(keys.contains_key("player.state"), "Should have 'player.state' path");
-        assert!(keys["player.state"].contains("stress"), "player.state should have 'stress' child");
-        assert!(keys["player.state"].contains("energy"), "player.state should have 'energy' child");
-    }
-
-    /// Test Bug 1 fix: `extract_object_literal_properties_for_var` should
-    /// extract properties from a `Block::Macro` entry when the passage body
-    /// contains `<<set $ITEMS to { ... }>>`.
-    #[test]
-    fn test_extract_object_literal_from_macro_block() {
-        use crate::sugarcube::blocks;
-
-        let body = r#"<<set $ITEMS to {
-    "plain-bra-white": {
-        name: "White Cotton Bra",
-        category: "apparel"
-    },
-    "pencil-skirt": {
-        name: "Navy Pencil Skirt"
-    }
-}>>"#;
-
-        let macros = blocks::extract_macros(body, 0);
-        let blocks = blocks::build_body_blocks(body, 0, &macros);
-
-        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
-        passage.body = blocks;
-
-        let result = extract_object_literal_properties_for_var(&passage, "$ITEMS");
-        assert!(result.is_some(), "Should extract properties from macro block");
-
-        let keys = result.unwrap();
-        assert!(keys.contains_key("plain-bra-white"), "Should find 'plain-bra-white' key");
-        assert!(keys.contains_key("pencil-skirt"), "Should find 'pencil-skirt' key");
-        assert!(keys["plain-bra-white"].contains("name"), "plain-bra-white should have 'name' child");
-        assert!(keys["plain-bra-white"].contains("category"), "plain-bra-white should have 'category' child");
-        assert!(keys["pencil-skirt"].contains("name"), "pencil-skirt should have 'name' child");
-
-        // Deep paths should also be present
-        assert!(keys.contains_key("plain-bra-white.name"), "Should have 'plain-bra-white.name' path");
-        assert!(keys.contains_key("plain-bra-white.category"), "Should have 'plain-bra-white.category' path");
-        assert!(keys.contains_key("pencil-skirt.name"), "Should have 'pencil-skirt.name' path");
-    }
-
-    /// Test that `extract_object_literal_properties_for_var` also works
-    /// with `=` assignment syntax.
-    #[test]
-    fn test_extract_object_literal_eq_syntax() {
-        use crate::sugarcube::blocks;
-
-        let body = r#"<<set $config = {
-    debug: true,
-    version: "1.0"
-}>>"#;
-
-        let macros = blocks::extract_macros(body, 0);
-        let blocks = blocks::build_body_blocks(body, 0, &macros);
-
-        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
-        passage.body = blocks;
-
-        let result = extract_object_literal_properties_for_var(&passage, "$config");
-        assert!(result.is_some(), "Should extract properties from = syntax macro");
-
-        let keys = result.unwrap();
-        assert!(keys.contains_key("debug"), "Should find 'debug' key");
-        assert!(keys.contains_key("version"), "Should find 'version' key");
-    }
-
-    /// Test that `extract_object_literal_properties_for_var` works with
-    /// a passage that stores content as a single Block::Text (e.g., raw body).
-    #[test]
-    fn test_extract_object_literal_from_text_block() {
-        let body = r#"<<set $ITEMS to {
-    "sword": { name: "Iron Sword" }
-}>>"#;
-
-        let mut passage = knot_core::passage::Passage::new("StoryInit".to_string(), 0..body.len());
-        passage.body = vec![knot_core::passage::Block::Text {
-            content: body.to_string(),
-            span: 0..body.len(),
-        }];
-
-        let result = extract_object_literal_properties_for_var(&passage, "$ITEMS");
-        assert!(result.is_some(), "Should extract properties from text block");
-
-        let keys = result.unwrap();
-        assert!(keys.contains_key("sword"), "Should find 'sword' key");
-        assert!(keys["sword"].contains("name"), "sword should have 'name' child");
-    }
-
-    /// Test that `extract_object_literal_properties_for_var` returns None
-    /// for a variable that is not assigned an object literal.
-    #[test]
-    fn test_extract_object_literal_no_match() {
-        use crate::sugarcube::blocks;
-
-        let body = r#"<<set $count to 5>><<set $name to "hello">>"#;
-        let macros = blocks::extract_macros(body, 0);
-        let blocks = blocks::build_body_blocks(body, 0, &macros);
-
-        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
-        passage.body = blocks;
-
-        let result = extract_object_literal_properties_for_var(&passage, "$count");
-        assert!(result.is_none(), "Should return None for non-object assignment");
-    }
-
-    /// Test Bug 2 fix: Property nodes in the tree should have reference
-    /// information (written_in, read_in) populated, not empty.
-    #[test]
-    fn test_property_tree_has_references() {
-        // Build a passage that assigns an object literal to $player
-        // and then accesses a sub-property
-        let body = r#"<<set $player to {
-    state: {
-        stress: 0,
-        energy: 100
-    },
-    name: "Alice"
-}>><<set $player.state.stress to 5>>"#;
-
-        let vars = extract_vars(body, 0);
-
-        // Verify we have both $player (Assign) and $player.state.stress (PropertyWrite)
-        let has_player_assign = vars.iter().any(|v| v.name == "$player" && v.kind == VarKind::Init);
-        let has_stress_write = vars.iter().any(|v| v.name == "$player.state.stress" && v.kind == VarKind::Init);
-        assert!(has_player_assign, "Should detect $player assignment");
-        assert!(has_stress_write, "Should detect $player.state.stress write");
-
-        // Now build a passage and workspace to test the full pipeline
-        use crate::sugarcube::blocks;
-        let macros = blocks::extract_macros(body, 0);
-        let blocks_list = blocks::build_body_blocks(body, 0, &macros);
-
-        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
-        passage.body = blocks_list;
-        passage.vars = vars;
-
-        // Build a minimal workspace
-        let mut doc = knot_core::document::Document::new(
-            url::Url::parse("file:///test.twee").unwrap(),
-            knot_core::passage::StoryFormat::SugarCube,
-        );
-        doc.passages.push(passage);
-        let mut workspace = knot_core::Workspace::new(url::Url::parse("file:///").unwrap());
-        workspace.insert_document(doc);
-
-        // Build the variable tree
-        let tree = build_variable_tree(&workspace);
-
-        // Find $player in the tree
-        let player_node = tree.iter().find(|n| n.name == "$player");
-        assert!(player_node.is_some(), "$player should be in the variable tree");
-        let player_node = player_node.unwrap();
-
-        // The root node should have properties
-        assert!(!player_node.properties.is_empty(),
-            "$player should have child properties, got: {:?}", player_node.properties);
-
-        // Find the 'state' property
-        let state_prop = player_node.properties.iter().find(|p| p.name == "state");
-        assert!(state_prop.is_some(), "$player should have 'state' property");
-        let state_prop = state_prop.unwrap();
-
-        // The state property should have sub-properties
-        assert!(!state_prop.properties.is_empty(),
-            ".state should have sub-properties (stress, energy)");
-
-        // The state property should have write references
-        // (at least from the base Assign and from the PropertyWrite)
-        assert!(!state_prop.written_in.is_empty(),
-            ".state should have write references, got written_in = {:?}", state_prop.written_in);
-
-        // Find the 'stress' property under 'state'
-        let stress_prop = state_prop.properties.iter().find(|p| p.name == "stress");
-        assert!(stress_prop.is_some(), ".state should have 'stress' property");
-        let stress_prop = stress_prop.unwrap();
-
-        // The stress property should have write references
-        assert!(!stress_prop.written_in.is_empty(),
-            ".stress should have write references, got written_in = {:?}", stress_prop.written_in);
-    }
-
-    /// Test that root node aggregates references from child properties.
-    #[test]
-    fn test_root_node_aggregates_child_references() {
-        let body = r#"<<set $player to { name: "Alice" }>><<set $player.name to "Bob">>"#;
-
-        let vars = extract_vars(body, 0);
-        use crate::sugarcube::blocks;
-        let macros = blocks::extract_macros(body, 0);
-        let blocks_list = blocks::build_body_blocks(body, 0, &macros);
-
-        let mut passage = knot_core::passage::Passage::new("Start".to_string(), 0..body.len());
-        passage.body = blocks_list;
-        passage.vars = vars;
-
-        let mut doc = knot_core::document::Document::new(
-            url::Url::parse("file:///test.twee").unwrap(),
-            knot_core::passage::StoryFormat::SugarCube,
-        );
-        doc.passages.push(passage);
-        let mut workspace = knot_core::Workspace::new(url::Url::parse("file:///").unwrap());
-        workspace.insert_document(doc);
-
-        let tree = build_variable_tree(&workspace);
-
-        let player_node = tree.iter().find(|n| n.name == "$player");
-        assert!(player_node.is_some(), "$player should be in the variable tree");
-        let player_node = player_node.unwrap();
-
-        // Root node should have both the base Assign and the PropertyWrite
-        // aggregated into its written_in list
-        assert!(player_node.written_in.len() >= 2,
-            "$player root should aggregate both Assign and PropertyWrite references, got {} references",
-            player_node.written_in.len());
-    }
+    variables.sort_by(|a, b| a.name.cmp(&b.name));
+    variables
 }

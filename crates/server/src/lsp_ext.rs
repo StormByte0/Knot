@@ -154,10 +154,18 @@ pub struct KnotVariableInfo {
     /// For `$player`, this would contain entries for `name`, `hp`, etc.
     /// Each property may itself have sub-properties (e.g., `$player.inventory.sword`
     /// means `inventory` has a sub-property `sword`).
+    ///
+    /// For Array-kind root variables, this is EMPTY — the element shape
+    /// is stored in `element_shape` instead, using `[*]` notation.
     pub properties: Vec<KnotVariableProperty>,
     /// The structural kind of this variable: "scalar", "object", "array", or "unknown".
     /// Inferred from assignment patterns (e.g., `<<set $var to {}>>` → "object").
     pub kind: String,
+    /// For Array-kind root variables: the shape of each array element.
+    /// Contains a virtual KnotVariableProperty representing the element's structure
+    /// with `[*]` notation. `None` for non-array root variables or arrays with
+    /// unknown element shape.
+    pub element_shape: Option<Box<KnotVariableProperty>>,
 }
 
 /// A known property of a state variable, reflecting the tree structure
@@ -188,6 +196,12 @@ pub struct KnotVariableProperty {
     /// `None` means the element shape is unknown (scalar or mixed).
     /// Contains a virtual KnotVariableProperty representing the element's structure.
     pub element_shape: Option<Box<KnotVariableProperty>>,
+    /// For `[*]` property nodes: coverage annotation for irregular arrays.
+    /// `None` for non-array properties or regular arrays (100% coverage).
+    /// Format: "present_in/total" (e.g., "3/5" means property exists in 3 of 5 elements).
+    /// Only set when coverage < 100%.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage: Option<String>,
 }
 
 /// Location where a variable is used within a passage.

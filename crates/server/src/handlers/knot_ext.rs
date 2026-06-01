@@ -10,70 +10,49 @@ use knot_core::{AnalysisEngine, Block};
 use lsp_types::{TextEdit as LspTextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 
+/// Convert a single format-agnostic `VariablePropertyNode` to LSP wire type
+/// `KnotVariableProperty`. This is a pure mechanical translation with no
+/// format-specific logic.
+fn convert_property_node(p: knot_formats::types::VariablePropertyNode) -> KnotVariableProperty {
+    let kind_str = match p.kind {
+        knot_formats::types::PropertyKind::Scalar => "scalar",
+        knot_formats::types::PropertyKind::Object => "object",
+        knot_formats::types::PropertyKind::Array => "array",
+        knot_formats::types::PropertyKind::Unknown => "unknown",
+    };
+    let element_shape = p.element_shape.map(|shape| {
+        Box::new(convert_property_node(*shape))
+    });
+    KnotVariableProperty {
+        name: p.name,
+        full_name: p.full_name,
+        state_path: p.state_path,
+        written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
+            passage_name: l.passage_name,
+            file_uri: l.file_uri,
+            is_write: l.is_write,
+            line: l.line,
+        }).collect(),
+        read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
+            passage_name: l.passage_name,
+            file_uri: l.file_uri,
+            is_write: l.is_write,
+            line: l.line,
+        }).collect(),
+        properties: convert_properties(p.properties),
+        kind: kind_str.to_string(),
+        element_shape,
+        coverage: p.coverage.map(|c| c.to_string()),
+    }
+}
+
 /// Recursively convert format-agnostic `VariablePropertyNode` instances
 /// to LSP wire type `KnotVariableProperty`. This is a pure mechanical
 /// translation with no format-specific logic.
 fn convert_properties(
     props: Vec<knot_formats::types::VariablePropertyNode>,
 ) -> Vec<KnotVariableProperty> {
-    props
-        .into_iter()
-        .map(|p| {
-            let kind_str = match p.kind {
-                knot_formats::types::PropertyKind::Scalar => "scalar",
-                knot_formats::types::PropertyKind::Object => "object",
-                knot_formats::types::PropertyKind::Array => "array",
-                knot_formats::types::PropertyKind::Unknown => "unknown",
-            };
-            let element_shape = p.element_shape.map(|shape| {
-                Box::new(KnotVariableProperty {
-                    name: shape.name,
-                    full_name: shape.full_name,
-                    state_path: shape.state_path,
-                    written_in: shape.written_in.into_iter().map(|l| KnotVariableLocation {
-                        passage_name: l.passage_name,
-                        file_uri: l.file_uri,
-                        is_write: l.is_write,
-                        line: l.line,
-                    }).collect(),
-                    read_in: shape.read_in.into_iter().map(|l| KnotVariableLocation {
-                        passage_name: l.passage_name,
-                        file_uri: l.file_uri,
-                        is_write: l.is_write,
-                        line: l.line,
-                    }).collect(),
-                    properties: convert_properties(shape.properties),
-                    kind: match shape.kind {
-                        knot_formats::types::PropertyKind::Scalar => "scalar".to_string(),
-                        knot_formats::types::PropertyKind::Object => "object".to_string(),
-                        knot_formats::types::PropertyKind::Array => "array".to_string(),
-                        knot_formats::types::PropertyKind::Unknown => "unknown".to_string(),
-                    },
-                    element_shape: None, // nested element_shape not needed yet
-                })
-            });
-            KnotVariableProperty {
-                name: p.name,
-                full_name: p.full_name,
-                state_path: p.state_path,
-                written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
-                    passage_name: l.passage_name,
-                    file_uri: l.file_uri,
-                    is_write: l.is_write,
-                    line: l.line,
-                }).collect(),
-                read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
-                    passage_name: l.passage_name,
-                    file_uri: l.file_uri,
-                    is_write: l.is_write,
-                    line: l.line,
-                }).collect(),
-                properties: convert_properties(p.properties),
-                kind: kind_str.to_string(),
-                element_shape,
-            }
-        })
-        .collect()
+    props.into_iter().map(convert_property_node).collect()
 }
 
 impl ServerState {
@@ -530,6 +509,9 @@ impl ServerState {
                     is_unused: node.is_unused,
                     properties: convert_properties(node.properties),
                     kind: kind_str.to_string(),
+                    element_shape: node.element_shape.map(|shape| {
+                        Box::new(convert_property_node(*shape))
+                    }),
                 }
             })
             .collect();
