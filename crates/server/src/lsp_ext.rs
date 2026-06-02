@@ -729,6 +729,51 @@ pub struct KnotUpdatePositionsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// knot/virtualDoc — get the assembled virtual document content + line map
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/virtualDoc` — get the assembled virtual document for
+/// the current workspace.
+///
+/// The virtual document is a JavaScript representation of all passages,
+/// assembled from the format plugin's per-passage virtual doc entries.
+/// VSCode's native JS/TS validation runs on this content, and diagnostics
+/// are routed back to .tw source positions using the line map.
+///
+/// Currently only supported by the SugarCube format plugin.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVirtualDocParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+}
+
+/// Response: `knot/virtualDoc`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVirtualDocResponse {
+    /// The assembled JavaScript content of the virtual document.
+    /// Structure: preamble → widget functions → passage functions.
+    pub content: String,
+    /// Per-line mapping from virtual doc lines to source positions.
+    /// Entry `i` corresponds to line `i` (0-based) of `content`.
+    pub line_map: Vec<KnotVirtualDocLineEntry>,
+    /// Names of all passages included in the virtual doc.
+    pub passage_names: Vec<String>,
+}
+
+/// A single entry in the virtual document's line map.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotVirtualDocLineEntry {
+    /// The passage name this line belongs to. Empty for preamble lines.
+    pub passage_name: String,
+    /// The file URI where this passage lives. Empty for preamble lines.
+    pub file_uri: String,
+    /// The 0-based line number within the original passage body
+    /// (offset from passage header, NOT global). 0 for preamble lines
+    /// and function header/footer lines that have no direct source mapping.
+    pub original_line: u32,
+}
+
+// ---------------------------------------------------------------------------
 // knot/refreshSemanticTokens — request client to refresh semantic tokens
 // ---------------------------------------------------------------------------
 

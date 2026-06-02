@@ -24,7 +24,8 @@ import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { isTweeLanguage, extractPassageName } from './utils';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams } from './types';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams, KnotVirtualDocResponse } from './types';
+import { registerVirtualDocProvider, openVirtualDoc, refreshVirtualDoc } from './virtualDocProvider';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -391,6 +392,11 @@ export async function activate(context: vscode.ExtensionContext) {
         if (playModeProvider) {
             playModeProvider.setClient(client);
         }
+
+        // Register the virtual document content provider and diagnostic routing.
+        // This enables VSCode's native JS/TS validation on the translated
+        // SugarCube code, with diagnostics routed back to .tw source positions.
+        registerVirtualDocProvider(context, client);
     } catch (e) {
         handleServerFailure(e, context, serverPath);
     }
@@ -811,6 +817,19 @@ function registerCommands(context: vscode.ExtensionContext) {
     );
 
     // Initialize Project
+    // Open Virtual Document — view the translated JS for the current workspace.
+    // This opens a read-only editor showing the assembled virtual document.
+    // JS diagnostics from VSCode's native validation are routed back to .tw files.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('knot.openVirtualDoc', async () => {
+            if (!client || !client.isRunning()) {
+                vscode.window.showWarningMessage('Knot: Language server is not running.');
+                return;
+            }
+            await openVirtualDoc(client);
+        })
+    );
+
     const initProject = vscode.commands.registerCommand('knot.initProject', async () => {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {

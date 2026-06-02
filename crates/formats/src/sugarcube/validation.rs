@@ -56,7 +56,7 @@ pub(crate) fn validate(body: &str, body_offset: usize) -> Vec<FormatDiagnostic> 
 /// a macro close if:
 /// - It's not inside a single- or double-quoted string
 /// - It's not part of a `>>>` (JS unsigned right shift operator)
-fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
+pub(crate) fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut depth = 0i32;
     let mut open_pos: Option<usize> = None;
     let bytes = body.as_bytes();
@@ -134,7 +134,7 @@ fn validate_macro_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec
 ///
 /// String-aware: skips `]]` inside quoted strings to avoid false positives
 /// from JS bracket notation like `cursor[parts[i]]`.
-fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
+pub(crate) fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut link_depth = 0i32;
     let mut link_open: Option<usize> = None;
     let bytes = body.as_bytes();

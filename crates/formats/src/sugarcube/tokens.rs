@@ -217,7 +217,7 @@ pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> 
 /// Returns a sorted list of `(args_start, args_end)` byte ranges relative
 /// to `body` (not the document). The ranges cover the trimmed argument
 /// text after the macro name, before the closing `>>`.
-fn macro_arg_ranges(body: &str) -> Vec<(usize, usize)> {
+pub(crate) fn macro_arg_ranges(body: &str) -> Vec<(usize, usize)> {
     let parsed = blocks::scan_macros(body);
     let mut ranges = Vec::new();
     for m in &parsed {
@@ -253,7 +253,7 @@ fn is_in_ranges(pos: usize, ranges: &[(usize, usize)]) -> bool {
 /// whole words surrounded by whitespace or macro delimiters **only within
 /// macro argument regions**. Keywords in passage body plaintext are NOT
 /// highlighted — they are just prose text, not SugarCube operators.
-fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+pub(crate) fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
@@ -306,7 +306,7 @@ fn keyword_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 ///
 /// Only matches within macro argument regions — boolean literals in passage
 /// body plaintext are not SugarCube syntax.
-fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+pub(crate) fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
@@ -356,7 +356,7 @@ fn boolean_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 /// so themes can give them a distinct "API object" color. Only matches
 /// within macro argument regions — namespace references in passage body
 /// plaintext are not SugarCube API calls.
-fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
+pub(crate) fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
     let len = bytes.len();
@@ -403,6 +403,7 @@ fn namespace_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
 }
 
 /// SugarCube assignment operators that appear inside macro argument lists.
+#[allow(dead_code)] // Replaced by walk_augment_tokens() in passage_tree (Phase 4)
 const SUGARCUBE_OPERATORS: &[&str] = &["+=", "-=", "*=", "/=", "%="];
 
 // ---------------------------------------------------------------------------
@@ -415,6 +416,7 @@ const SUGARCUBE_OPERATORS: &[&str] = &["+=", "-=", "*=", "/=", "%="];
 /// delimiters. The macro keyword itself is already highlighted by the `Macro`
 /// token from `body_tokens()`. The widget name is distinct — it's a function
 /// definition, not an invocation.
+#[allow(dead_code)] // Replaced by walk_augment_tokens() in passage_tree (Phase 4)
 pub(crate) fn widget_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let widget_macro_names = macros::macro_definition_macros();
@@ -477,6 +479,7 @@ pub(crate) fn widget_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
 /// inside `<<macro ...>>` constructs. Only scans within macro delimiters
 /// to avoid highlighting numbers in prose text (which would be incorrect —
 /// "You see 3 items" should not color the "3").
+#[allow(dead_code)] // Replaced by walk_augment_tokens() in passage_tree (Phase 4)
 pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     // Note: The Rust `regex` crate does not support lookbehind (`(?<!...)`).
@@ -543,6 +546,7 @@ pub(crate) fn number_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
 /// Only scans within macro delimiters to avoid highlighting prose text.
 /// Highlights the content inside `"..."` and `'...'` quotes, excluding the
 /// quote characters themselves (TextMate handles the quote punctuation).
+#[allow(dead_code)] // Replaced by walk_augment_tokens() in passage_tree (Phase 4)
 pub(crate) fn string_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
@@ -597,6 +601,7 @@ pub(crate) fn string_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken
 /// These are format-specific operators that TextMate doesn't know about.
 /// Outside macros (in passage body plaintext), these sequences are not
 /// SugarCube operators and should not be highlighted.
+#[allow(dead_code)] // Replaced by walk_augment_tokens() in passage_tree (Phase 4)
 pub(crate) fn operator_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let bytes = body.as_bytes();
@@ -762,6 +767,7 @@ pub(crate) fn script_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<S
 ///
 /// Uses the string-aware macro scanner from `blocks.rs` instead of regex
 /// to correctly handle `>` and `>>` inside macro conditions.
+#[allow(dead_code)] // Replaced by walk_macro_passage_ref_tokens() in passage_tree (Phase 4)
 pub(crate) fn macro_passage_ref_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
     let passage_arg_macros = macros::passage_arg_macro_names();

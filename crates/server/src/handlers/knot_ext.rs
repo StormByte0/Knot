@@ -1397,5 +1397,84 @@ impl ServerState {
             errors,
         })
     }
+
+    // -------------------------------------------------------------------
+    // knot/virtualDoc — get the assembled virtual document content + line map
+    // -------------------------------------------------------------------
+
+    /// Handle `knot/virtualDoc` — return the assembled virtual document for
+    /// the current workspace, enabling VSCode's native JS/TS validation on
+    /// the translated SugarCube code.
+    ///
+    /// The response includes:
+    /// - `content`: The assembled JavaScript (preamble + widgets + passages)
+    /// - `line_map`: Per-line mapping back to .tw source positions
+    /// - `passage_names`: All passages included in the virtual doc
+    ///
+    /// Currently only supported by the SugarCube format plugin. Other formats
+    /// return an empty response.
+    pub async fn knot_virtual_doc(
+        &self,
+        params: KnotVirtualDocParams,
+    ) -> Result<KnotVirtualDocResponse, tower_lsp::jsonrpc::Error> {
+        let inner = self.inner.read().await;
+
+        // Validate workspace_uri matches our workspace
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/virtualDoc: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri, root
+                );
+            }
+        }
+
+        // Get the active format plugin
+        let workspace = &inner.workspace;
+        let format = workspace.resolve_format();
+        let plugin = inner.format_registry.get(&format);
+
+        // Query the format plugin for virtual doc content and line map.
+        // Only SugarCube currently implements these methods.
+        let (content, line_map, passage_names) = if let Some(p) = plugin {
+            let vdoc_content = p.virtual_doc_content();
+            let vdoc_line_map = p.virtual_doc_line_map();
+
+            match (vdoc_content, vdoc_line_map) {
+                (Some(content), Some(line_map)) => {
+                    // Extract passage names from the line map (deduplicated,
+                    // preserving first-seen order)
+                    let mut names = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for entry in &line_map {
+                        if !entry.passage_name.is_empty() && seen.insert(entry.passage_name.clone()) {
+                            names.push(entry.passage_name.clone());
+                        }
+                    }
+                    (content, line_map, names)
+                }
+                _ => (String::new(), Vec::new(), Vec::new()),
+            }
+        } else {
+            (String::new(), Vec::new(), Vec::new())
+        };
+
+        // Translate format-agnostic VirtualDocLineMapEntry to LSP wire type
+        let wire_line_map: Vec<KnotVirtualDocLineEntry> = line_map
+            .into_iter()
+            .map(|entry| KnotVirtualDocLineEntry {
+                passage_name: entry.passage_name,
+                file_uri: entry.file_uri,
+                original_line: entry.original_line,
+            })
+            .collect();
+
+        Ok(KnotVirtualDocResponse {
+            content,
+            line_map: wire_line_map,
+            passage_names,
+        })
+    }
 }
 

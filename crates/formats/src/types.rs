@@ -688,6 +688,29 @@ pub struct VariablePropertyNode {
 }
 
 // ---------------------------------------------------------------------------
+// Per-passage virtual doc types (Phase C)
+// ---------------------------------------------------------------------------
+
+/// A single entry in the virtual document's line map, mapping a JS output
+/// line back to its original source position within a passage body.
+///
+/// This is the format-agnostic version of `ExactLineMapping` from
+/// `walk_translate.rs`. It is produced by `FormatPlugin::virtual_doc_line_map()`
+/// and consumed by the LSP handler for diagnostic routing.
+#[derive(Debug, Clone)]
+pub struct VirtualDocLineMapEntry {
+    /// The passage name that this line belongs to.
+    /// For preamble lines (JSDoc + const declaration), this is empty.
+    pub passage_name: String,
+    /// The file URI where this passage lives.
+    pub file_uri: String,
+    /// The 0-based line number within the original passage body
+    /// (offset from passage header, NOT global). 0 for preamble lines
+    /// and function header/footer lines that have no direct source mapping.
+    pub original_line: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Passage variable reference types (format-agnostic)
 // ---------------------------------------------------------------------------
 

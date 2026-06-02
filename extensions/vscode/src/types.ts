@@ -339,3 +339,27 @@ export interface KnotRefreshSemanticTokensParams {
     /** Optional reason for the refresh (for logging/debugging). */
     reason?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Virtual doc types (matches Rust-side KnotVirtualDocResponse)
+// ---------------------------------------------------------------------------
+
+/** Response: knot/virtualDoc */
+export interface KnotVirtualDocResponse {
+    /** The assembled JavaScript content of the virtual document. */
+    content: string;
+    /** Per-line mapping from virtual doc lines to source positions. */
+    line_map: KnotVirtualDocLineEntry[];
+    /** Names of all passages included in the virtual doc. */
+    passage_names: string[];
+}
+
+/** A single entry in the virtual document's line map. */
+export interface KnotVirtualDocLineEntry {
+    /** The passage name this line belongs to. Empty for preamble lines. */
+    passage_name: string;
+    /** The file URI where this passage lives. Empty for preamble lines. */
+    file_uri: string;
+    /** The 0-based line number within the original passage body. */
+    original_line: number;
+}

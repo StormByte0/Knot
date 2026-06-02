@@ -180,7 +180,6 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
 /// `Story.get("...")`, `Story.has("...")`, `UI.goto("...")`,
 /// `UI.include("...")` that reference passages but aren't standard
 /// `[[links]]` or `<<macro>>` passage-args.
-#[allow(dead_code)] // Replaced by walk_links() in passage_tree.rs (Phase 2)
 pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
 
@@ -335,6 +334,7 @@ pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<
 /// - alphanumeric — variable access without space: `cursor[[key]]`
 /// - `_` — identifier continuation: `variable_name[[key]]`
 /// - `$` — SugarCube variable: `$var[[key]]`
+#[allow(dead_code)] // Duplicated in passage_tree/mod.rs (tree has its own copy)
 fn is_js_bracket_context(text: &str, pos: usize) -> bool {
     if pos == 0 {
         return false;

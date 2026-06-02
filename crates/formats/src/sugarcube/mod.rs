@@ -24,17 +24,19 @@ pub mod special_passages;
 pub mod comments;
 pub mod virtual_doc;
 pub mod passage_tree;
+pub mod virtual_doc_map;
+pub mod variable_tree;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
 use url::Url;
 
 use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin, ParseResult};
 use crate::types::{
     GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization, ResolvedNavLink,
-    VariableSigilInfo,
+    UserCallable, VariableSigilInfo,
 };
 
 // ---------------------------------------------------------------------------
@@ -70,7 +72,31 @@ static RE_NAV_VAR: LazyLock<regex::Regex> = LazyLock::new(|| {
 /// Regexes are compiled once using `std::sync::LazyLock` in the submodule
 /// statics rather than per-instance, since they are immutable and identical
 /// across all instances.
-pub struct SugarCubePlugin;
+///
+/// ## Side tables
+///
+/// The plugin holds two side tables for virtual doc management and
+/// variable tracking. These are SugarCube-internal and NOT exposed
+/// through the `FormatPlugin` trait:
+///
+/// - `virtual_docs`: Per-passage virtual doc entries (JS function + line map)
+/// - `variable_tree`: Workspace-wide variable aggregation from VarEncounters
+///
+/// Both use `RwLock` for interior mutability since `FormatPlugin` requires
+/// `Send + Sync` and its methods take `&self` (not `&mut self`). The side
+/// tables are populated during `parse()` and `parse_passage()`.
+pub struct SugarCubePlugin {
+    /// Per-passage virtual doc map.
+    /// Stores translated JS functions and exact line mappings for each passage.
+    /// Used by Phase C (VSCode wiring) to serve virtual doc content and
+    /// route JS diagnostics back to .tw source positions.
+    virtual_docs: RwLock<virtual_doc_map::VirtualDocMap>,
+
+    /// Workspace-wide variable tree.
+    /// Aggregates VarEncounter entries from all passages for completions,
+    /// hover info, and tree panel navigation.
+    variable_tree: RwLock<variable_tree::VariableTree>,
+}
 
 impl Default for SugarCubePlugin {
     fn default() -> Self {
@@ -82,8 +108,26 @@ impl SugarCubePlugin {
     /// Create a new SugarCube plugin instance.
     ///
     /// Regexes are pre-compiled as `LazyLock` statics, so this is essentially free.
+    /// Side tables start empty and are populated during parsing.
     pub fn new() -> Self {
-        Self
+        Self {
+            virtual_docs: RwLock::new(virtual_doc_map::VirtualDocMap::new()),
+            variable_tree: RwLock::new(variable_tree::VariableTree::new()),
+        }
+    }
+
+    /// Get a read lock on the virtual doc map.
+    ///
+    /// Used by Phase C (VSCode wiring) to serve virtual doc content.
+    pub fn virtual_docs(&self) -> std::sync::RwLockReadGuard<'_, virtual_doc_map::VirtualDocMap> {
+        self.virtual_docs.read().unwrap()
+    }
+
+    /// Get a read lock on the variable tree.
+    ///
+    /// Used for completions, hover, and tree panel navigation.
+    pub fn variable_tree(&self) -> std::sync::RwLockReadGuard<'_, variable_tree::VariableTree> {
+        self.variable_tree.read().unwrap()
     }
 }
 
@@ -98,7 +142,25 @@ impl FormatPlugin for SugarCubePlugin {
         let mut diagnostics = Vec::new();
         let mut has_errors = false;
 
+        // Clear virtual doc and variable tree entries for this file
+        // before repopulating. This handles the full-file reparse case.
+        self.virtual_docs.write().unwrap().remove_file(_uri);
+
         let raw_passages = lexer::split_passages(text);
+
+        // Pre-extract user callables for this file. We need them for
+        // walk_translate() (widget detection, callable names) and for
+        // populating the virtual doc map.
+        let passage_infos: Vec<crate::types::PassageInfo> = raw_passages
+            .iter()
+            .map(|(header, body)| crate::types::PassageInfo {
+                name: header.name.clone(),
+                tags: header.tags.clone(),
+                body_text: body.to_string(),
+                file_uri: _uri.to_string(),
+            })
+            .collect();
+        let callables = virtual_doc::extract_user_callables(&passage_infos);
 
         for (header, body) in &raw_passages {
             // Compute body_offset: after the header line's content.
@@ -257,9 +319,9 @@ impl FormatPlugin for SugarCubePlugin {
                 // StoryInterface body tokens: emit PassageRef tokens for
                 // data-passage attributes, but no blanket String token
                 // (let TextMate handle HTML highlighting).
-                tokens.extend(tokens::interface_body_tokens(body, body_offset));
-
-                let mut ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
+                // interface_body_tokens() delegates to script_passage_ref_tokens()
+                // so we only call it once — no duplicate emission.
+                let mut ref_tokens = tokens::interface_body_tokens(body, body_offset);
                 ref_tokens.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
                     !comments::is_in_comment(&comment_spans, &tok_span)
@@ -303,6 +365,40 @@ impl FormatPlugin for SugarCubePlugin {
                     !comments::is_in_comment(&comment_spans, &var.span)
                 });
 
+                // ── Virtual doc map + Variable tree population ─────────────
+                // Translate the passage tree to JS and populate both side
+                // tables. This runs for every normal Twine passage (not
+                // script/stylesheet/interface passages, which don't use
+                // the tree parser).
+                {
+                    let is_widget = callables.iter().any(|c| {
+                        c.kind == crate::types::UserCallableKind::Widget
+                            && c.defined_in == header.name
+                    });
+
+                    let translate_result = passage_tree::walk_translate(
+                        &tree, body, body_offset, &callables,
+                        &header.name, is_widget,
+                    );
+
+                    // Update VirtualDocMap
+                    self.virtual_docs.write().unwrap().update_passage(
+                        header.name.clone(),
+                        virtual_doc_map::PassageDocEntry {
+                            source_file: _uri.clone(),
+                            is_widget,
+                            js_function: translate_result.js_function,
+                            line_map: translate_result.line_map,
+                        },
+                    );
+
+                    // Update VariableTree
+                    self.variable_tree.write().unwrap().update_passage(
+                        &header.name,
+                        &translate_result.var_encounters,
+                    );
+                }
+
                 // Semantic tokens for header. Use SpecialPassage type if this
                 // is a format-defined special passage (e.g., StoryInit,
                 // StoryCaption) even though it gets normal SugarCube parsing.
@@ -319,9 +415,7 @@ impl FormatPlugin for SugarCubePlugin {
                     tag_modifiers: tag_mods,
                 }));
 
-                // Semantic tokens for body: tree-based core tokens (Macro, Variable)
-                // + augmentation passes for keyword/boolean/namespace/number/string/
-                // operator/property/comment/PassageRef tokens
+                // Semantic tokens for body: tree-based core tokens (Macro, Variable, Link)
                 let mut body_tokens = passage_tree::walk_tokens(&tree, body, body_offset);
                 body_tokens.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
@@ -329,49 +423,15 @@ impl FormatPlugin for SugarCubePlugin {
                 });
                 tokens.extend(body_tokens);
 
-                // Widget/Function tokens (<<widget name>>)
-                let mut widget_toks = tokens::widget_tokens(body, body_offset);
-                widget_toks.retain(|tok| {
+                // Tree-based augmentation tokens: keyword, boolean, namespace,
+                // widget, number, string, operator, property, implicit passage
+                // refs — all from the tree walk (zero redundant scan_macros()).
+                let mut augment_toks = passage_tree::walk_augment_tokens(&tree, body, body_offset);
+                augment_toks.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
                     !comments::is_in_comment(&comment_spans, &tok_span)
                 });
-                tokens.extend(widget_toks);
-
-                // Number tokens inside macro arguments
-                let mut number_toks = tokens::number_tokens(body, body_offset);
-                number_toks.retain(|tok| {
-                    let tok_span = tok.start..tok.start + tok.length;
-                    !comments::is_in_comment(&comment_spans, &tok_span)
-                });
-                tokens.extend(number_toks);
-
-                // String tokens for quoted arguments inside macros
-                // (e.g., <<goto "Forest">>, <<set $x to "hello">>).
-                // PassageRef tokens emitted later will override String tokens
-                // where the quoted arg is a passage name — later tokens win
-                // in the LSP semantic tokens protocol.
-                let mut string_toks = tokens::string_tokens(body, body_offset);
-                string_toks.retain(|tok| {
-                    let tok_span = tok.start..tok.start + tok.length;
-                    !comments::is_in_comment(&comment_spans, &tok_span)
-                });
-                tokens.extend(string_toks);
-
-                // Operator tokens (+=, -=, etc.)
-                let mut op_toks = tokens::operator_tokens(body, body_offset);
-                op_toks.retain(|tok| {
-                    let tok_span = tok.start..tok.start + tok.length;
-                    !comments::is_in_comment(&comment_spans, &tok_span)
-                });
-                tokens.extend(op_toks);
-
-                // Property tokens (State.variables, Story.passage, etc.)
-                let mut prop_toks = tokens::property_tokens(body, body_offset);
-                prop_toks.retain(|tok| {
-                    let tok_span = tok.start..tok.start + tok.length;
-                    !comments::is_in_comment(&comment_spans, &tok_span)
-                });
-                tokens.extend(prop_toks);
+                tokens.extend(augment_toks);
 
                 // Comment tokens for Twine-style comments (/% ... %/, /%% ... %%/)
                 // that the TextMate grammar doesn't recognize.
@@ -380,26 +440,26 @@ impl FormatPlugin for SugarCubePlugin {
                 let comment_toks = tokens::comment_tokens(body, body_offset, &comment_spans);
                 tokens.extend(comment_toks);
 
-                // PassageRef tokens for implicit passage references
-                // (Engine.play, data-passage, etc.)
-                let mut implicit_ref_tokens = tokens::script_passage_ref_tokens(body, body_offset);
-                implicit_ref_tokens.retain(|tok| {
-                    let tok_span = tok.start..tok.start + tok.length;
-                    !comments::is_in_comment(&comment_spans, &tok_span)
-                });
-                tokens.extend(implicit_ref_tokens);
-
-                // PassageRef tokens for macro passage references
-                // (<<goto "name">>, <<link "label" "name">>, etc.)
-                let mut macro_ref_tokens = tokens::macro_passage_ref_tokens(body, body_offset);
+                // Tree-based macro passage-ref tokens (<<goto "name">>,
+                // <<link "label" "name">>, etc.) — walks the tree instead of
+                // re-scanning with scan_macros().
+                let mut macro_ref_tokens = passage_tree::walk_macro_passage_ref_tokens(&tree, body, body_offset);
                 macro_ref_tokens.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
                     !comments::is_in_comment(&comment_spans, &tok_span)
                 });
                 tokens.extend(macro_ref_tokens);
 
-                // Validation diagnostics: tree-based (replaces validation::validate)
-                let body_diags = passage_tree::walk_validate(&tree, body_offset);
+                // Validation diagnostics: tree-based structural checks (unknown,
+                // deprecated, unclosed blocks, parent constraints) + bracket
+                // validation (unclosed <</>>, unclosed [[]]) as augmentation
+                let mut body_diags = passage_tree::walk_validate(&tree, body_offset);
+                // Bracket validation: unclosed << / >> and [[ / ]]
+                // These are character-level checks that don't map to tree nodes
+                // (an unclosed << without >> never becomes a PassageNode), so
+                // they run as augmentation passes on the raw body text.
+                validation::validate_macro_brackets(body, body_offset, &mut body_diags);
+                validation::validate_link_brackets(body, body_offset, &mut body_diags);
                 let filtered_diags: Vec<_> = body_diags.into_iter().filter(|d| {
                     !comments::is_in_comment(&comment_spans, &d.range)
                 }).collect();
@@ -492,6 +552,43 @@ impl FormatPlugin for SugarCubePlugin {
             passage.vars.retain(|var| {
                 !comments::is_in_comment(&comment_spans, &var.span)
             });
+
+            // ── Virtual doc map + Variable tree population (incremental) ──
+            // For incremental updates, we don't have the file URI or the
+            // full callables list. We use an empty callables list for the
+            // translation (which means widget detection won't work for
+            // incremental updates — that's acceptable since widgets are
+            // typically defined in dedicated [widget] passages and
+            // incremental updates for widget passages are rare).
+            //
+            // TODO: Pass callables to parse_passage() for full widget
+            //       detection during incremental updates (Phase C).
+            let is_widget = passage_tags.iter().any(|t| t == "widget");
+            let empty_callables: Vec<UserCallable> = Vec::new();
+            let translate_result = passage_tree::walk_translate(
+                &tree, passage_text, 0, &empty_callables,
+                passage_name, is_widget,
+            );
+
+            // Update VirtualDocMap — use a placeholder URI since
+            // parse_passage() doesn't receive the file URI.
+            // The placeholder will be overwritten on next full parse().
+            let placeholder_uri = Url::parse("inmemory://incremental").unwrap();
+            self.virtual_docs.write().unwrap().update_passage(
+                passage_name.to_string(),
+                virtual_doc_map::PassageDocEntry {
+                    source_file: placeholder_uri,
+                    is_widget,
+                    js_function: translate_result.js_function,
+                    line_map: translate_result.line_map,
+                },
+            );
+
+            // Update VariableTree
+            self.variable_tree.write().unwrap().update_passage(
+                passage_name,
+                &translate_result.var_encounters,
+            );
         }
 
         Some(passage)
@@ -1026,12 +1123,21 @@ impl FormatPlugin for SugarCubePlugin {
         passage_name: &str,
         file_uri: &str,
     ) -> Option<(String, Vec<crate::types::LineMapping>)> {
-        // Build the tree and use walk_translate for exact line mapping
+        // Build the tree and use walk_translate for exact line mapping.
+        // Determine if this passage is a widget passage: a passage is a
+        // widget passage if any user callable with kind==Widget is defined
+        // in this passage.
+        let is_widget = callables.iter().any(|c| {
+            c.kind == crate::types::UserCallableKind::Widget && c.defined_in == passage_name
+        });
+
         let tree = passage_tree::parse_passage_body(passage_body, 0);
-        let (js, exact_mappings) = passage_tree::walk_translate(&tree, passage_body, 0, callables);
+        let result = passage_tree::walk_translate(
+            &tree, passage_body, 0, callables, passage_name, is_widget,
+        );
 
         // Convert ExactLineMapping to LineMapping
-        let line_map: Vec<crate::types::LineMapping> = exact_mappings.into_iter().map(|em| {
+        let line_map: Vec<crate::types::LineMapping> = result.line_map.into_iter().map(|em| {
             crate::types::LineMapping {
                 passage_name: passage_name.to_string(),
                 file_uri: file_uri.to_string(),
@@ -1039,7 +1145,7 @@ impl FormatPlugin for SugarCubePlugin {
             }
         }).collect();
 
-        Some((js, line_map))
+        Some((result.js_function, line_map))
     }
 
     fn extract_user_callables(
@@ -1106,6 +1212,34 @@ impl FormatPlugin for SugarCubePlugin {
             }
         }
         refs
+    }
+
+    // -------------------------------------------------------------------
+    // Per-passage virtual doc access (Phase C)
+    // -------------------------------------------------------------------
+
+    fn virtual_doc_content(&self) -> Option<String> {
+        // Delegate to the VirtualDocMap side table. The map assembles
+        // the monolithic JS string on demand from individual passage entries.
+        let docs = self.virtual_docs.read().unwrap();
+        if docs.is_empty() {
+            None
+        } else {
+            Some(docs.assemble_virtual_doc())
+        }
+    }
+
+    fn virtual_doc_line_map(&self) -> Option<Vec<crate::types::VirtualDocLineMapEntry>> {
+        // Delegate to the VirtualDocMap side table. It builds the annotated
+        // line map on demand, walking the same assembly order as
+        // assemble_virtual_doc() and tagging each line with passage name
+        // and source file URI.
+        let docs = self.virtual_docs.read().unwrap();
+        if docs.is_empty() {
+            None
+        } else {
+            Some(docs.assemble_annotated_line_map())
+        }
     }
 }
 

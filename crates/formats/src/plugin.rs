@@ -1337,6 +1337,47 @@ pub trait FormatPlugin: Send + Sync {
         let _ = (workspace, source_text, passage_name);
         Vec::new()
     }
+
+    // -----------------------------------------------------------------------
+    // Per-passage virtual doc access (Phase C — optional)
+    //
+    // These methods provide access to the format plugin's internal virtual
+    // document map, enabling the LSP server to serve virtual doc content to
+    // VSCode and route JS diagnostics back to .tw source positions.
+    //
+    // Only format plugins that build per-passage virtual docs (currently
+    // SugarCube) need to override these. Other formats use the default
+    // no-op implementations.
+    // -----------------------------------------------------------------------
+
+    /// Get the assembled virtual document content for the entire workspace.
+    ///
+    /// This returns the monolithic JS string that represents all passage
+    /// functions. The content follows this structure:
+    /// 1. Static preamble (`/** @type ... */ const State = ...`)
+    /// 2. Widget function definitions (standalone, no `passage_` wrapper)
+    /// 3. Passage functions (`function passage_Name() { ... }`)
+    ///
+    /// Returns `None` if the format does not support per-passage virtual docs.
+    /// The default implementation returns `None`.
+    fn virtual_doc_content(&self) -> Option<String> {
+        None
+    }
+
+    /// Get the line-level mapping for the assembled virtual document.
+    ///
+    /// Each entry maps one line of the virtual doc output to its original
+    /// source position. Preamble lines map to `passage_name: ""`,
+    /// `file_uri: ""`, `original_line: 0`.
+    ///
+    /// The line map is in the same order as the assembled virtual doc
+    /// content — entry `i` corresponds to line `i` of the content.
+    ///
+    /// Returns `None` if the format does not support per-passage virtual docs.
+    /// The default implementation returns `None`.
+    fn virtual_doc_line_map(&self) -> Option<Vec<crate::types::VirtualDocLineMapEntry>> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
