@@ -1232,19 +1232,26 @@ pub trait FormatPlugin: Send + Sync {
     /// to JavaScript that uses the format's state accessor path. Return
     /// `None` if the passage cannot be translated.
     ///
+    /// The return value is a tuple of `(js_string, line_mappings)`. The line
+    /// mappings map each virtual JS line back to the original source location.
+    /// Formats that don't implement exact mapping can use
+    /// `build_format_section_line_map()` for proportional mapping as a fallback.
+    ///
     /// The `callables` parameter provides the list of user-defined callables
     /// (custom macros and widgets) so the translator can recognize invocations
     /// like `<<useItem matchbox>>` as function calls.
     ///
-    /// - **SugarCube**: `<<set $x to 5>>` → `State.variables.x = 5;`
-    /// - **Harlowe**: `(set: $x to 5)` → translated JS
+    /// - **SugarCube**: `<<set $x to 5>>` → `State.variables.x = 5;` (exact mapping)
+    /// - **Harlowe**: `(set: $x to 5)` → translated JS (proportional mapping)
     /// - **Snowman**: `<%= s.x %>` → pass-through (already JS)
     /// - **Chapbook**: `[javascript] state.x = 5;` → pass-through
     fn translate_passage_to_js(
         &self,
         _passage_body: &str,
         _callables: &[crate::types::UserCallable],
-    ) -> Option<String> {
+        _passage_name: &str,
+        _file_uri: &str,
+    ) -> Option<(String, Vec<crate::types::LineMapping>)> {
         None
     }
 
@@ -1358,8 +1365,10 @@ impl<T: FormatPlugin + ?Sized> crate::virtual_doc::VirtualDocHooks for T {
         &self,
         passage_body: &str,
         callables: &[crate::types::UserCallable],
-    ) -> Option<String> {
-        FormatPlugin::translate_passage_to_js(self, passage_body, callables)
+        passage_name: &str,
+        file_uri: &str,
+    ) -> Option<(String, Vec<crate::types::LineMapping>)> {
+        FormatPlugin::translate_passage_to_js(self, passage_body, callables, passage_name, file_uri)
     }
 
     fn extract_user_callables(

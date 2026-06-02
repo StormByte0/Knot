@@ -23,6 +23,7 @@ pub mod blocks;
 pub mod special_passages;
 pub mod comments;
 pub mod virtual_doc;
+pub mod passage_tree;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
@@ -282,33 +283,25 @@ impl FormatPlugin for SugarCubePlugin {
                     .collect();
 
                 // Extract body elements, filtering out comment-embedded matches
-                let mut raw_links = links::extract_links(body, body_offset);
-                raw_links.extend(links::extract_implicit_passage_refs(body, body_offset));
-                raw_links.extend(links::extract_macro_passage_refs(body, body_offset));
+                // Build passage body from the tree (Phase 2: all walks from tree)
+                let tree = passage_tree::parse_passage_body(body, body_offset);
+                passage.body = passage_tree::walk_blocks(&tree);
 
+                // Extract links from tree walk (replaces extract_links +
+                // extract_implicit_passage_refs + extract_macro_passage_refs)
+                let mut raw_links = passage_tree::walk_links(&tree, body, body_offset);
                 // Filter links that fall inside comments
-                passage.links = raw_links.into_iter().filter(|link| {
+                raw_links.retain(|link| {
                     !comments::is_in_comment(&comment_spans, &link.span)
-                }).collect();
+                });
+                passage.links = raw_links;
 
-                // Deduplicate links by (display_text, target) — the same
-                // passage reference should not appear multiple times
-                {
-                    let mut seen = HashSet::new();
-                    passage.links.retain(|link| {
-                        let key = (link.display_text.clone(), link.target.clone());
-                        seen.insert(key)
-                    });
-                }
-
-                passage.vars = vars::extract_vars(body, body_offset);
+                // Extract vars from tree walk (replaces extract_vars)
+                passage.vars = passage_tree::walk_vars(&tree, body, body_offset);
                 // Filter vars inside comments
                 passage.vars.retain(|var| {
                     !comments::is_in_comment(&comment_spans, &var.span)
                 });
-
-                let macros = blocks::extract_macros(body, body_offset);
-                passage.body = blocks::build_body_blocks(body, body_offset, &macros);
 
                 // Semantic tokens for header. Use SpecialPassage type if this
                 // is a format-defined special passage (e.g., StoryInit,
@@ -326,8 +319,10 @@ impl FormatPlugin for SugarCubePlugin {
                     tag_modifiers: tag_mods,
                 }));
 
-                // Semantic tokens for body (filter comment-embedded tokens)
-                let mut body_tokens = tokens::body_tokens(body, body_offset);
+                // Semantic tokens for body: tree-based core tokens (Macro, Variable)
+                // + augmentation passes for keyword/boolean/namespace/number/string/
+                // operator/property/comment/PassageRef tokens
+                let mut body_tokens = passage_tree::walk_tokens(&tree, body, body_offset);
                 body_tokens.retain(|tok| {
                     let tok_span = tok.start..tok.start + tok.length;
                     !comments::is_in_comment(&comment_spans, &tok_span)
@@ -403,8 +398,8 @@ impl FormatPlugin for SugarCubePlugin {
                 });
                 tokens.extend(macro_ref_tokens);
 
-                // Validation diagnostics (filter comment-embedded ranges)
-                let body_diags = validation::validate(body, body_offset);
+                // Validation diagnostics: tree-based (replaces validation::validate)
+                let body_diags = passage_tree::walk_validate(&tree, body_offset);
                 let filtered_diags: Vec<_> = body_diags.into_iter().filter(|d| {
                     !comments::is_in_comment(&comment_spans, &d.range)
                 }).collect();
@@ -481,31 +476,22 @@ impl FormatPlugin for SugarCubePlugin {
         } else {
             let comment_spans = comments::find_all_comment_spans(passage_text, false);
 
-            passage.links = links::extract_links(passage_text, 0);
-            passage.links.extend(links::extract_implicit_passage_refs(passage_text, 0));
-            passage.links.extend(links::extract_macro_passage_refs(passage_text, 0));
+            // Build passage body from the tree (Phase 2: all walks from tree)
+            let tree = passage_tree::parse_passage_body(passage_text, 0);
+            passage.body = passage_tree::walk_blocks(&tree);
 
+            // Extract links from tree walk
+            passage.links = passage_tree::walk_links(&tree, passage_text, 0);
             // Filter links inside comments
             passage.links.retain(|link| {
                 !comments::is_in_comment(&comment_spans, &link.span)
             });
 
-            // Deduplicate
-            {
-                let mut seen = HashSet::new();
-                passage.links.retain(|link| {
-                    let key = (link.display_text.clone(), link.target.clone());
-                    seen.insert(key)
-                });
-            }
-
-            passage.vars = vars::extract_vars(passage_text, 0);
+            // Extract vars from tree walk
+            passage.vars = passage_tree::walk_vars(&tree, passage_text, 0);
             passage.vars.retain(|var| {
                 !comments::is_in_comment(&comment_spans, &var.span)
             });
-
-            let macros = blocks::extract_macros(passage_text, 0);
-            passage.body = blocks::build_body_blocks(passage_text, 0, &macros);
         }
 
         Some(passage)
@@ -1009,15 +995,13 @@ impl FormatPlugin for SugarCubePlugin {
     fn build_variable_tree(
         &self,
         workspace: &knot_core::Workspace,
-        source_text: &dyn crate::plugin::SourceTextProvider,
+        _source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
-        // Build the virtual document first, then use it for extraction
-        let vdoc = self.build_virtual_document(workspace, source_text);
-        if let Some(vdoc) = vdoc {
-            vars::build_variable_tree_from_virtual_doc(workspace, &vdoc)
-        } else {
-            vars::build_variable_tree(workspace)
-        }
+        // Tree-only path: walk_vars() already handles all variable patterns
+        // (JS aliases, State API, setter links, bracket props) that the old
+        // virtual doc extraction covered. No need to build the virtual
+        // document and merge Pipeline B results anymore.
+        vars::build_variable_tree(workspace)
     }
 
     // -------------------------------------------------------------------
@@ -1039,8 +1023,23 @@ impl FormatPlugin for SugarCubePlugin {
         &self,
         passage_body: &str,
         callables: &[crate::types::UserCallable],
-    ) -> Option<String> {
-        Some(virtual_doc::translate_macros_to_js(passage_body, callables))
+        passage_name: &str,
+        file_uri: &str,
+    ) -> Option<(String, Vec<crate::types::LineMapping>)> {
+        // Build the tree and use walk_translate for exact line mapping
+        let tree = passage_tree::parse_passage_body(passage_body, 0);
+        let (js, exact_mappings) = passage_tree::walk_translate(&tree, passage_body, 0, callables);
+
+        // Convert ExactLineMapping to LineMapping
+        let line_map: Vec<crate::types::LineMapping> = exact_mappings.into_iter().map(|em| {
+            crate::types::LineMapping {
+                passage_name: passage_name.to_string(),
+                file_uri: file_uri.to_string(),
+                original_line: em.original_line,
+            }
+        }).collect();
+
+        Some((js, line_map))
     }
 
     fn extract_user_callables(
@@ -1060,41 +1059,53 @@ impl FormatPlugin for SugarCubePlugin {
         source_text: &dyn crate::plugin::SourceTextProvider,
         passage_name: &str,
     ) -> Vec<crate::types::PassageVarRef> {
-        let vdoc = self.build_virtual_document(workspace, source_text);
-        if let Some(vdoc) = vdoc {
-            let accesses = virtual_doc::extract_virtual_var_accesses(&vdoc);
-            accesses
-                .into_iter()
-                .filter(|a| a.passage_name == passage_name)
-                .map(|a| crate::types::PassageVarRef {
-                    variable_name: a.dollar_name,
-                    is_write: a.is_write,
-                    line: a.original_line,
-                    file_uri: a.file_uri,
-                    passage_name: a.passage_name,
-                })
-                .collect()
-        } else {
-            // Fallback: use per-passage vars
-            let mut refs = Vec::new();
-            for doc in workspace.documents() {
-                for passage in &doc.passages {
-                    if passage.name != passage_name {
-                        continue;
+        // Tree-based extraction: walk the passage tree directly instead of
+        // building the full virtual document and regex-scanning JS output.
+        // This is faster (no vdoc build) and more accurate (exact line
+        // numbers from byte spans instead of proportional mapping).
+        let mut refs = Vec::new();
+        for doc in workspace.documents() {
+            for passage in &doc.passages {
+                if passage.name != passage_name {
+                    continue;
+                }
+                // Find the passage body text from source
+                let file_uri = doc.uri.to_string();
+                let src = source_text.get_source_text(&file_uri);
+                if let Some(src) = src {
+                    // passage.span covers header + body. Body starts after
+                    // the first newline following the header line.
+                    let header_start = passage.span.start;
+                    let header_line_end = src[header_start..]
+                        .find('\n')
+                        .map(|i| header_start + i)
+                        .unwrap_or(src.len().min(header_start + passage.name.len() + 2));
+                    let newline_len = if src.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < src.len() { 1 } else { 0 };
+                    let body_offset = header_line_end + newline_len;
+
+                    if body_offset >= src.len() {
+                        continue; // Empty body
                     }
+                    let body = &src[body_offset..];
+                    let tree = passage_tree::parse_passage_body(body, body_offset);
+                    refs.extend(passage_tree::walk_passage_var_refs(
+                        &tree, body, body_offset, passage_name, &file_uri,
+                    ));
+                } else {
+                    // Fallback: use already-parsed passage.vars (line = 0)
                     for var in &passage.vars {
                         refs.push(crate::types::PassageVarRef {
                             variable_name: var.name.clone(),
                             is_write: matches!(var.kind, knot_core::passage::VarKind::Init),
                             line: 0,
-                            file_uri: doc.uri.to_string(),
+                            file_uri: file_uri.clone(),
                             passage_name: passage.name.clone(),
                         });
                     }
                 }
             }
-            refs
         }
+        refs
     }
 }
 

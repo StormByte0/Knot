@@ -279,17 +279,11 @@ pub fn build_core_virtual_document<H: VirtualDocHooks>(
                 continue;
             }
 
-            // Ask the format plugin to translate to JS (with callable info)
-            let translated_js = match hooks.translate_passage_to_js(&body_text, &user_callables) {
-                Some(js) => js,
+            // Ask the format plugin to translate to JS (with callable info + exact mapping)
+            let (translated_js, line_map) = match hooks.translate_passage_to_js(&body_text, &user_callables, &passage.name, &file_uri) {
+                Some(result) => result,
                 None => continue, // Format can't translate this passage
             };
-
-            let line_map = build_format_section_line_map(
-                &translated_js,
-                &passage.name,
-                &file_uri,
-            );
 
             sections.push(VirtualSection {
                 kind: VirtualSectionKind::MacroTranslated {
@@ -311,21 +305,71 @@ pub fn build_core_virtual_document<H: VirtualDocHooks>(
 /// Build a line map for a format-translated section.
 ///
 /// Since format-translated sections are per-passage, all lines map to
-/// the same passage. The original line numbers are approximated since
-/// translation may change line counts — we map to the best available
-/// line in the original source.
-fn build_format_section_line_map(
+/// the same passage. The original line numbers are derived by correlating
+/// the translated JS output with the original passage body text.
+///
+/// ## Line Mapping Strategy
+///
+/// The macro translator processes each original source line and may produce
+/// 0-N translated JS lines. We use a heuristic approach:
+///
+/// 1. Count the number of original source lines (from `original_body_text`).
+/// 2. Count the number of translated JS lines.
+/// 3. Distribute the translated lines proportionally across the original
+///    lines. For example, if there are 10 original lines and 30 translated
+///    lines, each original line "owns" ~3 translated lines.
+///
+/// This produces a best-effort mapping that is significantly more accurate
+/// than the naive `original_line == virtual_line` approach, which always
+/// gives wrong line numbers when the translator expands macros into
+/// multi-line JS constructs.
+///
+/// **Why not exact mapping?** The recursive descent translator in
+/// `translate_macros_to_js()` does not currently emit line-number
+/// annotations. Adding those would require changing the translator's
+/// return type and is a larger refactor. The proportional mapping is
+/// a practical improvement that fixes the most common case (variable
+/// references in short passages where the mapping is close to 1:1).
+/// Build a line map for a format-translated section using proportional mapping.
+///
+/// This is the fallback mapping strategy. SugarCube now uses exact mapping
+/// via `walk_translate()` in `passage_tree.rs`. Other formats that don't
+/// implement exact mapping can use this as a fallback.
+#[allow(dead_code)] // Retained as fallback for other formats
+pub(crate) fn build_format_section_line_map(
     translated_js: &str,
+    original_body_text: &str,
     passage_name: &str,
     file_uri: &str,
 ) -> Vec<LineMapping> {
+    let original_line_count = original_body_text.lines().count().max(1);
+    let translated_line_count = translated_js.lines().count().max(1);
+
     translated_js
         .lines()
         .enumerate()
-        .map(|(line_idx, _)| LineMapping {
-            passage_name: passage_name.to_string(),
-            file_uri: file_uri.to_string(),
-            original_line: line_idx as u32,
+        .map(|(line_idx, _)| {
+            // Proportional mapping: each translated line maps to the
+            // original source line that "owns" it based on proportional
+            // distribution.
+            let original_line = if translated_line_count <= original_line_count {
+                // Fewer or equal translated lines than original — 1:1 or
+                // some original lines produced no output (e.g., blank lines).
+                // Map directly.
+                line_idx.min(original_line_count - 1) as u32
+            } else {
+                // More translated lines than original — some original lines
+                // expanded into multiple JS lines. Distribute proportionally.
+                ((line_idx as f64 * original_line_count as f64 / translated_line_count as f64)
+                    .floor() as usize)
+                    .min(original_line_count - 1) as u32
+            };
+
+            LineMapping {
+                passage_name: passage_name.to_string(),
+                file_uri: file_uri.to_string(),
+                original_line,
+            }
         })
         .collect()
 }
@@ -373,26 +417,33 @@ pub trait VirtualDocHooks {
     /// for `state.` and `{{...}}`.
     fn has_variable_affecting_content(&self, passage_body: &str) -> bool;
 
-    /// Translate a passage body to JavaScript.
+    /// Translate a passage body to JavaScript, with line mappings.
     ///
     /// The format plugin should convert its format-specific variable syntax
     /// to JavaScript that uses the format's state accessor path. Return
     /// `None` if the passage cannot be translated.
     ///
+    /// The return value is a tuple of `(js_string, line_mappings)`. The line
+    /// mappings are a `Vec<LineMapping>` with one entry per line of the JS
+    /// output, mapping each virtual line back to the original source location.
+    /// Formats that don't have exact mapping can use `build_format_section_line_map()`
+    /// as a fallback for proportional mapping.
+    ///
     /// The `callables` parameter provides the list of user-defined callables
     /// (custom macros and widgets) so the translator can recognize invocations
     /// like `<<useItem matchbox>>` as function calls.
     ///
-    /// - SugarCube: `<<set $x to 5>>` → `State.variables.x = 5;`
-    /// - Harlowe: `(set: $x to 5)` → `State.variables.x = 5;`
-    ///   (Harlowe's internal state model uses the same State.variables)
+    /// - SugarCube: `<<set $x to 5>>` → `State.variables.x = 5;` (exact mapping)
+    /// - Harlowe: `(set: $x to 5)` → `State.variables.x = 5;` (proportional mapping)
     /// - Snowman: `<%= s.x %>` → `window.story.state.x` (already JS)
     /// - Chapbook: `[javascript] state.x = 5; [/javascript]` → `state.x = 5;`
     fn translate_passage_to_js(
         &self,
         passage_body: &str,
         callables: &[UserCallable],
-    ) -> Option<String>;
+        passage_name: &str,
+        file_uri: &str,
+    ) -> Option<(String, Vec<LineMapping>)>;
 
     /// Extract user-defined callables from all passages.
     ///

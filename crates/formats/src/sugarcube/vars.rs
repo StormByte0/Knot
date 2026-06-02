@@ -216,6 +216,7 @@ pub(crate) static RE_JS_VAR_COMPOUND: LazyLock<Regex> =
 ///
 /// The `$$` escape markup is excluded — `$$name` outputs literal `$name`
 /// and is NOT a variable reference.
+#[allow(dead_code)] // Replaced by walk_vars() in passage_tree.rs (Phase 2)
 pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
     let mut vars = Vec::new();
     let mut init_spans: Vec<Range<usize>> = Vec::new();
@@ -377,11 +378,12 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
             let var_start = js_offset + full.start();
             let var_end = var_start + name.len();
 
-            // Skip $$ escape markup
+            // Skip $$ escape markup (e.g., $$var += is not a variable)
             let is_dollar_escape = full.start() > 0
                 && js_text.as_bytes()[full.start() - 1] == b'$';
+            let is_double_dollar = full.as_str().starts_with("$$");
 
-            if is_dollar_escape {
+            if is_dollar_escape || is_double_dollar {
                 continue;
             }
 
@@ -407,11 +409,12 @@ pub(crate) fn extract_vars(body: &str, body_offset: usize) -> Vec<VarOp> {
             let var_start = js_offset + full.start();
             let var_end = var_start + name.len();
 
-            // Skip $$ escape markup
+            // Skip $$ escape markup (e.g., $$var = is not a variable)
             let is_dollar_escape = full.start() > 0
                 && js_text.as_bytes()[full.start() - 1] == b'$';
+            let is_double_dollar = full.as_str().starts_with("$$");
 
-            if is_dollar_escape {
+            if is_dollar_escape || is_double_dollar {
                 continue;
             }
 
@@ -2011,6 +2014,7 @@ fn build_property_tree(
 ///
 /// The virtual document accesses are merged into the traditional registry,
 /// providing both complete coverage and proper reference counting.
+#[allow(dead_code)] // Replaced by tree-only path in mod.rs build_variable_tree() (Phase 4)
 pub(crate) fn build_variable_tree_from_virtual_doc(
     workspace: &knot_core::Workspace,
     vdoc: &VirtualDocument,

@@ -298,6 +298,7 @@ pub(crate) fn scan_macros(body: &str) -> Vec<ParsedMacro> {
 /// Both open macros (`<<name args>>`) and close macros (`<</name>>`) are
 /// extracted in **source position order** (since the scanner processes them
 /// sequentially from left to right).
+#[allow(dead_code)] // Replaced by walk_blocks() in passage_tree.rs (Phase 1)
 pub(crate) fn extract_macros(body: &str, body_offset: usize) -> Vec<Block> {
     let parsed = scan_macros(body);
 
@@ -319,6 +320,7 @@ pub(crate) fn extract_macros(body: &str, body_offset: usize) -> Vec<Block> {
 ///
 /// **Precondition**: The `macros` slice must be sorted by span start position.
 /// `extract_macros()` guarantees this.
+#[allow(dead_code)] // Replaced by walk_blocks() in passage_tree.rs (Phase 1)
 pub(crate) fn build_body_blocks(body: &str, body_offset: usize, macros: &[Block]) -> Vec<Block> {
     let mut blocks: Vec<Block> = Vec::new();
 

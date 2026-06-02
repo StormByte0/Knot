@@ -98,6 +98,7 @@ const SUGARCUBE_NAMESPACES: &[&str] = &[
 ///
 /// Uses the string-aware macro scanner from `blocks.rs` instead of regex
 /// to correctly handle `>` and `>>` inside macro conditions.
+#[allow(dead_code)] // Replaced by walk_tokens() in passage_tree.rs (Phase 4). Augmentation helpers still used.
 pub(crate) fn body_tokens(body: &str, body_offset: usize) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 

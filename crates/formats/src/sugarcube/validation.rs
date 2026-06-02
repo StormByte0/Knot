@@ -32,6 +32,7 @@ use super::macros;
 /// - Structural validation (macro parent constraints, block-aware)
 /// - Unknown macro detection
 /// - Deprecated macro warnings
+#[allow(dead_code)] // Replaced by walk_validate() in passage_tree.rs (Phase 4)
 pub(crate) fn validate(body: &str, body_offset: usize) -> Vec<FormatDiagnostic> {
     let mut diagnostics = Vec::new();
 

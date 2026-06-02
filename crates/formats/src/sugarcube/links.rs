@@ -77,6 +77,7 @@ pub(crate) static RE_UI_INCLUDE: LazyLock<Regex> =
 ///
 /// The `body_offset` is the byte offset of the body text within the full
 /// source document, used to compute absolute spans.
+#[allow(dead_code)] // Replaced by walk_links() in passage_tree.rs (Phase 2)
 pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
 
@@ -179,6 +180,7 @@ pub(crate) fn extract_links(body: &str, body_offset: usize) -> Vec<Link> {
 /// `Story.get("...")`, `Story.has("...")`, `UI.goto("...")`,
 /// `UI.include("...")` that reference passages but aren't standard
 /// `[[links]]` or `<<macro>>` passage-args.
+#[allow(dead_code)] // Replaced by walk_links() in passage_tree.rs (Phase 2)
 pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
 
@@ -237,6 +239,7 @@ pub(crate) fn extract_implicit_passage_refs(body: &str, body_offset: usize) -> V
 /// - `<<goto "PassageName">>` → Link to "PassageName"
 /// - `<<link "Label" "PassageName">>` → Link to "PassageName"
 /// - `<<include "PassageName">>` → Link to "PassageName"
+#[allow(dead_code)] // Replaced by walk_links() in passage_tree.rs (Phase 2)
 pub(crate) fn extract_macro_passage_refs(body: &str, body_offset: usize) -> Vec<Link> {
     let mut links = Vec::new();
     let passage_arg_macros = macros::passage_arg_macro_names();

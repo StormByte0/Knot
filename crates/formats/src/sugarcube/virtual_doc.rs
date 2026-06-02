@@ -473,15 +473,15 @@ pub fn has_variable_macros(body: &str) -> bool {
 
 /// Context for macro-to-JS translation, holding the builtin catalog and
 /// user callables for lookup during recursive descent.
-struct TranslationContext<'a> {
+pub(crate) struct TranslationContext<'a> {
     /// Lookup from macro name to its definition in the builtin catalog.
-    builtin_lookup: HashMap<&'static str, &'static MacroDef>,
+    pub(crate) builtin_lookup: HashMap<&'static str, &'static MacroDef>,
     /// Set of user-defined callable names (custom macros and widgets).
-    callable_names: std::collections::HashSet<&'a str>,
+    pub(crate) callable_names: std::collections::HashSet<&'a str>,
 }
 
 impl<'a> TranslationContext<'a> {
-    fn new(callables: &'a [UserCallable]) -> Self {
+    pub(crate) fn new(callables: &'a [UserCallable]) -> Self {
         let builtin_lookup: HashMap<&'static str, &'static MacroDef> =
             crate::sugarcube::macros::builtin_macros()
                 .iter()
@@ -522,6 +522,11 @@ impl<'a> TranslationContext<'a> {
 ///
 /// The translation uses `OperatorNormalization` mappings to convert
 /// TwineScript operators (e.g., `to` → `=`, `is` → `===`, `gte` → `>=`).
+///
+/// NOTE: Superseded by `walk_translate()` in `passage_tree.rs` which uses
+/// the tree for exact line mapping. This function is retained for backward
+/// compatibility and as a reference implementation.
+#[allow(dead_code)] // Replaced by walk_translate() in passage_tree.rs (Phase 3)
 pub fn translate_macros_to_js(body: &str, callables: &[UserCallable]) -> String {
     let ctx = TranslationContext::new(callables);
     translate_body(&ctx, body, 0)
@@ -536,6 +541,9 @@ pub fn translate_macros_to_js(body: &str, callables: &[UserCallable]) -> String 
 /// Scans for macro tags using `RE_MACRO_TAG`, dispatches to the appropriate
 /// handler based on the `MacroDef` catalog, and recursively translates
 /// block macro bodies.
+///
+/// NOTE: Superseded by `walk_translate()` in `passage_tree.rs`.
+#[allow(dead_code)] // Replaced by walk_translate() in passage_tree.rs (Phase 3)
 fn translate_body(ctx: &TranslationContext, text: &str, indent: usize) -> String {
     let mut result = String::new();
     let indent_str = "  ".repeat(indent);
@@ -660,7 +668,7 @@ fn translate_body(ctx: &TranslationContext, text: &str, indent: usize) -> String
 /// Check if a macro name is a block macro (`has_body: true`) in the catalog.
 ///
 /// Also handles the special `<<when>>` pseudo-macro (backward compat).
-fn is_block_macro(ctx: &TranslationContext, name: &str) -> bool {
+pub(crate) fn is_block_macro(ctx: &TranslationContext, name: &str) -> bool {
     if name == "when" {
         return true;
     }
@@ -675,6 +683,9 @@ fn is_block_macro(ctx: &TranslationContext, name: &str) -> bool {
 /// Scans the text for macro tags, tracking nesting depth for the given
 /// macro name.  Returns the byte offset of the start of the close tag
 /// relative to `text`, or `None` if no matching close tag is found.
+///
+/// NOTE: Superseded by the tree-based approach in `passage_tree.rs`.
+#[allow(dead_code)] // No longer needed — tree has nesting
 fn find_matching_close(text: &str, macro_name: &str) -> Option<usize> {
     let mut depth = 1;
     let mut pos = 0;
@@ -707,7 +718,7 @@ fn find_matching_close(text: &str, macro_name: &str) -> Option<usize> {
 }
 
 /// Translate the opening of a block macro (produces the JS header + `{`).
-fn translate_block_open(
+pub(crate) fn translate_block_open(
     _ctx: &TranslationContext,
     name: &str,
     args: &str,
@@ -867,7 +878,7 @@ fn translate_block_open(
 }
 
 /// Translate a close tag for a block macro.
-fn translate_close_tag(name: &str, indent: usize) -> String {
+pub(crate) fn translate_close_tag(name: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
 
     match name {
@@ -899,7 +910,7 @@ fn translate_close_tag(name: &str, indent: usize) -> String {
 }
 
 /// Translate an inline (non-block) builtin macro.
-fn translate_inline_macro(
+pub(crate) fn translate_inline_macro(
     _ctx: &TranslationContext,
     name: &str,
     args: &str,
@@ -1042,7 +1053,7 @@ fn translate_inline_macro(
 /// - `$var to expr` → `State.variables.var = translated_expr;`
 /// - `$var = expr` → `State.variables.var = translated_expr;`
 /// - `$var += expr` → `State.variables.var += translated_expr;`
-fn translate_set_macro(args: &str, indent: usize) -> String {
+pub(crate) fn translate_set_macro(args: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let args = args.trim();
 
@@ -1092,7 +1103,7 @@ fn translate_set_macro(args: &str, indent: usize) -> String {
 }
 
 /// Translate `<<unset $var>>` macro arguments.
-fn translate_unset_macro(args: &str, indent: usize) -> String {
+pub(crate) fn translate_unset_macro(args: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let var_ref = extract_dollar_var_from_args(args);
     match var_ref {
@@ -1102,14 +1113,14 @@ fn translate_unset_macro(args: &str, indent: usize) -> String {
 }
 
 /// Translate `<<run jscode>>` macro arguments.
-fn translate_run_macro(args: &str, indent: usize) -> String {
+pub(crate) fn translate_run_macro(args: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let translated_code = translate_dollar_refs_in_js(args);
     format!("{}{};\n", indent_str, translated_code.trim())
 }
 
 /// Translate a form macro (textbox, numberbox, etc.) that writes to a variable.
-fn translate_form_macro(args: &str, macro_name: &str, indent: usize) -> String {
+pub(crate) fn translate_form_macro(args: &str, macro_name: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let var_ref = extract_dollar_var_from_args(args);
     match var_ref {
@@ -1123,9 +1134,16 @@ fn translate_form_macro(args: &str, macro_name: &str, indent: usize) -> String {
 
 /// Extract the first `$varName` from macro arguments, returning the name
 /// without the `$` sigil.
-fn extract_dollar_var_from_args(args: &str) -> Option<String> {
+///
+/// Returns `None` if the match is a `$$` escape (e.g., `$$name` should not
+/// be treated as a variable reference).
+pub(crate) fn extract_dollar_var_from_args(args: &str) -> Option<String> {
+    // Guard $$ escape before matching
+    const DOLLAR_ESCAPE_SENTINEL: &str = "\u{E000}\u{E001}";
+    let guarded = args.replace("$$", DOLLAR_ESCAPE_SENTINEL);
+
     RE_VD_DOLLAR_REF
-        .captures(args)
+        .captures(&guarded)
         .map(|caps| caps.get(1).unwrap().as_str().to_string())
 }
 
@@ -1135,10 +1153,16 @@ fn extract_dollar_var_from_args(args: &str) -> Option<String> {
 
 /// Translate a text segment between macro tags.
 ///
-/// Handles `$var` references, `$var++`/`$var--`, and plain text.
-fn translate_text_segment(text: &str, indent: usize) -> String {
+/// Handles `$var` references, `$var++`/`$var--`, `$$` escape markup, and
+/// plain text. The `$$` escape is SugarCube's way of outputting a literal
+/// `$` character — `$$name` outputs `$name` and must NOT be treated as a
+/// variable reference.
+pub(crate) fn translate_text_segment(text: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let mut result = String::new();
+
+    // Sentinel for $$ escape (same approach as translate_dollar_refs_in_js)
+    const DOLLAR_ESCAPE_SENTINEL: &str = "\u{E000}\u{E001}";
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -1147,7 +1171,8 @@ fn translate_text_segment(text: &str, indent: usize) -> String {
             continue;
         }
 
-        let mut processed = trimmed.to_string();
+        // Guard $$ escape before any $-based replacement
+        let mut processed = trimmed.replace("$$", DOLLAR_ESCAPE_SENTINEL);
 
         // Handle $var++ / ++$var
         processed = RE_VD_INCREMENT
@@ -1182,8 +1207,12 @@ fn translate_text_segment(text: &str, indent: usize) -> String {
                     format!("/* read: {} */", js_path)
                 })
                 .to_string();
-            result.push_str(&format!("{}{}\n", indent_str, processed));
-        } else if processed.contains("State.variables.") {
+        }
+
+        // Restore $$ escape sentinel → single literal $
+        processed = processed.replace(DOLLAR_ESCAPE_SENTINEL, "$");
+
+        if processed.contains("State.variables.") || trimmed.contains("$$") || trimmed.contains('$') {
             result.push_str(&format!("{}{}\n", indent_str, processed));
         } else {
             result.push_str(&format!("{}/* text: {} */\n", indent_str, processed));
@@ -1197,7 +1226,7 @@ fn translate_text_segment(text: &str, indent: usize) -> String {
 ///
 /// Applies `OperatorNormalization` mappings (e.g., `to` → `=`, `is` → `===`,
 /// `gte` → `>=`) and converts `$var` to `State.variables.var`.
-fn translate_expression(expr: &str) -> String {
+pub(crate) fn translate_expression(expr: &str) -> String {
     let mut result = expr.to_string();
 
     // Apply operator normalizations (longest-first to avoid partial matches)
@@ -1229,7 +1258,7 @@ fn translate_expression(expr: &str) -> String {
 /// - `<<for $i, $arr>>` (iterate over array: value only)
 /// - `<<for $i, $arr range>>` (range iteration)
 /// - `<<for _i, $obj>>` (iterate over object keys)
-fn translate_for_macro(for_args: &str) -> String {
+pub(crate) fn translate_for_macro(for_args: &str) -> String {
     let args = for_args.trim();
 
     // Check for C-style for loop (contains semicolons)
@@ -1269,7 +1298,7 @@ fn translate_for_macro(for_args: &str) -> String {
 }
 
 /// Convert a `$var.path` reference to `State.variables.var.path`.
-fn dollar_path_to_state_path(dollar_path: &str) -> String {
+pub(crate) fn dollar_path_to_state_path(dollar_path: &str) -> String {
     if dollar_path.starts_with('$') {
         format!("State.variables.{}", &dollar_path[1..])
     } else {
@@ -1282,13 +1311,33 @@ fn dollar_path_to_state_path(dollar_path: &str) -> String {
 /// Inside `<<run>>` bodies, SugarCube allows `$var` as shorthand for
 /// `State.variables.var`. This function translates those references
 /// while preserving other JS code.
-fn translate_dollar_refs_in_js(js_code: &str) -> String {
-    RE_VD_DOLLAR_REF
-        .replace_all(js_code, |caps: &regex::Captures| {
+///
+/// ## `$$` Escape Handling
+///
+/// The `$$` markup escapes the `$` sigil in SugarCube — `$$name` outputs
+/// literal `$name` and is NOT a variable reference. This function must
+/// NOT translate `$$var` into `State.variables.var`. We handle this by
+/// temporarily replacing `$$` with a sentinel, translating `$var` refs,
+/// then restoring the sentinel back to `$$`.
+pub(crate) fn translate_dollar_refs_in_js(js_code: &str) -> String {
+    // Guard: replace $$ with a sentinel to prevent false matches.
+    // We use a Unicode private-use character that cannot appear in
+    // SugarCube source text. This avoids the need for lookbehind
+    // (which the `regex` crate doesn't support).
+    const DOLLAR_ESCAPE_SENTINEL: &str = "\u{E000}\u{E001}";
+    let guarded = js_code.replace("$$", DOLLAR_ESCAPE_SENTINEL);
+
+    let translated = RE_VD_DOLLAR_REF
+        .replace_all(&guarded, |caps: &regex::Captures| {
             let var_path = caps.get(1).unwrap().as_str();
             dollar_path_to_state_path(var_path)
         })
-        .to_string()
+        .to_string();
+
+    // Restore the $$ escape markup (the user wants literal $, not a
+    // variable reference). After sentinel restoration, `$$name` becomes
+    // just `$name` in the translated output (the first $ is literal).
+    translated.replace(DOLLAR_ESCAPE_SENTINEL, "$")
 }
 
 // NOTE: build_macro_line_map() has been moved to the core builder
@@ -1343,6 +1392,8 @@ pub struct VirtualVarAccess {
 /// 1. Extracts from the unified script section (with full JS analysis)
 /// 2. Extracts from each macro section (with startup alias resolution)
 /// 3. Resolves `gs()`/`reg()`/alias patterns using the startup alias table
+/// Note: No longer called from production code. Replaced by tree-based walks.
+#[allow(dead_code)] // Replaced by walk_vars()/walk_passage_var_refs() in passage_tree.rs (Phase 4)
 pub fn extract_virtual_var_accesses(
     vdoc: &crate::types::VirtualDocument,
 ) -> Vec<VirtualVarAccess> {
