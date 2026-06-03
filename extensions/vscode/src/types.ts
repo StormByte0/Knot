@@ -340,6 +340,12 @@ export interface KnotRefreshSemanticTokensParams {
     reason?: string;
 }
 
+/** Notification: knot/refreshVirtualDoc */
+export interface KnotRefreshVirtualDocParams {
+    /** Optional reason for the refresh (for logging/debugging). */
+    reason?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Virtual doc types (matches Rust-side KnotVirtualDocResponse)
 // ---------------------------------------------------------------------------

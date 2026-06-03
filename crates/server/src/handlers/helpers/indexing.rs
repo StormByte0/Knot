@@ -277,6 +277,13 @@ pub(crate) async fn index_workspace(
     // for every visible document.
     send_workspace_semantic_token_refresh(client).await;
 
+    // After indexing completes, notify the client that the virtual document
+    // is available. This is critical: the client needs to fetch the virtual
+    // doc content on project load so that JS diagnostics are routed to .tw
+    // files immediately, rather than requiring the user to manually open
+    // the virtual doc first.
+    send_virtual_doc_refresh(client, "workspace indexing complete").await;
+
     Ok(())
 }
 
@@ -425,6 +432,29 @@ pub(crate) async fn send_semantic_token_refresh(
 /// after server-side state changes that affect highlighting (e.g., after
 /// initial workspace indexing completes, or when cross-file link
 /// resolution changes).
+/// Send a `knot/refreshVirtualDoc` notification to the client.
+///
+/// Called after `parse()` completes (triggered by `did_change`, `did_open`,
+/// or file watcher events). The client should re-fetch the virtual document
+/// via `knot/virtualDoc` and refresh any open virtual doc tabs.
+///
+/// This is the server-push mechanism for virtual doc staleness: instead of
+/// the client polling or guessing when to refresh, the server pushes this
+/// notification exactly when the VirtualDocMap has been updated.
+pub(crate) async fn send_virtual_doc_refresh(
+    client: &tower_lsp::Client,
+    reason: &str,
+) {
+    tracing::debug!("Sending knot/refreshVirtualDoc notification (reason: {})", reason);
+    client
+        .send_notification::<crate::lsp_ext::KnotRefreshVirtualDocNotification>(
+            crate::lsp_ext::KnotRefreshVirtualDocParams {
+                reason: Some(reason.to_string()),
+            },
+        )
+        .await;
+}
+
 async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
     use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;
 

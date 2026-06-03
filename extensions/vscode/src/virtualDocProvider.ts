@@ -28,6 +28,7 @@
 
 import * as vscode from 'vscode';
 import { KnotLanguageClient, KnotVirtualDocResponse, KnotVirtualDocLineEntry } from './types';
+import { extractPassageName } from './utils';
 
 // ---------------------------------------------------------------------------
 // Virtual Document Content Provider
@@ -66,16 +67,16 @@ export function registerVirtualDocProvider(
 
     // Register the diagnostic routing: JS errors on virtual doc → .tw diagnostics
     const diagnostics = new KnotVirtualDocDiagnostics(client);
+    // Push BOTH the subscription AND the diagnostics object itself so that
+    // the diagnostic collection is properly disposed on deactivation.
     context.subscriptions.push(
         vscode.languages.onDidChangeDiagnostics((e) => diagnostics.onDiagnosticsChanged(e)),
     );
+    context.subscriptions.push(diagnostics);
 
-    // Register a command to open the virtual doc
-    context.subscriptions.push(
-        vscode.commands.registerCommand('knot.openVirtualDoc', async () => {
-            await openVirtualDoc(client);
-        }),
-    );
+    // NOTE: The 'knot.openVirtualDoc' command is registered in extension.ts
+    // registerCommands(). Do NOT register it here — VS Code throws on
+    // duplicate command registration.
 }
 
 /**
@@ -129,11 +130,12 @@ export async function refreshVirtualDoc(client: KnotLanguageClient): Promise<Kno
 }
 
 /**
- * Debounced refresh — called when .tw files change.
+ * Debounced refresh — retained as a utility but no longer used for
+ * automatic refresh. The server now pushes `knot/refreshVirtualDoc`
+ * notifications, which the client handles directly via `refreshVirtualDoc()`.
  *
- * Waits 500ms after the last change before requesting a fresh virtual doc
- * from the server. This avoids hammering the server during rapid typing
- * while still keeping the virtual doc reasonably up-to-date.
+ * This function is still exported for any edge cases where the client
+ * needs to manually trigger a debounced refresh (e.g., after reindex).
  */
 export function debouncedRefreshVirtualDoc(client: KnotLanguageClient): void {
     if (refreshDebounceTimer) {
@@ -169,17 +171,21 @@ class KnotVirtualDocProvider implements vscode.TextDocumentContentProvider {
     }
 
     async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-        // Always fetch fresh content from the server.
-        // The cached response may be stale if .tw files changed.
-        // We use the cache only as a fallback if the server is unavailable.
+        // Use the cached content if available. The cache is kept fresh by:
+        //   1. Initial project load (indexProgress completion)
+        //   2. File watcher changes (debounced 500ms)
+        //   3. Text document changes (debounced 500ms)
+        //   4. Explicit refresh via openVirtualDoc()
+        // Avoiding a server round-trip here prevents UI lag when VSCode
+        // re-queries the virtual doc content (e.g., on tab focus).
+        if (cachedResponse) {
+            return cachedResponse.content;
+        }
+
+        // No cache yet — fetch from server (first load scenario)
         const response = await refreshVirtualDoc(this.client);
         if (response) {
             return response.content;
-        }
-
-        // Fallback to cached content if server is unavailable
-        if (cachedResponse) {
-            return cachedResponse.content;
         }
 
         return '// No virtual document available\n';
@@ -338,8 +344,10 @@ class KnotVirtualDocDiagnostics {
      * find the actual line number in the .tw file by scanning for the
      * passage header and counting down.
      *
-     * Uses EXACT matching (not prefix) for passage names to avoid
-     * false positives like `:: StartExtra` matching `Start`.
+     * Uses `extractPassageName()` from utils.ts to correctly handle
+     * passage names with spaces, tags, and JSON metadata.
+     * For example, `:: Forest Entrance [outdoor]` yields "Forest Entrance",
+     * not just "Forest".
      */
     private async findPassageBodyLine(
         twUri: vscode.Uri,
@@ -353,18 +361,15 @@ class KnotVirtualDocDiagnostics {
 
             // Find the passage header line
             for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                // SugarCube passage header: :: PassageName or :: PassageName [tags] {"position":...}
-                // We need EXACT match of the passage name portion.
-                if (!line.startsWith('::')) {
+                const line = lines[i];
+                if (!line.trimStart().startsWith('::')) {
                     continue;
                 }
-                const afterHeader = line.substring(2).trimStart();
-                // The passage name ends at the first whitespace, [, or {.
-                // This handles: "PassageName", "PassageName [tags]", "PassageName {"position":...}"
-                // and "PassageName [tags] {"position":...}"
-                const nameEndMatch = afterHeader.match(/^[^\s\[\{]+/);
-                if (nameEndMatch && nameEndMatch[0] === passageName) {
+                // Use the shared extractPassageName() utility which correctly
+                // strips tags ([...]) and JSON metadata ({...}), preserving
+                // passage names that contain spaces like "Forest Entrance".
+                const extractedName = extractPassageName(line).trim();
+                if (extractedName === passageName) {
                     // The header is on line i. Body starts on line i+1.
                     // bodyLine is 0-based within the body, so:
                     return i + 1 + bodyLine;

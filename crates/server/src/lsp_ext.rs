@@ -803,6 +803,35 @@ impl Notification for KnotRefreshSemanticTokensNotification {
 }
 
 // ---------------------------------------------------------------------------
+// knot/refreshVirtualDoc — notify client that virtual doc content is stale
+// ---------------------------------------------------------------------------
+
+/// Notification: `knot/refreshVirtualDoc` — the virtual document has been
+/// updated and the client should re-fetch it.
+///
+/// Sent by the server after `parse()` completes (triggered by `did_change`,
+/// `did_open`, or file watcher events). The client should call `knot/virtualDoc`
+/// to get the updated content and line map, then refresh any open virtual doc
+/// tabs and re-route JS diagnostics to .tw source positions.
+///
+/// This replaces the client-side debounce approach: instead of the client
+/// guessing when the server has finished parsing, the server pushes this
+/// notification exactly when the virtual doc map has been updated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnotRefreshVirtualDocParams {
+    /// Optional reason for the refresh (for logging/debugging).
+    pub reason: Option<String>,
+}
+
+/// The LSP notification type for `knot/refreshVirtualDoc`.
+pub struct KnotRefreshVirtualDocNotification;
+
+impl Notification for KnotRefreshVirtualDocNotification {
+    type Params = KnotRefreshVirtualDocParams;
+    const METHOD: &'static str = "knot/refreshVirtualDoc";
+}
+
+// ---------------------------------------------------------------------------
 // workspace/semanticTokens/refresh — standard LSP request (missing from
 // lsp-types 0.94, defined here for tower-lsp send_request)
 // ---------------------------------------------------------------------------

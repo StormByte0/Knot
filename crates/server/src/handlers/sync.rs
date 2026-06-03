@@ -135,6 +135,14 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         &all_uris,
         "document opened — cross-file link resolution may have changed",
     ).await;
+
+    // Notify the client that the virtual document has been updated.
+    // The client will re-fetch the virtual doc and route JS diagnostics
+    // to .tw source positions.
+    helpers::send_virtual_doc_refresh(
+        &state.client,
+        "document opened — virtual doc map updated",
+    ).await;
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -344,6 +352,13 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         &uri,
         &open_docs.keys().cloned().collect::<Vec<_>>(),
         "cross-file link resolution may have changed",
+    ).await;
+
+    // Notify the client that the virtual document has been updated
+    // after processing the text document change.
+    helpers::send_virtual_doc_refresh(
+        &state.client,
+        "document changed — virtual doc map updated",
     ).await;
 }
 
@@ -566,6 +581,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             &open_docs.keys().cloned().collect::<Vec<_>>(),
                             "file created — passage resolution may have changed",
                         ).await;
+
+                        // Notify the client that the virtual document has been updated
+                        // after a new file was created and indexed.
+                        helpers::send_virtual_doc_refresh(
+                            &state.client,
+                            "file created — virtual doc map updated",
+                        ).await;
                     }
             }
             FileChangeType::DELETED => {
@@ -656,6 +678,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 state.client
                     .publish_diagnostics(uri, Vec::new(), None)
                     .await;
+
+                // Notify the client that the virtual document has been updated
+                // after a file was deleted.
+                helpers::send_virtual_doc_refresh(
+                    &state.client,
+                    "file deleted — virtual doc map updated",
+                ).await;
             }
             FileChangeType::CHANGED => {
                 tracing::info!("File changed on disk: {}", uri);
@@ -720,6 +749,13 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 &uri,
                                 &open_docs.keys().cloned().collect::<Vec<_>>(),
                                 "file changed on disk — passage resolution may have changed",
+                            ).await;
+
+                            // Notify the client that the virtual document has been updated
+                            // after a file changed on disk.
+                            helpers::send_virtual_doc_refresh(
+                                &state.client,
+                                "file changed on disk — virtual doc map updated",
                             ).await;
                         }
             }

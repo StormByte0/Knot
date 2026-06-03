@@ -24,8 +24,8 @@ import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { isTweeLanguage, extractPassageName } from './utils';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams, KnotVirtualDocResponse } from './types';
-import { registerVirtualDocProvider, openVirtualDoc, refreshVirtualDoc, debouncedRefreshVirtualDoc } from './virtualDocProvider';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams, KnotVirtualDocResponse, KnotRefreshVirtualDocParams } from './types';
+import { registerVirtualDocProvider, openVirtualDoc, refreshVirtualDoc } from './virtualDocProvider';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -178,6 +178,11 @@ export async function activate(context: vscode.ExtensionContext) {
                     variableFlowProvider?.refresh();
                     profileViewProvider?.refresh();
 
+                    // Note: virtual doc refresh on initial project load is
+                    // now handled by the server-push knot/refreshVirtualDoc
+                    // notification, which the server sends after indexing
+                    // completes. No client-side refresh needed here.
+
                     // Fetch profile data for status bar enrichment
                     (async () => {
                         try {
@@ -324,6 +329,25 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     );
 
+    // Register custom notification handler for knot/refreshVirtualDoc
+    // The server pushes this notification after parse() completes (triggered
+    // by did_change, did_open, file watcher events, or initial indexing).
+    // This is the server-push mechanism: instead of the client guessing when
+    // to refresh via debounce timers, the server notifies exactly when the
+    // VirtualDocMap has been updated.
+    client.onNotification(
+        { method: 'knot/refreshVirtualDoc' },
+        (params: KnotRefreshVirtualDocParams) => {
+            const reason = params.reason || 'unknown';
+            console.log(`[Knot] Virtual doc refresh requested (reason: ${reason})`);
+            // client is guaranteed non-null here — this handler is only
+            // registered after client.start() succeeds
+            if (client) {
+                refreshVirtualDoc(client);
+            }
+        }
+    );
+
     // Register the Story Map panel manager (WebviewPanel only, no sidebar)
     storyMapPanel = new StoryMapPanelManager(context.extensionUri, context);
     context.subscriptions.push(storyMapPanel);
@@ -428,13 +452,10 @@ export async function activate(context: vscode.ExtensionContext) {
         refreshStoryMap();
         variableFlowProvider?.refresh();
         debouncedProfileRefresh();
-        // Refresh the virtual doc so that custom macro definitions
-        // are re-registered and invocations are translated correctly.
-        // Without this, the virtual doc shows stale content with
-        // /* unknown */ comments for custom macro invocations.
-        if (client) {
-            debouncedRefreshVirtualDoc(client);
-        }
+        // Note: virtual doc refresh is now handled by the server-push
+        // knot/refreshVirtualDoc notification. The server sends this
+        // notification after parse() completes, so we no longer need
+        // client-side debounced refresh here.
     }
     watcher.onDidChange(onTwFileChange);
     watcher.onDidCreate(onTwFileChange);
@@ -1125,14 +1146,10 @@ function registerDecorations(context: vscode.ExtensionContext) {
             }, 300);
         }
 
-        // Debounced virtual doc refresh on .tw file edits.
-        // This ensures custom macro definitions are re-registered
-        // and invocations are translated as function calls, not
-        // /* unknown */ comments. The 500ms debounce avoids
-        // excessive server requests during rapid typing.
-        if (isTweeLanguage(event.document.languageId) && client) {
-            debouncedRefreshVirtualDoc(client);
-        }
+        // Note: virtual doc refresh is now handled by the server-push
+        // knot/refreshVirtualDoc notification. The server sends this
+        // after parse() completes following did_change, so we no longer
+        // need client-side debounced refresh here.
     }, null, context.subscriptions);
 
     // Initial update
