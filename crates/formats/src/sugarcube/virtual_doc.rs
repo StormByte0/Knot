@@ -111,177 +111,149 @@ static RE_VD_DOLLAR_REF: LazyLock<Regex> = LazyLock::new(|| {
 // Regexes for user callable extraction
 // ---------------------------------------------------------------------------
 
-/// `Macro.add('name', { handler: function() { ... } })` — custom macro definition
-/// Only used to find the start position; body extraction uses brace-counting.
-static RE_MACRO_ADD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"Macro\.add\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,\s*\{"#)
+/// `Macro.add('name', ...)` — finds the start of a single-name Macro.add call.
+/// Group 1: macro name. The handler body must be extracted with brace-counting
+/// because regex can't count nested braces.
+static RE_MACRO_ADD_START: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"Macro\.add\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,"#)
     .unwrap()
 });
 
-/// `Macro.add(['name1', 'name2'], { ... })` — multiple macro names
-/// Only used to find the start position; body extraction uses brace-counting.
-static RE_MACRO_ADD_MULTI: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"Macro\.add\s*\(\s*\[([^\]]*)\]\s*,\s*\{"#)
+/// `Macro.add(['name1', 'name2'], ...)` — finds the start of a multi-name Macro.add call.
+/// Group 1: the array of names. The handler body must be extracted with
+/// brace-counting.
+static RE_MACRO_ADD_MULTI_START: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"Macro\.add\s*\(\s*\[([^\]]*)\]\s*,"#)
     .unwrap()
 });
+
+/// `handler : function(params) {` — matches the handler function header inside
+/// a Macro.add object literal. Group 1: the params. After this match, the
+/// handler body must be extracted with brace-counting from the position after
+/// the opening `{`.
+static RE_HANDLER_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"handler\s*:\s*function\s*\(([^)]*)\)\s*\{")
+    .unwrap()
+});
+
+/// Extract a brace-balanced body from `text` starting at `start_pos` (which
+/// should point just after the opening `{`).
+///
+/// Counts `{` and `}` while respecting string literals (single-quoted,
+/// double-quoted, and backtick template literals) and `//` line comments
+/// and `/* */` block comments so that braces inside strings/comments
+/// don't affect the count.
+///
+/// Returns the body content between the opening and closing braces
+/// (exclusive of the braces themselves), or `None` if the braces are
+/// unbalanced.
+fn extract_brace_body(text: &str, start_pos: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut depth = 1u32;
+    let mut i = start_pos;
+
+    while i < len && depth > 0 {
+        let ch = bytes[i];
+
+        // String literals: skip their contents
+        if ch == b'"' || ch == b'\'' || ch == b'`' {
+            let quote = ch;
+            i += 1;
+            let mut escaped = false;
+            while i < len {
+                let c = bytes[i];
+                if escaped {
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if c == b'\\' {
+                    escaped = true;
+                    i += 1;
+                    continue;
+                }
+                if c == quote {
+                    i += 1;
+                    break;
+                }
+                // Template literal ${...} nesting — just skip the $, brace
+                // counting will handle the braces normally
+                i += 1;
+            }
+            continue;
+        }
+
+        // Line comments: skip to end of line
+        if ch == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comments: skip to */
+        if ch == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // Braces
+        if ch == b'{' {
+            depth += 1;
+        } else if ch == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(text[start_pos..i].to_string());
+            }
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+/// Extract the handler function from a Macro.add() call starting at
+/// the given position in the text.
+///
+/// Looks for `handler: function(params) {` and then uses brace-counting
+/// to extract the complete handler body, including nested braces.
+///
+/// Returns `(handler_params, handler_body, match_end)` where:
+/// - `handler_params`: the parameter string from `function(params)`
+/// - `handler_body`: the complete body between `{` and the matching `}`
+/// - `match_end`: the byte offset just after the closing `}`
+fn extract_handler_from_macro_add(text: &str, search_from: usize) -> Option<(String, String, usize)> {
+    // Find the handler function header within the Macro.add object literal
+    let handler_caps = RE_HANDLER_HEADER.captures(&text[search_from..])?;
+    let full_match = handler_caps.get(0)?;
+    let params = handler_caps.get(1)?.as_str().to_string();
+
+    // The handler body starts just after the `{` at the end of the match
+    let body_start = search_from + full_match.end();
+
+    // Use brace-counting to extract the complete handler body
+    let body = extract_brace_body(text, body_start)?;
+
+    // The match end is just after the closing `}` of the handler
+    let body_end = body_start + body.len() + 1; // +1 for the closing `}`
+
+    Some((params, body, body_end))
+}
 
 /// `this.args[N]` usage in handler body — to determine arg count
 static RE_THIS_ARGS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"this\.args\s*\[\s*(\d+)\s*\]").unwrap()
 });
-
-/// Find the `handler: function(params) {` inside a Macro.add object literal
-/// starting at `start_pos`, then extract the handler body by counting braces.
-fn extract_handler_from_macro_add_body(text: &str, start_pos: usize) -> Option<(String, String, String)> {
-    let remaining = text.get(start_pos..)?;
-    
-    // Find "handler" keyword followed by ":" and "function"
-    let handler_pattern = Regex::new(r#"handler\s*:\s*function\s*\(([^)]*)\)\s*\{"#).ok()?;
-    let caps = handler_pattern.captures(remaining)?;
-    let params = caps.get(1)?.as_str().to_string();
-    let func_start = caps.get(0)?.end(); // position after the opening {
-    
-    // Count braces to find the matching closing }
-    let after_open = remaining.get(func_start..)?;
-    let body = extract_balanced_brace_body(after_open)?;
-    
-    Some((params, body, remaining[..func_start].to_string()))
-}
-
-/// Extract a brace-balanced body from text starting just after the opening `{`.
-/// Returns the content between the opening `{` and its matching `}`,
-/// respecting nested braces, string literals, and comments.
-fn extract_balanced_brace_body(text: &str) -> Option<String> {
-    let mut depth: usize = 1;
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    
-    while i < len && depth > 0 {
-        match bytes[i] {
-            b'{' => { depth += 1; i += 1; }
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(text[..i].to_string());
-                }
-                i += 1;
-            }
-            b'"' | b'\'' => {
-                // Skip string literal
-                let quote = bytes[i];
-                i += 1;
-                let mut escaped = false;
-                while i < len {
-                    if escaped {
-                        escaped = false;
-                        i += 1;
-                        continue;
-                    }
-                    if bytes[i] == b'\\' {
-                        escaped = true;
-                        i += 1;
-                        continue;
-                    }
-                    if bytes[i] == quote {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'`' => {
-                // Skip template literal
-                i += 1;
-                while i < len {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == b'`' {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                // Skip line comment
-                i += 2;
-                while i < len && bytes[i] != b'\n' { i += 1; }
-            }
-            b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
-                // Skip block comment
-                i += 2;
-                while i + 1 < len {
-                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => { i += 1; }
-        }
-    }
-    
-    // Unclosed brace — return everything
-    if depth > 0 {
-        Some(text.to_string())
-    } else {
-        None
-    }
-}
-
-/// Translate a Macro.add handler body for use in the virtual doc.
-///
-/// Replaces SugarCube-specific patterns with standard JS:
-/// - `this.args[N]` → `args[N]`
-/// - `this.args` (bare) → `args`
-/// - `this.error(...)` → `throw new Error(...)`
-/// - `this.output(...)` → (removed, SugarCube runtime-specific)
-/// - `this.name` → `"macro"` (static placeholder)
-/// - `this.payload[N]` → `payload[N]`
-/// - `this.payload` (bare) → `payload`
-/// - `$var` references → `State.variables.var`
-fn translate_handler_body(body: &str) -> String {
-    let mut result = body.to_string();
-    
-    // Replace this.args[N] → args[N] (before bare this.args replacement)
-    let re_args_indexed = Regex::new(r"this\.args\s*\[").unwrap();
-    result = re_args_indexed.replace_all(&result, "args[").to_string();
-    
-    // Replace this.args (bare) → args
-    let re_args_bare = Regex::new(r"this\.args\b").unwrap();
-    result = re_args_bare.replace_all(&result, "args").to_string();
-    
-    // Replace this.error(...) → throw new Error(...)
-    // In SugarCube, this.error() both logs and aborts the macro.
-    // Using throw preserves the abort semantics in the virtual doc.
-    let re_error = Regex::new(r"this\.error\s*\(").unwrap();
-    result = re_error.replace_all(&result, "throw new Error(").to_string();
-    
-    // Replace this.output(...) → /* output: ... */
-    let re_output = Regex::new(r"this\.output\s*\(").unwrap();
-    result = re_output.replace_all(&result, "/* output: */ (").to_string();
-    
-    // Replace this.name → macro name string (we can't know it statically, use placeholder)
-    let re_name = Regex::new(r"this\.name\b").unwrap();
-    result = re_name.replace_all(&result, "\"macro\"").to_string();
-    
-    // Replace this.payload[i] → payload[i] (for <<widget>> context objects)
-    let re_payload = Regex::new(r"this\.payload\s*\[").unwrap();
-    result = re_payload.replace_all(&result, "payload[").to_string();
-    
-    // Replace this.payload (bare) → payload
-    let re_payload_bare = Regex::new(r"this\.payload\b").unwrap();
-    result = re_payload_bare.replace_all(&result, "payload").to_string();
-    
-    // Translate $var references
-    result = translate_dollar_refs_in_js(&result);
-    
-    result
-}
 
 /// `<<widget name>>` — widget definition opening tag
 static RE_WIDGET_DEF: LazyLock<Regex> = LazyLock::new(|| {
@@ -469,72 +441,65 @@ pub fn extract_user_callables(passages: &[PassageInfo]) -> Vec<UserCallable> {
         if passage.tags.contains(&"script".to_string()) {
             let stripped = strip_comments(&passage.body_text);
 
-            // Single-name Macro.add
-            for caps in RE_MACRO_ADD.captures_iter(&stripped) {
+            // Single-name Macro.add('name', ...)
+            // We find the start pattern, then use brace-counting to extract
+            // the complete handler body (including nested braces).
+            for caps in RE_MACRO_ADD_START.captures_iter(&stripped) {
                 let name = caps.get(1).unwrap().as_str().to_string();
                 if seen_names.contains(&name) {
                     continue;
                 }
-                let match_end = caps.get(0).unwrap().end();
+                let macro_add_start = caps.get(0).unwrap().start();
+                let macro_add_end = caps.get(0).unwrap().end();
+                let line_no = line_from_offset(&stripped, macro_add_start);
 
-                // Use brace-counting to extract the full handler body
-                let (handler_params, handler_body) = match extract_handler_from_macro_add_body(&stripped, match_end) {
-                    Some((params, body, _)) => (params, body),
-                    None => continue, // Malformed Macro.add — skip
-                };
-
-                let arg_count = compute_macro_arg_count(&handler_body, &handler_params);
-                let match_start = caps.get(0).unwrap().start();
-                let line_no = line_from_offset(&stripped, match_start);
-
-                // Translate handler body for virtual doc consumption
-                // Wrap in a function declaration with `args` parameter so
-                // that `args[N]` references (from this.args[N]) are valid.
-                let translated_inner = translate_handler_body(&handler_body);
-                let sanitized_name = sanitize_js_ident(&name);
-                let translated_body = format!(
-                    "function {}(args) {{\n{}\n}}",
-                    sanitized_name,
-                    // Indent the body lines
-                    translated_inner.lines().map(|l| {
-                        if l.trim().is_empty() { String::new() } else { format!("  {}", l) }
-                    }).collect::<Vec<_>>().join("\n")
-                );
-
-                seen_names.insert(name.clone());
-                callables.push(UserCallable {
-                    name,
-                    kind: UserCallableKind::CustomMacro,
-                    arg_count,
-                    defined_in: passage.name.clone(),
-                    file_uri: passage.file_uri.clone(),
-                    defined_at_line: line_no,
-                    body: Some(translated_body),
-                });
+                // Extract handler using brace-counting from the Macro.add start
+                match extract_handler_from_macro_add(&stripped, macro_add_end) {
+                    Some((handler_params, handler_body, _match_end)) => {
+                        let arg_count = compute_macro_arg_count(&handler_body, &handler_params);
+                        seen_names.insert(name.clone());
+                        callables.push(UserCallable {
+                            name,
+                            kind: UserCallableKind::CustomMacro,
+                            arg_count,
+                            defined_in: passage.name.clone(),
+                            file_uri: passage.file_uri.clone(),
+                            defined_at_line: line_no,
+                            body: Some(handler_body),
+                        });
+                    }
+                    None => {
+                        // Couldn't extract handler — still register the macro
+                        // without a body so invocations can be translated
+                        seen_names.insert(name.clone());
+                        callables.push(UserCallable {
+                            name,
+                            kind: UserCallableKind::CustomMacro,
+                            arg_count: None,
+                            defined_in: passage.name.clone(),
+                            file_uri: passage.file_uri.clone(),
+                            defined_at_line: line_no,
+                            body: None,
+                        });
+                    }
+                }
             }
 
-            // Multi-name Macro.add(['name1', 'name2'], { ... })
-            for caps in RE_MACRO_ADD_MULTI.captures_iter(&stripped) {
+            // Multi-name Macro.add(['name1', 'name2'], ...)
+            for caps in RE_MACRO_ADD_MULTI_START.captures_iter(&stripped) {
                 let names_str = caps.get(1).unwrap().as_str();
-                let match_end = caps.get(0).unwrap().end();
+                let macro_add_start = caps.get(0).unwrap().start();
+                let macro_add_end = caps.get(0).unwrap().end();
+                let line_no = line_from_offset(&stripped, macro_add_start);
 
-                // Use brace counting for handler body
-                let (handler_params, handler_body) = match extract_handler_from_macro_add_body(&stripped, match_end) {
-                    Some((params, body, _)) => (params, body),
-                    None => continue,
+                // Extract handler using brace-counting
+                let extraction = extract_handler_from_macro_add(&stripped, macro_add_end);
+                let (arg_count, handler_body) = match extraction {
+                    Some((handler_params, handler_body, _match_end)) => {
+                        (compute_macro_arg_count(&handler_body, &handler_params), Some(handler_body))
+                    }
+                    None => (None, None),
                 };
-
-                let arg_count = compute_macro_arg_count(&handler_body, &handler_params);
-                let match_start = caps.get(0).unwrap().start();
-                let line_no = line_from_offset(&stripped, match_start);
-                // Translate handler body (same wrapping as single-name case)
-                let translated_inner = translate_handler_body(&handler_body);
-                let translated_body = format!(
-                    "function macro_multi(args) {{\n{}\n}}",
-                    translated_inner.lines().map(|l| {
-                        if l.trim().is_empty() { String::new() } else { format!("  {}", l) }
-                    }).collect::<Vec<_>>().join("\n")
-                );
 
                 // Parse the array of names: ['name1', 'name2']
                 for name_cap in Regex::new(r#"['"]([A-Za-z_][A-Za-z0-9_]*)['"]"#)
@@ -553,7 +518,7 @@ pub fn extract_user_callables(passages: &[PassageInfo]) -> Vec<UserCallable> {
                         defined_in: passage.name.clone(),
                         file_uri: passage.file_uri.clone(),
                         defined_at_line: line_no,
-                        body: Some(translated_body.clone()),
+                        body: handler_body.clone(),
                     });
                 }
             }
@@ -917,22 +882,12 @@ pub(crate) fn translate_block_open(
     match name {
         // Control flow
         "if" => {
-            if args.trim().is_empty() {
-                // <<if>> without a condition is valid SugarCube (truthy).
-                // Produce `if (true) {` instead of invalid `if () {`.
-                format!("{}if (true) {{\n", indent_str)
-            } else {
-                let translated_cond = translate_expression(args);
-                format!("{}if ({}) {{\n", indent_str, translated_cond)
-            }
+            let translated_cond = translate_expression(args);
+            format!("{}if ({}) {{\n", indent_str, translated_cond)
         }
         "when" => {
-            if args.trim().is_empty() {
-                format!("{}/* when */ if (true) {{\n", indent_str)
-            } else {
-                let translated_cond = translate_expression(args);
-                format!("{}/* when */ if ({}) {{\n", indent_str, translated_cond)
-            }
+            let translated_cond = translate_expression(args);
+            format!("{}/* when */ if ({}) {{\n", indent_str, translated_cond)
         }
         "for" => {
             let header = translate_for_macro(args);
@@ -1124,13 +1079,9 @@ pub(crate) fn translate_inline_macro(
 
         // Control flow branches (inside <<if>> blocks)
         "elseif" => {
+            let translated_cond = translate_expression(args);
             let parent_indent = "  ".repeat(indent.saturating_sub(1));
-            if args.trim().is_empty() {
-                format!("{}}} else if (true) {{\n", parent_indent)
-            } else {
-                let translated_cond = translate_expression(args);
-                format!("{}}} else if ({}) {{\n", parent_indent, translated_cond)
-            }
+            format!("{}}} else if ({}) {{\n", parent_indent, translated_cond)
         }
         "else" => {
             let parent_indent = "  ".repeat(indent.saturating_sub(1));
@@ -1422,37 +1373,6 @@ pub(crate) fn translate_text_segment(text: &str, indent: usize) -> String {
     }
 
     result
-}
-
-/// Sanitize a passage name into a valid JavaScript identifier.
-///
-/// Passage titles can contain characters that are invalid in JS identifiers:
-/// spaces, colons, hyphens, dots, etc. This function replaces all non-
-/// alphanumeric characters with underscores and ensures the result starts
-/// with a letter or underscore (prepending `_` if it starts with a digit).
-///
-/// Examples:
-/// - `"Start"` → `"Start"`
-/// - `"Scene::hallway"` → `"Scene__hallway"`
-/// - `"My Passage"` → `"My_Passage"`
-/// - `"42begin"` → `"_42begin"`
-pub(crate) fn sanitize_js_ident(name: &str) -> String {
-    let sanitized: String = name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    // Ensure it doesn't start with a digit
-    if sanitized.starts_with(|c: char| c.is_ascii_digit()) {
-        format!("_{}", sanitized)
-    } else {
-        sanitized
-    }
 }
 
 /// Split SugarCube macro arguments into individual tokens, respecting quoted
@@ -2285,82 +2205,71 @@ Macro.add('useItem', {
         assert!(aliases.iter().any(|a| a.alias_name == "profiles" && matches!(a.resolution, AliasResolution::StateVariableProperty { .. })));
     }
 
-    // ── sanitize_js_ident tests ────────────────────────────────────────
+    // ── split_macro_args & translate_callable_args ────────────────────
 
     #[test]
-    fn test_sanitize_js_ident_simple() {
-        assert_eq!(sanitize_js_ident("Start"), "Start");
+    fn test_split_macro_args_simple() {
+        let tokens = split_macro_args("\"foo\" \"bar\"");
+        assert_eq!(tokens, vec!["\"foo\"", "\"bar\""]);
     }
 
     #[test]
-    fn test_sanitize_js_ident_double_colon() {
-        assert_eq!(sanitize_js_ident("Scene::hallway"), "Scene__hallway");
+    fn test_split_macro_args_numbers() {
+        let tokens = split_macro_args("5 10");
+        assert_eq!(tokens, vec!["5", "10"]);
     }
 
     #[test]
-    fn test_sanitize_js_ident_spaces() {
-        assert_eq!(sanitize_js_ident("My Passage"), "My_Passage");
+    fn test_split_macro_args_mixed() {
+        let tokens = split_macro_args("\"foo\" 5 $var");
+        assert_eq!(tokens, vec!["\"foo\"", "5", "$var"]);
     }
 
     #[test]
-    fn test_sanitize_js_ident_hyphens() {
-        assert_eq!(sanitize_js_ident("scene-id"), "scene_id");
+    fn test_split_macro_args_quoted_with_spaces() {
+        let tokens = split_macro_args("\"hello world\" 42");
+        assert_eq!(tokens, vec!["\"hello world\"", "42"]);
     }
 
     #[test]
-    fn test_sanitize_js_ident_starts_with_digit() {
-        assert_eq!(sanitize_js_ident("42begin"), "_42begin");
+    fn test_split_macro_args_bracketed() {
+        let tokens = split_macro_args("($x + 5) 10");
+        assert_eq!(tokens, vec!["($x + 5)", "10"]);
     }
 
     #[test]
-    fn test_sanitize_js_ident_mixed() {
-        assert_eq!(sanitize_js_ident("Scene::hallway-id"), "Scene__hallway_id");
-    }
-
-    // ── Empty if/when condition tests ──────────────────────────────────
-
-    #[test]
-    fn test_translate_empty_if_condition() {
-        let body = "<<if>>something<</if>>";
-        let js = translate_macros_to_js(body, &[]);
-        // Empty <<if>> should produce if (true) not if ()
-        assert!(js.contains("if (true) {"), "Expected 'if (true) {{' for empty <<if>>, got: {}", js);
+    fn test_split_macro_args_single_quoted() {
+        let tokens = split_macro_args("'hello' 'world'");
+        assert_eq!(tokens, vec!["'hello'", "'world'"]);
     }
 
     #[test]
-    fn test_translate_empty_if_with_else() {
-        let body = "<<if>>yes<<else>>no<</if>>";
-        let js = translate_macros_to_js(body, &[]);
-        assert!(js.contains("if (true) {"), "Expected 'if (true) {{' for empty <<if>>, got: {}", js);
-        assert!(js.contains("} else {"), "Expected else branch, got: {}", js);
-    }
-
-    // ── Handler translation tests ──────────────────────────────────────
-
-    #[test]
-    fn test_translate_handler_body_this_error() {
-        let body = "if (isNaN(mins)) { return this.error('bad arg'); }";
-        let translated = translate_handler_body(body);
-        // this.error() should become throw new Error()
-        assert!(translated.contains("throw new Error("), "Expected 'throw new Error(' for this.error(), got: {}", translated);
-        assert!(!translated.contains("this.error"), "this.error should be replaced, got: {}", translated);
+    fn test_split_macro_args_empty() {
+        let tokens = split_macro_args("");
+        assert!(tokens.is_empty());
     }
 
     #[test]
-    fn test_translate_handler_body_this_args() {
-        let body = "var mins = parseInt(this.args[0], 10);";
-        let translated = translate_handler_body(body);
-        // this.args[0] should become args[0]
-        assert!(translated.contains("args[0]"), "Expected args[0], got: {}", translated);
-        assert!(!translated.contains("this.args"), "this.args should be replaced, got: {}", translated);
+    fn test_translate_callable_args_strings() {
+        let result = translate_callable_args("\"foo\" \"bar\"");
+        assert_eq!(result, "\"foo\", \"bar\"");
     }
 
     #[test]
-    fn test_translate_handler_body_this_payload() {
-        let body = "var x = this.payload[0].contents;";
-        let translated = translate_handler_body(body);
-        // this.payload[0] should become payload[0]
-        assert!(translated.contains("payload[0]"), "Expected payload[0], got: {}", translated);
-        assert!(!translated.contains("this.payload"), "this.payload should be replaced, got: {}", translated);
+    fn test_translate_callable_args_vars() {
+        let result = translate_callable_args("$itemName");
+        assert_eq!(result, "State.variables.itemName");
+    }
+
+    #[test]
+    fn test_translate_callable_args_mixed() {
+        let result = translate_callable_args("\"sword\" $gold 10");
+        assert_eq!(result, "\"sword\", State.variables.gold, 10");
+    }
+
+    #[test]
+    fn test_translate_callable_args_empty() {
+        let result = translate_callable_args("");
+        assert!(result.is_empty());
     }
 }

@@ -134,7 +134,7 @@ pub(crate) fn validate_macro_brackets(body: &str, body_offset: usize, diagnostic
 ///
 /// String-aware: skips `]]` inside quoted strings to avoid false positives
 /// from JS bracket notation like `cursor[parts[i]]`.
-fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
+pub(crate) fn validate_link_brackets(body: &str, body_offset: usize, diagnostics: &mut Vec<FormatDiagnostic>) {
     let mut link_depth = 0i32;
     let mut link_open: Option<usize> = None;
     let bytes = body.as_bytes();

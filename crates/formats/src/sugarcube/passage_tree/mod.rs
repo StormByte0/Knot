@@ -43,7 +43,7 @@ pub(crate) use walk_vars::{walk_vars, walk_passage_var_refs, var_ref_to_var_op};
 pub(crate) use walk_links::walk_links;
 pub(crate) use walk_translate::{
     walk_translate, VarEncounter, VarTypeHint, VarAccessKind,
-    ExactLineMapping,
+    ExactLineMapping, sanitize_js_identifier,
 };
 pub(crate) use walk_validate::walk_validate;
 pub(crate) use walk_tokens::walk_tokens;

@@ -432,7 +432,7 @@ impl FormatPlugin for SugarCubePlugin {
 
                     let translate_result = passage_tree::walk_translate(
                         &tree, body, body_offset, &merged_callables,
-                        &header.name, is_widget,
+                        &header.name, is_widget, &comment_spans,
                     );
 
                     // Update VirtualDocMap
@@ -654,7 +654,7 @@ impl FormatPlugin for SugarCubePlugin {
                 .merge_with_callables(&[]);
             let translate_result = passage_tree::walk_translate(
                 &tree, passage_text, 0, &registry_callables,
-                passage_name, is_widget,
+                passage_name, is_widget, &comment_spans,
             );
 
             // Update VirtualDocMap — use a placeholder URI since
@@ -1220,8 +1220,13 @@ impl FormatPlugin for SugarCubePlugin {
         });
 
         let tree = passage_tree::parse_passage_body(passage_body, 0);
+
+        // Compute comment spans for this passage body (body-relative, body_offset=0)
+        let comment_spans = comments::find_all_comment_spans(passage_body, false);
+
         let result = passage_tree::walk_translate(
             &tree, passage_body, 0, callables, passage_name, is_widget,
+            &comment_spans,
         );
 
         // Convert ExactLineMapping to LineMapping

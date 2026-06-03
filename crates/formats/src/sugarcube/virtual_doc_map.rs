@@ -337,82 +337,65 @@ impl VirtualDocMap {
     /// the correct .tw file position.
     ///
     /// The assembly order matches `assemble_virtual_doc()` exactly:
-    /// preamble → widget functions → passage functions.
+    /// preamble → script functions → widget functions → passage functions.
+    ///
+    /// ## Implementation
+    ///
+    /// This method walks the same passage ordering as `assemble_virtual_doc()`
+    /// and `assemble_line_map()` but directly reads each passage's line_map
+    /// entries rather than re-indexing through `assemble_line_map()`. This
+    /// eliminates the fragile cursor-tracking approach that could desync
+    /// from the doc content.
     pub fn assemble_annotated_line_map(&self) -> Vec<crate::types::VirtualDocLineMapEntry> {
-        let raw_map = self.assemble_line_map();
-        let mut result = Vec::with_capacity(raw_map.len());
-        let mut cursor: usize = 0;
+        let mut result = Vec::new();
 
         // Phase 1: Preamble lines (JSDoc + const declaration + blank line)
         // These 3 lines have no passage association.
-        for _ in 0..3.min(raw_map.len()) {
+        for _ in 0..3 {
             result.push(crate::types::VirtualDocLineMapEntry {
                 passage_name: String::new(),
                 file_uri: String::new(),
                 original_line: 0,
             });
-            cursor += 1;
         }
+
+        // Helper: emit annotated entries for one passage's line_map
+        let emit_passage_entries = |name: &str,
+                                    entry: &PassageDocEntry,
+                                    result: &mut Vec<crate::types::VirtualDocLineMapEntry>| {
+            let file_uri = entry.source_file.to_string();
+            for mapping in &entry.line_map {
+                result.push(crate::types::VirtualDocLineMapEntry {
+                    passage_name: name.to_string(),
+                    file_uri: file_uri.clone(),
+                    original_line: mapping.original_line,
+                });
+            }
+            // Two blank lines after each function — these are separators
+            // with no source correspondence. Empty passage_name/file_uri
+            // so they're skipped by diagnostic routing (same as preamble).
+            for _ in 0..2 {
+                result.push(crate::types::VirtualDocLineMapEntry {
+                    passage_name: String::new(),
+                    file_uri: String::new(),
+                    original_line: 0,
+                });
+            }
+        };
 
         // Phase 2: Script passages (sorted, same order as assemble_virtual_doc)
         let mut script_names: Vec<&String> = self.script_passages.iter().collect();
         script_names.sort();
         for name in &script_names {
             if let Some(entry) = self.passages.get(*name) {
-                let line_count = entry.line_map.len();
-                let file_uri = entry.source_file.to_string();
-                for i in 0..line_count {
-                    if cursor + i < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: (*name).clone(),
-                            file_uri: file_uri.clone(),
-                            original_line: raw_map[cursor + i].original_line,
-                        });
-                    }
-                }
-                cursor += line_count;
-                // Two blank lines after each function — these are separators
-                // with no source correspondence. Empty passage_name/file_uri
-                // so they're skipped by diagnostic routing (same as preamble).
-                for _ in 0..2 {
-                    if cursor < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: String::new(),
-                            file_uri: String::new(),
-                            original_line: 0,
-                        });
-                        cursor += 1;
-                    }
-                }
+                emit_passage_entries(name, entry, &mut result);
             }
         }
 
         // Phase 3: Widget functions (same order as assemble_virtual_doc)
         for name in &self.widget_passages {
             if let Some(entry) = self.passages.get(name) {
-                let line_count = entry.line_map.len();
-                let file_uri = entry.source_file.to_string();
-                for i in 0..line_count {
-                    if cursor + i < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: name.clone(),
-                            file_uri: file_uri.clone(),
-                            original_line: raw_map[cursor + i].original_line,
-                        });
-                    }
-                }
-                cursor += line_count;
-                // Two blank lines after each function — no source correspondence
-                for _ in 0..2 {
-                    if cursor < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: String::new(),
-                            file_uri: String::new(),
-                            original_line: 0,
-                        });
-                        cursor += 1;
-                    }
-                }
+                emit_passage_entries(name, entry, &mut result);
             }
         }
 
@@ -426,33 +409,33 @@ impl VirtualDocMap {
 
         for name in passage_names {
             if let Some(entry) = self.passages.get(name) {
-                let line_count = entry.line_map.len();
-                let file_uri = entry.source_file.to_string();
-                for i in 0..line_count {
-                    if cursor + i < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: name.clone(),
-                            file_uri: file_uri.clone(),
-                            original_line: raw_map[cursor + i].original_line,
-                        });
-                    }
-                }
-                cursor += line_count;
-                // Two blank lines after each function — no source correspondence
-                for _ in 0..2 {
-                    if cursor < raw_map.len() {
-                        result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: String::new(),
-                            file_uri: String::new(),
-                            original_line: 0,
-                        });
-                        cursor += 1;
-                    }
-                }
+                emit_passage_entries(name, entry, &mut result);
             }
         }
 
         result
+    }
+
+    /// Verify that the assembled virtual doc's line count matches the
+    /// assembled line map's entry count.
+    ///
+    /// This is a critical invariant: the downstream consumer indexes the
+    /// line map by virtual doc line number, so every line in the assembled
+    /// doc must have exactly one corresponding entry in the line map.
+    /// Returns `Ok(())` if the invariant holds, or `Err(message)` with
+    /// diagnostic details.
+    pub fn verify_line_map_invariant(&self) -> Result<(), String> {
+        let doc = self.assemble_virtual_doc();
+        let map = self.assemble_line_map();
+        let doc_lines = doc.lines().count();
+        if doc_lines != map.len() {
+            return Err(format!(
+                "Virtual doc line count ({}) != line_map length ({}). \
+                 Every virtual doc line must have a corresponding line_map entry.",
+                doc_lines, map.len(),
+            ));
+        }
+        Ok(())
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -602,5 +585,142 @@ mod tests {
         // Same passage name, now not a widget
         map.update_passage("myWidget".to_string(), make_entry("myWidget", "story.tw", false));
         assert!(!map.widget_passages.contains("myWidget"));
+    }
+
+    // ── Pipeline invariant tests ──────────────────────────────────────
+
+    /// Test the critical invariant: js_function line count == line_map length.
+    ///
+    /// This is the #1 source of pipeline bugs. If these counts don't match,
+    /// the downstream consumer (assemble_line_map / assemble_annotated_line_map)
+    /// produces incorrect indices, and VSCode diagnostics get mapped to the
+    /// wrong lines in .tw files.
+    #[test]
+    fn test_per_passage_line_count_invariant() {
+        // Every entry produced by make_entry has 3 lines in js_function
+        // and 3 entries in line_map — this should hold for all entries.
+        let entry = make_entry("Test", "test.tw", false);
+        let js_lines = entry.js_function.lines().count();
+        assert_eq!(
+            js_lines, entry.line_map.len(),
+            "js_function has {} lines but line_map has {} entries",
+            js_lines, entry.line_map.len(),
+        );
+    }
+
+    /// Test the assembled virtual doc line count == assembled line_map length.
+    ///
+    /// When multiple passages are assembled into the monolithic virtual doc,
+    /// the preamble + passage functions + separator lines must produce exactly
+    /// the same number of entries in the assembled line map.
+    #[test]
+    fn test_assembled_line_map_invariant() {
+        let mut map = VirtualDocMap::new();
+        map.update_passage("Start".to_string(), make_entry("Start", "story.tw", false));
+        map.update_passage("myWidget".to_string(), make_entry("myWidget", "widgets.tw", true));
+        map.update_passage("Shop".to_string(), make_entry("Shop", "story.tw", false));
+
+        // Verify the invariant
+        map.verify_line_map_invariant()
+            .expect("Virtual doc line count must match line_map length");
+    }
+
+    /// Test the assembled annotated line map also matches the doc line count.
+    #[test]
+    fn test_annotated_line_map_matches_doc() {
+        let mut map = VirtualDocMap::new();
+        map.update_passage("Start".to_string(), make_entry("Start", "story.tw", false));
+        map.update_passage("myWidget".to_string(), make_entry("myWidget", "widgets.tw", true));
+        map.update_passage("Shop".to_string(), make_entry("Shop", "story.tw", false));
+
+        let doc = map.assemble_virtual_doc();
+        let annotated = map.assemble_annotated_line_map();
+        let doc_lines = doc.lines().count();
+
+        assert_eq!(
+            doc_lines, annotated.len(),
+            "Assembled virtual doc has {} lines but annotated line_map has {} entries",
+            doc_lines, annotated.len(),
+        );
+    }
+
+    /// Test that per-passage entries in the annotated line map have correct
+    /// passage_name and file_uri.
+    #[test]
+    fn test_annotated_line_map_passage_annotations() {
+        let mut map = VirtualDocMap::new();
+        map.update_passage("Start".to_string(), make_entry("Start", "story.tw", false));
+        map.update_passage("myWidget".to_string(), make_entry("myWidget", "widgets.tw", true));
+
+        let annotated = map.assemble_annotated_line_map();
+
+        // Find entries with passage_name == "Start" — they should reference story.tw
+        let start_entries: Vec<_> = annotated.iter()
+            .filter(|e| e.passage_name == "Start")
+            .collect();
+        assert!(!start_entries.is_empty(), "Should have entries for Start passage");
+        for entry in &start_entries {
+            assert!(entry.file_uri.contains("story.tw"),
+                "Start passage should reference story.tw, got: {}", entry.file_uri);
+        }
+
+        // Find entries with passage_name == "myWidget" — they should reference widgets.tw
+        let widget_entries: Vec<_> = annotated.iter()
+            .filter(|e| e.passage_name == "myWidget")
+            .collect();
+        assert!(!widget_entries.is_empty(), "Should have entries for myWidget passage");
+        for entry in &widget_entries {
+            assert!(entry.file_uri.contains("widgets.tw"),
+                "myWidget passage should reference widgets.tw, got: {}", entry.file_uri);
+        }
+
+        // Preamble and separator entries should have empty passage_name
+        let empty_name_entries: Vec<_> = annotated.iter()
+            .filter(|e| e.passage_name.is_empty())
+            .collect();
+        assert!(empty_name_entries.len() >= 3 + 4,
+            "Should have at least 3 preamble + 4 separator entries (2 per passage), got {}",
+            empty_name_entries.len());
+    }
+
+    /// Test with script passage — ensure script entries appear before widgets
+    /// and passages in the annotated line map.
+    #[test]
+    fn test_annotated_line_map_with_script_passage() {
+        let mut map = VirtualDocMap::new();
+
+        // Create a script passage entry
+        let script_entry = PassageDocEntry {
+            source_file: make_url("scripts.tw"),
+            is_widget: false,
+            is_script: true,
+            js_function: "function script_MyScript() {\n  var x = 1;\n}\n".to_string(),
+            line_map: vec![
+                ExactLineMapping { original_line: 0, original_start_byte: 0 },
+                ExactLineMapping { original_line: 0, original_start_byte: 0 },
+                ExactLineMapping { original_line: 0, original_start_byte: 0 },
+            ],
+        };
+        map.update_passage("MyScript".to_string(), script_entry);
+        map.update_passage("Start".to_string(), make_entry("Start", "story.tw", false));
+
+        // Verify invariant
+        map.verify_line_map_invariant()
+            .expect("Virtual doc line count must match line_map length with script passage");
+
+        // Verify annotated line map matches
+        let annotated = map.assemble_annotated_line_map();
+        let doc = map.assemble_virtual_doc();
+        assert_eq!(doc.lines().count(), annotated.len(),
+            "Annotated line map must match virtual doc line count");
+
+        // Script passage should appear before regular passages
+        let script_idx = annotated.iter().position(|e| e.passage_name == "MyScript")
+            .expect("Script passage should be in annotated map");
+        let start_idx = annotated.iter().position(|e| e.passage_name == "Start")
+            .expect("Start passage should be in annotated map");
+        assert!(script_idx < start_idx,
+            "Script passage (idx {}) should appear before regular passage (idx {})",
+            script_idx, start_idx);
     }
 }

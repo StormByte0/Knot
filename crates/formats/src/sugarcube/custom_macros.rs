@@ -60,6 +60,15 @@ static RE_THIS_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"this\.name\b").unwrap()
 });
 
+/// `return this.error("msg")` in handler bodies — replace with `throw new Error("msg")`.
+/// SugarCube macro handlers use `return this.error("message")` to report errors.
+/// In the standalone function, we translate this to a standard JS throw.
+/// The regex also consumes an optional preceding `return` keyword so that
+/// `return this.error(...)` becomes `throw new Error(...)` (not `return throw new Error(...)`).
+static RE_THIS_ERROR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:return\s+)?this\.error\s*\(").unwrap()
+});
+
 // ---------------------------------------------------------------------------
 // CustomMacroRegistry
 // ---------------------------------------------------------------------------
@@ -243,9 +252,9 @@ pub(crate) fn build_script_passage_js(
 ) -> (String, Vec<super::passage_tree::ExactLineMapping>) {
     use super::passage_tree::ExactLineMapping;
     use super::virtual_doc::translate_dollar_refs_in_js;
+    use super::passage_tree::sanitize_js_identifier;
 
-    let safe_name = passage_name.replace(' ', "_");
-    let func_name = format!("script_{}", safe_name);
+    let func_name = format!("script_{}", sanitize_js_identifier(passage_name));
 
     let translated_js = translate_dollar_refs_in_js(body);
 
@@ -258,18 +267,31 @@ pub(crate) fn build_script_passage_js(
         original_start_byte: body_offset,
     });
 
-    // Body lines — track which source line each JS line came from
-    // by counting newlines in the original body text
+    // Body lines — track which source line each JS line came from.
+    //
+    // CRITICAL: Every line emitted to js_output MUST have a corresponding
+    // entry in line_map. The consumer (assemble_line_map /
+    // assemble_annotated_line_map) indexes line_map by virtual doc line
+    // number, so a 1:1 correspondence between output lines and map entries
+    // is required.
+    //
+    // We skip blank source lines (they produce no JS output) but we must
+    // still increment source_line to maintain the correct mapping between
+    // emitted JS lines and their originating source lines.
     let mut source_line: u32 = 0;
     for line in translated_js.lines() {
         let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            js_output.push_str(&format!("  {}\n", trimmed));
-            line_map.push(ExactLineMapping {
-                original_line: source_line,
-                original_start_byte: body_offset,
-            });
+        if trimmed.is_empty() {
+            // Blank line in source — skip (no JS output) but still
+            // increment source_line so subsequent lines map correctly.
+            source_line += 1;
+            continue;
         }
+        js_output.push_str(&format!("  {}\n", trimmed));
+        line_map.push(ExactLineMapping {
+            original_line: source_line,
+            original_start_byte: body_offset,
+        });
         source_line += 1;
     }
 
@@ -297,6 +319,19 @@ pub(crate) fn build_script_passage_js(
             callable, &mut js_output, &mut line_map, body_offset,
         );
     }
+
+    // INVARIANT: js_output line count MUST equal line_map length.
+    // Every line in js_output (including blank separator lines, function
+    // headers, body lines, and closing braces) must have exactly one
+    // corresponding entry in line_map. The downstream consumer indexes
+    // line_map by virtual doc line number, so any mismatch causes
+    // incorrect error mapping.
+    let line_count = js_output.lines().count();
+    debug_assert_eq!(
+        line_count, line_map.len(),
+        "build_script_passage_js: js_output has {} lines but line_map has {} entries — they must match 1:1",
+        line_count, line_map.len(),
+    );
 
     (js_output, line_map)
 }
@@ -329,8 +364,16 @@ fn emit_custom_macro_standalone_function(
     use super::passage_tree::ExactLineMapping;
     use super::virtual_doc::translate_dollar_refs_in_js;
 
-    // Blank line separator before the function
+    // Blank line separator before the function.
+    // CRITICAL: This line MUST have a line_map entry — every line in
+    // js_output must have a 1:1 correspondence with line_map entries.
+    // The separator maps to the callable's definition line as the best
+    // available source location.
     js_output.push('\n');
+    line_map.push(ExactLineMapping {
+        original_line: callable.defined_at_line,
+        original_start_byte: body_offset,
+    });
 
     // Function signature: function macroName(...args) {
     js_output.push_str(&format!("function {}(...args) {{\n", callable.name));
@@ -365,16 +408,24 @@ fn emit_custom_macro_standalone_function(
             .replace_all(&translated, format!("'{}'", callable.name).as_str())
             .to_string();
 
-        // Emit each non-empty line with indentation
+        // Step 3: Replace this.error("msg") → throw new Error("msg")
+        let translated = RE_THIS_ERROR
+            .replace_all(&translated, "throw new Error(")
+            .to_string();
+
+        // Emit each line — skip blank source lines (no JS output, no
+        // line_map entry) but include every non-empty line. This maintains
+        // the 1:1 correspondence between output lines and line_map entries.
         for line in translated.lines() {
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                js_output.push_str(&format!("  {}\n", trimmed));
-                line_map.push(ExactLineMapping {
-                    original_line: callable.defined_at_line,
-                    original_start_byte: body_offset,
-                });
+            if trimmed.is_empty() {
+                continue;
             }
+            js_output.push_str(&format!("  {}\n", trimmed));
+            line_map.push(ExactLineMapping {
+                original_line: callable.defined_at_line,
+                original_start_byte: body_offset,
+            });
         }
     }
 
@@ -546,7 +597,12 @@ State.variables.time = 0;"#;
             },
         ];
 
-        let (js, _line_map) = build_script_passage_js("Macros", body, 0, &custom_macros);
+        let (js, line_map) = build_script_passage_js("Macros", body, 0, &custom_macros);
+
+        // INVARIANT: js line count must equal line_map length
+        let js_lines = js.lines().count();
+        assert_eq!(js_lines, line_map.len(),
+            "build_script_passage_js: js has {} lines but line_map has {} entries", js_lines, line_map.len());
 
         // Should contain the raw JS wrapper
         assert!(js.contains("function script_Macros()"));
@@ -576,7 +632,11 @@ State.variables.time = 0;"#;
         let body = r#"var gold = $gold;
 $gold = 100;"#;
 
-        let (js, _line_map) = build_script_passage_js("Init", body, 0, &[]);
+        let (js, line_map) = build_script_passage_js("Init", body, 0, &[]);
+
+        // INVARIANT: js line count must equal line_map length
+        assert_eq!(js.lines().count(), line_map.len(),
+            "build_script_passage_js (dollar refs): line count mismatch");
 
         // Dollar refs should be translated
         assert!(js.contains("State.variables.gold"));
@@ -599,7 +659,11 @@ $gold = 100;"#;
             },
         ];
 
-        let (js, _) = build_script_passage_js("SomeScript", "// JS", 0, &custom_macros);
+        let (js, line_map) = build_script_passage_js("SomeScript", "// JS", 0, &custom_macros);
+
+        // INVARIANT: js line count must equal line_map length
+        assert_eq!(js.lines().count(), line_map.len(),
+            "build_script_passage_js (widget not emitted): line count mismatch");
 
         // Widget should NOT appear as a standalone function
         assert!(!js.contains("function myWidget"));

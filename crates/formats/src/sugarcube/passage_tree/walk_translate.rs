@@ -11,6 +11,13 @@
 //! recurse into children so that stateful children (e.g., `<<set>>`) are
 //! translated.
 //!
+//! ## Comment awareness
+//!
+//! Macro nodes whose spans overlap with comment spans (`/* ... */`,
+//! `/% ... %/`, `<!-- ... -->`) are completely skipped during translation.
+//! This prevents macros inside block comments from producing JS output
+//! like `if () { } else { }` in the virtual document.
+//!
 //! The output is wrapped in a function: `function passage_Name() { ... }`
 //! for normal passages, or `function myWidget() { ... }` for widget
 //! passages.
@@ -179,6 +186,48 @@ fn classify_macro(name: &str, builtin_lookup: &std::collections::HashMap<&'stati
 }
 
 // ---------------------------------------------------------------------------
+// JS identifier sanitization
+// ---------------------------------------------------------------------------
+
+/// Sanitize a passage title into a valid JavaScript identifier.
+///
+/// Passage titles can contain characters that are not valid in JS identifiers:
+/// spaces, `::`, hyphens, dots, apostrophes, Unicode, etc. This function
+/// replaces all non-alphanumeric characters with underscores and ensures
+/// the result starts with a valid JS identifier start character (letter,
+/// underscore, or dollar sign).
+///
+/// Examples:
+/// - `"Start::Intro"` → `"passage_Start__Intro"`
+/// - `"my-passage"` → `"passage_my_passage"`
+/// - `"Mary's Room"` → `"passage_Mary_s_Room"`
+/// - `"42 Begin"` → `"passage__42_Begin"` (can't start with digit)
+pub(crate) fn sanitize_js_identifier(name: &str) -> String {
+    let sanitized: String = name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+
+    // Ensure the identifier starts with a valid JS identifier start character
+    if sanitized.is_empty() {
+        return "_".to_string();
+    }
+
+    let first = sanitized.chars().next().unwrap();
+    if first.is_ascii_alphabetic() || first == '_' || first == '$' {
+        sanitized
+    } else {
+        // Starts with a digit or other invalid char — prepend underscore
+        format!("_{}", sanitized)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Temp var collection
 // ---------------------------------------------------------------------------
 
@@ -187,19 +236,30 @@ fn classify_macro(name: &str, builtin_lookup: &std::collections::HashMap<&'stati
 /// Scans all nodes recursively, looking for VarRef entries with
 /// `is_temporary == true`. Returns deduplicated names (without the `_`
 /// prefix, matching JS `let` declaration convention).
-fn collect_temp_vars(nodes: &[PassageNode]) -> Vec<String> {
+fn collect_temp_vars(nodes: &[PassageNode], comment_spans: &[std::ops::Range<usize>]) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
-    collect_temp_vars_inner(nodes, &mut seen);
+    collect_temp_vars_inner(nodes, &mut seen, comment_spans);
     seen.into_iter().collect()
 }
 
-fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::BTreeSet<String>) {
+fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::BTreeSet<String>, comment_spans: &[std::ops::Range<usize>]) {
     for node in nodes {
+        // Skip nodes inside comments
+        let span = match node {
+            PassageNode::Text { span, .. } => span,
+            PassageNode::Macro { span, .. } => span,
+            PassageNode::Expression { span, .. } => span,
+            PassageNode::Heading { span, .. } => span,
+            PassageNode::Error { span, .. } => span,
+        };
+        if is_in_comment(comment_spans, span) {
+            continue;
+        }
+
         match node {
             PassageNode::Text { var_refs, .. } => {
                 for vr in var_refs {
                     if vr.is_temporary {
-                        // Strip the _ prefix for the JS `let` declaration
                         let name = vr.name.trim_start_matches('_');
                         if !name.is_empty() {
                             seen.insert(name.to_string());
@@ -217,7 +277,7 @@ fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::B
                     }
                 }
                 if let Some(children) = children {
-                    collect_temp_vars_inner(children, seen);
+                    collect_temp_vars_inner(children, seen, comment_spans);
                 }
             }
             PassageNode::Expression { var_refs, .. } => {
@@ -236,6 +296,26 @@ fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::B
 }
 
 // ---------------------------------------------------------------------------
+// Comment span overlap check
+// ---------------------------------------------------------------------------
+
+/// Check whether a node's span overlaps with any comment span.
+///
+/// Uses body-relative spans for both. The `comment_spans` are body-relative
+/// (as returned by `find_all_comment_spans`), and `node_span` is
+/// document-absolute (as stored in PassageNode). We convert `node_span`
+/// to body-relative by subtracting `body_offset`.
+fn is_in_comment(comment_spans: &[std::ops::Range<usize>], node_span: &std::ops::Range<usize>) -> bool {
+    // Quick exit: if no comment spans, nothing is in a comment
+    if comment_spans.is_empty() {
+        return false;
+    }
+    comment_spans.iter().any(|cs| {
+        node_span.start < cs.end && cs.start < node_span.end
+    })
+}
+
+// ---------------------------------------------------------------------------
 // walk_translate()
 // ---------------------------------------------------------------------------
 
@@ -247,6 +327,12 @@ fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::B
 /// translated. Navigation-only, DOM, audio, and timing macros are skipped.
 /// Nav-shell macros (like `<<link>>`) skip their shell but recurse into
 /// children so that stateful children are translated.
+///
+/// ## Comment awareness
+///
+/// Macro nodes whose spans overlap with comment spans are completely
+/// skipped, preventing macros inside `/* ... */` block comments from
+/// producing JS output in the virtual document.
 ///
 /// ## Function wrapper
 ///
@@ -264,6 +350,7 @@ fn collect_temp_vars_inner(nodes: &[PassageNode], seen: &mut std::collections::B
 /// - `callables`: User-defined callables (custom macros + widgets)
 /// - `passage_name`: The name of the passage being translated
 /// - `is_widget`: Whether this passage is a widget passage (tagged [widget])
+/// - `comment_spans`: Body-relative byte ranges of comments to skip
 pub(crate) fn walk_translate(
     nodes: &[PassageNode],
     body: &str,
@@ -271,6 +358,7 @@ pub(crate) fn walk_translate(
     callables: &[crate::types::UserCallable],
     passage_name: &str,
     is_widget: bool,
+    comment_spans: &[std::ops::Range<usize>],
 ) -> TranslateResult {
     let ctx = super::super::virtual_doc::TranslationContext::new(callables);
     let mut js_body = String::new();
@@ -278,19 +366,20 @@ pub(crate) fn walk_translate(
     let mut var_encounters = Vec::new();
 
     // Collect temp vars and emit `let _varname;` declarations
-    let temp_vars = collect_temp_vars(nodes);
+    // (skip temp vars inside comments)
+    let temp_vars = collect_temp_vars(nodes, comment_spans);
 
-    // Build function header
+    // Build function header — sanitize the passage name to a valid JS identifier
     let func_name = if is_widget {
         // Widget passages: use the first widget name from callables defined
-        // in this passage, or fall back to the passage name
+        // in this passage, or fall back to the passage name (sanitized)
         callables
             .iter()
             .find(|c| c.kind == crate::types::UserCallableKind::Widget && c.defined_in == passage_name)
             .map(|c| c.name.clone())
-            .unwrap_or_else(|| passage_name.replace(' ', "_"))
+            .unwrap_or_else(|| sanitize_js_identifier(passage_name))
     } else {
-        format!("passage_{}", passage_name.replace(' ', "_"))
+        format!("passage_{}", sanitize_js_identifier(passage_name))
     };
 
     let mut js_output = format!("function {}() {{\n", func_name);
@@ -315,6 +404,7 @@ pub(crate) fn walk_translate(
     walk_translate_inner(
         nodes, body, body_offset, &ctx, 1,
         &mut js_body, &mut line_mappings, &mut var_encounters,
+        comment_spans,
     );
 
     js_output.push_str(&js_body);
@@ -325,6 +415,19 @@ pub(crate) fn walk_translate(
         original_line: 0,
         original_start_byte: body_offset,
     });
+
+    // INVARIANT: js_output line count MUST equal line_mappings length.
+    // Every line in js_output (function header, temp var declarations,
+    // translated body, closing brace) must have exactly one entry in
+    // line_mappings. The downstream consumer (assemble_line_map /
+    // assemble_annotated_line_map) indexes line_mappings by virtual doc
+    // line number, so any mismatch causes incorrect error mapping.
+    let line_count = js_output.lines().count();
+    debug_assert_eq!(
+        line_count, line_mappings.len(),
+        "walk_translate: js_function has {} lines but line_map has {} entries — they must match 1:1",
+        line_count, line_mappings.len(),
+    );
 
     TranslateResult {
         js_function: js_output,
@@ -338,6 +441,7 @@ pub(crate) fn walk_translate(
 /// Emits translated JS and records exact line mappings for each output line.
 /// Only stateful macros are translated; nav-shell macros recurse into children
 /// without emitting their shell; completely-skipped macros produce no output.
+/// Macro nodes inside comment spans are completely skipped.
 fn walk_translate_inner(
     nodes: &[PassageNode],
     body: &str,
@@ -347,15 +451,69 @@ fn walk_translate_inner(
     js_output: &mut String,
     line_mappings: &mut Vec<ExactLineMapping>,
     var_encounters: &mut Vec<VarEncounter>,
+    comment_spans: &[std::ops::Range<usize>],
 ) {
     for node in nodes {
+        // ── Comment check: skip any node whose span overlaps a comment ──
+        // This prevents macros inside /* ... */ from being translated.
+        // We check the span before dispatching on node type.
+        let node_span = match node {
+            PassageNode::Text { span, .. } => span,
+            PassageNode::Macro { span, .. } => span,
+            PassageNode::Expression { span, .. } => span,
+            PassageNode::Heading { span, .. } => span,
+            PassageNode::Error { span, .. } => span,
+        };
+        if is_in_comment(comment_spans, node_span) {
+            continue;
+        }
+
         match node {
-            PassageNode::Text { content, span, .. } => {
-                // Text nodes: skip in the new selective translation.
-                // Text between macros is not JS — it's rendered HTML.
-                // (Previously, translate_text_segment was called, which
-                // emitted empty lines for blank text. We now skip entirely.)
-                let _ = (content, span);
+            PassageNode::Text { content, var_refs, span, .. } => {
+                // Text nodes inside block macros (if/else/for/etc.) may
+                // contain variable references that affect state. We emit
+                // these as "read" expressions so the virtual doc tracks
+                // variable usage inside control flow bodies.
+                //
+                // At the top level (indent=1), text between macros is just
+                // rendered HTML and we skip it (Phase A selective translation).
+                // But inside block macros, the text represents conditional or
+                // loop body content that may reference variables.
+                let has_var_refs = !var_refs.is_empty();
+                if has_var_refs && indent > 1 {
+                    // Emit variable reads from text content
+                    let indent_str = "  ".repeat(indent);
+                    let source_line = line_from_span(span.start, body, body_offset);
+
+                    // Collect VarEncounter entries for text node var refs
+                    for vr in var_refs {
+                        if vr.is_temporary {
+                            continue;
+                        }
+                        let name = vr.name.trim_start_matches('$');
+                        if name.is_empty() {
+                            continue;
+                        }
+                        // Text var refs are always reads
+                        var_encounters.push(VarEncounter {
+                            name: name.to_string(),
+                            type_hint: VarTypeHint::Unknown,
+                            kind: VarAccessKind::Read,
+                            line: source_line,
+                            byte_span: vr.span.clone(),
+                        });
+                    }
+
+                    // Translate $var references in the text to State.variables.var
+                    let translated = super::super::virtual_doc::translate_dollar_refs_in_js(content);
+                    // Only emit if the translation produced actual variable references
+                    if translated.contains("State.variables.") {
+                        let text_js = format!("{}/* read: {} */;\n", indent_str, translated.trim());
+                        append_with_mapping(&text_js, source_line, span.start, js_output, line_mappings);
+                    }
+                } else {
+                    let _ = (content, span);
+                }
             }
 
             PassageNode::Macro {
@@ -408,6 +566,7 @@ fn walk_translate_inner(
                                 walk_translate_inner(
                                     children, body, body_offset, ctx, indent + 1,
                                     js_output, line_mappings, var_encounters,
+                                    comment_spans,
                                 );
                             }
 
@@ -461,6 +620,7 @@ fn walk_translate_inner(
                             walk_translate_inner(
                                 children, body, body_offset, ctx, indent,
                                 js_output, line_mappings, var_encounters,
+                                comment_spans,
                             );
                         }
                         // No close tag emitted for skipped shells
@@ -690,4 +850,336 @@ fn line_from_span(doc_offset: usize, body: &str, body_offset: usize) -> u32 {
     }
     // Count newlines before the offset position
     body[..safe_end].bytes().filter(|&b| b == b'\n').count() as u32
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_js_identifier_simple() {
+        assert_eq!(sanitize_js_identifier("Start"), "Start");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_with_spaces() {
+        assert_eq!(sanitize_js_identifier("My Passage"), "My_Passage");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_with_double_colon() {
+        assert_eq!(sanitize_js_identifier("Start::Intro"), "Start__Intro");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_with_hyphen() {
+        assert_eq!(sanitize_js_identifier("my-passage"), "my_passage");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_with_apostrophe() {
+        assert_eq!(sanitize_js_identifier("Mary's Room"), "Mary_s_Room");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_starts_with_digit() {
+        assert_eq!(sanitize_js_identifier("42 Begin"), "_42_Begin");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_empty() {
+        assert_eq!(sanitize_js_identifier(""), "_");
+    }
+
+    #[test]
+    fn test_sanitize_js_identifier_already_valid() {
+        assert_eq!(sanitize_js_identifier("myWidget"), "myWidget");
+    }
+
+    #[test]
+    fn test_comment_span_check_skips_macro() {
+        // A macro span [10, 30) that overlaps with comment span [5, 35)
+        let comment_spans = vec![5..35];
+        let node_span = 10..30;
+        assert!(is_in_comment(&comment_spans, &node_span));
+    }
+
+    #[test]
+    fn test_comment_span_check_allows_non_comment() {
+        // A macro span [40, 50) that does NOT overlap with comment span [5, 35)
+        let comment_spans = vec![5..35];
+        let node_span = 40..50;
+        assert!(!is_in_comment(&comment_spans, &node_span));
+    }
+
+    #[test]
+    fn test_comment_span_check_empty() {
+        let comment_spans: Vec<std::ops::Range<usize>> = vec![];
+        let node_span = 10..30;
+        assert!(!is_in_comment(&comment_spans, &node_span));
+    }
+
+    /// Integration test covering four original bugs in the SugarCube virtual doc system.
+    ///
+    /// Bug 1: Macros inside `/* ... */` comments must NOT produce JS output.
+    /// Bug 2: Passage titles with special chars must produce valid JS function names.
+    /// Bug 3: `<<if>>` / `<<else>>` bodies must contain translated child content.
+    /// Bug 4: `build_script_passage_js()` must correctly transform `this.args`,
+    ///        `this.name`, and `this.error()` in standalone Macro.add functions.
+    #[test]
+    fn test_four_original_bugs() {
+        use crate::sugarcube::comments;
+        use crate::sugarcube::custom_macros;
+        use crate::sugarcube::passage_tree::parse_passage_body;
+        use crate::types::{UserCallable, UserCallableKind};
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Bug 1: Comment stripping
+        // ═══════════════════════════════════════════════════════════════════
+        // A macro inside `/* ... */` should NOT produce any JS output.
+        // The `<<if $y>>` and `<<set $z to 2>>` inside the comment must be
+        // skipped entirely; only `<<set $x to 1>>` and `<<set $w to 3>>`
+        // should appear in the output.
+        {
+            let body = r#"<<set $x to 1>> /* <<if $y>> <<set $z to 2>> <</if>> */ <<set $w to 3>>"#;
+            let body_offset = 0;
+            let nodes = parse_passage_body(body, body_offset);
+            let comment_spans = comments::find_all_comment_spans(body, false);
+
+            let result = walk_translate(
+                &nodes, body, body_offset, &[], "TestBug1", false, &comment_spans,
+            );
+
+            let js = &result.js_function;
+
+            // Macros inside the comment should NOT appear
+            assert!(
+                !js.contains("State.variables.y"),
+                "Bug 1: $y from inside comment should not appear in JS, got:\n{}",
+                js
+            );
+            assert!(
+                !js.contains("State.variables.z"),
+                "Bug 1: $z from inside comment should not appear in JS, got:\n{}",
+                js
+            );
+
+            // Macros outside the comment should appear
+            assert!(
+                js.contains("State.variables.x = 1"),
+                "Bug 1: $x set should appear in JS, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("State.variables.w = 3"),
+                "Bug 1: $w set should appear in JS, got:\n{}",
+                js
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Bug 2: Function name normalization
+        // ═══════════════════════════════════════════════════════════════════
+        // Passage titles with special chars (spaces, `::`, hyphens)
+        // should produce valid JS function names.
+        {
+            let body = "<<set $x to 1>>";
+            let body_offset = 0;
+            let nodes = parse_passage_body(body, body_offset);
+
+            // "Start::Intro" → function passage_Start__Intro()
+            let result = walk_translate(
+                &nodes, body, body_offset, &[], "Start::Intro", false, &[],
+            );
+            assert!(
+                result.js_function.starts_with("function passage_Start__Intro()"),
+                "Bug 2: 'Start::Intro' should produce function passage_Start__Intro(), got:\n{}",
+                result.js_function
+            );
+
+            // "my-passage" → function passage_my_passage()
+            let result = walk_translate(
+                &nodes, body, body_offset, &[], "my-passage", false, &[],
+            );
+            assert!(
+                result.js_function.starts_with("function passage_my_passage()"),
+                "Bug 2: 'my-passage' should produce function passage_my_passage(), got:\n{}",
+                result.js_function
+            );
+
+            // "Mary's Room" → function passage_Mary_s_Room()
+            let result = walk_translate(
+                &nodes, body, body_offset, &[], "Mary's Room", false, &[],
+            );
+            assert!(
+                result.js_function.starts_with("function passage_Mary_s_Room()"),
+                "Bug 2: 'Mary\'s Room' should produce function passage_Mary_s_Room(), got:\n{}",
+                result.js_function
+            );
+
+            // The function name must be a valid JS identifier (no spaces, colons, hyphens)
+            let func_name_line = result.js_function.lines().next().unwrap();
+            assert!(
+                !func_name_line.contains("::"),
+                "Bug 2: Function name should not contain '::', got: {}",
+                func_name_line
+            );
+            assert!(
+                !func_name_line.contains('-'),
+                "Bug 2: Function name should not contain '-', got: {}",
+                func_name_line
+            );
+            assert!(
+                !func_name_line.contains("'"),
+                "Bug 2: Function name should not contain apostrophe, got: {}",
+                func_name_line
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Bug 3: if/else body content
+        // ═══════════════════════════════════════════════════════════════════
+        // `<<if $x>><<set $y to 1>><<else>><<set $y to 2>><</if>>` should
+        // produce JS with both if and else bodies containing the set macros,
+        // NOT empty bodies like `if (State.variables.x) { } else { }`.
+        {
+            let body = "<<if $x>><<set $y to 1>><<else>><<set $y to 2>><</if>>";
+            let body_offset = 0;
+            let nodes = parse_passage_body(body, body_offset);
+
+            let result = walk_translate(
+                &nodes, body, body_offset, &[], "Bug3", false, &[],
+            );
+
+            let js = &result.js_function;
+
+            // The if-body should contain the first set
+            assert!(
+                js.contains("State.variables.y = 1"),
+                "Bug 3: if-body should contain 'State.variables.y = 1', got:\n{}",
+                js
+            );
+
+            // The else-body should contain the second set
+            assert!(
+                js.contains("State.variables.y = 2"),
+                "Bug 3: else-body should contain 'State.variables.y = 2', got:\n{}",
+                js
+            );
+
+            // Verify the structure: if block with else
+            assert!(
+                js.contains("if (State.variables.x)"),
+                "Bug 3: should contain 'if (State.variables.x)', got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("} else {"),
+                "Bug 3: should contain '}} else {{', got:\n{}",
+                js
+            );
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Bug 4: Macro.add handler extraction
+        // ═══════════════════════════════════════════════════════════════════
+        // `build_script_passage_js()` should emit standalone functions with:
+        // - `this.args` → `args`
+        // - `this.name` → string literal replacement
+        // - `return this.error()` → `throw new Error()` (not `return throw new Error()`)
+        {
+            let body = r#"Macro.add('myMacro', {
+    handler: function() {
+        var hours = this.args[0];
+        var macroName = this.name;
+        if (!hours) { return this.error("missing args"); }
+        State.variables.time += hours;
+    }
+});"#;
+
+            let custom_macros = vec![
+                UserCallable {
+                    name: "myMacro".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(1),
+                    defined_in: "Bug4Script".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 0,
+                    body: Some(
+                        "var hours = this.args[0];\nvar macroName = this.name;\nif (!hours) { return this.error(\"missing args\"); }\nState.variables.time += hours;".to_string()
+                    ),
+                },
+            ];
+
+            let (js, _line_map) = custom_macros::build_script_passage_js(
+                "Bug4Script", body, 0, &custom_macros,
+            );
+
+            // The standalone function should exist
+            assert!(
+                js.contains("function myMacro(...args)"),
+                "Bug 4: should contain standalone 'function myMacro(...args)', got:\n{}",
+                js
+            );
+
+            // Extract the standalone function body (after the function declaration line)
+            let func_start = js.find("function myMacro(...args)")
+                .expect("Bug 4: could not find standalone myMacro function");
+            let func_end = js[func_start..].rfind("}\n")
+                .map(|i| func_start + i + 2)
+                .unwrap_or(js.len());
+            let standalone_func = &js[func_start..func_end];
+
+            // this.args → args
+            assert!(
+                !standalone_func.contains("this.args"),
+                "Bug 4: standalone function should not contain 'this.args', got:\n{}",
+                standalone_func
+            );
+            assert!(
+                standalone_func.contains("args[0]"),
+                "Bug 4: standalone function should contain 'args[0]', got:\n{}",
+                standalone_func
+            );
+
+            // this.name → 'myMacro' string literal
+            assert!(
+                !standalone_func.contains("this.name"),
+                "Bug 4: standalone function should not contain 'this.name', got:\n{}",
+                standalone_func
+            );
+            assert!(
+                standalone_func.contains("'myMacro'"),
+                "Bug 4: standalone function should contain string literal 'myMacro', got:\n{}",
+                standalone_func
+            );
+
+            // return this.error("msg") → throw new Error("msg")
+            // Must NOT produce `return throw new Error(...)` which is invalid JS
+            assert!(
+                !standalone_func.contains("this.error"),
+                "Bug 4: standalone function should not contain 'this.error', got:\n{}",
+                standalone_func
+            );
+            assert!(
+                !standalone_func.contains("return throw"),
+                "Bug 4: standalone function must not contain 'return throw' (invalid JS), got:\n{}",
+                standalone_func
+            );
+            assert!(
+                standalone_func.contains("throw new Error("),
+                "Bug 4: standalone function should contain 'throw new Error(', got:\n{}",
+                standalone_func
+            );
+            assert!(
+                standalone_func.contains("missing args"),
+                "Bug 4: throw new Error should preserve the message, got:\n{}",
+                standalone_func
+            );
+        }
+    }
 }

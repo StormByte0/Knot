@@ -286,6 +286,9 @@ class KnotVirtualDocDiagnostics {
      * Given a passage name and a 0-based line within the passage body,
      * find the actual line number in the .tw file by scanning for the
      * passage header and counting down.
+     *
+     * Uses EXACT matching (not prefix) for passage names to avoid
+     * false positives like `:: StartExtra` matching `Start`.
      */
     private async findPassageBodyLine(
         twUri: vscode.Uri,
@@ -300,8 +303,17 @@ class KnotVirtualDocDiagnostics {
             // Find the passage header line
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i].trim();
-                // SugarCube passage header: :: PassageName or :: PassageName [tags]
-                if (line.startsWith('::') && line.substring(2).trimStart().startsWith(passageName)) {
+                // SugarCube passage header: :: PassageName or :: PassageName [tags] {"position":...}
+                // We need EXACT match of the passage name portion.
+                if (!line.startsWith('::')) {
+                    continue;
+                }
+                const afterHeader = line.substring(2).trimStart();
+                // The passage name ends at the first whitespace, [, or {.
+                // This handles: "PassageName", "PassageName [tags]", "PassageName {"position":...}"
+                // and "PassageName [tags] {"position":...}"
+                const nameEndMatch = afterHeader.match(/^[^\s\[\{]+/);
+                if (nameEndMatch && nameEndMatch[0] === passageName) {
                     // The header is on line i. Body starts on line i+1.
                     // bodyLine is 0-based within the body, so:
                     return i + 1 + bodyLine;
