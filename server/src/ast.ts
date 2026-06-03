@@ -146,7 +146,7 @@ export interface ObjectProperty extends BaseNode {
 export interface ParseDiagnostic {
   message: string;
   range: SourceRange;
-  severity?: 'error' | 'warning';
+  severity?: 'error' | 'warning' | 'info';
 }
 
 export interface ParseOutput {

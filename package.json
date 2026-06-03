@@ -2,7 +2,7 @@
   "name": "knot",
   "displayName": "Knot — Twine/SugarCube Language Support",
   "description": "Language server for Twine/SugarCube 2 development: diagnostics, completions, go-to-definition, rename, type inference, and Tweego build integration.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Stormbyte",
   "keywords": [
     "twine",

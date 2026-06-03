@@ -181,7 +181,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
         full: true,
       },
     },
-    serverInfo: { name: 'knot Language Server', version: '1.0.0' },
+    serverInfo: { name: 'knot Language Server', version: '1.0.1' },
   };
 });
 

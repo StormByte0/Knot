@@ -78,7 +78,9 @@ export class DiagnosticEngine {
     return {
       message:  diag.message,
       range:    diag.range,
-      severity: severity === DiagnosticSeverity.Error ? 'error' : 'warning',
+      severity: severity === DiagnosticSeverity.Error ? 'error'
+              : severity === DiagnosticSeverity.Information ? 'info'
+              : 'warning',
     };
   }
 
@@ -99,7 +101,12 @@ export class DiagnosticEngine {
     };
     for (const [key, severity] of Object.entries(config)) {
       const rule = ruleMap[key];
-      if (rule) this.configure(rule, { severity });
+      if (rule) {
+        // When severity is "off" (mapped to Hint), also disable the rule
+        // so that isEnabled() returns false and diagnostics are suppressed.
+        const enabled = severity !== DiagnosticSeverity.Hint;
+        this.configure(rule, { severity, enabled });
+      }
     }
   }
 

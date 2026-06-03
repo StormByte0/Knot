@@ -1,5 +1,10 @@
 # Change Log
 
+## 1.0.1 — Bug Fix
+
+### Fixed
+- Setting knot.lint.unreachablePassage to "off" now correctly suppresses unreachable passage warnings. Previously the setting was ignored and warnings always appeared.
+- The "info" severity setting for lint rules now displays as info instead of falling through to warning.
 
 ## 1.0.0
 

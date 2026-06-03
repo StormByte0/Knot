@@ -172,6 +172,7 @@ export class WorkspaceIndex {
     if (!this.diagnosticEngine.isEnabled(DiagnosticRule.DuplicatePassage)) return diags;
 
     const severity = this.diagnosticEngine.getSeverity(DiagnosticRule.DuplicatePassage) === DiagnosticSeverity.Error ? 'error' as const
+      : this.diagnosticEngine.getSeverity(DiagnosticRule.DuplicatePassage) === DiagnosticSeverity.Information ? 'info' as const
       : 'warning' as const;
 
     for (const passage of ast.passages) {
@@ -269,6 +270,7 @@ export class WorkspaceIndex {
     if (unreachable.size === 0) return diags;
 
     const severity = this.diagnosticEngine.getSeverity(DiagnosticRule.UnreachablePassage) === DiagnosticSeverity.Error ? 'error' as const
+      : this.diagnosticEngine.getSeverity(DiagnosticRule.UnreachablePassage) === DiagnosticSeverity.Information ? 'info' as const
       : 'warning' as const;
 
     for (const passage of ast.passages) {

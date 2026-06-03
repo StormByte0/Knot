@@ -177,6 +177,18 @@ describe('DiagnosticEngine', () => {
       const parseDiag = engine.toParseDiagnostic(ruleDiag);
       assert.strictEqual(parseDiag.severity, 'error');
     });
+
+    it('converts Information severity to "info" string', () => {
+      const engine = new DiagnosticEngine();
+      engine.configure(DiagnosticRule.UnknownPassage, { severity: DiagnosticSeverity.Information });
+      const ruleDiag: RuleDiagnostic = {
+        rule: DiagnosticRule.UnknownPassage,
+        message: 'info msg',
+        range,
+      };
+      const parseDiag = engine.toParseDiagnostic(ruleDiag);
+      assert.strictEqual(parseDiag.severity, 'info');
+    });
   });
 
   describe('toParseDiagnostics()', () => {
@@ -252,6 +264,27 @@ describe('DiagnosticEngine', () => {
       assert.strictEqual(engine.getSeverity(DiagnosticRule.UnknownPassage), DiagnosticSeverity.Error);
       assert.strictEqual(engine.getSeverity(DiagnosticRule.UnknownMacro), DiagnosticSeverity.Error);
       assert.strictEqual(engine.getSeverity(DiagnosticRule.DuplicatePassage), DiagnosticSeverity.Warning);
+    });
+
+    it('disables rule when severity is Hint (mapped from "off")', () => {
+      const engine = new DiagnosticEngine();
+      engine.configureFromLintConfig({ unreachablePassage: DiagnosticSeverity.Hint });
+      assert.strictEqual(engine.isEnabled(DiagnosticRule.UnreachablePassage), false);
+      assert.strictEqual(engine.getSeverity(DiagnosticRule.UnreachablePassage), DiagnosticSeverity.Hint);
+    });
+
+    it('keeps rule enabled when severity is not Hint', () => {
+      const engine = new DiagnosticEngine();
+      engine.configureFromLintConfig({ unreachablePassage: DiagnosticSeverity.Warning });
+      assert.strictEqual(engine.isEnabled(DiagnosticRule.UnreachablePassage), true);
+    });
+
+    it('re-enables a previously disabled rule when severity changes away from Hint', () => {
+      const engine = new DiagnosticEngine();
+      engine.configureFromLintConfig({ unreachablePassage: DiagnosticSeverity.Hint });
+      assert.strictEqual(engine.isEnabled(DiagnosticRule.UnreachablePassage), false);
+      engine.configureFromLintConfig({ unreachablePassage: DiagnosticSeverity.Warning });
+      assert.strictEqual(engine.isEnabled(DiagnosticRule.UnreachablePassage), true);
     });
   });
 
