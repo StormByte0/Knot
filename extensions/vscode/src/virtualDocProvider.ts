@@ -7,7 +7,14 @@
 //!
 //! ## URI Scheme
 //!
-//! - `knot-vdoc://workspace/story.tw` → virtual doc for the entire workspace
+//! - `knot-vdoc://workspace/virtual-doc.js` → virtual doc for the entire workspace
+//!
+//! ## Auto-refresh
+//!
+//! The virtual doc auto-refreshes when .tw files change (debounced by 500ms).
+//! This ensures the translated JS stays in sync with the source files,
+//! especially for custom macro definitions that need to be registered before
+//! invocations in other passages can be translated as function calls.
 //!
 //! ## Diagnostic Routing
 //!
@@ -29,8 +36,17 @@ import { KnotLanguageClient, KnotVirtualDocResponse, KnotVirtualDocLineEntry } f
 /** The URI scheme for virtual documents. */
 export const VDOC_SCHEME = 'knot-vdoc';
 
+/** The virtual doc URI — single workspace-wide virtual doc. */
+const VDOC_URI = vscode.Uri.parse(`${VDOC_SCHEME}://workspace/virtual-doc.js`);
+
 /** Cached virtual doc data — updated on every refresh. */
 let cachedResponse: KnotVirtualDocResponse | null = null;
+
+/** The provider instance — stored so extension.ts can trigger refreshes. */
+let providerInstance: KnotVirtualDocProvider | null = null;
+
+/** Debounce timer for auto-refresh. */
+let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Register the virtual document content provider and diagnostic routing.
@@ -43,6 +59,7 @@ export function registerVirtualDocProvider(
 ): void {
     // Register the content provider for the knot-vdoc:// scheme
     const provider = new KnotVirtualDocProvider(client);
+    providerInstance = provider;
     context.subscriptions.push(
         vscode.workspace.registerTextDocumentContentProvider(VDOC_SCHEME, provider),
     );
@@ -75,13 +92,15 @@ export async function openVirtualDoc(client: KnotLanguageClient): Promise<void> 
     await refreshVirtualDoc(client);
 
     // Create a virtual doc URI and open it
-    const vdocUri = vscode.Uri.parse(`${VDOC_SCHEME}://workspace/virtual-doc.js`);
-    const doc = await vscode.workspace.openTextDocument(vdocUri);
+    const doc = await vscode.workspace.openTextDocument(VDOC_URI);
     await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
 }
 
 /**
  * Refresh the cached virtual doc data from the server.
+ *
+ * After refreshing, fires the `onDidChange` event so that any open
+ * virtual doc tabs reload their content from the provider.
  */
 export async function refreshVirtualDoc(client: KnotLanguageClient): Promise<KnotVirtualDocResponse | null> {
     const wsFolders = vscode.workspace.workspaceFolders;
@@ -94,11 +113,36 @@ export async function refreshVirtualDoc(client: KnotLanguageClient): Promise<Kno
             workspace_uri: wsFolders[0].uri.toString(),
         });
         cachedResponse = response;
+
+        // Fire the onDidChange event so VSCode re-queries
+        // provideTextDocumentContent() for the virtual doc tab.
+        // This is the key mechanism for updating the virtual doc display.
+        if (providerInstance) {
+            providerInstance.notifyContentChanged();
+        }
+
         return response;
     } catch (error) {
         console.error('Knot: Failed to fetch virtual doc:', error);
         return null;
     }
+}
+
+/**
+ * Debounced refresh — called when .tw files change.
+ *
+ * Waits 500ms after the last change before requesting a fresh virtual doc
+ * from the server. This avoids hammering the server during rapid typing
+ * while still keeping the virtual doc reasonably up-to-date.
+ */
+export function debouncedRefreshVirtualDoc(client: KnotLanguageClient): void {
+    if (refreshDebounceTimer) {
+        clearTimeout(refreshDebounceTimer);
+    }
+    refreshDebounceTimer = setTimeout(async () => {
+        refreshDebounceTimer = null;
+        await refreshVirtualDoc(client);
+    }, 500);
 }
 
 /**
@@ -125,21 +169,28 @@ class KnotVirtualDocProvider implements vscode.TextDocumentContentProvider {
     }
 
     async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
-        // If we have cached content, use it; otherwise fetch from server
+        // Always fetch fresh content from the server.
+        // The cached response may be stale if .tw files changed.
+        // We use the cache only as a fallback if the server is unavailable.
+        const response = await refreshVirtualDoc(this.client);
+        if (response) {
+            return response.content;
+        }
+
+        // Fallback to cached content if server is unavailable
         if (cachedResponse) {
             return cachedResponse.content;
         }
 
-        const response = await refreshVirtualDoc(this.client);
-        return response?.content || '// No virtual document available\n';
+        return '// No virtual document available\n';
     }
 
     /**
      * Signal that the virtual doc content has changed.
-     * Call this after the server re-indexes or after a document save.
+     * This causes VSCode to re-query provideTextDocumentContent().
      */
-    refresh(): void {
-        this._onDidChange.fire(vscode.Uri.parse(`${VDOC_SCHEME}://workspace/virtual-doc.js`));
+    notifyContentChanged(): void {
+        this._onDidChange.fire(VDOC_URI);
     }
 }
 

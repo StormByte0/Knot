@@ -25,7 +25,7 @@ import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { isTweeLanguage, extractPassageName } from './utils';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotProfileResponse, KnotIndexProgress, KnotBuildOutput, KnotReindexResponse, KnotGenerateIfidResponse, KnotRefreshSemanticTokensParams, KnotFormatDetectedParams, KnotVirtualDocResponse } from './types';
-import { registerVirtualDocProvider, openVirtualDoc, refreshVirtualDoc } from './virtualDocProvider';
+import { registerVirtualDocProvider, openVirtualDoc, refreshVirtualDoc, debouncedRefreshVirtualDoc } from './virtualDocProvider';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -424,9 +424,21 @@ export async function activate(context: vscode.ExtensionContext) {
             profileViewProvider?.refresh();
         }, 500);
     }
-    watcher.onDidChange(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
-    watcher.onDidCreate(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
-    watcher.onDidDelete(() => { refreshStoryMap(); variableFlowProvider?.refresh(); debouncedProfileRefresh(); });
+    function onTwFileChange() {
+        refreshStoryMap();
+        variableFlowProvider?.refresh();
+        debouncedProfileRefresh();
+        // Refresh the virtual doc so that custom macro definitions
+        // are re-registered and invocations are translated correctly.
+        // Without this, the virtual doc shows stale content with
+        // /* unknown */ comments for custom macro invocations.
+        if (client) {
+            debouncedRefreshVirtualDoc(client);
+        }
+    }
+    watcher.onDidChange(onTwFileChange);
+    watcher.onDidCreate(onTwFileChange);
+    watcher.onDidDelete(onTwFileChange);
     context.subscriptions.push(watcher);
 
     // Also refresh on active editor change (for live updates)
@@ -1111,6 +1123,15 @@ function registerDecorations(context: vscode.ExtensionContext) {
                 decorationDebounceTimer = null;
                 updateDecorations(editor);
             }, 300);
+        }
+
+        // Debounced virtual doc refresh on .tw file edits.
+        // This ensures custom macro definitions are re-registered
+        // and invocations are translated as function calls, not
+        // /* unknown */ comments. The 500ms debounce avoids
+        // excessive server requests during rapid typing.
+        if (isTweeLanguage(event.document.languageId) && client) {
+            debouncedRefreshVirtualDoc(client);
         }
     }, null, context.subscriptions);
 

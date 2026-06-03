@@ -1944,4 +1944,152 @@ mod tests {
                 "Body blocks must be in source order: {:?}", macro_info);
         }
     }
+
+    /// Integration test: Custom macro definitions in [script] passages must
+    /// be available when translating invocations in normal passages.
+    ///
+    /// This tests the full `parse()` → virtual doc pipeline, verifying that:
+    /// 1. `extract_user_callables()` finds Macro.add definitions in script passages
+    /// 2. The custom macro registry is updated with the definitions
+    /// 3. `walk_translate()` receives the callable names via `merged_callables`
+    /// 4. Custom macro invocations in normal passages are translated as
+    ///    function calls, NOT as `/* unknown */` comments
+    /// 5. The virtual doc map contains the correctly translated JS
+    /// 6. The assembled virtual doc contains function calls, not unknowns
+    #[test]
+    fn custom_macro_invocations_translated_as_function_calls() {
+        let plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///game.tw").unwrap();
+
+        // A .tw file with a script passage defining custom macros and a
+        // normal passage that invokes them
+        let src = r#":: Macros [script]
+Macro.add('addTime', {
+    handler: function() {
+        var hours = this.args[0];
+        State.variables.time += hours;
+    }
+});
+
+Macro.add('setSceneLoc', {
+    handler: function() {
+        State.variables.scene = this.args[0];
+    }
+});
+
+Macro.add('earn', {
+    handler: function() {
+        State.variables.gold += this.args[0];
+    }
+});
+
+:: Work
+<<setSceneLoc "file-review-bay">>
+<<earn 2500>>
+<<addTime 25>>
+"#;
+
+        let _result = plugin.parse(&uri, src);
+
+        // Verify the virtual doc map was populated
+        let docs = plugin.virtual_docs();
+        assert!(!docs.is_empty(), "Virtual doc map should not be empty after parse");
+
+        // Get the assembled virtual doc content
+        let vdoc = docs.assemble_virtual_doc();
+
+        // The custom macro invocations should be translated as function calls,
+        // NOT as /* unknown */ comments
+        assert!(
+            !vdoc.contains("/* unknown */"),
+            "Custom macro invocations should NOT produce /* unknown */ comments.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("setSceneLoc("),
+            "setSceneLoc should be translated as a function call.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("earn("),
+            "earn should be translated as a function call.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("addTime("),
+            "addTime should be translated as a function call.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        // The script passage should also emit standalone function declarations
+        // for the custom macros
+        assert!(
+            vdoc.contains("function addTime("),
+            "Script passage should emit standalone function declaration for addTime.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("function setSceneLoc("),
+            "Script passage should emit standalone function declaration for setSceneLoc.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("function earn("),
+            "Script passage should emit standalone function declaration for earn.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+    }
+
+    /// Integration test: Cross-file custom macro definitions are available
+    /// when translating passages in a different file.
+    ///
+    /// When file A defines custom macros and file B uses them, the workspace-wide
+    /// custom macro registry ensures file B's passages can translate invocations
+    /// as function calls.
+    #[test]
+    fn cross_file_custom_macros_available() {
+        let plugin = SugarCubePlugin::new();
+        let uri_a = Url::parse("file:///macros.tw").unwrap();
+        let uri_b = Url::parse("file:///story.tw").unwrap();
+
+        // File A: script passage defining custom macros
+        let src_a = r#":: Macros [script]
+Macro.add('addTime', {
+    handler: function() {
+        var hours = this.args[0];
+        State.variables.time += hours;
+    }
+});
+"#;
+
+        // File B: normal passage invoking the custom macro
+        let src_b = ":: Work\n<<addTime 25>>\n";
+
+        // Parse file A first (registers custom macros)
+        let _result_a = plugin.parse(&uri_a, src_a);
+
+        // Parse file B (should have access to custom macros from A)
+        let _result_b = plugin.parse(&uri_b, src_b);
+
+        // Check the virtual doc
+        let docs = plugin.virtual_docs();
+        let vdoc = docs.assemble_virtual_doc();
+
+        assert!(
+            !vdoc.contains("/* unknown */"),
+            "Cross-file custom macro invocations should NOT produce /* unknown */.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+
+        assert!(
+            vdoc.contains("addTime("),
+            "Cross-file addTime should be translated as a function call.\n\
+             Virtual doc content:\n{}", vdoc
+        );
+    }
 }

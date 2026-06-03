@@ -1181,5 +1181,134 @@ mod tests {
                 standalone_func
             );
         }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Bug 5: Custom macro invocations must be translated as function
+        // calls, not as /* unknown */ comments.
+        //
+        // When a [script] passage defines custom macros via Macro.add(),
+        // and a normal passage invokes those macros, walk_translate() must
+        // receive the callable names in its `callables` parameter so that
+        // invocations are translated as function calls (e.g., `addTime(25)`)
+        // rather than `/* unknown: <<addTime 25>> */`.
+        // ═══════════════════════════════════════════════════════════════════
+        {
+            // Simulate callables that would be extracted from a script passage
+            let callables = vec![
+                UserCallable {
+                    name: "setSceneLoc".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(1),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 0,
+                    body: Some("State.variables.scene = this.args[0];".to_string()),
+                },
+                UserCallable {
+                    name: "earn".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(1),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 5,
+                    body: Some("State.variables.gold += this.args[0];".to_string()),
+                },
+                UserCallable {
+                    name: "addTime".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(1),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 10,
+                    body: Some("State.variables.time += this.args[0];".to_string()),
+                },
+                UserCallable {
+                    name: "adjustStat".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(2),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 15,
+                    body: Some("var stat = this.args[0]; var amount = this.args[1];".to_string()),
+                },
+                UserCallable {
+                    name: "task".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(1),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 20,
+                    body: None,
+                },
+                UserCallable {
+                    name: "questLog".to_string(),
+                    kind: UserCallableKind::CustomMacro,
+                    arg_count: Some(2),
+                    defined_in: "Macros".to_string(),
+                    file_uri: "file:///test.tw".to_string(),
+                    defined_at_line: 25,
+                    body: None,
+                },
+            ];
+
+            // Normal passage body that invokes these custom macros
+            let body = r#"<<setSceneLoc "file-review-bay">>
+<<earn 2500>>
+<<task 1.5>>
+<<questLog "first-day" "Cleared the oldest requests from the waiting stack.">>
+<<adjustStat "stress"  9>>
+<<adjustStat "stamina" -8>>
+<<addTime 25>>
+<<task 2.0>>
+<<addTime 5>>"#;
+            let body_offset = 0;
+            let nodes = parse_passage_body(body, body_offset);
+            let comment_spans: Vec<std::ops::Range<usize>> = vec![];
+
+            let result = walk_translate(
+                &nodes, body, body_offset, &callables, "Work", false, &comment_spans,
+            );
+
+            let js = &result.js_function;
+
+            // NONE of the custom macro invocations should produce /* unknown */
+            assert!(
+                !js.contains("/* unknown */"),
+                "Bug 5: Custom macro invocations should NOT produce /* unknown */ comments, got:\n{}",
+                js
+            );
+
+            // All custom macros should be translated as function calls
+            assert!(
+                js.contains("setSceneLoc("),
+                "Bug 5: setSceneLoc should be translated as a function call, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("earn("),
+                "Bug 5: earn should be translated as a function call, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("addTime("),
+                "Bug 5: addTime should be translated as a function call, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("adjustStat("),
+                "Bug 5: adjustStat should be translated as a function call, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("task("),
+                "Bug 5: task should be translated as a function call, got:\n{}",
+                js
+            );
+            assert!(
+                js.contains("questLog("),
+                "Bug 5: questLog should be translated as a function call, got:\n{}",
+                js
+            );
+        }
     }
 }
