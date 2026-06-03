@@ -79,6 +79,7 @@ pub(crate) struct VarEncounter {
     /// Source line within the passage body (0-based).
     pub line: u32,
     /// Byte span in the source document.
+    #[allow(dead_code)] // Used by Phase C for diagnostic routing
     pub byte_span: std::ops::Range<usize>,
 }
 
@@ -430,7 +431,7 @@ fn walk_translate_inner(
                             let translated_args = if args.is_empty() {
                                 String::new()
                             } else {
-                                super::super::virtual_doc::translate_expression(args)
+                                super::super::virtual_doc::translate_callable_args(args)
                             };
                             let callable_js = if translated_args.is_empty() {
                                 format!("{}{}();\n", indent_str, macro_name)

@@ -42,7 +42,7 @@ mod walk_tokens_augment;
 pub(crate) use walk_vars::{walk_vars, walk_passage_var_refs, var_ref_to_var_op};
 pub(crate) use walk_links::walk_links;
 pub(crate) use walk_translate::{
-    walk_translate, TranslateResult, VarEncounter, VarTypeHint, VarAccessKind,
+    walk_translate, VarEncounter, VarTypeHint, VarAccessKind,
     ExactLineMapping,
 };
 pub(crate) use walk_validate::walk_validate;

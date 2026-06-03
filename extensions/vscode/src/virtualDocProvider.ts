@@ -169,6 +169,14 @@ class KnotVirtualDocDiagnostics {
      * Called when VSCode's diagnostic collection changes.
      * We check if any diagnostics appeared on our virtual doc and
      * route them back to the .tw source files.
+     *
+     * ## Deduplication
+     *
+     * JS parser errors often cascade — a single missing comma causes
+     * "expected `,`", "expected `)`", etc. on the same or nearby lines.
+     * All of these map back to the same .tw source line, creating a
+     * confusing list in the hover. We keep only the **first** diagnostic
+     * per source line per file to show a single relevant error.
      */
     async onDiagnosticsChanged(event: vscode.DiagnosticChangeEvent): Promise<void> {
         // Check if any of the changed URIs are our virtual doc
@@ -185,6 +193,9 @@ class KnotVirtualDocDiagnostics {
 
         // Clear previous .tw diagnostics
         this.twDiagnostics.clear();
+
+        // Track which source lines already have a diagnostic (dedup key: "uri:line")
+        const seenLines = new Set<string>();
 
         // Process each virtual doc URI
         for (const vdocUri of vdocUris) {
@@ -219,6 +230,13 @@ class KnotVirtualDocDiagnostics {
                     mapping.passage_name,
                     mapping.original_line,
                 );
+
+                // Dedup: only keep the first diagnostic per source line
+                const dedupKey = `${twUri.toString()}:${twLine}`;
+                if (seenLines.has(dedupKey)) {
+                    continue;
+                }
+                seenLines.add(dedupKey);
 
                 // Create the diagnostic for the .tw file
                 const twRange = new vscode.Range(

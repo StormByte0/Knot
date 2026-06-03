@@ -631,7 +631,7 @@ fn translate_body(ctx: &TranslationContext, text: &str, indent: usize) -> String
                     let translated_args = if args.is_empty() {
                         String::new()
                     } else {
-                        translate_expression(args)
+                        translate_callable_args(args)
                     };
                     if translated_args.is_empty() {
                         result.push_str(&format!("{}{}();\n", indent_str, name));
@@ -1220,6 +1220,135 @@ pub(crate) fn translate_text_segment(text: &str, indent: usize) -> String {
     }
 
     result
+}
+
+/// Split SugarCube macro arguments into individual tokens, respecting quoted
+/// strings and bracket nesting.
+///
+/// SugarCube macros use space-separated args: `<<myWidget "foo" "bar" 5 $var>>`
+/// In JS, these need to become comma-separated: `myWidget("foo", "bar", 5, State.variables.var)`
+///
+/// This function tokenizes the args string, handling:
+/// - Double-quoted strings: `"hello world"` → single token
+/// - Single-quoted strings: `'hello world'` → single token
+/// - Backtick template literals: `` `template` `` → single token
+/// - Bracketed expressions: `($x + 5)` → single token (tracks depth)
+/// - Bare words and numbers: split on whitespace
+fn split_macro_args(args: &str) -> Vec<String> {
+    let args = args.trim();
+    if args.is_empty() {
+        return Vec::new();
+    }
+
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = args.chars().peekable();
+
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            ' ' | '\t' => {
+                // Whitespace: end current token if any
+                if !current.is_empty() {
+                    tokens.push(current.clone());
+                    current.clear();
+                }
+                chars.next();
+            }
+            '"' | '\'' => {
+                // Quoted string: consume until matching close quote
+                let quote = ch;
+                current.push(ch);
+                chars.next();
+                let mut escaped = false;
+                while let Some(&c) = chars.peek() {
+                    current.push(c);
+                    chars.next();
+                    if escaped {
+                        escaped = false;
+                        continue;
+                    }
+                    if c == '\\' {
+                        escaped = true;
+                        continue;
+                    }
+                    if c == quote {
+                        break;
+                    }
+                }
+            }
+            '`' => {
+                // Template literal: consume until matching backtick
+                current.push(ch);
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    current.push(c);
+                    chars.next();
+                    if c == '`' {
+                        break;
+                    }
+                }
+            }
+            '(' | '[' | '{' => {
+                // Opening bracket: track nesting depth
+                let close = match ch {
+                    '(' => ')',
+                    '[' => ']',
+                    '{' => '}',
+                    _ => unreachable!(),
+                };
+                let mut depth: u32 = 1;
+                current.push(ch);
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    current.push(c);
+                    chars.next();
+                    if c == ch {
+                        depth += 1;
+                    } else if c == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => {
+                // Regular character
+                current.push(ch);
+                chars.next();
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
+}
+
+/// Translate macro args for a user-defined callable (widget/custom macro).
+///
+/// Splits space-separated SugarCube args and joins them with commas for
+/// valid JS function call syntax.
+///
+/// Examples:
+/// - `<<myWidget "foo" "bar">>` → `"foo", "bar"`
+/// - `<<addTime 5 "hours">>` → `5, "hours"`
+/// - `<<useItem $itemName>>` → `State.variables.itemName`
+/// - `<<custom $x $y 10>>` → `State.variables.x, State.variables.y, 10`
+pub(crate) fn translate_callable_args(args: &str) -> String {
+    let tokens = split_macro_args(args);
+    if tokens.is_empty() {
+        return String::new();
+    }
+
+    // Translate each token individually (for $var refs and operator normalization)
+    let translated: Vec<String> = tokens.iter()
+        .map(|t| translate_expression(t))
+        .collect();
+
+    translated.join(", ")
 }
 
 /// Translate an expression containing TwineScript operators and `$var` refs to JS.
@@ -1921,5 +2050,73 @@ Macro.add('useItem', {
         };
         let aliases = extract_startup_aliases(&[section]);
         assert!(aliases.iter().any(|a| a.alias_name == "profiles" && matches!(a.resolution, AliasResolution::StateVariableProperty { .. })));
+    }
+
+    // ── split_macro_args & translate_callable_args ────────────────────
+
+    #[test]
+    fn test_split_macro_args_simple() {
+        let tokens = split_macro_args("\"foo\" \"bar\"");
+        assert_eq!(tokens, vec!["\"foo\"", "\"bar\""]);
+    }
+
+    #[test]
+    fn test_split_macro_args_numbers() {
+        let tokens = split_macro_args("5 10");
+        assert_eq!(tokens, vec!["5", "10"]);
+    }
+
+    #[test]
+    fn test_split_macro_args_mixed() {
+        let tokens = split_macro_args("\"foo\" 5 $var");
+        assert_eq!(tokens, vec!["\"foo\"", "5", "$var"]);
+    }
+
+    #[test]
+    fn test_split_macro_args_quoted_with_spaces() {
+        let tokens = split_macro_args("\"hello world\" 42");
+        assert_eq!(tokens, vec!["\"hello world\"", "42"]);
+    }
+
+    #[test]
+    fn test_split_macro_args_bracketed() {
+        let tokens = split_macro_args("($x + 5) 10");
+        assert_eq!(tokens, vec!["($x + 5)", "10"]);
+    }
+
+    #[test]
+    fn test_split_macro_args_single_quoted() {
+        let tokens = split_macro_args("'hello' 'world'");
+        assert_eq!(tokens, vec!["'hello'", "'world'"]);
+    }
+
+    #[test]
+    fn test_split_macro_args_empty() {
+        let tokens = split_macro_args("");
+        assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn test_translate_callable_args_strings() {
+        let result = translate_callable_args("\"foo\" \"bar\"");
+        assert_eq!(result, "\"foo\", \"bar\"");
+    }
+
+    #[test]
+    fn test_translate_callable_args_vars() {
+        let result = translate_callable_args("$itemName");
+        assert_eq!(result, "State.variables.itemName");
+    }
+
+    #[test]
+    fn test_translate_callable_args_mixed() {
+        let result = translate_callable_args("\"sword\" $gold 10");
+        assert_eq!(result, "\"sword\", State.variables.gold, 10");
+    }
+
+    #[test]
+    fn test_translate_callable_args_empty() {
+        let result = translate_callable_args("");
+        assert!(result.is_empty());
     }
 }

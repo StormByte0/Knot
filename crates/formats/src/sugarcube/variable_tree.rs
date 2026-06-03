@@ -85,6 +85,7 @@ pub(crate) struct VariableTree {
     variables: HashMap<String, VarEntry>,
 }
 
+#[allow(dead_code)] // API surface for Phase C (completions, hover, tree panel)
 impl VariableTree {
     /// Create a new, empty VariableTree.
     pub fn new() -> Self {

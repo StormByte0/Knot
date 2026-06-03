@@ -33,9 +33,16 @@ pub(crate) struct PassageDocEntry {
     /// Whether this passage is a widget definition (tagged [widget]).
     /// Widget entries are placed before passage functions in assembly.
     pub is_widget: bool,
+    /// Whether this passage is a script passage (tagged [script] or named
+    /// "Story JavaScript"). Script passages contain raw JavaScript and are
+    /// emitted as-is in the virtual doc (wrapped in a function for scoping).
+    /// Script entries are assembled before widget functions in the monolithic
+    /// virtual doc, since they define custom macros that other passages call.
+    pub is_script: bool,
     /// The complete JS function string, including the wrapper.
     /// E.g., `function passage_Start() {\n  State.variables.gold = 100;\n}\n`
     /// or for widgets: `function myWidget() {\n  State.variables.gold -= 10;\n}\n`
+    /// or for scripts: `function script_MyScript() {\n  ...raw JS...\n}\n`
     pub js_function: String,
     /// Per-line mapping from JS output lines back to source positions.
     /// Each entry maps one line of `js_function` to the original source line
@@ -63,8 +70,14 @@ pub(crate) struct VirtualDocMap {
     /// Widget entries are assembled before passage functions in the
     /// monolithic virtual doc.
     widget_passages: HashSet<String>,
+    /// Set of passage names that are script passages.
+    /// Script entries are assembled before widget functions in the
+    /// monolithic virtual doc, since they define custom macros that
+    /// other passages call.
+    script_passages: HashSet<String>,
 }
 
+#[allow(dead_code)] // API surface for Phase C (incremental updates, VSCode wiring)
 impl VirtualDocMap {
     /// Create a new, empty VirtualDocMap.
     pub fn new() -> Self {
@@ -102,6 +115,13 @@ impl VirtualDocMap {
             self.widget_passages.remove(&name);
         }
 
+        // Update the script_passages set
+        if entry.is_script {
+            self.script_passages.insert(name.clone());
+        } else {
+            self.script_passages.remove(&name);
+        }
+
         // Insert/replace the entry
         self.passages.insert(name, entry);
     }
@@ -114,6 +134,7 @@ impl VirtualDocMap {
         if let Some(entry) = self.passages.remove(name) {
             self.remove_from_file_index(name, &entry.source_file);
             self.widget_passages.remove(name);
+            self.script_passages.remove(name);
             true
         } else {
             false
@@ -130,6 +151,7 @@ impl VirtualDocMap {
             for name in &names {
                 self.passages.remove(name);
                 self.widget_passages.remove(name);
+                self.script_passages.remove(name);
             }
             count
         } else {
@@ -180,7 +202,19 @@ impl VirtualDocMap {
              const State = { variables: {} };\n\n",
         );
 
-        // 2. Widget functions first (workspace-global scope)
+        // 2. Script passages first (define custom macros, aliases, setup)
+        //    These must come before everything else because other passages
+        //    reference the functions/macros defined here.
+        let mut script_names: Vec<&String> = self.script_passages.iter().collect();
+        script_names.sort();
+        for name in script_names {
+            if let Some(entry) = self.passages.get(name) {
+                doc.push_str(&entry.js_function);
+                doc.push_str("\n\n");
+            }
+        }
+
+        // 3. Widget functions (workspace-global scope, may use macros from scripts)
         for name in &self.widget_passages {
             if let Some(entry) = self.passages.get(name) {
                 doc.push_str(&entry.js_function);
@@ -188,11 +222,11 @@ impl VirtualDocMap {
             }
         }
 
-        // 3. Passage functions (sorted for deterministic output)
+        // 4. Passage functions (sorted for deterministic output)
         let mut passage_names: Vec<&String> = self
             .passages
             .keys()
-            .filter(|n| !self.widget_passages.contains(*n))
+            .filter(|n| !self.widget_passages.contains(*n) && !self.script_passages.contains(*n))
             .collect();
         passage_names.sort();
 
@@ -234,6 +268,24 @@ impl VirtualDocMap {
             original_start_byte: 0,
         });
 
+        // Script passage line maps (sorted, before widgets)
+        let mut script_names: Vec<&String> = self.script_passages.iter().collect();
+        script_names.sort();
+        for name in &script_names {
+            if let Some(entry) = self.passages.get(*name) {
+                map.extend(entry.line_map.iter().cloned());
+            }
+            // Two blank lines after each function
+            map.push(ExactLineMapping {
+                original_line: 0,
+                original_start_byte: 0,
+            });
+            map.push(ExactLineMapping {
+                original_line: 0,
+                original_start_byte: 0,
+            });
+        }
+
         // Widget function line maps
         for name in &self.widget_passages {
             if let Some(entry) = self.passages.get(name) {
@@ -254,7 +306,7 @@ impl VirtualDocMap {
         let mut passage_names: Vec<&String> = self
             .passages
             .keys()
-            .filter(|n| !self.widget_passages.contains(*n))
+            .filter(|n| !self.widget_passages.contains(*n) && !self.script_passages.contains(*n))
             .collect();
         passage_names.sort();
 
@@ -289,6 +341,7 @@ impl VirtualDocMap {
     pub fn assemble_annotated_line_map(&self) -> Vec<crate::types::VirtualDocLineMapEntry> {
         let raw_map = self.assemble_line_map();
         let mut result = Vec::with_capacity(raw_map.len());
+        let mut cursor: usize = 0;
 
         // Phase 1: Preamble lines (JSDoc + const declaration + blank line)
         // These 3 lines have no passage association.
@@ -298,10 +351,43 @@ impl VirtualDocMap {
                 file_uri: String::new(),
                 original_line: 0,
             });
+            cursor += 1;
         }
 
-        // Phase 2: Widget functions (same order as assemble_virtual_doc)
-        let mut cursor = 3; // Skip preamble lines
+        // Phase 2: Script passages (sorted, same order as assemble_virtual_doc)
+        let mut script_names: Vec<&String> = self.script_passages.iter().collect();
+        script_names.sort();
+        for name in &script_names {
+            if let Some(entry) = self.passages.get(*name) {
+                let line_count = entry.line_map.len();
+                let file_uri = entry.source_file.to_string();
+                for i in 0..line_count {
+                    if cursor + i < raw_map.len() {
+                        result.push(crate::types::VirtualDocLineMapEntry {
+                            passage_name: (*name).clone(),
+                            file_uri: file_uri.clone(),
+                            original_line: raw_map[cursor + i].original_line,
+                        });
+                    }
+                }
+                cursor += line_count;
+                // Two blank lines after each function — these are separators
+                // with no source correspondence. Empty passage_name/file_uri
+                // so they're skipped by diagnostic routing (same as preamble).
+                for _ in 0..2 {
+                    if cursor < raw_map.len() {
+                        result.push(crate::types::VirtualDocLineMapEntry {
+                            passage_name: String::new(),
+                            file_uri: String::new(),
+                            original_line: 0,
+                        });
+                        cursor += 1;
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Widget functions (same order as assemble_virtual_doc)
         for name in &self.widget_passages {
             if let Some(entry) = self.passages.get(name) {
                 let line_count = entry.line_map.len();
@@ -316,12 +402,12 @@ impl VirtualDocMap {
                     }
                 }
                 cursor += line_count;
-                // Two blank lines after each function
+                // Two blank lines after each function — no source correspondence
                 for _ in 0..2 {
                     if cursor < raw_map.len() {
                         result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: name.clone(),
-                            file_uri: file_uri.clone(),
+                            passage_name: String::new(),
+                            file_uri: String::new(),
                             original_line: 0,
                         });
                         cursor += 1;
@@ -330,11 +416,11 @@ impl VirtualDocMap {
             }
         }
 
-        // Phase 3: Passage functions (sorted, same order as assemble_virtual_doc)
+        // Phase 4: Passage functions (sorted, same order as assemble_virtual_doc)
         let mut passage_names: Vec<&String> = self
             .passages
             .keys()
-            .filter(|n| !self.widget_passages.contains(*n))
+            .filter(|n| !self.widget_passages.contains(*n) && !self.script_passages.contains(*n))
             .collect();
         passage_names.sort();
 
@@ -352,12 +438,12 @@ impl VirtualDocMap {
                     }
                 }
                 cursor += line_count;
-                // Two blank lines after each function
+                // Two blank lines after each function — no source correspondence
                 for _ in 0..2 {
                     if cursor < raw_map.len() {
                         result.push(crate::types::VirtualDocLineMapEntry {
-                            passage_name: name.clone(),
-                            file_uri: file_uri.clone(),
+                            passage_name: String::new(),
+                            file_uri: String::new(),
                             original_line: 0,
                         });
                         cursor += 1;
@@ -398,6 +484,7 @@ mod tests {
         PassageDocEntry {
             source_file: make_url(file),
             is_widget,
+            is_script: false,
             js_function: format!(
                 "function {}() {{\n  /* body */;\n}}\n",
                 if is_widget { name.to_string() } else { format!("passage_{}", name) }
@@ -473,8 +560,9 @@ mod tests {
         let start_pos = doc.find("function passage_Start()").unwrap();
         let shop_pos = doc.find("function passage_Shop()").unwrap();
 
-        assert!(widget_pos < start_pos, "Widget should appear before Start passage");
-        assert!(start_pos < shop_pos, "Passages should be sorted alphabetically");
+        assert!(widget_pos < shop_pos, "Widget should appear before passage functions");
+        // Alphabetically: "Shop" < "Start", so passage_Shop comes first
+        assert!(shop_pos < start_pos, "Passages should be sorted alphabetically (Shop < Start)");
     }
 
     #[test]
