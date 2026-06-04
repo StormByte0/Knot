@@ -41,12 +41,17 @@ use crate::types::MacroCategory;
 #[derive(Debug, Clone)]
 pub(crate) struct ExactLineMapping {
     /// The 0-based line number within the original source file.
-    #[allow(dead_code)] // Reserved for Step 9 line-level diagnostics
+    /// Reserved for line-level diagnostic display and potential future
+    /// use in passage-diagnostics panels.
+    #[allow(dead_code)] // Stored for line-level diagnostics, not yet read in resolve path
     pub original_line: u32,
     /// The byte offset of the start of the source construct in the document.
-    /// Reserved for byte-precise diagnostics in future walk_validate() enhancements.
-    #[allow(dead_code)] // Will be consumed by enhanced diagnostics
     pub original_start_byte: usize,
+    /// The byte offset one-past-the-end of the source construct.
+    /// Together with `original_start_byte`, this defines the precise
+    /// byte span of the source text that produced this JS output line.
+    /// Used by `resolve_source_location()` for byte-precise diagnostics.
+    pub original_end_byte: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +394,7 @@ pub(crate) fn walk_translate(
     line_mappings.push(ExactLineMapping {
         original_line: 0,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // Emit temp var declarations
@@ -398,6 +404,7 @@ pub(crate) fn walk_translate(
         line_mappings.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
     }
 
@@ -415,6 +422,7 @@ pub(crate) fn walk_translate(
     line_mappings.push(ExactLineMapping {
         original_line: 0,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // INVARIANT: js_output line count MUST equal line_mappings length.
@@ -510,7 +518,7 @@ fn walk_translate_inner(
                     // Only emit if the translation produced actual variable references
                     if translated.contains("State.variables.") {
                         let text_js = format!("{}/* read: {} */;\n", indent_str, translated.trim());
-                        append_with_mapping(&text_js, source_line, span.start, js_output, line_mappings);
+                        append_with_mapping(&text_js, source_line, span.start, span.end, js_output, line_mappings);
                     }
                 } else {
                     let _ = (content, span);
@@ -553,6 +561,7 @@ fn walk_translate_inner(
                                     line_mappings.push(ExactLineMapping {
                                         original_line: source_line,
                                         original_start_byte: span.start,
+                                        original_end_byte: span.end,
                                     });
                                     js_output.push_str(&js_line);
                                 }
@@ -560,7 +569,7 @@ fn walk_translate_inner(
                         } else if is_block {
                             // Block macro: emit open tag, translate children, emit close tag
                             let open_js = super::super::virtual_doc::translate_block_open(ctx, macro_name, args, indent);
-                            append_with_mapping(&open_js, source_line, span.start, js_output, line_mappings);
+                            append_with_mapping(&open_js, source_line, span.start, span.end, js_output, line_mappings);
 
                             // Recursively translate children with indent+1
                             if let Some(children) = children {
@@ -575,16 +584,16 @@ fn walk_translate_inner(
                             if let Some(close_span) = close_span {
                                 let close_line = line_from_span(close_span.start, body, body_offset);
                                 let close_js = super::super::virtual_doc::translate_close_tag(macro_name, indent);
-                                append_with_mapping(&close_js, close_line, close_span.start, js_output, line_mappings);
+                                append_with_mapping(&close_js, close_line, close_span.start, close_span.end, js_output, line_mappings);
                             }
                         } else if super::super::virtual_doc::is_block_macro(ctx, macro_name) {
                             // Block macro that has no children (unclosed) — emit open only
                             let open_js = super::super::virtual_doc::translate_block_open(ctx, macro_name, args, indent);
-                            append_with_mapping(&open_js, source_line, span.start, js_output, line_mappings);
+                            append_with_mapping(&open_js, source_line, span.start, span.end, js_output, line_mappings);
                         } else if ctx.builtin_lookup.contains_key(macro_name) || macro_name == "when" {
                             // Inline builtin macro
                             let inline_js = super::super::virtual_doc::translate_inline_macro(ctx, macro_name, args, indent);
-                            append_with_mapping(&inline_js, source_line, span.start, js_output, line_mappings);
+                            append_with_mapping(&inline_js, source_line, span.start, span.end, js_output, line_mappings);
                         } else if ctx.callable_names.contains(macro_name) {
                             // User-defined callable (widget invocation / custom macro)
                             let indent_str = "  ".repeat(indent);
@@ -598,7 +607,7 @@ fn walk_translate_inner(
                             } else {
                                 format!("{}{}({});\n", indent_str, macro_name, translated_args)
                             };
-                            append_with_mapping(&callable_js, source_line, span.start, js_output, line_mappings);
+                            append_with_mapping(&callable_js, source_line, span.start, span.end, js_output, line_mappings);
                         } else {
                             // Unknown macro — treat as stateful (it might be a
                             // user callable we haven't detected, or a macro that
@@ -610,7 +619,7 @@ fn walk_translate_inner(
                                 args
                             );
                             let unknown_js = format!("{}/* unknown: {} */;\n", indent_str, full_tag);
-                            append_with_mapping(&unknown_js, source_line, span.start, js_output, line_mappings);
+                            append_with_mapping(&unknown_js, source_line, span.start, span.end, js_output, line_mappings);
                         }
                     }
 
@@ -640,7 +649,7 @@ fn walk_translate_inner(
                 let indent_str = "  ".repeat(indent);
                 let translated_expr = super::super::virtual_doc::translate_expression(content);
                 let expr_js = format!("{}/* print: {} */;\n", indent_str, translated_expr);
-                append_with_mapping(&expr_js, source_line, span.start, js_output, line_mappings);
+                append_with_mapping(&expr_js, source_line, span.start, span.end, js_output, line_mappings);
             }
 
             PassageNode::Heading { span, .. } => {
@@ -652,7 +661,7 @@ fn walk_translate_inner(
                 let source_line = line_from_span(span.start, body, body_offset);
                 let indent_str = "  ".repeat(indent);
                 let error_js = format!("{}/* error: {} */;\n", indent_str, message);
-                append_with_mapping(&error_js, source_line, span.start, js_output, line_mappings);
+                append_with_mapping(&error_js, source_line, span.start, span.end, js_output, line_mappings);
             }
         }
     }
@@ -799,6 +808,7 @@ fn append_with_mapping(
     js_text: &str,
     source_line: u32,
     source_start_byte: usize,
+    source_end_byte: usize,
     js_output: &mut String,
     line_mappings: &mut Vec<ExactLineMapping>,
 ) {
@@ -808,6 +818,7 @@ fn append_with_mapping(
         line_mappings.push(ExactLineMapping {
             original_line: source_line,
             original_start_byte: source_start_byte,
+            original_end_byte: source_end_byte,
         });
         js_output.push('\n');
         return;
@@ -820,6 +831,7 @@ fn append_with_mapping(
             line_mappings.push(ExactLineMapping {
                 original_line: source_line,
                 original_start_byte: source_start_byte,
+                original_end_byte: source_end_byte,
             });
             js_output.push_str(line);
             js_output.push('\n');
@@ -832,6 +844,7 @@ fn append_with_mapping(
         line_mappings.push(ExactLineMapping {
             original_line: source_line,
             original_start_byte: source_start_byte,
+            original_end_byte: source_end_byte,
         });
         js_output.push_str(line);
         js_output.push('\n');

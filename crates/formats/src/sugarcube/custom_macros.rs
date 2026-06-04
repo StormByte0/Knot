@@ -265,6 +265,7 @@ pub(crate) fn build_script_passage_js(
     line_map.push(ExactLineMapping {
         original_line: 0,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // Body lines — track which source line each JS line came from.
@@ -291,6 +292,7 @@ pub(crate) fn build_script_passage_js(
         line_map.push(ExactLineMapping {
             original_line: source_line,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
         source_line += 1;
     }
@@ -300,6 +302,7 @@ pub(crate) fn build_script_passage_js(
     line_map.push(ExactLineMapping {
         original_line: 0,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // ── Emit standalone function declarations for Macro.add definitions ──
@@ -373,6 +376,7 @@ fn emit_custom_macro_standalone_function(
     line_map.push(ExactLineMapping {
         original_line: callable.defined_at_line,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // Function signature: function macroName(...args) {
@@ -380,6 +384,7 @@ fn emit_custom_macro_standalone_function(
     line_map.push(ExactLineMapping {
         original_line: callable.defined_at_line,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 
     // Emit argument aliases if arg_count is known
@@ -391,6 +396,7 @@ fn emit_custom_macro_standalone_function(
             line_map.push(ExactLineMapping {
                 original_line: callable.defined_at_line,
                 original_start_byte: body_offset,
+                original_end_byte: body_offset,
             });
         }
     }
@@ -425,6 +431,7 @@ fn emit_custom_macro_standalone_function(
             line_map.push(ExactLineMapping {
                 original_line: callable.defined_at_line,
                 original_start_byte: body_offset,
+                original_end_byte: body_offset,
             });
         }
     }
@@ -434,6 +441,7 @@ fn emit_custom_macro_standalone_function(
     line_map.push(ExactLineMapping {
         original_line: callable.defined_at_line,
         original_start_byte: body_offset,
+        original_end_byte: body_offset,
     });
 }
 

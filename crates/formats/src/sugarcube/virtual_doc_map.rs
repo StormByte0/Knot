@@ -257,15 +257,18 @@ impl VirtualDocMap {
         map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: 0,
+            original_end_byte: 0,
         });
         map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: 0,
+            original_end_byte: 0,
         });
         // Blank line after preamble
         map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: 0,
+            original_end_byte: 0,
         });
 
         // Script passage line maps (sorted, before widgets)
@@ -279,10 +282,12 @@ impl VirtualDocMap {
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
         }
 
@@ -295,10 +300,12 @@ impl VirtualDocMap {
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
         }
 
@@ -318,10 +325,12 @@ impl VirtualDocMap {
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
             map.push(ExactLineMapping {
                 original_line: 0,
                 original_start_byte: 0,
+                original_end_byte: 0,
             });
         }
 
@@ -385,9 +394,9 @@ mod tests {
                 if is_widget { name.to_string() } else { format!("passage_{}", name) }
             ),
             line_map: vec![
-                ExactLineMapping { original_line: 0, original_start_byte: 0 },
-                ExactLineMapping { original_line: 1, original_start_byte: 10 },
-                ExactLineMapping { original_line: 0, original_start_byte: 0 },
+                ExactLineMapping { original_line: 0, original_start_byte: 0, original_end_byte: 0 },
+                ExactLineMapping { original_line: 1, original_start_byte: 10, original_end_byte: 10 },
+                ExactLineMapping { original_line: 0, original_start_byte: 0, original_end_byte: 0 },
             ],
         }
     }

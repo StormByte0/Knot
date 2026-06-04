@@ -44,9 +44,11 @@ use super::virtual_doc_map::VirtualDocMap;
 /// `resolve_source_location()`. It carries the exact byte-level mapping
 /// from virtual doc positions back to .tw source positions.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // file_uri/body_offset reserved for Step 9 byte-span propagation
 struct PassageReverseMap {
     /// The file URI where this passage originates.
+    /// Stored for cross-file diagnostic verification and potential
+    /// future use in multi-file workspaces.
+    #[allow(dead_code)] // Stored for verification, not yet read in resolve path
     file_uri: String,
 
     /// Per-line mapping from JS output lines to source positions.
@@ -57,6 +59,7 @@ struct PassageReverseMap {
     /// The byte offset where the passage body starts in the source file.
     /// This is needed to convert body-relative line numbers back to
     /// document-absolute byte positions.
+    #[allow(dead_code)] // Used in debug assertions, reserved for future enhancements
     body_offset: usize,
 
     /// The complete JS function block (annotation + wrapper + body).
@@ -203,10 +206,17 @@ impl VirtualDocAdapter for SugarCubeAdapter {
             // Strategy: walk the js_block line by line, accumulating byte
             // offsets from 0. Find the line whose byte range overlaps with
             // the diagnostic's passage-relative byte range, then look up
-            // the reverse mapping for that line to get the .tw source byte.
+            // the reverse mapping for that line to get the .tw source byte
+            // span (using both original_start_byte and original_end_byte
+            // for byte-precise resolution).
 
             let js_block = &reverse_map.js_block;
             let mut current_byte = 0usize;
+
+            // Track the best match across all overlapping lines — we want
+            // the byte range that covers the entire diagnostic span.
+            let mut best_start: Option<usize> = None;
+            let mut best_end: Option<usize> = None;
 
             for (line_idx, line) in js_block.lines().enumerate() {
                 let line_start = current_byte;
@@ -218,21 +228,33 @@ impl VirtualDocAdapter for SugarCubeAdapter {
                     // Look up the reverse mapping for this line.
                     if line_idx < reverse_map.line_map.len() {
                         let mapping = &reverse_map.line_map[line_idx];
-                        let original_byte = mapping.original_start_byte;
 
-                        // Compute the byte range within the source.
-                        // We use the original_start_byte as the start and
-                        // extend it by the diagnostic length, capped at a
-                        // reasonable maximum to avoid absurd ranges.
-                        let diag_len = (vdoc_byte_range.end - vdoc_byte_range.start).min(80);
-                        return SourceLocation {
-                            file_uri: file_uri.to_string(),
-                            byte_range: original_byte..(original_byte + diag_len),
-                        };
+                        // Expand the best match to cover this line's source span.
+                        // We take the minimum start and maximum end across all
+                        // overlapping lines to produce the full source range.
+                        let src_start = mapping.original_start_byte;
+                        let src_end = mapping.original_end_byte.max(src_start);
+
+                        best_start = Some(match best_start {
+                            Some(s) => s.min(src_start),
+                            None => src_start,
+                        });
+                        best_end = Some(match best_end {
+                            Some(e) => e.max(src_end),
+                            None => src_end,
+                        });
                     }
                 }
 
                 current_byte = line_end;
+            }
+
+            // If we found at least one matching line, return the merged range
+            if let (Some(start), Some(end)) = (best_start, best_end) {
+                return SourceLocation {
+                    file_uri: file_uri.to_string(),
+                    byte_range: start..end,
+                };
             }
         }
 
@@ -601,12 +623,14 @@ impl SugarCubeAdapter {
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Function declaration line → passage header sentinel
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Body lines from the original translation (skip first entry which
@@ -620,6 +644,7 @@ impl SugarCubeAdapter {
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Verify the invariant: js_block line count == line_map length
@@ -751,12 +776,14 @@ impl SugarCubeAdapter {
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Function declaration line → passage header sentinel
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Body lines from the original translation (skip first entry which
@@ -771,6 +798,7 @@ impl SugarCubeAdapter {
         new_line_map.push(ExactLineMapping {
             original_line: 0,
             original_start_byte: body_offset,
+            original_end_byte: body_offset,
         });
 
         // Verify the invariant: js_block line count == line_map length
