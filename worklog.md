@@ -280,3 +280,47 @@ Stage Summary:
 - Old VirtualDocHooks/FormatPlugin hook pipeline fully excised
 - Old types (VirtualDocument, VirtualSection, etc.) removed from formats crate
 - Clean compilation with no warnings
+
+---
+
+Task ID: 9
+Agent: Main
+Task: Step 9 — Byte-span propagation (Phase 2)
+
+Work Log:
+- Added `original_end_byte: usize` field to `ExactLineMapping` in `walk_translate.rs`
+  - Provides the one-past-the-end byte offset for precise source byte spans
+  - Together with `original_start_byte`, defines the full source byte span
+- Updated `append_with_mapping()` to accept `source_end_byte: usize` parameter
+  - All produced `ExactLineMapping` entries now carry the full span
+- Updated all callers of `append_with_mapping()` in `walk_translate.rs`:
+  - Macro nodes: `source_end_byte = span.end`
+  - Close tag spans: `source_end_byte = close_span.end`
+  - Expression/Error nodes: `source_end_byte = span.end`
+  - Text nodes: `source_end_byte = span.end`
+- Updated all `ExactLineMapping` constructors in `walk_translate.rs`:
+  - Function header/temp var/close brace sentinels: `original_end_byte: body_offset`
+  - `<<script>>` block lines: `original_end_byte: span.end`
+- Updated all `ExactLineMapping` constructors in `custom_macros.rs`:
+  - All entries use `original_end_byte: body_offset` (conservative for script passages)
+- Updated all `ExactLineMapping` constructors in `virtual_doc_map.rs`:
+  - Preamble/separator entries: `original_end_byte: 0`
+  - Test entries: matching `original_start_byte` values
+- Updated all `ExactLineMapping` constructors in `adapter.rs`:
+  - Sentinel entries (annotation, function declaration, closing brace): `original_end_byte: body_offset`
+  - Body lines cloned from walk_translate output inherit `original_end_byte` automatically
+- Rewrote `resolve_source_location()` to use `original_end_byte` for precise byte ranges:
+  - Previously: used `original_start_byte` + heuristic `min(80)` cap for range end
+  - Now: uses `original_end_byte` from the reverse mapping for the exact source span
+  - Multi-line diagnostics: merges overlapping line spans (min start, max end)
+- Cleaned up `#[allow(dead_code)]` annotations:
+  - Removed blanket annotation on `PassageReverseMap` struct
+  - Added targeted annotations on legitimately unused fields (`file_uri`, `body_offset`, `original_line`)
+  - `original_start_byte` and `original_end_byte` are now actively consumed by `resolve_source_location()`
+- Zero errors, zero warnings on cargo check
+
+Stage Summary:
+- Step 9 COMPLETE — byte-span propagation implemented
+- `ExactLineMapping` now carries full byte spans (start + end) for each source construct
+- `resolve_source_location()` produces precise source byte ranges instead of heuristic approximations
+- All 9 migration steps complete
