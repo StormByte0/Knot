@@ -832,6 +832,73 @@ impl Notification for KnotRefreshVirtualDocNotification {
 }
 
 // ---------------------------------------------------------------------------
+// knot/jsDiagnostics — relay JS diagnostics from client to server
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/jsDiagnostics` — relay JS diagnostics from the client's
+/// built-in JS service to the server for processing.
+///
+/// VSCode's built-in JavaScript/TypeScript language service runs inside the
+/// extension host process (client-side). It validates the virtual document
+/// served by the `knot-vdoc://` content provider. The server cannot directly
+/// access these diagnostics, so the client relays them via this request.
+///
+/// The server runs the two-stage diagnostic relay:
+/// 1. **Stage 1 (Core):** Binary search byte ranges → passage identity
+/// 2. **Stage 2 (Format):** Adapter reverse-maps to exact .tw byte range
+///    and interprets the diagnostic (filter false positives, rephrase messages)
+///
+/// The server then publishes `.tw` diagnostics via `textDocument/publishDiagnostics`,
+/// ensuring a single diagnostic source per file (no conflicting client-side
+/// DiagnosticCollection).
+///
+/// ## Why a request, not a notification?
+///
+/// tower-lsp's `.custom_method()` registers handlers for JSON-RPC methods.
+/// Using a request (with a trivial response) ensures reliable dispatch and
+/// allows the client to await acknowledgment if needed. The overhead is
+/// negligible — one small response message per batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnotJsDiagnosticsParams {
+    /// The URI of the virtual doc that the diagnostics apply to
+    /// (always `knot-vdoc://workspace/virtual-doc.js`).
+    pub uri: String,
+    /// JS diagnostics from VSCode's built-in JS service.
+    pub diagnostics: Vec<KnotJsDiagnostic>,
+}
+
+/// A single JS diagnostic from VSCode's built-in JS service.
+///
+/// Uses line/character positions (not byte offsets) because that's what
+/// VSCode's diagnostic API provides. The server converts these to byte
+/// offsets using its virtual doc content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnotJsDiagnostic {
+    /// 0-based line number in the virtual doc where the diagnostic starts.
+    pub start_line: u32,
+    /// 0-based character offset on the start line.
+    pub start_character: u32,
+    /// 0-based line number in the virtual doc where the diagnostic ends.
+    pub end_line: u32,
+    /// 0-based character offset on the end line.
+    pub end_character: u32,
+    /// The diagnostic message from the JS service.
+    pub message: String,
+    /// Severity: 1=Error, 2=Warning, 3=Information, 4=Hint.
+    pub severity: u32,
+    /// The diagnostic code, if any (e.g., TS error code like "2304").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// Response: `knot/jsDiagnostics` — trivial acknowledgment.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotJsDiagnosticsResponse {
+    /// Number of diagnostics that were successfully processed and published.
+    pub processed: u32,
+}
+
+// ---------------------------------------------------------------------------
 // workspace/semanticTokens/refresh — standard LSP request (missing from
 // lsp-types 0.94, defined here for tower-lsp send_request)
 // ---------------------------------------------------------------------------

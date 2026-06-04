@@ -68,12 +68,17 @@ pub(crate) fn incoming_link_sources(workspace: &Workspace, passage_name: &str) -
 /// Publish diagnostics to **all** affected files. This combines:
 /// - Graph analysis diagnostics (broken links, unreachable, loops, etc.)
 /// - Format plugin diagnostics (syntax errors, parsing warnings, etc.)
+/// - JS virtual doc diagnostics (relayed from client, resolved by adapter)
 ///
 /// Groups results by `file_uri` and publishes each group separately.
+/// Since LSP `publishDiagnostics` replaces all previous diagnostics for a URI,
+/// all three sources must be published together to avoid one source wiping
+/// out another's diagnostics.
 pub(crate) async fn publish_all_diagnostics(
     client: &tower_lsp::Client,
     graph_diagnostics: &[knot_core::graph::GraphDiagnostic],
     format_diagnostics: &std::collections::HashMap<Url, Vec<fmt_plugin::FormatDiagnostic>>,
+    js_diagnostics: &std::collections::HashMap<Url, Vec<Diagnostic>>,
     open_documents: &std::collections::HashMap<Url, String>,
     workspace: &Workspace,
     config: &knot_core::workspace::KnotConfig,
@@ -93,6 +98,7 @@ pub(crate) async fn publish_all_diagnostics(
     let all_uris: std::collections::HashSet<Url> = open_documents
         .keys()
         .chain(format_diagnostics.keys())
+        .chain(js_diagnostics.keys())
         .cloned()
         .collect();
 
@@ -165,6 +171,12 @@ pub(crate) async fn publish_all_diagnostics(
                     ..Default::default()
                 });
             }
+        }
+
+        // Add JS virtual doc diagnostics for this file (relayed from client,
+        // resolved to .tw byte ranges by the adapter's diagnostic pipeline)
+        if let Some(js_diags) = js_diagnostics.get(uri) {
+            lsp_diagnostics.extend(js_diags.iter().cloned());
         }
 
         client

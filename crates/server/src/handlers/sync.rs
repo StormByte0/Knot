@@ -101,6 +101,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
+    // ── Rebuild virtual document ──────────────────────────────
+    // After the document is opened and the workspace is updated,
+    // rebuild the virtual doc so it includes the new passages.
+    helpers::indexing::rebuild_virtual_doc_if_available(&mut inner);
+
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
 
@@ -116,7 +121,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
     }
 
     if should_notify {
@@ -299,6 +304,27 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     let format_after = inner.workspace.resolve_format();
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
+
+    // ── Update virtual document ──────────────────────────────────
+    // After the passage is updated in the workspace, also update the
+    // VirtualDocManager. For modified passages, do a surgical update.
+    // For format changes, do a full rebuild.
+    if should_notify {
+        // Format changed — need a full rebuild of the virtual doc
+        helpers::indexing::rebuild_virtual_doc_if_available(&mut inner);
+    } else {
+        // Update the affected passages in the virtual doc
+        for passage_name in &surgery_result.modified {
+            helpers::indexing::update_virtual_doc_passage(&mut inner, passage_name);
+        }
+        for passage_name in &surgery_result.added {
+            helpers::indexing::update_virtual_doc_passage(&mut inner, passage_name);
+        }
+        for passage_name in &surgery_result.removed {
+            inner.virtual_doc_manager.remove_passage(passage_name);
+        }
+    }
+
     drop(inner); // ← release write lock
 
     // ── Phase 2: read-lock — analysis (read-only) ──────────────────
@@ -338,7 +364,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // ── Phase 3: publish (needs workspace read lock for variable related info) ──
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
     }
 
     if should_notify {
@@ -473,7 +499,7 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
 
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
     }
 }
 
@@ -565,7 +591,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         {
                             let inner = state.inner.read().await;
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
                         }
 
                         // Notify client if format changed after file creation
@@ -662,7 +688,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                 {
                     let inner = state.inner.read().await;
-                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
                 }
 
                 // Notify remaining open documents that their semantic tokens may be stale
@@ -735,7 +761,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                             {
                                 let inner = state.inner.read().await;
-                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config).await;
+                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
                             }
 
                             if should_notify {

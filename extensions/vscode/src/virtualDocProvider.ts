@@ -27,8 +27,7 @@
 //! 3. Publish as `vscode.Diagnostic` on the .tw file
 
 import * as vscode from 'vscode';
-import { KnotLanguageClient, KnotVirtualDocResponse, KnotVirtualDocLineEntry } from './types';
-import { extractPassageName } from './utils';
+import { KnotLanguageClient, KnotVirtualDocResponse, KnotJsDiagnosticsParams, KnotJsDiagnostic, KnotJsDiagnosticsResponse } from './types';
 
 // ---------------------------------------------------------------------------
 // Virtual Document Content Provider
@@ -204,36 +203,35 @@ class KnotVirtualDocProvider implements vscode.TextDocumentContentProvider {
 // Diagnostic Routing: JS errors on virtual doc → .tw diagnostics
 // ---------------------------------------------------------------------------
 
-/** Custom diagnostic collection for Knot virtual doc → .tw diagnostic routing. */
-const VDOC_DIAGNOSTIC_COLLECTION = 'knot-virtual-doc';
-
 class KnotVirtualDocDiagnostics {
     private client: KnotLanguageClient;
-    private diagnosticCollection: vscode.DiagnosticCollection;
-    /** Map from .tw file URI to its diagnostics. */
-    private twDiagnostics: Map<string, vscode.Diagnostic[]> = new Map();
+    /** Debounce timer for batching diagnostics before relaying. */
+    private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Pending diagnostics to relay. */
+    private pendingDiagnostics: KnotJsDiagnostic[] = [];
 
     constructor(client: KnotLanguageClient) {
         this.client = client;
-        this.diagnosticCollection = vscode.languages.createDiagnosticCollection(VDOC_DIAGNOSTIC_COLLECTION);
     }
 
     dispose(): void {
-        this.diagnosticCollection.dispose();
+        if (this.debounceTimer) {
+            clearTimeout(this.debounceTimer);
+            this.debounceTimer = null;
+        }
     }
 
     /**
      * Called when VSCode's diagnostic collection changes.
      * We check if any diagnostics appeared on our virtual doc and
-     * route them back to the .tw source files.
+     * relay them to the server for processing via the two-stage
+     * diagnostic relay pipeline.
      *
-     * ## Deduplication
+     * ## Debouncing
      *
-     * JS parser errors often cascade — a single missing comma causes
-     * "expected `,`", "expected `)`", etc. on the same or nearby lines.
-     * All of these map back to the same .tw source line, creating a
-     * confusing list in the hover. We keep only the **first** diagnostic
-     * per source line per file to show a single relevant error.
+     * JS diagnostics can arrive in bursts (e.g., after a full virtual
+     * doc refresh). We collect diagnostics for 300ms after the first
+     * diagnostic appears, then send a single batch to the server.
      */
     async onDiagnosticsChanged(event: vscode.DiagnosticChangeEvent): Promise<void> {
         // Check if any of the changed URIs are our virtual doc
@@ -242,143 +240,65 @@ class KnotVirtualDocDiagnostics {
             return;
         }
 
-        // Get diagnostics from VSCode for the virtual doc
-        const lineMap = cachedResponse?.line_map;
-        if (!lineMap || lineMap.length === 0) {
-            return;
-        }
-
-        // Clear previous .tw diagnostics
-        this.twDiagnostics.clear();
-
-        // Track which source lines already have a diagnostic (dedup key: "uri:line")
-        const seenLines = new Set<string>();
-
-        // Process each virtual doc URI
+        // Collect raw JS diagnostics from VSCode
         for (const vdocUri of vdocUris) {
             const allDiags = vscode.languages.getDiagnostics(vdocUri);
 
             for (const diag of allDiags) {
-                // Convert virtual doc line to .tw source position
-                const vdocLine = diag.range.start.line;
-                if (vdocLine >= lineMap.length) {
-                    continue;
-                }
-
-                const mapping = lineMap[vdocLine];
-                if (!mapping.passage_name || !mapping.file_uri) {
-                    // Preamble line — skip
-                    continue;
-                }
-
-                // Parse the file URI
-                let twUri: vscode.Uri;
-                try {
-                    twUri = vscode.Uri.parse(mapping.file_uri);
-                } catch {
-                    continue;
-                }
-
-                // Find the passage in the .tw file to compute the correct position
-                // The mapping gives us original_line (0-based, within passage body).
-                // We need to convert this to a document-absolute line number.
-                const twLine = await this.findPassageBodyLine(
-                    twUri,
-                    mapping.passage_name,
-                    mapping.original_line,
-                );
-
-                // Dedup: only keep the first diagnostic per source line
-                const dedupKey = `${twUri.toString()}:${twLine}`;
-                if (seenLines.has(dedupKey)) {
-                    continue;
-                }
-                seenLines.add(dedupKey);
-
-                // Create the diagnostic for the .tw file
-                const twRange = new vscode.Range(
-                    twLine,
-                    0,
-                    twLine,
-                    1000, // Large end char to cover the line
-                );
-
-                const twDiag = new vscode.Diagnostic(
-                    twRange,
-                    `[JS] ${diag.message}`,
-                    diag.severity ?? vscode.DiagnosticSeverity.Warning,
-                );
-                twDiag.source = 'knot (virtual doc)';
-                twDiag.relatedInformation = [
-                    new vscode.DiagnosticRelatedInformation(
-                        new vscode.Location(vdocUri, diag.range),
-                        'Virtual document JS error',
-                    ),
-                ];
-
-                // Add to the map
-                const key = twUri.toString();
-                if (!this.twDiagnostics.has(key)) {
-                    this.twDiagnostics.set(key, []);
-                }
-                this.twDiagnostics.get(key)!.push(twDiag);
+                this.pendingDiagnostics.push({
+                    start_line: diag.range.start.line,
+                    start_character: diag.range.start.character,
+                    end_line: diag.range.end.line,
+                    end_character: diag.range.end.character,
+                    message: diag.message,
+                    severity: this.convertSeverity(diag.severity),
+                    code: diag.code?.toString(),
+                });
             }
         }
 
-        // Publish the .tw diagnostics
-        this.diagnosticCollection.clear();
-        for (const [uriStr, diags] of this.twDiagnostics) {
-            try {
-                const uri = vscode.Uri.parse(uriStr);
-                this.diagnosticCollection.set(uri, diags);
-            } catch {
-                // Skip invalid URIs
-            }
+        // Debounce: wait 300ms before sending the batch
+        if (this.debounceTimer) {
+            clearTimeout(this.debounceTimer);
+        }
+
+        this.debounceTimer = setTimeout(() => {
+            this.debounceTimer = null;
+            this.flushDiagnostics();
+        }, 300);
+    }
+
+    /**
+     * Send the collected diagnostics to the server.
+     */
+    private flushDiagnostics(): void {
+        if (this.pendingDiagnostics.length === 0) {
+            return;
+        }
+
+        const diagnostics = this.pendingDiagnostics.splice(0);
+        const params: KnotJsDiagnosticsParams = {
+            uri: VDOC_URI.toString(),
+            diagnostics,
+        };
+
+        try {
+            this.client.sendRequest<KnotJsDiagnosticsResponse>('knot/jsDiagnostics', params);
+        } catch (error) {
+            console.error('Knot: Failed to relay JS diagnostics:', error);
         }
     }
 
     /**
-     * Find the document-absolute line number for a passage body line.
-     *
-     * Given a passage name and a 0-based line within the passage body,
-     * find the actual line number in the .tw file by scanning for the
-     * passage header and counting down.
-     *
-     * Uses `extractPassageName()` from utils.ts to correctly handle
-     * passage names with spaces, tags, and JSON metadata.
-     * For example, `:: Forest Entrance [outdoor]` yields "Forest Entrance",
-     * not just "Forest".
+     * Convert VSCode DiagnosticSeverity to the numeric wire format.
      */
-    private async findPassageBodyLine(
-        twUri: vscode.Uri,
-        passageName: string,
-        bodyLine: number,
-    ): Promise<number> {
-        try {
-            const doc = await vscode.workspace.openTextDocument(twUri);
-            const text = doc.getText();
-            const lines = text.split('\n');
-
-            // Find the passage header line
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i];
-                if (!line.trimStart().startsWith('::')) {
-                    continue;
-                }
-                // Use the shared extractPassageName() utility which correctly
-                // strips tags ([...]) and JSON metadata ({...}), preserving
-                // passage names that contain spaces like "Forest Entrance".
-                const extractedName = extractPassageName(line).trim();
-                if (extractedName === passageName) {
-                    // The header is on line i. Body starts on line i+1.
-                    // bodyLine is 0-based within the body, so:
-                    return i + 1 + bodyLine;
-                }
-            }
-        } catch {
-            // If we can't read the file, fall back to bodyLine as-is
+    private convertSeverity(severity: vscode.DiagnosticSeverity): number {
+        switch (severity) {
+            case vscode.DiagnosticSeverity.Error: return 1;
+            case vscode.DiagnosticSeverity.Warning: return 2;
+            case vscode.DiagnosticSeverity.Information: return 3;
+            case vscode.DiagnosticSeverity.Hint: return 4;
+            default: return 2; // Default to Warning
         }
-
-        return bodyLine;
     }
 }

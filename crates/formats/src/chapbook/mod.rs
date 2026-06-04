@@ -30,6 +30,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 use url::Url;
 
+pub mod adapter;
+
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,

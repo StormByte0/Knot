@@ -11,6 +11,7 @@ export interface KnotLanguageClient {
     stop(): Promise<void>;
     isRunning(): boolean;
     sendRequest<T>(method: string, params: object): Promise<T>;
+    sendNotification(method: string, params: object): void;
     onNotification<P = Record<string, unknown>>(type: { method: string }, handler: (params: P) => void): void;
 }
 
@@ -368,4 +369,40 @@ export interface KnotVirtualDocLineEntry {
     file_uri: string;
     /** The 0-based line number within the original passage body. */
     original_line: number;
+}
+
+// ---------------------------------------------------------------------------
+// JS Diagnostics relay types (matches Rust-side KnotJsDiagnosticsParams)
+// ---------------------------------------------------------------------------
+
+/** Request: knot/jsDiagnostics — relay JS diagnostics from client to server. */
+export interface KnotJsDiagnosticsParams {
+    /** The URI of the virtual doc. */
+    uri: string;
+    /** JS diagnostics from VSCode's built-in JS service. */
+    diagnostics: KnotJsDiagnostic[];
+}
+
+/** A single JS diagnostic from VSCode's built-in JS service. */
+export interface KnotJsDiagnostic {
+    /** 0-based line number where the diagnostic starts. */
+    start_line: number;
+    /** 0-based character offset on the start line. */
+    start_character: number;
+    /** 0-based line number where the diagnostic ends. */
+    end_line: number;
+    /** 0-based character offset on the end line. */
+    end_character: number;
+    /** The diagnostic message. */
+    message: string;
+    /** Severity: 1=Error, 2=Warning, 3=Information, 4=Hint. */
+    severity: number;
+    /** The diagnostic code, if any. */
+    code?: string;
+}
+
+/** Response: knot/jsDiagnostics */
+export interface KnotJsDiagnosticsResponse {
+    /** Number of diagnostics successfully processed. */
+    processed: number;
 }

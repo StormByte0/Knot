@@ -27,6 +27,7 @@ pub mod passage_tree;
 pub mod virtual_doc_map;
 pub mod variable_tree;
 pub mod custom_macros;
+pub mod adapter;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
 use std::collections::{HashMap, HashSet};
