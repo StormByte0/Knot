@@ -44,13 +44,11 @@ pub use types::{
     MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
     ResolvedNavLink,
-    VirtualDocument, VirtualSection, VirtualSectionKind, LineMapping,
     StartupAlias, AliasResolution,
     UserCallable, UserCallableKind, PassageInfo,
     PropertyKind, PropertyMapEntry,
     PassageVarRef,
 };
-pub use virtual_doc::VirtualDocHooks;
 
 #[cfg(test)]
 mod integration_tests;

@@ -3,7 +3,6 @@
 use crate::lsp_ext::*;
 use crate::state::CoreDocumentCache;
 use knot_core::passage::StoryFormat;
-use knot_core::virtual_doc::VirtualDocAdapter;
 use knot_core::workspace::StoryMetadata;
 use lsp_types::*;
 use std::collections::HashMap;

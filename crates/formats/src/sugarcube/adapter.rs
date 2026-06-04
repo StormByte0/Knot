@@ -32,7 +32,7 @@ use super::comments;
 use super::custom_macros;
 use super::passage_tree::{parse_passage_body, walk_translate, ExactLineMapping};
 use super::virtual_doc::{extract_startup_aliases, extract_user_callables};
-use super::virtual_doc_map::{PassageDocEntry, VirtualDocMap};
+use super::virtual_doc_map::VirtualDocMap;
 
 // ---------------------------------------------------------------------------
 // Reverse-mapping state per passage
@@ -44,6 +44,7 @@ use super::virtual_doc_map::{PassageDocEntry, VirtualDocMap};
 /// `resolve_source_location()`. It carries the exact byte-level mapping
 /// from virtual doc positions back to .tw source positions.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // file_uri/body_offset reserved for Step 9 byte-span propagation
 struct PassageReverseMap {
     /// The file URI where this passage originates.
     file_uri: String,
@@ -245,7 +246,7 @@ impl VirtualDocAdapter for SugarCubeAdapter {
     fn interpret_diagnostic(
         &self,
         js_diagnostic: &JsDiagnostic,
-        passage_name: &str,
+        _passage_name: &str,
         file_uri: &str,
     ) -> Option<TwDiagnostic> {
         // SugarCube-specific diagnostic interpretation.
@@ -326,8 +327,7 @@ impl VirtualDocAdapter for SugarCubeAdapter {
         workspace: &knot_core::Workspace,
         source_text: &dyn SourceTextProvider,
     ) -> Vec<StartupAlias> {
-        // Collect all script passage bodies and build a synthetic
-        // VirtualSection that the existing extract_startup_aliases() can process.
+        // Collect all script passage bodies into a unified string
         let mut unified_script = String::new();
         for doc in workspace.documents() {
             let file_uri = doc.uri.to_string();
@@ -348,16 +348,8 @@ impl VirtualDocAdapter for SugarCubeAdapter {
             return Vec::new();
         }
 
-        // Build a synthetic VirtualSection to reuse the existing extraction logic
-        use crate::types::{LineMapping, VirtualSection, VirtualSectionKind};
-        let section = VirtualSection {
-            kind: VirtualSectionKind::UnifiedScript,
-            source_text: unified_script,
-            line_map: Vec::<LineMapping>::new(),
-        };
-
-        // The existing extract_startup_aliases takes &[VirtualSection]
-        let aliases = extract_startup_aliases(&[section]);
+        // The refactored extract_startup_aliases takes &str directly
+        let aliases = extract_startup_aliases(&unified_script);
 
         // Convert from formats' StartupAlias to core's StartupAlias
         aliases.into_iter().map(|a| {

@@ -311,7 +311,7 @@ pub trait VirtualDocAdapter: Send + Sync {
     /// Default: empty Vec (formats without JS aliases, like Harlowe).
     fn extract_startup_aliases(
         &self,
-        _workspace: &knot_core::Workspace,
+        _workspace: &Workspace,
         _source_text: &dyn SourceTextProvider,
     ) -> Vec<StartupAlias> {
         Vec::new()
@@ -330,7 +330,7 @@ pub trait VirtualDocAdapter: Send + Sync {
     /// Default: empty Vec (formats without user-defined callables).
     fn extract_user_callables(
         &self,
-        _workspace: &knot_core::Workspace,
+        _workspace: &Workspace,
         _source_text: &dyn SourceTextProvider,
     ) -> Vec<UserCallable> {
         Vec::new()

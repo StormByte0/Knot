@@ -104,7 +104,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // ── Rebuild virtual document ──────────────────────────────
     // After the document is opened and the workspace is updated,
     // rebuild the virtual doc so it includes the new passages.
-    helpers::indexing::rebuild_virtual_doc_if_available(&mut inner);
+    helpers::rebuild_virtual_doc_if_available(&mut inner);
 
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
@@ -311,14 +311,14 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // For format changes, do a full rebuild.
     if should_notify {
         // Format changed — need a full rebuild of the virtual doc
-        helpers::indexing::rebuild_virtual_doc_if_available(&mut inner);
+        helpers::rebuild_virtual_doc_if_available(&mut inner);
     } else {
         // Update the affected passages in the virtual doc
         for passage_name in &surgery_result.modified {
-            helpers::indexing::update_virtual_doc_passage(&mut inner, passage_name);
+            helpers::update_virtual_doc_passage(&mut inner, passage_name);
         }
         for passage_name in &surgery_result.added {
-            helpers::indexing::update_virtual_doc_passage(&mut inner, passage_name);
+            helpers::update_virtual_doc_passage(&mut inner, passage_name);
         }
         for passage_name in &surgery_result.removed {
             inner.virtual_doc_manager.remove_passage(passage_name);

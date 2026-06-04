@@ -252,3 +252,31 @@ Stage Summary:
 - Adapter context now receives proper startup aliases and user callables
 - Byte-range calculations are now passage-relative throughout
 - Line map provides passage-relative line numbers
+
+---
+
+Task ID: 8
+Agent: Main
+Task: Step 8 — Remove old virtual doc code (VirtualDocHooks, FormatPlugin methods, old types, fallback paths)
+
+Work Log:
+- Removed old FormatPlugin fallback path in knot_virtual_doc handler (knot_ext.rs)
+- Removed FormatPlugin::virtual_doc_content(), virtual_doc_line_map() trait methods
+- Removed FormatPlugin::extract_startup_aliases(), has_variable_affecting_content(), translate_passage_to_js(), build_virtual_document() trait methods
+- Removed blanket impl VirtualDocHooks for T: FormatPlugin
+- Removed VirtualDocHooks trait, build_core_virtual_document(), build_format_section_line_map() from formats/src/virtual_doc.rs
+- Removed VirtualDocLineMapEntry, VirtualDocument, VirtualSection, VirtualSectionKind, LineMapping types from formats/src/types.rs
+- Removed corresponding re-exports from formats/src/lib.rs
+- Removed SugarCube FormatPlugin hook overrides (extract_startup_aliases, has_variable_affecting_content, translate_passage_to_js, extract_user_callables, virtual_doc_content, virtual_doc_line_map)
+- Refactored extract_startup_aliases() in sugarcube/virtual_doc.rs: changed signature from `&[VirtualSection]` to `&str` to decouple from old types
+- Updated SugarCubeAdapter::extract_startup_aliases() to call refactored function directly (no more synthetic VirtualSection construction)
+- Fixed compilation errors: indexing module visibility, CoreDocumentCache trait import, removed analyze_workspace call
+- Fixed all compilation warnings: unused imports, dead code annotations
+- Zero errors, zero warnings on cargo check
+
+Stage Summary:
+- Step 8 COMPLETE — all old virtual doc code paths removed
+- VirtualDocManager is now the sole source of virtual doc content
+- Old VirtualDocHooks/FormatPlugin hook pipeline fully excised
+- Old types (VirtualDocument, VirtualSection, etc.) removed from formats crate
+- Clean compilation with no warnings

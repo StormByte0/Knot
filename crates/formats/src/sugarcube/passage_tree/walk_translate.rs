@@ -41,6 +41,7 @@ use crate::types::MacroCategory;
 #[derive(Debug, Clone)]
 pub(crate) struct ExactLineMapping {
     /// The 0-based line number within the original source file.
+    #[allow(dead_code)] // Reserved for Step 9 line-level diagnostics
     pub original_line: u32,
     /// The byte offset of the start of the source construct in the document.
     /// Reserved for byte-precise diagnostics in future walk_validate() enhancements.

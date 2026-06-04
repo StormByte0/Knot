@@ -1191,65 +1191,6 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     // -------------------------------------------------------------------
-    // Virtual document hooks (SugarCube-specific)
-    // -------------------------------------------------------------------
-
-    fn extract_startup_aliases(
-        &self,
-        sections: &[crate::types::VirtualSection],
-    ) -> Vec<crate::types::StartupAlias> {
-        virtual_doc::extract_startup_aliases(sections)
-    }
-
-    fn has_variable_affecting_content(&self, passage_body: &str) -> bool {
-        virtual_doc::has_variable_macros(passage_body)
-    }
-
-    fn translate_passage_to_js(
-        &self,
-        passage_body: &str,
-        callables: &[crate::types::UserCallable],
-        passage_name: &str,
-        file_uri: &str,
-    ) -> Option<(String, Vec<crate::types::LineMapping>)> {
-        // Build the tree and use walk_translate for exact line mapping.
-        // Determine if this passage is a widget passage: a passage is a
-        // widget passage if any user callable with kind==Widget is defined
-        // in this passage.
-        let is_widget = callables.iter().any(|c| {
-            c.kind == crate::types::UserCallableKind::Widget && c.defined_in == passage_name
-        });
-
-        let tree = passage_tree::parse_passage_body(passage_body, 0);
-
-        // Compute comment spans for this passage body (body-relative, body_offset=0)
-        let comment_spans = comments::find_all_comment_spans(passage_body, false);
-
-        let result = passage_tree::walk_translate(
-            &tree, passage_body, 0, callables, passage_name, is_widget,
-            &comment_spans,
-        );
-
-        // Convert ExactLineMapping to LineMapping
-        let line_map: Vec<crate::types::LineMapping> = result.line_map.into_iter().map(|em| {
-            crate::types::LineMapping {
-                passage_name: passage_name.to_string(),
-                file_uri: file_uri.to_string(),
-                original_line: em.original_line,
-            }
-        }).collect();
-
-        Some((result.js_function, line_map))
-    }
-
-    fn extract_user_callables(
-        &self,
-        passages: &[crate::types::PassageInfo],
-    ) -> Vec<crate::types::UserCallable> {
-        virtual_doc::extract_user_callables(passages)
-    }
-
-    // -------------------------------------------------------------------
     // Passage variable references (virtual document → passage diagnostics)
     // -------------------------------------------------------------------
 
@@ -1306,34 +1247,6 @@ impl FormatPlugin for SugarCubePlugin {
             }
         }
         refs
-    }
-
-    // -------------------------------------------------------------------
-    // Per-passage virtual doc access (Phase C)
-    // -------------------------------------------------------------------
-
-    fn virtual_doc_content(&self) -> Option<String> {
-        // Delegate to the VirtualDocMap side table. The map assembles
-        // the monolithic JS string on demand from individual passage entries.
-        let docs = self.virtual_docs.read().unwrap();
-        if docs.is_empty() {
-            None
-        } else {
-            Some(docs.assemble_virtual_doc())
-        }
-    }
-
-    fn virtual_doc_line_map(&self) -> Option<Vec<crate::types::VirtualDocLineMapEntry>> {
-        // Delegate to the VirtualDocMap side table. It builds the annotated
-        // line map on demand, walking the same assembly order as
-        // assemble_virtual_doc() and tagging each line with passage name
-        // and source file URI.
-        let docs = self.virtual_docs.read().unwrap();
-        if docs.is_empty() {
-            None
-        } else {
-            Some(docs.assemble_annotated_line_map())
-        }
     }
 }
 

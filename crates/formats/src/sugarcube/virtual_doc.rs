@@ -24,7 +24,6 @@
 
 use crate::types::{
     AliasResolution, MacroDef, PassageInfo, StartupAlias, UserCallable, UserCallableKind,
-    VirtualSection, VirtualSectionKind,
 };
 use regex::Regex;
 use std::collections::HashMap;
@@ -86,16 +85,19 @@ static RE_VD_NAMED_GETTER: LazyLock<Regex> = LazyLock::new(|| {
 /// Group 1: "/" if close tag, empty if open tag
 /// Group 2: macro name (=, -, or alphanumeric)
 /// Group 3: arguments (optional)
+#[allow(dead_code)] // Only used by old translate_body; passage_tree has its own parser
 static RE_MACRO_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"<<(/?)(=|-|[A-Za-z_][A-Za-z0-9_]*)(?:\s+([\s\S]*?))?>>").unwrap()
 });
 
 /// `$var++` / `++$var` / `$var--` / `--$var`
+#[allow(dead_code)] // Only used by translate_text_segment below
 static RE_VD_INCREMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)\+\+|\+\+\$([A-Za-z\$_][A-Za-z0-9\$_]*))")
         .unwrap()
 });
 
+#[allow(dead_code)] // Only used by translate_text_segment below
 static RE_VD_DECREMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\$([A-Za-z\$_][A-Za-z0-9\$_]*)--|--\$([A-Za-z\$_][A-Za-z0-9\$_]*))")
         .unwrap()
@@ -288,17 +290,21 @@ static RE_WIDGET_DEF: LazyLock<Regex> = LazyLock::new(|| {
 /// - `var g = gs()` → StateVariables alias (gs() returns State.variables)
 /// - `var x = State.variables.propName` → StateVariableProperty alias
 /// - `function reg(name) { return State.variables[name]; }` → GetterFunction alias
-pub fn extract_startup_aliases(sections: &[VirtualSection]) -> Vec<StartupAlias> {
+/// Extract startup aliases from script passage source text.
+///
+/// Takes the concatenated script passage text directly (instead of
+/// `&[VirtualSection]` as before). This decouples the function from
+/// the old `VirtualSection`/`VirtualSectionKind` types, which are
+/// being removed as part of the VirtualDocAdapter migration.
+pub fn extract_startup_aliases(script_text: &str) -> Vec<StartupAlias> {
     let mut aliases: Vec<StartupAlias> = Vec::new();
 
-    // Find the unified script section
-    let script_section = match sections.iter().find(|s| s.kind == VirtualSectionKind::UnifiedScript) {
-        Some(s) => s,
-        None => return aliases,
-    };
+    if script_text.is_empty() {
+        return aliases;
+    }
 
     // Strip comments before analyzing
-    let stripped = strip_comments(&script_section.source_text);
+    let stripped = strip_comments(script_text);
 
     // Track which alias names we've already seen (avoid duplicates)
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -653,171 +659,6 @@ impl<'a> TranslationContext<'a> {
     }
 }
 
-/// Translate SugarCube macros in a passage body to JavaScript.
-///
-/// Uses the `MacroDef` catalog from `builtin_macros()` to identify macro
-/// types, and implements a recursive descent translator that handles block
-/// macros (like `<<if>>...<</if>>`) with proper structural awareness.
-///
-/// This produces faithful translations of built-in SugarCube macros:
-///
-/// - **Variable macros**: `<<set>>`, `<<unset>>`, `<<capture>>`, `<<run>>`
-/// - **Control flow**: `<<if>>`/`<<elseif>>`/`<<else>>`/`<</if>>`,
-///   `<<for>>`/`<</for>>`, `<<switch>>`/`<<case>>`/`<<default>>`/`<</switch>>`
-/// - **Output**: `<<print>>`/`<<=>>`
-/// - **Navigation**: `<<goto>>`, `<<include>>`
-/// - **Forms**: `<<textbox>>`, `<<checkbox>>`, `<<numberbox>>`,
-///   `<<radiobutton>>`, `<<textarea>>` (write to variables)
-/// - **Deferred execution**: `<<link>>`/`<<button>>`/`<<timed>>`/`<<repeat>>`
-///   (bodies are translated but marked as deferred)
-/// - **Inline JS**: `<<script>>...<</script>>`
-/// - **Custom macros & widgets**: `<<macroName args>>` → `macroName(args);`
-///
-/// The translation uses `OperatorNormalization` mappings to convert
-/// TwineScript operators (e.g., `to` → `=`, `is` → `===`, `gte` → `>=`).
-///
-/// NOTE: Superseded by `walk_translate()` in `passage_tree.rs` which uses
-/// the tree for exact line mapping. This function is retained for backward
-/// compatibility and as a reference implementation.
-#[allow(dead_code)] // Replaced by walk_translate() in passage_tree.rs (Phase 3)
-pub fn translate_macros_to_js(body: &str, callables: &[UserCallable]) -> String {
-    let ctx = TranslationContext::new(callables);
-    translate_body(&ctx, body, 0)
-}
-
-// ---------------------------------------------------------------------------
-// Recursive descent translator
-// ---------------------------------------------------------------------------
-
-/// Translate a full passage body (or block body) recursively.
-///
-/// Scans for macro tags using `RE_MACRO_TAG`, dispatches to the appropriate
-/// handler based on the `MacroDef` catalog, and recursively translates
-/// block macro bodies.
-///
-/// NOTE: Superseded by `walk_translate()` in `passage_tree.rs`.
-#[allow(dead_code)] // Replaced by walk_translate() in passage_tree.rs (Phase 3)
-fn translate_body(ctx: &TranslationContext, text: &str, indent: usize) -> String {
-    let mut result = String::new();
-    let indent_str = "  ".repeat(indent);
-    let mut pos = 0;
-
-    while pos < text.len() {
-        let remaining = &text[pos..];
-
-        // Find the next macro tag
-        match RE_MACRO_TAG.captures(remaining) {
-            Some(caps) => {
-                let full_match = caps.get(0).unwrap();
-                let tag_start = full_match.start();
-                let tag_end = full_match.end();
-
-                // Emit text before this tag
-                if tag_start > 0 {
-                    let text_before = &remaining[..tag_start];
-                    result.push_str(&translate_text_segment(text_before, indent));
-                }
-
-                let is_close = !caps.get(1).unwrap().as_str().is_empty();
-                let name = caps.get(2).unwrap().as_str();
-                let args = caps.get(3).map(|m| m.as_str()).unwrap_or("");
-
-                if is_close {
-                    // Close tag at this level — shouldn't normally happen in
-                    // translate_body (block close tags are consumed by the
-                    // block handler).  Emit as a stray comment for safety.
-                    result.push_str(&format!(
-                        "{}/* stray close: /{} */\n",
-                        indent_str, name
-                    ));
-                    pos += tag_end;
-                } else if is_block_macro(ctx, name) {
-                    // Block macro — find matching close tag and translate body
-                    let body_start = pos + tag_end;
-                    match find_matching_close(&text[body_start..], name) {
-                        Some(body_len) => {
-                            let body_text = &text[body_start..body_start + body_len];
-                            let close_tag_len = format!("<</{}>>", name).len();
-
-                            // Special handling for <<script>> blocks (raw JS)
-                            if name == "script" {
-                                let translated_js =
-                                    translate_dollar_refs_in_js(body_text);
-                                for line in translated_js.lines() {
-                                    let trimmed = line.trim();
-                                    if !trimmed.is_empty() {
-                                        result.push_str(&format!(
-                                            "{}{}\n",
-                                            indent_str, trimmed
-                                        ));
-                                    }
-                                }
-                            } else {
-                                result.push_str(&translate_block_open(
-                                    ctx, name, args, indent,
-                                ));
-                                result.push_str(&translate_body(
-                                    ctx,
-                                    body_text,
-                                    indent + 1,
-                                ));
-                                result.push_str(&translate_close_tag(name, indent));
-                            }
-
-                            pos = body_start + body_len + close_tag_len;
-                        }
-                        None => {
-                            // No matching close tag — produce the block open
-                            // without a body (incomplete block, common in tests)
-                            result.push_str(&translate_block_open(
-                                ctx, name, args, indent,
-                            ));
-                            pos += tag_end;
-                        }
-                    }
-                } else if ctx.builtin_lookup.contains_key(name) {
-                    // Inline builtin macro
-                    result.push_str(&translate_inline_macro(ctx, name, args, indent));
-                    pos += tag_end;
-                } else if ctx.callable_names.contains(name) {
-                    // User-defined callable
-                    let translated_args = if args.is_empty() {
-                        String::new()
-                    } else {
-                        translate_callable_args(args)
-                    };
-                    if translated_args.is_empty() {
-                        result.push_str(&format!("{}{}();\n", indent_str, name));
-                    } else {
-                        result.push_str(&format!(
-                            "{}{}({});\n",
-                            indent_str, name, translated_args
-                        ));
-                    }
-                    pos += tag_end;
-                } else {
-                    // Unknown macro
-                    let full_tag = full_match.as_str();
-                    result.push_str(&format!(
-                        "{}/* unknown: {} */;\n",
-                        indent_str, full_tag
-                    ));
-                    pos += tag_end;
-                }
-            }
-            None => {
-                // No more macro tags — emit remaining text
-                if !remaining.is_empty() {
-                    result.push_str(&translate_text_segment(remaining, indent));
-                }
-                break;
-            }
-        }
-    }
-
-    result
-}
-
 /// Check if a macro name is a block macro (`has_body: true`) in the catalog.
 ///
 /// Also handles the special `<<when>>` pseudo-macro (backward compat).
@@ -829,45 +670,6 @@ pub(crate) fn is_block_macro(ctx: &TranslationContext, name: &str) -> bool {
         .get(name)
         .map(|m| m.has_body)
         .unwrap_or(false)
-}
-
-/// Find the position of the matching close tag for a block macro.
-///
-/// Scans the text for macro tags, tracking nesting depth for the given
-/// macro name.  Returns the byte offset of the start of the close tag
-/// relative to `text`, or `None` if no matching close tag is found.
-///
-/// NOTE: Superseded by the tree-based approach in `passage_tree.rs`.
-#[allow(dead_code)] // No longer needed — tree has nesting
-fn find_matching_close(text: &str, macro_name: &str) -> Option<usize> {
-    let mut depth = 1;
-    let mut pos = 0;
-
-    while pos < text.len() {
-        let remaining = &text[pos..];
-
-        if let Some(caps) = RE_MACRO_TAG.captures(remaining) {
-            let full_match = caps.get(0).unwrap();
-            let match_offset = full_match.start();
-            let is_close = !caps.get(1).unwrap().as_str().is_empty();
-            let name = caps.get(2).unwrap().as_str();
-
-            if is_close && name == macro_name {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(pos + match_offset);
-                }
-            } else if !is_close && name == macro_name {
-                depth += 1;
-            }
-
-            pos += match_offset + full_match.len();
-        } else {
-            break;
-        }
-    }
-
-    None
 }
 
 /// Translate the opening of a block macro (produces the JS header + `{`).
@@ -1310,6 +1112,7 @@ pub(crate) fn extract_dollar_var_from_args(args: &str) -> Option<String> {
 /// plain text. The `$$` escape is SugarCube's way of outputting a literal
 /// `$` character — `$$name` outputs `$name` and must NOT be treated as a
 /// variable reference.
+#[allow(dead_code)] // Superseded by passage_tree; kept for reference
 pub(crate) fn translate_text_segment(text: &str, indent: usize) -> String {
     let indent_str = "  ".repeat(indent);
     let mut result = String::new();
@@ -1642,307 +1445,6 @@ fn line_from_offset(text: &str, offset: usize) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-section variable extraction
-// ---------------------------------------------------------------------------
-
-/// A variable access extracted from the virtual document, with full context.
-///
-/// Unlike `VarOp` (which only tracks span within a single passage), this
-/// type carries the resolved access path and the original source location
-/// derived from the virtual document's line map.
-#[derive(Debug, Clone)]
-pub struct VirtualVarAccess {
-    /// The normalized access path (e.g., "State.variables.player.name").
-    pub access_path: String,
-    /// The SugarCube dollar-name (e.g., "$player.name").
-    pub dollar_name: String,
-    /// Whether this is a write (true) or read (false).
-    pub is_write: bool,
-    /// The passage name where this access occurs.
-    pub passage_name: String,
-    /// The file URI where this access occurs.
-    pub file_uri: String,
-    /// The 0-based line number in the original source file.
-    pub original_line: u32,
-}
-
-/// Extract all variable accesses from the virtual document, resolving
-/// startup aliases in macro sections.
-///
-/// This is the main extraction function that replaces per-passage extraction
-/// for the purpose of building the variable tree. It:
-/// 1. Extracts from the unified script section (with full JS analysis)
-/// 2. Extracts from each macro section (with startup alias resolution)
-/// 3. Resolves `gs()`/`reg()`/alias patterns using the startup alias table
-/// Note: No longer called from production code. Replaced by tree-based walks.
-#[allow(dead_code)] // Replaced by walk_vars()/walk_passage_var_refs() in passage_tree.rs (Phase 4)
-pub fn extract_virtual_var_accesses(
-    vdoc: &crate::types::VirtualDocument,
-) -> Vec<VirtualVarAccess> {
-    let mut accesses: Vec<VirtualVarAccess> = Vec::new();
-
-    // Build a quick lookup for whole-object aliases
-    let whole_aliases: std::collections::HashMap<&str, &StartupAlias> = vdoc
-        .startup_aliases
-        .iter()
-        .filter(|a| matches!(a.resolution, AliasResolution::StateVariables))
-        .map(|a| (a.alias_name.as_str(), a))
-        .collect();
-
-    // Build a quick lookup for getter function aliases
-    let getter_aliases: std::collections::HashMap<&str, &StartupAlias> = vdoc
-        .startup_aliases
-        .iter()
-        .filter(|a| matches!(a.resolution, AliasResolution::GetterFunction))
-        .map(|a| (a.alias_name.as_str(), a))
-        .collect();
-
-    // Build a quick lookup for specific property aliases
-    let prop_aliases: std::collections::HashMap<&str, &StartupAlias> = vdoc
-        .startup_aliases
-        .iter()
-        .filter(|a| matches!(a.resolution, AliasResolution::StateVariableProperty { .. }))
-        .map(|a| (a.alias_name.as_str(), a))
-        .collect();
-
-    for section in &vdoc.sections {
-        match &section.kind {
-            VirtualSectionKind::UnifiedScript => {
-                extract_from_script_section(section, &mut accesses);
-            }
-            VirtualSectionKind::MacroTranslated { passage_name } => {
-                extract_from_macro_section(
-                    section,
-                    passage_name,
-                    &whole_aliases,
-                    &getter_aliases,
-                    &prop_aliases,
-                    &mut accesses,
-                );
-            }
-        }
-    }
-
-    accesses
-}
-
-/// Extract variable accesses from the unified script section.
-///
-/// Script passages use pure JS, so we look for:
-/// - `State.variables.x` patterns (read and write)
-/// - Whole-object alias property accesses (e.g., `v.x` where `v = State.variables`)
-/// - Getter function calls (e.g., `reg('UI_PROFILES')`)
-fn extract_from_script_section(
-    section: &VirtualSection,
-    accesses: &mut Vec<VirtualVarAccess>,
-) {
-    let stripped = strip_comments(&section.source_text);
-
-    // ── Direct State.variables patterns ────────────────────────────────
-
-    // State.variables.name = value (write)
-    for caps in RE_VD_ALIAS_SPECIFIC.captures_iter(&stripped) {
-        let _alias = caps.get(1).unwrap().as_str();
-        let prop = caps.get(2).unwrap().as_str();
-        let match_start = caps.get(0).unwrap().start();
-        let line_no = line_from_offset(&stripped, match_start);
-
-        // Check if this is a write (look for = after the match, but not == or ===)
-        let after = stripped[caps.get(0).unwrap().end()..].trim_start();
-        let is_write = after.starts_with('=') && !after.starts_with("==") && !after.starts_with("===");
-
-        if let Some(mapping) = section.line_map.get(line_no as usize) {
-            let dollar_name = format!("${}", prop);
-            accesses.push(VirtualVarAccess {
-                access_path: format!("State.variables.{}", prop),
-                dollar_name,
-                is_write,
-                passage_name: mapping.passage_name.clone(),
-                file_uri: mapping.file_uri.clone(),
-                original_line: mapping.original_line,
-            });
-        }
-    }
-}
-
-/// Extract variable accesses from a macro-translated section, resolving
-/// startup aliases.
-fn extract_from_macro_section(
-    section: &VirtualSection,
-    passage_name: &str,
-    whole_aliases: &std::collections::HashMap<&str, &StartupAlias>,
-    getter_aliases: &std::collections::HashMap<&str, &StartupAlias>,
-    prop_aliases: &std::collections::HashMap<&str, &StartupAlias>,
-    accesses: &mut Vec<VirtualVarAccess>,
-) {
-    let js_text = &section.source_text;
-
-    // ── Direct State.variables patterns ────────────────────────────────
-    // These come from translated macros (<<set>>, <<run>>, etc.)
-
-    // State.variables.x = value (write)
-    static RE_SV_WRITE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"State\.variables\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*=").unwrap()
-    });
-
-    // State.variables.x (read — no = after, or after /* read: */)
-    static RE_SV_READ: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"State\.variables\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)").unwrap()
-    });
-
-    // ── Extract writes ─────────────────────────────────────────────────
-    for caps in RE_SV_WRITE.captures_iter(js_text) {
-        let prop_path = caps.get(1).unwrap().as_str();
-        let match_start = caps.get(0).unwrap().start();
-        let line_no = line_from_offset(js_text, match_start) as usize;
-
-        let dollar_name = format!("${}", prop_path);
-        let mapping = section.line_map.get(line_no);
-
-        accesses.push(VirtualVarAccess {
-            access_path: format!("State.variables.{}", prop_path),
-            dollar_name,
-            is_write: true,
-            passage_name: mapping.map(|m| m.passage_name.clone()).unwrap_or_else(|| passage_name.to_string()),
-            file_uri: mapping.map(|m| m.file_uri.clone()).unwrap_or_default(),
-            original_line: mapping.map(|m| m.original_line).unwrap_or(0),
-        });
-    }
-
-    // ── Extract reads ──────────────────────────────────────────────────
-    for caps in RE_SV_READ.captures_iter(js_text) {
-        let prop_path = caps.get(1).unwrap().as_str();
-        let match_start = caps.get(0).unwrap().start();
-        let line_no = line_from_offset(js_text, match_start) as usize;
-
-        // Skip if this is a write (already captured above)
-        let after = js_text[caps.get(0).unwrap().end()..].trim_start();
-        if after.starts_with('=') && !after.starts_with("==") {
-            continue; // This is a write, already handled
-        }
-
-        let dollar_name = format!("${}", prop_path);
-        let mapping = section.line_map.get(line_no);
-
-        accesses.push(VirtualVarAccess {
-            access_path: format!("State.variables.{}", prop_path),
-            dollar_name,
-            is_write: false,
-            passage_name: mapping.map(|m| m.passage_name.clone()).unwrap_or_else(|| passage_name.to_string()),
-            file_uri: mapping.map(|m| m.file_uri.clone()).unwrap_or_default(),
-            original_line: mapping.map(|m| m.original_line).unwrap_or(0),
-        });
-    }
-
-    // ── Resolve alias-based accesses from <<run>> bodies ───────────────
-    for alias in whole_aliases.keys() {
-        let alias_dot = format!("{}.", alias);
-        for (line_idx, line) in js_text.lines().enumerate() {
-            if !line.contains(&alias_dot) {
-                continue;
-            }
-            let re = Regex::new(&format!(
-                r"{}\s*\.\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)",
-                regex::escape(alias)
-            ))
-            .unwrap();
-
-            for caps in re.captures_iter(line) {
-                let prop_path = caps.get(1).unwrap().as_str();
-                let after_match = &line[caps.get(0).unwrap().end()..];
-                let is_write = after_match.trim_start().starts_with('=')
-                    && !after_match.trim_start().starts_with("==")
-                    && !after_match.trim_start().starts_with("===");
-
-                let dollar_name = format!("${}", prop_path);
-                let mapping = section.line_map.get(line_idx);
-
-                accesses.push(VirtualVarAccess {
-                    access_path: format!("State.variables.{}", prop_path),
-                    dollar_name,
-                    is_write,
-                    passage_name: mapping.map(|m| m.passage_name.clone()).unwrap_or_else(|| passage_name.to_string()),
-                    file_uri: mapping.map(|m| m.file_uri.clone()).unwrap_or_default(),
-                    original_line: mapping.map(|m| m.original_line).unwrap_or(0),
-                });
-            }
-        }
-    }
-
-    // ── Resolve getter function calls ──────────────────────────────────
-    for alias in getter_aliases.keys() {
-        let call_pattern = format!(r#"{}\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*\)"#, regex::escape(alias));
-        let re = Regex::new(&call_pattern).unwrap();
-
-        for (line_idx, line) in js_text.lines().enumerate() {
-            for caps in re.captures_iter(line) {
-                let var_name = caps.get(1).unwrap().as_str();
-                let dollar_name = format!("${}", var_name);
-                let mapping = section.line_map.get(line_idx);
-
-                let after_match = &line[caps.get(0).unwrap().end()..];
-                let is_write = after_match.trim_start().starts_with('=')
-                    && !after_match.trim_start().starts_with("==")
-                    && !after_match.trim_start().starts_with("===");
-
-                accesses.push(VirtualVarAccess {
-                    access_path: format!("State.variables.{}", var_name),
-                    dollar_name,
-                    is_write,
-                    passage_name: mapping.map(|m| m.passage_name.clone()).unwrap_or_else(|| passage_name.to_string()),
-                    file_uri: mapping.map(|m| m.file_uri.clone()).unwrap_or_default(),
-                    original_line: mapping.map(|m| m.original_line).unwrap_or(0),
-                });
-            }
-        }
-    }
-
-    // ── Resolve property aliases ───────────────────────────────────────
-    for alias in prop_aliases.keys() {
-        let alias_dot = format!("{}.", alias);
-        for (line_idx, line) in js_text.lines().enumerate() {
-            if !line.contains(&alias_dot) {
-                continue;
-            }
-            let re = Regex::new(&format!(
-                r"{}\s*\.\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)",
-                regex::escape(alias)
-            ))
-            .unwrap();
-
-            for caps in re.captures_iter(line) {
-                let sub_prop = caps.get(1).unwrap().as_str();
-                let mapping = section.line_map.get(line_idx);
-
-                if let Some(alias_def) = prop_aliases.get(alias) {
-                    if let AliasResolution::StateVariableProperty { base_name, property_path } = &alias_def.resolution {
-                        let full_path = match property_path {
-                            Some(pp) => format!("{}.{}.{}", base_name, pp, sub_prop),
-                            None => format!("{}.{}", base_name, sub_prop),
-                        };
-                        let dollar_name = format!("${}", full_path);
-
-                        let after_match = &line[caps.get(0).unwrap().end()..];
-                        let is_write = after_match.trim_start().starts_with('=')
-                            && !after_match.trim_start().starts_with("==")
-                            && !after_match.trim_start().starts_with("===");
-
-                        accesses.push(VirtualVarAccess {
-                            access_path: format!("State.variables.{}", full_path),
-                            dollar_name,
-                            is_write,
-                            passage_name: mapping.map(|m| m.passage_name.clone()).unwrap_or_else(|| passage_name.to_string()),
-                            file_uri: mapping.map(|m| m.file_uri.clone()).unwrap_or_default(),
-                            original_line: mapping.map(|m| m.original_line).unwrap_or(0),
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2148,15 +1650,7 @@ Macro.add('useItem', {
     #[test]
     fn test_alias_extraction_whole() {
         let js = "var v = State.variables;\nv.gold = 10;";
-        let section = VirtualSection {
-            kind: VirtualSectionKind::UnifiedScript,
-            source_text: js.to_string(),
-            line_map: vec![
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 0 },
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 1 },
-            ],
-        };
-        let aliases = extract_startup_aliases(&[section]);
+        let aliases = extract_startup_aliases(js);
         assert_eq!(aliases.len(), 1);
         assert_eq!(aliases[0].alias_name, "v");
         assert_eq!(aliases[0].resolution, AliasResolution::StateVariables);
@@ -2165,43 +1659,21 @@ Macro.add('useItem', {
     #[test]
     fn test_alias_extraction_gs() {
         let js = "var g = gs();\ng.meta.uiProfile = 'default';";
-        let section = VirtualSection {
-            kind: VirtualSectionKind::UnifiedScript,
-            source_text: js.to_string(),
-            line_map: vec![
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 0 },
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 1 },
-            ],
-        };
-        let aliases = extract_startup_aliases(&[section]);
+        let aliases = extract_startup_aliases(js);
         assert!(aliases.iter().any(|a| a.alias_name == "g" && a.resolution == AliasResolution::StateVariables));
     }
 
     #[test]
     fn test_alias_extraction_named_getter() {
         let js = "function reg(name) { return State.variables[name]; }";
-        let section = VirtualSection {
-            kind: VirtualSectionKind::UnifiedScript,
-            source_text: js.to_string(),
-            line_map: vec![
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 0 },
-            ],
-        };
-        let aliases = extract_startup_aliases(&[section]);
+        let aliases = extract_startup_aliases(js);
         assert!(aliases.iter().any(|a| a.alias_name == "reg" && matches!(a.resolution, AliasResolution::GetterFunction)));
     }
 
     #[test]
     fn test_alias_extraction_specific() {
         let js = "var profiles = State.variables.uiProfiles;";
-        let section = VirtualSection {
-            kind: VirtualSectionKind::UnifiedScript,
-            source_text: js.to_string(),
-            line_map: vec![
-                crate::types::LineMapping { passage_name: "Script1".to_string(), file_uri: "file:///test.twee".to_string(), original_line: 0 },
-            ],
-        };
-        let aliases = extract_startup_aliases(&[section]);
+        let aliases = extract_startup_aliases(js);
         assert!(aliases.iter().any(|a| a.alias_name == "profiles" && matches!(a.resolution, AliasResolution::StateVariableProperty { .. })));
     }
 

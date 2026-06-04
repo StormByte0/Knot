@@ -34,60 +34,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
-// Virtual document types
+// Startup alias types (retained — still used by VirtualDocAdapter)
 // ---------------------------------------------------------------------------
-
-/// The kind of a virtual document section.
-///
-/// Script passages are concatenated into a single unified section (they share
-/// both scope and deterministic execution order at startup). Macro passages
-/// are translated to JS but kept as individual sections (they share scope
-/// with scripts but execute non-deterministically based on player choices).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VirtualSectionKind {
-    /// All `[script]` passages concatenated in SugarCube execution order.
-    /// These execute at startup in a deterministic sequence, sharing a single
-    /// JS scope. This section is the source of startup alias definitions.
-    UnifiedScript,
-    /// A single macro passage translated to JS via `OperatorNormalization`.
-    /// These execute when the player visits the passage — non-deterministic
-    /// order, but they share the same JS scope as the script section.
-    MacroTranslated {
-        /// The original passage name (before translation to JS).
-        passage_name: String,
-    },
-}
-
-/// A section within a virtual document.
-///
-/// Each section corresponds to one or more source passages and contains
-/// JavaScript text (either original JS from `[script]` passages, or
-/// translated JS from macro passages). The section tracks which passage
-/// and which original line each virtual line came from.
-#[derive(Debug, Clone)]
-pub struct VirtualSection {
-    /// The kind of this section (unified script or translated macro).
-    pub kind: VirtualSectionKind,
-    /// The JavaScript source text of this section.
-    pub source_text: String,
-    /// Line-level mapping from virtual line number (0-based, relative to
-    /// this section's start) to the original source passage and line.
-    pub line_map: Vec<LineMapping>,
-}
-
-/// Maps a virtual document line back to its original source location.
-///
-/// This is the critical piece that enables "go to definition" and hover
-/// from virtual document analysis results back to the actual source files.
-#[derive(Debug, Clone)]
-pub struct LineMapping {
-    /// The passage name where this line originated.
-    pub passage_name: String,
-    /// The file URI where this passage lives.
-    pub file_uri: String,
-    /// The 0-based line number within the original source file.
-    pub original_line: u32,
-}
 
 /// An alias extracted from the startup script section.
 ///
@@ -124,37 +72,6 @@ pub enum AliasResolution {
     /// (e.g., `reg` from `var reg = State.variables.reg` or a custom
     /// `function(name) { return State.variables[name]; }` pattern)
     GetterFunction,
-}
-
-/// The virtual document — a unified JS representation of all passage code.
-///
-/// This is the foundation for cross-passage variable tracking. It contains:
-/// - A unified script section (all `[script]` passages concatenated)
-/// - Individual macro sections (each macro passage translated to JS)
-/// - A startup alias table (extracted from the script section)
-/// - Line mappings back to original source locations
-///
-/// The virtual document enables:
-/// 1. **Deep alias resolution**: `gs()` in scripts → `State.variables` →
-///    `g.x` in macros resolves to `State.variables.x`
-/// 2. **Macro-to-JS translation**: `<<set $x to 5>>` → `State.variables.x = 5`
-///    using `OperatorNormalization`
-/// 3. **Unified path-centric analysis**: All sections produce normalized
-///    access paths that feed into the same reference counter
-#[derive(Debug, Clone)]
-pub struct VirtualDocument {
-    /// All sections in the virtual document, in order.
-    /// The unified script section comes first (if any script passages exist),
-    /// followed by individual macro sections.
-    pub sections: Vec<VirtualSection>,
-    /// The startup alias table, extracted from the unified script section.
-    /// These aliases are available in ALL sections (both script and macro)
-    /// because SugarCube's JS scope is shared across the entire game session.
-    pub startup_aliases: Vec<StartupAlias>,
-    /// User-defined callables (custom macros and widgets) extracted from
-    /// the workspace. These are used by the translator to recognize
-    /// `<<macroName args>>` invocations as function calls.
-    pub user_callables: Vec<UserCallable>,
 }
 
 // ---------------------------------------------------------------------------
@@ -685,29 +602,6 @@ pub struct VariablePropertyNode {
     /// `None` for non-array properties or regular arrays (100% coverage).
     /// Only set when coverage < 100%.
     pub coverage: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Per-passage virtual doc types (Phase C)
-// ---------------------------------------------------------------------------
-
-/// A single entry in the virtual document's line map, mapping a JS output
-/// line back to its original source position within a passage body.
-///
-/// This is the format-agnostic version of `ExactLineMapping` from
-/// `walk_translate.rs`. It is produced by `FormatPlugin::virtual_doc_line_map()`
-/// and consumed by the LSP handler for diagnostic routing.
-#[derive(Debug, Clone)]
-pub struct VirtualDocLineMapEntry {
-    /// The passage name that this line belongs to.
-    /// For preamble lines (JSDoc + const declaration), this is empty.
-    pub passage_name: String,
-    /// The file URI where this passage lives.
-    pub file_uri: String,
-    /// The 0-based line number within the original passage body
-    /// (offset from passage header, NOT global). 0 for preamble lines
-    /// and function header/footer lines that have no direct source mapping.
-    pub original_line: u32,
 }
 
 // ---------------------------------------------------------------------------

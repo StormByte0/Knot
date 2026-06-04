@@ -5,7 +5,7 @@
 
 use knot_core::passage::Passage;
 use knot_core::virtual_doc::{
-    AdapterContext, DiagnosticSeverity, JsDiagnostic, SourceLocation, SourceTextProvider,
+    AdapterContext, JsDiagnostic, SourceLocation, SourceTextProvider,
     TranslatedBlock, TwDiagnostic, VirtualDocAdapter,
 };
 use std::ops::Range;

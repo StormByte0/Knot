@@ -6,6 +6,7 @@
 use crate::handlers::helpers;
 use crate::lsp_ext::*;
 use crate::state::ServerState;
+use knot_core::virtual_doc::SourceTextProvider as _;
 use knot_core::{AnalysisEngine, Block};
 use lsp_types::{TextEdit as LspTextEdit, WorkspaceEdit};
 use std::collections::HashMap;
@@ -1632,52 +1633,13 @@ impl ServerState {
             });
         }
 
-        // ── Fallback: old FormatPlugin path ─────────────────────────
-        // During the migration period, fall back to the FormatPlugin's
-        // virtual_doc_content() and virtual_doc_line_map() methods.
-        // This is the path that uses the SugarCube plugin's VirtualDocMap
-        // side table directly.
-        let workspace = &inner.workspace;
-        let format = workspace.resolve_format();
-        let plugin = inner.format_registry.get(&format);
-
-        let (content, line_map, passage_names) = if let Some(p) = plugin {
-            let vdoc_content = p.virtual_doc_content();
-            let vdoc_line_map = p.virtual_doc_line_map();
-
-            match (vdoc_content, vdoc_line_map) {
-                (Some(content), Some(line_map)) => {
-                    // Extract passage names from the line map (deduplicated,
-                    // preserving first-seen order)
-                    let mut names = Vec::new();
-                    let mut seen = std::collections::HashSet::new();
-                    for entry in &line_map {
-                        if !entry.passage_name.is_empty() && seen.insert(entry.passage_name.clone()) {
-                            names.push(entry.passage_name.clone());
-                        }
-                    }
-                    (content, line_map, names)
-                }
-                _ => (String::new(), Vec::new(), Vec::new()),
-            }
-        } else {
-            (String::new(), Vec::new(), Vec::new())
-        };
-
-        // Translate format-agnostic VirtualDocLineMapEntry to LSP wire type
-        let wire_line_map: Vec<KnotVirtualDocLineEntry> = line_map
-            .into_iter()
-            .map(|entry| KnotVirtualDocLineEntry {
-                passage_name: entry.passage_name,
-                file_uri: entry.file_uri,
-                original_line: entry.original_line,
-            })
-            .collect();
-
+        // VirtualDocManager is empty — return empty response.
+        // The old FormatPlugin fallback path has been removed; the
+        // VirtualDocManager is now the sole source of virtual doc content.
         Ok(KnotVirtualDocResponse {
-            content,
-            line_map: wire_line_map,
-            passage_names,
+            content: String::new(),
+            line_map: Vec::new(),
+            passage_names: Vec::new(),
         })
     }
 
@@ -1808,11 +1770,8 @@ impl ServerState {
             let inner = self.inner.read().await;
             let workspace = &inner.workspace;
             let config = &workspace.config;
-            let format = workspace.resolve_format();
             let graph_diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
-            let fmt_diags = inner.format_registry.get(&format)
-                .map(|p| p.analyze_workspace(workspace, &crate::state::DocumentCache(&inner.open_documents)))
-                .unwrap_or_default();
+            let fmt_diags: std::collections::HashMap<url::Url, Vec<knot_formats::plugin::FormatDiagnostic>> = std::collections::HashMap::new();
 
             helpers::publish_all_diagnostics(
                 &self.client,
