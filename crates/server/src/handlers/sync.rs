@@ -101,10 +101,6 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
-    // ── Rebuild virtual document ──────────────────────────────
-    // After the document is opened and the workspace is updated,
-    // rebuild the virtual doc so it includes the new passages.
-    helpers::rebuild_virtual_doc_if_available(&mut inner);
 
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
@@ -310,25 +306,6 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     let should_notify = format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
-    // ── Update virtual document ──────────────────────────────────
-    // After the passage is updated in the workspace, also update the
-    // VirtualDocManager. For modified passages, do a surgical update.
-    // For format changes, do a full rebuild.
-    if should_notify {
-        // Format changed — need a full rebuild of the virtual doc
-        helpers::rebuild_virtual_doc_if_available(&mut inner);
-    } else {
-        // Update the affected passages in the virtual doc
-        for passage_name in &surgery_result.modified {
-            helpers::update_virtual_doc_passage(&mut inner, passage_name);
-        }
-        for passage_name in &surgery_result.added {
-            helpers::update_virtual_doc_passage(&mut inner, passage_name);
-        }
-        for passage_name in &surgery_result.removed {
-            inner.virtual_doc_manager.remove_passage(passage_name);
-        }
-    }
 
     drop(inner); // ← release write lock
 

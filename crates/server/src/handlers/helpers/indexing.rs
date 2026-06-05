@@ -1,7 +1,6 @@
 //! Workspace indexing (two-pass: StoryData discovery + full parse).
 
 use crate::lsp_ext::*;
-use crate::state::CoreDocumentCache;
 use knot_core::passage::StoryFormat;
 use knot_core::workspace::StoryMetadata;
 use lsp_types::*;
@@ -248,12 +247,6 @@ pub(crate) async fn index_workspace(
         inner_guard.workspace.graph = rebuild_graph(&inner_guard.workspace, &inner_guard.format_registry, format.clone());
         inner_guard.workspace.mark_indexed();
 
-        // ── Rebuild virtual document manager ──────────────────────────
-        // After graph rebuild, also rebuild the VirtualDocManager using
-        // the format-specific adapter. This produces the monolithic JS
-        // virtual doc that VSCode's JS language service validates.
-        rebuild_virtual_doc_if_available(&mut inner_guard);
-
         // Notify the client of the detected format so it can switch language IDs
         doc_uris = inner_guard.open_documents.keys().map(|u| u.to_string()).collect();
 
@@ -483,106 +476,5 @@ async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
                 e
             );
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Virtual document rebuild
-// ---------------------------------------------------------------------------
-
-/// Ensure the adapter for the current format exists, then rebuild the
-/// VirtualDocManager from the workspace.
-///
-/// This is called after workspace indexing and after format changes.
-/// The adapter is created lazily when first needed. Once created, it
-/// persists across rebuilds (the adapter's `clear_state()` is called
-/// instead of creating a new adapter).
-pub(crate) fn rebuild_virtual_doc_if_available(
-    inner: &mut crate::state::ServerStateInner,
-) {
-    let format = inner.workspace.resolve_format();
-
-    // Ensure the adapter exists for the current format.
-    let needs_adapter = inner.virtual_doc_adapter.is_none();
-    if needs_adapter {
-        let Some(adapter) = create_virtual_doc_adapter(format) else {
-            return;
-        };
-        inner.virtual_doc_adapter = Some(adapter);
-    }
-
-    // Rebuild the VirtualDocManager using the adapter
-    if let Some(ref adapter) = inner.virtual_doc_adapter {
-        let source_text = CoreDocumentCache(&inner.open_documents);
-        inner.virtual_doc_manager.rebuild(
-            &inner.workspace,
-            &source_text,
-            adapter.as_ref(),
-        );
-        tracing::debug!(
-            "Rebuilt virtual doc: {} passages, {} bytes",
-            inner.virtual_doc_manager.len(),
-            inner.virtual_doc_manager.content().len(),
-        );
-    }
-}
-
-/// Create the virtual doc adapter for the given story format.
-///
-/// This is the format-isolation-compliant way to obtain a virtual doc
-/// adapter — no handler or helper should directly instantiate a
-/// format-specific adapter. When new formats gain adapter support,
-/// they only need to be added here.
-fn create_virtual_doc_adapter(format: knot_core::passage::StoryFormat) -> Option<Box<dyn knot_core::virtual_doc::VirtualDocAdapter>> {
-    use knot_core::passage::StoryFormat;
-    match format {
-        StoryFormat::SugarCube => {
-            tracing::info!("Created SugarCubeAdapter for virtual doc pipeline");
-            Some(Box::new(knot_formats::sugarcube::adapter::SugarCubeAdapter::new()))
-        }
-        StoryFormat::Harlowe => {
-            tracing::info!("Created HarloweAdapter for virtual doc pipeline");
-            Some(Box::new(knot_formats::harlowe::adapter::HarloweAdapter))
-        }
-        StoryFormat::Chapbook => {
-            tracing::info!("Created ChapbookAdapter for virtual doc pipeline");
-            Some(Box::new(knot_formats::chapbook::adapter::ChapbookAdapter))
-        }
-        StoryFormat::Snowman => {
-            tracing::info!("Created SnowmanAdapter for virtual doc pipeline");
-            Some(Box::new(knot_formats::snowman::adapter::SnowmanAdapter))
-        }
-        StoryFormat::Core => None,
-    }
-}
-
-/// Update a single passage in the VirtualDocManager.
-///
-/// Called after a passage is edited (did_change). This performs a surgical
-/// update instead of a full rebuild, which is much faster for large projects.
-///
-/// Returns `true` if the virtual doc content changed.
-pub(crate) fn update_virtual_doc_passage(
-    inner: &mut crate::state::ServerStateInner,
-    passage_name: &str,
-) -> bool {
-    if let Some(ref adapter) = inner.virtual_doc_adapter {
-        let source_text = CoreDocumentCache(&inner.open_documents);
-        let changed = inner.virtual_doc_manager.update_passage(
-            passage_name,
-            &inner.workspace,
-            &source_text,
-            adapter.as_ref(),
-        );
-        if changed {
-            tracing::debug!(
-                "Updated virtual doc passage '{}': {} bytes total",
-                passage_name,
-                inner.virtual_doc_manager.content().len(),
-            );
-        }
-        changed
-    } else {
-        false
     }
 }
