@@ -10,7 +10,7 @@
 //!
 //! ## Incremental updates
 //!
-//! Like `VirtualDocMap`, the tree supports surgical passage-level updates:
+//! Like the passage tree's `walk_encounters()`, the tree supports surgical passage-level updates:
 //!
 //! - `update_passage()` replaces one passage's variable data
 //! - `remove_passage()` removes all references from a passage

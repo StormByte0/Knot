@@ -871,9 +871,9 @@ fn record_increment_decrement(
 
 /// Extract variable references for a specific passage using tree-based analysis.
 ///
-/// Tree-based extraction: walk the passage tree directly instead of building the
-/// full virtual document and regex-scanning JS output. This is faster (no vdoc
-/// build) and more accurate (exact line numbers from byte spans instead of
+/// Tree-based extraction: walk the passage tree directly instead of building a
+/// full document JS assembly and regex-scanning. This is faster (no JS assembly)
+/// and more accurate (exact line numbers from byte spans instead of
 /// proportional mapping).
 pub(crate) fn extract_passage_variable_refs(
     workspace: &knot_core::Workspace,
@@ -1244,7 +1244,7 @@ pub(crate) fn build_variable_tree(
                 &state_var.known_properties,
                 &basic_map,
             ),
-            element_shape: None, // TODO: Populated by virtual doc path when available
+            element_shape: None, // TODO: Populated by type inference when available
         });
     }
 
@@ -1413,7 +1413,7 @@ fn build_property_tree(
             } else {
                 crate::types::PropertyKind::Scalar
             },
-            element_shape: None, // TODO: Populated by virtual doc path when available
+            element_shape: None, // TODO: Populated by type inference when available
             coverage: None,      // TODO: Populated by coverage analysis
         });
     }

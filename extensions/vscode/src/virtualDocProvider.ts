@@ -48,6 +48,10 @@ let providerInstance: KnotVirtualDocProvider | null = null;
 /** Debounce timer for auto-refresh. */
 let refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Reference to the silently-opened virtual doc, kept alive to prevent GC
+ *  and keep the document registered with VS Code's language services. */
+let vdocDocument: vscode.TextDocument | null = null;
+
 /**
  * Register the virtual document content provider and diagnostic routing.
  *
@@ -144,6 +148,114 @@ export function debouncedRefreshVirtualDoc(client: KnotLanguageClient): void {
         refreshDebounceTimer = null;
         await refreshVirtualDoc(client);
     }, 500);
+}
+
+/**
+ * Open the virtual document silently — no editor tab, no visible UI.
+ *
+ * Calls `openTextDocument()` without `showTextDocument()`, which loads the
+ * document into VS Code's document registry and fires `onDidOpenTextDocument`.
+ * This registers the document with VS Code's built-in JS/TS language service,
+ * which validates it and publishes diagnostics. Our `KnotVirtualDocDiagnostics`
+ * listener catches those diagnostics and relays them to the server.
+ *
+ * The module-level `vdocDocument` reference prevents VS Code from garbage-
+ * collecting the document. If the document is already open (visible tab or
+ * in-memory), this just refreshes the cache.
+ *
+ * ## Fallback
+ *
+ * If VS Code's JS/TS extension does not validate documents that aren't in a
+ * visible editor (this varies by VS Code version), call
+ * `openVirtualDocTab()` instead — it opens a background tab with
+ * `preserveFocus: true`.
+ */
+export async function openVirtualDocSilently(
+    client: KnotLanguageClient,
+): Promise<void> {
+    // If the document is already open (tab or in-memory), just refresh.
+    if (vdocDocument) {
+        await refreshVirtualDoc(client);
+        return;
+    }
+    // If a tab is already visible, also just refresh.
+    if (isVirtualDocTabOpen()) {
+        await refreshVirtualDoc(client);
+        return;
+    }
+
+    const wsFolders = vscode.workspace.workspaceFolders;
+    if (!wsFolders || wsFolders.length === 0) {
+        return;
+    }
+
+    try {
+        await refreshVirtualDoc(client);
+        // Open in memory — no tab, no visible UI. The document is registered
+        // with VS Code's language services via onDidOpenTextDocument.
+        vdocDocument = await vscode.workspace.openTextDocument(VDOC_URI);
+    } catch (error) {
+        console.error('Knot: Failed to silently open virtual doc:', error);
+    }
+}
+
+/**
+ * Open the virtual document in a visible background editor tab.
+ *
+ * This is the fallback if `openVirtualDocSilently()` doesn't trigger JS
+ * validation (some VS Code versions only validate visible editors). The
+ * tab opens with `preserveFocus: true` so the user's active editor isn't
+ * disrupted.
+ */
+export async function openVirtualDocTab(
+    client: KnotLanguageClient,
+): Promise<void> {
+    if (isVirtualDocTabOpen()) {
+        await refreshVirtualDoc(client);
+        return;
+    }
+
+    const wsFolders = vscode.workspace.workspaceFolders;
+    if (!wsFolders || wsFolders.length === 0) {
+        return;
+    }
+
+    try {
+        await refreshVirtualDoc(client);
+        const doc = await vscode.workspace.openTextDocument(VDOC_URI);
+        await vscode.window.showTextDocument(doc, {
+            preview: true,
+            viewColumn: vscode.ViewColumn.Beside,
+            preserveFocus: true,
+        });
+        vdocDocument = doc;
+    } catch (error) {
+        console.error('Knot: Failed to open virtual doc tab:', error);
+    }
+}
+
+/**
+ * Check whether the virtual doc is open — either as a visible editor tab
+ * or as an in-memory document (silently opened).
+ */
+export function isVirtualDocOpen(): boolean {
+    // Check for a visible tab
+    if (vscode.window.visibleTextEditors.some(
+        e => e.document.uri.scheme === VDOC_SCHEME
+    )) {
+        return true;
+    }
+    // Check for in-memory document (silently opened)
+    return vdocDocument !== null;
+}
+
+/**
+ * Check whether the virtual doc tab is currently visible in any editor.
+ */
+export function isVirtualDocTabOpen(): boolean {
+    return vscode.window.visibleTextEditors.some(
+        e => e.document.uri.scheme === VDOC_SCHEME
+    );
 }
 
 /**

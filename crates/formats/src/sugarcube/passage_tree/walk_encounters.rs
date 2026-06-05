@@ -1,6 +1,6 @@
 //! Variable encounter collection from the passage tree.
 //!
-//! Contains `walk_translate()`, which walks the passage tree and collects
+//! Contains `walk_encounters()`, which walks the passage tree and collects
 //! `VarEncounter` entries for all stateful macros. This is the sole source
 //! of variable-tracking data for the `VariableTree` side table.
 //!
@@ -172,7 +172,7 @@ fn is_in_comment(comment_spans: &[std::ops::Range<usize>], node_span: &std::ops:
 }
 
 // ---------------------------------------------------------------------------
-// walk_translate()
+// walk_encounters()
 // ---------------------------------------------------------------------------
 
 /// Walk the tree and collect `VarEncounter` entries for all stateful macros.
@@ -197,7 +197,7 @@ fn is_in_comment(comment_spans: &[std::ops::Range<usize>], node_span: &std::ops:
 /// - `body_offset`: The byte offset of the body within the source document
 /// - `callable_names`: Set of user-defined callable names (custom macros + widgets)
 /// - `comment_spans`: Body-relative byte ranges of comments to skip
-pub(crate) fn walk_translate(
+pub(crate) fn walk_encounters(
     nodes: &[PassageNode],
     body: &str,
     body_offset: usize,
@@ -213,7 +213,7 @@ pub(crate) fn walk_translate(
 
     let mut var_encounters = Vec::new();
 
-    walk_translate_inner(
+    walk_encounters_inner(
         nodes, body, body_offset, &builtin_lookup, callable_names,
         &mut var_encounters, comment_spans,
     );
@@ -221,13 +221,13 @@ pub(crate) fn walk_translate(
     var_encounters
 }
 
-/// Inner recursive walk for `walk_translate()`.
+/// Inner recursive walk for `walk_encounters()`.
 ///
 /// Collects `VarEncounter` entries from stateful macros. Nav-shell macros
 /// recurse into children without recording encounters for the shell itself.
 /// Completely-skipped macros produce no output and do not recurse.
 /// Macro nodes inside comment spans are completely skipped.
-fn walk_translate_inner(
+fn walk_encounters_inner(
     nodes: &[PassageNode],
     body: &str,
     body_offset: usize,
@@ -299,7 +299,7 @@ fn walk_translate_inner(
 
                         // If this is a block macro, recurse into children
                         if let Some(children) = children {
-                            walk_translate_inner(
+                            walk_encounters_inner(
                                 children, body, body_offset, builtin_lookup, callable_names,
                                 var_encounters, comment_spans,
                             );
@@ -310,7 +310,7 @@ fn walk_translate_inner(
                         // Nav-shell macro: skip the shell (no var encounters for the shell),
                         // but recurse into children to find stateful macros.
                         if let Some(children) = children {
-                            walk_translate_inner(
+                            walk_encounters_inner(
                                 children, body, body_offset, builtin_lookup, callable_names,
                                 var_encounters, comment_spans,
                             );

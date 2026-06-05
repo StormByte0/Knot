@@ -653,22 +653,17 @@ pub(crate) fn scan_bracket_notation(text: &str, text_offset: usize, refs: &mut V
 }
 
 // ---------------------------------------------------------------------------
-// walk_passage_var_refs() — Tree-based replacement for extract_virtual_var_accesses
+// walk_passage_var_refs() — Tree-based passage variable references
 // ---------------------------------------------------------------------------
 
 /// Walk the tree and produce `PassageVarRef` entries with exact line numbers.
 ///
-/// Replaces the old `extract_virtual_var_accesses()` path which:
-/// 1. Built the entire virtual document (translating ALL passages to JS)
-/// 2. Ran regex on the JS output to find `State.variables.x` patterns
-/// 3. Mapped back to source lines via the (lossy) proportional line map
-///
-/// This function instead:
-/// 1. Walks the tree directly (no virtual document build needed)
+/// This function:
+/// 1. Walks the tree directly (no intermediate assembly needed)
 /// 2. Uses `walk_vars()` which already handles all var patterns
-/// 3. Computes exact line numbers from byte spans (no proportional mapping)
+/// 3. Computes exact line numbers from byte spans
 ///
-/// The result is both faster (no full vdoc build) and more accurate (exact
+/// The result is both faster (no JS assembly needed) and more accurate (exact
 /// line numbers instead of proportional approximation).
 pub(crate) fn walk_passage_var_refs(
     nodes: &[PassageNode],

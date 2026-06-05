@@ -22,14 +22,12 @@ pub mod validation;
 pub mod blocks;
 pub mod special_passages;
 pub mod comments;
-pub mod virtual_doc;
 pub mod passage_tree;
-pub mod virtual_doc_map;
 pub mod variable_tree;
 pub mod custom_macros;
-pub mod adapter;
 pub mod macro_scan;
 pub mod navigation;
+pub mod workspace;
 #[cfg(test)] mod tests;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
@@ -57,23 +55,15 @@ use crate::types::{
 ///
 /// ## Side tables
 ///
-/// The plugin holds two side tables for virtual doc management and
-/// variable tracking. These are SugarCube-internal and NOT exposed
-/// through the `FormatPlugin` trait:
+/// The plugin holds side tables for variable tracking. These are
+/// SugarCube-internal and NOT exposed through the `FormatPlugin` trait:
 ///
-/// - `virtual_docs`: Per-passage virtual doc entries (JS function + line map)
 /// - `variable_tree`: Workspace-wide variable aggregation from VarEncounters
 ///
 /// Both use `RwLock` for interior mutability since `FormatPlugin` requires
 /// `Send + Sync` and its methods take `&self` (not `&mut self`). The side
 /// tables are populated during `parse()` and `parse_passage()`.
 pub struct SugarCubePlugin {
-    /// Per-passage virtual doc map.
-    /// Stores translated JS functions and exact line mappings for each passage.
-    /// Used by Phase C (VSCode wiring) to serve virtual doc content and
-    /// route JS diagnostics back to .tw source positions.
-    virtual_docs: RwLock<virtual_doc_map::VirtualDocMap>,
-
     /// Workspace-wide variable tree.
     /// Aggregates VarEncounter entries from all passages for completions,
     /// hover info, and tree panel navigation.
@@ -81,8 +71,8 @@ pub struct SugarCubePlugin {
 
     /// Workspace-wide custom macro registry.
     /// Accumulates Macro.add definitions from [script] passages across
-    /// all files so that walk_translate() can translate invocations
-    /// as function calls instead of /* unknown */ comments.
+    /// all files so that walk_encounters() can identify user-defined
+    /// callables during variable encounter extraction.
     custom_macros: RwLock<custom_macros::CustomMacroRegistry>,
 }
 
@@ -100,17 +90,9 @@ impl SugarCubePlugin {
     /// Side tables start empty and are populated during parsing.
     pub fn new() -> Self {
         Self {
-            virtual_docs: RwLock::new(virtual_doc_map::VirtualDocMap::new()),
             variable_tree: RwLock::new(variable_tree::VariableTree::new()),
             custom_macros: RwLock::new(custom_macros::CustomMacroRegistry::new()),
         }
-    }
-
-    /// Get a read lock on the virtual doc map.
-    ///
-    /// Used by Phase C (VSCode wiring) to serve virtual doc content.
-    pub(crate) fn virtual_docs(&self) -> std::sync::RwLockReadGuard<'_, virtual_doc_map::VirtualDocMap> {
-        self.virtual_docs.read().unwrap()
     }
 
     /// Get a read lock on the variable tree.
@@ -132,33 +114,31 @@ impl FormatPlugin for SugarCubePlugin {
         let mut diagnostics = Vec::new();
         let mut has_errors = false;
 
-        // Clear virtual doc and variable tree entries for this file
+        // Clear variable tree entries for this file
         // before repopulating. This handles the full-file reparse case.
-        self.virtual_docs.write().unwrap().remove_file(_uri);
 
         let raw_passages = lexer::split_passages(text);
 
         // Pre-extract user callables for this file. We need them for
-        // walk_translate() (widget detection, callable names) and for
-        // populating the virtual doc map.
-        let passage_infos: Vec<crate::types::PassageInfo> = raw_passages
+        // walk_encounters() (widget detection, callable names).
+        let passage_infos: Vec<workspace::PassageInfo> = raw_passages
             .iter()
-            .map(|(header, body)| crate::types::PassageInfo {
+            .map(|(header, body)| workspace::PassageInfo {
                 name: header.name.clone(),
                 tags: header.tags.clone(),
                 body_text: body.to_string(),
                 file_uri: _uri.to_string(),
             })
             .collect();
-        let callables = virtual_doc::extract_user_callables(&passage_infos);
+        let callables = workspace::extract_user_callables(&passage_infos);
 
         // Update the workspace-wide custom macro registry with custom
         // macros from this file. This ensures cross-file macro definitions
-        // are available when translating passages in other files.
+        // are available when processing passages in other files.
         self.custom_macros.write().unwrap().update_file(_uri, &callables);
 
         // Merge workspace-wide custom macros with per-file callables
-        // so that walk_translate() sees ALL known callables, including
+        // so that walk_encounters() sees ALL known callables, including
         // custom macros defined in other files' script passages.
         let merged_callables = self.custom_macros.read().unwrap().merge_with_callables(&callables);
 
@@ -263,40 +243,7 @@ impl FormatPlugin for SugarCubePlugin {
                 // Validation: skip SugarCube-specific bracket checks
                 // (no [[/]] or <</>> validation on JS content)
 
-                // ── Virtual doc map: script passage entry ─────────────────
-                // Script passages contain raw JavaScript. We wrap their body
-                // in a function declaration and add it to the virtual doc map.
-                // This unifies script passages with translated passages in the
-                // virtual doc, enabling cross-passage JS validation.
-                //
-                // Additionally, we pass the custom macros defined in this
-                // script passage so that standalone function declarations are
-                // emitted for each Macro.add() definition. This makes custom
-                // macros visible to VSCode's JS language service.
-                {
-                    let custom_macros_in_passage: Vec<crate::types::UserCallable> = callables
-                        .iter()
-                        .filter(|c| {
-                            c.kind == crate::types::UserCallableKind::CustomMacro
-                                && c.defined_in == header.name
-                        })
-                        .cloned()
-                        .collect();
-
-                    let (js_function, line_map) = custom_macros::build_script_passage_js(
-                        &header.name, body, body_offset, &custom_macros_in_passage,
-                    );
-                    self.virtual_docs.write().unwrap().update_passage(
-                        header.name.clone(),
-                        virtual_doc_map::PassageDocEntry {
-                            source_file: _uri.clone(),
-                            is_widget: false,
-                            is_script: true,
-                            js_function,
-                            line_map,
-                        },
-                    );
-                }
+                // Script passages: JS content parsed above.
             } else if is_stylesheet {
                 // Stylesheet passages: no link extraction, no variable
                 // extraction — just store as a raw text block
@@ -400,38 +347,23 @@ impl FormatPlugin for SugarCubePlugin {
                     !comments::is_in_comment(&comment_spans, &var.span)
                 });
 
-                // ── Virtual doc map + Variable tree population ─────────────
-                // Translate the passage tree to JS and populate both side
-                // tables. This runs for every normal Twine passage (not
-                // script/stylesheet/interface passages, which don't use
-                // the tree parser).
+                // ── Variable tree population ─────────────────────────────────
+                // Walk the passage tree to collect variable encounters and
+                // populate the variable tree side table.
                 {
-                    let is_widget = callables.iter().any(|c| {
-                        c.kind == crate::types::UserCallableKind::Widget
-                            && c.defined_in == header.name
-                    });
+                    let callable_names: HashSet<&str> = merged_callables
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .collect();
 
-                    let translate_result = passage_tree::walk_translate(
-                        &tree, body, body_offset, &merged_callables,
-                        &header.name, is_widget, &comment_spans,
-                    );
-
-                    // Update VirtualDocMap
-                    self.virtual_docs.write().unwrap().update_passage(
-                        header.name.clone(),
-                        virtual_doc_map::PassageDocEntry {
-                            source_file: _uri.clone(),
-                            is_widget,
-                            is_script: false,
-                            js_function: translate_result.js_function,
-                            line_map: translate_result.line_map,
-                        },
+                    let var_encounters = passage_tree::walk_encounters(
+                        &tree, body, body_offset, &callable_names, &comment_spans,
                     );
 
                     // Update VariableTree
                     self.variable_tree.write().unwrap().update_passage(
                         &header.name,
-                        &translate_result.var_encounters,
+                        &var_encounters,
                     );
                 }
 
@@ -554,38 +486,8 @@ impl FormatPlugin for SugarCubePlugin {
                 span: 0..passage_text.len(),
             }];
 
-            // ── Virtual doc map: script passage entry (incremental) ──────
-            // Extract custom macros from this script passage for
-            // standalone function emission.
-            {
-                let passage_infos = vec![crate::types::PassageInfo {
-                    name: passage_name.to_string(),
-                    tags: passage_tags.to_vec(),
-                    body_text: passage_text.to_string(),
-                    file_uri: String::new(),
-                }];
-                let callables = virtual_doc::extract_user_callables(&passage_infos);
-                let custom_macros_in_passage: Vec<crate::types::UserCallable> = callables
-                    .iter()
-                    .filter(|c| c.kind == crate::types::UserCallableKind::CustomMacro)
-                    .cloned()
-                    .collect();
-
-                let (js_function, line_map) = custom_macros::build_script_passage_js(
-                    passage_name, passage_text, 0, &custom_macros_in_passage,
-                );
-                let placeholder_uri = Url::parse("inmemory://incremental").unwrap();
-                self.virtual_docs.write().unwrap().update_passage(
-                    passage_name.to_string(),
-                    virtual_doc_map::PassageDocEntry {
-                        source_file: placeholder_uri,
-                        is_widget: false,
-                        is_script: true,
-                        js_function,
-                        line_map,
-                    },
-                );
-            }
+            // Script passages: custom macros are already registered during
+            // the full parse() call. No additional processing needed here.
         } else if is_stylesheet {
             passage.body = vec![knot_core::passage::Block::Text {
                 content: passage_text.to_string(),
@@ -622,42 +524,27 @@ impl FormatPlugin for SugarCubePlugin {
                 !comments::is_in_comment(&comment_spans, &var.span)
             });
 
-            // ── Virtual doc map + Variable tree population (incremental) ──
+            // ── Variable tree population (incremental) ──
             // For incremental updates, we use the workspace-wide custom macro
-            // registry to provide cross-file callable names. Widget detection
-            // uses a simple tag check since we don't have the full callables
-            // list from other passages in the file.
-            let is_widget = passage_tags.iter().any(|t| t == "widget");
+            // registry to provide cross-file callable names.
+            {
+                let registry_callables = self.custom_macros.read().unwrap()
+                    .merge_with_callables(&[]);
+                let callable_names: HashSet<&str> = registry_callables
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect();
 
-            // Build callables from the registry (workspace-wide custom macros)
-            // plus a local widget detection if this is a widget passage.
-            let registry_callables = self.custom_macros.read().unwrap()
-                .merge_with_callables(&[]);
-            let translate_result = passage_tree::walk_translate(
-                &tree, passage_text, 0, &registry_callables,
-                passage_name, is_widget, &comment_spans,
-            );
+                let var_encounters = passage_tree::walk_encounters(
+                    &tree, passage_text, 0, &callable_names, &comment_spans,
+                );
 
-            // Update VirtualDocMap — use a placeholder URI since
-            // parse_passage() doesn't receive the file URI.
-            // The placeholder will be overwritten on next full parse().
-            let placeholder_uri = Url::parse("inmemory://incremental").unwrap();
-            self.virtual_docs.write().unwrap().update_passage(
-                passage_name.to_string(),
-                virtual_doc_map::PassageDocEntry {
-                    source_file: placeholder_uri,
-                    is_widget,
-                    is_script: false,
-                    js_function: translate_result.js_function,
-                    line_map: translate_result.line_map,
-                },
-            );
-
-            // Update VariableTree
-            self.variable_tree.write().unwrap().update_passage(
-                passage_name,
-                &translate_result.var_encounters,
-            );
+                // Update VariableTree
+                self.variable_tree.write().unwrap().update_passage(
+                    passage_name,
+                    &var_encounters,
+                );
+            }
         }
 
         Some(passage)
@@ -956,14 +843,13 @@ impl FormatPlugin for SugarCubePlugin {
         _source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<crate::types::VariableTreeNode> {
         // Tree-only path: walk_vars() already handles all variable patterns
-        // (JS aliases, State API, setter links, bracket props) that the old
-        // virtual doc extraction covered. No need to build the virtual
-        // document and merge Pipeline B results anymore.
+        // (JS aliases, State API, setter links, bracket props) that the
+        // passage tree extraction covered.
         vars::build_variable_tree(workspace)
     }
 
     // -------------------------------------------------------------------
-    // Passage variable references (virtual document → passage diagnostics)
+    // Passage variable references (passage diagnostics)
     // -------------------------------------------------------------------
 
     fn extract_passage_variable_refs(

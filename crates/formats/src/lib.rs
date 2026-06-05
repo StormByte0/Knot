@@ -17,7 +17,7 @@
 //! - Implicit passage reference patterns for graph building
 //! - Dynamic navigation resolution for the passage graph
 //! - Global object documentation for hover
-//! - Operator normalization for virtual document generation
+//! - Operator normalization for macro expression handling
 //!
 //! All parsers must support incomplete and invalid syntax during live editing.
 //!
@@ -33,7 +33,6 @@ pub mod types;
 pub mod header;
 pub mod core_specials;
 pub mod core;
-pub mod virtual_doc;
 pub mod sugarcube;
 pub mod harlowe;
 pub mod chapbook;
@@ -44,11 +43,10 @@ pub use types::{
     MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
     ResolvedNavLink,
-    StartupAlias, AliasResolution,
-    UserCallable, UserCallableKind, PassageInfo,
     PropertyKind, PropertyMapEntry,
     PassageVarRef,
 };
+pub use sugarcube::workspace::{StartupAlias, AliasResolution, UserCallable, UserCallableKind, PassageInfo, extract_startup_aliases, extract_user_callables, strip_comments, line_from_offset};
 
 #[cfg(test)]
 mod integration_tests;

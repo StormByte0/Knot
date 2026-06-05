@@ -155,7 +155,7 @@ export interface KnotPassageDiagnosticsResponse {
     incoming_links: KnotPassageLink[];
     diagnostics: KnotPassageDiagnostic[];
     /** Variable references (reads and writes) in this passage,
-     *  resolved from the virtual document with exact line numbers. */
+     *  resolved from passage analysis with exact line numbers. */
     variable_references: KnotVariableReference[];
 }
 
@@ -341,68 +341,4 @@ export interface KnotRefreshSemanticTokensParams {
     reason?: string;
 }
 
-/** Notification: knot/refreshVirtualDoc */
-export interface KnotRefreshVirtualDocParams {
-    /** Optional reason for the refresh (for logging/debugging). */
-    reason?: string;
-}
 
-// ---------------------------------------------------------------------------
-// Virtual doc types (matches Rust-side KnotVirtualDocResponse)
-// ---------------------------------------------------------------------------
-
-/** Response: knot/virtualDoc */
-export interface KnotVirtualDocResponse {
-    /** The assembled JavaScript content of the virtual document. */
-    content: string;
-    /** Per-line mapping from virtual doc lines to source positions. */
-    line_map: KnotVirtualDocLineEntry[];
-    /** Names of all passages included in the virtual doc. */
-    passage_names: string[];
-}
-
-/** A single entry in the virtual document's line map. */
-export interface KnotVirtualDocLineEntry {
-    /** The passage name this line belongs to. Empty for preamble lines. */
-    passage_name: string;
-    /** The file URI where this passage lives. Empty for preamble lines. */
-    file_uri: string;
-    /** The 0-based line number within the original passage body. */
-    original_line: number;
-}
-
-// ---------------------------------------------------------------------------
-// JS Diagnostics relay types (matches Rust-side KnotJsDiagnosticsParams)
-// ---------------------------------------------------------------------------
-
-/** Request: knot/jsDiagnostics — relay JS diagnostics from client to server. */
-export interface KnotJsDiagnosticsParams {
-    /** The URI of the virtual doc. */
-    uri: string;
-    /** JS diagnostics from VSCode's built-in JS service. */
-    diagnostics: KnotJsDiagnostic[];
-}
-
-/** A single JS diagnostic from VSCode's built-in JS service. */
-export interface KnotJsDiagnostic {
-    /** 0-based line number where the diagnostic starts. */
-    start_line: number;
-    /** 0-based character offset on the start line. */
-    start_character: number;
-    /** 0-based line number where the diagnostic ends. */
-    end_line: number;
-    /** 0-based character offset on the end line. */
-    end_character: number;
-    /** The diagnostic message. */
-    message: string;
-    /** Severity: 1=Error, 2=Warning, 3=Information, 4=Hint. */
-    severity: number;
-    /** The diagnostic code, if any. */
-    code?: string;
-}
-
-/** Response: knot/jsDiagnostics */
-export interface KnotJsDiagnosticsResponse {
-    /** Number of diagnostics successfully processed. */
-    processed: number;
-}

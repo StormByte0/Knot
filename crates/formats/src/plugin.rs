@@ -14,8 +14,8 @@
 //!    validation, dynamic navigation, and variable tracking. These have default
 //!    (no-op) implementations so formats only need to override what they support.
 //!
-//! The behavioral methods are the Rust equivalent of the TypeScript
-//! `StoryFormatAdapter` interface. They ensure format isolation: handlers
+//! The behavioral methods are the Rust equivalent of the former TypeScript
+//! format-specific adapter pattern. They ensure format isolation: handlers
 //! query the active format plugin instead of hardcoding format-specific logic.
 
 use crate::types::*;
@@ -258,7 +258,8 @@ pub struct MacroBlockEvent {
 /// These methods provide format-specific data for IDE features like completion,
 /// hover, validation, and navigation. The default implementations return empty
 /// collections or `None`, acting as safe no-ops for formats that don't support
-/// a given feature. This is the same pattern as the TypeScript `FallbackAdapter`.
+/// a given feature. This is the same pattern as the default no-op fallback
+/// for unsupported format features.
 ///
 /// Handlers must always query these methods through the active format plugin
 /// obtained from `FormatRegistry::get()`. Never import format-specific data
@@ -1182,24 +1183,23 @@ pub trait FormatPlugin: Send + Sync {
     }
 
     // -----------------------------------------------------------------------
-    // Virtual document (optional)
+    // Passage variable references (optional)
     // -----------------------------------------------------------------------
 
-    /// Extract variable references for a specific passage from the virtual document.
+    /// Extract variable references for a specific passage.
     ///
     /// This is the format-agnostic entry point used by passage diagnostics to
     /// show which variables are read/written in a passage, with exact line
-    /// numbers mapped from the virtual document back to the original source.
+    /// numbers mapped back to the original source.
     ///
     /// The default implementation:
-    /// 1. Builds the virtual document via `build_virtual_document()`
-    /// 2. Extracts all variable accesses from the virtual document
-    /// 3. Filters for the requested passage
-    /// 4. Returns format-agnostic `PassageVarRef` instances with line numbers
+    /// 1. Extracts all variable accesses from the passage tree
+    /// 2. Filters for the requested passage
+    /// 3. Returns format-agnostic `PassageVarRef` instances with line numbers
     ///
     /// Format plugins that need custom extraction logic (e.g., SugarCube's
     /// alias resolution) should override this method. Format plugins that
-    /// don't support virtual documents should use the fallback path.
+    /// don't support variable tracking should use the default (empty) path.
     ///
     /// Returns an empty Vec if the format doesn't support variable tracking
     /// or the passage has no variable references.

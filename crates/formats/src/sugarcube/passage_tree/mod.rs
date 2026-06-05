@@ -25,14 +25,14 @@
 //!     |--> walk_vars()       -> Vec<VarOp>       (Phase 2)
 //!     |--> walk_links()      -> Vec<Link>        (Phase 2)
 //!     |--> walk_blocks()     -> Vec<Block>       (this file)
-//!     |--> walk_translate()  -> (String, Vec<ExactLineMapping>) (Phase 3)
+//!     |--> walk_encounters() -> Vec<VarEncounter> (variable tracking)
 //!     |--> walk_validate()   -> Vec<Diagnostic>  (Phase 4)
 //!     +--> walk_tokens()     -> Vec<SemanticToken> (Phase 4)
 //! ```
 
 mod walk_vars;
 mod walk_links;
-mod walk_translate;
+mod walk_encounters;
 mod walk_validate;
 mod walk_tokens;
 mod walk_tokens_augment;
@@ -41,9 +41,8 @@ mod walk_tokens_augment;
 #[allow(unused_imports)] // Re-exports used by other crate modules and tests
 pub(crate) use walk_vars::{walk_vars, walk_passage_var_refs, var_ref_to_var_op};
 pub(crate) use walk_links::walk_links;
-pub(crate) use walk_translate::{
-    walk_translate, VarEncounter, VarTypeHint, VarAccessKind,
-    ExactLineMapping, sanitize_js_identifier,
+pub(crate) use walk_encounters::{
+    walk_encounters, VarEncounter, VarTypeHint, VarAccessKind,
 };
 pub(crate) use walk_validate::walk_validate;
 pub(crate) use walk_tokens::walk_tokens;

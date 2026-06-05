@@ -34,113 +34,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
-// Startup alias types (retained — still used by VirtualDocAdapter)
-// ---------------------------------------------------------------------------
-
-/// An alias extracted from the startup script section.
-///
-/// In SugarCube, JavaScript in `[script]` passages can create aliases to
-/// `State.variables` or to specific state properties. These aliases persist
-/// for the entire game session and are used by both script and macro passages.
-/// The virtual document's startup alias table captures these so that macro
-/// sections can resolve them.
-#[derive(Debug, Clone)]
-pub struct StartupAlias {
-    /// The alias identifier (e.g., `g` for `var g = gs()`).
-    pub alias_name: String,
-    /// What this alias resolves to.
-    pub resolution: AliasResolution,
-    /// The virtual line number (0-based) where this alias is defined.
-    pub defined_at_line: u32,
-}
-
-/// What a startup alias resolves to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AliasResolution {
-    /// The alias points to the entire `State.variables` object.
-    /// (e.g., `var v = State.variables` or `var g = gs()`)
-    StateVariables,
-    /// The alias points to a specific property of `State.variables`.
-    /// (e.g., `var profiles = State.variables.uiProfiles`)
-    StateVariableProperty {
-        /// The base variable name without `$` sigil.
-        base_name: String,
-        /// Optional dot-path after the base name.
-        property_path: Option<String>,
-    },
-    /// The alias points to a known SugarCube getter function.
-    /// (e.g., `reg` from `var reg = State.variables.reg` or a custom
-    /// `function(name) { return State.variables[name]; }` pattern)
-    GetterFunction,
-}
-
-// ---------------------------------------------------------------------------
-// User-defined callable types (custom macros & widgets)
-// ---------------------------------------------------------------------------
-
-/// The kind of a user-defined callable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UserCallableKind {
-    /// Custom macro defined via `Macro.add('name', { handler: function() { ... } })`.
-    CustomMacro,
-    /// Widget defined via `<<widget name>>...<</widget>>` in a [widget]-tagged passage.
-    Widget,
-}
-
-/// A user-defined callable (custom macro or widget) that can be invoked
-/// like a function from macro passages.
-///
-/// Custom macros are defined in `[script]` passages using SugarCube's
-/// `Macro.add()` API. Widgets are defined in `[widget]`-tagged passages
-/// using `<<widget name>>...<</widget>>`.
-///
-/// When the translator encounters `<<useItem matchbox>>`, it looks up
-/// `useItem` in the user callables and translates it to a function call:
-/// `useItem(matchbox);`. The arguments are mapped positionally to the
-/// `this.args[N]` references in the handler body (for custom macros) or
-/// the `<<args>>` / `$args` references in the widget body.
-#[derive(Debug, Clone)]
-pub struct UserCallable {
-    /// The callable name (e.g., "useItem" for `Macro.add('useItem', ...)`).
-    pub name: String,
-    /// The kind of callable (custom macro or widget).
-    pub kind: UserCallableKind,
-    /// Number of arguments this callable accepts, if known.
-    /// For custom macros, derived from `this.args[N]` usage in the handler.
-    /// For widgets, defaults to variadic (None) unless explicitly annotated.
-    pub arg_count: Option<usize>,
-    /// The passage name where this callable is defined.
-    pub defined_in: String,
-    /// The file URI where this callable is defined.
-    pub file_uri: String,
-    /// The 0-based line number where this callable is defined.
-    pub defined_at_line: u32,
-    /// The body of the callable's handler/widget code (for analysis of
-    /// variable effects). For custom macros, this is the `handler` function
-    /// body. For widgets, this is the content between `<<widget>>` and
-    /// `<</widget>>`.
-    pub body: Option<String>,
-}
-
-/// Minimal passage info passed to the `extract_user_callables` hook.
-///
-/// The core virtual document builder collects this information from all
-/// passages and passes it to the format plugin so it can detect custom
-/// macro definitions (in script passages) and widget definitions (in
-/// widget-tagged passages).
-#[derive(Debug, Clone)]
-pub struct PassageInfo {
-    /// The passage name.
-    pub name: String,
-    /// The file URI where this passage lives.
-    pub file_uri: String,
-    /// The passage tags (e.g., ["script"], ["widget"]).
-    pub tags: Vec<String>,
-    /// The passage body text.
-    pub body_text: String,
-}
-
-// ---------------------------------------------------------------------------
 // Macro catalog types
 // ---------------------------------------------------------------------------
 
@@ -614,10 +507,9 @@ pub struct VariablePropertyNode {
 /// `FormatPlugin::extract_passage_variable_refs()`. The server converts
 /// these directly to LSP wire types without any format-specific logic.
 ///
-/// The `line` field comes from the virtual document's `LineMapping`,
-/// which maps virtual document line numbers back to original source file
-/// line numbers — this is the "deref index" from virtual docs to normal
-/// files that enables showing exact read/write lines in the UI.
+/// The `line` field is computed from the passage tree walk, which maps
+/// variable references back to their exact source line numbers — enabling
+/// the UI to show precise read/write locations.
 #[derive(Debug, Clone)]
 pub struct PassageVarRef {
     /// The variable name in format-specific notation (e.g., "$gold",
@@ -627,8 +519,8 @@ pub struct PassageVarRef {
     /// Whether this is a write (true) or read (false).
     pub is_write: bool,
     /// The 0-based line number within the original source file.
-    /// Derived from the virtual document's line map, which maps
-    /// virtual line positions back to original source locations.
+    /// Derived from the passage tree walk, which maps variable
+    /// references to their exact source line numbers.
     pub line: u32,
     /// The file URI containing this reference.
     pub file_uri: String,

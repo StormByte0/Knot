@@ -4,7 +4,7 @@
 //! logic. Commands include:
 //! - Story Map, Build, Play, Play from Passage
 //! - Restart Server, Re-index Workspace, Detect Compiler
-//! - Open Passage by Name, Open Virtual Document
+//! - Open Passage by Name
 //! - Initialize Project
 //! - Toggle Auto-Rebuild
 
@@ -18,7 +18,6 @@ import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { extractPassageName } from './utils';
-import { openVirtualDoc } from './virtualDocProvider';
 
 // ---------------------------------------------------------------------------
 // Dependencies injected from extension.ts
@@ -288,18 +287,6 @@ export function registerCommands(deps: CommandDeps): void {
                 return;
             }
             await navigation.navigateToPassage(passageName, targetLine);
-        })
-    );
-
-    // Open Virtual Document
-    context.subscriptions.push(
-        vscode.commands.registerCommand('knot.openVirtualDoc', async () => {
-            const client = deps.getClient();
-            if (!client || !client.isRunning()) {
-                vscode.window.showWarningMessage('Knot: Language server is not running.');
-                return;
-            }
-            await openVirtualDoc(client);
         })
     );
 
