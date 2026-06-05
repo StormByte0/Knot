@@ -393,7 +393,7 @@ pub struct KnotPassageDiagnosticsResponse {
     /// Diagnostic messages associated with this passage.
     pub diagnostics: Vec<KnotPassageDiagnostic>,
     /// Variable references (reads and writes) in this passage,
-    /// resolved from the virtual document with exact line numbers.
+    /// resolved from the format plugin with exact line numbers.
     /// Enables the client to show where each variable is read/written
     /// and navigate to the specific source line.
     pub variable_references: Vec<KnotVariableReference>,

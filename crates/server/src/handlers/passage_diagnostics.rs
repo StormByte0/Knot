@@ -9,7 +9,7 @@ impl ServerState {
     ///
     /// Returns linter issues, link connections, passage metadata, and
     /// variable references (reads/writes with line numbers) resolved from
-    /// the virtual document.
+    /// the format plugin.
     pub async fn knot_passage_diagnostics(
         &self,
         params: KnotPassageDiagnosticsParams,
@@ -100,11 +100,10 @@ impl ServerState {
             })
             .collect();
 
-        // ── Variable references (from virtual document) ──────────────────
-        // Build the virtual document via the format plugin and extract
-        // variable accesses filtered for this passage. This gives us exact
-        // line numbers for each read/write, enabling "go to reference" from
-        // the passage diagnostics panel.
+        // ── Variable references (from format plugin) ────────────────────
+        // Extract variable accesses filtered for this passage via the format
+        // plugin. This gives us exact line numbers for each read/write,
+        // enabling "go to reference" from the passage diagnostics panel.
         let variable_references = super::variables::build_passage_variable_references(
             workspace,
             &inner.format_registry,

@@ -1,5 +1,5 @@
 //! Custom LSP request handlers for variable analysis (knot/variableFlow, knot/watchVariables)
-//! and passage variable reference extraction from virtual documents.
+//! and passage variable reference extraction from format plugins.
 
 use crate::lsp_ext::*;
 use crate::state::{DocumentCache, ServerState};
@@ -55,23 +55,22 @@ fn convert_properties(
 }
 
 // ===========================================================================
-// Passage variable reference extraction (virtual document → passage diagnostics)
+// Passage variable reference extraction (format plugin → passage diagnostics)
 // ===========================================================================
 
 /// Build variable references for a specific passage using the format plugin's
-/// virtual document extraction.
+/// variable extraction.
 ///
-/// This is the wiring between the virtual document system and passage diagnostics.
+/// This is the wiring between the format plugin system and passage diagnostics.
 /// It:
 /// 1. Delegates to the format plugin's `extract_passage_variable_refs()` method
-/// 2. The format plugin builds the virtual document, extracts variable accesses,
+/// 2. The format plugin parses the passage, extracts variable accesses,
 ///    and filters for the requested passage
-/// 3. The returned `PassageVarRef` entries carry line numbers from the virtual
-///    document's line map (which maps virtual lines back to original source
-///    file lines)
+/// 3. The returned `PassageVarRef` entries carry line numbers mapped
+///    back to the original source file
 ///
-/// The line numbers come from the virtual document's `LineMapping`, which
-/// is the "deref index" from virtual doc positions back to the normal file.
+/// The line numbers come from the format plugin's position mapping,
+/// which maps extracted positions back to the original source file.
 /// This is what enables showing exact read/write lines in the passage
 /// diagnostics panel.
 pub(crate) fn build_passage_variable_references(
