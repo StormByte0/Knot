@@ -33,50 +33,58 @@ pub(crate) async fn goto_definition(
         }
 
         // ── 2. Try variable definition (e.g., $var → <<set $var>>) ───────
-        if let Some(var_name) = helpers::find_variable_at_position(text, position) {
-            // Find the first passage that initializes this variable.
-            // Prefer non-temporary initializations (<<set $var to ...>>) over
-            // reads, and prefer passages that appear earlier in the document
-            // order to give the most likely "definition" site.
-            let mut best: Option<(Url, Range)> = None;
-            for doc in inner.workspace.documents() {
-                if let Some(doc_text) = inner.open_documents.get(&doc.uri) {
-                    for passage in &doc.passages {
-                        for var in &passage.vars {
-                            if var.name == var_name && !var.is_temporary {
-                                if matches!(var.kind, knot_core::passage::VarKind::Init) {
-                                    // Found an initialization — compute the range
-                                    // at the variable's byte offset within the passage.
-                                    let passage_start = helpers::find_passage_start_offset(doc_text, &passage.name);
-                                    let var_byte = passage_start + var.span.start;
-                                    if let Some(var_pos) = helpers::byte_offset_to_position_safe(doc_text, var_byte) {
-                                        let var_end_byte = passage_start + var.span.end;
-                                        let var_end_pos = helpers::byte_offset_to_position_safe(doc_text, var_end_byte)
-                                            .unwrap_or(Position { line: var_pos.line, character: var_pos.character + var_name.len() as u32 });
-                                        let range = Range { start: var_pos, end: var_end_pos };
-                                        return Ok(Some(GotoDefinitionResponse::Scalar(Location {
-                                            uri: doc.uri.clone(),
-                                            range,
-                                        })));
-                                    }
-                                } else if best.is_none() {
-                                    // Keep the first read as a fallback
-                                    let passage_start = helpers::find_passage_start_offset(doc_text, &passage.name);
-                                    let var_byte = passage_start + var.span.start;
-                                    if let Some(var_pos) = helpers::byte_offset_to_position_safe(doc_text, var_byte) {
-                                        let var_end_byte = passage_start + var.span.end;
-                                        let var_end_pos = helpers::byte_offset_to_position_safe(doc_text, var_end_byte)
-                                            .unwrap_or(Position { line: var_pos.line, character: var_pos.character + var_name.len() as u32 });
-                                        best = Some((doc.uri.clone(), Range { start: var_pos, end: var_end_pos }));
+        {
+            let format = inner.workspace.resolve_format();
+            let plugin = inner.format_registry.get(&format);
+            let sigils: Vec<char> = plugin.as_ref()
+                .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                .unwrap_or_default();
+
+            if let Some(var_name) = helpers::find_variable_at_position(text, position, &sigils) {
+                // Find the first passage that initializes this variable.
+                // Prefer non-temporary initializations (<<set $var to ...>>) over
+                // reads, and prefer passages that appear earlier in the document
+                // order to give the most likely "definition" site.
+                let mut best: Option<(Url, Range)> = None;
+                for doc in inner.workspace.documents() {
+                    if let Some(doc_text) = inner.open_documents.get(&doc.uri) {
+                        for passage in &doc.passages {
+                            for var in &passage.vars {
+                                if var.name == var_name && !var.is_temporary {
+                                    if matches!(var.kind, knot_core::passage::VarKind::Init) {
+                                        // Found an initialization — compute the range
+                                        // at the variable's byte offset within the passage.
+                                        let passage_start = helpers::find_passage_start_offset(doc_text, &passage.name);
+                                        let var_byte = passage_start + var.span.start;
+                                        if let Some(var_pos) = helpers::byte_offset_to_position_safe(doc_text, var_byte) {
+                                            let var_end_byte = passage_start + var.span.end;
+                                            let var_end_pos = helpers::byte_offset_to_position_safe(doc_text, var_end_byte)
+                                                .unwrap_or(Position { line: var_pos.line, character: var_pos.character + var_name.len() as u32 });
+                                            let range = Range { start: var_pos, end: var_end_pos };
+                                            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                                                uri: doc.uri.clone(),
+                                                range,
+                                            })));
+                                        }
+                                    } else if best.is_none() {
+                                        // Keep the first read as a fallback
+                                        let passage_start = helpers::find_passage_start_offset(doc_text, &passage.name);
+                                        let var_byte = passage_start + var.span.start;
+                                        if let Some(var_pos) = helpers::byte_offset_to_position_safe(doc_text, var_byte) {
+                                            let var_end_byte = passage_start + var.span.end;
+                                            let var_end_pos = helpers::byte_offset_to_position_safe(doc_text, var_end_byte)
+                                                .unwrap_or(Position { line: var_pos.line, character: var_pos.character + var_name.len() as u32 });
+                                            best = Some((doc.uri.clone(), Range { start: var_pos, end: var_end_pos }));
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if let Some((uri, range)) = best {
-                return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+                if let Some((uri, range)) = best {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location { uri, range })));
+                }
             }
         }
     }

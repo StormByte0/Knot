@@ -8,19 +8,25 @@
 #![allow(clippy::manual_strip)]
 #![allow(clippy::match_like_matches_macro)]
 
+pub mod build;
 pub mod call_hierarchy;
 pub mod code_actions;
 pub mod completion;
 pub mod editing;
+pub mod graph;
 pub mod helpers;
 pub mod hover;
-pub mod knot_ext;
 pub mod lifecycle;
 pub mod macros;
 pub mod navigation;
+pub mod passage_diagnostics;
+pub mod profile;
 pub mod semantic;
 pub mod structure;
 pub mod sync;
+pub mod variables;
+pub mod virtual_doc;
+pub mod workspace;
 
 use crate::state::ServerState;
 use lsp_types::*;

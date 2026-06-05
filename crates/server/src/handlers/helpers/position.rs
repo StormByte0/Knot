@@ -607,24 +607,49 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
 }
 
 /// Find the variable name at the given cursor position in the text.
-/// Returns the variable name (with the `$` sigil) if the cursor is
-/// on a `$variable` reference, or `None` otherwise.
-pub(crate) fn find_variable_at_position(text: &str, position: Position) -> Option<String> {
+///
+/// Returns the variable name (with its sigil) if the cursor is on a
+/// variable reference, or `None` otherwise. The `sigils` parameter
+/// should come from the format plugin's `variable_sigils()` method.
+///
+/// For sigils that are valid identifier characters (e.g., `_`), a word
+/// boundary is required before the sigil to avoid false matches (e.g.,
+/// matching `_bar` inside `foo_bar`).
+pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: &[char]) -> Option<String> {
     let line_idx = position.line as usize;
     let line = text.lines().nth(line_idx)?;
     let char_idx = position.character as usize;
 
-    // Scan backwards from the cursor to find the `$` sigil
+    if sigils.is_empty() {
+        return None;
+    }
+
+    // Scan backwards from the cursor to find an identifier body
     let mut start = char_idx;
     while start > 0 && line.as_bytes().get(start - 1).map_or(false, |&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         start -= 1;
     }
 
     // Check if the character before the identifier is a variable sigil
-    if start > 0 && line.as_bytes().get(start - 1) == Some(&b'$') {
-        let var_name = &line[start..char_idx.max(start)];
-        if !var_name.is_empty() {
-            return Some(format!("${}", var_name));
+    if start > 0 {
+        let prev_byte = line.as_bytes().get(start - 1)?;
+        let prev_char = *prev_byte as char;
+        if sigils.contains(&prev_char) {
+            // For sigils that are valid inside identifiers (like `_`),
+            // require a word boundary before the sigil to avoid false
+            // matches (e.g., matching `_bar` inside `foo_bar`).
+            if prev_char.is_alphanumeric() || prev_char == '_' {
+                if start >= 2 {
+                    let before_sigil = line.as_bytes().get(start - 2)?;
+                    if before_sigil.is_ascii_alphanumeric() || *before_sigil == b'_' {
+                        return None; // No word boundary — skip
+                    }
+                }
+            }
+            let var_name = &line[start..char_idx.max(start)];
+            if !var_name.is_empty() {
+                return Some(format!("{}{}", prev_char, var_name));
+            }
         }
     }
 
@@ -656,4 +681,79 @@ pub(crate) fn byte_offset_to_position_safe(text: &str, byte_offset: usize) -> Op
         return None;
     }
     Some(byte_offset_to_position(text, byte_offset))
+}
+
+// ===========================================================================
+// Virtual document position conversion helpers
+// ===========================================================================
+
+/// Convert a line/character position in a text document to a byte offset range.
+///
+/// VSCode uses line/character positions (0-based). The server needs byte
+/// offsets for the VirtualDocManager's binary search. This function walks
+/// the content string line by line, accumulating byte positions.
+pub(crate) fn line_char_to_byte_range(
+    content: &str,
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+) -> std::ops::Range<usize> {
+    let mut line_starts: Vec<usize> = Vec::new();
+    line_starts.push(0);
+    for (i, c) in content.char_indices() {
+        if c == '\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    // Add one past the end for the "virtual" line start
+    line_starts.push(content.len());
+
+    let start_byte = if (start_line as usize) < line_starts.len() {
+        let line_start = line_starts[start_line as usize];
+        // Count characters to find the character offset
+        let chars_in_line = content[line_start..]
+            .lines()
+            .next()
+            .map(|l| l.chars().count())
+            .unwrap_or(0);
+        line_start + content[line_start..]
+            .chars()
+            .take(start_character as usize)
+            .map(|c| c.len_utf8())
+            .sum::<usize>()
+            .min(chars_in_line)
+    } else {
+        content.len()
+    };
+
+    let end_byte = if (end_line as usize) < line_starts.len() {
+        let line_start = line_starts[end_line as usize];
+        let chars_in_line = content[line_start..]
+            .lines()
+            .next()
+            .map(|l| l.chars().count())
+            .unwrap_or(0);
+        line_start + content[line_start..]
+            .chars()
+            .take(end_character as usize)
+            .map(|c| c.len_utf8())
+            .sum::<usize>()
+            .min(chars_in_line)
+    } else {
+        content.len()
+    };
+
+    start_byte..end_byte.max(start_byte)
+}
+
+/// Convert a byte range within a text document to an LSP Range (owning version).
+///
+/// This is the same as [`byte_range_to_lsp_range`] but takes the range by
+/// value instead of by reference, for convenience in virtual document code.
+pub(crate) fn byte_range_to_lsp_range_owned(
+    source: &str,
+    byte_range: std::ops::Range<usize>,
+) -> Range {
+    byte_range_to_lsp_range(source, &byte_range)
 }

@@ -43,19 +43,19 @@ pub(crate) fn extract_passage_from_diag(message: &str) -> Option<String> {
 
 /// Extract a variable name from a diagnostic message.
 ///
-/// Tries to find a word starting with a format-specific variable sigil
-/// (e.g., `$` for SugarCube). Falls back to looking for any word that
-/// looks like a variable identifier.
-pub(crate) fn extract_variable_name(message: &str) -> Option<String> {
-    // Common variable sigils across formats: $ (SugarCube/Harlowe/Snowman),
-    // _ (SugarCube temp vars). This is a best-effort heuristic — the format
-    // plugin's parsed variable data is the authoritative source.
+/// Tries to find a word starting with a format-specific variable sigil.
+/// The `sigils` parameter should come from the format plugin's
+/// `variable_sigils()` method. This is a best-effort heuristic — the
+/// format plugin's parsed variable data is the authoritative source.
+pub(crate) fn extract_variable_name(message: &str, sigils: &[char]) -> Option<String> {
     for word in message.split_whitespace() {
-        if word.starts_with('$') || word.starts_with('_') {
-            let name = word.trim_end_matches(':').trim_end_matches(',').to_string();
-            // Filter out standalone sigils (e.g., just "$" or "_")
-            if name.len() > 1 {
-                return Some(name);
+        if let Some(first_char) = word.chars().next() {
+            if sigils.contains(&first_char) {
+                let name = word.trim_end_matches(':').trim_end_matches(',').to_string();
+                // Filter out standalone sigils (e.g., just "$" or "_")
+                if name.len() > 1 {
+                    return Some(name);
+                }
             }
         }
     }

@@ -266,7 +266,12 @@ pub(crate) async fn index_workspace(
     // Re-acquire read lock for publish — it needs workspace for variable related info
     {
         let inner_guard = inner.read().await;
-        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &inner_guard.js_diagnostics, &open_docs, &inner_guard.workspace, &config).await;
+        let format = inner_guard.workspace.resolve_format();
+        let plugin = inner_guard.format_registry.get(&format);
+        let sigils: Vec<char> = plugin.as_ref()
+            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+            .unwrap_or_default();
+        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &inner_guard.js_diagnostics, &open_docs, &inner_guard.workspace, &config, &sigils).await;
     }
 
     // Always send formatDetected after initial indexing so the client
@@ -489,30 +494,21 @@ async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
 /// VirtualDocManager from the workspace.
 ///
 /// This is called after workspace indexing and after format changes.
-/// During the migration period, the adapter is created lazily when first
-/// needed. Once created, it persists across rebuilds (the adapter's
-/// `clear_state()` is called instead of creating a new adapter).
+/// The adapter is created lazily when first needed. Once created, it
+/// persists across rebuilds (the adapter's `clear_state()` is called
+/// instead of creating a new adapter).
 pub(crate) fn rebuild_virtual_doc_if_available(
     inner: &mut crate::state::ServerStateInner,
 ) {
     let format = inner.workspace.resolve_format();
 
     // Ensure the adapter exists for the current format.
-    // Only SugarCube is supported during the migration period.
     let needs_adapter = inner.virtual_doc_adapter.is_none();
     if needs_adapter {
-        match format {
-            StoryFormat::SugarCube => {
-                inner.virtual_doc_adapter = Some(Box::new(
-                    knot_formats::sugarcube::adapter::SugarCubeAdapter::new(),
-                ));
-                tracing::info!("Created SugarCubeAdapter for virtual doc pipeline");
-            }
-            // Other formats: no adapter available yet
-            _ => {
-                return;
-            }
-        }
+        let Some(adapter) = create_virtual_doc_adapter(format) else {
+            return;
+        };
+        inner.virtual_doc_adapter = Some(adapter);
     }
 
     // Rebuild the VirtualDocManager using the adapter
@@ -528,6 +524,35 @@ pub(crate) fn rebuild_virtual_doc_if_available(
             inner.virtual_doc_manager.len(),
             inner.virtual_doc_manager.content().len(),
         );
+    }
+}
+
+/// Create the virtual doc adapter for the given story format.
+///
+/// This is the format-isolation-compliant way to obtain a virtual doc
+/// adapter — no handler or helper should directly instantiate a
+/// format-specific adapter. When new formats gain adapter support,
+/// they only need to be added here.
+fn create_virtual_doc_adapter(format: knot_core::passage::StoryFormat) -> Option<Box<dyn knot_core::virtual_doc::VirtualDocAdapter>> {
+    use knot_core::passage::StoryFormat;
+    match format {
+        StoryFormat::SugarCube => {
+            tracing::info!("Created SugarCubeAdapter for virtual doc pipeline");
+            Some(Box::new(knot_formats::sugarcube::adapter::SugarCubeAdapter::new()))
+        }
+        StoryFormat::Harlowe => {
+            tracing::info!("Created HarloweAdapter for virtual doc pipeline");
+            Some(Box::new(knot_formats::harlowe::adapter::HarloweAdapter))
+        }
+        StoryFormat::Chapbook => {
+            tracing::info!("Created ChapbookAdapter for virtual doc pipeline");
+            Some(Box::new(knot_formats::chapbook::adapter::ChapbookAdapter))
+        }
+        StoryFormat::Snowman => {
+            tracing::info!("Created SnowmanAdapter for virtual doc pipeline");
+            Some(Box::new(knot_formats::snowman::adapter::SnowmanAdapter))
+        }
+        StoryFormat::Core => None,
     }
 }
 

@@ -275,13 +275,20 @@ mod tests {
 
     #[test]
     fn test_extract_variable_name() {
+        // SugarCube-style sigils: $ and _
+        let sigils = vec!['$', '_'];
         // $varname without quotes
         assert_eq!(
-            extract_variable_name("Variable $gold may be used before initialization"),
+            extract_variable_name("Variable $gold may be used before initialization", &sigils),
             Some("$gold".to_string())
         );
         assert_eq!(
-            extract_variable_name("No variable mentioned"),
+            extract_variable_name("No variable mentioned", &sigils),
+            None
+        );
+        // Empty sigils — nothing to match
+        assert_eq!(
+            extract_variable_name("Variable $gold may be used before initialization", &[]),
             None
         );
     }

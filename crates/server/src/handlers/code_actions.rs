@@ -20,9 +20,10 @@ pub(crate) async fn code_action(
 
     // Resolve the startup passage name from the format plugin
     let format = inner.workspace.resolve_format();
-    let startup_passage_name = inner.format_registry.get(&format)
-        .and_then(|plugin| {
-            plugin.all_special_passages()
+    let plugin = inner.format_registry.get(&format);
+    let startup_passage_name = plugin.as_ref()
+        .and_then(|p| {
+            p.all_special_passages()
                 .into_iter()
                 .find(|def| {
                     def.contributes_variables
@@ -31,6 +32,10 @@ pub(crate) async fn code_action(
                 .map(|def| def.name)
         })
         .unwrap_or_else(|| "Startup".to_string());
+
+    let sigils: Vec<char> = plugin.as_ref()
+        .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+        .unwrap_or_default();
 
     let mut actions: Vec<CodeActionOrCommand> = Vec::new();
 
@@ -94,7 +99,7 @@ pub(crate) async fn code_action(
                 }
             }
             "UninitializedVariable" => {
-                if let Some(var_name) = helpers::extract_variable_name(&diag.message) {
+                if let Some(var_name) = helpers::extract_variable_name(&diag.message, &sigils) {
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                         title: format!("Initialize {} in {}", var_name, startup_passage_name),
                         kind: Some(CodeActionKind::QUICKFIX),

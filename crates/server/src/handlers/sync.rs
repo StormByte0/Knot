@@ -121,7 +121,12 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+        let format = inner.workspace.resolve_format();
+        let plugin = inner.format_registry.get(&format);
+        let sigils: Vec<char> = plugin.as_ref()
+            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+            .unwrap_or_default();
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
     if should_notify {
@@ -364,7 +369,12 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // ── Phase 3: publish (needs workspace read lock for variable related info) ──
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+        let format = inner.workspace.resolve_format();
+        let plugin = inner.format_registry.get(&format);
+        let sigils: Vec<char> = plugin.as_ref()
+            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+            .unwrap_or_default();
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
     if should_notify {
@@ -499,7 +509,12 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
 
     {
         let inner = state.inner.read().await;
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+        let format = inner.workspace.resolve_format();
+        let plugin = inner.format_registry.get(&format);
+        let sigils: Vec<char> = plugin.as_ref()
+            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+            .unwrap_or_default();
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 }
 
@@ -591,7 +606,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         {
                             let inner = state.inner.read().await;
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+                            let format = inner.workspace.resolve_format();
+                            let plugin = inner.format_registry.get(&format);
+                            let sigils: Vec<char> = plugin.as_ref()
+                                .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                                .unwrap_or_default();
+                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
                         }
 
                         // Notify client if format changed after file creation
@@ -688,7 +708,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                 {
                     let inner = state.inner.read().await;
-                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+                    let format = inner.workspace.resolve_format();
+                    let plugin = inner.format_registry.get(&format);
+                    let sigils: Vec<char> = plugin.as_ref()
+                        .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                        .unwrap_or_default();
+                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
                 }
 
                 // Notify remaining open documents that their semantic tokens may be stale
@@ -761,7 +786,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                             {
                                 let inner = state.inner.read().await;
-                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config).await;
+                                let format = inner.workspace.resolve_format();
+                                let plugin = inner.format_registry.get(&format);
+                                let sigils: Vec<char> = plugin.as_ref()
+                                    .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                                    .unwrap_or_default();
+                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
                             }
 
                             if should_notify {
