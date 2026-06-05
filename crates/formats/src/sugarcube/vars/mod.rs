@@ -36,7 +36,20 @@
 //! analysis, which replaces the traditional "uninitialized variable" detection
 //! that is incorrect for SugarCube's persistent state model.
 
-use crate::types::{StateVariable, VarAccessKind, VarLocation};
+pub mod property_map;
+pub mod state_registry;
+pub mod variable_diagnostics;
+
+// Re-export moved items so existing callers don't break
+pub(crate) use property_map::{
+    extract_object_property_map, build_shape_aware_property_map,
+    infer_variable_kind_from_properties,
+};
+pub(crate) use state_registry::build_state_variable_registry;
+pub(crate) use variable_diagnostics::compute_variable_diagnostics;
+// Re-export types from crate::types that are used by build_variable_tree / build_property_tree
+pub(crate) use crate::types::{VarAccessKind, VarLocation};
+
 use knot_core::passage::{VarKind, VarOp};
 use std::sync::LazyLock;
 use regex::Regex;
@@ -856,645 +869,56 @@ fn record_increment_decrement(
     init_spans.push(var_start..var_end);
 }
 
-// ---------------------------------------------------------------------------
-// Dot-notation property map
-// ---------------------------------------------------------------------------
-
-/// Build a map of variable dot-path → set of immediate child property names.
+/// Extract variable references for a specific passage using tree-based analysis.
 ///
-/// Scans all variable operations across the workspace and builds a tree:
-/// `{"item": {"sword": {}, "shield": {}}, "player": {"name": {}, "health": {}}}`
-///
-/// Returns a `HashMap<String, HashSet<String>>` mapping parent paths to their
-/// immediate children. Used for dot-notation completion (e.g., `$item.` →
-/// suggest "sword", "shield").
-pub(crate) fn extract_object_property_map(
-    vars_by_passage: &[Vec<&VarOp>],
-) -> HashMap<String, HashSet<String>> {
-    let mut map: HashMap<String, HashSet<String>> = HashMap::new();
-
-    for vars in vars_by_passage {
-        for var in vars {
-            if var.is_temporary {
-                continue;
-            }
-
-            // Only consider variables with dots in their name
-            if !var.name.contains('.') {
-                continue;
-            }
-
-            // Must start with $ for SugarCube
-            if !var.name.starts_with('$') {
-                continue;
-            }
-
-            // Split the name into path segments
-            let without_sigil = &var.name[1..]; // strip $
-            let segments: Vec<&str> = without_sigil.split('.').collect();
-
-            // Build the property map by walking the path
-            // For "$item.sword.damage", add:
-            //   "$item" → {"sword"}
-            //   "$item.sword" → {"damage"}
-            for i in 0..segments.len().saturating_sub(1) {
-                let parent = if i == 0 {
-                    format!("${}", segments[0])
-                } else {
-                    format!("${}", segments[..=i].join("."))
-                };
-                let child = segments[i + 1].to_string();
-                map.entry(parent).or_default().insert(child);
-            }
-        }
-    }
-
-    map
-}
-
-// ---------------------------------------------------------------------------
-// State variable registry
-// ---------------------------------------------------------------------------
-
-/// Build a shape-aware property map that enriches the basic child-name map
-/// with structural type information (`PropertyKind`) and array element shapes.
-///
-/// This is consumed by the completion handler for dot-notation completion.
-/// It infers the kind of each variable from its assignment patterns:
-/// - `<<set $var to {}>>` or `$var.prop = val` → Object
-/// - `<<set $var to []>>` or `$var[0]` → Array
-/// - `<<set $var to 42>>` or no children → Scalar
-/// - No assignment patterns found → Unknown
-///
-/// For arrays, if element properties can be determined from `$var[0].prop`
-/// patterns, they are stored in `element_shape`.
-pub(crate) fn build_shape_aware_property_map(
+/// Tree-based extraction: walk the passage tree directly instead of building the
+/// full virtual document and regex-scanning JS output. This is faster (no vdoc
+/// build) and more accurate (exact line numbers from byte spans instead of
+/// proportional mapping).
+pub(crate) fn extract_passage_variable_refs(
     workspace: &knot_core::Workspace,
-) -> HashMap<String, crate::types::PropertyMapEntry> {
-    use crate::types::{PropertyKind, PropertyMapEntry};
-
-    // Build the basic property map first
-    let vars_by_passage: Vec<Vec<&VarOp>> = workspace
-        .documents()
-        .flat_map(|doc| doc.passages.iter().map(|p| p.vars.iter().collect()))
-        .collect();
-    let basic_map = extract_object_property_map(&vars_by_passage);
-
-    // Build the state variable registry for kind inference
-    let registry = build_state_variable_registry(workspace);
-
-    let mut result: HashMap<String, PropertyMapEntry> = HashMap::new();
-
-    // For each base variable in the registry, determine its kind and children
-    for (dollar_name, state_var) in &registry {
-        let kind = infer_variable_kind_from_properties(dollar_name, &state_var.known_properties, &basic_map);
-        let children: Vec<String> = basic_map
-            .get(dollar_name)
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default();
-
-        // For arrays, try to determine element shape from bracket-notation patterns
-        let element_shape = if kind == PropertyKind::Array {
-            infer_array_element_shape(dollar_name, &basic_map)
-        } else {
-            None
-        };
-
-        result.insert(dollar_name.clone(), PropertyMapEntry {
-            kind,
-            children,
-            element_shape,
-        });
-    }
-
-    // Also add entries for nested property paths (e.g., "$player.state")
-    // that appear as keys in the basic map but aren't base variables
-    for (path, children_set) in &basic_map {
-        if result.contains_key(path) {
-            continue; // Already added as a base variable
-        }
-        // Infer kind from whether this path has children
-        let kind = if children_set.is_empty() {
-            PropertyKind::Scalar
-        } else {
-            // Has children → likely an object property
-            PropertyKind::Object
-        };
-        let children: Vec<String> = children_set.iter().cloned().collect();
-
-        result.insert(path.clone(), PropertyMapEntry {
-            kind,
-            children,
-            element_shape: None,
-        });
-    }
-
-    result
-}
-
-/// Infer the `PropertyKind` of a base variable from its known properties
-/// and the basic property map.
-fn infer_variable_kind_from_properties(
-    dollar_name: &str,
-    known_properties: &HashSet<String>,
-    basic_map: &HashMap<String, HashSet<String>>,
-) -> crate::types::PropertyKind {
-    use crate::types::PropertyKind;
-
-    // If the variable has known dot-notation properties, it's an Object
-    if !known_properties.is_empty() {
-        // Check if any property suggests an array (numeric-like keys or [*] patterns)
-        // For now, if it has named properties, treat it as Object
-        return PropertyKind::Object;
-    }
-
-    // Check if the variable has children in the basic map
-    if let Some(children) = basic_map.get(dollar_name) {
-        if !children.is_empty() {
-            return PropertyKind::Object;
-        }
-    }
-
-    // No properties or children → likely Scalar
-    PropertyKind::Scalar
-}
-
-/// For an array variable, try to infer the element shape from bracket-notation
-/// patterns in the basic property map (e.g., `$items[0].name` → element has `name`).
-///
-/// Returns `Some(PropertyMapEntry)` if element properties can be determined,
-/// `None` if the element shape is unknown.
-fn infer_array_element_shape(
-    _dollar_name: &str,
-    _basic_map: &HashMap<String, HashSet<String>>,
-) -> Option<Box<crate::types::PropertyMapEntry>> {
-    // TODO: Implement bracket-notation element shape inference.
-    // This requires scanning for patterns like `$var[0].prop` and
-    // collecting common properties across all indexed accesses.
-    // For now, return None (unknown element shape).
-    None
-}
-
-/// Build a registry of all SugarCube state variables across the workspace.
-///
-/// This scans all passages for persistent variable references (`$var`,
-/// `State.variables.var`, JS aliases) and collects them into a map from
-/// dollar-prefixed name (e.g., "$hp") to `StateVariable`. Dot-notation
-/// paths like `$player.name` are decomposed: the base variable (`$player`)
-/// gets `name` added to its `known_properties`, and a separate base-level
-/// read/write is also recorded.
-///
-/// Temporary variables (`_var`) are excluded from the registry since they
-/// don't persist in `State.variables`.
-pub(crate) fn build_state_variable_registry(
-    workspace: &knot_core::Workspace,
-) -> HashMap<String, StateVariable> {
-    let mut registry: HashMap<String, StateVariable> = HashMap::new();
-
-    for doc in workspace.documents() {
-        let file_uri = doc.uri.to_string();
-        for passage in &doc.passages {
-            // Skip metadata passages
-            if passage.is_metadata() {
-                continue;
-            }
-
-            let passage_name = passage.name.clone();
-            let is_special_seeding = passage.is_special
-                && passage.special_def.as_ref().map_or(false, |d| d.contributes_variables);
-
-            for var in &passage.vars {
-                // Skip temporary variables — they don't persist in State.variables
-                if var.is_temporary {
-                    continue;
-                }
-
-                // Parse the variable name to extract base name and optional property path
-                let (base_name, dollar_name, property_path) = parse_var_name(&var.name);
-
-                let access_kind = match var.kind {
-                    VarKind::Init => {
-                        if let Some(path) = property_path.clone() {
-                            VarAccessKind::PropertyWrite { path }
-                        } else {
-                            VarAccessKind::Assign
-                        }
-                    }
-                    VarKind::Read => {
-                        if let Some(path) = property_path.clone() {
-                            VarAccessKind::PropertyRead { path }
-                        } else {
-                            VarAccessKind::Read
-                        }
-                    }
-                };
-
-                let location = VarLocation {
-                    passage_name: passage_name.clone(),
-                    file_uri: file_uri.clone(),
-                    span: var.span.clone(),
-                    kind: access_kind,
-                };
-
-                let entry = registry.entry(dollar_name.clone()).or_insert_with(|| {
-                    StateVariable {
-                        base_name: base_name.clone(),
-                        dollar_name: dollar_name.clone(),
-                        known_properties: HashSet::new(),
-                        write_locations: Vec::new(),
-                        read_locations: Vec::new(),
-                        first_available: None,
-                        seeded_by_special: false,
-                    }
-                });
-
-                // Track known properties from dot-notation paths
-                if let Some(ref path) = property_path {
-                    entry.known_properties.insert(path.clone());
-                }
-
-                // Record the location in the appropriate list
-                match &location.kind {
-                    VarAccessKind::Assign | VarAccessKind::PropertyWrite { .. } => {
-                        entry.write_locations.push(location);
-                        // If this is in a special passage that contributes_variables,
-                        // mark the variable as seeded by special
-                        if is_special_seeding {
-                            entry.seeded_by_special = true;
-                        }
-                    }
-                    VarAccessKind::Read | VarAccessKind::PropertyRead { .. } => {
-                        entry.read_locations.push(location);
-                    }
-                    VarAccessKind::Unset => {
-                        // Unset doesn't go in either list, but we could track it
-                        // separately in the future if needed
-                    }
-                }
-            }
-        }
-    }
-
-    registry
-}
-
-/// Parse a SugarCube variable name into its components.
-///
-/// - `"$hp"` → `("hp", "$hp", None)`
-/// - `"$player.name"` → `("player", "$player", Some("name"))`
-/// - `"$player.inventory.sword"` → `("player", "$player", Some("inventory.sword"))`
-fn parse_var_name(name: &str) -> (String, String, Option<String>) {
-    if let Some(dot_pos) = name.find('.') {
-        let base = &name[..dot_pos];
-        let path = &name[dot_pos + 1..];
-        // base should start with $
-        let base_name = if base.starts_with('$') {
-            base[1..].to_string()
-        } else {
-            base.to_string()
-        };
-        let dollar_name = if base.starts_with('$') {
-            base.to_string()
-        } else {
-            format!("${}", base)
-        };
-        (base_name, dollar_name, Some(path.to_string()))
-    } else {
-        let base_name = if name.starts_with('$') {
-            name[1..].to_string()
-        } else {
-            name.to_string()
-        };
-        let dollar_name = if name.starts_with('$') {
-            name.to_string()
-        } else {
-            format!("${}", name)
-        };
-        (base_name, dollar_name, None)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Graph-BFS variable availability computation
-// ---------------------------------------------------------------------------
-
-/// Compute variable-related diagnostics using graph-BFS availability analysis.
-///
-/// This is the SugarCube-specific replacement for the core's
-/// `detect_uninitialized_reads()`, `detect_unused_variables()`, and
-/// `detect_redundant_writes()`. The key insight is that SugarCube variables
-/// are persistent `State.variables` entries — they are NOT traditional
-/// scoped variables that need "definite assignment analysis".
-///
-/// ## Algorithm
-///
-/// 1. **Availability computation**: For each variable, find all passages that
-///    write it. BFS forward from each write passage through the graph. Any
-///    passage reachable from a write passage "has access" to that variable.
-///    Variables seeded by special passages (StoryInit) and script-tagged
-///    passages are considered available everywhere.
-///
-/// 2. **Diagnostics**: If a variable is read in a passage that is NOT reachable
-///    from any write passage (and not seeded by special), emit a
-///    `VariableAvailabilityHint`. This is a HINT, not an error, because the
-///    variable might exist from a saved game or an unmodeled JS script.
-///
-/// 3. **Unused variables**: If a variable is written but never read in any
-///    reachable passage, emit an `UnusedVariableHint`.
-///
-/// 4. **Redundant writes**: If a variable is written twice in the same passage
-///    without an intervening read, emit a `RedundantWriteHint`.
-///
-/// 5. **Unknown properties**: If a property is read but never written anywhere,
-///    emit an `UnknownPropertyHint`.
-pub(crate) fn compute_variable_diagnostics(
-    workspace: &knot_core::Workspace,
-    start_passage: &str,
-    registry: &HashMap<String, StateVariable>,
-) -> Vec<crate::types::VariableDiagnostic> {
-    use crate::types::{VariableDiagnostic, VariableDiagnosticKind};
-
-    let mut diagnostics = Vec::new();
-
-    // Collect the set of passages reachable from the start passage
-    // (this is used to filter out diagnostics for unreachable passages,
-    // which are already flagged by the core's unreachable passage detection)
-    let reachable_from_start = bfs_reachable(workspace, start_passage);
-
-    for (dollar_name, var) in registry {
-        // Skip variables that are seeded by special passages (StoryInit, etc.)
-        // They are always available from the start of the game.
-        if var.seeded_by_special {
-            continue;
-        }
-
-        // ── Variable availability hints ──────────────────────────────────
-        // For each read location, check if the reading passage is reachable
-        // from any write location via the narrative graph.
-        if !var.write_locations.is_empty() {
-            // Compute the set of passages that can "see" this variable
-            // by BFS-ing forward from each write passage
-            let mut available_passages: HashSet<String> = HashSet::new();
-            for write_loc in &var.write_locations {
-                available_passages.insert(write_loc.passage_name.clone());
-                // BFS forward from this write passage
-                let forward = bfs_forward(workspace, &write_loc.passage_name);
-                for p in forward {
-                    available_passages.insert(p);
-                }
-            }
-
-            // Also make available from start passage if any write is in
-            // a passage that precedes start (e.g., StoryInit)
-            for write_loc in &var.write_locations {
-                if is_pre_start_passage(workspace, &write_loc.passage_name) {
-                    available_passages.insert(start_passage.to_string());
-                    let forward = bfs_forward(workspace, start_passage);
-                    for p in forward {
-                        available_passages.insert(p);
-                    }
-                    break;
-                }
-            }
-
-            // Check each read location for availability
-            for read_loc in &var.read_locations {
-                if !available_passages.contains(&read_loc.passage_name) {
-                    // Only flag if the reading passage is itself reachable from start
-                    // (unreachable passages are flagged separately by the core)
-                    if reachable_from_start.contains(&read_loc.passage_name) {
-                        diagnostics.push(VariableDiagnostic {
-                            passage_name: read_loc.passage_name.clone(),
-                            file_uri: read_loc.file_uri.clone(),
-                            kind: VariableDiagnosticKind::VariableAvailabilityHint,
-                            message: format!(
-                                "Variable '{}' may not be available in passage '{}' \
-                                 (no write in a preceding passage is reachable via narrative flow). \
-                                 This is a hint — the variable may exist from a saved game.",
-                                dollar_name, read_loc.passage_name
-                            ),
-                        });
-                    }
-                }
-            }
-        } else {
-            // Variable has reads but NO writes anywhere — flag all reads
-            for read_loc in &var.read_locations {
-                if reachable_from_start.contains(&read_loc.passage_name) {
-                    diagnostics.push(VariableDiagnostic {
-                        passage_name: read_loc.passage_name.clone(),
-                        file_uri: read_loc.file_uri.clone(),
-                        kind: VariableDiagnosticKind::VariableAvailabilityHint,
-                        message: format!(
-                            "Variable '{}' is read but never written in any passage. \
-                             It may come from a saved game or external script.",
-                            dollar_name
-                        ),
-                    });
-                }
-            }
-        }
-
-        // ── Unused variable hints ─────────────────────────────────────────
-        if !var.write_locations.is_empty() && var.read_locations.is_empty() {
-            // Variable is written but never read
-            if let Some(first_write) = var.write_locations.first() {
-                if reachable_from_start.contains(&first_write.passage_name) {
-                    diagnostics.push(VariableDiagnostic {
-                        passage_name: first_write.passage_name.clone(),
-                        file_uri: first_write.file_uri.clone(),
-                        kind: VariableDiagnosticKind::UnusedVariableHint,
-                        message: format!(
-                            "Variable '{}' is written but never read in any reachable passage",
-                            dollar_name
-                        ),
-                    });
-                }
-            }
-        }
-
-        // ── Unknown property hints ────────────────────────────────────────
-        // Check if any property reads don't have corresponding property writes
-        {
-            let mut written_properties: HashSet<String> = HashSet::new();
-            let mut read_properties: HashSet<(String, String)> = HashSet::new(); // (property_path, passage_name)
-
-            for loc in &var.write_locations {
-                if let VarAccessKind::PropertyWrite { path } = &loc.kind {
-                    written_properties.insert(path.clone());
-                }
-            }
-            // Base-level assigns also make all properties potentially available
-            // (e.g., <<set $player to {name: "Alice"}>> makes $player.name available)
-            let has_base_assign = var.write_locations.iter().any(|loc| {
-                        matches!(&loc.kind, VarAccessKind::Assign)
-                    });
-
-            for loc in &var.read_locations {
-                if let VarAccessKind::PropertyRead { path } = &loc.kind {
-                    if !written_properties.contains(path) && !has_base_assign {
-                        read_properties.insert((path.clone(), loc.passage_name.clone()));
-                    }
-                }
-            }
-
-            for (path, passage_name) in &read_properties {
-                if reachable_from_start.contains(passage_name) {
-                    diagnostics.push(VariableDiagnostic {
-                        passage_name: passage_name.clone(),
-                        file_uri: var.write_locations.first()
-                            .or_else(|| var.read_locations.first())
-                            .map(|l| l.file_uri.clone())
-                            .unwrap_or_default(),
-                        kind: VariableDiagnosticKind::UnknownPropertyHint,
-                        message: format!(
-                            "Property '{}.{}' is read but never written. \
-                             The property may be set via base-level assignment \
-                             (e.g., <<set {} to {{...}}>>)",
-                            dollar_name, path, dollar_name
-                        ),
-                    });
-                }
-            }
-        }
-    }
-
-    // ── Redundant write hints (intra-passage) ─────────────────────────────
-    diagnostics.extend(compute_redundant_write_hints(workspace));
-
-    diagnostics
-}
-
-/// Compute redundant write hints: a variable written twice in the same
-/// passage without an intervening read.
-fn compute_redundant_write_hints(
-    workspace: &knot_core::Workspace,
-) -> Vec<crate::types::VariableDiagnostic> {
-    use crate::types::{VariableDiagnostic, VariableDiagnosticKind};
-
-    let mut diagnostics = Vec::new();
-
+    source_text: &dyn crate::plugin::SourceTextProvider,
+    passage_name: &str,
+) -> Vec<crate::types::PassageVarRef> {
+    let mut refs = Vec::new();
     for doc in workspace.documents() {
         for passage in &doc.passages {
-            if passage.is_metadata() {
+            if passage.name != passage_name {
                 continue;
             }
+            let file_uri = doc.uri.to_string();
+            let src = source_text.get_source_text(&file_uri);
+            if let Some(src) = src {
+                let header_start = passage.span.start;
+                let header_line_end = src[header_start..]
+                    .find('\n')
+                    .map(|i| header_start + i)
+                    .unwrap_or(src.len().min(header_start + passage.name.len() + 2));
+                let newline_len = if src.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < src.len() { 1 } else { 0 };
+                let body_offset = header_line_end + newline_len;
 
-            let mut written_not_read: HashSet<String> = HashSet::new();
-            let mut reported: HashSet<String> = HashSet::new();
-
-            let sorted_vars = passage.vars_sorted_by_span();
-            for var in sorted_vars {
-                if var.is_temporary {
+                if body_offset >= src.len() {
                     continue;
                 }
-
-                match var.kind {
-                    VarKind::Init => {
-                        if written_not_read.contains(&var.name) && !reported.contains(&var.name) {
-                            diagnostics.push(VariableDiagnostic {
-                                passage_name: passage.name.clone(),
-                                file_uri: doc.uri.to_string(),
-                                kind: VariableDiagnosticKind::RedundantWriteHint,
-                                message: format!(
-                                    "Variable '{}' is assigned again without being read \
-                                     since the last assignment in passage '{}'",
-                                    var.name, passage.name
-                                ),
-                            });
-                            reported.insert(var.name.clone());
-                        }
-                        written_not_read.insert(var.name.clone());
-                    }
-                    VarKind::Read => {
-                        written_not_read.remove(&var.name);
-                        reported.remove(&var.name);
-                    }
+                let body = &src[body_offset..];
+                let tree = super::passage_tree::parse_passage_body(body, body_offset);
+                refs.extend(super::passage_tree::walk_passage_var_refs(
+                    &tree, body, body_offset, passage_name, &file_uri,
+                ));
+            } else {
+                for var in &passage.vars {
+                    refs.push(crate::types::PassageVarRef {
+                        variable_name: var.name.clone(),
+                        is_write: matches!(var.kind, knot_core::passage::VarKind::Init),
+                        line: 0,
+                        file_uri: file_uri.clone(),
+                        passage_name: passage.name.clone(),
+                    });
                 }
             }
         }
     }
-
-    diagnostics
-}
-
-/// BFS forward from a passage through the narrative graph.
-/// Returns the set of passage names reachable via outgoing edges.
-fn bfs_forward(workspace: &knot_core::Workspace, start: &str) -> HashSet<String> {
-    let mut visited = HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-
-    queue.push_back(start.to_string());
-
-    while let Some(current) = queue.pop_front() {
-        if visited.contains(&current) {
-            continue;
-        }
-        visited.insert(current.clone());
-
-        for neighbor in workspace.graph.outgoing_neighbors(&current) {
-            if !visited.contains(&neighbor) {
-                queue.push_back(neighbor);
-            }
-        }
-    }
-
-    visited
-}
-
-/// BFS from the start passage to determine all reachable passages.
-fn bfs_reachable(workspace: &knot_core::Workspace, start: &str) -> HashSet<String> {
-    let mut visited = HashSet::new();
-    let mut queue = std::collections::VecDeque::new();
-
-    queue.push_back(start.to_string());
-
-    while let Some(current) = queue.pop_front() {
-        if visited.contains(&current) {
-            continue;
-        }
-        visited.insert(current.clone());
-
-        for neighbor in workspace.graph.outgoing_neighbors(&current) {
-            if !visited.contains(&neighbor) {
-                queue.push_back(neighbor);
-            }
-        }
-    }
-
-    visited
-}
-
-/// Check if a passage runs before the start passage in the SugarCube lifecycle.
-/// These passages (StoryInit, script-tagged passages) contribute variables that are
-/// available from the very beginning of the game.
-fn is_pre_start_passage(workspace: &knot_core::Workspace, passage_name: &str) -> bool {
-    // Find the passage in the workspace
-    for doc in workspace.documents() {
-        if let Some(passage) = doc.passages.iter().find(|p| p.name == passage_name) {
-            if passage.is_special {
-                if let Some(ref def) = passage.special_def {
-                    // Startup passages (StoryInit) and script-injection passages
-                    // both run before the start passage. Script-injection passages
-                    // (tagged [script] or legacy-named "script") are compiled into
-                    // <script> elements that execute at story load time.
-                    return matches!(
-                        def.behavior,
-                        knot_core::passage::SpecialPassageBehavior::Startup
-                            | knot_core::passage::SpecialPassageBehavior::ScriptInjection
-                    );
-                }
-            }
-            // Fallback: tag-based detection for unclassified script passages.
-            // This path is reached when special_def is not set (shouldn't happen
-            // in normal parse flow, but defensive).
-            if passage.is_script_passage() {
-                return true;
-            }
-            return false;
-        }
-    }
-    false
+    refs
 }
 
 #[cfg(test)]
