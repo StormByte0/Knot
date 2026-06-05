@@ -28,6 +28,8 @@ pub mod custom_macros;
 pub mod macro_scan;
 pub mod navigation;
 pub mod workspace;
+pub mod js_extractor;
+pub mod js_preprocess;
 #[cfg(test)] mod tests;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
@@ -243,6 +245,37 @@ impl FormatPlugin for SugarCubePlugin {
                 // Validation: skip SugarCube-specific bracket checks
                 // (no [[/]] or <</>> validation on JS content)
 
+                // JavaScript syntax validation via Oxc for script passages.
+                // Script passages contain full JS programs, so we validate them
+                // as a single ScriptPassage context.
+                {
+                    use crate::sugarcube::js_preprocess::preprocess_sugarcube_js;
+                    use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode};
+
+                    let preprocessed = preprocess_sugarcube_js(body, body_offset);
+                    match parse_js(&preprocessed.js_source, ParseMode::Module) {
+                        JsParseOutcome::Success(_output) => {
+                            // Valid JS — no diagnostics
+                        }
+                        JsParseOutcome::Error(js_diagnostics) => {
+                            for js_diag in js_diagnostics {
+                                let original_range = preprocessed.offset_mapper.map_range_back(&js_diag.range);
+                                // Skip diagnostics inside comments
+                                if comments::is_in_comment(&comment_spans, &original_range) {
+                                    continue;
+                                }
+                                has_errors = true;
+                                diagnostics.push(crate::plugin::FormatDiagnostic {
+                                    range: original_range,
+                                    message: format!("JS: {}", js_diag.message),
+                                    severity: FormatDiagnosticSeverity::Error,
+                                    code: "sc-js-syntax".into(),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Script passages: JS content parsed above.
             } else if is_stylesheet {
                 // Stylesheet passages: no link extraction, no variable
@@ -428,6 +461,13 @@ impl FormatPlugin for SugarCubePlugin {
                 // they run as augmentation passes on the raw body text.
                 validation::validate_macro_brackets(body, body_offset, &mut body_diags);
                 validation::validate_link_brackets(body, body_offset, &mut body_diags);
+                // JavaScript syntax validation via Oxc parser
+                // Validates JS expressions in macro arguments (<<run>>, <<set>>,
+                // <<if>>), <<script>> blocks, and inline expressions (<<=>>)
+                let mut js_diags = passage_tree::walk_js_check(&tree, body, body_offset);
+                // Filter JS diagnostics inside comments
+                js_diags.retain(|d| !comments::is_in_comment(&comment_spans, &d.range));
+                body_diags.extend(js_diags);
                 let filtered_diags: Vec<_> = body_diags.into_iter().filter(|d| {
                     !comments::is_in_comment(&comment_spans, &d.range)
                 }).collect();

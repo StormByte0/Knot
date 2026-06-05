@@ -11,3 +11,10 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+
+# JavaScript parsing via Oxc
+oxc_parser = "0.134"
+oxc_span = "0.134"
+oxc_ast = "0.134"
+oxc_allocator = "0.134"
+oxc_diagnostics = "0.134"

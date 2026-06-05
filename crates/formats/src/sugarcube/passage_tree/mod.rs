@@ -36,6 +36,7 @@ mod walk_encounters;
 mod walk_validate;
 mod walk_tokens;
 mod walk_tokens_augment;
+mod walk_js_check;
 
 // Re-exports: all public items from submodules are available via `passage_tree::`
 #[allow(unused_imports)] // Re-exports used by other crate modules and tests
@@ -47,6 +48,7 @@ pub(crate) use walk_encounters::{
 pub(crate) use walk_validate::walk_validate;
 pub(crate) use walk_tokens::walk_tokens;
 pub(crate) use walk_tokens_augment::{walk_augment_tokens, walk_macro_passage_ref_tokens};
+pub(crate) use walk_js_check::walk_js_check;
 
 use std::ops::Range;
 

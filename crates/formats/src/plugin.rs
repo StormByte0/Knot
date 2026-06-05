@@ -1259,7 +1259,7 @@ impl FormatRegistry {
     /// finds this plugin.
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
-        registry.register(Box::new(crate::core::TwineCorePlugin::new()));
+        registry.register(Box::new(crate::twine_core::TwineCorePlugin::new()));
         registry.register(Box::new(crate::sugarcube::SugarCubePlugin::new()));
         registry.register(Box::new(crate::harlowe::HarlowePlugin::new()));
         registry.register(Box::new(crate::chapbook::ChapbookPlugin::new()));
