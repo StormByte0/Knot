@@ -77,10 +77,8 @@ export function registerDecorations(
             }, 300);
         }
 
-        // Note: virtual doc refresh is now handled by the server-push
-        // knot/refreshVirtualDoc notification. The server sends this
-        // after parse() completes following did_change, so we no longer
-        // need client-side debounced refresh here.
+        // Decorations are refreshed by the semantic token refresh cycle
+        // triggered after document changes.
     }, null, context.subscriptions);
 
     // Initial update

@@ -10,7 +10,6 @@ pub mod graph;
 pub mod workspace;
 pub mod analysis;
 pub mod editing;
-pub mod virtual_doc;
 
 pub use document::{Document, DocumentSnapshot};
 pub use passage::{Passage, Block, Link, VarOp, VarKind, SpecialPassageBehavior, PassageCategory};
@@ -21,13 +20,6 @@ pub use workspace::Workspace;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;
 pub use analysis::FormatVariableDiagnostic;
-pub use virtual_doc::{
-    VirtualDocAdapter, VirtualDocManager, PassageEntry,
-    TranslatedBlock, AdapterContext, SourceLocation,
-    JsDiagnostic, TwDiagnostic, DiagnosticSeverity,
-    SourceTextProvider, NoSourceText,
-    StartupAlias, UserCallable, UserCallableKind,
-};
 
 #[cfg(test)]
 mod analysis_tests;

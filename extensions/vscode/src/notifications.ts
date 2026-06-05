@@ -6,7 +6,6 @@
 //! - `knot/noTweeFiles` — no project detected prompt
 //! - `knot/formatDetected` — language ID switching for TextMate grammars
 //! - `knot/refreshSemanticTokens` — cross-file semantic token refresh
-//! - `knot/refreshVirtualDoc` — virtual document content refresh
 
 import * as vscode from 'vscode';
 import {
@@ -15,10 +14,8 @@ import {
     KnotBuildOutput,
     KnotFormatDetectedParams,
     KnotRefreshSemanticTokensParams,
-    KnotRefreshVirtualDocParams,
     KnotProfileResponse,
 } from './types';
-import { refreshVirtualDoc, openVirtualDocTab, isVirtualDocTabOpen, getCachedVirtualDoc } from './virtualDocProvider';
 
 // ---------------------------------------------------------------------------
 // Dependencies injected from extension.ts
@@ -62,12 +59,6 @@ export function registerNotifications(
                     deps.storyMapPanel?.refreshGraph();
                     deps.variableFlowProvider?.refresh();
                     deps.profileViewProvider?.refresh();
-
-                    // Open the virtual doc in a background tab so that
-                    // VSCode's JS language service validates it and diagnostics
-                    // flow through the relay pipeline. preserveFocus keeps the
-                    // user's .tw editor active.
-                    openVirtualDocTab(client);
 
                     // Fetch profile data for status bar enrichment
                     (async () => {
@@ -203,20 +194,4 @@ export function registerNotifications(
         }
     );
 
-    // ── knot/refreshVirtualDoc ────────────────────────────────────────
-    client.onNotification(
-        { method: 'knot/refreshVirtualDoc' },
-        (params: KnotRefreshVirtualDocParams) => {
-            const reason = params.reason || 'unknown';
-            console.log(`[Knot] Virtual doc refresh requested (reason: ${reason})`);
-            // Refresh cached content and update any open tab / in-memory doc
-            refreshVirtualDoc(client).then(() => {
-                // If the virtual doc tab was closed, re-open it in
-                // background to keep JS validation active.
-                if (!isVirtualDocTabOpen() && getCachedVirtualDoc()?.content?.length) {
-                    openVirtualDocTab(client);
-                }
-            });
-        }
-    );
 }

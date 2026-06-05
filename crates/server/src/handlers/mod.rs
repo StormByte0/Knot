@@ -25,7 +25,6 @@ pub mod semantic;
 pub mod structure;
 pub mod sync;
 pub mod variables;
-pub mod virtual_doc;
 pub mod workspace;
 
 use crate::state::ServerState;

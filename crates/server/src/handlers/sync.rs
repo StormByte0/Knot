@@ -122,7 +122,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         let sigils: Vec<char> = plugin.as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
     if should_notify {
@@ -140,14 +140,6 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         &uri,
         &all_uris,
         "document opened — cross-file link resolution may have changed",
-    ).await;
-
-    // Notify the client that the virtual document has been updated.
-    // The client will re-fetch the virtual doc and route JS diagnostics
-    // to .tw source positions.
-    helpers::send_virtual_doc_refresh(
-        &state.client,
-        "document opened — virtual doc map updated",
     ).await;
 }
 
@@ -351,7 +343,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         let sigils: Vec<char> = plugin.as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
     if should_notify {
@@ -367,12 +359,6 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         "cross-file link resolution may have changed",
     ).await;
 
-    // Notify the client that the virtual document has been updated
-    // after processing the text document change.
-    helpers::send_virtual_doc_refresh(
-        &state.client,
-        "document changed — virtual doc map updated",
-    ).await;
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
@@ -491,7 +477,7 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
         let sigils: Vec<char> = plugin.as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 }
 
@@ -588,7 +574,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             let sigils: Vec<char> = plugin.as_ref()
                                 .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                                 .unwrap_or_default();
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
                         }
 
                         // Notify client if format changed after file creation
@@ -605,12 +591,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             "file created — passage resolution may have changed",
                         ).await;
 
-                        // Notify the client that the virtual document has been updated
-                        // after a new file was created and indexed.
-                        helpers::send_virtual_doc_refresh(
-                            &state.client,
-                            "file created — virtual doc map updated",
-                        ).await;
                     }
             }
             FileChangeType::DELETED => {
@@ -690,7 +670,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     let sigils: Vec<char> = plugin.as_ref()
                         .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                         .unwrap_or_default();
-                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
                 }
 
                 // Notify remaining open documents that their semantic tokens may be stale
@@ -707,12 +687,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     .publish_diagnostics(uri, Vec::new(), None)
                     .await;
 
-                // Notify the client that the virtual document has been updated
-                // after a file was deleted.
-                helpers::send_virtual_doc_refresh(
-                    &state.client,
-                    "file deleted — virtual doc map updated",
-                ).await;
             }
             FileChangeType::CHANGED => {
                 tracing::info!("File changed on disk: {}", uri);
@@ -768,7 +742,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 let sigils: Vec<char> = plugin.as_ref()
                                     .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                                     .unwrap_or_default();
-                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &inner.js_diagnostics, &open_docs, &inner.workspace, &config, &sigils).await;
+                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
                             }
 
                             if should_notify {
@@ -784,12 +758,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 "file changed on disk — passage resolution may have changed",
                             ).await;
 
-                            // Notify the client that the virtual document has been updated
-                            // after a file changed on disk.
-                            helpers::send_virtual_doc_refresh(
-                                &state.client,
-                                "file changed on disk — virtual doc map updated",
-                            ).await;
                         }
             }
             _ => {}

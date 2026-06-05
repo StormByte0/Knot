@@ -169,12 +169,6 @@
         "title": "Knot: Initialize Project",
         "category": "Knot",
         "icon": "$(add)"
-      },
-      {
-        "command": "knot.openVirtualDoc",
-        "title": "Knot: Open Virtual Document",
-        "category": "Knot",
-        "icon": "$(file-code)"
       }
     ],
     "keybindings": [
@@ -234,7 +228,6 @@
         }
       ]
     },
-    "viewsWelcome": [],
     "menus": {
       "editor/context": [
         {
@@ -249,8 +242,7 @@
           "when": "resourceLangId == twee",
           "group": "navigation"
         }
-      ],
-      "view/title": []
+      ]
     },
     "configuration": {
       "title": "Knot",

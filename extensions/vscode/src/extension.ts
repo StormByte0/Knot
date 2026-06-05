@@ -20,7 +20,6 @@ import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { isTweeLanguage, extractPassageName } from './utils';
 import { KnotLanguageClient } from './types';
-import { registerVirtualDocProvider } from './virtualDocProvider';
 import { getServerPath } from './binaryResolution';
 import { registerNotifications, NotificationDeps } from './notifications';
 import { registerCommands, CommandDeps } from './commands';
@@ -173,9 +172,6 @@ export async function activate(context: vscode.ExtensionContext) {
         if (playModeProvider) {
             playModeProvider.setClient(client);
         }
-
-        // Register the virtual document content provider and diagnostic routing.
-        registerVirtualDocProvider(context, client);
 
         // Register custom LSP notification handlers
         const notifDeps: NotificationDeps = {
