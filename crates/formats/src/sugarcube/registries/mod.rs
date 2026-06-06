@@ -59,6 +59,7 @@ pub mod var_extract;
 pub mod registry_populate;
 
 use parking_lot::RwLock;
+use std::collections::HashSet;
 
 use custom_macros::CustomMacroRegistry;
 use variable_tree::VariableTree;
@@ -195,7 +196,7 @@ impl SugarCubeRegistry {
         self.variables
             .read()
             .get_variable(var_name)
-            .map(|e| e.known_properties.clone())
+            .map(|e| e.known_properties())
             .unwrap_or_default()
     }
 
@@ -215,8 +216,48 @@ impl SugarCubeRegistry {
     }
 
     /// Build the variable tree for the workspace.
-    pub fn build_variable_tree(&self) -> Vec<VariableTreeNode> {
-        self.variables.read().build_tree()
+    ///
+    /// Before building, computes passage body start positions from the
+    /// document cache so that passage-relative line numbers can be
+    /// converted to document-absolute line numbers at the output boundary.
+    /// Line numbers are computed at record time from passage body text,
+    /// so no post-hoc `resolve_line_numbers()` call is needed.
+    pub fn build_variable_tree(&self, source_text: &dyn crate::plugin::SourceTextProvider) -> Vec<VariableTreeNode> {
+        // Compute passage positions from the source text for relative→absolute conversion.
+        let passage_positions = self.compute_passage_positions(source_text);
+
+        self.variables.read().build_tree(&passage_positions)
+    }
+
+    /// Compute passage positions for all files referenced in the variable tree.
+    ///
+    /// Scans each file's source text for `:: PassageName` headers and builds
+    /// a map from `(file_uri, passage_name)` to `PassagePosition`. This map
+    /// is used at the output boundary to convert passage-relative line numbers
+    /// and byte offsets to document-absolute values.
+    pub fn compute_passage_positions(&self, source_text: &dyn crate::plugin::SourceTextProvider) -> variable_tree::PassagePositionMap {
+        use variable_tree::compute_passage_positions;
+
+        // Collect all unique file URIs from the variable tree
+        let file_uris: HashSet<String> = {
+            let vtree = self.variables.read();
+            let mut uris = HashSet::new();
+            for (_, entry) in vtree.iter() {
+                collect_file_uris_from_node(&entry.node, &mut uris);
+            }
+            uris
+        };
+
+        // For each file, compute passage positions from the source text
+        let mut all_positions = variable_tree::PassagePositionMap::new();
+        for file_uri in file_uris {
+            if let Some(text) = source_text.get_source_text(&file_uri) {
+                let positions = compute_passage_positions(text, &file_uri);
+                all_positions.extend(positions);
+            }
+        }
+
+        all_positions
     }
 }
 
@@ -254,7 +295,7 @@ impl FormatRegistry for SugarCubeRegistry {
         self.variables
             .read()
             .get_variable(var_name)
-            .map(|e| e.known_properties.clone())
+            .map(|e| e.known_properties())
             .unwrap_or_default()
     }
 
@@ -268,5 +309,15 @@ impl FormatRegistry for SugarCubeRegistry {
 
     fn template_names(&self) -> Vec<String> {
         self.templates.read().completion_names()
+    }
+}
+
+/// Recursively collect all unique file URIs from a node's accesses.
+fn collect_file_uris_from_node(node: &variable_tree::VarNode, uris: &mut HashSet<String>) {
+    for access in &node.accesses {
+        uris.insert(access.file_uri.clone());
+    }
+    for child in node.children.values() {
+        collect_file_uris_from_node(child, uris);
     }
 }

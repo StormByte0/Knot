@@ -6,7 +6,11 @@ use crate::sugarcube::ast::*;
 ///
 /// `i` points to the first character after `[[`.
 /// On return, `i` points past the closing `]]`.
-pub(super) fn parse_link(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+///
+/// `offset` is the base byte offset for the body text being parsed
+/// (0 for top-level, nonzero for nested block content).
+/// `link_start` is the position of `[[` in `text`.
+pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: usize) -> AstNode {
     let bytes = text.as_bytes();
     let len = bytes.len();
     let content_start = *i;
@@ -52,7 +56,7 @@ pub(super) fn parse_link(text: &str, i: &mut usize, span_start: usize) -> AstNod
         target,
         kind,
         setter_var,
-        span: span_start..span_start + *i,
+        span: offset + link_start..offset + *i,
     }
 }
 

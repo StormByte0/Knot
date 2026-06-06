@@ -31,7 +31,7 @@ pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
                 // << — macro open
                 let start = i;
                 i += 2;
-                let node = parse_macro(text, &mut i, offset + start);
+                let node = parse_macro(text, &mut i, offset, start);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
             }
@@ -39,7 +39,7 @@ pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
                 // [[ — link
                 let start = i;
                 i += 2;
-                let node = parse_link(text, &mut i, offset + start);
+                let node = parse_link(text, &mut i, offset, start);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
             }

@@ -50,15 +50,16 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
         let passage_ast = super::parser::parse_passage_body(&cp.body_text, body_offset, mode);
 
         // Populate registries from the AST
+        // Spans are passage-body-relative; no body_offset shifting needed.
         registry_populate::populate_registries_from_ast(
             registry,
             &passage_ast,
             cp,
             uri.as_ref(),
-            body_offset,
         );
 
         // For script passages, also do oxc walk for State.variables / Macro.add / functions / templates
+        // Spans are passage-body-relative; no body_offset shifting needed.
         if is_script_passage(cp) {
             registry_populate::walk_script_js(
                 registry,
@@ -234,7 +235,6 @@ pub(super) fn parse_single(
         &passage_ast,
         &cp,
         "",
-        0,
     );
 
     // For script passages, also do oxc walk

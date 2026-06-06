@@ -59,12 +59,16 @@ fn macro_name_to_access_kind(name: &str) -> VarAccessKind {
 /// Walks the AST's var_ops and links to feed the `VariableTree`
 /// and `CustomMacroRegistry` side tables. Each variable access is classified
 /// with the appropriate `VarAccessKind` for nuanced read/write tracking.
+///
+/// Spans in the AST are **passage-body-relative** (relative to the start of
+/// the passage content after the header line). They are stored as-is in the
+/// variable tree without shifting by `body_offset`. Line numbers are computed
+/// immediately from the passage body text.
 pub fn populate_registries_from_ast(
     registry: &SugarCubeRegistry,
     passage_ast: &ast::PassageAst,
     cp: &ClassifiedPassage,
     file_uri: &str,
-    _body_offset: usize,
 ) {
     // Record variable operations from the AST
     {
@@ -73,6 +77,9 @@ pub fn populate_registries_from_ast(
             // Determine the access kind from the AST's VarOpInfo.
             // The is_write flag is the basic classification; the actual kind
             // is refined below when we have SetOperator information.
+            //
+            // The parser produces body-relative spans — store them directly.
+            // Line numbers are computed from the passage body text at record time.
             vtree.record_var_simple(
                 &var_op.name,
                 var_op.is_temporary,
@@ -81,6 +88,7 @@ pub fn populate_registries_from_ast(
                 file_uri,
                 var_op.span.clone(),
                 &var_op.property_path,
+                &cp.body_text,
             );
         }
 
@@ -131,6 +139,10 @@ pub fn populate_registries_from_ast(
 /// have a `SetAssignment` that tells us whether it's a simple write (`to`/`=`),
 /// a compound write (`+=`, `-=`, etc.), or a postfix modify (`++`, `--`).
 /// This function walks the AST nodes and upgrades the access kind.
+///
+/// Spans are **passage-body-relative** — the AST and the variable tree both
+/// use body-relative positions, so we match on the span directly without
+/// any `body_offset` adjustment.
 fn refine_access_kinds_from_ast(
     vtree: &mut super::variable_tree::VariableTree,
     nodes: &[ast::AstNode],
@@ -149,10 +161,11 @@ fn refine_access_kinds_from_ast(
             if name.eq_ignore_ascii_case("set") {
                 if let Some(sa) = set_assignment {
                     let kind = set_operator_to_access_kind(&sa.operator);
-                    // Find the target variable in the tree and update its access kind
+                    // Find the target variable in the tree and update its access kind.
+                    // Both the variable tree and the AST use passage-body-relative
+                    // spans, so we match on the span start directly.
                     if let Some(entry) = vtree.get_variable_mut(&sa.target.name) {
-                        // Find the matching access (same passage, same span start)
-                        for access in &mut entry.accesses {
+                        for access in &mut entry.node.accesses {
                             if access.passage_name == passage_name
                                 && access.file_uri == file_uri
                                 && access.span.start == sa.target.span.start
@@ -196,6 +209,10 @@ fn refine_access_kinds_from_ast(
 /// - `Macro.add("name", {...})` → custom macro definitions
 /// - `function name()` → function registry entries
 /// - `Template.add("name", ...)` → template registry entries
+///
+/// Spans from oxc are mapped back to original body-relative coordinates
+/// via `preprocessed.map_to_original()`. These body-relative spans are
+/// stored directly in the variable tree without any `body_offset` adjustment.
 pub fn walk_script_js(
     registry: &SugarCubeRegistry,
     body_text: &str,
@@ -219,6 +236,7 @@ pub fn walk_script_js(
                     file_uri,
                     &cp.header.name,
                     registry,
+                    body_text,
                 );
             });
         }

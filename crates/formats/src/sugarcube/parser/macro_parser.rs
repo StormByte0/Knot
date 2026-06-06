@@ -9,7 +9,11 @@ use super::variable_scan::scan_inline_vars;
 ///
 /// `i` points to the first character after `<<`.
 /// On return, `i` points past the closing `>>` (or end of text).
-pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+///
+/// `offset` is the base byte offset for the body text being parsed
+/// (0 for top-level, nonzero for nested block content).
+/// `macro_start` is the position of `<<` in `text`.
+pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start: usize) -> AstNode {
     let bytes = text.as_bytes();
     let len = bytes.len();
 
@@ -34,10 +38,10 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
             args: String::new(),
             var_refs: Vec::new(),
             children: None, // close tags have no children
-            name_span: span_start + 2..span_start + 2 + (*i - name_start),
-            open_span: span_start..span_start + *i,
+            name_span: offset + name_start..offset + *i,
+            open_span: offset + macro_start..offset + *i,
             close_span: None,
-            full_span: span_start..span_start + *i,
+            full_span: offset + macro_start..offset + *i,
             set_assignment: None, // close tags have no assignment
         };
     }
@@ -56,12 +60,12 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
         let content_start = *i;
         let content_end = skip_to_first_macro_close(text, i);
         let content = text[content_start..content_end].to_string();
-        let var_refs = scan_inline_vars(&content, span_start + content_start);
+        let var_refs = scan_inline_vars(&content, offset + content_start);
         return AstNode::Expression {
             kind,
             content,
             var_refs,
-            span: span_start..span_start + *i,
+            span: offset + macro_start..offset + *i,
         };
     }
 
@@ -91,12 +95,12 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
     // standalone blocks with their own close tags.
     let is_block = is_block_macro(&name) && !is_block_modifier(&name);
 
-    let var_refs = scan_inline_vars(&args, span_start + args_start);
+    let var_refs = scan_inline_vars(&args, offset + args_start);
 
     // For <<set>> macros: parse the assignment structure so that only
     // the RHS expression goes to oxc (not the target + operator).
     let set_assignment = if name.eq_ignore_ascii_case("set") {
-        parse_set_assignment(&args, span_start + args_start)
+        parse_set_assignment(&args, offset + args_start)
     } else {
         None
     };
@@ -104,7 +108,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
     if is_block {
         // Parse the body until <</name>>
         let body_text = &text[open_end..];
-        let (children, close_offset) = parse_block_body(body_text, &name, span_start + open_end);
+        let (children, close_offset) = parse_block_body(body_text, &name, offset + open_end);
 
         let close_span = if let Some(co) = close_offset {
             // The close tag was found at body_text[co..]
@@ -122,24 +126,24 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
                 }
             }
             *i = open_end + ci;
-            Some(span_start + open_end + co..span_start + open_end + ci)
+            Some(offset + open_end + co..offset + open_end + ci)
         } else {
             // Unclosed block macro — the rest of the text is the body
             *i = len;
             None
         };
 
-        let full_end = close_span.as_ref().map_or(span_start + *i, |s| s.end);
+        let full_end = close_span.as_ref().map_or(offset + *i, |s| s.end);
 
         AstNode::Macro {
             name,
             args,
             var_refs,
             children: Some(children),
-            name_span: span_start + 2..span_start + 2 + name_len,
-            open_span: span_start..span_start + open_end,
+            name_span: offset + name_start..offset + name_start + name_len,
+            open_span: offset + macro_start..offset + open_end,
             close_span,
-            full_span: span_start..full_end.max(span_start + *i),
+            full_span: offset + macro_start..full_end.max(offset + *i),
             set_assignment,
         }
     } else {
@@ -148,10 +152,10 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
             args,
             var_refs,
             children: None,
-            name_span: span_start + 2..span_start + 2 + name_len,
-            open_span: span_start..span_start + open_end,
+            name_span: offset + name_start..offset + name_start + name_len,
+            open_span: offset + macro_start..offset + open_end,
             close_span: None,
-            full_span: span_start..span_start + open_end,
+            full_span: offset + macro_start..offset + open_end,
             set_assignment,
         }
     }

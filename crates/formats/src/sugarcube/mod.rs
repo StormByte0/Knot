@@ -385,12 +385,16 @@ impl FormatPlugin for SugarCubePlugin {
     /// Returns the current tree-structured variable inventory from the
     /// VariableTree sub-registry. This is used by the variable tracker
     /// UI panel and by completion/hover for workspace-wide variable info.
+    ///
+    /// Before building the tree, resolves all byte-offset → line-number
+    /// mappings using the server's document cache so that usage locations
+    /// report actual source lines instead of `line: 0`.
     fn build_variable_tree(
         &self,
         _workspace: &knot_core::Workspace,
-        _source_text: &dyn crate::plugin::SourceTextProvider,
+        source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<VariableTreeNode> {
-        self.registry.build_variable_tree()
+        self.registry.build_variable_tree(source_text)
     }
 
     /// Get all workspace variable names for completion.
@@ -428,11 +432,14 @@ impl FormatPlugin for SugarCubePlugin {
         source_text: &dyn crate::plugin::SourceTextProvider,
         passage_name: &str,
     ) -> Vec<crate::types::PassageVarRef> {
+        // Compute passage positions for relative→absolute line conversion
+        let passage_positions = self.registry.compute_passage_positions(source_text);
         var_extract::extract_passage_variable_refs_impl(
             &self.registry.variables(),
             workspace,
             source_text,
             passage_name,
+            &passage_positions,
         )
     }
 
@@ -448,7 +455,12 @@ impl FormatPlugin for SugarCubePlugin {
         &self,
         _workspace: &knot_core::Workspace,
     ) -> HashMap<String, crate::types::StateVariable> {
-        var_extract::build_state_variable_registry_impl(&self.registry.variables())
+        // For state variable registry, passage positions are not available
+        // without source text. Use empty map — spans will stay passage-relative.
+        // This is acceptable because the state variable registry is primarily
+        // used for variable availability analysis, not for precise location reporting.
+        let passage_positions = crate::sugarcube::registries::variable_tree::PassagePositionMap::new();
+        var_extract::build_state_variable_registry_impl(&self.registry.variables(), &passage_positions)
     }
 
     // ── Function registry ─────────────────────────────────────────────

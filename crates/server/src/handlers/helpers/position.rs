@@ -190,7 +190,12 @@ pub(crate) fn find_passage_name_range(text: &str, passage_name: &str) -> Range {
             if name == passage_name {
                 let after_colons = &line[2..];
                 if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
-                    let start_char = utf16_len(&after_colons[..name_range.start]);
+                    // The `::` prefix is 2 UTF-16 code units that must be
+                    // included in the character offset — passage_name_range_in_header()
+                    // returns offsets relative to after_colons, but LSP positions
+                    // are relative to the full line.
+                    let prefix_len = utf16_len(&line[..2]);
+                    let start_char = prefix_len + utf16_len(&after_colons[..name_range.start]);
                     let end_char = start_char + utf16_len(&after_colons[name_range.start..name_range.end]);
                     return Range {
                         start: Position {

@@ -52,18 +52,23 @@ pub struct JsWalkResult {
 ///
 /// The walker uses `with_program()` from the oxc output to access the AST.
 /// It scans for common SugarCube patterns in a best-effort manner.
+///
+/// Spans from oxc are mapped back to original body-relative coordinates
+/// via `preprocessed.map_to_original()`. These are stored directly in the
+/// variable tree. The `body_text` parameter is used for line number computation.
 pub fn walk_script_passage(
     program: &Program<'_>,
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
     registry: &SugarCubeRegistry,
+    body_text: &str,
 ) -> JsWalkResult {
     let mut result = JsWalkResult::default();
 
     // Walk all top-level statements
     for stmt in &program.body {
-        walk_statement(stmt, preprocessed, file_uri, passage_name, registry, &mut result);
+        walk_statement(stmt, preprocessed, file_uri, passage_name, registry, &mut result, body_text);
     }
 
     result
@@ -83,11 +88,12 @@ pub fn walk_inline_js(
     file_uri: &str,
     passage_name: &str,
     registry: &SugarCubeRegistry,
+    body_text: &str,
 ) -> JsWalkResult {
     let mut result = JsWalkResult::default();
 
     // For inline JS, scan for substituted variable references
-    scan_for_substituted_vars(program.source_text, preprocessed, file_uri, passage_name, registry, &mut result);
+    scan_for_substituted_vars(program.source_text, preprocessed, file_uri, passage_name, registry, &mut result, body_text);
 
     result
 }
@@ -103,6 +109,7 @@ fn walk_statement(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     use oxc_ast::ast::Statement;
 
@@ -124,7 +131,7 @@ fn walk_statement(
             }
         }
         Statement::ExpressionStatement(expr_stmt) => {
-            walk_expression(&expr_stmt.expression, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&expr_stmt.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Statement::VariableDeclaration(var_decl) => {
             for decl in &var_decl.declarations {
@@ -165,45 +172,45 @@ fn walk_statement(
                         }
                         _ => {}
                     }
-                    walk_expression(init, preprocessed, file_uri, passage_name, registry, result);
+                    walk_expression(init, preprocessed, file_uri, passage_name, registry, result, body_text);
                 }
             }
         }
         Statement::BlockStatement(block) => {
             for s in &block.body {
-                walk_statement(s, preprocessed, file_uri, passage_name, registry, result);
+                walk_statement(s, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Statement::IfStatement(if_stmt) => {
-            walk_expression(&if_stmt.test, preprocessed, file_uri, passage_name, registry, result);
-            walk_statement(&if_stmt.consequent, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&if_stmt.test, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_statement(&if_stmt.consequent, preprocessed, file_uri, passage_name, registry, result, body_text);
             if let Some(alt) = &if_stmt.alternate {
-                walk_statement(alt, preprocessed, file_uri, passage_name, registry, result);
+                walk_statement(alt, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Statement::ForStatement(for_stmt) => {
-            walk_statement(&for_stmt.body, preprocessed, file_uri, passage_name, registry, result);
+            walk_statement(&for_stmt.body, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Statement::WhileStatement(while_stmt) => {
-            walk_statement(&while_stmt.body, preprocessed, file_uri, passage_name, registry, result);
+            walk_statement(&while_stmt.body, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Statement::ReturnStatement(ret) => {
             if let Some(arg) = &ret.argument {
-                walk_expression(arg, preprocessed, file_uri, passage_name, registry, result);
+                walk_expression(arg, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Statement::TryStatement(try_stmt) => {
             for s in &try_stmt.block.body {
-                walk_statement(s, preprocessed, file_uri, passage_name, registry, result);
+                walk_statement(s, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
             if let Some(catch) = &try_stmt.handler {
                 for s in &catch.body.body {
-                    walk_statement(s, preprocessed, file_uri, passage_name, registry, result);
+                    walk_statement(s, preprocessed, file_uri, passage_name, registry, result, body_text);
                 }
             }
             if let Some(finally) = &try_stmt.finalizer {
                 for s in &finally.body {
-                    walk_statement(s, preprocessed, file_uri, passage_name, registry, result);
+                    walk_statement(s, preprocessed, file_uri, passage_name, registry, result, body_text);
                 }
             }
         }
@@ -222,6 +229,7 @@ fn walk_expression(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     use oxc_ast::ast::Expression as Expr;
 
@@ -251,11 +259,11 @@ fn walk_expression(
                 // Found Template.add — the parent call expression handles this
             }
             // Recurse into object
-            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::ComputedMemberExpression(member) => {
-            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&member.expression, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&member.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::CallExpression(call) => {
             // Check for Macro.add("name", ...) pattern
@@ -352,36 +360,36 @@ fn walk_expression(
                 result.template_adds += 1;
             }
             // Recurse into callee and arguments
-            walk_expression(&call.callee, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&call.callee, preprocessed, file_uri, passage_name, registry, result, body_text);
             for arg in &call.arguments {
-                walk_argument(arg, preprocessed, file_uri, passage_name, registry, result);
+                walk_argument(arg, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Expr::AssignmentExpression(assign) => {
             // Check for State.variables.x = value
-            check_assignment_for_state_var(&assign.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&assign.right, preprocessed, file_uri, passage_name, registry, result);
+            check_assignment_for_state_var(&assign.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&assign.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::Identifier(id) => {
-            check_identifier_for_substituted_var(id, false, preprocessed, file_uri, passage_name, registry, result);
+            check_identifier_for_substituted_var(id, false, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::BinaryExpression(bin) => {
-            walk_expression(&bin.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&bin.right, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&bin.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&bin.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::LogicalExpression(logic) => {
-            walk_expression(&logic.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&logic.right, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&logic.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&logic.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::SequenceExpression(seq) => {
             for e in &seq.expressions {
-                walk_expression(e, preprocessed, file_uri, passage_name, registry, result);
+                walk_expression(e, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Expr::ConditionalExpression(cond) => {
-            walk_expression(&cond.test, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&cond.test, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         _ => {}
     }
@@ -398,6 +406,7 @@ fn check_assignment_for_state_var(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     use oxc_ast::ast::AssignmentTarget;
 
@@ -422,6 +431,7 @@ fn check_assignment_for_state_var(
                     file_uri,
                     original_start..original_end,
                     "",
+                    body_text,
                 );
                 result.state_writes += 1;
             }
@@ -446,12 +456,13 @@ fn check_assignment_for_state_var(
                     file_uri,
                     original_start..original_end,
                     "",
+                    body_text,
                 );
                 result.state_writes += 1;
             }
         }
         AssignmentTarget::AssignmentTargetIdentifier(id) => {
-            check_identifier_for_substituted_var(id, true, preprocessed, file_uri, passage_name, registry, result);
+            check_identifier_for_substituted_var(id, true, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         _ => {}
     }
@@ -469,6 +480,7 @@ fn check_identifier_for_substituted_var(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     let name = id.name.as_str();
 
@@ -486,6 +498,7 @@ fn check_identifier_for_substituted_var(
             file_uri,
             original_start..original_end,
             property_path,
+            body_text,
         );
         if is_write {
             result.state_writes += 1;
@@ -507,6 +520,7 @@ fn check_identifier_for_substituted_var(
             file_uri,
             original_start..original_end,
             "",
+            body_text,
         );
         if is_write {
             result.state_writes += 1;
@@ -530,6 +544,7 @@ fn scan_for_substituted_vars(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     // Scan for State_variables_XXX and State_temporary_XXX identifiers
     for sub in &preprocessed.substitutions {
@@ -555,8 +570,9 @@ fn scan_for_substituted_vars(
                 false, // Inline expressions are typically reads
                 passage_name,
                 file_uri,
-                sub.original_range.clone(),
+                sub.original_range.start..sub.original_range.end,
                 &property_path,
+                body_text,
             );
             result.state_reads += 1;
         } else if original_text.starts_with('_') {
@@ -567,8 +583,9 @@ fn scan_for_substituted_vars(
                 false,
                 passage_name,
                 file_uri,
-                sub.original_range.clone(),
+                sub.original_range.start..sub.original_range.end,
                 "",
+                body_text,
             );
             result.state_reads += 1;
         }
@@ -605,12 +622,13 @@ fn walk_argument(
     passage_name: &str,
     registry: &SugarCubeRegistry,
     result: &mut JsWalkResult,
+    body_text: &str,
 ) {
     use oxc_ast::ast::Argument as Arg;
 
     match arg {
         Arg::SpreadElement(spread) => {
-            walk_expression(&spread.argument, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&spread.argument, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::StaticMemberExpression(member) => {
             if member.property.name == "variables"
@@ -625,11 +643,11 @@ fn walk_argument(
             {
                 // Macro.add detected at argument level
             }
-            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::ComputedMemberExpression(member) => {
-            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&member.expression, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&member.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::CallExpression(call) => {
             // Check for Macro.add("name", ...) pattern
@@ -650,35 +668,35 @@ fn walk_argument(
                 );
                 result.macro_adds += 1;
             }
-            walk_expression(&call.callee, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&call.callee, preprocessed, file_uri, passage_name, registry, result, body_text);
             for a in &call.arguments {
-                walk_argument(a, preprocessed, file_uri, passage_name, registry, result);
+                walk_argument(a, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Arg::AssignmentExpression(assign) => {
-            check_assignment_for_state_var(&assign.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&assign.right, preprocessed, file_uri, passage_name, registry, result);
+            check_assignment_for_state_var(&assign.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&assign.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::Identifier(id) => {
-            check_identifier_for_substituted_var(id, false, preprocessed, file_uri, passage_name, registry, result);
+            check_identifier_for_substituted_var(id, false, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::BinaryExpression(bin) => {
-            walk_expression(&bin.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&bin.right, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&bin.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&bin.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::LogicalExpression(logic) => {
-            walk_expression(&logic.left, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&logic.right, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&logic.left, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&logic.right, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Arg::SequenceExpression(seq) => {
             for e in &seq.expressions {
-                walk_expression(e, preprocessed, file_uri, passage_name, registry, result);
+                walk_expression(e, preprocessed, file_uri, passage_name, registry, result, body_text);
             }
         }
         Arg::ConditionalExpression(cond) => {
-            walk_expression(&cond.test, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result);
-            walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result);
+            walk_expression(&cond.test, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result, body_text);
+            walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         _ => {}
     }
@@ -726,6 +744,7 @@ mod tests {
                         "file:///test.tw",
                         "Scripts",
                         &registry,
+                        "",
                     )
                 });
 
@@ -754,6 +773,7 @@ mod tests {
                         "file:///test.tw",
                         "Scripts",
                         &registry,
+                        "",
                     )
                 });
 
@@ -782,6 +802,7 @@ mod tests {
                         "file:///test.tw",
                         "Scripts",
                         &registry,
+                        "",
                     )
                 });
 
@@ -813,6 +834,7 @@ mod tests {
                         "file:///test.tw",
                         "Scripts",
                         &registry,
+                        "",
                     )
                 });
 
@@ -839,6 +861,7 @@ mod tests {
                         "file:///test.tw",
                         "Start",
                         &registry,
+                        "",
                     )
                 });
 
