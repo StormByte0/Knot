@@ -55,25 +55,35 @@ pub mod macros;
 pub mod classifier;
 pub mod ast;
 pub mod parser;
+pub mod variable_tree;
+pub mod custom_macros;
+pub mod js_preprocess;
+pub mod js_walk;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarKind, VarOp, Block, PassageCategory as CorePassageCategory};
 use std::collections::{HashMap, HashSet};
+use std::sync::RwLock;
 use url::Url;
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use crate::types::{
     GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
-    VariableSigilInfo,
+    VariableSigilInfo, VariableTreeNode,
 };
 use ast::{ParseMode, PassageAst};
 use classifier::{ClassifiedPassage, is_script_passage, is_stylesheet_passage, is_widget_passage};
+use variable_tree::VariableTree;
+use custom_macros::CustomMacroRegistry;
 
 /// SugarCube 2.x format plugin.
 ///
 /// Format-owned registries are exposed through trait methods so that
 /// LSP handlers never touch VariableTree/CustomMacroRegistry directly.
 pub struct SugarCubePlugin {
-    // Registries will be added in Phase 3
+    /// Side table tracking all `$var` / `_var` references across the workspace.
+    variable_tree: RwLock<VariableTree>,
+    /// Registry of user-defined macros (widgets and `Macro.add()` calls).
+    custom_macros: RwLock<CustomMacroRegistry>,
 }
 
 impl Default for SugarCubePlugin {
@@ -84,7 +94,10 @@ impl Default for SugarCubePlugin {
 
 impl SugarCubePlugin {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            variable_tree: RwLock::new(VariableTree::new()),
+            custom_macros: RwLock::new(CustomMacroRegistry::new()),
+        }
     }
 
     /// Determine the parse mode for a classified passage.
@@ -144,6 +157,117 @@ impl SugarCubePlugin {
 
         passage
     }
+
+    /// Populate registries from a parsed passage AST.
+    ///
+    /// This walks the AST's var_ops and links to feed the VariableTree
+    /// and CustomMacroRegistry side tables. Called during the ordered
+    /// parse pipeline so that registries are warm for later passages.
+    fn populate_registries_from_ast(
+        &self,
+        passage_ast: &PassageAst,
+        cp: &ClassifiedPassage,
+        file_uri: &str,
+        _body_offset: usize,
+    ) {
+        let mut var_tree = self.variable_tree.write().unwrap();
+        let mut macro_reg = self.custom_macros.write().unwrap();
+
+        // Record variable operations from the AST
+        for var_op in &passage_ast.var_ops {
+            var_tree.record_var(
+                &var_op.name,
+                var_op.is_temporary,
+                var_op.is_write,
+                &cp.header.name,
+                file_uri,
+                var_op.span.clone(),
+                &var_op.property_path,
+            );
+        }
+
+        // Extract widget definitions from AST nodes
+        for node in &passage_ast.nodes {
+            if let ast::AstNode::Macro { name, args, open_span, .. } = node {
+                // <<widget name>> definitions
+                if name.eq_ignore_ascii_case("widget") {
+                    let widget_name = args.trim().to_string();
+                    if !widget_name.is_empty() {
+                        macro_reg.register_widget(
+                            &widget_name,
+                            &cp.header.name,
+                            file_uri,
+                            open_span.start,
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Mark variables as seeded if this is a special passage
+        if cp.special_def.as_ref().map_or(false, |d| {
+            matches!(d.behavior, knot_core::passage::SpecialPassageBehavior::Startup)
+        }) {
+            for var_op in &passage_ast.var_ops {
+                if var_op.is_write {
+                    var_tree.mark_seeded(&var_op.name);
+                }
+            }
+        }
+    }
+
+    /// Walk JS in a script passage using oxc for deep registry population.
+    ///
+    /// Script passages contain full JS programs. We preprocess the `$var`
+    /// references, parse with oxc, and walk the AST to find:
+    /// - `State.variables.x = value` → variable writes
+    /// - `Macro.add("name", {...})` → custom macro definitions
+    /// - Function declarations → function registry
+    fn walk_script_js(
+        &self,
+        body_text: &str,
+        cp: &ClassifiedPassage,
+        file_uri: &str,
+    ) {
+        use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
+
+        // Preprocess $var references for oxc
+        let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
+
+        // Parse with oxc as a JS module
+        match parse_js(&preprocessed.source, JsParseMode::Module) {
+            JsParseOutcome::Success(output) => {
+                let mut var_tree = self.variable_tree.write().unwrap();
+                let mut macro_reg = self.custom_macros.write().unwrap();
+
+                output.with_program(|program| {
+                    js_walk::walk_script_passage(
+                        program,
+                        &preprocessed,
+                        file_uri,
+                        &cp.header.name,
+                        &mut var_tree,
+                        &mut macro_reg,
+                    );
+                });
+            }
+            JsParseOutcome::Error(_diagnostics) => {
+                // JS syntax errors are reported as diagnostics by the
+                // caller — we just skip registry population for broken JS
+            }
+        }
+    }
+
+    /// Get the variable tree for read-only access.
+    pub fn variable_tree(&self) -> std::sync::RwLockReadGuard<'_, VariableTree> {
+        self.variable_tree.read().unwrap()
+    }
+
+    /// Get the custom macro registry for read-only access.
+    pub fn custom_macro_registry(&self) -> std::sync::RwLockReadGuard<'_, CustomMacroRegistry> {
+        self.custom_macros.read().unwrap()
+    }
 }
 
 /// Build `Block` list from AST nodes (backward compatibility).
@@ -172,11 +296,11 @@ fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
                     span: body_offset + span.start..body_offset + span.end,
                 });
             }
-            ast::AstNode::Link { span, .. } => {
+            ast::AstNode::Link { .. } => {
                 // Links in body are represented as text blocks for backward compat
                 // The actual Link data is in passage.links
             }
-            ast::AstNode::Comment { span, .. } => {
+            ast::AstNode::Comment { .. } => {
                 // Comments don't produce body blocks
             }
             ast::AstNode::Error { message, span } => {
@@ -194,7 +318,7 @@ fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
 fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
     for node in nodes {
         match node {
-            ast::AstNode::Macro { name, name_span, var_refs, children, .. } => {
+            ast::AstNode::Macro { name: _, name_span, var_refs, children, .. } => {
                 // Macro name token
                 tokens.push(SemanticToken {
                     start: body_offset + name_span.start,
@@ -225,7 +349,7 @@ fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>
                     modifier: None,
                 });
             }
-            ast::AstNode::Expression { kind: _, span, var_refs, .. } => {
+            ast::AstNode::Expression { kind: _, span: _, var_refs, .. } => {
                 for vr in var_refs {
                     tokens.push(SemanticToken {
                         start: body_offset + vr.span.start,
@@ -375,7 +499,15 @@ impl FormatPlugin for SugarCubePlugin {
         // 3. Sort by processing priority (scripts first, normal last)
         classifier::sort_for_processing(&mut classified);
 
-        // 4. Process each passage
+        // 4. Clear registries for this file before re-populating
+        {
+            let mut var_tree = self.variable_tree.write().unwrap();
+            var_tree.remove_file(&uri.to_string());
+            let mut macro_reg = self.custom_macros.write().unwrap();
+            macro_reg.remove_file(&uri.to_string());
+        }
+
+        // 5. Process each passage in order
         let mut passages = Vec::new();
         let mut all_tokens = Vec::new();
         let mut all_diagnostics = Vec::new();
@@ -391,6 +523,19 @@ impl FormatPlugin for SugarCubePlugin {
 
             // Parse the body (parser returns offsets relative to body text start)
             let passage_ast = parser::parse_passage_body(&cp.body_text, body_offset, mode);
+
+            // Populate registries from the AST
+            self.populate_registries_from_ast(
+                &passage_ast,
+                &cp,
+                &uri.to_string(),
+                body_offset,
+            );
+
+            // For script passages, also do oxc walk for State.variables / Macro.add
+            if is_script_passage(cp) {
+                self.walk_script_js(&cp.body_text, &cp, &uri.to_string());
+            }
 
             // Build the Passage struct (shift all AST spans by body_offset)
             let mut passage = Self::build_passage(cp, &passage_ast, body_offset);
@@ -646,5 +791,60 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn macro_snippet(&self, name: &str) -> Option<&'static str> {
         macros::macro_snippet(name)
+    }
+
+    // ── Registry accessors (Phase C) ───────────────────────────────────
+    //
+    // These methods expose the format-owned registries through the
+    // FormatPlugin trait so that LSP handlers can query them without
+    // importing format-specific types. The handlers call these methods
+    // through `FormatRegistry::get()` — never directly.
+
+    /// Build the variable tree for the workspace.
+    ///
+    /// Returns the current tree-structured variable inventory from the
+    /// VariableTree side table. This is used by the variable tracker
+    /// UI panel and by completion/hover for workspace-wide variable info.
+    fn build_variable_tree(
+        &self,
+        _workspace: &knot_core::Workspace,
+        _source_text: &dyn crate::plugin::SourceTextProvider,
+    ) -> Vec<VariableTreeNode> {
+        let tree = self.variable_tree.read().unwrap();
+        tree.build_tree()
+    }
+
+    /// Get all workspace variable names for completion.
+    fn workspace_variable_names(&self) -> HashSet<String> {
+        let tree = self.variable_tree.read().unwrap();
+        tree.completion_names()
+    }
+
+    /// Get known property paths for a variable (for dot-notation completion).
+    fn variable_properties(&self, var_name: &str) -> HashSet<String> {
+        let tree = self.variable_tree.read().unwrap();
+        tree.get_variable(var_name)
+            .map(|e| e.known_properties.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get all custom macro names for completion.
+    fn custom_macro_names(&self) -> Vec<String> {
+        let registry = self.custom_macros.read().unwrap();
+        registry.names().cloned().collect()
+    }
+
+    /// Look up a custom macro definition for hover/go-to-def.
+    fn find_custom_macro(&self, name: &str) -> Option<(String, String, usize)> {
+        let registry = self.custom_macros.read().unwrap();
+        registry.get(name).map(|m| {
+            (m.defined_in.clone(), m.file_uri.clone(), m.defined_at_offset)
+        })
+    }
+
+    /// Check if a macro name is a known custom macro.
+    fn is_custom_macro(&self, name: &str) -> bool {
+        let registry = self.custom_macros.read().unwrap();
+        registry.contains(name)
     }
 }

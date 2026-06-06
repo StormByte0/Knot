@@ -11,3 +11,6 @@ logos = { workspace = true }
 regex = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+oxc_ast = { workspace = true }
+oxc_allocator = { workspace = true }
+oxc_span = { workspace = true }

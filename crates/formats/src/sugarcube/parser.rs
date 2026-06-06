@@ -125,7 +125,7 @@ fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
             b'$' if i + 1 < len && is_ident_start(bytes[i + 1]) => {
                 // $var — story variable in text
                 let start = i;
-                let (var_ref, end) = scan_variable(text, i, false);
+                let (_var_ref, end) = scan_variable(text, i, false);
                 // Don't create a separate node for inline vars in text.
                 // Instead, they'll be picked up when we flush the text node.
                 i = end;
@@ -327,7 +327,7 @@ fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNode {
 fn scan_macro_args(text: &str, i: &mut usize) -> usize {
     let bytes = text.as_bytes();
     let len = bytes.len();
-    let start = *i;
+    let _start = *i;
     let mut depth = 1u32; // We're inside one <<
     let mut in_single_quote = false;
     let mut in_double_quote = false;
@@ -507,8 +507,6 @@ fn parse_link(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     // Parse the link content
     let (display, target, kind, setter_var) = parse_link_content(content);
 
-    let is_dynamic = target.starts_with('$') || target.starts_with('_');
-
     AstNode::Link {
         display,
         target,
@@ -656,7 +654,7 @@ fn parse_html_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
 fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (VarRef, usize) {
     let bytes = text.as_bytes();
     let len = bytes.len();
-    let sigil = bytes[start];
+    let _sigil = bytes[start];
 
     // Scan identifier
     let mut i = start + 1;
@@ -665,7 +663,7 @@ fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (VarRef, usize
     }
 
     // Scan dot-notation property path
-    let mut path_start = i;
+    let path_start = i;
     let mut property_path = String::new();
     while i < len && bytes[i] == b'.' {
         i += 1; // Skip the dot
@@ -786,7 +784,7 @@ fn extract_var_ops_from_ast(nodes: &[AstNode]) -> Vec<VarOpInfo> {
 fn extract_var_ops_recursive(
     nodes: &[AstNode],
     ops: &mut Vec<VarOpInfo>,
-    in_assignment: bool,
+    _in_assignment: bool,
 ) {
     for node in nodes {
         match node {

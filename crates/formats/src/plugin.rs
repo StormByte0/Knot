@@ -1213,6 +1213,50 @@ pub trait FormatPlugin: Send + Sync {
         let _ = (workspace, source_text, passage_name);
         Vec::new()
     }
+
+    // -----------------------------------------------------------------------
+    // Registry accessors (Phase C — format-owned side tables)
+    // -----------------------------------------------------------------------
+
+    /// Get all workspace variable names for completion.
+    ///
+    /// Returns the set of variable names known to the format's side table.
+    /// The default implementation returns an empty set.
+    fn workspace_variable_names(&self) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    /// Get known property paths for a variable (for dot-notation completion).
+    ///
+    /// Returns the set of known property paths (e.g., `{"name", "hp"}` for
+    /// `$player`) from the format's variable side table.
+    /// The default implementation returns an empty set.
+    fn variable_properties(&self, _var_name: &str) -> HashSet<String> {
+        HashSet::new()
+    }
+
+    /// Get all custom macro names for completion.
+    ///
+    /// Returns names of user-defined macros (widgets and `Macro.add()` calls)
+    /// from the format's macro registry. The default returns an empty list.
+    fn custom_macro_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Look up a custom macro definition for hover/go-to-def.
+    ///
+    /// Returns `(passage_name, file_uri, offset)` if the macro is found,
+    /// or `None`. The default returns `None`.
+    fn find_custom_macro(&self, _name: &str) -> Option<(String, String, usize)> {
+        None
+    }
+
+    /// Check if a macro name is a known custom macro.
+    ///
+    /// Returns `true` if the name matches a widget or `Macro.add()` definition.
+    fn is_custom_macro(&self, _name: &str) -> bool {
+        false
+    }
 }
 
 // ===========================================================================

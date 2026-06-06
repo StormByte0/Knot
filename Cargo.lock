@@ -483,6 +483,9 @@ version = "2.0.0"
 dependencies = [
  "knot-core",
  "logos",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_span",
  "regex",
  "serde",
  "serde_json",
