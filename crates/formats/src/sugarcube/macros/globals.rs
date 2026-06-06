@@ -1,0 +1,137 @@
+//! Built-in SugarCube global object definitions and hover text.
+//!
+//! Self-contained module providing the catalog of SugarCube global objects
+//! (State, Engine, Story, etc.) and hover documentation for them.
+
+use crate::types::{GlobalDef, GlobalProperty};
+
+/// Built-in SugarCube global object definitions.
+pub fn builtin_globals() -> &'static [GlobalDef] {
+    use GlobalProperty as GP;
+    static GLOBALS: &[GlobalDef] = &[
+        GlobalDef {
+            name: "State",
+            description: "SugarCube state management API.",
+            properties: Some(&[
+                GP { name: "variables",    description: "Record<string, unknown> — story variables", is_method: false },
+                GP { name: "temporary",    description: "Record<string, unknown> — temporary variables", is_method: false },
+                GP { name: "turns",        description: "number — turn count", is_method: false },
+                GP { name: "passage",      description: "string — current passage name", is_method: false },
+                GP { name: "active",       description: "object — active passage info", is_method: false },
+                GP { name: "top",          description: "object — top passage info", is_method: false },
+                GP { name: "history",      description: "array — passage history", is_method: false },
+                GP { name: "has()",        description: "boolean — check if passage visited", is_method: true },
+                GP { name: "hasTag()",     description: "boolean — check if tag visited", is_method: true },
+                GP { name: "index",        description: "number — current history index", is_method: false },
+                GP { name: "size",         description: "number — history size", is_method: false },
+            ]),
+        },
+        GlobalDef {
+            name: "Engine",
+            description: "Story engine control API.",
+            properties: Some(&[
+                GP { name: "play()",       description: "void — navigate to passage", is_method: true },
+                GP { name: "forward()",    description: "void — go forward in history", is_method: true },
+                GP { name: "backward()",   description: "void — go backward in history", is_method: true },
+                GP { name: "goto()",       description: "void — navigate to passage", is_method: true },
+                GP { name: "isIdle()",     description: "boolean — is engine idle", is_method: true },
+                GP { name: "isPlaying()",  description: "boolean — is engine playing", is_method: true },
+            ]),
+        },
+        GlobalDef {
+            name: "Story",
+            description: "Story metadata and passage lookup API.",
+            properties: Some(&[
+                GP { name: "title",   description: "string — story title", is_method: false },
+                GP { name: "has()",   description: "boolean — check passage exists", is_method: true },
+                GP { name: "get()",   description: "object — get passage data", is_method: true },
+                GP { name: "filter()", description: "array — filter passages", is_method: true },
+            ]),
+        },
+        GlobalDef {
+            name: "Save",
+            description: "Save/load API.",
+            properties: Some(&[
+                GP { name: "save()",    description: "void — save game", is_method: true },
+                GP { name: "load()",    description: "void — load game", is_method: true },
+                GP { name: "delete()",  description: "void — delete save", is_method: true },
+                GP { name: "ok()",      description: "boolean — check save exists", is_method: true },
+                GP { name: "sizes()",   description: "object — save sizes", is_method: true },
+            ]),
+        },
+        GlobalDef {
+            name: "Config",
+            description: "Story configuration object.",
+            properties: Some(&[
+                GP { name: "debug",       description: "boolean — debug mode", is_method: false },
+                GP { name: "history",     description: "object — history config", is_method: false },
+                GP { name: "macros",      description: "object — macro config", is_method: false },
+                GP { name: "navigation",  description: "object — navigation config", is_method: false },
+                GP { name: "ui",          description: "object — UI config", is_method: false },
+            ]),
+        },
+        GlobalDef {
+            name: "UI",
+            description: "UI utility API.",
+            properties: Some(&[
+                GP { name: "alert()",    description: "void — show alert dialog", is_method: true },
+                GP { name: "restart()",  description: "void — restart story", is_method: true },
+                GP { name: "squash()",   description: "void — squash history", is_method: true },
+                GP { name: "goto()",     description: "void — navigate to passage", is_method: true },
+                GP { name: "include()",  description: "void — include passage", is_method: true },
+            ]),
+        },
+        GlobalDef { name: "Dialog",      description: "Dialog box API.", properties: None },
+        GlobalDef { name: "Fullscreen",  description: "Fullscreen API.", properties: None },
+        GlobalDef { name: "LoadScreen",  description: "Loading screen API.", properties: None },
+        GlobalDef { name: "Macro",       description: "Macro registration API (e.g. Macro.add).", properties: None },
+        GlobalDef { name: "Passage",     description: "Current passage info.", properties: None },
+        GlobalDef { name: "Setting",     description: "Settings API.", properties: None },
+        GlobalDef { name: "Settings",    description: "Settings object.", properties: None },
+        GlobalDef { name: "SimpleAudio", description: "Simple audio API.", properties: None },
+        GlobalDef { name: "Template",    description: "Template API.", properties: None },
+        GlobalDef { name: "UIBar",       description: "Story navigation bar API.", properties: None },
+        GlobalDef { name: "SugarCube",   description: "Global SugarCube namespace.", properties: None },
+        GlobalDef { name: "setup",       description: "Author setup object for shared data.", properties: None },
+        GlobalDef { name: "prehistory",  description: "Prehistory task array.", properties: None },
+        GlobalDef { name: "predisplay",  description: "Predisplay task array.", properties: None },
+        GlobalDef { name: "prerender",   description: "Prerender task array.", properties: None },
+        GlobalDef { name: "postdisplay", description: "Postdisplay task array.", properties: None },
+        GlobalDef { name: "postrender",  description: "Postrender task array.", properties: None },
+    ];
+    GLOBALS
+}
+
+/// Hover text for SugarCube global objects.
+///
+/// Returns rich Markdown hover text for known SugarCube globals like
+/// `State`, `Engine`, `Story`, `Save`, `Config`, `UI`, etc.
+pub fn global_hover_text(name: &str) -> Option<&'static str> {
+    match name {
+        "State"      => Some("**SugarCube** `State` — the story history and variable store."),
+        "Engine"     => Some("**SugarCube** `Engine` — controls passage navigation."),
+        "Story"      => Some("**SugarCube** `Story` — passage access and metadata."),
+        "SugarCube"  => Some("**SugarCube** version metadata object."),
+        "setup"      => Some("**SugarCube** `setup` — author-defined initialisation object."),
+        "passage"    => Some("**SugarCube** `passage` — title of the current passage."),
+        "tags"       => Some("**SugarCube** `tags` — tag array of the current passage."),
+        "visited"    => Some("**SugarCube** `visited(...passages)` — times any listed passage was visited."),
+        "turns"      => Some("**SugarCube** `turns` — number of turns elapsed."),
+        "time"       => Some("**SugarCube** `time` — milliseconds since last `<<timed>>` or `<<repeat>>`."),
+        "$args"      => Some("**SugarCube** `$args` — arguments passed to the current `<<widget>>`."),
+        "Dialog"     => Some("**SugarCube** `Dialog` — dialog box API."),
+        "Fullscreen" => Some("**SugarCube** `Fullscreen` — fullscreen API."),
+        "LoadScreen" => Some("**SugarCube** `LoadScreen` — loading screen API."),
+        "Macro"      => Some("**SugarCube** `Macro` — macro registration API (e.g. Macro.add)."),
+        "Passage"    => Some("**SugarCube** `Passage` — current passage info."),
+        "Save"       => Some("**SugarCube** `Save` — save/load API."),
+        "Setting"    => Some("**SugarCube** `Setting` — settings API."),
+        "Settings"   => Some("**SugarCube** `Settings` — settings object."),
+        "SimpleAudio"=> Some("**SugarCube** `SimpleAudio` — simple audio API."),
+        "Template"   => Some("**SugarCube** `Template` — template API."),
+        "UI"         => Some("**SugarCube** `UI` — UI utility API."),
+        "UIBar"      => Some("**SugarCube** `UIBar` — story navigation bar API."),
+        "Config"     => Some("**SugarCube** `Config` — story configuration object."),
+        _ => None,
+    }
+}

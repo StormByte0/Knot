@@ -46,6 +46,11 @@ pub struct VarRef {
 // ---------------------------------------------------------------------------
 
 /// The kind of a comment block.
+///
+/// SugarCube/Twine projects can contain almost every variety of comment
+/// from HTML, CSS, and JS — all of which must be excluded from analysis
+/// (variable extraction, link extraction, macro parsing) to avoid false
+/// positives. The parser recognizes all of these in passage body text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentKind {
     /// Twine block comment: /% ... %/
@@ -54,8 +59,12 @@ pub enum CommentKind {
     SugarCube,
     /// HTML comment: <!-- ... -->
     Html,
-    /// C-style block comment: /* ... */
+    /// C-style block comment: /* ... */ (CSS and JS)
     CStyle,
+    /// JavaScript single-line comment: // ... (to end of line)
+    JsLine,
+    /// HTML conditional comment: <!--[if ...]>...<![endif]-->
+    HtmlConditional,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +87,61 @@ pub enum LinkKind {
 }
 
 // ---------------------------------------------------------------------------
+// Link source — where a link came from (for edge type classification)
+// ---------------------------------------------------------------------------
+
+/// The source context of a link, used to determine its graph edge type.
+///
+/// SugarCube has multiple ways to reference passages: `[[ ]]` links, navigation
+/// macros (`<<goto>>`, `<<include>>`, `<<link>>`, `<<button>>`), the `<<actions>>`
+/// macro, and `data-passage` HTML attributes in StoryInterface. Each source
+/// maps to a different semantic edge type in the passage graph.
+///
+/// The graph engine uses `edge_type_hint` from `Passage.links` directly when
+/// set, and only falls back to `classify_edge()` when the hint is `None`.
+/// By setting the hint at extraction time, we avoid the post-hoc substring
+/// matching approach that can produce false positives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkSource {
+    /// Standard `[[ ]]` passage link — Navigation edge type.
+    PassageLink,
+    /// `<<goto>>` macro — Jump edge type (unconditional redirect).
+    Goto,
+    /// `<<include>>` macro — Include edge type (passage inclusion).
+    Include,
+    /// `<<link>>` or `<<button>>` macro — Navigation edge type (player choice).
+    NavigationMacro,
+    /// `<<actions>>` macro — Navigation edge type (player choice list).
+    Actions,
+    /// `<<return>>` macro — Navigation edge type.
+    Return,
+    /// `<<back>>` macro — Navigation edge type.
+    Back,
+    /// `data-passage` HTML attribute — Navigation edge type.
+    DataPassage,
+}
+
+impl LinkSource {
+    /// Convert this link source to the corresponding graph edge type.
+    ///
+    /// This is the canonical mapping from SugarCube link sources to graph
+    /// edge types. The `link_source_to_edge_type()` function in `mod.rs`
+    /// delegates to this method.
+    pub fn to_edge_type(self) -> knot_core::graph::EdgeType {
+        match self {
+            LinkSource::PassageLink => knot_core::graph::EdgeType::Navigation,
+            LinkSource::Goto => knot_core::graph::EdgeType::Jump,
+            LinkSource::Include => knot_core::graph::EdgeType::Include,
+            LinkSource::NavigationMacro => knot_core::graph::EdgeType::Navigation,
+            LinkSource::Actions => knot_core::graph::EdgeType::Navigation,
+            LinkSource::Return => knot_core::graph::EdgeType::Navigation,
+            LinkSource::Back => knot_core::graph::EdgeType::Navigation,
+            LinkSource::DataPassage => knot_core::graph::EdgeType::Navigation,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression kind
 // ---------------------------------------------------------------------------
 
@@ -88,6 +152,65 @@ pub enum ExprKind {
     Print,
     /// Silent expression: <<->>
     Silent,
+}
+
+// ---------------------------------------------------------------------------
+// Set assignment — structured <<set>> macro parsing
+// ---------------------------------------------------------------------------
+
+/// Assignment operator for `<<set>>` macros.
+///
+/// SugarCube's `<<set>>` macro supports multiple assignment operators.
+/// The `to` keyword is SugarCube-specific; the rest are standard JS
+/// compound assignment operators. The SugarCube parser owns the
+/// target + operator; only the RHS expression goes to oxc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOperator {
+    /// `to` keyword (SugarCube-specific assignment)
+    To,
+    /// `=` operator
+    Eq,
+    /// `+=` operator
+    PlusEq,
+    /// `-=` operator
+    MinusEq,
+    /// `*=` operator
+    StarEq,
+    /// `/=` operator
+    SlashEq,
+    /// `%=` operator
+    PercentEq,
+    /// `++` postfix increment
+    PostfixPlus,
+    /// `--` postfix decrement
+    PostfixMinus,
+}
+
+/// Structured representation of a `<<set>>` macro's assignment.
+///
+/// For `<<set $hp to 100>>`, this captures:
+/// - target: `$hp` (the LHS variable, which SugarCube owns)
+/// - operator: `SetOperator::To` (SugarCube-specific `to` keyword)
+/// - expression: `Some("100")` (the RHS, which is the ONLY part oxc parses)
+///
+/// For `<<set $hp++>>`, there is no RHS expression:
+/// - target: `$hp`
+/// - operator: `SetOperator::PostfixPlus`
+/// - expression: `None`
+///
+/// This separation ensures that the SugarCube parser owns the assignment
+/// structure (target + operator), and oxc only sees the value expression.
+#[derive(Debug, Clone)]
+pub struct SetAssignment {
+    /// The target variable being assigned to.
+    pub target: VarRef,
+    /// The assignment operator.
+    pub operator: SetOperator,
+    /// The RHS expression (None for postfix `++` and `--`).
+    /// This is the ONLY part of a `<<set>>` that goes to oxc.
+    pub expression: Option<String>,
+    /// Byte range of the expression in the passage body.
+    pub expression_span: Option<Range<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +258,15 @@ pub enum AstNode {
         close_span: Option<Range<usize>>,
         /// Byte range of the entire macro construct (open + body + close).
         full_span: Range<usize>,
+        /// For `<<set>>` macros: structured assignment info.
+        ///
+        /// When present, the SugarCube parser has split the `<<set>>` args
+        /// into target + operator + expression. The `target` and `operator`
+        /// are SugarCube-owned; only `expression` goes to oxc.
+        ///
+        /// When `None`, the macro is not a `<<set>>` (or the args couldn't
+        /// be parsed as a simple assignment, e.g. `<<set $arr.push(1)>>`).
+        set_assignment: Option<SetAssignment>,
     },
 
     /// An inline expression: `<<=>>expr>>` or `<<->>expr>>`.
@@ -241,6 +373,13 @@ pub struct LinkInfo {
     pub span: Range<usize>,
     /// Whether this link uses a variable target (dynamic navigation).
     pub is_dynamic: bool,
+    /// The source context of this link, used for edge type classification.
+    ///
+    /// When set, this allows `build_passage()` to set `edge_type_hint`
+    /// directly on the resulting `Passage.links` entry, avoiding the
+    /// post-hoc `classify_edge()` substring matching that can produce
+    /// false positives.
+    pub source: LinkSource,
 }
 
 /// A variable operation extracted from the AST.
@@ -268,6 +407,38 @@ impl PassageAst {
             mode,
         }
     }
+
+    /// Extract graph connections from this passage's links.
+    ///
+    /// Converts the `LinkInfo` entries into `PassageConnection` instances
+    /// with concrete `EdgeType` values. This is the primary method for
+    /// the graph handler to get edge data from a parsed passage.
+    pub fn graph_connections(&self) -> Vec<PassageConnection> {
+        self.links.iter().map(|link| {
+            PassageConnection {
+                target: link.target.clone(),
+                display: link.display.clone(),
+                edge_type: link.source.to_edge_type(),
+                is_dynamic: link.is_dynamic,
+                span: link.span.clone(),
+            }
+        }).collect()
+    }
+}
+
+/// A connection from this passage to another passage, for graph building.
+#[derive(Debug, Clone)]
+pub struct PassageConnection {
+    /// The target passage name.
+    pub target: String,
+    /// Display text for the link (if any).
+    pub display: Option<String>,
+    /// The graph edge type (Navigation, Jump, Include, Call).
+    pub edge_type: knot_core::graph::EdgeType,
+    /// Whether this connection uses a dynamic variable target.
+    pub is_dynamic: bool,
+    /// Byte range of the link in the passage body.
+    pub span: Range<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -294,11 +465,10 @@ pub fn collect_links(nodes: &[AstNode]) -> Vec<&AstNode> {
     for node in nodes {
         match node {
             AstNode::Link { .. } => result.push(node),
-            AstNode::Macro { children, .. } => {
-                if let Some(ch) = children {
-                    result.extend(collect_links(ch));
-                }
+            AstNode::Macro { children: Some(ch), .. } => {
+                result.extend(collect_links(ch));
             }
+            AstNode::Macro { children: None, .. } => {}
             _ => {}
         }
     }
@@ -311,11 +481,10 @@ pub fn collect_errors(nodes: &[AstNode]) -> Vec<&AstNode> {
     for node in nodes {
         match node {
             AstNode::Error { .. } => result.push(node),
-            AstNode::Macro { children, .. } => {
-                if let Some(ch) = children {
-                    result.extend(collect_errors(ch));
-                }
+            AstNode::Macro { children: Some(ch), .. } => {
+                result.extend(collect_errors(ch));
             }
+            AstNode::Macro { children: None, .. } => {}
             _ => {}
         }
     }
@@ -343,8 +512,9 @@ pub fn collect_js_snippets(nodes: &[AstNode]) -> Vec<JsSnippet> {
 }
 
 fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>) {
-    /// Macro names that contain inline JS expressions.
-    const INLINE_JS_MACROS: &[&str] = &["set", "run", "if", "elseif", "else", "print", "nobr"];
+    /// Macro names that contain inline JS expressions (excluding "set",
+    /// which is handled specially via set_assignment).
+    const INLINE_JS_MACROS: &[&str] = &["run", "if", "elseif", "else", "print", "nobr"];
     /// Macro names that contain full JS blocks.
     const BLOCK_JS_MACROS: &[&str] = &["script"];
 
@@ -354,6 +524,7 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
             args,
             open_span,
             children,
+            set_assignment,
             ..
         } = node
         {
@@ -377,6 +548,38 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                             body_offset: body_start,
                             macro_name: name.clone(),
                             is_block: true,
+                        });
+                    }
+                }
+            } else if name == "set" {
+                // <<set>> is special: SugarCube owns the target + operator,
+                // oxc only parses the RHS expression.
+                if let Some(sa) = set_assignment {
+                    // Structured assignment: only the expression goes to oxc
+                    if let Some(expr) = &sa.expression {
+                        let trimmed = expr.trim();
+                        if !trimmed.is_empty() {
+                            result.push(JsSnippet {
+                                source: trimmed.to_string(),
+                                body_offset: sa.expression_span.as_ref()
+                                    .map(|s| s.start)
+                                    .unwrap_or(open_span.start),
+                                macro_name: "set".to_string(),
+                                is_block: false,
+                            });
+                        }
+                    }
+                    // Postfix ++ / --: no JS snippet needed
+                } else {
+                    // No structured assignment (e.g., <<set $arr.push("item")>>).
+                    // The entire args are a JS expression — same as <<run>>.
+                    let trimmed = args.trim();
+                    if !trimmed.is_empty() {
+                        result.push(JsSnippet {
+                            source: trimmed.to_string(),
+                            body_offset: open_span.start,
+                            macro_name: "set".to_string(),
+                            is_block: false,
                         });
                     }
                 }

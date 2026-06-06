@@ -14,6 +14,13 @@ use url::Url;
 /// Falls back to the Core format plugin if the requested format plugin is not
 /// available. The Core plugin provides base Twine engine behavior (passage
 /// headers, links, core special passages) with no format-specific features.
+///
+/// ## Panic safety
+///
+/// The format plugin's `parse()` method is wrapped in `std::panic::catch_unwind`
+/// to prevent a panic in any format parser from killing the entire server
+/// process. If a panic occurs, an empty document with a diagnostic warning
+/// is returned instead, and the error is logged.
 pub(crate) fn parse_with_format_plugin(
     registry: &fmt_plugin::FormatRegistry,
     uri: &Url,
@@ -30,12 +37,56 @@ pub(crate) fn parse_with_format_plugin(
         });
 
     if let Some(plugin) = plugin {
-        let result = plugin.parse(uri, text);
-        let mut doc = Document::new(uri.clone(), format);
-        doc.version = version;
-        doc.passages = result.passages.clone();
-        doc.set_snapshot_from_text(text);
-        (doc, result)
+        // Wrap the parse call in catch_unwind to prevent panics in format
+        // parsers from crashing the server. This is the primary defense
+        // against EPIPE errors caused by the server process dying.
+        let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            plugin.parse(uri, text)
+        }));
+
+        match parse_result {
+            Ok(result) => {
+                let mut doc = Document::new(uri.clone(), format);
+                doc.version = version;
+                doc.passages = result.passages.clone();
+                doc.set_snapshot_from_text(text);
+                (doc, result)
+            }
+            Err(panic_payload) => {
+                // Log the panic without crashing
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!(
+                    "Format plugin {:?} panicked while parsing {}: {}",
+                    format,
+                    uri,
+                    panic_msg
+                );
+
+                // Return an empty document with a diagnostic warning
+                let mut doc = Document::new(uri.clone(), format);
+                doc.version = version;
+                doc.set_snapshot_from_text(text);
+
+                let result = fmt_plugin::ParseResult {
+                    passages: Vec::new(),
+                    tokens: Vec::new(),
+                    diagnostics: vec![fmt_plugin::FormatDiagnostic {
+                        range: 0..text.len().min(1),
+                        message: format!("Internal error: parser panicked — {}", panic_msg),
+                        severity: fmt_plugin::FormatDiagnosticSeverity::Error,
+                        code: "knot-panic".to_string(),
+                    }],
+                    is_complete: false,
+                };
+                (doc, result)
+            }
+        }
     } else {
         // No plugin available — create an empty document
         tracing::warn!("No format plugin available for {:?}", format);

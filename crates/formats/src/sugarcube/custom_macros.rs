@@ -13,7 +13,6 @@
 //! completions, hover, and go-to-definition.
 
 use std::collections::HashMap;
-use std::ops::Range;
 
 // ---------------------------------------------------------------------------
 // CustomMacro — a user-defined macro entry
@@ -141,6 +140,15 @@ impl CustomMacroRegistry {
     /// Remove all entries for a specific file (for incremental re-parse).
     pub fn remove_file(&mut self, file_uri: &str) {
         self.macros.retain(|_, m| m.file_uri != file_uri);
+    }
+
+    /// Remove all entries defined in a specific passage (for incremental re-parse).
+    ///
+    /// Unlike `remove_file()`, this removes macros by their `defined_in`
+    /// passage name, which is needed when a single passage is re-parsed
+    /// without re-parsing the entire file.
+    pub fn remove_passage(&mut self, passage_name: &str) {
+        self.macros.retain(|_, m| m.defined_in != passage_name);
     }
 
     /// Check if a macro name is registered.

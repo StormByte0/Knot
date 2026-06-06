@@ -102,12 +102,19 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
 /// Twine 2 serialises position as a string `"x,y"` (e.g., `"100,200"`).
 /// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
 /// Both formats are supported.
+///
+/// This function is currently unused but retained for the story map
+/// visualization feature (passage position in the Twine graph UI).
+#[allow(dead_code)]
 pub(crate) fn position_from_header(header: &TweeHeader) -> Option<(f64, f64)> {
     let json_str = header.metadata_json.as_ref()?;
     parse_position_from_metadata(json_str)
 }
 
 /// Parse a `"position"` value from a passage header metadata JSON block.
+///
+/// See [`position_from_header`] for the intended use case.
+#[allow(dead_code)]
 fn parse_position_from_metadata(json: &str) -> Option<(f64, f64)> {
     let val = serde_json::from_str::<serde_json::Value>(json).ok()?;
     if let Some(pos_str) = val.get("position").and_then(|v| v.as_str()) {

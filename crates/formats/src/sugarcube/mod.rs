@@ -59,18 +59,27 @@ pub mod variable_tree;
 pub mod custom_macros;
 pub mod js_preprocess;
 pub mod js_walk;
+pub mod js_validate;
+pub mod token_builder;
+pub mod syntax_detect;
+pub mod nav_resolve;
+pub mod edge_classify;
+pub mod var_extract;
+pub mod passage_build;
+pub mod registry_populate;
+pub mod parse_pipeline;
 
-use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarKind, VarOp, Block, PassageCategory as CorePassageCategory};
+use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat};
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use url::Url;
 
-use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use crate::plugin::{FormatPlugin, ParseResult};
 use crate::types::{
     GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
     VariableSigilInfo, VariableTreeNode,
 };
-use ast::{ParseMode, PassageAst};
+use ast::ParseMode;
 use classifier::{ClassifiedPassage, is_script_passage, is_stylesheet_passage, is_widget_passage};
 use variable_tree::VariableTree;
 use custom_macros::CustomMacroRegistry;
@@ -117,371 +126,15 @@ impl SugarCubePlugin {
         }
     }
 
-    /// Build a `Passage` from a classified passage and its AST.
-    fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
-        let is_special = cp.special_def.is_some();
-        let mut passage = if is_special {
-            Passage::new_special(
-                cp.header.name.clone(),
-                cp.header.header_start..cp.header.header_start + 0, // span computed in caller
-                cp.special_def.clone().unwrap(),
-            )
-        } else {
-            Passage::new(cp.header.name.clone(), cp.header.header_start..cp.header.header_start + 0)
-        };
-
-        passage.tags = cp.header.tags.clone();
-
-        // Build body blocks from AST (shift spans by body_offset)
-        passage.body = build_body_blocks(&passage_ast.nodes, body_offset);
-
-        // Build links from AST (shift spans by body_offset)
-        passage.links = passage_ast.links.iter().map(|link_info| {
-            knot_core::passage::Link {
-                display_text: link_info.display.clone(),
-                target: link_info.target.clone(),
-                span: body_offset + link_info.span.start..body_offset + link_info.span.end,
-                edge_type_hint: None, // Will be classified later by navigation
-            }
-        }).collect();
-
-        // Build var ops from AST (shift spans by body_offset)
-        passage.vars = passage_ast.var_ops.iter().map(|var_op| {
-            VarOp {
-                name: var_op.name.clone(),
-                kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
-                span: body_offset + var_op.span.start..body_offset + var_op.span.end,
-                is_temporary: var_op.is_temporary,
-            }
-        }).collect();
-
-        passage
-    }
-
-    /// Populate registries from a parsed passage AST.
-    ///
-    /// This walks the AST's var_ops and links to feed the VariableTree
-    /// and CustomMacroRegistry side tables. Called during the ordered
-    /// parse pipeline so that registries are warm for later passages.
-    fn populate_registries_from_ast(
-        &self,
-        passage_ast: &PassageAst,
-        cp: &ClassifiedPassage,
-        file_uri: &str,
-        _body_offset: usize,
-    ) {
-        let mut var_tree = self.variable_tree.write().unwrap();
-        let mut macro_reg = self.custom_macros.write().unwrap();
-
-        // Record variable operations from the AST
-        for var_op in &passage_ast.var_ops {
-            var_tree.record_var(
-                &var_op.name,
-                var_op.is_temporary,
-                var_op.is_write,
-                &cp.header.name,
-                file_uri,
-                var_op.span.clone(),
-                &var_op.property_path,
-            );
-        }
-
-        // Extract widget definitions from AST nodes
-        for node in &passage_ast.nodes {
-            if let ast::AstNode::Macro { name, args, open_span, .. } = node {
-                // <<widget name>> definitions
-                if name.eq_ignore_ascii_case("widget") {
-                    let widget_name = args.trim().to_string();
-                    if !widget_name.is_empty() {
-                        macro_reg.register_widget(
-                            &widget_name,
-                            &cp.header.name,
-                            file_uri,
-                            open_span.start,
-                            None,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Mark variables as seeded if this is a special passage
-        if cp.special_def.as_ref().map_or(false, |d| {
-            matches!(d.behavior, knot_core::passage::SpecialPassageBehavior::Startup)
-        }) {
-            for var_op in &passage_ast.var_ops {
-                if var_op.is_write {
-                    var_tree.mark_seeded(&var_op.name);
-                }
-            }
-        }
-    }
-
-    /// Walk JS in a script passage using oxc for deep registry population.
-    ///
-    /// Script passages contain full JS programs. We preprocess the `$var`
-    /// references, parse with oxc, and walk the AST to find:
-    /// - `State.variables.x = value` → variable writes
-    /// - `Macro.add("name", {...})` → custom macro definitions
-    /// - Function declarations → function registry
-    fn walk_script_js(
-        &self,
-        body_text: &str,
-        cp: &ClassifiedPassage,
-        file_uri: &str,
-    ) {
-        use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
-
-        // Preprocess $var references for oxc
-        let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
-
-        // Parse with oxc as a JS module
-        match parse_js(&preprocessed.source, JsParseMode::Module) {
-            JsParseOutcome::Success(output) => {
-                let mut var_tree = self.variable_tree.write().unwrap();
-                let mut macro_reg = self.custom_macros.write().unwrap();
-
-                output.with_program(|program| {
-                    js_walk::walk_script_passage(
-                        program,
-                        &preprocessed,
-                        file_uri,
-                        &cp.header.name,
-                        &mut var_tree,
-                        &mut macro_reg,
-                    );
-                });
-            }
-            JsParseOutcome::Error(_diagnostics) => {
-                // JS syntax errors are reported as diagnostics by the
-                // caller — we just skip registry population for broken JS
-            }
-        }
-    }
-
     /// Get the variable tree for read-only access.
-    pub fn variable_tree(&self) -> std::sync::RwLockReadGuard<'_, VariableTree> {
-        self.variable_tree.read().unwrap()
+    pub fn variable_tree(&self) -> parking_lot::RwLockReadGuard<'_, VariableTree> {
+        self.variable_tree.read()
     }
 
     /// Get the custom macro registry for read-only access.
-    pub fn custom_macro_registry(&self) -> std::sync::RwLockReadGuard<'_, CustomMacroRegistry> {
-        self.custom_macros.read().unwrap()
+    pub fn custom_macro_registry(&self) -> parking_lot::RwLockReadGuard<'_, CustomMacroRegistry> {
+        self.custom_macros.read()
     }
-}
-
-/// Build `Block` list from AST nodes (backward compatibility).
-fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    for node in nodes {
-        match node {
-            ast::AstNode::Text { content, span, .. } => {
-                if !content.is_empty() {
-                    blocks.push(Block::Text {
-                        content: content.clone(),
-                        span: body_offset + span.start..body_offset + span.end,
-                    });
-                }
-            }
-            ast::AstNode::Macro { name, args, full_span, .. } => {
-                blocks.push(Block::Macro {
-                    name: name.clone(),
-                    args: args.clone(),
-                    span: body_offset + full_span.start..body_offset + full_span.end,
-                });
-            }
-            ast::AstNode::Expression { content, span, .. } => {
-                blocks.push(Block::Expression {
-                    content: content.clone(),
-                    span: body_offset + span.start..body_offset + span.end,
-                });
-            }
-            ast::AstNode::Link { .. } => {
-                // Links in body are represented as text blocks for backward compat
-                // The actual Link data is in passage.links
-            }
-            ast::AstNode::Comment { .. } => {
-                // Comments don't produce body blocks
-            }
-            ast::AstNode::Error { message, span } => {
-                blocks.push(Block::Incomplete {
-                    content: message.clone(),
-                    span: body_offset + span.start..body_offset + span.end,
-                });
-            }
-        }
-    }
-    blocks
-}
-
-/// Build semantic tokens from AST nodes.
-fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
-    for node in nodes {
-        match node {
-            ast::AstNode::Macro { name: _, name_span, var_refs, children, .. } => {
-                // Macro name token
-                tokens.push(SemanticToken {
-                    start: body_offset + name_span.start,
-                    length: name_span.end - name_span.start,
-                    token_type: SemanticTokenType::Macro,
-                    modifier: None,
-                });
-                // Variable references in args
-                for vr in var_refs {
-                    tokens.push(SemanticToken {
-                        start: body_offset + vr.span.start,
-                        length: vr.span.end - vr.span.start,
-                        token_type: SemanticTokenType::Variable,
-                        modifier: if vr.is_write { Some(SemanticTokenModifier::Definition) } else { None },
-                    });
-                }
-                // Recurse into block macro children
-                if let Some(ch) = children {
-                    build_semantic_tokens(ch, tokens, body_offset);
-                }
-            }
-            ast::AstNode::Link { target, span, .. } => {
-                // Link target token
-                tokens.push(SemanticToken {
-                    start: body_offset + span.start + 2, // past [[
-                    length: target.len(),
-                    token_type: SemanticTokenType::Link,
-                    modifier: None,
-                });
-            }
-            ast::AstNode::Expression { kind: _, span: _, var_refs, .. } => {
-                for vr in var_refs {
-                    tokens.push(SemanticToken {
-                        start: body_offset + vr.span.start,
-                        length: vr.span.end - vr.span.start,
-                        token_type: SemanticTokenType::Variable,
-                        modifier: None,
-                    });
-                }
-            }
-            ast::AstNode::Comment { span, .. } => {
-                tokens.push(SemanticToken {
-                    start: body_offset + span.start,
-                    length: span.end - span.start,
-                    token_type: SemanticTokenType::Comment,
-                    modifier: None,
-                });
-            }
-            ast::AstNode::Text { var_refs, .. } => {
-                for vr in var_refs {
-                    tokens.push(SemanticToken {
-                        start: body_offset + vr.span.start,
-                        length: vr.span.end - vr.span.start,
-                        token_type: SemanticTokenType::Variable,
-                        modifier: None,
-                    });
-                }
-            }
-            ast::AstNode::Error { .. } => {}
-        }
-    }
-}
-
-/// Build diagnostics from AST error nodes.
-fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDiagnostic>, body_offset: usize) {
-    for node in nodes {
-        if let ast::AstNode::Error { message, span } = node {
-            diagnostics.push(FormatDiagnostic {
-                range: body_offset + span.start..body_offset + span.end,
-                message: message.clone(),
-                severity: FormatDiagnosticSeverity::Error,
-                code: "sc-parse".to_string(),
-            });
-        }
-        if let ast::AstNode::Macro { children, name, name_span, close_span, .. } = node {
-            if children.is_some() && close_span.is_none() {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset + name_span.start..body_offset + name_span.end,
-                    message: format!("Unclosed block macro: <<{}>>", name),
-                    severity: FormatDiagnosticSeverity::Error,
-                    code: "sc-unclosed".to_string(),
-                });
-            }
-            if let Some(ch) = children {
-                build_diagnostics(ch, diagnostics, body_offset);
-            }
-        }
-    }
-}
-
-/// Build header tokens for a passage.
-fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool) -> Vec<SemanticToken> {
-    let mut tokens = Vec::new();
-
-    // :: prefix token
-    let header_type = if is_special {
-        SemanticTokenType::SpecialPassageHeader
-    } else {
-        SemanticTokenType::PassageHeader
-    };
-    tokens.push(SemanticToken {
-        start: header.header_start,
-        length: 2, // ::
-        token_type: header_type,
-        modifier: None,
-    });
-
-    // Passage name token
-    let name_type = if is_special {
-        SemanticTokenType::SpecialPassage
-    } else {
-        SemanticTokenType::PassageName
-    };
-    let name_len = header.name.len();
-    tokens.push(SemanticToken {
-        start: header.name_start,
-        length: name_len,
-        token_type: name_type,
-        modifier: None,
-    });
-
-    // Tag tokens — only the tag names, with appropriate modifiers
-    for tag in &header.tags {
-        if let Some(tag_pos) = header.tags_raw.find(tag.as_str()) {
-            // Classify the tag to determine its modifier
-            let modifier = self_classify_tag(tag);
-            tokens.push(SemanticToken {
-                start: header.name_start + tag_pos,
-                length: tag.len(),
-                token_type: SemanticTokenType::Tag,
-                modifier,
-            });
-        }
-    }
-
-    tokens
-}
-
-/// Classify a tag and return the appropriate semantic token modifier.
-fn self_classify_tag(tag: &str) -> Option<SemanticTokenModifier> {
-    // Core tags: [script], [stylesheet], [style]
-    for def in knot_core::passage::twine_core_special_passages() {
-        if def.match_strategy == knot_core::passage::MatchStrategy::Tag
-            && tag.eq_ignore_ascii_case(&def.name)
-        {
-            return Some(SemanticTokenModifier::TwineCore);
-        }
-    }
-    // Legacy core tags
-    for def in knot_core::passage::legacy_core_special_passages() {
-        if def.match_strategy == knot_core::passage::MatchStrategy::Tag
-            && tag.eq_ignore_ascii_case(&def.name)
-        {
-            return Some(SemanticTokenModifier::TwineCore);
-        }
-    }
-    // Format-specific tags: [init], [widget]
-    for def in special_passages::tag_matched_special_passages() {
-        if tag.eq_ignore_ascii_case(&def.name) {
-            return Some(SemanticTokenModifier::StoryFormat);
-        }
-    }
-    None
 }
 
 impl FormatPlugin for SugarCubePlugin {
@@ -490,132 +143,11 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     fn parse(&self, uri: &Url, text: &str) -> ParseResult {
-        // 1. Split into raw passages
-        let raw_passages = lexer::split_passages(text);
-
-        // 2. Classify each passage
-        let mut classified = classifier::classify_all(&raw_passages, &uri.to_string());
-
-        // 3. Sort by processing priority (scripts first, normal last)
-        classifier::sort_for_processing(&mut classified);
-
-        // 4. Clear registries for this file before re-populating
-        {
-            let mut var_tree = self.variable_tree.write().unwrap();
-            var_tree.remove_file(&uri.to_string());
-            let mut macro_reg = self.custom_macros.write().unwrap();
-            macro_reg.remove_file(&uri.to_string());
-        }
-
-        // 5. Process each passage in order
-        let mut passages = Vec::new();
-        let mut all_tokens = Vec::new();
-        let mut all_diagnostics = Vec::new();
-
-        for cp in &classified {
-            let mode = Self::parse_mode_for(cp);
-
-            // Compute where the body starts in the document (after header line + newline)
-            let header_line_end = text[cp.header.header_start..]
-                .find('\n')
-                .map_or(text.len(), |pos| cp.header.header_start + pos + 1);
-            let body_offset = header_line_end;
-
-            // Parse the body (parser returns offsets relative to body text start)
-            let passage_ast = parser::parse_passage_body(&cp.body_text, body_offset, mode);
-
-            // Populate registries from the AST
-            self.populate_registries_from_ast(
-                &passage_ast,
-                &cp,
-                &uri.to_string(),
-                body_offset,
-            );
-
-            // For script passages, also do oxc walk for State.variables / Macro.add
-            if is_script_passage(cp) {
-                self.walk_script_js(&cp.body_text, &cp, &uri.to_string());
-            }
-
-            // Build the Passage struct (shift all AST spans by body_offset)
-            let mut passage = Self::build_passage(cp, &passage_ast, body_offset);
-            passage.span = cp.header.header_start..header_line_end + cp.body_text.len();
-
-            // Build semantic tokens for the header
-            let is_special = cp.special_def.is_some();
-            let header_tokens = build_header_tokens(&cp.header, is_special);
-            all_tokens.extend(header_tokens);
-
-            // Build semantic tokens from the body AST (shift spans by body_offset)
-            build_semantic_tokens(&passage_ast.nodes, &mut all_tokens, body_offset);
-
-            // Build diagnostics from the body AST (shift spans by body_offset)
-            build_diagnostics(&passage_ast.nodes, &mut all_diagnostics, body_offset);
-
-            passages.push(passage);
-        }
-
-        ParseResult {
-            passages,
-            tokens: all_tokens,
-            diagnostics: all_diagnostics,
-            is_complete: true,
-        }
+        parse_pipeline::parse_full(self, uri, text)
     }
 
     fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
-        // Determine the parse mode from the tags
-        let mode = if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("script")) {
-            ParseMode::Script
-        } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style")) {
-            ParseMode::Stylesheet
-        } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("widget")) {
-            ParseMode::Widget
-        } else if passage_name == "StoryInterface" {
-            ParseMode::Interface
-        } else if passage_name == "StoryData" {
-            ParseMode::Minimal
-        } else {
-            ParseMode::Normal
-        };
-
-        let passage_ast = parser::parse_passage_body(passage_text, 0, mode);
-
-        // Classify the passage
-        let (_, category) = self.classify_passage_category(passage_name, passage_tags);
-        let is_special = category != CorePassageCategory::Regular;
-
-        let mut passage = if is_special {
-            let def = self.classify_passage(passage_name, passage_tags);
-            Passage::new_special(
-                passage_name.to_string(),
-                0..passage_text.len(),
-                def?,
-            )
-        } else {
-            Passage::new(passage_name.to_string(), 0..passage_text.len())
-        };
-
-        passage.tags = passage_tags.to_vec();
-        passage.body = build_body_blocks(&passage_ast.nodes, 0);
-        passage.links = passage_ast.links.iter().map(|li| {
-            knot_core::passage::Link {
-                display_text: li.display.clone(),
-                target: li.target.clone(),
-                span: li.span.start..li.span.end,
-                edge_type_hint: None,
-            }
-        }).collect();
-        passage.vars = passage_ast.var_ops.iter().map(|vo| {
-            VarOp {
-                name: vo.name.clone(),
-                kind: if vo.is_write { VarKind::Init } else { VarKind::Read },
-                span: vo.span.start..vo.span.end,
-                is_temporary: vo.is_temporary,
-            }
-        }).collect();
-
-        Some(passage)
+        parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text)
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -793,6 +325,49 @@ impl FormatPlugin for SugarCubePlugin {
         macros::macro_snippet(name)
     }
 
+    // ── Syntax detection (Phase E) ──────────────────────────────────────
+
+    fn find_macro_at_position(
+        &self,
+        line: &str,
+        byte_pos: usize,
+    ) -> Option<crate::plugin::MacroAtPosition> {
+        syntax_detect::find_macro_at_position_impl(line, byte_pos)
+    }
+
+    fn scan_line_for_macro_events(
+        &self,
+        line: &str,
+        line_idx: u32,
+    ) -> Vec<crate::plugin::MacroBlockEvent> {
+        syntax_detect::scan_line_for_macro_events_impl(line, line_idx)
+    }
+
+    // ── Dynamic navigation resolution (Phase F) ───────────────────────
+
+    fn build_var_string_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, Vec<String>> {
+        nav_resolve::build_var_string_map_impl(workspace, &self.variable_tree.read())
+    }
+
+    fn resolve_dynamic_navigation_links(
+        &self,
+        passage: &Passage,
+        var_string_map: &HashMap<String, Vec<String>>,
+    ) -> Vec<crate::types::ResolvedNavLink> {
+        nav_resolve::resolve_dynamic_navigation_links_impl(passage, var_string_map)
+    }
+
+    // ── Edge classification ────────────────────────────────────────────
+
+    fn classify_edge(
+        &self,
+        source_passage: &Passage,
+        display_text: Option<&str>,
+        target: &str,
+    ) -> Option<knot_core::graph::EdgeType> {
+        edge_classify::classify_edge_impl(source_passage, display_text, target)
+    }
+
     // ── Registry accessors (Phase C) ───────────────────────────────────
     //
     // These methods expose the format-owned registries through the
@@ -810,19 +385,19 @@ impl FormatPlugin for SugarCubePlugin {
         _workspace: &knot_core::Workspace,
         _source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<VariableTreeNode> {
-        let tree = self.variable_tree.read().unwrap();
+        let tree = self.variable_tree.read();
         tree.build_tree()
     }
 
     /// Get all workspace variable names for completion.
     fn workspace_variable_names(&self) -> HashSet<String> {
-        let tree = self.variable_tree.read().unwrap();
+        let tree = self.variable_tree.read();
         tree.completion_names()
     }
 
     /// Get known property paths for a variable (for dot-notation completion).
     fn variable_properties(&self, var_name: &str) -> HashSet<String> {
-        let tree = self.variable_tree.read().unwrap();
+        let tree = self.variable_tree.read();
         tree.get_variable(var_name)
             .map(|e| e.known_properties.clone())
             .unwrap_or_default()
@@ -830,13 +405,13 @@ impl FormatPlugin for SugarCubePlugin {
 
     /// Get all custom macro names for completion.
     fn custom_macro_names(&self) -> Vec<String> {
-        let registry = self.custom_macros.read().unwrap();
+        let registry = self.custom_macros.read();
         registry.names().cloned().collect()
     }
 
     /// Look up a custom macro definition for hover/go-to-def.
     fn find_custom_macro(&self, name: &str) -> Option<(String, String, usize)> {
-        let registry = self.custom_macros.read().unwrap();
+        let registry = self.custom_macros.read();
         registry.get(name).map(|m| {
             (m.defined_in.clone(), m.file_uri.clone(), m.defined_at_offset)
         })
@@ -844,7 +419,39 @@ impl FormatPlugin for SugarCubePlugin {
 
     /// Check if a macro name is a known custom macro.
     fn is_custom_macro(&self, name: &str) -> bool {
-        let registry = self.custom_macros.read().unwrap();
+        let registry = self.custom_macros.read();
         registry.contains(name)
+    }
+
+    // ── Variable refs + property maps (Phase G) ────────────────────────
+
+    fn extract_passage_variable_refs(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn crate::plugin::SourceTextProvider,
+        passage_name: &str,
+    ) -> Vec<crate::types::PassageVarRef> {
+        var_extract::extract_passage_variable_refs_impl(
+            &self.variable_tree.read(),
+            workspace,
+            source_text,
+            passage_name,
+        )
+    }
+
+    fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
+        let tree = self.variable_tree.read();
+        tree.property_map()
+    }
+
+    fn build_shape_aware_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
+        var_extract::build_shape_aware_property_map_impl(&self.variable_tree.read())
+    }
+
+    fn build_state_variable_registry(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> HashMap<String, crate::types::StateVariable> {
+        var_extract::build_state_variable_registry_impl(&self.variable_tree.read())
     }
 }

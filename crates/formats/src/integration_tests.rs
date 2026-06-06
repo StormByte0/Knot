@@ -899,3 +899,633 @@ fn sugarcube_stylesheet_tag_token_positions() {
     assert_eq!(st.modifier, Some(SemanticTokenModifier::TwineCore),
                "'stylesheet' tag should have TwineCore modifier");
 }
+
+// ===========================================================================
+// Phase I: SugarCube integration tests (Phases D–H end-to-end)
+// ===========================================================================
+
+use crate::plugin::FormatPlugin as FormatPluginTrait;
+use crate::sugarcube::SugarCubePlugin;
+
+/// Helper: Create a SugarCubePlugin and parse the given source, returning both.
+fn sc_parse(text: &str) -> (SugarCubePlugin, crate::plugin::ParseResult) {
+    let plugin = SugarCubePlugin::new();
+    let result = plugin.parse(&Url::parse("file:///project/story.tw").unwrap(), text);
+    (plugin, result)
+}
+
+// ── Phase D: Inline JS validation ─────────────────────────────────────────
+
+#[test]
+fn sugarcube_js_validation_invalid_run_produces_diagnostic() {
+    let src = ":: Start\n<<run invalid{{{>>\n";
+    let (.., pr) = sc_parse(src);
+
+    let js_diags: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-js")
+        .collect();
+    assert!(!js_diags.is_empty(), "Invalid JS in <<run>> should produce a JS diagnostic");
+}
+
+#[test]
+fn sugarcube_js_validation_valid_set_no_diagnostic() {
+    let src = ":: Start\n<<set $hp to 100>>\n";
+    let (.., pr) = sc_parse(src);
+
+    let js_diags: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-js")
+        .collect();
+    assert!(js_diags.is_empty(), "Valid <<set>> should produce no JS diagnostics, got: {:?}", js_diags);
+}
+
+#[test]
+fn sugarcube_js_validation_valid_print_expression() {
+    // <<print $gold>> is a valid macro with valid JS expression
+    let src = ":: Start\n<<print $gold>>\n";
+    let (.., pr) = sc_parse(src);
+
+    let js_diags: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-js")
+        .collect();
+    assert!(js_diags.is_empty(), "Valid <<print>> should produce no JS diagnostics, got: {:?}", js_diags);
+}
+
+#[test]
+fn sugarcube_js_validation_stylesheet_no_js_diagnostics() {
+    let src = ":: Styles [stylesheet]\nbody { color: red; }\n";
+    let (.., pr) = sc_parse(src);
+
+    let js_diags: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-js")
+        .collect();
+    assert!(js_diags.is_empty(), "Stylesheet passage should not produce JS diagnostics");
+}
+
+// ── Phase E: find_macro_at_position + scan_line_for_macro_events ──────────
+
+#[test]
+fn sugarcube_find_macro_at_position_on_name() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<<set $gold to 10>>";
+
+    let result = plugin.find_macro_at_position(line, 3);
+    assert!(result.is_some(), "Should find macro at position on 'set'");
+    let m = result.unwrap();
+    assert_eq!(m.name, "set");
+    assert!(!m.is_unclosed);
+}
+
+#[test]
+fn sugarcube_find_macro_at_position_on_args() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<<set $gold to 10>>";
+
+    let result = plugin.find_macro_at_position(line, 8);
+    assert!(result.is_some(), "Should find macro at position on args");
+    assert_eq!(result.unwrap().name, "set");
+}
+
+#[test]
+fn sugarcube_find_macro_at_position_close_tag() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<</if>>";
+
+    let result = plugin.find_macro_at_position(line, 3);
+    assert!(result.is_some(), "Should find close tag macro");
+    assert_eq!(result.unwrap().name, "if");
+}
+
+#[test]
+fn sugarcube_find_macro_at_position_unclosed() {
+    let plugin = SugarCubePlugin::new();
+    // A line with << that never closes — missing second >>
+    let line = "<<if $x>";
+
+    let result = plugin.find_macro_at_position(line, 4);
+    assert!(result.is_some(), "Should find unclosed macro");
+    assert!(result.unwrap().is_unclosed, "Macro should be flagged as unclosed");
+}
+
+#[test]
+fn sugarcube_find_macro_at_position_no_macro() {
+    let plugin = SugarCubePlugin::new();
+    let line = "Just some text without macros.";
+
+    let result = plugin.find_macro_at_position(line, 5);
+    assert!(result.is_none(), "Should find no macro in plain text");
+}
+
+#[test]
+fn sugarcube_scan_line_for_macro_events_if_block() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<<if $x>>content<</if>>";
+
+    let events = plugin.scan_line_for_macro_events(line, 0);
+
+    let opens: Vec<_> = events.iter().filter(|e| e.is_open).collect();
+    let closes: Vec<_> = events.iter().filter(|e| !e.is_open).collect();
+    assert!(!opens.is_empty(), "Should detect open <<if>>");
+    assert!(!closes.is_empty(), "Should detect close <</if>>");
+}
+
+#[test]
+fn sugarcube_scan_line_for_macro_events_else_modifier() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<<else>>";
+
+    let events = plugin.scan_line_for_macro_events(line, 5);
+    assert!(!events.is_empty(), "Should detect <<else>> as modifier event");
+
+    let else_event = events.iter().find(|e| e.name == "else");
+    assert!(else_event.is_some(), "Should find 'else' event");
+    assert!(else_event.unwrap().is_open, "<<else>> should be is_open=true for subdivision");
+}
+
+#[test]
+fn sugarcube_scan_line_for_macro_events_inline_not_folded() {
+    let plugin = SugarCubePlugin::new();
+    let line = "<<set $x to 5>>";
+
+    let events = plugin.scan_line_for_macro_events(line, 0);
+    assert!(events.is_empty(), "<<set>> is not a block macro, should not produce folding event");
+}
+
+// ── Phase F: build_var_string_map + resolve_dynamic_navigation_links ──────
+
+#[test]
+fn sugarcube_build_var_string_map_extracts_literals() {
+    let registry = FormatRegistry::with_defaults();
+    let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
+
+    let src = ":: Start\n<<set $dest to \"Forest\">>\n:: Forest\nTrees.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let var_map = plugin.build_var_string_map(&ws);
+
+    assert!(var_map.contains_key("$dest"), "Should find $dest in var string map");
+    let values = var_map.get("$dest").unwrap();
+    assert!(values.contains(&"Forest".to_string()), "Should find 'Forest' as a value for $dest");
+}
+
+#[test]
+fn sugarcube_build_var_string_map_single_quoted() {
+    let registry = FormatRegistry::with_defaults();
+    let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
+
+    let src = ":: Start\n<<set $dest to 'Cave'>>\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let var_map = plugin.build_var_string_map(&ws);
+
+    assert!(var_map.contains_key("$dest"), "Should find $dest with single-quoted value");
+    let values = var_map.get("$dest").unwrap();
+    assert!(values.contains(&"Cave".to_string()), "Should find 'Cave' value");
+}
+
+#[test]
+fn sugarcube_resolve_dynamic_navigation_goto() {
+    let registry = FormatRegistry::with_defaults();
+    let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
+
+    let src = ":: Start\n<<set $dest to \"Forest\">><<goto $dest>>\n:: Forest\nTrees.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let var_map = plugin.build_var_string_map(&ws);
+
+    let doc = ws.get_document(&uri).unwrap();
+    let start_passage = doc.find_passage("Start").unwrap();
+    let resolved = plugin.resolve_dynamic_navigation_links(start_passage, &var_map);
+
+    assert!(!resolved.is_empty(), "Should resolve dynamic navigation links");
+    assert_eq!(resolved[0].target, "Forest", "Should resolve $dest to 'Forest'");
+    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Jump), "<<goto>> should produce Jump edge");
+}
+
+#[test]
+fn sugarcube_resolve_dynamic_navigation_include() {
+    let registry = FormatRegistry::with_defaults();
+    let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
+
+    let src = ":: Start\n<<set $dest to \"Sidebar\">><<include $dest>>\n:: Sidebar\nMenu.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let var_map = plugin.build_var_string_map(&ws);
+
+    let doc = ws.get_document(&uri).unwrap();
+    let start_passage = doc.find_passage("Start").unwrap();
+    let resolved = plugin.resolve_dynamic_navigation_links(start_passage, &var_map);
+
+    assert!(!resolved.is_empty(), "Should resolve <<include $dest>>");
+    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Include));
+}
+
+// ── Edge classification ────────────────────────────────────────────────────
+
+#[test]
+fn sugarcube_classify_edge_goto_is_jump() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+
+    let src = ":: Start\n<<goto Forest>>\n:: Forest\nTrees.\n";
+    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
+
+    let edge = plugin.classify_edge(start, None, "Forest");
+    assert_eq!(edge, Some(knot_core::graph::EdgeType::Jump), "<<goto>> should classify as Jump");
+}
+
+#[test]
+fn sugarcube_classify_edge_include_is_include() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+
+    let src = ":: Start\n<<include Sidebar>>\n:: Sidebar\nMenu.\n";
+    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
+
+    let edge = plugin.classify_edge(start, None, "Sidebar");
+    assert_eq!(edge, Some(knot_core::graph::EdgeType::Include), "<<include>> should classify as Include");
+}
+
+#[test]
+fn sugarcube_classify_edge_link_is_navigation() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+
+    let src = ":: Start\n<<link \"Go\" Forest>>\n:: Forest\nTrees.\n";
+    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
+
+    let edge = plugin.classify_edge(start, None, "Forest");
+    assert_eq!(edge, Some(knot_core::graph::EdgeType::Navigation), "<<link>> should classify as Navigation");
+}
+
+#[test]
+fn sugarcube_classify_edge_no_macro_is_none() {
+    let registry = FormatRegistry::with_defaults();
+    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+
+    let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n";
+    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
+
+    let edge = plugin.classify_edge(start, None, "Forest");
+    assert_eq!(edge, None, "Plain [[link]] should not produce special edge classification");
+}
+
+// ── Registry population after parse ────────────────────────────────────────
+
+#[test]
+fn sugarcube_variable_tree_populated_after_parse() {
+    let src = ":: Start\n<<set $gold to 10>>You have $gold coins.\n:: Forest\n<<set $hp to 100>>\n";
+    let (plugin, pr) = sc_parse(src);
+
+    assert!(pr.passages.len() >= 2, "Should parse at least 2 passages");
+
+    let names = plugin.workspace_variable_names();
+    assert!(names.contains("$gold"), "Variable tree should contain $gold");
+    assert!(names.contains("$hp"), "Variable tree should contain $hp");
+}
+
+#[test]
+fn sugarcube_variable_tree_property_tracking() {
+    let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let props = plugin.variable_properties("$player");
+    assert!(props.contains("name"), "Should track $player.name property");
+    assert!(props.contains("hp"), "Should track $player.hp property");
+}
+
+#[test]
+fn sugarcube_custom_macros_widget_registration() {
+    let src = ":: MyWidgets [widget]\n<<widget myWidget>>Hello<</widget>>\n:: Start\n<<myWidget>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    assert!(plugin.is_custom_macro("myWidget"), "Widget should be registered as custom macro");
+    let names = plugin.custom_macro_names();
+    assert!(names.contains(&"myWidget".to_string()), "custom_macro_names() should include 'myWidget'");
+}
+
+#[test]
+fn sugarcube_build_variable_tree_returns_nodes() {
+    let src = ":: Start\n<<set $gold to 10>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let tree = plugin.build_variable_tree(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+        &crate::plugin::NoSourceText,
+    );
+    assert!(!tree.is_empty(), "Variable tree should not be empty after parsing");
+
+    let gold_node = tree.iter().find(|n| n.name == "$gold");
+    assert!(gold_node.is_some(), "Should find $gold in variable tree");
+    assert!(gold_node.unwrap().written_in.iter().any(|w| w.passage_name == "Start"));
+}
+
+// ── Phase G: extract_passage_variable_refs + property maps ────────────────
+
+#[test]
+fn sugarcube_extract_passage_variable_refs() {
+    let src = ":: Start\n<<set $gold to 10>>You have $gold.\n";
+    let (plugin, _) = sc_parse(src);
+
+    let refs = plugin.extract_passage_variable_refs(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+        &crate::plugin::NoSourceText,
+        "Start",
+    );
+    assert!(!refs.is_empty(), "Should find variable refs for Start passage");
+
+    let gold_refs: Vec<_> = refs.iter().filter(|r| r.variable_name == "$gold").collect();
+    assert!(!gold_refs.is_empty(), "Should find $gold refs in Start passage");
+}
+
+#[test]
+fn sugarcube_build_shape_aware_property_map() {
+    let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let map = plugin.build_shape_aware_property_map(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+    );
+    assert!(!map.is_empty(), "Property map should not be empty");
+
+    let player_entry = map.get("$player");
+    assert!(player_entry.is_some(), "Should find $player in property map");
+    let entry = player_entry.unwrap();
+    assert_eq!(entry.kind, crate::types::PropertyKind::Object, "$player should be Object kind");
+    assert!(entry.children.contains(&"name".to_string()), "$player should have 'name' child");
+    assert!(entry.children.contains(&"hp".to_string()), "$player should have 'hp' child");
+}
+
+#[test]
+fn sugarcube_build_state_variable_registry() {
+    let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let reg = plugin.build_state_variable_registry(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+    );
+    assert!(!reg.is_empty(), "State variable registry should not be empty");
+
+    let gold = reg.get("$gold");
+    assert!(gold.is_some(), "Should find $gold in registry");
+    assert_eq!(gold.unwrap().dollar_name, "$gold");
+
+    let hp = reg.get("$hp");
+    assert!(hp.is_some(), "Should find $hp in registry");
+}
+
+// ── Phase H: Incremental re-parse ─────────────────────────────────────────
+
+#[test]
+fn sugarcube_incremental_reparse_updates_registries() {
+    let src = ":: Start\n<<set $gold to 10>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    assert!(plugin.workspace_variable_names().contains("$gold"));
+
+    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>");
+    assert!(result.is_some());
+
+    let names = plugin.workspace_variable_names();
+    assert!(names.contains("$silver"), "After re-parse, $silver should be tracked");
+}
+
+#[test]
+fn sugarcube_incremental_reparse_keeps_other_passages() {
+    let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>");
+    assert!(result.is_some());
+
+    let names = plugin.workspace_variable_names();
+    assert!(names.contains("$hp"), "Re-parsing Start should not remove $hp from Forest");
+    assert!(names.contains("$silver"), "$silver should be added");
+}
+
+// ── Two-pass pipeline: scripts before normal passages ─────────────────────
+
+#[test]
+fn sugarcube_two_pass_script_before_normal() {
+    let src = ":: Init [script]\nState.variables.hp = 100;\n:: Start\nYou have $hp.\n";
+    let (plugin, pr) = sc_parse(src);
+
+    let names = plugin.workspace_variable_names();
+    assert!(names.contains("$hp"), "State.variables.hp in [script] should register $hp");
+
+    assert!(pr.passages.iter().any(|p| p.name == "Init"), "Script passage should be parsed");
+    assert!(pr.passages.iter().any(|p| p.name == "Start"), "Normal passage should be parsed");
+}
+
+#[test]
+fn sugarcube_script_passage_macro_add() {
+    let src = ":: Scripts [script]\nMacro.add(\"customGreet\", {});\n:: Start\nHello.\n";
+    let (plugin, _) = sc_parse(src);
+
+    assert!(plugin.is_custom_macro("customGreet"), "Macro.add in [script] should register custom macro");
+}
+
+// ── Parse diagnostics ─────────────────────────────────────────────────────
+
+#[test]
+fn sugarcube_unclosed_block_macro_diagnostic() {
+    let src = ":: Start\n<<if $x>>unclosed\n";
+    let (.., pr) = sc_parse(src);
+
+    let unclosed: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-unclosed")
+        .collect();
+    assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
+}
+
+#[test]
+fn sugarcube_nested_block_macros_no_false_unclosed() {
+    // Note: Same-name nested block macros (<<if>> inside <<if>>) are a known
+    // limitation — the close-tag matcher uses the first matching close tag.
+    // Using different block macro types for nesting works correctly.
+    let src = ":: Start\n<<if $x>>inner<<for _i to 0>><</for>><</if>>\n";
+    let (.., pr) = sc_parse(src);
+
+    let unclosed: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-unclosed")
+        .collect();
+    assert!(unclosed.is_empty(), "Properly nested different block macros should not produce unclosed diagnostics, got: {:?}", unclosed);
+}
+
+#[test]
+fn sugarcube_parse_error_diagnostic() {
+    // Unclosed block macro: <<if>> without <</if>> produces a diagnostic
+    let src = ":: Start\n<<if $x>>no close tag\n";
+    let (.., pr) = sc_parse(src);
+
+    let unclosed: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-unclosed")
+        .collect();
+    assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
+}
+
+// ── Edge cases ────────────────────────────────────────────────────────────
+
+#[test]
+fn sugarcube_crlf_handling() {
+    let src = ":: Start\r\n<<set $gold to 10>>\r\n:: Forest\r\nTrees.\r\n";
+    let (.., pr) = sc_parse(src);
+
+    assert!(pr.passages.len() >= 2, "Should parse passages with CRLF line endings");
+}
+
+#[test]
+fn sugarcube_empty_passage_body() {
+    let src = ":: Start\n\n:: Forest\n\n";
+    let (.., pr) = sc_parse(src);
+
+    assert!(pr.passages.len() >= 2, "Empty passages should still be parsed");
+}
+
+#[test]
+fn sugarcube_widget_tag_registration() {
+    let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n<<widget farewell>>Bye!<</widget>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    assert!(plugin.is_custom_macro("greet"), "Widget 'greet' should be registered");
+    assert!(plugin.is_custom_macro("farewell"), "Widget 'farewell' should be registered");
+}
+
+#[test]
+fn sugarcube_find_custom_macro_definition() {
+    let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let def = plugin.find_custom_macro("greet");
+    assert!(def.is_some(), "Should find 'greet' custom macro definition");
+    let (passage, _uri, _offset) = def.unwrap();
+    assert_eq!(passage, "MyWidgets", "Widget should be defined in MyWidgets passage");
+}
+
+#[test]
+fn sugarcube_build_object_property_map() {
+    let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.level to 5>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let map = plugin.build_object_property_map(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+    );
+    assert!(!map.is_empty(), "Property map should not be empty");
+    assert!(map.contains_key("$player"), "Should find $player in property map");
+    let props = map.get("$player").unwrap();
+    assert!(props.contains("name"), "Should track 'name' property");
+    assert!(props.contains("level"), "Should track 'level' property");
+}
+
+#[test]
+fn sugarcube_special_passage_seeding() {
+    let src = ":: StoryInit\n<<set $gold to 100>><<set $hp to 50>>\n:: Start\nYou have $gold.\n";
+    let (plugin, _) = sc_parse(src);
+
+    let reg = plugin.build_state_variable_registry(
+        &Workspace::new(Url::parse("file:///project/").unwrap()),
+    );
+    let gold = reg.get("$gold");
+    assert!(gold.is_some(), "Should find $gold in registry");
+    assert!(gold.unwrap().seeded_by_special, "$gold from StoryInit should be seeded");
+}
+
+#[test]
+fn sugarcube_temporary_variable_tracking() {
+    let src = ":: Start\n<<for _i to 0; _i lt 5; _i++>><</for>>\n";
+    let (plugin, _) = sc_parse(src);
+
+    let names = plugin.workspace_variable_names();
+    assert!(names.contains("_i"), "Temporary variable _i should be tracked");
+}
+
+#[test]
+fn sugarcube_block_comment_parsing() {
+    let src = ":: Start\n/% comment %/ visible text\n";
+    let (.., pr) = sc_parse(src);
+
+    let parse_errors: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-parse")
+        .collect();
+    assert!(parse_errors.is_empty(), "Block comment should not produce parse errors, got: {:?}", parse_errors);
+
+    let comment_toks: Vec<_> = pr.tokens.iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
+        .collect();
+    assert!(!comment_toks.is_empty(), "Should produce comment semantic token");
+}
+
+#[test]
+fn sugarcube_html_comment_parsing() {
+    let src = ":: Start\n<!-- HTML comment --> visible\n";
+    let (.., pr) = sc_parse(src);
+
+    let comment_toks: Vec<_> = pr.tokens.iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
+        .collect();
+    assert!(!comment_toks.is_empty(), "HTML comment should produce comment semantic token");
+}
+
+#[test]
+fn sugarcube_link_with_pipe_syntax() {
+    let src = ":: Start\n[[Go to Forest|Forest]]\n:: Forest\nTrees.\n";
+    let (.., pr) = sc_parse(src);
+
+    let start = pr.passages.iter().find(|p| p.name == "Start");
+    assert!(start.is_some());
+    let s = start.unwrap();
+    assert!(s.links.iter().any(|l| l.target == "Forest" && l.display_text.as_deref() == Some("Go to Forest")),
+            "Should parse pipe-syntax link with display text");
+}
+
+#[test]
+fn sugarcube_link_with_arrow_syntax() {
+    let src = ":: Start\n[[Forest->Forest]]\n:: Forest\nTrees.\n";
+    let (.., pr) = sc_parse(src);
+
+    let start = pr.passages.iter().find(|p| p.name == "Start");
+    assert!(start.is_some());
+    assert!(start.unwrap().links.iter().any(|l| l.target == "Forest"),
+            "Should parse arrow-syntax link");
+}
+
+#[test]
+fn sugarcube_expression_macros() {
+    let src = ":: Start\n<<=>>$gold>> coins.\n";
+    let (.., pr) = sc_parse(src);
+
+    let parse_errors: Vec<_> = pr.diagnostics.iter()
+        .filter(|d| d.code == "sc-parse")
+        .collect();
+    assert!(parse_errors.is_empty(), "Expression macro <<=>>$gold>> should parse cleanly, got: {:?}", parse_errors);
+
+    let var_toks: Vec<_> = pr.tokens.iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Variable)
+        .collect();
+    assert!(!var_toks.is_empty(), "Should produce variable token for $gold in expression");
+}
+
+#[test]
+fn sugarcube_detect_close_tag_context() {
+    let plugin = SugarCubePlugin::new();
+
+    let ctx = plugin.detect_close_tag_context("some text <</");
+    assert!(ctx.is_some(), "Should detect close tag context after <</");
+
+    let ctx = plugin.detect_close_tag_context("some text <<");
+    assert!(ctx.is_some(), "Should detect macro start context after <<");
+
+    let ctx = plugin.detect_close_tag_context("plain text");
+    assert!(ctx.is_none(), "Should not detect context in plain text");
+}

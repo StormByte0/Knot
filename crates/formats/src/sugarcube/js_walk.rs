@@ -92,7 +92,7 @@ pub fn walk_inline_js(
     let mut result = JsWalkResult::default();
 
     // For inline JS, scan for substituted variable references
-    scan_for_substituted_vars(&program.source_text, preprocessed, file_uri, passage_name, var_tree, &mut result);
+    scan_for_substituted_vars(program.source_text, preprocessed, file_uri, passage_name, var_tree, &mut result);
 
     result
 }
@@ -188,22 +188,20 @@ fn walk_expression(
     match expr {
         Expr::StaticMemberExpression(member) => {
             // Check for State.variables.x pattern
-            if member.property.name == "variables" {
-                if let Expr::Identifier(id) = &member.object {
-                    if id.name == "State" {
-                        // This is State.variables — the parent expression
-                        // will have the property access. We detect that at the
-                        // assignment/call level instead.
-                    }
-                }
+            if member.property.name == "variables"
+                && let Expr::Identifier(id) = &member.object
+                && id.name == "State"
+            {
+                // This is State.variables — the parent expression
+                // will have the property access. We detect that at the
+                // assignment/call level instead.
             }
             // Check for Macro.add pattern
-            if member.property.name == "add" {
-                if let Expr::Identifier(id) = &member.object {
-                    if id.name == "Macro" {
-                        // Found Macro.add — the parent call expression handles this
-                    }
-                }
+            if member.property.name == "add"
+                && let Expr::Identifier(id) = &member.object
+                && id.name == "Macro"
+            {
+                // Found Macro.add — the parent call expression handles this
             }
             // Recurse into object
             walk_expression(&member.object, preprocessed, file_uri, passage_name, var_tree, macro_registry, result);
@@ -214,52 +212,42 @@ fn walk_expression(
         }
         Expr::CallExpression(call) => {
             // Check for Macro.add("name", ...) pattern
-            if let Expr::StaticMemberExpression(member) = &call.callee {
-                if member.property.name == "add" {
-                    if let Expr::Identifier(id) = &member.object {
-                        if id.name == "Macro" || id.name == "SugarCube" {
-                            if let Some(arg) = call.arguments.first() {
-                                if let Some(name) = extract_string_from_arg(arg) {
-                                    let offset = preprocessed.map_to_original(arg.span().start as usize);
-                                    macro_registry.register_macro_add(
-                                        &name,
-                                        passage_name,
-                                        file_uri,
-                                        offset,
-                                        None,
-                                    );
-                                    result.macro_adds += 1;
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Expr::StaticMemberExpression(member) = &call.callee
+                && member.property.name == "add"
+                && let Expr::Identifier(id) = &member.object
+                && (id.name == "Macro" || id.name == "SugarCube")
+                && let Some(arg) = call.arguments.first()
+                && let Some(name) = extract_string_from_arg(arg)
+            {
+                let offset = preprocessed.map_to_original(arg.span().start as usize);
+                macro_registry.register_macro_add(
+                    &name,
+                    passage_name,
+                    file_uri,
+                    offset,
+                    None,
+                );
+                result.macro_adds += 1;
             }
             // Also handle SugarCube.Macro.add
-            if let Expr::StaticMemberExpression(member) = &call.callee {
-                if member.property.name == "add" {
-                    if let Expr::StaticMemberExpression(inner) = &member.object {
-                        if inner.property.name == "Macro" {
-                            if let Expr::Identifier(id) = &inner.object {
-                                if id.name == "SugarCube" {
-                                    if let Some(arg) = call.arguments.first() {
-                                        if let Some(name) = extract_string_from_arg(arg) {
-                                            let offset = preprocessed.map_to_original(arg.span().start as usize);
-                                            macro_registry.register_macro_add(
-                                                &name,
-                                                passage_name,
-                                                file_uri,
-                                                offset,
-                                                None,
-                                            );
-                                            result.macro_adds += 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Expr::StaticMemberExpression(member) = &call.callee
+                && member.property.name == "add"
+                && let Expr::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "Macro"
+                && let Expr::Identifier(id) = &inner.object
+                && id.name == "SugarCube"
+                && let Some(arg) = call.arguments.first()
+                && let Some(name) = extract_string_from_arg(arg)
+            {
+                let offset = preprocessed.map_to_original(arg.span().start as usize);
+                macro_registry.register_macro_add(
+                    &name,
+                    passage_name,
+                    file_uri,
+                    offset,
+                    None,
+                );
+                result.macro_adds += 1;
             }
             // Recurse into callee and arguments
             walk_expression(&call.callee, preprocessed, file_uri, passage_name, var_tree, macro_registry, result);
@@ -314,55 +302,50 @@ fn check_assignment_for_state_var(
     match target {
         AssignmentTarget::StaticMemberExpression(member) => {
             // Check for State.variables.x = value
-            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object {
-                if inner.property.name == "variables" {
-                    if let oxc_ast::ast::Expression::Identifier(id) = &inner.object {
-                        if id.name == "State" {
-                            let prop_name = member.property.name.as_str();
-                            let var_name = format!("${}", prop_name);
-                            let original_start = preprocessed.map_to_original(member.span.start as usize);
-                            let original_end = preprocessed.map_to_original(member.span.end as usize);
+            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "variables"
+                && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
+                && id.name == "State"
+            {
+                let prop_name = member.property.name.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
 
-                            var_tree.record_var(
-                                &var_name,
-                                false,
-                                true,
-                                passage_name,
-                                file_uri,
-                                original_start..original_end,
-                                "",
-                            );
-                            result.state_writes += 1;
-                        }
-                    }
-                }
+                var_tree.record_var(
+                    &var_name,
+                    false,
+                    true,
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                );
+                result.state_writes += 1;
             }
         }
         AssignmentTarget::ComputedMemberExpression(member) => {
-            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object {
-                if inner.property.name == "variables" {
-                    if let oxc_ast::ast::Expression::Identifier(id) = &inner.object {
-                        if id.name == "State" {
-                            if let oxc_ast::ast::Expression::StringLiteral(str_lit) = &member.expression {
-                                let prop_name = str_lit.value.as_str();
-                                let var_name = format!("${}", prop_name);
-                                let original_start = preprocessed.map_to_original(member.span.start as usize);
-                                let original_end = preprocessed.map_to_original(member.span.end as usize);
+            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "variables"
+                && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
+                && id.name == "State"
+                && let oxc_ast::ast::Expression::StringLiteral(str_lit) = &member.expression
+            {
+                let prop_name = str_lit.value.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
 
-                                var_tree.record_var(
-                                    &var_name,
-                                    false,
-                                    true,
-                                    passage_name,
-                                    file_uri,
-                                    original_start..original_end,
-                                    "",
-                                );
-                                result.state_writes += 1;
-                            }
-                        }
-                    }
-                }
+                var_tree.record_var(
+                    &var_name,
+                    false,
+                    true,
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                );
+                result.state_writes += 1;
             }
         }
         AssignmentTarget::AssignmentTargetIdentifier(id) => {
@@ -438,8 +421,12 @@ fn check_identifier_for_substituted_var(
 /// Scan the preprocessed source text for substituted variable patterns.
 /// This is used for inline JS expressions where the AST structure may not
 /// be as easily traversable.
+///
+/// Note: `_source` (the preprocessed JS text) is not currently used by this
+/// implementation, which relies solely on the substitution map. It is kept
+/// for potential future use (e.g., regex-based fallback scanning).
 fn scan_for_substituted_vars(
-    source: &str,
+    _source: &str,
     preprocessed: &crate::sugarcube::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
@@ -532,19 +519,17 @@ fn walk_argument(
             walk_expression(&spread.argument, preprocessed, file_uri, passage_name, var_tree, macro_registry, result);
         }
         Arg::StaticMemberExpression(member) => {
-            if member.property.name == "variables" {
-                if let oxc_ast::ast::Expression::Identifier(id) = &member.object {
-                    if id.name == "State" {
-                        // State.variables read detected at argument level
-                    }
-                }
+            if member.property.name == "variables"
+                && let oxc_ast::ast::Expression::Identifier(id) = &member.object
+                && id.name == "State"
+            {
+                // State.variables read detected at argument level
             }
-            if member.property.name == "add" {
-                if let oxc_ast::ast::Expression::Identifier(id) = &member.object {
-                    if id.name == "Macro" {
-                        // Macro.add detected at argument level
-                    }
-                }
+            if member.property.name == "add"
+                && let oxc_ast::ast::Expression::Identifier(id) = &member.object
+                && id.name == "Macro"
+            {
+                // Macro.add detected at argument level
             }
             walk_expression(&member.object, preprocessed, file_uri, passage_name, var_tree, macro_registry, result);
         }
@@ -554,26 +539,22 @@ fn walk_argument(
         }
         Arg::CallExpression(call) => {
             // Check for Macro.add("name", ...) pattern
-            if let oxc_ast::ast::Expression::StaticMemberExpression(member) = &call.callee {
-                if member.property.name == "add" {
-                    if let oxc_ast::ast::Expression::Identifier(id) = &member.object {
-                        if id.name == "Macro" || id.name == "SugarCube" {
-                            if let Some(arg) = call.arguments.first() {
-                                if let Some(name) = extract_string_from_arg(arg) {
-                                    let offset = preprocessed.map_to_original(arg.span().start as usize);
-                                    macro_registry.register_macro_add(
-                                        &name,
-                                        passage_name,
-                                        file_uri,
-                                        offset,
-                                        None,
-                                    );
-                                    result.macro_adds += 1;
-                                }
-                            }
-                        }
-                    }
-                }
+            if let oxc_ast::ast::Expression::StaticMemberExpression(member) = &call.callee
+                && member.property.name == "add"
+                && let oxc_ast::ast::Expression::Identifier(id) = &member.object
+                && (id.name == "Macro" || id.name == "SugarCube")
+                && let Some(arg) = call.arguments.first()
+                && let Some(name) = extract_string_from_arg(arg)
+            {
+                let offset = preprocessed.map_to_original(arg.span().start as usize);
+                macro_registry.register_macro_add(
+                    &name,
+                    passage_name,
+                    file_uri,
+                    offset,
+                    None,
+                );
+                result.macro_adds += 1;
             }
             walk_expression(&call.callee, preprocessed, file_uri, passage_name, var_tree, macro_registry, result);
             for a in &call.arguments {

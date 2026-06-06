@@ -99,11 +99,9 @@ impl VarEntry {
 
     /// Record a variable access.
     pub fn record_access(&mut self, access: VarAccess) {
-        // If property path, add to known_properties
-        // (property path is extracted from the name like `$player.name`)
-        if let Some(dot_pos) = self.name.find('.') {
-            // This shouldn't happen — base names don't have dots
-        }
+        // Note: base names (e.g., "$player") should never contain dots;
+        // property paths (e.g., "name" for $player.name) are tracked
+        // separately via `record_property()`.
         self.accesses.push(access);
     }
 
@@ -140,6 +138,7 @@ impl VariableTree {
     /// The `property_path` parameter is the dot-notation path after the
     /// base name (e.g., "name" for `$player.name`). Empty string if no
     /// property access.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_var(
         &mut self,
         name: &str,
@@ -217,6 +216,21 @@ impl VariableTree {
         });
     }
 
+    /// Remove all accesses for a specific passage (for incremental single-passage re-parse).
+    ///
+    /// Unlike `remove_file()`, this keeps the variable entry alive if it has
+    /// accesses in other passages or known properties. The variable will be
+    /// re-populated when the passage is re-parsed.
+    pub fn remove_passage(&mut self, passage_name: &str) {
+        for entry in self.variables.values_mut() {
+            entry.accesses.retain(|a| a.passage_name != passage_name);
+        }
+        // Remove variables with no remaining accesses (unless they have known properties)
+        self.variables.retain(|_, entry| {
+            !entry.accesses.is_empty() || !entry.known_properties.is_empty()
+        });
+    }
+
     /// Build a `VariableTreeNode` for the variable tree UI.
     ///
     /// This converts the flat side table into the tree-structured format
@@ -258,7 +272,7 @@ impl VariableTree {
                     full_name: format!("{}.{}", entry.name, prop),
                     state_path: format!(
                         "State.variables.{}",
-                        entry.name.trim_start_matches('$').replace('.', ".")
+                        entry.name.trim_start_matches('$')
                     ),
                     line: 0,
                     written_in: Vec::new(), // Property-level writes tracked separately
@@ -313,6 +327,11 @@ impl VariableTree {
             }
         }
         map
+    }
+
+    /// Iterate over all variable entries in the tree.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &VarEntry)> {
+        self.variables.iter()
     }
 }
 

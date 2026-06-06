@@ -38,7 +38,7 @@
 //! parser::parse_passage()     ← processes each in order
 //! ```
 
-use knot_core::passage::{SpecialPassageDef, SpecialPassageLayer, SpecialPassageBehavior, MatchStrategy};
+use knot_core::passage::{SpecialPassageDef, SpecialPassageBehavior, MatchStrategy};
 use crate::header::TweeHeader;
 use super::special_passages;
 
@@ -341,7 +341,7 @@ fn compute_processing_priority(
 /// Check if a classified passage is a script passage (should be parsed by oxc).
 pub fn is_script_passage(cp: &ClassifiedPassage) -> bool {
     matches!(cp.category, PassageCategory::CoreTagged | PassageCategory::CoreLegacy)
-        && cp.special_def.as_ref().map_or(false, |d| {
+        && cp.special_def.as_ref().is_some_and(|d| {
             d.name.eq_ignore_ascii_case("script")
                 || d.name == "Story JavaScript"
         })
@@ -352,7 +352,7 @@ pub fn is_script_passage(cp: &ClassifiedPassage) -> bool {
 /// Check if a classified passage is a stylesheet passage (minimal processing).
 pub fn is_stylesheet_passage(cp: &ClassifiedPassage) -> bool {
     matches!(cp.category, PassageCategory::CoreTagged | PassageCategory::CoreLegacy)
-        && cp.special_def.as_ref().map_or(false, |d| {
+        && cp.special_def.as_ref().is_some_and(|d| {
             d.name.eq_ignore_ascii_case("stylesheet")
                 || d.name.eq_ignore_ascii_case("style")
                 || d.name == "Story Stylesheet"
@@ -364,7 +364,7 @@ pub fn is_stylesheet_passage(cp: &ClassifiedPassage) -> bool {
 /// Check if a classified passage is a widget passage.
 pub fn is_widget_passage(cp: &ClassifiedPassage) -> bool {
     matches!(cp.category, PassageCategory::FormatTagged)
-        && cp.special_def.as_ref().map_or(false, |d| d.name.eq_ignore_ascii_case("widget"))
+        && cp.special_def.as_ref().is_some_and(|d| d.name.eq_ignore_ascii_case("widget"))
         || cp.header.tags.iter().any(|t| t.eq_ignore_ascii_case("widget"))
 }
 
