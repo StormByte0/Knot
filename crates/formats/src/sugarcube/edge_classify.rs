@@ -66,7 +66,17 @@ pub(super) fn classify_edge_impl(
                     return Some(knot_core::graph::EdgeType::Navigation);
                 }
                 "return" | "back" if args_match => {
-                    return Some(knot_core::graph::EdgeType::Navigation);
+                    // For <<back>>/<<return>> with a single string arg, that arg
+                    // is display text (NOT a passage target). Only treat it as a
+                    // navigation edge if we have 2+ string args (display + target).
+                    // This fallback is only called when edge_type_hint is None,
+                    // which should be rare after the extraction rewrite.
+                    let string_args = parser::extract_string_args(args);
+                    if string_args.len() >= 2 {
+                        return Some(knot_core::graph::EdgeType::Navigation);
+                    }
+                    // Single string arg = display text only, no navigation edge
+                    return None;
                 }
                 _ => {}
             }

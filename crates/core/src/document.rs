@@ -196,11 +196,121 @@ impl DocumentSnapshot {
 
     /// Apply a range of text changes to the rope.
     ///
+    /// The `range` parameter is in **byte offsets** (from LSP position
+    /// conversion). Ropey's `remove`/`insert` require **char indices**,
+    /// so we convert here using `byte_to_char`.
+    ///
     /// **Note:** This does NOT update `self.version`; the caller is
     /// responsible for setting the version from the authoritative LSP
     /// version number.
     pub fn apply_change(&mut self, range: Range<usize>, new_text: &str) {
-        self.rope.remove(range.start..range.end);
-        self.rope.insert(range.start, new_text);
+        // Clamp byte offsets to the rope's byte length to avoid panics
+        let byte_start = range.start.min(self.rope.len_bytes());
+        let byte_end = range.end.min(self.rope.len_bytes());
+
+        // Convert byte offsets to char indices — ropey requires char indices
+        // for remove/insert, NOT byte offsets. Using byte offsets directly
+        // causes panics on any document with multi-byte UTF-8 characters.
+        let char_start = self.rope.byte_to_char(byte_start);
+        let char_end = self.rope.byte_to_char(byte_end);
+
+        self.rope.remove(char_start..char_end);
+        self.rope.insert(char_start, new_text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that apply_change correctly converts byte offsets to char indices
+    /// for documents containing multi-byte UTF-8 characters.
+    ///
+    /// This is a regression test for the ropey panic: the old code passed
+    /// byte offsets directly to rope.remove() and rope.insert(), which
+    /// require char indices. With multi-byte characters (em-dash, CJK,
+    /// emoji), byte offsets exceed the char count and cause ropey to panic.
+    #[test]
+    fn apply_change_with_multibyte_chars() {
+        let mut snapshot = DocumentSnapshot {
+            uri: url::Url::parse("file:///test.tw").unwrap(),
+            version: 1,
+            rope: Rope::from_str("Hello — World"),  // — is 3 bytes in UTF-8
+            passage_names: vec![],
+        };
+
+        // The em-dash — is at byte offset 6..9 (3 bytes) but char index 6..7
+        // Replace "World" (byte offset 10..15) with "Rust"
+        // In char indices: "World" is at char 8..13
+        snapshot.apply_change(10..15, "Rust");
+
+        let result: String = snapshot.rope.to_string();
+        assert_eq!(result, "Hello — Rust");
+    }
+
+    #[test]
+    fn apply_change_at_start_with_multibyte() {
+        let mut snapshot = DocumentSnapshot {
+            uri: url::Url::parse("file:///test.tw").unwrap(),
+            version: 1,
+            rope: Rope::from_str("日本語テスト"),  // CJK characters (3 bytes each)
+            passage_names: vec![],
+        };
+
+        // Replace first 3 chars (byte 0..9) with "Hello"
+        snapshot.apply_change(0..9, "Hello");
+
+        let result: String = snapshot.rope.to_string();
+        assert_eq!(result, "Helloテスト");
+    }
+
+    #[test]
+    fn apply_change_insert_in_multibyte() {
+        let mut snapshot = DocumentSnapshot {
+            uri: url::Url::parse("file:///test.tw").unwrap(),
+            version: 1,
+            rope: Rope::from_str("a—b"),  // 1 + 3 + 1 = 5 bytes, 3 chars
+            passage_names: vec![],
+        };
+
+        // Insert "XX" after the em-dash (byte offset 4, char index 2)
+        snapshot.apply_change(4..4, "XX");
+
+        let result: String = snapshot.rope.to_string();
+        assert_eq!(result, "a—XXb");
+    }
+
+    #[test]
+    fn apply_change_with_emoji() {
+        let mut snapshot = DocumentSnapshot {
+            uri: url::Url::parse("file:///test.tw").unwrap(),
+            version: 1,
+            rope: Rope::from_str("Hello 🌍 World"),  // 🌍 is 4 bytes
+            passage_names: vec![],
+        };
+
+        // Replace "World" (after emoji) with "Earth"
+        // "Hello " = 6 bytes, "🌍" = 4 bytes, " " = 1 byte
+        // "World" starts at byte 11, ends at byte 16
+        snapshot.apply_change(11..16, "Earth");
+
+        let result: String = snapshot.rope.to_string();
+        assert_eq!(result, "Hello 🌍 Earth");
+    }
+
+    #[test]
+    fn apply_change_clamps_out_of_bounds() {
+        let mut snapshot = DocumentSnapshot {
+            uri: url::Url::parse("file:///test.tw").unwrap(),
+            version: 1,
+            rope: Rope::from_str("abc"),
+            passage_names: vec![],
+        };
+
+        // Out-of-bounds byte range should be clamped, not panic
+        snapshot.apply_change(0..1000, "xyz");
+
+        let result: String = snapshot.rope.to_string();
+        assert_eq!(result, "xyz");
     }
 }

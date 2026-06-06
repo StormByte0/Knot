@@ -555,15 +555,30 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                 // <<set>> is special: SugarCube owns the target + operator,
                 // oxc only parses the RHS expression.
                 if let Some(sa) = set_assignment {
-                    // Structured assignment: only the expression goes to oxc
+                    // Structured assignment: only the expression goes to oxc.
+                    //
+                    // The expression_span is relative to the passage body start.
+                    // We need the offset to the START of the expression within
+                    // the passage body, so that JS diagnostics can be mapped
+                    // back to the correct position.
+                    //
+                    // IMPORTANT: When `expression` is trimmed (leading/trailing
+                    // whitespace removed), the body_offset must account for the
+                    // trimmed portion. Otherwise, diagnostics at the start of
+                    // the expression will be mapped to the wrong position.
                     if let Some(expr) = &sa.expression {
                         let trimmed = expr.trim();
                         if !trimmed.is_empty() {
+                            // Calculate how many bytes of leading whitespace
+                            // were trimmed from the expression, so the offset
+                            // accounts for the trim.
+                            let leading_ws = expr.len() - expr.trim_start().len();
+                            let expr_body_offset = sa.expression_span.as_ref()
+                                .map(|s| s.start + leading_ws)
+                                .unwrap_or(open_span.start);
                             result.push(JsSnippet {
                                 source: trimmed.to_string(),
-                                body_offset: sa.expression_span.as_ref()
-                                    .map(|s| s.start)
-                                    .unwrap_or(open_span.start),
+                                body_offset: expr_body_offset,
                                 macro_name: "set".to_string(),
                                 is_block: false,
                             });
@@ -573,23 +588,46 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                 } else {
                     // No structured assignment (e.g., <<set $arr.push("item")>>).
                     // The entire args are a JS expression — same as <<run>>.
+                    //
+                    // For correct span mapping, the body_offset must point to
+                    // where the args actually start in the passage body, which
+                    // is after `<<set ` (the `<<` + macro name + space).
+                    // Using `open_span.start` would point to `<<`, making
+                    // diagnostics appear at the wrong position.
                     let trimmed = args.trim();
                     if !trimmed.is_empty() {
+                        // Calculate the byte offset of the args start in the
+                        // passage body.
+                        //
+                        // open_span.end = span_start + position_past_>>>
+                        // args_end (before >>) = open_span.end - span_start - 2
+                        // args_start = args_end - args.len()
+                        // args_start in passage body = span_start + args_start
+                        //   = span_start + (open_span.end - span_start - 2 - args.len())
+                        //   = open_span.end - 2 - args.len()
+                        //
+                        // We also add leading_ws to account for trimmed whitespace.
+                        let leading_ws = args.len() - args.trim_start().len();
+                        let args_body_start = open_span.end - 2 - args.len() + leading_ws;
                         result.push(JsSnippet {
                             source: trimmed.to_string(),
-                            body_offset: open_span.start,
+                            body_offset: args_body_start,
                             macro_name: "set".to_string(),
                             is_block: false,
                         });
                     }
                 }
             } else if INLINE_JS_MACROS.contains(&name.as_str()) {
-                // Inline JS: the args are a JS expression
+                // Inline JS: the args are a JS expression.
+                // Calculate the args start offset similarly to the <<set>> case.
+                // open_span.end - 2 accounts for the >> closing tag.
                 let trimmed = args.trim();
                 if !trimmed.is_empty() {
+                    let leading_ws = args.len() - args.trim_start().len();
+                    let args_body_start = open_span.end - 2 - args.len() + leading_ws;
                     result.push(JsSnippet {
                         source: trimmed.to_string(),
-                        body_offset: open_span.start,
+                        body_offset: args_body_start,
                         macro_name: name.clone(),
                         is_block: false,
                     });

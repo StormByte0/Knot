@@ -27,6 +27,11 @@ pub(super) fn parse_block_comment(text: &str, i: &mut usize, span_start: usize, 
     } else {
         ("%/", CommentKind::Twine)
     };
+    // delim_len = number of bytes the caller consumed before entering this
+    // function (2 for /%, 3 for /%%). This is needed to compute the correct
+    // span: span_start = offset + start, and *i on entry = start + delim_len,
+    // so the span end must be offset + *i, NOT span_start + *i.
+    let delim_len = if is_sugarcube { 3 } else { 2 };
 
     let content_start = *i;
     if let Some(pos) = text[*i..].find(close_delim) {
@@ -36,7 +41,7 @@ pub(super) fn parse_block_comment(text: &str, i: &mut usize, span_start: usize, 
         AstNode::Comment {
             content,
             kind,
-            span: span_start..span_start + *i,
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     } else {
         // Unclosed comment
@@ -45,13 +50,15 @@ pub(super) fn parse_block_comment(text: &str, i: &mut usize, span_start: usize, 
         AstNode::Comment {
             content,
             kind,
-            span: span_start..span_start + text.len(),
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     }
 }
 
 /// Parse an HTML comment (<!-- ... -->).
 pub(super) fn parse_html_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // delim_len = 4 for <!-- (caller already consumed it)
+    let delim_len = 4;
     let content_start = *i;
     if let Some(pos) = text[*i..].find("-->") {
         let content_end = *i + pos;
@@ -60,7 +67,7 @@ pub(super) fn parse_html_comment(text: &str, i: &mut usize, span_start: usize) -
         AstNode::Comment {
             content,
             kind: CommentKind::Html,
-            span: span_start..span_start + *i,
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     } else {
         let content = text[content_start..].to_string();
@@ -68,7 +75,7 @@ pub(super) fn parse_html_comment(text: &str, i: &mut usize, span_start: usize) -
         AstNode::Comment {
             content,
             kind: CommentKind::Html,
-            span: span_start..span_start + text.len(),
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     }
 }
@@ -79,6 +86,8 @@ pub(super) fn parse_html_comment(text: &str, i: &mut usize, span_start: usize) -
 /// blocks (`<<script>>/* comment */<</script>>`) within SugarCube passages.
 /// The content inside `/* */` is excluded from all analysis.
 pub(super) fn parse_cstyle_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // delim_len = 2 for /* (caller already consumed it)
+    let delim_len = 2;
     let content_start = *i;
     if let Some(pos) = text[*i..].find("*/") {
         let content_end = *i + pos;
@@ -87,7 +96,7 @@ pub(super) fn parse_cstyle_comment(text: &str, i: &mut usize, span_start: usize)
         AstNode::Comment {
             content,
             kind: CommentKind::CStyle,
-            span: span_start..span_start + *i,
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     } else {
         // Unclosed comment
@@ -96,7 +105,7 @@ pub(super) fn parse_cstyle_comment(text: &str, i: &mut usize, span_start: usize)
         AstNode::Comment {
             content,
             kind: CommentKind::CStyle,
-            span: span_start..span_start + text.len(),
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     }
 }
@@ -107,6 +116,8 @@ pub(super) fn parse_cstyle_comment(text: &str, i: &mut usize, span_start: usize)
 /// in SugarCube passages. The comment extends to the end of the line.
 /// Content inside `//` comments is excluded from all analysis.
 pub(super) fn parse_js_line_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // delim_len = 2 for // (caller already consumed it)
+    let delim_len = 2;
     let content_start = *i;
     // Scan to end of line
     if let Some(pos) = text[*i..].find('\n') {
@@ -116,7 +127,7 @@ pub(super) fn parse_js_line_comment(text: &str, i: &mut usize, span_start: usize
         AstNode::Comment {
             content,
             kind: CommentKind::JsLine,
-            span: span_start..span_start + *i,
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     } else {
         // Comment extends to end of text
@@ -125,7 +136,7 @@ pub(super) fn parse_js_line_comment(text: &str, i: &mut usize, span_start: usize
         AstNode::Comment {
             content,
             kind: CommentKind::JsLine,
-            span: span_start..span_start + text.len(),
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     }
 }
@@ -136,20 +147,22 @@ pub(super) fn parse_js_line_comment(text: &str, i: &mut usize, span_start: usize
 /// HTML pattern. The content between `<!--[if ...]>` and `<![endif]-->`
 /// is excluded from all analysis.
 pub(super) fn parse_html_conditional_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // delim_len = 4 for <!-- (caller already consumed it)
+    let delim_len = 4;
     let content_start = *i;
     // Look for <![endif]-->
     if let Some(pos) = text[*i..].find("<![endif]") {
         let content_end = *i + pos;
         let content = text[content_start..content_end].to_string();
         *i = content_end + "<![endif]".len();
-        // Skip the -->  after <![endif]
+        // Skip the -->  after <![endif]>
         if text[*i..].starts_with("-->") {
             *i += 3;
         }
         AstNode::Comment {
             content,
             kind: CommentKind::HtmlConditional,
-            span: span_start..span_start + *i,
+            span: span_start..span_start + *i - content_start + delim_len,
         }
     } else {
         // Unclosed conditional comment — fall back to regular HTML comment parsing
@@ -160,7 +173,7 @@ pub(super) fn parse_html_conditional_comment(text: &str, i: &mut usize, span_sta
             AstNode::Comment {
                 content,
                 kind: CommentKind::HtmlConditional,
-                span: span_start..span_start + *i,
+                span: span_start..span_start + *i - content_start + delim_len,
             }
         } else {
             let content = text[content_start..].to_string();
@@ -168,7 +181,7 @@ pub(super) fn parse_html_conditional_comment(text: &str, i: &mut usize, span_sta
             AstNode::Comment {
                 content,
                 kind: CommentKind::HtmlConditional,
-                span: span_start..span_start + text.len(),
+                span: span_start..span_start + *i - content_start + delim_len,
             }
         }
     }
@@ -629,6 +642,67 @@ more text
         );
         // This is a tricky edge case — just verify no crash
         assert!(!ast.links.is_empty() || ast.links.is_empty()); // verify it doesn't panic
+    }
+
+    #[test]
+    fn cstyle_comment_span_does_not_extend_past_close() {
+        // The bug: comment span was computed as span_start + *i instead of
+        // offset + *i, causing the span to extend past the */ delimiter by
+        // `start` bytes. Verify the span is correct.
+        let body = "before /* comment */ after";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let comment = ast.nodes.iter().find_map(|n| {
+            if let AstNode::Comment { span, kind: CommentKind::CStyle, .. } = n {
+                Some(span.clone())
+            } else {
+                None
+            }
+        }).expect("should find CStyle comment");
+        // The comment starts at byte 7 (the / of /*) and ends at byte 20
+        // (exclusive, after the / of */), so span should be 7..20
+        assert_eq!(comment.start, 7, "comment span start should be at /*");
+        assert_eq!(comment.end, 20, "comment span end should be at position after */");
+        // Verify the span length equals the actual comment length in the text
+        let comment_text = &body[comment.start..comment.end];
+        assert_eq!(comment_text, "/* comment */");
+    }
+
+    #[test]
+    fn twine_comment_span_does_not_extend_past_close() {
+        let body = "before /% comment %/ after";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let comment = ast.nodes.iter().find_map(|n| {
+            if let AstNode::Comment { span, kind: CommentKind::Twine, .. } = n {
+                Some(span.clone())
+            } else {
+                None
+            }
+        }).expect("should find Twine comment");
+        // /% starts at byte 7, %/ ends at byte 20 (exclusive, after the /), span = 7..20
+        assert_eq!(comment.start, 7);
+        assert_eq!(comment.end, 20);
+        let comment_text = &body[comment.start..comment.end];
+        assert_eq!(comment_text, "/% comment %/");
+    }
+
+    #[test]
+    fn cstyle_comment_after_long_prefix() {
+        // A comment NOT at the start — the old bug made spans extend by
+        // `start` bytes past the closing delimiter.
+        let body = "x".repeat(1000) + "/* short */ rest";
+        let ast = parse_passage_body(&body, 0, ParseMode::Normal);
+        let comment = ast.nodes.iter().find_map(|n| {
+            if let AstNode::Comment { span, kind: CommentKind::CStyle, .. } = n {
+                Some(span.clone())
+            } else {
+                None
+            }
+        }).expect("should find CStyle comment");
+        // Comment starts at byte 1000, ends at byte 1011 (exclusive, after */)
+        assert_eq!(comment.start, 1000);
+        assert_eq!(comment.end, 1011);
+        let comment_text = &body[comment.start..comment.end];
+        assert_eq!(comment_text, "/* short */");
     }
 
     #[test]

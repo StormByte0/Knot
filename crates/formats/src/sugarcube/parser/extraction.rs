@@ -73,6 +73,17 @@ fn extract_links_recursive(nodes: &[AstNode], links: &mut Vec<LinkInfo>) {
 /// These macros create graph edges when their arguments contain string
 /// literal passage names or variable references. The mapping determines
 /// which `LinkSource` (and therefore which `EdgeType`) each macro produces.
+///
+/// ## Argument semantics by macro
+///
+/// | Macro | 1 string arg | 2+ string args | Variable arg |
+/// |-------|-------------|----------------|-------------|
+/// | `<<goto>>` | passage target | — | dynamic target |
+/// | `<<include>>` | passage target | — | dynamic target |
+/// | `<<link>>` / `<<button>>` | display + target (same) | display + target | dynamic target |
+/// | `<<actions>>` | all are targets | all are targets | — |
+/// | `<<back>>` | display text only | display + target | dynamic (history) |
+/// | `<<return>>` | display text only | display + target | dynamic (history) |
 const NAVIGATION_MACROS: &[(&str, LinkSource)] = &[
     ("goto", LinkSource::Goto),
     ("include", LinkSource::Include),
@@ -97,8 +108,10 @@ const NAVIGATION_MACROS: &[(&str, LinkSource)] = &[
 /// - `<<link "Display" "Passage">>` — display + passage target
 /// - `<<button "Display" "Passage">>` — display + passage target
 /// - `<<actions "P1" "P2" "P3">>` — multiple passage targets
-/// - `<<return "Passage">>` — single passage target
-/// - `<<back "Passage">>` — single passage target
+/// - `<<back "Display">>` — display text only (history-based, no fixed target)
+/// - `<<back "Display" "Passage">>` — display + specific passage target
+/// - `<<return "Display">>` — display text only (history-based, no fixed target)
+/// - `<<return "Display" "Passage">>` — display + specific passage target
 /// - `<<goto $var>>` — dynamic variable target (is_dynamic = true)
 /// - `<<link "Display" $var>>` — dynamic variable target
 ///
@@ -128,6 +141,11 @@ fn extract_macro_passage_refs(
         // No string literal args. Check for:
         // 1. Variable reference as sole argument: <<goto $dest>>
         // 2. Bare passage name: <<goto Forest>> (SugarCube accepts unquoted names)
+        //
+        // IMPORTANT: For <<back>> and <<return>>, a single unquoted arg is
+        // display text (not a passage target) — same semantics as a single
+        // quoted string arg. These macros navigate via browser history; the
+        // single arg customizes the link text, not the destination.
         let trimmed = stripped_args.trim();
         if trimmed.starts_with('$') || trimmed.starts_with('_') {
             links.push(LinkInfo {
@@ -138,15 +156,28 @@ fn extract_macro_passage_refs(
                 source,
             });
         } else if !trimmed.is_empty() && is_bare_passage_name(trimmed) {
-            // Bare passage name (e.g., <<goto Forest>>)
-            // SugarCube treats unquoted identifiers as passage names
-            links.push(LinkInfo {
-                display: None,
-                target: trimmed.to_string(),
-                span: open_span,
-                is_dynamic: false,
-                source,
-            });
+            if matches!(source, LinkSource::Back | LinkSource::Return) {
+                // Single unquoted arg for <<back>>/<<return>> is display text,
+                // not a passage target. Mark as dynamic (history-based nav)
+                // with no fixed target to prevent false BrokenLink diagnostics.
+                links.push(LinkInfo {
+                    display: Some(trimmed.to_string()),
+                    target: String::new(),
+                    span: open_span,
+                    is_dynamic: true,
+                    source,
+                });
+            } else {
+                // Bare passage name (e.g., <<goto Forest>>)
+                // SugarCube treats unquoted identifiers as passage names
+                links.push(LinkInfo {
+                    display: None,
+                    target: trimmed.to_string(),
+                    span: open_span,
+                    is_dynamic: false,
+                    source,
+                });
+            }
         }
         return links;
     }
@@ -622,5 +653,87 @@ mod tests {
         );
         // This is a tricky edge case — just verify no crash
         assert!(!ast.links.is_empty() || ast.links.is_empty()); // verify it doesn't panic
+    }
+
+    // -----------------------------------------------------------------------
+    // <<back>> / <<return>> no false BrokenLink tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn back_quoted_single_arg_no_broken_link() {
+        // <<back "Back">> — "Back" is display text, NOT a passage target.
+        // Must NOT produce a link with target "Back" (which would cause
+        // a false BrokenLink diagnostic if no passage named "Back" exists).
+        let ast = parse_passage_body(r#"<<back "Back">>"#, 0, ParseMode::Normal);
+        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        assert_eq!(back_links.len(), 1);
+        assert_eq!(back_links[0].display.as_deref(), Some("Back"));
+        assert!(back_links[0].target.is_empty(), "<<back>> with one quoted arg should have no fixed target");
+        assert!(back_links[0].is_dynamic, "<<back>> with one arg should be dynamic");
+    }
+
+    #[test]
+    fn back_unquoted_single_arg_no_broken_link() {
+        // <<back Back>> — unquoted bare name, same semantics as quoted.
+        // SugarCube treats the single arg as display text for history navigation.
+        // Must NOT produce a link with target "Back".
+        let ast = parse_passage_body("<<back Back>>", 0, ParseMode::Normal);
+        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        assert_eq!(back_links.len(), 1);
+        assert_eq!(back_links[0].display.as_deref(), Some("Back"));
+        assert!(back_links[0].target.is_empty(), "<<back>> with one unquoted arg should have no fixed target");
+        assert!(back_links[0].is_dynamic, "<<back>> with one arg should be dynamic");
+    }
+
+    #[test]
+    fn return_quoted_single_arg_no_broken_link() {
+        // <<return "Town">> — display text only, history-based navigation
+        let ast = parse_passage_body(r#"<<return "Town">>"#, 0, ParseMode::Normal);
+        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        assert_eq!(ret_links.len(), 1);
+        assert!(ret_links[0].target.is_empty(), "<<return>> with one arg should have no fixed target");
+        assert!(ret_links[0].is_dynamic);
+    }
+
+    #[test]
+    fn return_unquoted_single_arg_no_broken_link() {
+        // <<return Town>> — unquoted bare name, display text only
+        let ast = parse_passage_body("<<return Town>>", 0, ParseMode::Normal);
+        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        assert_eq!(ret_links.len(), 1);
+        assert!(ret_links[0].target.is_empty(), "<<return>> with one unquoted arg should have no fixed target");
+        assert!(ret_links[0].is_dynamic);
+    }
+
+    #[test]
+    fn back_two_args_has_fixed_target() {
+        // <<back "Flee" "Forest">> — display text + specific passage target
+        let ast = parse_passage_body(r#"<<back "Flee" "Forest">>"#, 0, ParseMode::Normal);
+        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        assert_eq!(back_links.len(), 1);
+        assert_eq!(back_links[0].display.as_deref(), Some("Flee"));
+        assert_eq!(back_links[0].target, "Forest");
+        assert!(!back_links[0].is_dynamic, "<<back>> with two args should have a fixed target");
+    }
+
+    #[test]
+    fn goto_bare_name_is_passage_target() {
+        // <<goto Forest>> — bare name IS a passage target for <<goto>>
+        // (unlike <<back>>/<<return>> where single arg is display text)
+        let ast = parse_passage_body("<<goto Forest>>", 0, ParseMode::Normal);
+        let goto_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Goto).collect();
+        assert_eq!(goto_links.len(), 1);
+        assert_eq!(goto_links[0].target, "Forest");
+        assert!(!goto_links[0].is_dynamic);
+    }
+
+    #[test]
+    fn include_bare_name_is_passage_target() {
+        // <<include Header>> — bare name is passage target for <<include>>
+        let ast = parse_passage_body("<<include Header>>", 0, ParseMode::Normal);
+        let inc_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Include).collect();
+        assert_eq!(inc_links.len(), 1);
+        assert_eq!(inc_links[0].target, "Header");
+        assert!(!inc_links[0].is_dynamic);
     }
 }

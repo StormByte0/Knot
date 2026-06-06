@@ -68,24 +68,49 @@ fn convert_semantic_tokens(
     plugin_tokens: &[fmt_plugin::SemanticToken],
 ) -> Vec<SemTok> {
     let mut tokens = Vec::new();
+    let line_count = text.lines().count() as u32;
 
     for pt in plugin_tokens {
-        let pos = helpers::byte_offset_to_position(text, pt.start);
+        // Clamp byte offsets to document length to prevent out-of-bounds access
+        let safe_start = pt.start.min(text.len());
+        let safe_end = (pt.start + pt.length).min(text.len());
+        
+        // Skip zero-length tokens (can happen from incorrect position math)
+        if safe_start >= safe_end {
+            continue;
+        }
+
+        let pos = helpers::byte_offset_to_position(text, safe_start);
+        
+        // Skip tokens whose line exceeds the document
+        if pos.line >= line_count {
+            continue;
+        }
+
         let token_type = map_token_type(&pt.token_type);
         let modifiers = map_token_modifier(&pt.modifier);
 
         // Convert byte length to UTF-16 code unit length for the LSP wire format.
-        let safe_start = pt.start.min(text.len());
-        let safe_end = (safe_start + pt.length).min(text.len());
         let token_text = &text[safe_start..safe_end];
         let utf16_length: u32 = token_text.chars()
             .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
             .sum();
 
+        // Clamp start_char to the line length to prevent "end character > model.getLineLength"
+        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+        let line_utf16_len = helpers::utf16_len(line_text);
+        let clamped_char = pos.character.min(line_utf16_len);
+        let clamped_length = utf16_length.min(line_utf16_len.saturating_sub(clamped_char));
+        
+        // Skip if the token would have zero or negative length after clamping
+        if clamped_length == 0 {
+            continue;
+        }
+
         tokens.push(SemTok {
             line: pos.line,
-            start_char: pos.character,
-            length: utf16_length,
+            start_char: clamped_char,
+            length: clamped_length,
             token_type,
             token_modifiers: modifiers,
         });
@@ -352,20 +377,13 @@ pub(crate) async fn semantic_tokens_full(
             let parse_result = plugin.parse(&uri, text);
             let tokens = convert_semantic_tokens(text, &parse_result.tokens);
 
-            // Debug: log semantic tokens with position verification to help
-            // diagnose offset issues. This logs the token's LSP position, the
-            // text at that byte offset, AND the text at the LSP character
-            // position on the line — if they differ, there's a conversion bug.
+            // Debug: compact semantic token summary with mismatch detection.
             {
-                let debug_limit = 30.min(tokens.len());
-                tracing::debug!(
-                    file = %uri,
-                    total_tokens = tokens.len(),
-                    text_len = text.len(),
-                    text_first_100 = &text[..100.min(text.len())],
-                    "semantic_tokens_full: generated tokens"
-                );
-                for (i, tok) in tokens.iter().take(debug_limit).enumerate() {
+                let mut match_count = 0usize;
+                let mut mismatch_count = 0usize;
+                let mut mismatches = Vec::new();
+
+                for (i, tok) in tokens.iter().enumerate() {
                     let safe_start = parse_result.tokens.get(i)
                         .map(|pt| pt.start.min(text.len()))
                         .unwrap_or(0);
@@ -378,7 +396,6 @@ pub(crate) async fn semantic_tokens_full(
                         ""
                     };
 
-                    // Verify: what text is actually at the LSP position?
                     let line_text = text.lines().nth(tok.line as usize).unwrap_or("");
                     let char_end = (tok.start_char as usize + tok.length as usize).min(line_text.len());
                     let lsp_text = if (tok.start_char as usize) < line_text.len() {
@@ -387,17 +404,39 @@ pub(crate) async fn semantic_tokens_full(
                         ""
                     };
 
-                    tracing::debug!(
-                        token_idx = i,
-                        line = tok.line,
-                        start_char = tok.start_char,
-                        length = tok.length,
-                        token_type = tok.token_type,
-                        byte_text = tok_text,
-                        lsp_text = lsp_text,
-                        match = tok_text == lsp_text,
-                        "semantic token"
-                    );
+                    if tok_text == lsp_text {
+                        match_count += 1;
+                    } else {
+                        mismatch_count += 1;
+                        // Truncate text to 40 chars for readability
+                        let trunc = |s: &str| -> String {
+                            if s.len() <= 40 { s.to_string() }
+                            else { format!("{}...", &s[..s.char_indices().take(40).last().map(|(i,c)| i + c.len_utf8()).unwrap_or(40)]) }
+                        };
+                        mismatches.push(format!(
+                            "  [{}] line={} char={} len={} type={} byte_text={:?} lsp_text={:?}",
+                            i, tok.line, tok.start_char, tok.length, tok.token_type,
+                            trunc(tok_text), trunc(lsp_text)
+                        ));
+                    }
+                }
+
+                tracing::debug!(
+                    file = %uri,
+                    total_tokens = tokens.len(),
+                    match_count,
+                    mismatch_count,
+                    "semantic_tokens_full: token summary"
+                );
+
+                if !mismatches.is_empty() {
+                    // Log up to 10 mismatches to avoid flooding
+                    for m in mismatches.iter().take(10) {
+                        tracing::debug!(mismatch = m, "semantic token mismatch");
+                    }
+                    if mismatches.len() > 10 {
+                        tracing::debug!(remaining = mismatches.len() - 10, "... more mismatches");
+                    }
                 }
             }
 

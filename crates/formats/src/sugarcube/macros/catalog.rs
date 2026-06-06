@@ -912,7 +912,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "back",
-            description: "Return to the previous passage, optionally a specific one.",
+            description: "Navigate back via browser history: `<<back>>` / `<<back \"LinkText\">>` / `<<back \"LinkText\" \"Passage\">>`",
             has_body: false,
             args: Some(&[
                 MacroArgDef {
@@ -942,7 +942,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "return",
-            description: "Navigate using browser history, optionally to a specific passage.",
+            description: "Navigate using browser history: `<<return>>` / `<<return \"LinkText\">>` / `<<return \"LinkText\" \"Passage\">>`",
             has_body: false,
             args: Some(&[
                 MacroArgDef {

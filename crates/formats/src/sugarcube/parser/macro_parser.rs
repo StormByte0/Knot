@@ -157,10 +157,26 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, span_start: usize) -> AstNo
     }
 }
 
-/// Scan macro arguments, handling nested `<<`/`>>` and strings.
+/// Scan macro arguments, handling nested `<<`/`>>`, strings, and comments.
 ///
 /// Returns the byte position where args end (before `>>`).
 /// Advances `i` past the closing `>>`.
+///
+/// ## Comment handling
+///
+/// SugarCube macro args can contain JS expressions with C-style comments
+/// (`/* ... */` and `// ...`). A `>>` inside a comment must NOT be treated
+/// as the macro closing delimiter. For example:
+///
+/// ```text
+/// <<set $x = [
+///   /* comment with >> inside */
+///   1, 2, 3
+/// ]>>
+/// ```
+///
+/// Without comment awareness, the scanner would find `>>` inside the
+/// `/* */` comment and incorrectly close the macro, truncating the args.
 pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
     let bytes = text.as_bytes();
     let len = bytes.len();
@@ -189,6 +205,32 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
         }
         if in_single_quote || in_double_quote {
             *i += 1;
+            continue;
+        }
+
+        // C-style block comment: /* ... */
+        // Skip over it entirely — a >> inside the comment must NOT
+        // be treated as a macro close delimiter.
+        if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'*' {
+            *i += 2; // Skip /*
+            while *i + 1 < len {
+                if bytes[*i] == b'*' && bytes[*i + 1] == b'/' {
+                    *i += 2; // Skip */
+                    break;
+                }
+                *i += 1;
+            }
+            continue;
+        }
+
+        // JS line comment: // ... (to end of line)
+        // Skip to end of line — a >> on this commented-out line must NOT
+        // be treated as a macro close delimiter.
+        if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'/' {
+            *i += 2; // Skip //
+            while *i < len && bytes[*i] != b'\n' {
+                *i += 1;
+            }
             continue;
         }
 
@@ -420,8 +462,12 @@ pub(super) fn skip_to_macro_close(text: &str, i: &mut usize) {
 /// After this call, `*i` points past the `>>`.
 ///
 /// Expression macros close at the **first** `>>` after the `=`/`-` sigil,
-/// with one important exception: `>>` inside string literals is NOT treated
-/// as a close delimiter. This prevents `<<= "hello >>">>` from closing early.
+/// with important exceptions: `>>` inside string literals, `/* */` block
+/// comments, and `//` line comments is NOT treated as a close delimiter.
+/// This prevents premature closing in expressions like:
+/// - `<<= "hello >>">>`  (string containing >>)
+/// - `<<= /* >> */ 42>>` (block comment containing >>)
+/// - `<<= 42 // >>` + newline + `>>` (line comment containing >>)
 pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
     let bytes = text.as_bytes();
     let len = bytes.len();
@@ -451,7 +497,32 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
             continue;
         }
 
-        // First >> outside of strings closes the expression macro
+        // C-style block comment: /* ... */
+        // Skip over it — a >> inside the comment must NOT close the macro.
+        if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'*' {
+            *i += 2; // Skip /*
+            while *i + 1 < len {
+                if bytes[*i] == b'*' && bytes[*i + 1] == b'/' {
+                    *i += 2; // Skip */
+                    break;
+                }
+                *i += 1;
+            }
+            continue;
+        }
+
+        // JS line comment: // ... (to end of line)
+        // Skip to end of line — a >> on this commented-out line must NOT
+        // close the macro.
+        if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'/' {
+            *i += 2; // Skip //
+            while *i < len && bytes[*i] != b'\n' {
+                *i += 1;
+            }
+            continue;
+        }
+
+        // First >> outside of strings/comments closes the expression macro
         if b == b'>' && *i + 1 < len && bytes[*i + 1] == b'>' {
             let content_end = *i;
             *i += 2;
@@ -967,5 +1038,96 @@ mod tests {
         let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
         // With no args at all, there's no string arg to extract — no link
         assert_eq!(back_links.len(), 0, "<<back>> with no args produces no extractable link");
+    }
+
+    // -----------------------------------------------------------------------
+    // Comment-aware macro scanning tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_macro_with_block_comment_containing_gt_gt() {
+        // A >> inside a /* */ comment must NOT close the macro.
+        // Without comment awareness, the scanner would find >> inside
+        // the comment and truncate the args.
+        let input = r#"<<set $x = [1, /* >> */ 2, 3]>>"#;
+        let ast = parse_passage_body(input, 0, ParseMode::Normal);
+        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
+            AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(macros.len(), 1);
+        // The args should contain the full expression including the
+        // commented-out >> and the 2, 3 after it.
+        assert!(macros[0].contains("2, 3"), "Args should contain '2, 3' after the block comment, got: {:?}", macros[0]);
+    }
+
+    #[test]
+    fn set_macro_with_line_comment_containing_gt_gt() {
+        // A >> inside a // comment must NOT close the macro.
+        let input = "<<set $x = [1, // >> close\n2]>>";
+        let ast = parse_passage_body(input, 0, ParseMode::Normal);
+        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
+            AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(macros.len(), 1);
+        assert!(macros[0].contains("2]"), "Args should contain '2]' after the line comment, got: {:?}", macros[0]);
+    }
+
+    #[test]
+    fn set_macro_multiline_with_comments() {
+        // Realistic multi-line <<set>> with C-style comments,
+        // mimicking the user's $UI_PROFILES pattern.
+        let input = r#"<<set $arr = [
+  /* Block comment */
+  {
+    id: "base",
+    // Line comment
+    value: 42
+  }
+]>>"#;
+        let ast = parse_passage_body(input, 0, ParseMode::Normal);
+        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
+            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(macros.len(), 1);
+        let sa = macros[0].as_ref().unwrap();
+        assert_eq!(sa.target.name, "$arr");
+        assert_eq!(sa.operator, SetOperator::Eq);
+        // The expression should contain the full array literal with comments
+        let expr = sa.expression.as_ref().unwrap();
+        assert!(expr.contains("id: \"base\""), "Expression should contain 'id: \"base\"', got: {:?}", expr);
+        assert!(expr.contains("value: 42"), "Expression should contain 'value: 42', got: {:?}", expr);
+    }
+
+    #[test]
+    fn expression_macro_with_block_comment_containing_gt_gt() {
+        // <<=>> with a >> inside a /* */ comment should not close early
+        let input = r#"<<= 1 + /* >> */ 2>>"#;
+        let ast = parse_passage_body(input, 0, ParseMode::Normal);
+        match &ast.nodes[0] {
+            AstNode::Expression { content, kind, .. } => {
+                assert_eq!(*kind, ExprKind::Print);
+                // The content should include the full expression
+                assert!(content.contains("1 +"), "Content should contain '1 +', got: {:?}", content);
+                assert!(content.contains("2"), "Content should contain '2', got: {:?}", content);
+            }
+            other => panic!("Expected Expression node, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expression_macro_with_line_comment_containing_gt_gt() {
+        // <<=>> with a >> inside a // comment should not close early
+        let input = "<<= 1 + // >> close\n2>>";
+        let ast = parse_passage_body(input, 0, ParseMode::Normal);
+        match &ast.nodes[0] {
+            AstNode::Expression { content, kind, .. } => {
+                assert_eq!(*kind, ExprKind::Print);
+                assert!(content.contains("2"), "Content should contain '2' after line comment, got: {:?}", content);
+            }
+            other => panic!("Expected Expression node, got {:?}", other),
+        }
     }
 }

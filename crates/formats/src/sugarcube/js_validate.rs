@@ -388,4 +388,168 @@ mod tests {
             js_errors
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Span mapping accuracy tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_error_span_points_to_expression_not_closing_tag() {
+        // When a <<set>> expression has a JS error, the diagnostic range
+        // should point to the error location within the expression, NOT
+        // to the >> closing tag.
+        let body = r#"<<set $x to [1, 2, bad@@]>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+
+        if !js_errors.is_empty() {
+            // The error should NOT be at the very end of the macro (>>)
+            // It should be somewhere within the expression content
+            let macro_close_pos = body.find(">>").unwrap_or(body.len());
+            for diag in &js_errors {
+                assert!(
+                    diag.range.start < macro_close_pos,
+                    "JS error span (start={}) should be before >> (pos={}), got message: {}",
+                    diag.range.start, macro_close_pos, diag.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_set_method_call_error_span() {
+        // For <<set>> without structured assignment (method call),
+        // the error span should point to the expression, not to <<.
+        let body = r#"<<set $arr.push(bad@@)>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+
+        if !js_errors.is_empty() {
+            // The error should NOT be at the start of the macro (<<)
+            let _macro_open_pos = 0; // body starts with <<
+            let args_start = "<<set ".len(); // args start after "set "
+            for diag in &js_errors {
+                assert!(
+                    diag.range.start >= args_start,
+                    "JS error span (start={}) should be at or past args start (pos={}), got: {}",
+                    diag.range.start, args_start, diag.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_run_error_span_in_args() {
+        // For <<run>> macros, error spans should point to the expression args,
+        // not to the << opening tag.
+        let body = r#"<<run bad@@syntax>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+
+        if !js_errors.is_empty() {
+            let args_start = "<<run ".len();
+            for diag in &js_errors {
+                assert!(
+                    diag.range.start >= args_start,
+                    "JS error span (start={}) should be at or past args start (pos={}), got: {}",
+                    diag.range.start, args_start, diag.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validate_set_with_to_keyword_and_complex_expression() {
+        // <<set $var to {key: "value"}>> — object literal with SugarCube `to`
+        let body = r#"<<set $config to {key: "value", nested: {a: 1}}>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for <<set $config to {{object}}>>, got: {:?}",
+            js_errors
+        );
+    }
+
+    #[test]
+    fn validate_set_multi_assignment_with_comma() {
+        // SugarCube allows multiple assignments separated by commas:
+        // <<set $a to 1, $b to 2>>
+        // But in our two-parser model, <<set>> parses only the first
+        // assignment structurally. The comma expression goes to oxc as-is.
+        let body = r#"<<set $a = 1, $b = 2>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        // This might produce JS errors because $b is not substituted in the
+        // expression portion (only the RHS of the first assignment goes to oxc).
+        // Just verify no panics and diagnostics are reasonable.
+        for d in &diagnostics {
+            assert!(!d.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn validate_set_with_block_comment_containing_gt_gt() {
+        // Regression test: >> inside a /* */ comment must NOT close the macro.
+        // Without comment-aware scanning, the macro args would be truncated
+        // at the >> inside the comment, causing "Unexpected token" errors.
+        let body = r#"<<set $x = [1, /* >> */ 2, 3]>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        for e in &js_errors {
+            eprintln!("JS error: {:?} range={:?}", e.message, e.range);
+        }
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for <<set>> with >> inside block comment, got: {:?}",
+            js_errors
+        );
+    }
+
+    #[test]
+    fn validate_set_with_line_comment_containing_gt_gt() {
+        // Regression test: >> inside a // comment must NOT close the macro.
+        let body = "<<set $x = [1, // >> close\n2, 3]>>";
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        for e in &js_errors {
+            eprintln!("JS error: {:?} range={:?}", e.message, e.range);
+        }
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for <<set>> with >> inside line comment, got: {:?}",
+            js_errors
+        );
+    }
 }
