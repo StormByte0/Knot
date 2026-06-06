@@ -1257,6 +1257,70 @@ pub trait FormatPlugin: Send + Sync {
     fn is_custom_macro(&self, _name: &str) -> bool {
         false
     }
+
+    // -----------------------------------------------------------------------
+    // Function registry (optional — formats with JS scripting)
+    // -----------------------------------------------------------------------
+
+    /// Get all JS function names discovered in script passages (for completion).
+    ///
+    /// Formats that support JS scripting (SugarCube, Snowman) can override this
+    /// to provide function name completion in JS contexts. Harlowe and Chapbook
+    /// return empty vectors by default.
+    fn function_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Look up a function definition for hover/go-to-definition.
+    ///
+    /// Returns `(passage_name, file_uri, defined_at_offset)` if found.
+    fn find_function(&self, _name: &str) -> Option<FunctionDefInfo> {
+        None
+    }
+
+    // -----------------------------------------------------------------------
+    // Template registry (optional — formats with template systems)
+    // -----------------------------------------------------------------------
+
+    /// Get all template names for completion (with format-specific prefix).
+    ///
+    /// SugarCube returns names with `?` prefix (e.g., `?heal`).
+    fn template_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Look up a template definition for hover/go-to-definition.
+    fn find_template(&self, _name: &str) -> Option<TemplateDefInfo> {
+        None
+    }
+
+    // -----------------------------------------------------------------------
+    // Registry lifecycle (optional — incremental re-parse support)
+    // -----------------------------------------------------------------------
+
+    /// Remove all registry entries associated with a specific passage.
+    ///
+    /// Called by the LSP server when a passage is deleted from a document
+    /// (not modified, but actually removed). Without this, stale entries
+    /// remain in the format's side tables (variables, custom macros,
+    /// functions, templates) causing ghost completions and stale hover data
+    /// until a full workspace re-parse occurs.
+    ///
+    /// The default implementation is a no-op. Format plugins that maintain
+    /// incremental side tables (like SugarCube's `SugarCubeRegistry`) should
+    /// override this to clean up entries from the deleted passage.
+    fn remove_passage_from_registries(&self, _passage_name: &str, _file_uri: &str) {
+        // Default: no-op — formats without incremental registries don't need this
+    }
+
+    /// Remove all registry entries associated with a specific file.
+    ///
+    /// Called by the LSP server when a document is deleted from the workspace.
+    /// The default implementation is a no-op. Format plugins that maintain
+    /// incremental side tables should override this.
+    fn remove_file_from_registries(&self, _file_uri: &str) {
+        // Default: no-op
+    }
 }
 
 // ===========================================================================

@@ -49,29 +49,41 @@
 //! 4. Normal passages → SugarCube parser (can query all registries)
 //! 5. Stylesheets/StoryData → skip or minimal processing
 
+// Subdirectory modules (new organization)
+pub mod graph;
+pub mod js;
+pub mod lsp;
+
+// Expanded registry module (now includes variable_tree, custom_macros, etc.)
+pub mod registries;
+
+// Root-level modules (unchanged)
 pub mod lexer;
-pub mod special_passages;
-pub mod macros;
 pub mod classifier;
-pub mod ast;
-pub mod parser;
-pub mod variable_tree;
-pub mod custom_macros;
-pub mod js_preprocess;
-pub mod js_walk;
-pub mod js_validate;
-pub mod token_builder;
-pub mod syntax_detect;
-pub mod nav_resolve;
-pub mod edge_classify;
-pub mod var_extract;
-pub mod passage_build;
-pub mod registry_populate;
 pub mod parse_pipeline;
+pub mod ast;
+pub mod special_passages;
+pub mod parser;
+pub mod macros;
+
+// Re-exports for backward compatibility
+// These ensure that `super::passage_build` etc. from parser/ and macros/ still resolve
+pub use graph::passage_build;
+pub use graph::edge_classify;
+pub use graph::nav_resolve;
+pub use js::js_preprocess;
+pub use js::js_walk;
+pub use js::js_validate;
+pub use lsp::syntax_detect;
+pub use lsp::token_builder;
+pub use registries::variable_tree;
+pub use registries::variable_tree::VarAccessKind;
+pub use registries::custom_macros;
+pub use registries::var_extract;
+pub use registries::registry_populate;
 
 use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat};
 use std::collections::{HashMap, HashSet};
-use parking_lot::RwLock;
 use url::Url;
 
 use crate::plugin::{FormatPlugin, ParseResult};
@@ -81,18 +93,17 @@ use crate::types::{
 };
 use ast::ParseMode;
 use classifier::{ClassifiedPassage, is_script_passage, is_stylesheet_passage, is_widget_passage};
-use variable_tree::VariableTree;
-use custom_macros::CustomMacroRegistry;
+use registries::SugarCubeRegistry;
 
 /// SugarCube 2.x format plugin.
 ///
-/// Format-owned registries are exposed through trait methods so that
-/// LSP handlers never touch VariableTree/CustomMacroRegistry directly.
+/// All runtime-populated registries are owned by the unified
+/// [`SugarCubeRegistry`] hub, which implements [`FormatRegistry`] for
+/// format-agnostic access. LSP handlers query registries through
+/// `FormatPlugin` trait methods, never touching the hub directly.
 pub struct SugarCubePlugin {
-    /// Side table tracking all `$var` / `_var` references across the workspace.
-    variable_tree: RwLock<VariableTree>,
-    /// Registry of user-defined macros (widgets and `Macro.add()` calls).
-    custom_macros: RwLock<CustomMacroRegistry>,
+    /// The unified registry hub — owns all sub-registries.
+    registry: SugarCubeRegistry,
 }
 
 impl Default for SugarCubePlugin {
@@ -104,8 +115,7 @@ impl Default for SugarCubePlugin {
 impl SugarCubePlugin {
     pub fn new() -> Self {
         Self {
-            variable_tree: RwLock::new(VariableTree::new()),
-            custom_macros: RwLock::new(CustomMacroRegistry::new()),
+            registry: SugarCubeRegistry::new(),
         }
     }
 
@@ -126,14 +136,9 @@ impl SugarCubePlugin {
         }
     }
 
-    /// Get the variable tree for read-only access.
-    pub fn variable_tree(&self) -> parking_lot::RwLockReadGuard<'_, VariableTree> {
-        self.variable_tree.read()
-    }
-
-    /// Get the custom macro registry for read-only access.
-    pub fn custom_macro_registry(&self) -> parking_lot::RwLockReadGuard<'_, CustomMacroRegistry> {
-        self.custom_macros.read()
+    /// Get a reference to the unified registry hub.
+    pub fn registry(&self) -> &SugarCubeRegistry {
+        &self.registry
     }
 }
 
@@ -346,7 +351,7 @@ impl FormatPlugin for SugarCubePlugin {
     // ── Dynamic navigation resolution (Phase F) ───────────────────────
 
     fn build_var_string_map(&self, workspace: &knot_core::Workspace) -> HashMap<String, Vec<String>> {
-        nav_resolve::build_var_string_map_impl(workspace, &self.variable_tree.read())
+        nav_resolve::build_var_string_map_impl(workspace, &self.registry.variables())
     }
 
     fn resolve_dynamic_navigation_links(
@@ -378,49 +383,41 @@ impl FormatPlugin for SugarCubePlugin {
     /// Build the variable tree for the workspace.
     ///
     /// Returns the current tree-structured variable inventory from the
-    /// VariableTree side table. This is used by the variable tracker
+    /// VariableTree sub-registry. This is used by the variable tracker
     /// UI panel and by completion/hover for workspace-wide variable info.
     fn build_variable_tree(
         &self,
         _workspace: &knot_core::Workspace,
         _source_text: &dyn crate::plugin::SourceTextProvider,
     ) -> Vec<VariableTreeNode> {
-        let tree = self.variable_tree.read();
-        tree.build_tree()
+        self.registry.build_variable_tree()
     }
 
     /// Get all workspace variable names for completion.
     fn workspace_variable_names(&self) -> HashSet<String> {
-        let tree = self.variable_tree.read();
-        tree.completion_names()
+        self.registry.variable_names()
     }
 
     /// Get known property paths for a variable (for dot-notation completion).
     fn variable_properties(&self, var_name: &str) -> HashSet<String> {
-        let tree = self.variable_tree.read();
-        tree.get_variable(var_name)
-            .map(|e| e.known_properties.clone())
-            .unwrap_or_default()
+        self.registry.variable_properties(var_name)
     }
 
     /// Get all custom macro names for completion.
     fn custom_macro_names(&self) -> Vec<String> {
-        let registry = self.custom_macros.read();
-        registry.names().cloned().collect()
+        self.registry.custom_macro_names()
     }
 
     /// Look up a custom macro definition for hover/go-to-def.
     fn find_custom_macro(&self, name: &str) -> Option<(String, String, usize)> {
-        let registry = self.custom_macros.read();
-        registry.get(name).map(|m| {
+        self.registry.custom_macros().get(name).map(|m| {
             (m.defined_in.clone(), m.file_uri.clone(), m.defined_at_offset)
         })
     }
 
     /// Check if a macro name is a known custom macro.
     fn is_custom_macro(&self, name: &str) -> bool {
-        let registry = self.custom_macros.read();
-        registry.contains(name)
+        self.registry.custom_macros().contains(name)
     }
 
     // ── Variable refs + property maps (Phase G) ────────────────────────
@@ -432,7 +429,7 @@ impl FormatPlugin for SugarCubePlugin {
         passage_name: &str,
     ) -> Vec<crate::types::PassageVarRef> {
         var_extract::extract_passage_variable_refs_impl(
-            &self.variable_tree.read(),
+            &self.registry.variables(),
             workspace,
             source_text,
             passage_name,
@@ -440,18 +437,63 @@ impl FormatPlugin for SugarCubePlugin {
     }
 
     fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
-        let tree = self.variable_tree.read();
-        tree.property_map()
+        self.registry.variables().property_map()
     }
 
     fn build_shape_aware_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
-        var_extract::build_shape_aware_property_map_impl(&self.variable_tree.read())
+        var_extract::build_shape_aware_property_map_impl(&self.registry.variables())
     }
 
     fn build_state_variable_registry(
         &self,
         _workspace: &knot_core::Workspace,
     ) -> HashMap<String, crate::types::StateVariable> {
-        var_extract::build_state_variable_registry_impl(&self.variable_tree.read())
+        var_extract::build_state_variable_registry_impl(&self.registry.variables())
+    }
+
+    // ── Function registry ─────────────────────────────────────────────
+
+    fn function_names(&self) -> Vec<String> {
+        self.registry.function_names()
+    }
+
+    fn find_function(&self, name: &str) -> Option<crate::types::FunctionDefInfo> {
+        self.registry.functions().get(name).map(|f| {
+            crate::types::FunctionDefInfo {
+                name: f.name.clone(),
+                defined_in: f.defined_in.clone(),
+                file_uri: f.file_uri.clone(),
+                defined_at_offset: f.defined_at_offset,
+                param_count: f.param_count,
+            }
+        })
+    }
+
+    // ── Template registry ─────────────────────────────────────────────
+
+    fn template_names(&self) -> Vec<String> {
+        self.registry.template_completion_names()
+    }
+
+    fn find_template(&self, name: &str) -> Option<crate::types::TemplateDefInfo> {
+        self.registry.templates().get(name).map(|t| {
+            crate::types::TemplateDefInfo {
+                name: t.name.clone(),
+                defined_in: t.defined_in.clone(),
+                file_uri: t.file_uri.clone(),
+                defined_at_offset: t.defined_at_offset,
+            }
+        })
+    }
+
+    // ── Registry lifecycle (incremental re-parse support) ─────────────
+
+    fn remove_passage_from_registries(&self, passage_name: &str, file_uri: &str) {
+        self.registry.remove_passage(passage_name);
+        self.registry.remove_file(file_uri);
+    }
+
+    fn remove_file_from_registries(&self, file_uri: &str) {
+        self.registry.remove_file(file_uri);
     }
 }

@@ -10,7 +10,7 @@
 //! 5. Analysis Invalidation (only affected regions)
 //! 6. Diagnostics Return
 
-use crate::graph::{PassageEdge, PassageNode, PassageGraph};
+use crate::graph::{EdgeType, PassageEdge, PassageNode, PassageGraph};
 use crate::passage::Passage;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -49,7 +49,7 @@ pub fn graph_surgery(
     old_passages: &[Passage],
     new_passages: &[Passage],
     file_uri: &str,
-    extra_edges: &[(String, Option<String>, String)],
+    extra_edges: &[(String, Option<String>, String, Option<EdgeType>)],
 ) -> UpdateResult {
     let old_names: HashSet<String> = old_passages.iter().map(|p| p.name.clone()).collect();
     let new_names: HashSet<String> = new_passages.iter().map(|p| p.name.clone()).collect();
@@ -106,13 +106,14 @@ pub fn graph_surgery(
             }
 
             // Re-add extra edges (dynamic navigation links) for this passage
-            for (source, display_text, target) in extra_edges {
+            for (source, display_text, target, hint) in extra_edges {
                 if *source == passage.name {
                     let target_exists = graph.contains_passage(target);
                     let (edge_type, pre_broken_type) = if !target_exists {
-                        (crate::graph::EdgeType::Broken, Some(crate::graph::EdgeType::Navigation))
+                        let would_be = hint.unwrap_or(EdgeType::Navigation);
+                        (EdgeType::Broken, Some(would_be))
                     } else {
-                        (crate::graph::EdgeType::Navigation, None)
+                        (hint.unwrap_or(EdgeType::Navigation), None)
                     };
                     let edge = PassageEdge {
                         display_text: display_text.clone(),

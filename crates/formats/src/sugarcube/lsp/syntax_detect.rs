@@ -6,7 +6,7 @@
 
 use crate::plugin::MacroAtPosition;
 use crate::plugin::MacroBlockEvent;
-use super::macros;
+use crate::sugarcube::macros;
 
 /// Find the SugarCube macro at a given cursor position on a line.
 ///
@@ -19,7 +19,7 @@ use super::macros;
 /// This is used by hover, completion, and signature-help handlers to
 /// detect which macro the cursor is inside without hardcoding `<<>>`
 /// detection logic.
-pub(super) fn find_macro_at_position_impl(
+pub fn find_macro_at_position_impl(
     line: &str,
     byte_pos: usize,
 ) -> Option<MacroAtPosition> {
@@ -128,7 +128,7 @@ pub(super) fn find_macro_at_position_impl(
 ///
 /// Also detects modifier macros (`<<elseif>>`, `<<else>>`) which create
 /// subdivision points within a block macro's folding range.
-pub(super) fn scan_line_for_macro_events_impl(
+pub fn scan_line_for_macro_events_impl(
     line: &str,
     line_idx: u32,
 ) -> Vec<MacroBlockEvent> {
@@ -244,7 +244,7 @@ pub(super) fn scan_line_for_macro_events_impl(
 /// Block macros are the ones that can have child content between their
 /// open and close tags: <<if>>...<</if>>, <<for>>...<</for>>, etc.
 /// Inline macros like <<set>>, <<print>>, <<goto>> are not block macros.
-pub(super) fn is_block_macro_name(name: &str) -> bool {
+pub fn is_block_macro_name(name: &str) -> bool {
     // Check against the static block macro names from the catalog
     let block_names = macros::block_macro_names();
     block_names.contains(name)

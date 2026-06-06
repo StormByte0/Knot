@@ -18,6 +18,8 @@ use super::registry_populate;
 ///
 /// This is the body of `FormatPlugin::parse()` for `SugarCubePlugin`.
 pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> ParseResult {
+    let registry = plugin.registry();
+
     // 1. Split into raw passages
     let raw_passages = super::lexer::split_passages(text);
 
@@ -28,12 +30,7 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
     classifier::sort_for_processing(&mut classified);
 
     // 4. Clear registries for this file before re-populating
-    {
-        let mut var_tree = plugin.variable_tree.write();
-        var_tree.remove_file(uri.as_ref());
-        let mut macro_reg = plugin.custom_macros.write();
-        macro_reg.remove_file(uri.as_ref());
-    }
+    registry.remove_file(uri.as_ref());
 
     // 5. Process each passage in order
     let mut passages = Vec::new();
@@ -53,26 +50,18 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
         let passage_ast = super::parser::parse_passage_body(&cp.body_text, body_offset, mode);
 
         // Populate registries from the AST
-        {
-            let mut var_tree = plugin.variable_tree.write();
-            let mut macro_reg = plugin.custom_macros.write();
-            registry_populate::populate_registries_from_ast(
-                &mut var_tree,
-                &mut macro_reg,
-                &passage_ast,
-                cp,
-                uri.as_ref(),
-                body_offset,
-            );
-        }
+        registry_populate::populate_registries_from_ast(
+            registry,
+            &passage_ast,
+            cp,
+            uri.as_ref(),
+            body_offset,
+        );
 
-        // For script passages, also do oxc walk for State.variables / Macro.add
+        // For script passages, also do oxc walk for State.variables / Macro.add / functions / templates
         if is_script_passage(cp) {
-            let mut var_tree = plugin.variable_tree.write();
-            let mut macro_reg = plugin.custom_macros.write();
             registry_populate::walk_script_js(
-                &mut var_tree,
-                &mut macro_reg,
+                registry,
                 &cp.body_text,
                 cp,
                 uri.as_ref(),
@@ -107,6 +96,41 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
         passages.push(passage);
     }
 
+    // 6. Post-pass: inject Call edges for widget invocations.
+    // After all passages are parsed and the custom macro registry is populated,
+    // we do a second pass over normal passages to check if any of their
+    // `<<macroName>>` invocations match a known widget. If so, we add a
+    // Link with `LinkSource::WidgetCall` → `EdgeType::Call` so the graph
+    // traces widget invocations as call edges.
+    {
+        let custom_macros = registry.custom_macros();
+        for passage in &mut passages {
+            // Only check passages with body blocks that might contain macros
+            for block in &passage.body {
+                if let knot_core::passage::Block::Macro { name, .. } = block {
+                    if custom_macros.contains(name) {
+                        // Found a widget invocation — add a Call link to the
+                        // widget's definition passage.
+                        let edge_type_hint = Some(knot_core::graph::EdgeType::Call);
+                        // Check if this link already exists (avoid duplicates
+                        // from <<widget>> definitions themselves)
+                        let already_has = passage.links.iter().any(|l| {
+                            l.target == *name && l.edge_type_hint == edge_type_hint
+                        });
+                        if !already_has {
+                            passage.links.push(knot_core::passage::Link {
+                                display_text: Some(format!("<<{}>>", name)),
+                                target: name.clone(),
+                                span: 0..0, // Span not needed for dynamic links
+                                edge_type_hint,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     ParseResult {
         passages,
         tokens: all_tokens,
@@ -124,6 +148,8 @@ pub(super) fn parse_single(
     passage_tags: &[String],
     passage_text: &str,
 ) -> Option<Passage> {
+    let registry = plugin.registry();
+
     // Determine the parse mode from the tags
     let mode = if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("script")) {
         ParseMode::Script
@@ -144,12 +170,7 @@ pub(super) fn parse_single(
     // Phase H: Incremental registry update for single-passage re-parse.
     // Remove old entries for this passage from the registries before
     // adding new ones, so we don't accumulate stale data.
-    {
-        let mut var_tree = plugin.variable_tree.write();
-        var_tree.remove_passage(passage_name);
-        let mut macro_reg = plugin.custom_macros.write();
-        macro_reg.remove_passage(passage_name);
-    }
+    registry.remove_passage(passage_name);
 
     // Classify the passage (using the FormatPlugin default impl)
     let (_, category) = plugin.classify_passage_category(passage_name, passage_tags);
@@ -208,26 +229,18 @@ pub(super) fn parse_single(
         processing_priority: 40, // Normal passage priority
     };
 
-    {
-        let mut var_tree = plugin.variable_tree.write();
-        let mut macro_reg = plugin.custom_macros.write();
-        registry_populate::populate_registries_from_ast(
-            &mut var_tree,
-            &mut macro_reg,
-            &passage_ast,
-            &cp,
-            "",
-            0,
-        );
-    }
+    registry_populate::populate_registries_from_ast(
+        registry,
+        &passage_ast,
+        &cp,
+        "",
+        0,
+    );
 
     // For script passages, also do oxc walk
     if mode == ParseMode::Script {
-        let mut var_tree = plugin.variable_tree.write();
-        let mut macro_reg = plugin.custom_macros.write();
         registry_populate::walk_script_js(
-            &mut var_tree,
-            &mut macro_reg,
+            registry,
             passage_text,
             &cp,
             "",

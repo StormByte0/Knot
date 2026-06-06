@@ -4,8 +4,8 @@
 //! from the SugarCube AST representation to the core `Passage` type.
 
 use knot_core::passage::{Block, Passage, VarKind, VarOp};
-use super::ast::{self, PassageAst};
-use super::classifier::ClassifiedPassage;
+use crate::sugarcube::ast::{self, PassageAst};
+use crate::sugarcube::classifier::ClassifiedPassage;
 
 /// Convert a `LinkSource` to the corresponding `EdgeType` hint.
 ///
@@ -13,12 +13,12 @@ use super::classifier::ClassifiedPassage;
 /// map to graph edge types. By setting the hint at extraction time, we avoid
 /// the post-hoc `classify_edge()` substring matching that can produce false
 /// positives (e.g., `args.contains(target)` matching substrings).
-pub(super) fn link_source_to_edge_type(source: ast::LinkSource) -> Option<knot_core::graph::EdgeType> {
+pub fn link_source_to_edge_type(source: ast::LinkSource) -> Option<knot_core::graph::EdgeType> {
     Some(source.to_edge_type())
 }
 
 /// Build `Block` list from AST nodes (backward compatibility).
-pub(super) fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
+pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
     let mut blocks = Vec::new();
     for node in nodes {
         match node {
@@ -64,7 +64,7 @@ pub(super) fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> V
 /// Build a [`Passage`] from a classified passage and its AST.
 ///
 /// This is a pure transformation — it does not read or write any plugin state.
-pub(super) fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
+pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
     let is_special = cp.special_def.is_some();
     let mut passage = if is_special {
         Passage::new_special(

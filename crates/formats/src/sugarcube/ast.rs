@@ -119,6 +119,9 @@ pub enum LinkSource {
     Back,
     /// `data-passage` HTML attribute — Navigation edge type.
     DataPassage,
+    /// Widget invocation (`<<myWidget>>`) — Call edge type.
+    /// Detected post-parse by checking the custom macro registry.
+    WidgetCall,
 }
 
 impl LinkSource {
@@ -137,6 +140,7 @@ impl LinkSource {
             LinkSource::Return => knot_core::graph::EdgeType::Navigation,
             LinkSource::Back => knot_core::graph::EdgeType::Navigation,
             LinkSource::DataPassage => knot_core::graph::EdgeType::Navigation,
+            LinkSource::WidgetCall => knot_core::graph::EdgeType::Call,
         }
     }
 }

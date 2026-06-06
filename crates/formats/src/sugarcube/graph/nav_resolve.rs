@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use knot_core::passage::{Block, Passage};
 use crate::types::ResolvedNavLink;
-use super::variable_tree::VariableTree;
+use crate::sugarcube::registries::variable_tree::VariableTree;
 
 /// Build a map of variable name → set of known string literal values.
 ///
@@ -18,7 +18,7 @@ use super::variable_tree::VariableTree;
 /// This map is then used by `resolve_dynamic_navigation_links` to resolve
 /// dynamic navigation macros like `<<goto $dest>>` into concrete passage
 /// names for the story graph.
-pub(super) fn build_var_string_map_impl(
+pub fn build_var_string_map_impl(
     workspace: &knot_core::Workspace,
     _var_tree: &VariableTree,
 ) -> HashMap<String, Vec<String>> {
@@ -51,7 +51,7 @@ pub(super) fn build_var_string_map_impl(
 /// - `$var = "value"` → Some(("$var", "value"))
 ///
 /// Returns `None` if the args don't match a simple string assignment pattern.
-pub(super) fn extract_set_string_literal(args: &str) -> Option<(String, String)> {
+pub fn extract_set_string_literal(args: &str) -> Option<(String, String)> {
     let trimmed = args.trim();
 
     // Find the variable name (must start with $ or _)
@@ -91,7 +91,7 @@ pub(super) fn extract_set_string_literal(args: &str) -> Option<(String, String)>
 /// `<<button $var>>` in the passage, look up `$var` in the var_string_map
 /// to find known string literal values. Return resolved link targets
 /// with appropriate edge type hints.
-pub(super) fn resolve_dynamic_navigation_links_impl(
+pub fn resolve_dynamic_navigation_links_impl(
     passage: &Passage,
     var_string_map: &HashMap<String, Vec<String>>,
 ) -> Vec<ResolvedNavLink> {

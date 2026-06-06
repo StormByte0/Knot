@@ -15,7 +15,7 @@ use super::variable_tree::VariableTree;
 /// Walks the VariableTree to find all variable operations (reads and writes)
 /// that occur in the named passage, and converts them to format-agnostic
 /// `PassageVarRef` instances with line numbers computed from the source text.
-pub(super) fn extract_passage_variable_refs_impl(
+pub fn extract_passage_variable_refs_impl(
     var_tree: &VariableTree,
     _workspace: &Workspace,
     source_text: &dyn SourceTextProvider,
@@ -38,7 +38,7 @@ pub(super) fn extract_passage_variable_refs_impl(
 
             refs.push(PassageVarRef {
                 variable_name: var_name.clone(),
-                is_write: access.is_write,
+                is_write: access.is_write(),
                 line,
                 file_uri: access.file_uri.clone(),
                 passage_name: access.passage_name.clone(),
@@ -52,7 +52,7 @@ pub(super) fn extract_passage_variable_refs_impl(
             // We emit a synthetic ref for each property path seen in this passage.
             let full_name = format!("{}.{}", var_name, prop);
             let has_write_in_passage = entry.accesses.iter().any(|a| {
-                a.passage_name == passage_name && a.is_write
+                a.passage_name == passage_name && a.is_write()
             });
 
             refs.push(PassageVarRef {
@@ -73,7 +73,7 @@ pub(super) fn extract_passage_variable_refs_impl(
 /// For each variable in the tree, infers its structural kind (Scalar, Object,
 /// Array, Unknown) from assignment patterns, and builds a `PropertyMapEntry`
 /// with immediate child property names and element shapes for arrays.
-pub(super) fn build_shape_aware_property_map_impl(
+pub fn build_shape_aware_property_map_impl(
     var_tree: &VariableTree,
 ) -> HashMap<String, PropertyMapEntry> {
     let mut map = HashMap::new();
@@ -115,7 +115,7 @@ pub(super) fn build_shape_aware_property_map_impl(
 }
 
 /// Infer the structural kind of a variable from its known properties.
-pub(super) fn infer_property_kind(properties: &[String]) -> PropertyKind {
+pub fn infer_property_kind(properties: &[String]) -> PropertyKind {
     if properties.is_empty() {
         return PropertyKind::Unknown;
     }
@@ -135,7 +135,7 @@ pub(super) fn infer_property_kind(properties: &[String]) -> PropertyKind {
 /// Converts the VariableTree's internal representation into the
 /// format-agnostic `StateVariable` type used by the server for
 /// variable availability analysis and diagnostics.
-pub(super) fn build_state_variable_registry_impl(
+pub fn build_state_variable_registry_impl(
     var_tree: &VariableTree,
 ) -> HashMap<String, StateVariable> {
     use crate::types::{VarAccessKind, VarLocation};
@@ -164,7 +164,7 @@ pub(super) fn build_state_variable_registry_impl(
             // Determine the access kind — for the base variable level,
             // we don't have property_path on VarAccess, so we use
             // the base Assign/Read kinds
-            let kind = if access.is_write {
+            let kind = if access.is_write() {
                 VarAccessKind::Assign
             } else {
                 VarAccessKind::Read
@@ -177,7 +177,7 @@ pub(super) fn build_state_variable_registry_impl(
                 kind,
             };
 
-            if access.is_write {
+            if access.is_write() {
                 write_locations.push(location);
             } else {
                 read_locations.push(location);
@@ -219,7 +219,7 @@ pub(super) fn build_state_variable_registry_impl(
 }
 
 /// Compute a 0-based line number from a byte offset in source text.
-pub(super) fn compute_line_from_offset(source: &str, offset: usize) -> u32 {
+pub fn compute_line_from_offset(source: &str, offset: usize) -> u32 {
     let pos = offset.min(source.len());
     source[..pos].chars().filter(|&c| c == '\n').count() as u32
 }

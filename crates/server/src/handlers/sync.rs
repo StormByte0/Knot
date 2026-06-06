@@ -200,13 +200,16 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     let new_passages = doc.passages.clone();
 
     // Compute dynamic navigation edges for the new passages
-    let extra_edges: Vec<(String, Option<String>, String)> = if let Some(plug) = inner.format_registry.get(&format) {
+    // Include the edge_type_hint from ResolvedNavLink so that dynamic
+    // navigation edges preserve their semantic type (Jump, Include, etc.)
+    // through graph_surgery instead of defaulting to Navigation.
+    let extra_edges: Vec<(String, Option<String>, String, Option<knot_core::graph::EdgeType>)> = if let Some(plug) = inner.format_registry.get(&format) {
         let var_string_map = plug.build_var_string_map(&inner.workspace);
         new_passages.iter()
             .flat_map(|p| {
                 plug.resolve_dynamic_navigation_links(p, &var_string_map)
                     .into_iter()
-                    .map(|link| (p.name.clone(), link.display_text, link.target))
+                    .map(|link| (p.name.clone(), link.display_text, link.target, link.edge_type_hint))
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -599,6 +602,16 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 inner.open_documents.remove(&uri);
                 inner.editor_open_docs.remove(&uri);
                 inner.format_diagnostics.remove(&uri);
+
+                // Clean up format registries for the deleted file.
+                // Without this, stale variables/macros/functions/templates
+                // from the deleted document persist in completion and hover
+                // until a full workspace re-parse.
+                let format = inner.workspace.resolve_format();
+                if let Some(plug) = inner.format_registry.get(&format) {
+                    plug.remove_file_from_registries(&uri.to_string());
+                }
+
                 inner.workspace.remove_document_and_update_graph(&uri);
 
                 // Recheck broken links after removal

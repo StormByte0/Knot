@@ -4,7 +4,7 @@
 //! `edge_type_hint` is not set at extraction time.
 
 use knot_core::passage::{Block, Passage};
-use super::parser;
+use crate::sugarcube::parser;
 
 /// Classify the edge type for a link from a SugarCube source passage.
 ///
@@ -19,7 +19,7 @@ use super::parser;
 /// - `<<goto>>` → `Jump` (unconditional navigation)
 /// - `<<link>>` / `<<button>>` → `Navigation` (player choice)
 /// - `[[link]]` → `Navigation` (default — player choice)
-pub(super) fn classify_edge_impl(
+pub fn classify_edge_impl(
     source_passage: &Passage,
     _display_text: Option<&str>,
     target: &str,

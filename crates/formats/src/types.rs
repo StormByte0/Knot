@@ -527,3 +527,124 @@ pub struct PassageVarRef {
     /// The passage name where this reference occurs.
     pub passage_name: String,
 }
+
+// ---------------------------------------------------------------------------
+// Format Registry trait (template for all format plugins)
+// ---------------------------------------------------------------------------
+
+/// Trait defining the standard registry interface that any story format
+/// must provide for runtime-populated data.
+///
+/// This trait serves as the **functional template** for implementing
+/// registries across all supported formats (SugarCube, Harlowe, Snowman,
+/// Chapbook). Each format implements this trait with its own sub-registries,
+/// but the interface remains consistent so that LSP handlers can query
+/// any format's registry through the same methods.
+///
+/// ## Design Principles
+///
+/// 1. **Format isolation**: Handlers never import format-specific types.
+///    They query registries through `FormatPlugin` trait methods, which
+///    delegate to the active format's `FormatRegistry` implementation.
+///
+/// 2. **Categorized sub-registries**: Each format organizes its runtime
+///    data into categories (variables, macros, functions, templates, etc.).
+///    The format decides which categories it supports — not all formats
+///    need all categories.
+///
+/// 3. **Incremental updates**: All registries support `remove_file()` and
+///    `remove_passage()` for incremental re-parse without full workspace
+///    re-indexing.
+///
+/// ## Implementing for a New Format
+///
+/// When adding Harlowe, Snowman, or Chapbook support:
+///
+/// 1. Identify the format's runtime categories (e.g., Harlowe has datatypes,
+///    macros, and variables; Snowman has `window.*` globals and passages)
+/// 2. Create a sub-registry for each category with this standard interface
+/// 3. Compose them into a unified `FormatNameRegistry` hub
+/// 4. Implement `FormatRegistry` on the hub
+/// 5. Wire up through `FormatPlugin` trait accessor methods
+///
+/// ## Registry Categories (SugarCube example)
+///
+/// | Category | SugarCube Source | Harlowe Equivalent |
+/// |----------|-----------------|-------------------|
+/// | Variables | `$var`, `State.variables.*` | `$var` (datamap entries) |
+/// | Custom Macros | `<<widget>>`, `Macro.add()` | Custom macro definitions |
+/// | Functions | JS `function` in `[script]` | N/A (no JS scripting) |
+/// | Templates | `Template.add()` | N/A |
+pub trait FormatRegistry: Send + Sync {
+    // ── Lifecycle ─────────────────────────────────────────────────────
+
+    /// Remove all entries for a specific file from all sub-registries.
+    fn remove_file(&self, file_uri: &str);
+
+    /// Remove all entries for a specific passage from all sub-registries.
+    fn remove_passage(&self, passage_name: &str);
+
+    /// Clear all sub-registries (for full workspace re-parse).
+    fn clear(&self);
+
+    // ── Variable queries ──────────────────────────────────────────────
+
+    /// Get all variable names across the workspace (for completion).
+    fn variable_names(&self) -> HashSet<String>;
+
+    /// Get known property paths for a variable (for dot-notation completion).
+    fn variable_properties(&self, var_name: &str) -> HashSet<String>;
+
+    // ── Custom definition queries ─────────────────────────────────────
+
+    /// Get all custom macro/definition names (for completion).
+    fn custom_definition_names(&self) -> Vec<String>;
+
+    /// Get all function names discovered in script passages (for completion).
+    fn function_names(&self) -> Vec<String> {
+        Vec::new() // Default: not all formats have JS functions
+    }
+
+    /// Get all template names (for completion, format-specific prefix included).
+    fn template_names(&self) -> Vec<String> {
+        Vec::new() // Default: not all formats have templates
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function and Template discovery types (format-agnostic)
+// ---------------------------------------------------------------------------
+
+/// A function definition discovered during JS analysis, in format-agnostic form.
+///
+/// Produced by format plugins that support JS scripting (SugarCube, Snowman)
+/// for completion and hover. Formats without JS scripting return empty lists.
+#[derive(Debug, Clone)]
+pub struct FunctionDefInfo {
+    /// The function name.
+    pub name: String,
+    /// The passage where this function is defined.
+    pub defined_in: String,
+    /// The file URI where this function is defined.
+    pub file_uri: String,
+    /// The byte offset of the definition within the file.
+    pub defined_at_offset: usize,
+    /// The number of parameters (if known).
+    pub param_count: Option<usize>,
+}
+
+/// A template definition discovered during JS analysis, in format-agnostic form.
+///
+/// Produced by format plugins that support template systems (SugarCube's
+/// `Template.add()` API) for completion and hover.
+#[derive(Debug, Clone)]
+pub struct TemplateDefInfo {
+    /// The template name (without the invocation prefix).
+    pub name: String,
+    /// The passage where this template is defined.
+    pub defined_in: String,
+    /// The file URI where this template is defined.
+    pub file_uri: String,
+    /// The byte offset of the definition within the file.
+    pub defined_at_offset: usize,
+}

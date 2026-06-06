@@ -4,11 +4,11 @@
 //! headers into LSP semantic tokens and diagnostics.
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenModifier, SemanticTokenType};
-use super::ast;
-use super::special_passages;
+use crate::sugarcube::ast;
+use crate::sugarcube::special_passages;
 
 /// Build semantic tokens from AST nodes.
-pub(super) fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
+pub fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
     for node in nodes {
         match node {
             ast::AstNode::Macro { name: _, name_span, var_refs, children, .. } => {
@@ -76,7 +76,7 @@ pub(super) fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<Sem
 }
 
 /// Build diagnostics from AST error nodes.
-pub(super) fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDiagnostic>, body_offset: usize) {
+pub fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDiagnostic>, body_offset: usize) {
     for node in nodes {
         if let ast::AstNode::Error { message, span } = node {
             diagnostics.push(FormatDiagnostic {
@@ -103,7 +103,7 @@ pub(super) fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<Fo
 }
 
 /// Build header tokens for a passage.
-pub(super) fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool) -> Vec<SemanticToken> {
+pub fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
     // :: prefix token
@@ -151,7 +151,7 @@ pub(super) fn build_header_tokens(header: &crate::header::TweeHeader, is_special
 }
 
 /// Classify a tag and return the appropriate semantic token modifier.
-pub(super) fn self_classify_tag(tag: &str) -> Option<SemanticTokenModifier> {
+pub fn self_classify_tag(tag: &str) -> Option<SemanticTokenModifier> {
     // Core tags: [script], [stylesheet], [style]
     for def in knot_core::passage::twine_core_special_passages() {
         if def.match_strategy == knot_core::passage::MatchStrategy::Tag

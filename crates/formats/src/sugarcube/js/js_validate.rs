@@ -33,7 +33,7 @@
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity};
 use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
 
-use super::ast::{self, JsSnippet};
+use crate::sugarcube::ast::{self, JsSnippet};
 
 /// Validate all JS snippets in a passage AST and return diagnostics.
 ///
