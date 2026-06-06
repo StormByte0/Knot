@@ -15,18 +15,22 @@
 //! lexer::split_passages()     ← Passage boundary detection (kept from old code)
 //!     |
 //!     v
-//! classifier::classify()      ← Two-pass: detect + classify (tags-first per Twee 3)
+//! classifier::classify_all()  ← Two-pass: detect + classify (tags-first per Twee 3)
 //!     |
 //!     v
-//! parser::parse_passage()     ← SugarCube recursive descent parser
-//!     |                           Calls oxc internally for JS blocks
-//!     |                           Produces PassageAst (flat node list + spans)
+//! classifier::sort_for_processing() ← Define-before-use ordering
 //!     |
-//!     |--> registries            ← VariableTree, WidgetRegistry, MacroRegistry
-//!     |--> tokens                ← Semantic tokens from AST walk
-//!     |--> diagnostics           ← Structural + JS diagnostics from AST walk
-//!     |--> links                 ← Navigation links from AST walk
-//!     +--> blocks                ← Block list for backward compat
+//!     v
+//! [per-passage dispatch]       ← Each category gets the right parser mode
+//!     |
+//!     |--> Script:         oxc parse → warm registries
+//!     |--> Widget:         SC parser (Widget mode) → warm widget registry
+//!     |--> Normal/Special: SC parser (Normal mode)
+//!     |--> Stylesheet:     skip
+//!     |--> StoryData:      minimal
+//!     |
+//!     v
+//! ParseResult { passages, tokens, diagnostics }
 //! ```
 //!
 //! ## Classification Priority (Twee 3 spec: tags override names)
@@ -49,24 +53,27 @@ pub mod lexer;
 pub mod special_passages;
 pub mod macros;
 pub mod classifier;
+pub mod ast;
+pub mod parser;
 
-use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarOp};
+use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat, VarKind, VarOp, Block, PassageCategory as CorePassageCategory};
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
 use url::Url;
 
-use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin, ParseResult};
+use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use crate::types::{
-    GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization, ResolvedNavLink,
+    GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
     VariableSigilInfo,
 };
+use ast::{ParseMode, PassageAst};
+use classifier::{ClassifiedPassage, is_script_passage, is_stylesheet_passage, is_widget_passage};
 
 /// SugarCube 2.x format plugin.
 ///
 /// Format-owned registries are exposed through trait methods so that
-/// LSP handlers never touch VariableTree/WidgetRegistry directly.
+/// LSP handlers never touch VariableTree/CustomMacroRegistry directly.
 pub struct SugarCubePlugin {
-    // Registries will be added as modules are implemented
+    // Registries will be added in Phase 3
 }
 
 impl Default for SugarCubePlugin {
@@ -79,6 +86,278 @@ impl SugarCubePlugin {
     pub fn new() -> Self {
         Self {}
     }
+
+    /// Determine the parse mode for a classified passage.
+    fn parse_mode_for(cp: &ClassifiedPassage) -> ParseMode {
+        if is_script_passage(cp) {
+            ParseMode::Script
+        } else if is_stylesheet_passage(cp) {
+            ParseMode::Stylesheet
+        } else if is_widget_passage(cp) {
+            ParseMode::Widget
+        } else if cp.header.name == "StoryInterface" {
+            ParseMode::Interface
+        } else if cp.header.name == "StoryData" {
+            ParseMode::Minimal
+        } else {
+            ParseMode::Normal
+        }
+    }
+
+    /// Build a `Passage` from a classified passage and its AST.
+    fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
+        let is_special = cp.special_def.is_some();
+        let mut passage = if is_special {
+            Passage::new_special(
+                cp.header.name.clone(),
+                cp.header.header_start..cp.header.header_start + 0, // span computed in caller
+                cp.special_def.clone().unwrap(),
+            )
+        } else {
+            Passage::new(cp.header.name.clone(), cp.header.header_start..cp.header.header_start + 0)
+        };
+
+        passage.tags = cp.header.tags.clone();
+
+        // Build body blocks from AST (shift spans by body_offset)
+        passage.body = build_body_blocks(&passage_ast.nodes, body_offset);
+
+        // Build links from AST (shift spans by body_offset)
+        passage.links = passage_ast.links.iter().map(|link_info| {
+            knot_core::passage::Link {
+                display_text: link_info.display.clone(),
+                target: link_info.target.clone(),
+                span: body_offset + link_info.span.start..body_offset + link_info.span.end,
+                edge_type_hint: None, // Will be classified later by navigation
+            }
+        }).collect();
+
+        // Build var ops from AST (shift spans by body_offset)
+        passage.vars = passage_ast.var_ops.iter().map(|var_op| {
+            VarOp {
+                name: var_op.name.clone(),
+                kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
+                span: body_offset + var_op.span.start..body_offset + var_op.span.end,
+                is_temporary: var_op.is_temporary,
+            }
+        }).collect();
+
+        passage
+    }
+}
+
+/// Build `Block` list from AST nodes (backward compatibility).
+fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for node in nodes {
+        match node {
+            ast::AstNode::Text { content, span, .. } => {
+                if !content.is_empty() {
+                    blocks.push(Block::Text {
+                        content: content.clone(),
+                        span: body_offset + span.start..body_offset + span.end,
+                    });
+                }
+            }
+            ast::AstNode::Macro { name, args, full_span, .. } => {
+                blocks.push(Block::Macro {
+                    name: name.clone(),
+                    args: args.clone(),
+                    span: body_offset + full_span.start..body_offset + full_span.end,
+                });
+            }
+            ast::AstNode::Expression { content, span, .. } => {
+                blocks.push(Block::Expression {
+                    content: content.clone(),
+                    span: body_offset + span.start..body_offset + span.end,
+                });
+            }
+            ast::AstNode::Link { span, .. } => {
+                // Links in body are represented as text blocks for backward compat
+                // The actual Link data is in passage.links
+            }
+            ast::AstNode::Comment { span, .. } => {
+                // Comments don't produce body blocks
+            }
+            ast::AstNode::Error { message, span } => {
+                blocks.push(Block::Incomplete {
+                    content: message.clone(),
+                    span: body_offset + span.start..body_offset + span.end,
+                });
+            }
+        }
+    }
+    blocks
+}
+
+/// Build semantic tokens from AST nodes.
+fn build_semantic_tokens(nodes: &[ast::AstNode], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
+    for node in nodes {
+        match node {
+            ast::AstNode::Macro { name, name_span, var_refs, children, .. } => {
+                // Macro name token
+                tokens.push(SemanticToken {
+                    start: body_offset + name_span.start,
+                    length: name_span.end - name_span.start,
+                    token_type: SemanticTokenType::Macro,
+                    modifier: None,
+                });
+                // Variable references in args
+                for vr in var_refs {
+                    tokens.push(SemanticToken {
+                        start: body_offset + vr.span.start,
+                        length: vr.span.end - vr.span.start,
+                        token_type: SemanticTokenType::Variable,
+                        modifier: if vr.is_write { Some(SemanticTokenModifier::Definition) } else { None },
+                    });
+                }
+                // Recurse into block macro children
+                if let Some(ch) = children {
+                    build_semantic_tokens(ch, tokens, body_offset);
+                }
+            }
+            ast::AstNode::Link { target, span, .. } => {
+                // Link target token
+                tokens.push(SemanticToken {
+                    start: body_offset + span.start + 2, // past [[
+                    length: target.len(),
+                    token_type: SemanticTokenType::Link,
+                    modifier: None,
+                });
+            }
+            ast::AstNode::Expression { kind: _, span, var_refs, .. } => {
+                for vr in var_refs {
+                    tokens.push(SemanticToken {
+                        start: body_offset + vr.span.start,
+                        length: vr.span.end - vr.span.start,
+                        token_type: SemanticTokenType::Variable,
+                        modifier: None,
+                    });
+                }
+            }
+            ast::AstNode::Comment { span, .. } => {
+                tokens.push(SemanticToken {
+                    start: body_offset + span.start,
+                    length: span.end - span.start,
+                    token_type: SemanticTokenType::Comment,
+                    modifier: None,
+                });
+            }
+            ast::AstNode::Text { var_refs, .. } => {
+                for vr in var_refs {
+                    tokens.push(SemanticToken {
+                        start: body_offset + vr.span.start,
+                        length: vr.span.end - vr.span.start,
+                        token_type: SemanticTokenType::Variable,
+                        modifier: None,
+                    });
+                }
+            }
+            ast::AstNode::Error { .. } => {}
+        }
+    }
+}
+
+/// Build diagnostics from AST error nodes.
+fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDiagnostic>, body_offset: usize) {
+    for node in nodes {
+        if let ast::AstNode::Error { message, span } = node {
+            diagnostics.push(FormatDiagnostic {
+                range: body_offset + span.start..body_offset + span.end,
+                message: message.clone(),
+                severity: FormatDiagnosticSeverity::Error,
+                code: "sc-parse".to_string(),
+            });
+        }
+        if let ast::AstNode::Macro { children, name, name_span, close_span, .. } = node {
+            if children.is_some() && close_span.is_none() {
+                diagnostics.push(FormatDiagnostic {
+                    range: body_offset + name_span.start..body_offset + name_span.end,
+                    message: format!("Unclosed block macro: <<{}>>", name),
+                    severity: FormatDiagnosticSeverity::Error,
+                    code: "sc-unclosed".to_string(),
+                });
+            }
+            if let Some(ch) = children {
+                build_diagnostics(ch, diagnostics, body_offset);
+            }
+        }
+    }
+}
+
+/// Build header tokens for a passage.
+fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool) -> Vec<SemanticToken> {
+    let mut tokens = Vec::new();
+
+    // :: prefix token
+    let header_type = if is_special {
+        SemanticTokenType::SpecialPassageHeader
+    } else {
+        SemanticTokenType::PassageHeader
+    };
+    tokens.push(SemanticToken {
+        start: header.header_start,
+        length: 2, // ::
+        token_type: header_type,
+        modifier: None,
+    });
+
+    // Passage name token
+    let name_type = if is_special {
+        SemanticTokenType::SpecialPassage
+    } else {
+        SemanticTokenType::PassageName
+    };
+    let name_len = header.name.len();
+    tokens.push(SemanticToken {
+        start: header.name_start,
+        length: name_len,
+        token_type: name_type,
+        modifier: None,
+    });
+
+    // Tag tokens — only the tag names, with appropriate modifiers
+    for tag in &header.tags {
+        if let Some(tag_pos) = header.tags_raw.find(tag.as_str()) {
+            // Classify the tag to determine its modifier
+            let modifier = self_classify_tag(tag);
+            tokens.push(SemanticToken {
+                start: header.name_start + tag_pos,
+                length: tag.len(),
+                token_type: SemanticTokenType::Tag,
+                modifier,
+            });
+        }
+    }
+
+    tokens
+}
+
+/// Classify a tag and return the appropriate semantic token modifier.
+fn self_classify_tag(tag: &str) -> Option<SemanticTokenModifier> {
+    // Core tags: [script], [stylesheet], [style]
+    for def in knot_core::passage::twine_core_special_passages() {
+        if def.match_strategy == knot_core::passage::MatchStrategy::Tag
+            && tag.eq_ignore_ascii_case(&def.name)
+        {
+            return Some(SemanticTokenModifier::TwineCore);
+        }
+    }
+    // Legacy core tags
+    for def in knot_core::passage::legacy_core_special_passages() {
+        if def.match_strategy == knot_core::passage::MatchStrategy::Tag
+            && tag.eq_ignore_ascii_case(&def.name)
+        {
+            return Some(SemanticTokenModifier::TwineCore);
+        }
+    }
+    // Format-specific tags: [init], [widget]
+    for def in special_passages::tag_matched_special_passages() {
+        if tag.eq_ignore_ascii_case(&def.name) {
+            return Some(SemanticTokenModifier::StoryFormat);
+        }
+    }
+    None
 }
 
 impl FormatPlugin for SugarCubePlugin {
@@ -86,21 +365,112 @@ impl FormatPlugin for SugarCubePlugin {
         StoryFormat::SugarCube
     }
 
-    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
-        // Stub: will be implemented as modules are built
-        let passages = Vec::new();
-        let tokens = Vec::new();
-        let diagnostics = Vec::new();
+    fn parse(&self, uri: &Url, text: &str) -> ParseResult {
+        // 1. Split into raw passages
+        let raw_passages = lexer::split_passages(text);
+
+        // 2. Classify each passage
+        let mut classified = classifier::classify_all(&raw_passages, &uri.to_string());
+
+        // 3. Sort by processing priority (scripts first, normal last)
+        classifier::sort_for_processing(&mut classified);
+
+        // 4. Process each passage
+        let mut passages = Vec::new();
+        let mut all_tokens = Vec::new();
+        let mut all_diagnostics = Vec::new();
+
+        for cp in &classified {
+            let mode = Self::parse_mode_for(cp);
+
+            // Compute where the body starts in the document (after header line + newline)
+            let header_line_end = text[cp.header.header_start..]
+                .find('\n')
+                .map_or(text.len(), |pos| cp.header.header_start + pos + 1);
+            let body_offset = header_line_end;
+
+            // Parse the body (parser returns offsets relative to body text start)
+            let passage_ast = parser::parse_passage_body(&cp.body_text, body_offset, mode);
+
+            // Build the Passage struct (shift all AST spans by body_offset)
+            let mut passage = Self::build_passage(cp, &passage_ast, body_offset);
+            passage.span = cp.header.header_start..header_line_end + cp.body_text.len();
+
+            // Build semantic tokens for the header
+            let is_special = cp.special_def.is_some();
+            let header_tokens = build_header_tokens(&cp.header, is_special);
+            all_tokens.extend(header_tokens);
+
+            // Build semantic tokens from the body AST (shift spans by body_offset)
+            build_semantic_tokens(&passage_ast.nodes, &mut all_tokens, body_offset);
+
+            // Build diagnostics from the body AST (shift spans by body_offset)
+            build_diagnostics(&passage_ast.nodes, &mut all_diagnostics, body_offset);
+
+            passages.push(passage);
+        }
+
         ParseResult {
             passages,
-            tokens,
-            diagnostics,
+            tokens: all_tokens,
+            diagnostics: all_diagnostics,
             is_complete: true,
         }
     }
 
-    fn parse_passage(&self, _passage_name: &str, _passage_tags: &[String], _passage_text: &str) -> Option<Passage> {
-        None
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+        // Determine the parse mode from the tags
+        let mode = if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("script")) {
+            ParseMode::Script
+        } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style")) {
+            ParseMode::Stylesheet
+        } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("widget")) {
+            ParseMode::Widget
+        } else if passage_name == "StoryInterface" {
+            ParseMode::Interface
+        } else if passage_name == "StoryData" {
+            ParseMode::Minimal
+        } else {
+            ParseMode::Normal
+        };
+
+        let passage_ast = parser::parse_passage_body(passage_text, 0, mode);
+
+        // Classify the passage
+        let (_, category) = self.classify_passage_category(passage_name, passage_tags);
+        let is_special = category != CorePassageCategory::Regular;
+
+        let mut passage = if is_special {
+            let def = self.classify_passage(passage_name, passage_tags);
+            Passage::new_special(
+                passage_name.to_string(),
+                0..passage_text.len(),
+                def?,
+            )
+        } else {
+            Passage::new(passage_name.to_string(), 0..passage_text.len())
+        };
+
+        passage.tags = passage_tags.to_vec();
+        passage.body = build_body_blocks(&passage_ast.nodes, 0);
+        passage.links = passage_ast.links.iter().map(|li| {
+            knot_core::passage::Link {
+                display_text: li.display.clone(),
+                target: li.target.clone(),
+                span: li.span.start..li.span.end,
+                edge_type_hint: None,
+            }
+        }).collect();
+        passage.vars = passage_ast.var_ops.iter().map(|vo| {
+            VarOp {
+                name: vo.name.clone(),
+                kind: if vo.is_write { VarKind::Init } else { VarKind::Read },
+                span: vo.span.start..vo.span.end,
+                is_temporary: vo.is_temporary,
+            }
+        }).collect();
+
+        Some(passage)
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
