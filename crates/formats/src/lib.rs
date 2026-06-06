@@ -46,7 +46,8 @@ pub use types::{
     PropertyKind, PropertyMapEntry,
     PassageVarRef,
 };
-pub use sugarcube::workspace::{StartupAlias, AliasResolution, UserCallable, UserCallableKind, PassageInfo, extract_startup_aliases, extract_user_callables, strip_comments, line_from_offset};
+// Workspace re-exports temporarily removed during ver_3 rewrite.
+// These types will be re-introduced when the workspace module is rebuilt.
 
 #[cfg(test)]
 mod integration_tests;
