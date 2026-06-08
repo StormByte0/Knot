@@ -69,6 +69,20 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
             );
         }
 
+        // For all passages with inline JS (<<run>>, <<set>>, <<if>>, <<script>> blocks, etc.),
+        // walk the inline JS snippets with oxc to detect State.variables.x references,
+        // SugarCube operator usage, and other JS patterns the SugarCube parser can't see.
+        // Skip script passages (already handled above), stylesheets, and minimal passages.
+        if !is_script_passage(cp) && !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
+            registry_populate::walk_inline_js_snippets(
+                registry,
+                &passage_ast.nodes,
+                &cp.header.name,
+                uri.as_ref(),
+                &cp.body_text,
+            );
+        }
+
         // Build the Passage struct (shift all AST spans by body_offset)
         let mut passage = passage_build::build_passage(cp, &passage_ast, body_offset);
         passage.span = cp.header.header_start..header_line_end + cp.body_text.len();
@@ -244,6 +258,17 @@ pub(super) fn parse_single(
             passage_text,
             &cp,
             "",
+        );
+    }
+
+    // For all passages with inline JS, walk the snippets for registry population
+    if mode != ParseMode::Script && !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
+        registry_populate::walk_inline_js_snippets(
+            registry,
+            &passage_ast.nodes,
+            passage_name,
+            "",
+            passage_text,
         );
     }
 

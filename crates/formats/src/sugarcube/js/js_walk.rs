@@ -82,6 +82,14 @@ pub fn walk_script_passage(
 ///
 /// This is used for `<<set>>`, `<<run>>`, `<<script>>` blocks within
 /// normal passages. The JS is typically an expression or a few statements.
+///
+/// Unlike the old implementation which only scanned the preprocessor
+/// substitution table, this reuses the same full AST walking logic as
+/// `walk_script_passage()` — so it detects:
+/// - `State.variables.x = value` → variable writes
+/// - `State.variables.x` (read) → variable reads
+/// - `State_temporary_x` → temporary variable reads/writes
+/// - `Macro.add()` calls, `Template.add()`, function declarations, etc.
 pub fn walk_inline_js(
     program: &Program<'_>,
     preprocessed: &super::js_preprocess::PreprocessedJs,
@@ -92,8 +100,12 @@ pub fn walk_inline_js(
 ) -> JsWalkResult {
     let mut result = JsWalkResult::default();
 
-    // For inline JS, scan for substituted variable references
-    scan_for_substituted_vars(program.source_text, preprocessed, file_uri, passage_name, registry, &mut result, body_text);
+    // Walk the AST using the same logic as script passages.
+    // For expression-mode snippets, oxc wraps in `(expr)`, producing a
+    // single ExpressionStatement in program.body — walk_statement handles that.
+    for stmt in &program.body {
+        walk_statement(stmt, preprocessed, file_uri, passage_name, registry, &mut result, body_text);
+    }
 
     result
 }
@@ -235,7 +247,58 @@ fn walk_expression(
 
     match expr {
         Expr::StaticMemberExpression(member) => {
-            // Check for State.variables.x pattern
+            // Check for State.variables.x READ pattern
+            // e.g., State.variables.ITEMS in _items = State.variables.ITEMS
+            if member.property.name != "variables"
+                && let Expr::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "variables"
+                && let Expr::Identifier(id) = &inner.object
+                && id.name == "State"
+            {
+                let prop_name = member.property.name.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
+
+                registry.variables_mut().record_var_simple(
+                    &var_name,
+                    false,     // story variable ($), not temporary
+                    false,     // read
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                    body_text,
+                );
+                result.state_reads += 1;
+            }
+            // Check for SugarCube.State.variables.x READ pattern
+            if member.property.name != "variables"
+                && let Expr::StaticMemberExpression(state_access) = &member.object
+                && state_access.property.name == "variables"
+                && let Expr::StaticMemberExpression(sc_state) = &state_access.object
+                && sc_state.property.name == "State"
+                && let Expr::Identifier(id) = &sc_state.object
+                && id.name == "SugarCube"
+            {
+                let prop_name = member.property.name.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
+
+                registry.variables_mut().record_var_simple(
+                    &var_name,
+                    false,
+                    false,     // read
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                    body_text,
+                );
+                result.state_reads += 1;
+            }
+            // Check for State.variables pattern (intermediate — just recurse)
             if member.property.name == "variables"
                 && let Expr::Identifier(id) = &member.object
                 && id.name == "State"
@@ -262,6 +325,30 @@ fn walk_expression(
             walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
         Expr::ComputedMemberExpression(member) => {
+            // Check for State.variables["x"] READ pattern
+            if let Expr::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "variables"
+                && let Expr::Identifier(id) = &inner.object
+                && id.name == "State"
+                && let Expr::StringLiteral(str_lit) = &member.expression
+            {
+                let prop_name = str_lit.value.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
+
+                registry.variables_mut().record_var_simple(
+                    &var_name,
+                    false,     // story variable ($), not temporary
+                    false,     // read
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                    body_text,
+                );
+                result.state_reads += 1;
+            }
             walk_expression(&member.object, preprocessed, file_uri, passage_name, registry, result, body_text);
             walk_expression(&member.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
@@ -391,6 +478,30 @@ fn walk_expression(
             walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result, body_text);
             walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
+        Expr::ParenthesizedExpression(pe) => {
+            // When parse_js uses Expression mode, it wraps the source as `(source)`.
+            // oxc 0.134 preserves parentheses as a ParenthesizedExpression node.
+            // We must recurse into the inner expression to detect variables.
+            walk_expression(&pe.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
+        }
+        Expr::UnaryExpression(unary) => {
+            // e.g., !$alive, -1 — recurse into the argument
+            walk_expression(&unary.argument, preprocessed, file_uri, passage_name, registry, result, body_text);
+        }
+        Expr::ObjectExpression(obj) => {
+            // Object literals may contain variable references in property values
+            for prop in &obj.properties {
+                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+                    walk_expression(&p.value, preprocessed, file_uri, passage_name, registry, result, body_text);
+                }
+            }
+        }
+        Expr::NewExpression(new_expr) => {
+            walk_expression(&new_expr.callee, preprocessed, file_uri, passage_name, registry, result, body_text);
+            for arg in &new_expr.arguments {
+                walk_argument(arg, preprocessed, file_uri, passage_name, registry, result, body_text);
+            }
+        }
         _ => {}
     }
 }
@@ -417,6 +528,31 @@ fn check_assignment_for_state_var(
                 && inner.property.name == "variables"
                 && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
                 && id.name == "State"
+            {
+                let prop_name = member.property.name.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
+
+                registry.variables_mut().record_var_simple(
+                    &var_name,
+                    false,
+                    true,
+                    passage_name,
+                    file_uri,
+                    original_start..original_end,
+                    "",
+                    body_text,
+                );
+                result.state_writes += 1;
+            }
+            // Check for SugarCube.State.variables.x = value
+            if let oxc_ast::ast::Expression::StaticMemberExpression(state_access) = &member.object
+                && state_access.property.name == "variables"
+                && let oxc_ast::ast::Expression::StaticMemberExpression(sc_state) = &state_access.object
+                && sc_state.property.name == "State"
+                && let oxc_ast::ast::Expression::Identifier(id) = &sc_state.object
+                && id.name == "SugarCube"
             {
                 let prop_name = member.property.name.as_str();
                 let var_name = format!("${}", prop_name);
@@ -531,12 +667,14 @@ fn check_identifier_for_substituted_var(
 }
 
 // ---------------------------------------------------------------------------
-// Internal: source text scanner for substituted vars (fallback)
+// Internal: source text scanner for substituted vars (legacy fallback)
 // ---------------------------------------------------------------------------
 
 /// Scan the preprocessed source text for substituted variable patterns.
-/// This is used for inline JS expressions where the AST structure may not
-/// be as easily traversable.
+///
+/// **Note**: This function is no longer used by `walk_inline_js()`, which
+/// now uses the full AST walker instead. Kept for reference.
+#[allow(dead_code)]
 fn scan_for_substituted_vars(
     _source: &str,
     preprocessed: &super::js_preprocess::PreprocessedJs,
@@ -698,6 +836,9 @@ fn walk_argument(
             walk_expression(&cond.consequent, preprocessed, file_uri, passage_name, registry, result, body_text);
             walk_expression(&cond.alternate, preprocessed, file_uri, passage_name, registry, result, body_text);
         }
+        Arg::ParenthesizedExpression(pe) => {
+            walk_expression(&pe.expression, preprocessed, file_uri, passage_name, registry, result, body_text);
+        }
         _ => {}
     }
 }
@@ -734,6 +875,8 @@ mod tests {
                 let preprocessed = js_preprocess::PreprocessedJs {
                     source: source.to_string(),
                     substitutions: Vec::new(),
+                    origin_offset: 0,
+                    wrapping_offset: 0,
                 };
                 let registry = SugarCubeRegistry::new();
 
@@ -763,6 +906,8 @@ mod tests {
                 let preprocessed = js_preprocess::PreprocessedJs {
                     source: source.to_string(),
                     substitutions: Vec::new(),
+                    origin_offset: 0,
+                    wrapping_offset: 0,
                 };
                 let registry = SugarCubeRegistry::new();
 
@@ -792,6 +937,8 @@ mod tests {
                 let preprocessed = js_preprocess::PreprocessedJs {
                     source: source.to_string(),
                     substitutions: Vec::new(),
+                    origin_offset: 0,
+                    wrapping_offset: 0,
                 };
                 let registry = SugarCubeRegistry::new();
 
@@ -824,6 +971,8 @@ mod tests {
                 let preprocessed = js_preprocess::PreprocessedJs {
                     source: source.to_string(),
                     substitutions: Vec::new(),
+                    origin_offset: 0,
+                    wrapping_offset: 0,
                 };
                 let registry = SugarCubeRegistry::new();
 
@@ -865,11 +1014,64 @@ mod tests {
                     )
                 });
 
-                assert!(result.state_reads >= 2);
+                assert!(result.state_reads >= 2, "Expected at least 2 state_reads, got {}", result.state_reads);
                 assert!(registry.variables().get_variable("$hp").is_some());
                 assert!(registry.variables().get_variable("$gold").is_some());
             }
-            JsParseOutcome::Error(_) => {}
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_state_variables_read() {
+        // <<run _items = State.variables.ITEMS>> after preprocessing
+        // _items becomes State_temporary_items, State.variables.ITEMS stays as-is
+        let source = "State_temporary_items = State.variables.ITEMS";
+        match parse_js(source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let preprocessed = js_preprocess::PreprocessedJs {
+                    source: source.to_string(),
+                    substitutions: Vec::new(),
+                    origin_offset: 0,
+                    wrapping_offset: 0,
+                };
+                let registry = SugarCubeRegistry::new();
+
+                let result = output.with_program(|program| {
+                    walk_inline_js(
+                        program,
+                        &preprocessed,
+                        "file:///test.tw",
+                        "Game",
+                        &registry,
+                        "",
+                    )
+                });
+
+                // State.variables.ITEMS should be detected as a READ of $ITEMS
+                assert_eq!(result.state_reads, 1, "Expected 1 state_read for State.variables.ITEMS, got {}", result.state_reads);
+                // _items should be detected as a WRITE (via State_temporary_ prefix)
+                assert_eq!(result.state_writes, 1, "Expected 1 state_write for _items, got {}", result.state_writes);
+                assert!(registry.variables().get_variable("$ITEMS").is_some(), "$ITEMS should be in registry");
+                assert!(registry.variables().get_variable("_items").is_some(), "_items should be in registry");
+
+                // Verify the access kinds
+                let vtree = registry.variables();
+                let items_var = vtree.get_variable("$ITEMS").unwrap();
+                let reads: Vec<_> = items_var.node.accesses.iter().filter(|a| a.is_read()).collect();
+                assert!(!reads.is_empty(), "$ITEMS should have at least one read access");
+                drop(vtree);
+
+                let vtree2 = registry.variables();
+                let temp_var = vtree2.get_variable("_items").unwrap();
+                let writes: Vec<_> = temp_var.node.accesses.iter().filter(|a| a.is_write()).collect();
+                assert!(!writes.is_empty(), "_items should have at least one write access");
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
         }
     }
 }

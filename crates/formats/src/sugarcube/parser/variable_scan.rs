@@ -53,6 +53,9 @@ pub(super) fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (Va
 ///
 /// This finds all `$var` and `_var` references in text that is
 /// NOT inside a macro or link (those are handled by their own parsers).
+///
+/// Skips content inside `/* ... */` block comments and `// ...` line
+/// comments, since variable references in comments are not real references.
 pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
     let mut refs = Vec::new();
     let bytes = text.as_bytes();
@@ -60,6 +63,28 @@ pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
     let mut i = 0usize;
 
     while i < len {
+        // ── Block comments: /* ... */ ── skip entirely
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // ── Line comments: // ... ── skip to end of line
+        if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
         if bytes[i] == b'$' && i + 1 < len && is_ident_start(bytes[i + 1]) {
             let (var_ref, end) = scan_variable(text, i, false);
             let mut vr = var_ref;

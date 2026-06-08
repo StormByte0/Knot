@@ -83,14 +83,46 @@ pub struct PreprocessedJs {
     pub source: String,
     /// All substitutions made, in source order.
     pub substitutions: Vec<Substitution>,
+    /// Offset to add to all `map_to_original()` results.
+    ///
+    /// For script passages, this is `0` because the preprocessor operates on
+    /// the full passage body text, so `map_to_original()` already returns
+    /// passage-body-relative positions.
+    ///
+    /// For inline JS snippets (extracted from `<<run>>`, `<<set>>`, etc.),
+    /// the preprocessor operates on the snippet text, so `map_to_original()`
+    /// returns snippet-relative positions. Setting `origin_offset` to the
+    /// snippet's `body_offset` shifts results to passage-body-relative.
+    pub origin_offset: usize,
+    /// Number of characters prepended by `parse_js` before the actual source.
+    ///
+    /// When oxc parses in Expression mode, `parse_js` wraps the source as
+    /// `(source)`, adding 1 character of prefix. All oxc AST spans are
+    /// relative to this wrapped source, so we must subtract `wrapping_offset`
+    /// before mapping positions back to the preprocessed source.
+    ///
+    /// - Module mode / StatementList: `0` (no wrapping)
+    /// - Expression mode: `1` (the opening paren)
+    pub wrapping_offset: usize,
 }
 
 impl PreprocessedJs {
-    /// Map a byte position from the preprocessed text back to the original.
+    /// Map a byte position from the oxc AST back to the original source.
     ///
     /// This is needed for mapping oxc diagnostics and AST node positions
     /// back to the original SugarCube source.
-    pub fn map_to_original(&self, processed_pos: usize) -> usize {
+    ///
+    /// The input `oxc_pos` is a byte position from oxc's AST spans (which
+    /// are relative to the source text passed to the parser, including any
+    /// wrapping for Expression mode). This method:
+    /// 1. Subtracts `wrapping_offset` to get a position in the preprocessed source
+    /// 2. Applies substitution mapping to get a position in the original source
+    /// 3. Adds `origin_offset` to shift from snippet-relative to passage-body-relative
+    pub fn map_to_original(&self, oxc_pos: usize) -> usize {
+        // Step 1: Remove wrapping offset (for Expression mode, oxc wraps as `(source)`)
+        let processed_pos = oxc_pos.saturating_sub(self.wrapping_offset);
+
+        // Step 2: Map through substitution table
         let mut offset = 0isize;
         for sub in &self.substitutions {
             if processed_pos >= sub.processed_range.end {
@@ -98,19 +130,20 @@ impl PreprocessedJs {
                 offset += sub.original_text.len() as isize - sub.replacement.len() as isize;
             } else if processed_pos >= sub.processed_range.start {
                 // Our position is inside this substitution — map to start
-                return sub.original_range.start;
+                return sub.original_range.start + self.origin_offset;
             } else {
                 // Our position is before this substitution — no adjustment needed yet
                 break;
             }
         }
-        (processed_pos as isize + offset) as usize
+        // Step 3: Apply origin_offset for passage-body-relative result
+        (processed_pos as isize + offset) as usize + self.origin_offset
     }
 
-    /// Map a byte range from the preprocessed text back to the original.
-    pub fn map_range_to_original(&self, processed_range: Range<usize>) -> Range<usize> {
-        let start = self.map_to_original(processed_range.start);
-        let end = self.map_to_original(processed_range.end);
+    /// Map a byte range from the oxc AST back to the original source.
+    pub fn map_range_to_original(&self, oxc_range: Range<usize>) -> Range<usize> {
+        let start = self.map_to_original(oxc_range.start);
+        let end = self.map_to_original(oxc_range.end);
         start..end
     }
 }
@@ -139,6 +172,59 @@ pub fn preprocess_for_oxc(source: &str) -> PreprocessedJs {
 
     while i < len {
         let b = bytes[i];
+
+        // ── Block comments: /* ... */ ───────────────────────────────
+        // Copy as-is with no substitution. This prevents $var and
+        // keyword operators inside comments from being processed.
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            result.push_str("/*");
+            i += 2;
+            result_offset += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    result.push_str("*/");
+                    i += 2;
+                    result_offset += 2;
+                    break;
+                }
+                if bytes[i] < 0x80 {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                    result_offset += 1;
+                } else {
+                    let consumed = push_utf8_char(source, bytes, i, &mut result);
+                    i += consumed;
+                    result_offset += consumed;
+                }
+            }
+            continue;
+        }
+
+        // ── Line comments: // ... ───────────────────────────────────
+        // Copy as-is with no substitution until end of line.
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            result.push_str("//");
+            i += 2;
+            result_offset += 2;
+            while i < len {
+                if bytes[i] == b'\n' {
+                    result.push('\n');
+                    i += 1;
+                    result_offset += 1;
+                    break;
+                }
+                if bytes[i] < 0x80 {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                    result_offset += 1;
+                } else {
+                    let consumed = push_utf8_char(source, bytes, i, &mut result);
+                    i += consumed;
+                    result_offset += consumed;
+                }
+            }
+            continue;
+        }
 
         // ── String literals: copy as-is (no substitution) ──────────────
         // Both $var substitution and operator normalization must skip
@@ -307,6 +393,8 @@ pub fn preprocess_for_oxc(source: &str) -> PreprocessedJs {
     PreprocessedJs {
         source: result,
         substitutions,
+        origin_offset: 0,
+        wrapping_offset: 0,
     }
 }
 
