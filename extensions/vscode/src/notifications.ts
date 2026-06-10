@@ -153,7 +153,7 @@ export function registerNotifications(
                     const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
                     if (doc && doc.languageId !== languageId) {
                         const p = vscode.languages.setTextDocumentLanguage(doc, languageId);
-                        switchPromises.push(p);
+                        switchPromises.push(p.then(() => {}));
                         p.then(
                             () => {
                                 console.log(`[Knot] Switched ${docUri} to language: ${languageId}`);
