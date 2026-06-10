@@ -11,8 +11,9 @@
 //! - Project configuration loading
 
 use crate::document::Document;
-use crate::graph::{DiagnosticKind, GraphDiagnostic, PassageGraph};
-use crate::passage::{Block, StoryFormat};
+use crate::editing::{graph_surgery, UpdateResult};
+use crate::graph::{DiagnosticKind, EdgeType, GraphDiagnostic, PassageEdge, PassageGraph};
+use crate::passage::{Block, Passage, StoryFormat};
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -155,6 +156,22 @@ impl Default for StoryMetadata {
             ifid: None,
         }
     }
+}
+
+/// Result of applying a document update to the workspace.
+///
+/// Returned by [`Workspace::apply_document_update`] so that callers
+/// (server handlers) can decide what follow-up actions to take
+/// (format detection notifications, semantic token refreshes, etc.)
+/// without needing access to workspace internals.
+#[derive(Debug)]
+pub struct DocumentUpdateResult {
+    /// The result of the incremental graph surgery.
+    pub surgery_result: UpdateResult,
+    /// The resolved format BEFORE this update was applied.
+    pub format_before: Option<StoryFormat>,
+    /// The resolved format AFTER this update was applied.
+    pub format_after: StoryFormat,
 }
 
 /// Intermediate JSON struct for deserializing the StoryData passage body.
@@ -464,6 +481,156 @@ impl Workspace {
         Some(doc)
     }
 
+    /// Apply a parsed document update to the workspace.
+    ///
+    /// This is the **single authoritative entry point** for all document
+    /// updates (did_open, did_change, did_change_watched_files). It
+    /// atomically:
+    ///
+    /// 1. Captures the old passages from the existing document (if any)
+    /// 2. Inserts the new document into the workspace
+    /// 3. Performs incremental graph surgery (adds/removes/modifies nodes
+    ///    and edges for the changed passages only)
+    /// 4. Rechecks broken links across the entire graph
+    /// 5. Rebuilds the upstream lifecycle edge chain (ScriptInjection →
+    ///    Startup → Start)
+    /// 6. Extracts StoryData metadata from the new document
+    ///
+    /// The caller is responsible for:
+    /// - Parsing the document with the format plugin BEFORE calling this
+    /// - Computing `extra_edges` (dynamic navigation links) from the
+    ///   format plugin BEFORE calling this
+    /// - Publishing diagnostics and sending notifications AFTER this
+    ///   returns
+    ///
+    /// This method ensures the workspace document model and passage graph
+    /// are always consistent — you cannot have a document inserted without
+    /// the graph being updated, or vice versa.
+    pub fn apply_document_update(
+        &mut self,
+        uri: &Url,
+        doc: Document,
+        extra_edges: &[(String, Option<String>, String, Option<EdgeType>)],
+    ) -> DocumentUpdateResult {
+        let format_before = self.metadata.as_ref().map(|m| m.format.clone());
+
+        // 1. Capture old passages for graph surgery
+        let old_passages: Vec<Passage> = self.get_document(uri)
+            .map(|d| d.passages.clone())
+            .unwrap_or_default();
+
+        let new_passages = doc.passages.clone();
+        let file_uri_str = uri.to_string();
+
+        // 2. Insert the new document
+        self.insert_document(doc);
+
+        // 3. Graph surgery — incremental update
+        let surgery_result = graph_surgery(
+            &mut self.graph,
+            &old_passages,
+            &new_passages,
+            &file_uri_str,
+            extra_edges,
+        );
+
+        tracing::debug!(
+            "apply_document_update: graph_surgery added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
+            surgery_result.added,
+            surgery_result.removed,
+            surgery_result.modified,
+            self.graph.passage_count(),
+            self.graph.edge_count()
+        );
+
+        // 4. Recheck broken links after surgery
+        self.graph.recheck_broken_links();
+
+        // 5. Rebuild upstream lifecycle edges
+        self.rebuild_upstream_edges();
+
+        // 6. Extract StoryData metadata from the newly inserted document
+        if let Some(new_doc) = self.get_document(uri) {
+            if let Some(story_data) = new_doc.story_data() {
+                let body_text = extract_passage_body_from_blocks(&story_data.body);
+                if let Some(metadata) = parse_story_data_json_body(&body_text) {
+                    tracing::info!(
+                        "apply_document_update: found StoryData format={:?} start={}",
+                        metadata.format,
+                        metadata.start_passage
+                    );
+                    self.metadata = Some(metadata);
+                }
+            }
+        }
+
+        let format_after = self.resolve_format();
+
+        DocumentUpdateResult {
+            surgery_result,
+            format_before,
+            format_after,
+        }
+    }
+
+    /// Rebuild the upstream lifecycle edge chain.
+    ///
+    /// After graph surgery or document removal, the implicit upstream edges
+    /// among special passages may be missing. This method re-establishes:
+    ///
+    /// 1. **ScriptInjection → Startup**: Script injection passages run
+    ///    before startup passages (e.g., "Story JavaScript" → "StoryInit").
+    /// 2. **Startup → Start**: The last startup passage bridges into the
+    ///    user-defined passage graph.
+    ///
+    /// This method queries the graph's `special_bundle`, which is
+    /// maintained incrementally by `add_passage()` / `remove_passage()`,
+    /// so it never needs to re-scan workspace documents.
+    pub fn rebuild_upstream_edges(&mut self) {
+        let graph = &mut self.graph;
+
+        let script_injection = graph.special_bundle.script_injection.clone();
+        let startup = graph.special_bundle.startup.clone();
+
+        let start_passage_name: String = self.metadata
+            .as_ref()
+            .map(|m| m.start_passage.clone())
+            .unwrap_or_else(|| "Start".into());
+
+        // Upstream edge: ScriptInjection → Startup
+        for script_name in &script_injection {
+            for startup_name in &startup {
+                let exists = graph.outgoing_neighbors(script_name)
+                    .iter()
+                    .any(|n| n == startup_name);
+                if !exists {
+                    graph.add_edge(script_name, startup_name, PassageEdge {
+                        display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
+                        edge_type: EdgeType::Upstream,
+                        pre_broken_type: None,
+                    });
+                }
+            }
+        }
+
+        // Bridge edge: Startup → Start passage
+        if !startup.is_empty() {
+            if graph.contains_passage(&start_passage_name) {
+                let bridge_source = &startup[0];
+                let exists = graph.outgoing_neighbors(bridge_source)
+                    .iter()
+                    .any(|n| *n == start_passage_name);
+                if !exists {
+                    graph.add_edge(bridge_source, &start_passage_name, PassageEdge {
+                        display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
+                        edge_type: EdgeType::Upstream,
+                        pre_broken_type: None,
+                    });
+                }
+            }
+        }
+    }
+
     /// Check if a document with the given URI exists in the workspace.
     pub fn contains_document(&self, uri: &Url) -> bool {
         self.documents.contains_key(uri)
@@ -477,6 +644,63 @@ impl Workspace {
     pub fn generate_ifid() -> String {
         uuid::Uuid::new_v4().to_string().to_uppercase()
     }
+}
+
+/// Extract the body text of a passage from its body blocks.
+///
+/// Concatenates all `Block::Text` content from the body blocks into a
+/// single string. Used by `apply_document_update` to extract the
+/// StoryData JSON body for metadata parsing.
+fn extract_passage_body_from_blocks(body: &[Block]) -> String {
+    body.iter()
+        .filter_map(|block| match block {
+            Block::Text { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Parse the JSON body of a StoryData passage and return metadata.
+///
+/// This is the core equivalent of the server's `parse_story_data_json`
+/// helper. It extracts `format`, `format-version`, `start`, and `ifid`
+/// from the JSON body. Returns `None` if the body is not valid JSON or
+/// doesn't contain a JSON object.
+fn parse_story_data_json_body(body: &str) -> Option<StoryMetadata> {
+    // Find the first `{` in the body — skip any leading whitespace or tags
+    let json_start = body.find('{')?;
+    let json_text = &body[json_start..];
+
+    let value: serde_json::Value = serde_json::from_str(json_text).ok()?;
+
+    let format = value
+        .get("format")
+        .and_then(|v| v.as_str())
+        .and_then(|s| StoryFormat::from_str(s).ok())
+        .unwrap_or_else(StoryFormat::default_format);
+
+    let format_version = value
+        .get("format-version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let start_passage = value
+        .get("start")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Start")
+        .to_string();
+
+    let ifid = value
+        .get("ifid")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Some(StoryMetadata {
+        format,
+        format_version,
+        start_passage,
+        ifid,
+    })
 }
 
 #[cfg(test)]

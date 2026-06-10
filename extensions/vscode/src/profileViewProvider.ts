@@ -17,6 +17,10 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _client: KnotLanguageClient | null = null;
     private _refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    private static readonly MAX_INITIAL_RETRIES = 15;
+    private static readonly INITIAL_RETRY_MS = 2000;
+    private _initialRetryCount = 0;
+    private _initialRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -24,13 +28,62 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     public setClient(client: KnotLanguageClient | null) {
         this._client = client;
         if (this._view) {
-            this.refresh();
+            this._startInitialPolling();
+        }
+    }
+
+    /** Start polling until the server is ready and profile data is fetched. */
+    private _startInitialPolling() {
+        this._initialRetryCount = 0;
+        this._pollInitial();
+    }
+
+    private async _pollInitial() {
+        if (this._initialRetryCount >= ProfileViewProvider.MAX_INITIAL_RETRIES) {
+            return;
+        }
+        this._initialRetryCount++;
+        const clientReady = this._client && this._client.isRunning();
+        const viewReady = !!this._view;
+        if (clientReady && viewReady) {
+            const gotData = await this._fetchAndPost();
+            if (!gotData) {
+                this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
+            }
         } else {
-            // View hasn't resolved yet — schedule a deferred refresh so that
-            // when the view does appear it won't be stuck at "Loading...".
-            // The resolveWebviewView handler also calls refresh(), but this
-            // covers the case where the client becomes ready *after* resolve.
-            this._scheduleRefresh(500);
+            this._initialRetryTimer = setTimeout(() => this._pollInitial(), ProfileViewProvider.INITIAL_RETRY_MS);
+        }
+    }
+
+    /** Core fetch — returns true if data was obtained. */
+    private async _fetchAndPost(): Promise<boolean> {
+        if (!this._client || !this._client.isRunning()) {
+            return false;
+        }
+        if (!this._view) {
+            return false;
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            return false;
+        }
+
+        try {
+            const result = await this._client.sendRequest<KnotProfileResponse>('knot/profile', {
+                workspace_uri: workspaceFolders[0].uri.toString(),
+            });
+
+            if (this._view) {
+                this._view.webview.postMessage({
+                    command: 'updateProfile',
+                    data: result,
+                });
+            }
+            return true;
+        } catch (e) {
+            console.error('[Knot] Failed to fetch profile:', e);
+            return false;
         }
     }
 
@@ -59,14 +112,10 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         });
 
         if (this._client) {
-            this.refresh();
-        } else {
-            // Client not ready yet — schedule a deferred refresh. The
-            // setClient handler also calls refresh(), but this covers the
-            // case where the view resolves *after* the client is set but
-            // before the server has finished starting.
-            this._scheduleRefresh(3000);
+            this._startInitialPolling();
         }
+        // If client isn't ready yet, the setClient handler will start
+        // polling when the client is eventually set.
     }
 
     /** Schedule a debounced refresh. */
@@ -80,42 +129,26 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         }, delayMs);
     }
 
-    /** Refresh profile data from the language server. */
-    public async refresh() {
-        if (!this._client || !this._client.isRunning()) {
-            return;
+    /** Refresh profile data from the language server (debounced). */
+    public refresh() {
+        if (this._refreshDebounceTimer) {
+            clearTimeout(this._refreshDebounceTimer);
         }
+        this._refreshDebounceTimer = setTimeout(() => {
+            this._refreshDebounceTimer = null;
+            this._fetchAndPost();
+        }, 500);
+    }
 
-        if (!this._view) {
-            return;
+    /** Clean up pending timers. */
+    public dispose() {
+        if (this._initialRetryTimer) {
+            clearTimeout(this._initialRetryTimer);
+            this._initialRetryTimer = null;
         }
-
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) {
-            return;
-        }
-
-        try {
-            const result = await this._client.sendRequest<KnotProfileResponse>('knot/profile', {
-                workspace_uri: workspaceFolders[0].uri.toString(),
-            });
-
-            if (this._view) {
-                this._view.webview.postMessage({
-                    command: 'updateProfile',
-                    data: result,
-                });
-            }
-        } catch (e) {
-            console.error('[Knot] Failed to fetch profile:', e);
-            // Show an error state in the webview instead of staying at "Loading..."
-            if (this._view) {
-                this._view.webview.postMessage({
-                    command: 'updateProfile',
-                    data: null,
-                    error: String(e),
-                });
-            }
+        if (this._refreshDebounceTimer) {
+            clearTimeout(this._refreshDebounceTimer);
+            this._refreshDebounceTimer = null;
         }
     }
 

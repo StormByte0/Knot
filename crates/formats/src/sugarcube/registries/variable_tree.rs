@@ -1489,6 +1489,15 @@ impl VariableTree {
         self.arena.get(self.persistent_root).meta.nav.known_child_count as usize
     }
 
+    /// Get the number of entries in the path index.
+    ///
+    /// This counts all fully-qualified dot-paths (e.g., `$player`,
+    /// `$player.hp`, `$player.hp.max`) currently indexed for O(1)
+    /// lookup. Used by pipeline logging to report variable counts.
+    pub fn path_index_len(&self) -> usize {
+        self.path_index.len()
+    }
+
     /// Whether the tree has no persistent variables.
     pub fn is_empty(&self) -> bool {
         self.len() == 0

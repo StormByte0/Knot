@@ -3,8 +3,7 @@
 
 use crate::handlers::helpers;
 use crate::state::{ServerState, ServerStateInner};
-use knot_core::editing::graph_surgery;
-use knot_core::passage::{Passage, StoryFormat};
+use knot_core::passage::StoryFormat;
 use lsp_types::*;
 use url::Url;
 
@@ -198,26 +197,13 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Cache semantic tokens at parse time
     inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
 
-    let old_passages: Vec<Passage> = inner
-        .workspace
-        .get_document(&uri)
-        .map(|d| d.passages.clone())
-        .unwrap_or_default();
-    tracing::trace!(
-        file = %uri,
-        old_passage_count = old_passages.len(),
-        old_passages = ?old_passages.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        "did_change: comparing old vs new passages"
-    );
-    let new_passages = doc.passages.clone();
-
     // Compute dynamic navigation edges for the new passages
     // Include the edge_type_hint from ResolvedNavLink so that dynamic
     // navigation edges preserve their semantic type (Jump, Include, etc.)
     // through graph_surgery instead of defaulting to Navigation.
     let extra_edges: Vec<(String, Option<String>, String, Option<knot_core::graph::EdgeType>)> = if let Some(plug) = inner.format_registry.get(&format) {
         let var_string_map = plug.build_var_string_map(&inner.workspace);
-        new_passages.iter()
+        doc.passages.iter()
             .flat_map(|p| {
                 plug.resolve_dynamic_navigation_links(p, &var_string_map)
                     .into_iter()
@@ -229,76 +215,22 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         Vec::new()
     };
 
-    // Check for StoryData changes
-    let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
-    helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-
-    inner.workspace.insert_document(doc);
-    let file_uri_str = uri.to_string();
-    let surgery_result = graph_surgery(
-        &mut inner.workspace.graph,
-        &old_passages,
-        &new_passages,
-        &file_uri_str,
+    // Check for StoryData changes — use the centralized apply_document_update
+    // which handles insert + graph_surgery + recheck_broken_links +
+    // rebuild_upstream_edges + metadata extraction atomically.
+    let update_result = inner.workspace.apply_document_update(
+        &uri,
+        doc,
         &extra_edges,
     );
     tracing::trace!(
-        "graph_surgery result: added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
-        surgery_result.added,
-        surgery_result.removed,
-        surgery_result.modified,
+        "apply_document_update: added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
+        update_result.surgery_result.added,
+        update_result.surgery_result.removed,
+        update_result.surgery_result.modified,
         inner.workspace.graph.passage_count(),
         inner.workspace.graph.edge_count()
     );
-
-    // Update broken-link flags on all edges after surgery
-    inner.workspace.graph.recheck_broken_links();
-
-    // Re-add upstream lifecycle edges for special passages after surgery.
-    // graph_surgery() strips implicit edges during incremental update,
-    // so we must re-establish the upstream chain. The graph's special_bundle
-    // was populated incrementally by add_passage(), so we can query it
-    // directly instead of re-scanning workspace documents.
-    let start_passage_name: String = inner.workspace.metadata
-        .as_ref()
-        .map(|m| m.start_passage.clone())
-        .unwrap_or_else(|| "Start".into());
-
-    {
-        let graph = &mut inner.workspace.graph;
-
-        let script_injection = graph.special_bundle.script_injection.clone();
-        let startup = graph.special_bundle.startup.clone();
-
-        // Upstream edge: ScriptInjection → Startup
-        for script_name in &script_injection {
-            for startup_name in &startup {
-                let exists = graph.outgoing_neighbors(script_name).iter().any(|n| n == startup_name);
-                if !exists {
-                    graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
-                        display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                        edge_type: knot_core::graph::EdgeType::Upstream,
-                        pre_broken_type: None,
-                    });
-                }
-            }
-        }
-
-        // Bridge edge: Startup → Start passage
-        if !startup.is_empty() {
-            if graph.contains_passage(&start_passage_name) {
-                let bridge_source = &startup[0];
-                let exists = graph.outgoing_neighbors(bridge_source).iter().any(|n| *n == start_passage_name);
-                if !exists {
-                    graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
-                        display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
-                        edge_type: knot_core::graph::EdgeType::Upstream,
-                        pre_broken_type: None,
-                    });
-                }
-            }
-        }
-    }
 
     // ── Phase 1 complete: all state mutations are done. ──────────────
     // Release the write lock early so that read-lock handlers
@@ -309,8 +241,8 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // will catch in-flight handlers still waiting for the lock.
 
     // Check if format changed after StoryData extraction
-    let format_after = inner.workspace.resolve_format();
-    let should_notify = format_before != Some(format_after.clone());
+    let format_after = update_result.format_after;
+    let should_notify = update_result.format_before != Some(format_after.clone());
     let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
 
@@ -637,51 +569,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // Recheck broken links after removal
                 inner.workspace.graph.recheck_broken_links();
 
-                // Re-add upstream lifecycle edges for special passages after
+                // Rebuild upstream lifecycle edges for special passages after
                 // removal. When a file containing a Startup or ScriptInjection
-                // passage is deleted, petgraph removes all edges connected to
-                // that node, which can break the upstream chain for remaining
-                // special passages. We must re-establish the chain.
-                let start_passage_name: String = inner.workspace.metadata
-                    .as_ref()
-                    .map(|m| m.start_passage.clone())
-                    .unwrap_or_else(|| "Start".into());
-
-                {
-                    let graph = &mut inner.workspace.graph;
-
-                    let script_injection = graph.special_bundle.script_injection.clone();
-                    let startup = graph.special_bundle.startup.clone();
-
-                    // Upstream edge: ScriptInjection → Startup
-                    for script_name in &script_injection {
-                        for startup_name in &startup {
-                            let exists = graph.outgoing_neighbors(script_name).iter().any(|n| n == startup_name);
-                            if !exists {
-                                graph.add_edge(script_name, startup_name, knot_core::graph::PassageEdge {
-                                    display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                                    edge_type: knot_core::graph::EdgeType::Upstream,
-                                    pre_broken_type: None,
-                                });
-                            }
-                        }
-                    }
-
-                    // Bridge edge: Startup → Start passage
-                    if !startup.is_empty() {
-                        if graph.contains_passage(&start_passage_name) {
-                            let bridge_source = &startup[0];
-                            let exists = graph.outgoing_neighbors(bridge_source).iter().any(|n| *n == start_passage_name);
-                            if !exists {
-                                graph.add_edge(bridge_source, &start_passage_name, knot_core::graph::PassageEdge {
-                                    display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
-                                    edge_type: knot_core::graph::EdgeType::Upstream,
-                                    pre_broken_type: None,
-                                });
-                            }
-                        }
-                    }
-                }
+                // passage is deleted, all edges connected to that node are
+                // removed, which can break the upstream chain for remaining
+                // special passages.
+                inner.workspace.rebuild_upstream_edges();
 
                 // Release write lock before analysis
                 drop(inner);

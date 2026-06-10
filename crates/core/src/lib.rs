@@ -18,6 +18,7 @@ pub use graph::PassageGraph;
 pub use graph::EdgeType;
 pub use graph::GameLoopInfo;
 pub use workspace::Workspace;
+pub use workspace::DocumentUpdateResult;
 pub use analysis::AnalysisEngine;
 pub use analysis::PassageFlowState;
 pub use analysis::FormatVariableDiagnostic;

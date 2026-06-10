@@ -27,6 +27,7 @@ use crate::plugin::{FormatPlugin, ParseResult};
 use super::SugarCubePlugin;
 use super::ast::ParseMode;
 use super::classifier::{self, ClassifiedPassage, is_script_passage};
+use super::lsp::pipeline_log;
 use super::passage_build;
 use super::registry_populate;
 
@@ -63,23 +64,37 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         let body_offset = header_line_end;
 
         // Phase 1: Structural parse (SugarCube parser)
+        pipeline_log::parse_phase1_enter(&cp.header.name, uri.as_ref());
         let mut passage_ast = super::parser::parse_passage_body(&cp.body_text, body_offset, mode);
+        pipeline_log::parse_phase1_exit(&cp.header.name, passage_ast.nodes.len());
 
         // Phase 2: JS annotation pass — attach JsAnalysis to AST nodes
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
+            let js_node_count = count_js_nodes(&passage_ast.nodes);
+            pipeline_log::parse_phase2_enter(&cp.header.name, js_node_count);
             super::js::js_annotate::annotate_js(
                 &mut passage_ast,
                 &cp.body_text,
                 is_script_passage(cp),
             );
+            let total_var_ops = count_total_var_ops(&passage_ast);
+            pipeline_log::parse_phase2_exit(&cp.header.name, total_var_ops);
         }
 
         // Phase 3: Unified registry population (single walk over unified AST)
+        pipeline_log::parse_phase3_enter(&cp.header.name, uri.as_ref());
         registry_populate::populate_registries_from_unified_ast(
             registry,
             &passage_ast,
             cp,
             uri.as_ref(),
+        );
+        pipeline_log::parse_phase3_exit(
+            &cp.header.name,
+            registry.variables().path_index_len(),
+            registry.custom_macros().len(),
+            registry.functions().len(),
+            registry.templates().len(),
         );
 
         // Build the Passage struct (shift all AST spans by body_offset)
@@ -142,12 +157,73 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         }
     }
 
+    pipeline_log::parse_full_summary(
+        uri.as_ref(),
+        passages.len(),
+        all_tokens.len(),
+        all_diagnostics.len(),
+    );
+
     ParseResult {
         passages,
         tokens: all_tokens,
         diagnostics: all_diagnostics,
         is_complete: true,
     }
+}
+
+/// Count AST nodes that have JS content (Macro or Expression nodes).
+fn count_js_nodes(nodes: &[super::ast::AstNode]) -> usize {
+    let mut count = 0;
+    for node in nodes {
+        match node {
+            super::ast::AstNode::Macro { children, .. } => {
+                count += 1;
+                if let Some(ch) = children {
+                    count += count_js_nodes(ch);
+                }
+            }
+            super::ast::AstNode::Expression { .. } => {
+                count += 1;
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
+/// Count total var_ops across all AST nodes that have js_analysis.
+fn count_total_var_ops(ast: &super::ast::PassageAst) -> usize {
+    let mut total = 0;
+    // Script-level analysis
+    if let Some(analysis) = &ast.script_js_analysis {
+        total += analysis.var_ops.len();
+    }
+    // Node-level analysis
+    fn count_in_nodes(nodes: &[super::ast::AstNode]) -> usize {
+        let mut n = 0;
+        for node in nodes {
+            match node {
+                super::ast::AstNode::Macro { js_analysis, children, .. } => {
+                    if let Some(analysis) = js_analysis {
+                        n += analysis.var_ops.len();
+                    }
+                    if let Some(ch) = children {
+                        n += count_in_nodes(ch);
+                    }
+                }
+                super::ast::AstNode::Expression { js_analysis, .. } => {
+                    if let Some(analysis) = js_analysis {
+                        n += analysis.var_ops.len();
+                    }
+                }
+                _ => {}
+            }
+        }
+        n
+    }
+    total += count_in_nodes(&ast.nodes);
+    total
 }
 
 /// Incremental re-parse of a single passage.
