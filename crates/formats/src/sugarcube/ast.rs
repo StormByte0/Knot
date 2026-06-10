@@ -18,6 +18,97 @@
 use std::ops::Range;
 
 // ---------------------------------------------------------------------------
+// JsAnalysis — oxc-derived analysis attached to AST nodes
+// ---------------------------------------------------------------------------
+
+/// JS analysis result, attached to AST nodes that contain JS.
+///
+/// Produced by Phase 2 (JS annotation pass) and consumed by Phase 3
+/// (registry population). This replaces the old dual-path variable
+/// extraction where both `scan_inline_vars` and `js_walk` would
+/// independently produce variable entries.
+///
+/// A single `JsAnalysis` on a node is the **single source of truth** for
+/// all JS-derived information in that node — variable operations, macro
+/// definitions, template registrations, and function declarations.
+#[derive(Debug, Clone, Default)]
+pub struct JsAnalysis {
+    /// Variable operations found by oxc.
+    pub var_ops: Vec<AnalyzedVarOp>,
+    /// `Macro.add()` calls found.
+    pub macro_adds: Vec<MacroAddInfo>,
+    /// `Template.add()` calls found.
+    pub template_adds: Vec<TemplateAddInfo>,
+    /// Function declarations/expressions found.
+    pub function_defs: Vec<FunctionDefInfo>,
+}
+
+/// A variable operation extracted by the oxc AST walker.
+///
+/// Unlike `VarRef` (which is produced by the simple `scan_inline_vars`
+/// scanner), `AnalyzedVarOp` comes from full JS AST analysis and
+/// correctly classifies reads vs writes from assignment position.
+/// SugarCube semantic overrides (CompoundWrite, Capture, Unset) are
+/// applied during Phase 3 registry population, not here.
+#[derive(Debug, Clone)]
+pub struct AnalyzedVarOp {
+    /// Variable name with sigil: "$hp", "_items", "$ITEMS"
+    pub name: String,
+    /// Whether this is a temporary variable (_ sigil).
+    pub is_temporary: bool,
+    /// The access kind (Read, Write, CompoundWrite, etc.).
+    ///
+    /// oxc determines Read vs Write from assignment position.
+    /// SugarCube semantic overrides (CompoundWrite, Capture, Unset)
+    /// are applied during Phase 3.
+    pub access_kind: super::registries::variable_tree::VarAccessKind,
+    /// Byte range in the passage body (passage-body-relative).
+    pub span: Range<usize>,
+    /// Dot-notation property path (e.g., "name" for $player.name).
+    pub property_path: String,
+    /// Per-segment spans for each path component, enabling "Go to Definition"
+    /// to navigate to the exact property token rather than the whole expression.
+    pub segment_spans: Vec<Range<usize>>,
+    /// The span of the full construct at the root variable's focus level.
+    ///
+    /// For object literal property writes like `<<set $foo = {bar: 1, baz: 2}`>>,
+    /// `span` covers just the property key (e.g., `bar`), but `construct_span`
+    /// covers the entire `{...}` expression.
+    pub construct_span: Option<Range<usize>>,
+}
+
+/// Information about a `Macro.add()` call found in JS.
+#[derive(Debug, Clone)]
+pub struct MacroAddInfo {
+    /// The macro name being registered.
+    pub name: String,
+    /// Byte offset of the name argument in the passage body.
+    pub name_offset: usize,
+}
+
+/// Information about a `Template.add()` call found in JS.
+#[derive(Debug, Clone)]
+pub struct TemplateAddInfo {
+    /// The template name being registered.
+    pub name: String,
+    /// Byte offset of the name argument in the passage body.
+    pub name_offset: usize,
+    /// Whether this template is a string template or function template.
+    pub is_string: bool,
+}
+
+/// Information about a function declaration/expression found in JS.
+#[derive(Debug, Clone)]
+pub struct FunctionDefInfo {
+    /// The function name.
+    pub name: String,
+    /// Byte offset of the function name in the passage body.
+    pub name_offset: usize,
+    /// Number of parameters, if known.
+    pub param_count: Option<usize>,
+}
+
+// ---------------------------------------------------------------------------
 // VarRef — extracted from macro args and text gaps
 // ---------------------------------------------------------------------------
 
@@ -251,6 +342,12 @@ pub enum AstNode {
         args: String,
         /// Variable references found in the args string.
         var_refs: Vec<VarRef>,
+        /// JS analysis results from oxc, attached during Phase 2 (annotation pass).
+        ///
+        /// When `Some`, this is the **single source of truth** for JS-derived
+        /// variable operations. When `None`, the annotation pass hasn't run yet
+        /// or this macro doesn't contain JS content.
+        js_analysis: Option<JsAnalysis>,
         /// For block macros: the child nodes between `<<name>>` and `<</name>>`.
         /// For inline macros: `None`.
         children: Option<Vec<AstNode>>,
@@ -281,6 +378,11 @@ pub enum AstNode {
         content: String,
         /// Variable references found in the expression.
         var_refs: Vec<VarRef>,
+        /// JS analysis results from oxc, attached during Phase 2 (annotation pass).
+        ///
+        /// When `Some`, this is the **single source of truth** for JS-derived
+        /// variable operations. When `None`, the annotation pass hasn't run yet.
+        js_analysis: Option<JsAnalysis>,
         /// Byte range of the entire expression construct.
         span: Range<usize>,
     },
@@ -364,6 +466,15 @@ pub struct PassageAst {
     pub var_ops: Vec<VarOpInfo>,
     /// The parse mode that was used.
     pub mode: ParseMode,
+    /// For script passages: the JS analysis for the entire passage body.
+    ///
+    /// Script passages contain pure JS (no SugarCube syntax), so the parser
+    /// produces a single Text node. Since Text nodes don't have `js_analysis`,
+    /// we store the analysis here at the PassageAst level.
+    ///
+    /// Populated during Phase 2 (JS annotation pass) for script passages.
+    /// `None` for all other passage modes.
+    pub script_js_analysis: Option<JsAnalysis>,
 }
 
 /// A link extracted from the AST, in a format-agnostic representation.
@@ -409,6 +520,7 @@ impl PassageAst {
             links: Vec::new(),
             var_ops: Vec::new(),
             mode,
+            script_js_analysis: None,
         }
     }
 

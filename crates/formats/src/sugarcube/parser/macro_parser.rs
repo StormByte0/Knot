@@ -37,6 +37,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             name,
             args: String::new(),
             var_refs: Vec::new(),
+            js_analysis: None,
             children: None, // close tags have no children
             name_span: offset + name_start..offset + *i,
             open_span: offset + macro_start..offset + *i,
@@ -65,6 +66,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             kind,
             content,
             var_refs,
+            js_analysis: None,
             span: offset + macro_start..offset + *i,
         };
     }
@@ -139,6 +141,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             name,
             args,
             var_refs,
+            js_analysis: None,
             children: Some(children),
             name_span: offset + name_start..offset + name_start + name_len,
             open_span: offset + macro_start..offset + open_end,
@@ -151,6 +154,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             name,
             args,
             var_refs,
+            js_analysis: None,
             children: None,
             name_span: offset + name_start..offset + name_start + name_len,
             open_span: offset + macro_start..offset + open_end,

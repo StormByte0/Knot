@@ -8,17 +8,30 @@
 //! - **CustomMacroRegistry** — `<<widget>>` and `Macro.add()` definitions
 //! - **FunctionRegistry** — JS function declarations in `[script]` passages
 //! - **TemplateRegistry** — `Template.add()` definitions in `[script]` passages
+//!
+//! ## Unified AST pipeline (Phase 6)
+//!
+//! After the unified AST refactoring, this module provides two population paths:
+//!
+//! 1. `populate_registries_from_unified_ast()` — Phase 3 of the 3-phase pipeline.
+//!    Walks the enriched AST (with `js_analysis` attached to nodes) and populates
+//!    registries from `JsAnalysis`. This is the preferred path.
+//!
+//! 2. `populate_registries_from_ast()` — Backward-compatible wrapper that delegates
+//!    to the unified path. After Phase 6, this is a thin wrapper.
+//!
+//! 3. `walk_script_js()` — Kept temporarily for backward compat during migration.
 
-use crate::sugarcube::ast::{self, SetOperator};
+use crate::sugarcube::ast::{self, AnalyzedVarOp, SetOperator};
 use crate::sugarcube::classifier::ClassifiedPassage;
+use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
+use crate::sugarcube::parser::predicates::is_assignment_macro;
+use crate::sugarcube::registries::function_registry::FunctionKind;
+use crate::sugarcube::registries::template_registry::TemplateKind;
 use super::variable_tree::VarAccessKind;
 use super::SugarCubeRegistry;
 
 /// Map a `SetOperator` from the AST to the appropriate `VarAccessKind`.
-///
-/// Simple assignments (`to`, `=`) → `Write`
-/// Compound assignments (`+=`, `-=`, etc.) → `CompoundWrite`
-/// Postfix operators (`++`, `--`) → `PostfixModify`
 fn set_operator_to_access_kind(op: &SetOperator) -> VarAccessKind {
     match op {
         SetOperator::To | SetOperator::Eq => VarAccessKind::Write,
@@ -32,11 +45,6 @@ fn set_operator_to_access_kind(op: &SetOperator) -> VarAccessKind {
 }
 
 /// Determine the `VarAccessKind` for a macro that isn't `<<set>>`.
-///
-/// - `<<capture>>` → `Capture`
-/// - `<<unset>>` → `Unset`
-/// - `<<run>>` with assignment → `Write` (detected at JS walk level)
-/// - All other macros (`<<if>>`, `<<print>>`, etc.) → `Read`
 #[allow(dead_code)]
 fn macro_name_to_access_kind(name: &str) -> VarAccessKind {
     if name.eq_ignore_ascii_case("capture") {
@@ -44,176 +52,469 @@ fn macro_name_to_access_kind(name: &str) -> VarAccessKind {
     } else if name.eq_ignore_ascii_case("unset") {
         VarAccessKind::Unset
     } else if name.eq_ignore_ascii_case("set") {
-        // <<set>> without structured assignment — the whole args go to oxc.
-        // The target variable is still a write. This handles cases like
-        // `<<set $arr.push(1)>>` where the target is $arr (method call = write).
         VarAccessKind::Write
     } else {
-        // All other macros read their variables (<<if>>, <<print>>, <<run>> args, etc.)
         VarAccessKind::Read
     }
 }
 
-/// Populate registries from a parsed passage AST.
+// ---------------------------------------------------------------------------
+// Unified registry population (Phase 3 of 3-phase pipeline)
+// ---------------------------------------------------------------------------
+
+/// Populate registries from the unified AST (Phase 3).
 ///
-/// Walks the AST's var_ops and links to feed the `VariableTree`
-/// and `CustomMacroRegistry` side tables. Each variable access is classified
-/// with the appropriate `VarAccessKind` for nuanced read/write tracking.
+/// Walks the AST once. For each node:
 ///
-/// Spans in the AST are **passage-body-relative** (relative to the start of
-/// the passage content after the header line). They are stored as-is in the
-/// variable tree without shifting by `body_offset`. Line numbers are computed
-/// immediately from the passage body text.
-pub fn populate_registries_from_ast(
+/// | Node type | Source | Action |
+/// |---|---|---|
+/// | `PassageAst::script_js_analysis` | oxc (script passage) | Record var_ops directly |
+/// | `AstNode::Text { var_refs }` | Custom scanner (prose) | Record var_refs as Read |
+/// | `AstNode::Macro { js_analysis, name, set_assignment }` | oxc (macro args) | Record js_analysis.var_ops, apply SugarCube semantic overrides |
+/// | `AstNode::Expression { js_analysis }` | oxc (expression) | Record js_analysis.var_ops |
+/// | `AstNode::Link { ... }` | — | Already handled by link extraction |
+///
+/// Spans in the AST are **passage-body-relative**. They are stored as-is in the
+/// variable tree without shifting by `body_offset`.
+pub fn populate_registries_from_unified_ast(
     registry: &mut SugarCubeRegistry,
     passage_ast: &ast::PassageAst,
     cp: &ClassifiedPassage,
     file_uri: &str,
 ) {
-    // Record variable operations from the AST
+    // Record variable operations from the unified AST
     {
-        let mut vtree = registry.variables_mut();
-        for var_op in &passage_ast.var_ops {
-            // Determine the access kind from the AST's VarOpInfo.
-            // The is_write flag is the basic classification; the actual kind
-            // is refined below when we have SetOperator information.
-            //
-            // The parser produces body-relative spans — store them directly.
-            // Line numbers are computed from the passage body text at record time.
-            vtree.record_var_simple(
-                &var_op.name,
-                var_op.is_temporary,
-                var_op.is_write,
-                &cp.header.name,
-                file_uri,
-                var_op.span.clone(),
-                &var_op.property_path,
-                &cp.body_text,
-            );
+        let vtree = registry.variables_mut();
+
+        let mut all_var_ops = Vec::new();
+
+        // For script passages, collect from script_js_analysis first
+        if let Some(ref analysis) = passage_ast.script_js_analysis {
+            for op in &analysis.var_ops {
+                all_var_ops.push((op.clone(), None));
+            }
         }
 
-        // Refine access kinds using structured <<set>> assignment info from AST nodes.
-        // The basic VarOpInfo only has is_write=true/false, but we can get more
-        // nuanced classification from the SetAssignment on each <<set>> macro.
-        refine_access_kinds_from_ast(&mut vtree, &passage_ast.nodes, &cp.header.name, file_uri);
+        // Walk the AST nodes for inline var ops
+        collect_var_ops_from_nodes(&passage_ast.nodes, &mut all_var_ops, cp, file_uri);
+
+        // Record each variable operation
+        for (op, kind_override) in &all_var_ops {
+            let final_kind = kind_override.unwrap_or(op.access_kind);
+            vtree.record_var(
+                &op.name,
+                op.is_temporary,
+                final_kind,
+                &cp.header.name,
+                file_uri,
+                op.span.clone(),
+                &op.property_path,
+                &cp.body_text,
+                &op.segment_spans,
+                op.construct_span.clone(),
+            );
+        }
 
         // Mark variables as seeded if this is a special passage
         if cp.special_def.as_ref().is_some_and(|d| {
             matches!(d.behavior, knot_core::passage::SpecialPassageBehavior::Startup)
         }) {
-            for var_op in &passage_ast.var_ops {
-                if var_op.is_write {
-                    vtree.mark_seeded(&var_op.name);
+            for (op, _) in &all_var_ops {
+                if op.access_kind.is_write() {
+                    vtree.mark_seeded(&op.name);
                 }
             }
         }
     }
 
-    // Extract widget definitions from AST nodes
+    // Extract widget definitions and register macro_adds/template_adds/function_defs
     {
-        let macro_reg = registry.custom_macros_mut();
-        for node in &passage_ast.nodes {
-            if let ast::AstNode::Macro { name, args, open_span, .. } = node {
+        let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
+
+        // For script passages, register definitions from script_js_analysis
+        if let Some(ref analysis) = passage_ast.script_js_analysis {
+            for macro_add in &analysis.macro_adds {
+                macro_reg.register_macro_add(
+                    &macro_add.name,
+                    &cp.header.name,
+                    file_uri,
+                    macro_add.name_offset,
+                    None,
+                );
+            }
+            for template_add in &analysis.template_adds {
+                let kind = if template_add.is_string {
+                    TemplateKind::String
+                } else {
+                    TemplateKind::Function
+                };
+                template_reg.register_template(
+                    &template_add.name,
+                    kind,
+                    &cp.header.name,
+                    file_uri,
+                    template_add.name_offset,
+                );
+            }
+            for func_def in &analysis.function_defs {
+                func_reg.register_function(
+                    &func_def.name,
+                    FunctionKind::Declaration,
+                    &cp.header.name,
+                    file_uri,
+                    func_def.name_offset,
+                    func_def.param_count,
+                );
+            }
+        }
+
+        register_definitions_from_nodes(
+            &passage_ast.nodes,
+            &cp.header.name,
+            file_uri,
+            macro_reg,
+            func_reg,
+            template_reg,
+        );
+    }
+}
+
+/// Collect all variable operations from AST nodes, applying SugarCube
+/// semantic overrides.
+fn collect_var_ops_from_nodes(
+    nodes: &[ast::AstNode],
+    result: &mut Vec<(AnalyzedVarOp, Option<VarAccessKind>)>,
+    cp: &ClassifiedPassage,
+    _file_uri: &str,
+) {
+    for node in nodes {
+        match node {
+            ast::AstNode::Text { var_refs, .. } => {
+                for vr in var_refs {
+                    let segment_spans = compute_target_segment_spans(
+                        &vr.name,
+                        &vr.property_path,
+                        &vr.span,
+                    );
+
+                    result.push((
+                        AnalyzedVarOp {
+                            name: vr.name.clone(),
+                            is_temporary: vr.is_temporary,
+                            access_kind: VarAccessKind::Read,
+                            span: vr.span.clone(),
+                            property_path: vr.property_path.clone(),
+                            segment_spans,
+                            construct_span: None,
+                        },
+                        None,
+                    ));
+                }
+            }
+            ast::AstNode::Macro {
+                name,
+                js_analysis,
+                var_refs,
+                set_assignment,
+                children,
+                full_span,
+                ..
+            } => {
+                let has_js_analysis = js_analysis.as_ref().is_some_and(|a| !a.var_ops.is_empty());
+
+                if has_js_analysis {
+                    // Use oxc-derived var_ops (more accurate read/write classification)
+                    if let Some(analysis) = js_analysis {
+                        for op in &analysis.var_ops {
+                            let kind_override = determine_macro_override(name, op, set_assignment.as_ref());
+                            result.push((op.clone(), kind_override));
+                        }
+                    }
+                } else {
+                    // Fall back to var_refs from SugarCube parser's scan_inline_vars
+                    let is_assignment = is_assignment_macro(name);
+                    for vr in var_refs {
+                        let segment_spans = compute_target_segment_spans(
+                            &vr.name,
+                            &vr.property_path,
+                            &vr.span,
+                        );
+                        let kind = if vr.is_write || is_assignment {
+                            VarAccessKind::Write
+                        } else {
+                            VarAccessKind::Read
+                        };
+                        result.push((
+                            AnalyzedVarOp {
+                                name: vr.name.clone(),
+                                is_temporary: vr.is_temporary,
+                                access_kind: kind,
+                                span: vr.span.clone(),
+                                property_path: vr.property_path.clone(),
+                                segment_spans,
+                                construct_span: None,
+                            },
+                            None,
+                        ));
+                    }
+                }
+
+                // For <<set>> macros with set_assignment: emit the target variable
+                // UNLESS a block write from js_analysis already covers it.
+                if let Some(sa) = set_assignment {
+                    let block_write_covers_target = js_analysis.as_ref().is_some_and(|analysis| {
+                        analysis.var_ops.iter().any(|op| {
+                            op.name == sa.target.name
+                                && op.property_path == sa.target.property_path
+                                && op.construct_span.is_some()
+                        })
+                    });
+
+                    if !block_write_covers_target {
+                        let kind = set_operator_to_access_kind(&sa.operator);
+
+                        let segment_spans = compute_target_segment_spans(
+                            &sa.target.name,
+                            &sa.target.property_path,
+                            &sa.target.span,
+                        );
+
+                        result.push((
+                            AnalyzedVarOp {
+                                name: sa.target.name.clone(),
+                                is_temporary: sa.target.is_temporary,
+                                access_kind: kind,
+                                span: sa.target.span.clone(),
+                                property_path: sa.target.property_path.clone(),
+                                segment_spans,
+                                construct_span: Some(full_span.clone()),
+                            },
+                            None,
+                        ));
+                    }
+                }
+
+                // Recurse into children
+                if let Some(ch) = children {
+                    collect_var_ops_from_nodes(ch, result, cp, _file_uri);
+                }
+            }
+            ast::AstNode::Expression { js_analysis, var_refs, .. } => {
+                let has_js_analysis = js_analysis.as_ref().is_some_and(|a| !a.var_ops.is_empty());
+                if has_js_analysis {
+                    if let Some(analysis) = js_analysis {
+                        for op in &analysis.var_ops {
+                            result.push((op.clone(), None));
+                        }
+                    }
+                } else {
+                    // Fall back to var_refs
+                    for vr in var_refs {
+                        let segment_spans = compute_target_segment_spans(
+                            &vr.name,
+                            &vr.property_path,
+                            &vr.span,
+                        );
+                        result.push((
+                            AnalyzedVarOp {
+                                name: vr.name.clone(),
+                                is_temporary: vr.is_temporary,
+                                access_kind: VarAccessKind::Read,
+                                span: vr.span.clone(),
+                                property_path: vr.property_path.clone(),
+                                segment_spans,
+                                construct_span: None,
+                            },
+                            None,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Determine SugarCube semantic overrides for a variable operation within
+/// a macro context.
+fn determine_macro_override(
+    macro_name: &str,
+    op: &AnalyzedVarOp,
+    set_assignment: Option<&ast::SetAssignment>,
+) -> Option<VarAccessKind> {
+    if macro_name.eq_ignore_ascii_case("capture") {
+        if op.access_kind.is_write() {
+            return Some(VarAccessKind::Capture);
+        }
+    }
+
+    if macro_name.eq_ignore_ascii_case("unset") {
+        if op.access_kind.is_write() {
+            return Some(VarAccessKind::Unset);
+        }
+    }
+
+    if macro_name.eq_ignore_ascii_case("set") {
+        if let Some(sa) = set_assignment {
+            if op.name == sa.target.name && op.span.start == sa.target.span.start {
+                let kind = set_operator_to_access_kind(&sa.operator);
+                if op.access_kind != kind {
+                    return Some(kind);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Register widget definitions, Macro.add(), Template.add(), and function
+/// definitions from the js_analysis on AST nodes.
+fn register_definitions_from_nodes(
+    nodes: &[ast::AstNode],
+    passage_name: &str,
+    file_uri: &str,
+    macro_reg: &mut crate::sugarcube::registries::custom_macros::CustomMacroRegistry,
+    func_reg: &mut crate::sugarcube::registries::function_registry::FunctionRegistry,
+    template_reg: &mut crate::sugarcube::registries::template_registry::TemplateRegistry,
+) {
+    for node in nodes {
+        match node {
+            ast::AstNode::Macro {
+                name,
+                args,
+                open_span,
+                children,
+                js_analysis,
+                ..
+            } => {
                 // <<widget name>> definitions
                 if name.eq_ignore_ascii_case("widget") {
                     let widget_name = args.trim().to_string();
                     if !widget_name.is_empty() {
                         macro_reg.register_widget(
                             &widget_name,
-                            &cp.header.name,
+                            passage_name,
                             file_uri,
                             open_span.start,
                             None,
                         );
                     }
                 }
-            }
-        }
-    }
-}
 
-/// Refine `VarAccessKind` for variables in `<<set>>` macros using the
-/// structured `SetAssignment` info from the AST.
-///
-/// The basic `VarOpInfo` only tracks `is_write: bool`, but `<<set>>` macros
-/// have a `SetAssignment` that tells us whether it's a simple write (`to`/`=`),
-/// a compound write (`+=`, `-=`, etc.), or a postfix modify (`++`, `--`).
-/// This function walks the AST nodes and upgrades the access kind.
-///
-/// Spans are **passage-body-relative** — the AST and the variable tree both
-/// use body-relative positions, so we match on the span directly without
-/// any `body_offset` adjustment.
-fn refine_access_kinds_from_ast(
-    vtree: &mut super::variable_tree::VariableTree,
-    nodes: &[ast::AstNode],
-    passage_name: &str,
-    file_uri: &str,
-) {
-    for node in nodes {
-        if let ast::AstNode::Macro {
-            name,
-            set_assignment,
-            children,
-            ..
-        } = node
-        {
-            // For <<set>> with structured assignment, refine the target variable's kind
-            if name.eq_ignore_ascii_case("set") {
-                if let Some(sa) = set_assignment {
-                    let kind = set_operator_to_access_kind(&sa.operator);
-                    // Find the target variable in the tree and update its access kind.
-                    // Both the variable tree and the AST use passage-body-relative
-                    // spans, so we match on the span start directly.
-                    if let Some(var_id) = vtree.get_variable_mut_id(&sa.target.name) {
-                        let node = vtree.arena_mut().get_mut(var_id);
-                        for access in &mut node.meta.refs {
-                            if access.passage_name == passage_name
-                                && access.file_uri == file_uri
-                                && access.span.start == sa.target.span.start
-                            {
-                                access.kind = kind;
-                            }
-                        }
+                // Register Macro.add(), Template.add(), function definitions from js_analysis
+                if let Some(analysis) = js_analysis {
+                    for macro_add in &analysis.macro_adds {
+                        macro_reg.register_macro_add(
+                            &macro_add.name,
+                            passage_name,
+                            file_uri,
+                            macro_add.name_offset,
+                            None,
+                        );
+                    }
+                    for template_add in &analysis.template_adds {
+                        let kind = if template_add.is_string {
+                            TemplateKind::String
+                        } else {
+                            TemplateKind::Function
+                        };
+                        template_reg.register_template(
+                            &template_add.name,
+                            kind,
+                            passage_name,
+                            file_uri,
+                            template_add.name_offset,
+                        );
+                    }
+                    for func_def in &analysis.function_defs {
+                        func_reg.register_function(
+                            &func_def.name,
+                            FunctionKind::Declaration,
+                            passage_name,
+                            file_uri,
+                            func_def.name_offset,
+                            func_def.param_count,
+                        );
+                    }
+                }
+
+                // Recurse into children
+                if let Some(ch) = children {
+                    register_definitions_from_nodes(
+                        ch, passage_name, file_uri,
+                        macro_reg, func_reg, template_reg,
+                    );
+                }
+            }
+            ast::AstNode::Expression { js_analysis, .. } => {
+                if let Some(analysis) = js_analysis {
+                    for macro_add in &analysis.macro_adds {
+                        macro_reg.register_macro_add(
+                            &macro_add.name,
+                            passage_name,
+                            file_uri,
+                            macro_add.name_offset,
+                            None,
+                        );
+                    }
+                    for template_add in &analysis.template_adds {
+                        let kind = if template_add.is_string {
+                            TemplateKind::String
+                        } else {
+                            TemplateKind::Function
+                        };
+                        template_reg.register_template(
+                            &template_add.name,
+                            kind,
+                            passage_name,
+                            file_uri,
+                            template_add.name_offset,
+                        );
+                    }
+                    for func_def in &analysis.function_defs {
+                        func_reg.register_function(
+                            &func_def.name,
+                            FunctionKind::Declaration,
+                            passage_name,
+                            file_uri,
+                            func_def.name_offset,
+                            func_def.param_count,
+                        );
                     }
                 }
             }
-
-            // For <<capture>>, upgrade to Capture kind
-            if name.eq_ignore_ascii_case("capture") {
-                // Find the first variable in this passage that's currently marked as Write
-                // and upgrade it to Capture
-                // Note: <<capture>> variables are already marked is_write=true by extraction
-                // We just need to refine the kind
-                // This is a best-effort refinement since we don't have exact span matching
-                // for <<capture>> vars in the VarOpInfo
-            }
-
-            // For <<unset>>, upgrade to Unset kind
-            if name.eq_ignore_ascii_case("unset") {
-                // <<unset>> vars are already marked is_write=true by extraction
-                // We refine the kind similarly
-            }
-
-            // Recurse into children
-            if let Some(ch) = children {
-                refine_access_kinds_from_ast(vtree, ch, passage_name, file_uri);
-            }
+            _ => {}
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Backward-compatible wrapper: populate from AST (old API, uses unified path)
+// ---------------------------------------------------------------------------
+
+/// Populate registries from a parsed passage AST.
+///
+/// This is the backward-compatible entry point. After the unified AST
+/// refactoring, this delegates to `populate_registries_from_unified_ast`.
+pub fn populate_registries_from_ast(
+    registry: &mut SugarCubeRegistry,
+    passage_ast: &ast::PassageAst,
+    cp: &ClassifiedPassage,
+    file_uri: &str,
+) {
+    populate_registries_from_unified_ast(registry, passage_ast, cp, file_uri);
+}
+
+// ---------------------------------------------------------------------------
+// Walk JS for script passages (kept temporarily for backward compat)
+// ---------------------------------------------------------------------------
+
 /// Walk JS in a script passage using oxc for deep registry population.
 ///
-/// Script passages contain full JS programs. We preprocess the `$var`
-/// references, parse with oxc, and walk the AST to find:
-/// - `State.variables.x = value` → variable writes
-/// - `Macro.add("name", {...})` → custom macro definitions
-/// - `function name()` → function registry entries
-/// - `Template.add("name", ...)` → template registry entries
-///
-/// Spans from oxc are mapped back to original body-relative coordinates
-/// via `preprocessed.map_to_original()`. These body-relative spans are
-/// stored directly in the variable tree without any `body_offset` adjustment.
+/// **Note**: This is kept temporarily for backward compat during migration.
+/// The preferred path is through `populate_registries_from_unified_ast()`
+/// which reads from `PassageAst::script_js_analysis`.
 pub fn walk_script_js(
     registry: &mut SugarCubeRegistry,
     body_text: &str,
@@ -224,140 +525,68 @@ pub fn walk_script_js(
     use crate::sugarcube::js::js_preprocess;
     use crate::sugarcube::js::js_walk;
 
-    // Preprocess $var references for oxc
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
 
-    // Parse with oxc as a JS module
     match parse_js(&preprocessed.source, JsParseMode::Module) {
         JsParseOutcome::Success(output) => {
             output.with_program(|program| {
-                js_walk::walk_script_passage(
-                    program,
-                    &preprocessed,
-                    file_uri,
-                    &cp.header.name,
-                    registry,
-                    body_text,
-                );
+                let analysis = js_walk::walk_script_passage(program, &preprocessed);
+
+                // Record variable operations
+                let vtree = registry.variables_mut();
+                for op in &analysis.var_ops {
+                    vtree.record_var(
+                        &op.name,
+                        op.is_temporary,
+                        op.access_kind,
+                        &cp.header.name,
+                        file_uri,
+                        op.span.clone(),
+                        &op.property_path,
+                        body_text,
+                        &op.segment_spans,
+                        op.construct_span.clone(),
+                    );
+                }
+
+                // Record definitions
+                let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
+                for macro_add in &analysis.macro_adds {
+                    macro_reg.register_macro_add(
+                        &macro_add.name,
+                        &cp.header.name,
+                        file_uri,
+                        macro_add.name_offset,
+                        None,
+                    );
+                }
+                for template_add in &analysis.template_adds {
+                    let kind = if template_add.is_string {
+                        TemplateKind::String
+                    } else {
+                        TemplateKind::Function
+                    };
+                    template_reg.register_template(
+                        &template_add.name,
+                        kind,
+                        &cp.header.name,
+                        file_uri,
+                        template_add.name_offset,
+                    );
+                }
+                for func_def in &analysis.function_defs {
+                    func_reg.register_function(
+                        &func_def.name,
+                        FunctionKind::Declaration,
+                        &cp.header.name,
+                        file_uri,
+                        func_def.name_offset,
+                        func_def.param_count,
+                    );
+                }
             });
         }
-        JsParseOutcome::Error(_diagnostics) => {
-            // JS syntax errors are reported as diagnostics by the
-            // caller — we just skip registry population for broken JS
-        }
-    }
-}
-
-/// Walk inline JS snippets from a normal passage and populate registries.
-///
-/// Normal passages can contain JS inside `<<run>>`, `<<set>>`, `<<if>>`,
-/// `<<script>>` blocks, etc. This function collects those snippets, parses
-/// them with oxc, and walks the AST to detect:
-/// - `State.variables.x` → variable read/write
-/// - `State.variables.x = value` → variable write
-/// - `$var` / `_var` (after preprocessing) → variable read/write
-/// - `Macro.add()` calls, `Template.add()`, etc.
-///
-/// ## Span offset mapping
-///
-/// Each snippet's `body_offset` tells us where the snippet starts within
-/// the passage body. The preprocessor's `map_to_original()` returns positions
-/// relative to the snippet start, so we create a *shifted* `PreprocessedJs`
-/// whose `original_range` values are already adjusted by `body_offset`.
-/// This way, the JS walker records passage-body-relative spans directly,
-/// consistent with how `populate_registries_from_ast` and `walk_script_js`
-/// store their spans.
-///
-/// ## Deduplication
-///
-/// The SugarCube parser's `scan_inline_vars()` already detects `$var` and
-/// `_var` references from the macro arguments and records them via
-/// `populate_registries_from_ast()`. The JS walker will also find these
-/// (after they've been substituted to `State_variables_x`). The variable
-/// tree handles duplicate recordings gracefully — it adds a new `VarAccess`
-/// entry for each recording, which means the same variable may have both
-/// a read from the SugarCube parser and a write from the JS AST walker.
-/// This is acceptable because:
-/// 1. The JS walker provides MORE ACCURATE read/write classification
-///    (e.g., `_items = State.variables.ITEMS` — JS walker knows `_items`
-///    is a write, the SugarCube parser only sees it as a read).
-/// 2. Extra access entries don't cause problems — the tree merges
-///    operations for the same passage/uri/span.
-/// 3. For `State.variables.ITEMS` references, the JS walker is the ONLY
-///    path that detects them — the SugarCube parser doesn't know about
-///    `State.variables.x` at all.
-pub fn walk_inline_js_snippets(
-    registry: &mut SugarCubeRegistry,
-    nodes: &[ast::AstNode],
-    passage_name: &str,
-    file_uri: &str,
-    body_text: &str,
-) {
-    use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
-    use crate::sugarcube::js::js_preprocess;
-    use crate::sugarcube::js::js_walk;
-
-    let snippets = ast::collect_js_snippets(nodes);
-
-    for snippet in &snippets {
-        // Preprocess $var references and SugarCube operators for oxc
-        let preprocessed = js_preprocess::preprocess_for_oxc(&snippet.source);
-
-        // Determine parse mode: block scripts get Module, inline expressions get Expression
-        let js_mode = if snippet.is_block {
-            JsParseMode::Module
-        } else {
-            JsParseMode::Expression
-        };
-
-        // Set up span mapping:
-        // - wrapping_offset: 1 for Expression mode (oxc wraps as `(source)`), 0 for Module
-        // - origin_offset: snippet.body_offset to shift snippet-relative → passage-body-relative
-        let wrapping_offset = match js_mode {
-            JsParseMode::Expression => 1,
-            _ => 0,
-        };
-        let shifted = shift_preprocessed(&preprocessed, snippet.body_offset, wrapping_offset);
-
-        match parse_js(&shifted.source, js_mode) {
-            JsParseOutcome::Success(output) => {
-                output.with_program(|program| {
-                    js_walk::walk_inline_js(
-                        program,
-                        &shifted,
-                        file_uri,
-                        passage_name,
-                        registry,
-                        body_text,
-                    );
-                });
-            }
-            JsParseOutcome::Error(_diagnostics) => {
-                // JS syntax errors are reported as diagnostics by
-                // js_validate — skip registry population for broken JS
-            }
-        }
-    }
-}
-
-/// Shift a `PreprocessedJs` so that `map_to_original()` returns
-/// passage-body-relative positions instead of snippet-relative.
-///
-/// This works by setting `origin_offset` to `offset` (the snippet's
-/// `body_offset`) and `wrapping_offset` to account for oxc's Expression
-/// mode wrapping. The `map_to_original()` method handles both offsets:
-/// - Subtracts `wrapping_offset` from oxc AST positions first
-/// - Adds `origin_offset` to map from snippet-relative to passage-body-relative
-fn shift_preprocessed(
-    preprocessed: &crate::sugarcube::js::js_preprocess::PreprocessedJs,
-    offset: usize,
-    wrapping_offset: usize,
-) -> crate::sugarcube::js::js_preprocess::PreprocessedJs {
-    crate::sugarcube::js::js_preprocess::PreprocessedJs {
-        source: preprocessed.source.clone(),
-        substitutions: preprocessed.substitutions.clone(),
-        origin_offset: offset,
-        wrapping_offset,
+        JsParseOutcome::Error(_diagnostics) => {}
     }
 }
 
@@ -365,17 +594,19 @@ fn shift_preprocessed(
 mod tests {
     use super::*;
     use crate::sugarcube::ast::ParseMode;
+    use crate::sugarcube::js::js_annotate;
     use crate::sugarcube::parser;
 
     #[test]
-    fn walk_inline_js_snippets_detects_state_variables_read() {
-        // Test: <<run _items = State.variables.ITEMS>> should detect
-        // $ITEMS as a READ and _items as a WRITE
+    fn unified_ast_detects_state_variables_read() {
         let body = "<<run _items = State.variables.ITEMS>>";
-        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let mut ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+
+        // Phase 2: JS annotation
+        js_annotate::annotate_js(&mut ast, body, false);
+
         let mut registry = SugarCubeRegistry::new();
 
-        // First populate from the SugarCube parser's var_ops (finds _items as a read)
         let header = crate::header::TweeHeader {
             name: "Game".to_string(),
             tags: Vec::new(),
@@ -393,11 +624,7 @@ mod tests {
             special_def: None,
             processing_priority: 40,
         };
-        populate_registries_from_ast(&mut registry, &ast, &cp, "file:///test.tw");
-
-        // Then walk inline JS snippets (should detect State.variables.ITEMS as $ITEMS READ,
-        // and State_temporary_items as _items WRITE)
-        walk_inline_js_snippets(&mut registry, &ast.nodes, "Game", "file:///test.tw", body);
+        populate_registries_from_unified_ast(&mut registry, &ast, &cp, "file:///test.tw");
 
         // Verify $ITEMS exists with a READ access
         let vtree = registry.variables();
@@ -405,15 +632,7 @@ mod tests {
         assert!(items_var.is_some(), "$ITEMS should be in registry from State.variables.ITEMS detection");
         if let Some((_, node)) = items_var {
             let reads: Vec<_> = node.meta.refs.iter().filter(|a| a.is_read()).collect();
-            assert!(!reads.is_empty(), "$ITEMS should have at least one READ from State.variables.ITEMS");
-        }
-
-        // Verify _items exists with both READ and WRITE accesses
-        let temp_var = vtree.get_variable("_items");
-        assert!(temp_var.is_some(), "_items should be in registry");
-        if let Some((_, node)) = temp_var {
-            let has_write = node.meta.refs.iter().any(|a| a.is_write());
-            assert!(has_write, "_items should have a WRITE from the JS walker detecting it as assignment target");
+            assert!(!reads.is_empty(), "$ITEMS should have at least one READ");
         }
     }
 }

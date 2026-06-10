@@ -40,7 +40,7 @@ mod link_parser;
 mod comment;
 mod variable_scan;
 mod extraction;
-mod predicates;
+pub(crate) mod predicates;
 
 // Re-export public API from sub-modules
 pub use comment::strip_comments;
@@ -74,6 +74,7 @@ pub fn parse_passage_body(body: &str, _body_offset: usize, mode: ParseMode) -> P
                 links,
                 var_ops,
                 mode,
+                script_js_analysis: None,
             }
         }
         ParseMode::Interface => {
@@ -91,6 +92,7 @@ pub fn parse_passage_body(body: &str, _body_offset: usize, mode: ParseMode) -> P
                 links,
                 var_ops,
                 mode,
+                script_js_analysis: None,
             }
         }
         ParseMode::Script | ParseMode::Stylesheet | ParseMode::Minimal => {

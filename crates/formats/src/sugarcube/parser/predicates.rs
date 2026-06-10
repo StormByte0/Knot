@@ -54,6 +54,6 @@ pub(super) fn is_block_modifier(name: &str) -> bool {
 }
 
 /// Check if a macro name assigns/writes variables.
-pub(super) fn is_assignment_macro(name: &str) -> bool {
+pub(crate) fn is_assignment_macro(name: &str) -> bool {
     macros::variable_assignment_macros().contains(name)
 }
