@@ -1575,3 +1575,271 @@ git tag phase-3-cascade-protection
 
 If a phase introduces breakage, `git reset --hard phase-N-1` to the last known-good
 state and re-attempt the phase with the fix.
+
+---
+
+## Interrogation Report
+
+> This section documents the 12 discrepancies found during aggressive interrogation
+> of the plan against the actual codebase at both f65d6e2 and ver_3 HEAD. Each
+> finding is classified by severity and shows what was corrected.
+
+### Methodology
+
+Two parallel interrogation agents were launched:
+1. **Agent A**: Verified Phase 1-3 specifications against the actual f65d6e2 code
+2. **Agent B**: Verified Phase 4-7 specifications against the actual ver_3 HEAD code
+
+Each agent read the actual source files, compared them against the plan claims,
+and reported discrepancies.
+
+---
+
+### Finding 1: FATAL - parse_single() has 4 parameters, not 3
+
+**Phase affected**: Phase 1.3
+
+**Plan claimed**: `parse_single()` takes 3 parameters: `plugin`, `passage_name`, `passage_text`
+
+**Actual state at f65d6e2**: Takes 4 parameters: `plugin`, `passage_name`, `passage_tags`, `passage_text`
+- the `passage_tags: &[String]` parameter was completely omitted from the plan.
+
+**Impact**: If implemented as written, the function signature would be wrong and
+all callers would need different arguments than planned.
+
+**Correction applied**: Updated Phase 1.3 to show the correct 4 to 5 parameter change
+(adding `file_uri` after `passage_text`), and added a note that `passage_tags` was
+missed in the original plan.
+
+---
+
+### Finding 2: FATAL - FormatPlugin::parse_passage() trait method must also be updated
+
+**Phase affected**: Phase 1.3
+
+**Plan claimed**: Only `parse_single()` in `parse_pipeline.rs` needs the `file_uri` parameter.
+
+**Actual state at f65d6e2**: The `FormatPlugin` trait in `plugin.rs` defines
+`fn parse_passage(&self, passage_name, passage_tags, passage_text) -> Option<Passage>`.
+Since `parse_single()` is called through this trait method, the TRAIT must also be
+updated, AND every format plugin implementation (SugarCube, Harlowe, Chapbook, Snowman,
+TwineCore) must be updated.
+
+**Impact**: Without updating the trait, the compiler would reject the new parameter
+on the concrete implementation.
+
+**Correction applied**: Added explicit instructions to update the `FormatPlugin::parse_passage()`
+trait method signature and listed all 5 format plugin implementations that must be updated.
+
+---
+
+### Finding 3: FATAL - ServerState.inner is RwLock<...>, NOT Arc<RwLock<...>>
+
+**Phase affected**: Phase 3.1
+
+**Plan claimed**: Phase 3 adds `Arc` wrapping around `RwLock<ServerStateInner>`.
+
+**Actual state at f65d6e2**: `ServerState.inner` is `tokio::sync::RwLock<ServerStateInner>`,
+NOT wrapped in `Arc`. Since `tokio::spawn` requires `'static + Send` futures and
+`RwLock` is not `Clone`, we cannot clone `self.inner` into a spawned task without
+wrapping it in `Arc` first.
+
+**Impact**: The `initialized` handler `tokio::spawn` would fail to compile because
+`self.inner` cannot be cloned.
+
+**Correction applied**: Added explicit note that Phase 3.1 must change `inner` from
+`RwLock<ServerStateInner>` to `Arc<RwLock<ServerStateInner>>`, and that all handler
+methods that use `self.inner.read().await` and `self.inner.write().await` still work
+because `Arc` derefs to the inner type.
+
+---
+
+### Finding 4: HIGH - "Double remove_file" claim was FALSE
+
+**Phase affected**: Phase 1.4
+
+**Plan originally claimed**: Both callers AND `parse_full()` call `registry.remove_file()`,
+creating a double-removal that needs fixing.
+
+**Actual state at f65d6e2**: After thorough code audit of ALL call sites:
+- `parse_full()` calls `registry.remove_file(uri.as_ref())` only
+- `did_open` does NOT call `remove_file_from_registries` before parse
+- `did_change` does NOT call `remove_file_from_registries` before parse
+- `indexing.rs` Pass 2 does NOT call `remove_file_from_registries`
+- `did_change_watched_files` DELETED case calls `remove_file_from_registries` - but
+  this is AFTER removing the document (cleanup), not before a parse
+
+**Impact**: If we had "fixed" a non-existent double-removal by moving `remove_file`
+out of `parse_full()`, we would have SPREAD responsibility to multiple call sites,
+increasing the risk of missing one.
+
+**Correction applied**: Changed Phase 1.4 from "fix double remove" to "verify no change
+needed" with a documented control logic for future maintainers.
+
+---
+
+### Finding 5: HIGH - convert_semantic_tokens already exists, must not be recreated
+
+**Phase affected**: Phase 2.3
+
+**Plan implied**: The new cache-first `semantic_tokens_full` would need a function
+to convert format-plugin `SemanticToken` to LSP `SemanticToken`.
+
+**Actual state at f65d6e2**: `convert_semantic_tokens()` already exists in
+`semantic.rs` (lines 66-120), with byte-to-line/char conversion and important
+clamping/safety logic.
+
+**Impact**: Recreating this function would lose the safety clamping logic and
+create maintenance burden of two copies.
+
+**Correction applied**: Added explicit "DO NOT recreate this function" note in Phase 2.3
+with reference to the existing function location.
+
+---
+
+### Finding 6: HIGH - semantic_tokens_full re-parses under read lock, causing hidden writes
+
+**Phase affected**: Phase 2.3
+
+**Plan described**: The old behavior "re-parses on every request."
+
+**Actual concurrency issue**: At f65d6e2, `semantic_tokens_full` acquires a READ lock
+on `ServerStateInner`, but `parse_full()` internally calls `registry.remove_file()`
+and `populate_registries_from_ast()`, which WRITE to the `SugarCubeRegistry`
+sub-registries via `parking_lot::RwLock`. This means a "read" operation on the server
+state is actually triggering hidden writes through interior mutability.
+
+**Impact**: This is architecturally unsound. The token cache fix eliminates this
+concurrency correctness problem entirely, which is a benefit beyond just performance.
+
+**Correction applied**: Added "IMPORTANT CONCURRENCY NOTE" to Phase 2.3 documenting
+this hidden-write issue and how the cache fix resolves it.
+
+---
+
+### Finding 7: HIGH - scan_inline_vars must NOT be removed
+
+**Phase affected**: Phase 6.6
+
+**Plan implied**: The unified pipeline would replace inline variable scanning with
+oxc-based `js_annotate`.
+
+**Actual capability gap**: `scan_inline_vars` handles prose `$var` detection that
+oxc CANNOT detect because oxc only processes `<script>` blocks. Prose variable
+references like `You have $player.hp hit points` are NOT inside `<script>` tags
+and must be detected by the regex-based scanner.
+
+**Impact**: Removing `scan_inline_vars` would cause ALL prose variable references
+to be invisible to the Variable Flow panel and semantic highlighting.
+
+**Correction applied**: Added explicit "KEEP scan_inline_vars" warning in Phase 6.6
+with explanation of the prose detection gap.
+
+---
+
+### Finding 8: HIGH - LegacyVariableTree has 15+ tests that need migration before deletion
+
+**Phase affected**: Phase 5.3
+
+**Plan originally said**: Delete `LegacyVariableTree` after arena tree is implemented.
+
+**Actual state at ver_3**: There are approximately 15 test functions that use
+`LegacyVariableTree::legacy_new()`. Deleting the type without migrating these tests
+would leave the test suite with compilation errors.
+
+**Impact**: Without migrating tests, `cargo test` would fail, violating the Phase
+Execution Contract.
+
+**Correction applied**: Changed Phase 5.3 from "delete" to "migrate tests before deletion"
+with explicit instruction to update all test functions to use arena-based `VariableTree::new()`.
+
+---
+
+### Finding 9: HIGH - FormatPlugin::parse(&self) was REMOVED in ver_3, not just moved
+
+**Phase affected**: Phase 4.5
+
+**Plan implied**: The `parse(&self)` method would be "moved" to `FormatPluginMut::parse_mut(&mut self)`.
+
+**Actual state at ver_3**: The `parse(&self)` method was completely REMOVED from the
+`FormatPlugin` trait. ALL parsing goes through `FormatPluginMut::parse_mut()`. There
+is no read-only parse method.
+
+**Impact**: If we kept `parse(&self)` on `FormatPlugin`, we would need to decide what it
+does - but the whole point of FormatPluginMut is that parsing requires exclusive access.
+Keeping a read-only parse would undermine the architectural change.
+
+**Correction applied**: Added explicit "REMOVE `fn parse(&self, ...)` from the
+FormatPlugin trait" instruction in Phase 4.5.
+
+---
+
+### Finding 10: MEDIUM - FormatRegistry should NOT have a separate FormatRegistryMut trait
+
+**Phase affected**: Phase 4.5
+
+**Plan originally considered**: A separate `FormatRegistryMut` trait for mutable access.
+
+**Actual design at ver_3**: `FormatPluginMut: FormatPlugin` means every `FormatPluginMut`
+is also a `FormatPlugin`. So `Box<dyn FormatPluginMut>` can produce both `&dyn FormatPlugin`
+(via `as_ref()`) and `&mut dyn FormatPluginMut` (via `as_mut()`). A single `FormatRegistry`
+struct with both `get()` and `get_mut()` methods is sufficient.
+
+**Correction applied**: Simplified Phase 4.5 to use a single `FormatRegistry` with
+both access patterns, removing the `FormatRegistryMut` concept.
+
+---
+
+### Finding 11: MEDIUM - JsAnalysis has 4 fields, not just var_ops
+
+**Phase affected**: Phase 6.1
+
+**Plan implied**: `JsAnalysis` primarily contains `var_ops`.
+
+**Actual state at ver_3**: `JsAnalysis` contains 4 fields:
+1. `var_ops: Vec<VarOp>` - variable reads/writes
+2. `macro_calls: Vec<MacroCall>` - macro invocations
+3. `function_calls: Vec<FunctionCall>` - function invocations
+4. `templates: Vec<TemplateUsage>` - template usage
+
+**Impact**: The plan must account for all 4 categories being populated in the
+js_annotate phase, not just variable operations.
+
+**Correction applied**: Expanded Phase 6.1 to document all 4 JsAnalysis fields
+with their purpose.
+
+---
+
+### Finding 12: MEDIUM - Arena VariableTree is 1600+ lines; js_annotate.rs is 758 lines
+
+**Phase affected**: Phase 5, Phase 6
+
+**Plan implied**: These are moderate-sized implementations.
+
+**Actual size at ver_3**: The arena-based `VariableTree` in `variable_tree.rs` is
+approximately 1600 lines of Rust. The `js_annotate.rs` file is approximately 758 lines.
+These are substantial implementations that need careful porting, not trivial additions.
+
+**Impact**: Underestimating complexity could lead to rushing and introducing bugs.
+
+**Correction applied**: Added size estimates to the affected phases as a heads-up
+for implementation planning.
+
+---
+
+### Summary of Corrections
+
+| # | Severity | Finding | Phase | Correction |
+|---|----------|---------|-------|------------|
+| 1 | FATAL | parse_single has 4 params not 3 | 1.3 | Fixed signature, added passage_tags |
+| 2 | FATAL | FormatPlugin::parse_passage trait must update | 1.3 | Added trait + all impl updates |
+| 3 | FATAL | ServerState.inner not wrapped in Arc | 3.1 | Added Arc wrapping requirement |
+| 4 | HIGH | Double remove_file claim was false | 1.4 | Changed to verify no change needed |
+| 5 | HIGH | convert_semantic_tokens already exists | 2.3 | Added do not recreate warning |
+| 6 | HIGH | Hidden writes under read lock | 2.3 | Documented concurrency issue |
+| 7 | HIGH | scan_inline_vars must be kept | 6.6 | Added explicit keep warning |
+| 8 | HIGH | 15+ tests need migration | 5.3 | Changed to migrate before delete |
+| 9 | HIGH | parse(&self) removed, not moved | 4.5 | Added explicit removal instruction |
+| 10 | MEDIUM | No separate FormatRegistryMut | 4.5 | Simplified to single FormatRegistry |
+| 11 | MEDIUM | JsAnalysis has 4 fields | 6.1 | Expanded JsAnalysis documentation |
+| 12 | MEDIUM | Arena tree 1600+ lines | 5,6 | Added size estimates |

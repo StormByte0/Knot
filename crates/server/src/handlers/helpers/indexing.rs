@@ -278,7 +278,7 @@ pub(crate) async fn index_workspace(
     // Always send formatDetected after initial indexing so the client
     // can set language IDs even when the format hasn't "changed" (it
     // may be the first time the client hears about it).
-    send_format_detected(client, format, doc_uris).await;
+    send_format_detected(client, format, doc_uris, root_uri.to_string()).await;
 
     // After indexing completes, request the client to refresh semantic
     // tokens for all visible editors. This is critical for the scenario
@@ -353,6 +353,7 @@ pub(crate) async fn send_format_detected(
     client: &tower_lsp::Client,
     format: StoryFormat,
     document_uris: Vec<String>,
+    workspace_uri: String,
 ) {
     tracing::info!(
         format = %format,
@@ -363,6 +364,7 @@ pub(crate) async fn send_format_detected(
         .send_notification::<FormatDetectedNotification>(FormatDetectedParams {
             format: format.to_string(),
             document_uris,
+            workspace_uri,
         })
         .await;
 }

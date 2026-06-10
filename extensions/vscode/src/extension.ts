@@ -184,6 +184,16 @@ export async function activate(context: vscode.ExtensionContext) {
             refreshDecorations: () => refreshDecorationsForOpenEditors(client!),
         };
         registerNotifications(client, notifDeps);
+
+        // Signal to the server that all notification handlers are registered.
+        // The server waits for this before starting indexing, ensuring that
+        // formatDetected and indexProgress notifications won't be dropped.
+        try {
+            const response = await client.sendRequest('knot/clientReady', {});
+            console.log('[knot] clientReady acknowledged:', response);
+        } catch (e) {
+            console.warn('[knot] clientReady failed (server may be older version):', e);
+        }
     } catch (e) {
         handleServerFailure(e, context, serverPath, {
             client: client!,

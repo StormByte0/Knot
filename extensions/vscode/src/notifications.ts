@@ -144,13 +144,17 @@ export function registerNotifications(
                 return;
             }
 
+            // Collect all switch promises so we can wait for them to settle
+            const switchPromises: Thenable<void>[] = [];
             for (const docUri of params.document_uris) {
                 try {
                     const uri = vscode.Uri.parse(docUri);
                     // Find the document in the visible editors or workspace
                     const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
                     if (doc && doc.languageId !== languageId) {
-                        vscode.languages.setTextDocumentLanguage(doc, languageId).then(
+                        const p = vscode.languages.setTextDocumentLanguage(doc, languageId);
+                        switchPromises.push(p);
+                        p.then(
                             () => {
                                 console.log(`[Knot] Switched ${docUri} to language: ${languageId}`);
                             },
@@ -164,13 +168,22 @@ export function registerNotifications(
                 }
             }
 
-            // After switching language IDs, trigger a semantic token refresh
-            // so that already-open editors get proper highlighting based on
-            // the newly detected format. Without this, editors that were
-            // already open before format detection complete may show stale
-            // or empty tokens.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
-            deps.refreshDecorations();
+            // Wait for ALL switches to settle (not just resolve — allSettled
+            // handles failures). Then signal completion to the server.
+            Promise.allSettled(switchPromises).then(async () => {
+                // Signal completion to the server — it will clear the
+                // format_switch_in_progress flag and send ONE unified
+                // workspace/semanticTokens/refresh
+                try {
+                    await client.sendRequest('knot/formatSwitchComplete', {
+                        workspace_uri: params.workspace_uri,
+                        switched_count: switchPromises.length,
+                    });
+                } catch (e) {
+                    console.warn('[knot] formatSwitchComplete failed:', e);
+                }
+                deps.refreshDecorations();
+            });
         }
     );
 
@@ -181,15 +194,10 @@ export function registerNotifications(
             const reason = params.reason || 'unknown';
             console.log(`[Knot] Refreshing semantic tokens for ${params.document_uris.length} document(s) (reason: ${reason})`);
 
-            // Trigger VS Code's built-in semantic token refresh for all
-            // visible editors. VS Code doesn't provide a per-document
-            // semantic token refresh API, so we refresh all visible
-            // editors. This is the same mechanism that
-            // `workspace/semanticTokens/refresh` uses under the hood.
-            vscode.commands.executeCommand('editor.action.semanticTokens.refresh');
-
-            // Also refresh decorations for the affected documents, since
-            // broken link highlights and gutter badges may have changed.
+            // The server's workspace/semanticTokens/refresh already
+            // triggers VS Code's built-in token refresh. We only need
+            // to refresh decorations (broken link highlights, gutter
+            // badges) since those are client-side overlays.
             deps.refreshDecorations();
         }
     );

@@ -403,15 +403,15 @@ pub(crate) async fn semantic_tokens_full(
             })))
         }
         None => {
-            // No cached tokens — return empty tokens. VS Code will
-            // re-request after a workspace/semanticTokens/refresh.
-            // We return an empty SemanticTokens (not JSON null) at this
-            // phase. Phase 3 will upgrade this to return JSON null for
-            // better handling during format switch cascades.
-            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-                result_id: None,
-                data: vec![],
-            })))
+            // No cached tokens — return JSON null. This tells VS Code
+            // "tokens not available yet, re-request after refresh."
+            // VS Code will re-request after receiving
+            // workspace/semanticTokens/refresh, which is sent by the
+            // debounced refresh or the formatSwitchComplete handler.
+            // This is an upgrade from Phase 2 (which returned empty
+            // SemanticTokens) — returning null ensures VS Code doesn't
+            // cache empty tokens and suppress future re-requests.
+            Ok(None)
         }
     }
 }

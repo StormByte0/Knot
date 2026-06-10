@@ -1,8 +1,10 @@
 //! Lifecycle handlers: initialize, initialized, shutdown.
 
 use crate::handlers::helpers;
+use crate::lsp_ext::{KnotClientReadyResponse, KnotFormatSwitchCompleteParams, KnotFormatSwitchCompleteResponse};
 use crate::state::ServerState;
 use lsp_types::*;
+use std::time::Duration;
 
 pub(crate) async fn initialize(
     state: &ServerState,
@@ -174,7 +176,7 @@ pub(crate) async fn initialized(
     tracing::info!("Language server initialized");
 
     state.client
-        .log_message(MessageType::INFO, "Knot Language Server initialized — indexing workspace…")
+        .log_message(MessageType::INFO, "Knot Language Server initialized — waiting for clientReady…")
         .await;
 
     // Register for configuration change notifications
@@ -192,17 +194,40 @@ pub(crate) async fn initialized(
     // Register file watchers for .tw/.twee files
     register_file_watchers(&state.client).await;
 
-    // Spawn workspace indexing in the background
-    if let Err(e) = helpers::index_workspace(&state.inner, &state.client).await {
-        tracing::error!("Workspace indexing failed: {}", e);
-        state.client
-            .log_message(MessageType::ERROR, format!("Workspace indexing failed: {}", e))
-            .await;
-    } else {
-        state.client
-            .log_message(MessageType::INFO, "Workspace indexing complete")
-            .await;
-    }
+    // Spawn workspace indexing in a background task that WAITS for the
+    // extension to confirm it's ready via `knot/clientReady`. This
+    // eliminates the race where the server sends `formatDetected` before
+    // the extension has registered notification handlers.
+    let inner = state.inner.clone();
+    let client = state.client.clone();
+    let client_ready = state.client_ready.clone();
+
+    tokio::spawn(async move {
+        tracing::info!("Indexing task spawned — waiting for clientReady handshake");
+
+        // Wait for the extension to signal readiness, with a 30-second
+        // safety timeout in case the extension never sends clientReady
+        // (e.g., older extension version).
+        tokio::select! {
+            _ = client_ready.notified() => {
+                tracing::info!("clientReady received — starting workspace indexing");
+            }
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                tracing::warn!("clientReady not received after 30s, starting indexing anyway");
+            }
+        }
+
+        if let Err(e) = helpers::index_workspace(&inner, &client).await {
+            tracing::error!("Workspace indexing failed: {}", e);
+            client
+                .log_message(MessageType::ERROR, format!("Workspace indexing failed: {}", e))
+                .await;
+        } else {
+            client
+                .log_message(MessageType::INFO, "Workspace indexing complete")
+                .await;
+        }
+    });
 }
 
 pub(crate) async fn shutdown(
@@ -244,5 +269,50 @@ async fn register_file_watchers(client: &tower_lsp::Client) {
         tracing::warn!("Failed to register file watchers: {}", e);
     } else {
         tracing::info!("Registered file watchers for .tw/.twee files");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Custom LSP method handlers: knot/clientReady, knot/formatSwitchComplete
+// ---------------------------------------------------------------------------
+
+impl ServerState {
+    /// Handler for `knot/clientReady` custom request.
+    ///
+    /// The extension sends this after all notification handlers are
+    /// registered. The server's `initialized` handler spawns an indexing
+    /// task that waits on `client_ready.notified()` before starting,
+    /// preventing the race where `formatDetected` arrives before the
+    /// extension has registered notification handlers.
+    pub async fn knot_client_ready(
+        &self,
+    ) -> Result<KnotClientReadyResponse, tower_lsp::jsonrpc::Error> {
+        tracing::info!("knot/clientReady received — notifying indexing task");
+        self.client_ready.notify_one();
+        Ok(KnotClientReadyResponse { acknowledged: true })
+    }
+
+    /// Handler for `knot/formatSwitchComplete` custom request.
+    ///
+    /// The extension sends this after all document language IDs have been
+    /// switched following a `formatDetected` notification. The server
+    /// clears the `format_switch_in_progress` flag and sends ONE unified
+    /// `workspace/semanticTokens/refresh`, preventing the O(N²) token
+    /// request flood that would otherwise occur.
+    pub async fn knot_format_switch_complete(
+        &self,
+        params: KnotFormatSwitchCompleteParams,
+    ) -> Result<KnotFormatSwitchCompleteResponse, tower_lsp::jsonrpc::Error> {
+        tracing::info!(
+            "knot/formatSwitchComplete received — workspace_uri={}, switched_count={}",
+            params.workspace_uri, params.switched_count
+        );
+        {
+            let mut inner = self.inner.write().await;
+            inner.format_switch_in_progress = false;
+        }
+        // Send ONE unified refresh now that the cascade is complete
+        self.schedule_semantic_token_refresh().await;
+        Ok(KnotFormatSwitchCompleteResponse { acknowledged: true })
     }
 }

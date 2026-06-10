@@ -7,8 +7,10 @@ use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
 use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SemanticToken, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
-use tokio::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Notify, RwLock};
 use tower_lsp::Client;
 use url::Url;
 
@@ -82,6 +84,15 @@ pub struct ServerStateInner {
     /// can temporarily remove documents from the cache. Stale tokens are
     /// better than no tokens because VS Code will re-request after a refresh.
     pub semantic_tokens: HashMap<Url, Vec<SemanticToken>>,
+    /// Flag indicating that a format switch cascade is in progress.
+    ///
+    /// When set to `true`, `did_open` and `did_change` should suppress
+    /// semantic token refreshes. The cascade completes when the extension
+    /// sends `knot/formatSwitchComplete`, at which point ONE unified
+    /// refresh is sent. This prevents the O(N²) token request flood that
+    /// would otherwise occur when N files have their language IDs switched
+    /// in quick succession.
+    pub format_switch_in_progress: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -92,16 +103,34 @@ pub struct ServerStateInner {
 ///
 /// The `Client` handle is stored outside the lock because it is `Send + Sync`
 /// and does not require interior mutability. All other mutable state lives
-/// inside `inner`, protected by a `tokio::sync::RwLock`.
+/// inside `inner`, protected by a `tokio::sync::RwLock` wrapped in `Arc`
+/// so that the `initialized` handler can clone it into a spawned task.
 pub struct ServerState {
     /// The LSP client handle for sending notifications.
     pub client: Client,
     /// Mutable inner state behind an async read-write lock.
-    pub inner: RwLock<ServerStateInner>,
+    /// Wrapped in `Arc` so that `tokio::spawn` can clone it into `'static`
+    /// tasks (e.g., the indexing task spawned in `initialized`).
+    pub inner: Arc<RwLock<ServerStateInner>>,
     /// Shutdown guard — set to `true` when `shutdown()` is called so that
     /// in-flight handlers can short-circuit instead of writing to a destroyed
     /// transport stream.  Reset to `false` on `initialize()`.
     pub shutting_down: AtomicBool,
+    /// Notification primitive for the `knot/clientReady` handshake.
+    ///
+    /// The `initialized` handler spawns an indexing task that waits on this
+    /// `Notify` before starting workspace indexing. The extension sends
+    /// `knot/clientReady` after all notification handlers are registered,
+    /// preventing the race where `formatDetected` arrives before handlers
+    /// are ready.
+    pub client_ready: Arc<Notify>,
+    /// Flag for debouncing `workspace/semanticTokens/refresh` requests.
+    ///
+    /// The `compare_exchange` on this flag ensures only ONE debounce timer
+    /// is active at a time. Subsequent calls within 150ms are coalesced.
+    /// This prevents the O(N²) token request flood during format switch
+    /// cascades.
+    pub semantic_refresh_pending: Arc<AtomicBool>,
 }
 
 impl ServerState {
@@ -116,7 +145,7 @@ impl ServerState {
 
         Self {
             client,
-            inner: RwLock::new(ServerStateInner {
+            inner: Arc::new(RwLock::new(ServerStateInner {
                 workspace,
                 format_registry: FormatRegistry::with_defaults(),
                 debounce: DebounceTimer::new(),
@@ -125,8 +154,34 @@ impl ServerState {
                 format_diagnostics: HashMap::new(),
                 doc_versions: HashMap::new(),
                 semantic_tokens: HashMap::new(),
-            }),
+                format_switch_in_progress: false,
+            })),
             shutting_down: AtomicBool::new(false),
+            client_ready: Arc::new(Notify::new()),
+            semantic_refresh_pending: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Schedule a debounced `workspace/semanticTokens/refresh` request.
+    ///
+    /// Uses `compare_exchange` to ensure only ONE debounce timer is active
+    /// at a time. Subsequent calls within 150ms are coalesced. This
+    /// prevents the O(N²) token request flood during format switch cascades.
+    pub async fn schedule_semantic_token_refresh(&self) {
+        if self.semantic_refresh_pending.compare_exchange(
+            false, true, Ordering::Relaxed, Ordering::Relaxed
+        ).is_err() {
+            return; // refresh already pending
+        }
+
+        let pending = self.semantic_refresh_pending.clone();
+        let client = self.client.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            pending.store(false, Ordering::Relaxed);
+            use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;
+            let _ = client.send_request::<WorkspaceSemanticTokensRefreshRequest>(()).await;
+        });
     }
 }

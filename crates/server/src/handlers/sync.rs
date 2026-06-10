@@ -131,21 +131,25 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     }
 
     if should_notify {
-        helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+        // Format switch cascade starting — set the flag so that
+        // did_change and subsequent did_open calls suppress their
+        // semantic token refreshes. The extension will send
+        // `knot/formatSwitchComplete` when all language ID switches
+        // are done, which clears the flag and sends ONE unified refresh.
+        {
+            let mut inner = state.inner.write().await;
+            inner.format_switch_in_progress = true;
+        }
+        let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
+        helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
     }
 
-    // Notify other open documents that their semantic tokens may be stale
-    // due to cross-file link resolution changes from this document opening.
-    let all_uris: Vec<Url> = {
-        let inner = state.inner.read().await;
-        inner.open_documents.keys().cloned().collect()
-    };
-    helpers::send_semantic_token_refresh(
-        &state.client,
-        &uri,
-        &all_uris,
-        "document opened — cross-file link resolution may have changed",
-    ).await;
+    // Schedule a debounced semantic token refresh if no format switch
+    // is in progress. During a cascade, the formatSwitchComplete
+    // handler will send ONE unified refresh.
+    if !state.inner.read().await.format_switch_in_progress {
+        state.schedule_semantic_token_refresh().await;
+    }
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -358,17 +362,23 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     }
 
     if should_notify {
-        helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+        // Format switch cascade starting — set the flag so that
+        // subsequent operations suppress their semantic token refreshes.
+        {
+            let mut inner = state.inner.write().await;
+            inner.format_switch_in_progress = true;
+        }
+        let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
+        helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
     }
 
-    // Notify other open documents that their semantic tokens may be stale
-    // due to broken link resolution changes.
-    helpers::send_semantic_token_refresh(
-        &state.client,
-        &uri,
-        &open_docs.keys().cloned().collect::<Vec<_>>(),
-        "cross-file link resolution may have changed",
-    ).await;
+    // Schedule a debounced semantic token refresh if no format switch
+    // is in progress. During a cascade, the formatSwitchComplete
+    // handler will send ONE unified refresh. This fixes the bug from
+    // the original commits where did_change didn't check the flag.
+    if !state.inner.read().await.format_switch_in_progress {
+        state.schedule_semantic_token_refresh().await;
+    }
 
 }
 
@@ -592,17 +602,17 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         // Notify client if format changed after file creation
                         if should_notify {
-                            helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+                            // Format switch cascade starting — set the flag
+                            {
+                                let mut inner = state.inner.write().await;
+                                inner.format_switch_in_progress = true;
+                            }
+                            let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
+                            helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
                         }
 
-                        // Notify other open documents that their semantic tokens may be stale
-                        // due to a new file being added (affects passage resolution).
-                        helpers::send_semantic_token_refresh(
-                            &state.client,
-                            &uri,
-                            &open_docs.keys().cloned().collect::<Vec<_>>(),
-                            "file created — passage resolution may have changed",
-                        ).await;
+                        // Schedule debounced semantic token refresh
+                        state.schedule_semantic_token_refresh().await;
 
                     }
             }
@@ -696,14 +706,9 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
                 }
 
-                // Notify remaining open documents that their semantic tokens may be stale
-                // due to a file being deleted (broken links may have changed).
-                helpers::send_semantic_token_refresh(
-                    &state.client,
-                    &uri,
-                    &open_docs.keys().cloned().collect::<Vec<_>>(),
-                    "file deleted — broken link resolution may have changed",
-                ).await;
+                // Schedule debounced semantic token refresh for remaining
+                // documents whose broken link status may have changed.
+                state.schedule_semantic_token_refresh().await;
 
                 // Clear diagnostics for the deleted file
                 state.client
@@ -770,17 +775,17 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             }
 
                             if should_notify {
-                                helpers::send_format_detected(&state.client, format_after, doc_uris).await;
+                                // Format switch cascade starting — set the flag
+                                {
+                                    let mut inner = state.inner.write().await;
+                                    inner.format_switch_in_progress = true;
+                                }
+                                let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
+                                helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
                             }
 
-                            // Notify other open documents that their semantic tokens may be stale
-                            // due to a file changing on disk (affects passage resolution).
-                            helpers::send_semantic_token_refresh(
-                                &state.client,
-                                &uri,
-                                &open_docs.keys().cloned().collect::<Vec<_>>(),
-                                "file changed on disk — passage resolution may have changed",
-                            ).await;
+                            // Schedule debounced semantic token refresh
+                            state.schedule_semantic_token_refresh().await;
 
                         }
             }

@@ -280,6 +280,10 @@ pub struct FormatDetectedParams {
     pub format: String,
     /// URIs of all twee documents in the workspace that should be updated.
     pub document_uris: Vec<String>,
+    /// The URI of the workspace root. Used by the client in the
+    /// `knot/formatSwitchComplete` handshake to identify which workspace
+    /// completed its language ID switches.
+    pub workspace_uri: String,
 }
 
 /// The LSP notification type for `knot/formatDetected`.
@@ -777,4 +781,49 @@ impl Request for WorkspaceSemanticTokensRefreshRequest {
     type Params = ();
     type Result = ();
     const METHOD: &'static str = "workspace/semanticTokens/refresh";
+}
+
+// ---------------------------------------------------------------------------
+// knot/clientReady — handshake to confirm extension is ready
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/clientReady` — signal that the extension is fully initialized.
+///
+/// The server waits for this before starting workspace indexing. This
+/// eliminates the race where the server sends `formatDetected` before
+/// the extension has registered notification handlers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotClientReadyParams {}
+
+/// Response: `knot/clientReady`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotClientReadyResponse {
+    /// Whether the server acknowledged the client is ready.
+    pub acknowledged: bool,
+}
+
+// ---------------------------------------------------------------------------
+// knot/formatSwitchComplete — handshake to confirm format switch cascade is done
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/formatSwitchComplete` — signal that the extension has
+/// finished switching all document language IDs after a `formatDetected`
+/// notification.
+///
+/// The server uses this to clear `format_switch_in_progress` and send ONE
+/// unified `workspace/semanticTokens/refresh`, preventing the O(N²) token
+/// request flood that would otherwise occur.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatSwitchCompleteParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// Number of documents whose language ID was switched.
+    pub switched_count: u32,
+}
+
+/// Response: `knot/formatSwitchComplete`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatSwitchCompleteResponse {
+    /// Whether the server acknowledged the format switch completion.
+    pub acknowledged: bool,
 }

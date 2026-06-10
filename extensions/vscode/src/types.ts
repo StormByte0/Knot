@@ -331,6 +331,8 @@ export interface KnotBuildOutput {
 export interface KnotFormatDetectedParams {
     format: string;
     document_uris: string[];
+    /** The URI of the workspace root. Used by the formatSwitchComplete handshake. */
+    workspace_uri: string;
 }
 
 /** Notification: knot/refreshSemanticTokens */
@@ -341,4 +343,25 @@ export interface KnotRefreshSemanticTokensParams {
     reason?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Handshake types (matches Rust-side lsp_ext types)
+// ---------------------------------------------------------------------------
 
+/** Request: knot/clientReady */
+export interface KnotClientReadyParams {}
+
+/** Response: knot/clientReady */
+export interface KnotClientReadyResponse {
+    acknowledged: boolean;
+}
+
+/** Request: knot/formatSwitchComplete */
+export interface KnotFormatSwitchCompleteParams {
+    workspace_uri: string;
+    switched_count: number;
+}
+
+/** Response: knot/formatSwitchComplete */
+export interface KnotFormatSwitchCompleteResponse {
+    acknowledged: boolean;
+}

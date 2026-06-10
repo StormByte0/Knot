@@ -33,6 +33,8 @@ impl KnotServer {
             .custom_method("knot/generateIfid", ServerState::knot_generate_ifid)
             .custom_method("knot/reindexWorkspace", ServerState::knot_reindex_workspace)
             .custom_method("knot/updatePositions", ServerState::knot_update_positions)
+            .custom_method("knot/clientReady", ServerState::knot_client_ready)
+            .custom_method("knot/formatSwitchComplete", ServerState::knot_format_switch_complete)
             .finish();
 
         let stdin = tokio::io::stdin();
