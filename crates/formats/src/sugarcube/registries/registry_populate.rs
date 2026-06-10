@@ -164,8 +164,9 @@ fn refine_access_kinds_from_ast(
                     // Find the target variable in the tree and update its access kind.
                     // Both the variable tree and the AST use passage-body-relative
                     // spans, so we match on the span start directly.
-                    if let Some(entry) = vtree.get_variable_mut(&sa.target.name) {
-                        for access in &mut entry.node.accesses {
+                    if let Some(var_id) = vtree.get_variable_mut_id(&sa.target.name) {
+                        let node = vtree.arena_mut().get_mut(var_id);
+                        for access in &mut node.meta.refs {
                             if access.passage_name == passage_name
                                 && access.file_uri == file_uri
                                 && access.span.start == sa.target.span.start
@@ -402,16 +403,16 @@ mod tests {
         let vtree = registry.variables();
         let items_var = vtree.get_variable("$ITEMS");
         assert!(items_var.is_some(), "$ITEMS should be in registry from State.variables.ITEMS detection");
-        if let Some(var) = items_var {
-            let reads: Vec<_> = var.node.accesses.iter().filter(|a| a.is_read()).collect();
+        if let Some((_, node)) = items_var {
+            let reads: Vec<_> = node.meta.refs.iter().filter(|a| a.is_read()).collect();
             assert!(!reads.is_empty(), "$ITEMS should have at least one READ from State.variables.ITEMS");
         }
 
         // Verify _items exists with both READ and WRITE accesses
         let temp_var = vtree.get_variable("_items");
         assert!(temp_var.is_some(), "_items should be in registry");
-        if let Some(var) = temp_var {
-            let has_write = var.node.accesses.iter().any(|a| a.is_write());
+        if let Some((_, node)) = temp_var {
+            let has_write = node.meta.refs.iter().any(|a| a.is_write());
             assert!(has_write, "_items should have a WRITE from the JS walker detecting it as assignment target");
         }
     }

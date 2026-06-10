@@ -1059,14 +1059,14 @@ mod tests {
 
                 // Verify the access kinds
                 let vtree = registry.variables();
-                let items_var = vtree.get_variable("$ITEMS").unwrap();
-                let reads: Vec<_> = items_var.node.accesses.iter().filter(|a| a.is_read()).collect();
+                let (_, items_node) = vtree.get_variable("$ITEMS").unwrap();
+                let reads: Vec<_> = items_node.meta.refs.iter().filter(|a| a.is_read()).collect();
                 assert!(!reads.is_empty(), "$ITEMS should have at least one read access");
                 drop(vtree);
 
                 let vtree2 = registry.variables();
-                let temp_var = vtree2.get_variable("_items").unwrap();
-                let writes: Vec<_> = temp_var.node.accesses.iter().filter(|a| a.is_write()).collect();
+                let (_, temp_node) = vtree2.get_variable("_items").unwrap();
+                let writes: Vec<_> = temp_node.meta.refs.iter().filter(|a| a.is_write()).collect();
                 assert!(!writes.is_empty(), "_items should have at least one write access");
             }
             JsParseOutcome::Error(diags) => {

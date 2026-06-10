@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use knot_core::Workspace;
 use crate::plugin::SourceTextProvider;
 use crate::types::{PassageVarRef, PropertyKind, PropertyMapEntry, StateVariable, VarAccessKind as TypesVarAccessKind};
-use super::variable_tree::{VariableTree, PassagePositionMap};
+use super::variable_tree::{VariableTree, PassagePositionMap, NodeId, VarArena, NO_NODE};
 
 /// Extract variable references for a specific passage from the variable tree.
 ///
@@ -31,28 +31,29 @@ pub fn extract_passage_variable_refs_impl(
 ) -> Vec<PassageVarRef> {
     let mut refs = Vec::new();
 
-    for (var_name, entry) in var_tree.iter() {
+    for (var_name, var_id) in var_tree.iter() {
         // Walk the tree to collect all accesses (root + children) for this passage
-        collect_refs_from_node(&entry.node, var_name, passage_name, passage_positions, &mut refs);
+        collect_refs_from_arena_node(var_tree.arena(), var_id, &var_name, passage_name, passage_positions, &mut refs);
     }
 
     refs
 }
 
-/// Recursively collect passage variable refs from a node and its children.
-fn collect_refs_from_node(
-    node: &super::variable_tree::VarNode,
+/// Recursively collect passage variable refs from an arena node and its children.
+fn collect_refs_from_arena_node(
+    arena: &VarArena,
+    node_id: NodeId,
     full_name: &str,
     passage_name: &str,
     passage_positions: &PassagePositionMap,
     refs: &mut Vec<PassageVarRef>,
 ) {
-    for access in &node.accesses {
+    let node = arena.get(node_id);
+    for access in &node.meta.refs {
         if access.passage_name != passage_name {
             continue;
         }
         // Only include direct accesses at this node, not propagated ones.
-        // Propagated accesses are already captured at the actual target node.
         if access.propagated {
             continue;
         }
@@ -73,9 +74,12 @@ fn collect_refs_from_node(
     }
 
     // Recurse into children
-    for (child_name, child_node) in &node.children {
+    let mut child_id = node.first_child;
+    while child_id != NO_NODE {
+        let child_name = arena.get(child_id).name.clone();
         let child_full_name = format!("{}.{}", full_name, child_name);
-        collect_refs_from_node(child_node, &child_full_name, passage_name, passage_positions, refs);
+        collect_refs_from_arena_node(arena, child_id, &child_full_name, passage_name, passage_positions, refs);
+        child_id = arena.get(child_id).next_sibling;
     }
 }
 
@@ -89,8 +93,11 @@ pub fn build_shape_aware_property_map_impl(
 ) -> HashMap<String, PropertyMapEntry> {
     let mut map = HashMap::new();
 
-    for (var_name, entry) in var_tree.iter() {
-        let properties: Vec<String> = entry.node.children.keys().cloned().collect();
+    for (var_name, var_id) in var_tree.iter() {
+        let arena = var_tree.arena();
+        let properties: Vec<String> = arena.children_of(var_id)
+            .map(|child_id| arena.get(child_id).name.clone())
+            .collect();
 
         let kind = infer_property_kind(&properties);
 
@@ -110,7 +117,7 @@ pub fn build_shape_aware_property_map_impl(
             None
         };
 
-        map.entry(var_name.clone()).or_insert(PropertyMapEntry {
+        map.entry(var_name).or_insert(PropertyMapEntry {
             kind,
             children,
             element_shape,
@@ -147,10 +154,13 @@ pub fn build_state_variable_registry_impl(
 ) -> HashMap<String, StateVariable> {
     let mut registry = HashMap::new();
 
-    for (var_name, entry) in var_tree.iter() {
+    for (var_name, var_id) in var_tree.iter() {
+        let arena = var_tree.arena();
+        let node = arena.get(var_id);
+
         let dollar_name = if var_name.starts_with('$') || var_name.starts_with('_') {
             var_name.clone()
-        } else if entry.is_temporary {
+        } else if node.is_temporary {
             format!("_{}", var_name)
         } else {
             format!("${}", var_name)
@@ -166,10 +176,10 @@ pub fn build_state_variable_registry_impl(
         let mut read_locations = Vec::new();
 
         // Collect locations from the root node (direct + propagated)
-        collect_locations_from_node(&entry.node, passage_positions, &mut write_locations, &mut read_locations);
+        collect_locations_from_arena_node(arena, var_id, passage_positions, &mut write_locations, &mut read_locations);
 
         // Collect property paths from child nodes
-        let known_properties = collect_all_property_paths_from_node(&entry.node);
+        let known_properties = collect_all_property_paths_from_arena_node(arena, var_id);
 
         registry.insert(var_name.clone(), StateVariable {
             base_name,
@@ -178,26 +188,24 @@ pub fn build_state_variable_registry_impl(
             write_locations,
             read_locations,
             first_available: None,
-            seeded_by_special: entry.seeded_by_special,
+            seeded_by_special: node.meta.seeded_by_special,
         });
     }
 
     registry
 }
 
-/// Recursively collect write/read locations from a node tree.
-///
-/// Converts passage-body-relative spans and line numbers to document-absolute
-/// using the `passage_positions` map.
-fn collect_locations_from_node(
-    node: &super::variable_tree::VarNode,
+/// Recursively collect write/read locations from an arena node tree.
+fn collect_locations_from_arena_node(
+    arena: &VarArena,
+    node_id: NodeId,
     passage_positions: &PassagePositionMap,
     write_locations: &mut Vec<crate::types::VarLocation>,
     read_locations: &mut Vec<crate::types::VarLocation>,
 ) {
-    for access in &node.accesses {
+    let node = arena.get(node_id);
+    for access in &node.meta.refs {
         let kind = if access.propagated {
-            // Propagated accesses inherit the kind from the original operation
             if access.is_write() {
                 TypesVarAccessKind::PropertyWrite { path: String::new() }
             } else {
@@ -209,7 +217,6 @@ fn collect_locations_from_node(
             TypesVarAccessKind::Read
         };
 
-        // Convert passage-relative span → document-absolute span
         let abs_span = passage_positions
             .get(&(access.file_uri.clone(), access.passage_name.clone()))
             .map(|pos| pos.body_start_offset + access.span.start..pos.body_start_offset + access.span.end)
@@ -230,12 +237,16 @@ fn collect_locations_from_node(
     }
 
     // Recurse into children
-    for child_node in node.children.values() {
-        collect_locations_from_node(child_node, passage_positions, write_locations, read_locations);
+    let mut child_id = node.first_child;
+    while child_id != NO_NODE {
+        collect_locations_from_arena_node(arena, child_id, passage_positions, write_locations, read_locations);
+        child_id = arena.get(child_id).next_sibling;
     }
 }
 
-/// Collect all property paths from a node's children as immediate child names.
-fn collect_all_property_paths_from_node(node: &super::variable_tree::VarNode) -> HashSet<String> {
-    node.children.keys().cloned().collect()
+/// Collect all property paths from an arena node's children as immediate child names.
+fn collect_all_property_paths_from_arena_node(arena: &VarArena, node_id: NodeId) -> HashSet<String> {
+    arena.children_of(node_id)
+        .map(|child_id| arena.get(child_id).name.clone())
+        .collect()
 }

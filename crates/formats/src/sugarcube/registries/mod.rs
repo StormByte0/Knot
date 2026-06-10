@@ -199,10 +199,7 @@ impl SugarCubeRegistry {
 
     /// Get known property paths for a variable (for dot-notation completion).
     pub fn variable_properties(&self, var_name: &str) -> std::collections::HashSet<String> {
-        self.variables
-            .get_variable(var_name)
-            .map(|e| e.known_properties())
-            .unwrap_or_default()
+        self.variables.known_properties(var_name)
     }
 
     /// Get all custom macro names for completion.
@@ -244,13 +241,7 @@ impl SugarCubeRegistry {
         use variable_tree::compute_passage_positions;
 
         // Collect all unique file URIs from the variable tree
-        let file_uris: HashSet<String> = {
-            let mut uris = HashSet::new();
-            for (_, entry) in self.variables.iter() {
-                collect_file_uris_from_node(&entry.node, &mut uris);
-            }
-            uris
-        };
+        let file_uris: HashSet<String> = self.variables.collect_file_uris();
 
         // For each file, compute passage positions from the source text
         let mut all_positions = variable_tree::PassagePositionMap::new();
@@ -296,10 +287,7 @@ impl FormatRegistry for SugarCubeRegistry {
     }
 
     fn variable_properties(&self, var_name: &str) -> std::collections::HashSet<String> {
-        self.variables
-            .get_variable(var_name)
-            .map(|e| e.known_properties())
-            .unwrap_or_default()
+        self.variables.known_properties(var_name)
     }
 
     fn custom_definition_names(&self) -> Vec<String> {
@@ -315,12 +303,4 @@ impl FormatRegistry for SugarCubeRegistry {
     }
 }
 
-/// Recursively collect all unique file URIs from a node's accesses.
-fn collect_file_uris_from_node(node: &variable_tree::VarNode, uris: &mut HashSet<String>) {
-    for access in &node.accesses {
-        uris.insert(access.file_uri.clone());
-    }
-    for child in node.children.values() {
-        collect_file_uris_from_node(child, uris);
-    }
-}
+

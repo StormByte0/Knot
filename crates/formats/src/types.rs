@@ -409,6 +409,9 @@ pub struct VariableUsageLocation {
     /// Enables "goto" navigation to a specific line within a passage,
     /// not just the passage header. Defaults to 0 when not yet computed.
     pub line: u32,
+    /// The byte span of the access within the passage body (passage-body-relative).
+    /// `None` when span data is not available.
+    pub span: Option<std::ops::Range<usize>>,
 }
 
 /// A tree-structured variable node for display in the variable tracker UI.
