@@ -151,8 +151,8 @@ impl FormatPlugin for SugarCubePlugin {
         parse_pipeline::parse_full(self, uri, text)
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
-        parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text)
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage> {
+        parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text, file_uri)
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -500,9 +500,8 @@ impl FormatPlugin for SugarCubePlugin {
 
     // ── Registry lifecycle (incremental re-parse support) ─────────────
 
-    fn remove_passage_from_registries(&self, passage_name: &str, file_uri: &str) {
+    fn remove_passage_from_registries(&self, passage_name: &str, _file_uri: &str) {
         self.registry.remove_passage(passage_name);
-        self.registry.remove_file(file_uri);
     }
 
     fn remove_file_from_registries(&self, file_uri: &str) {

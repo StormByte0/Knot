@@ -324,6 +324,7 @@ impl FormatPlugin for TwineCorePlugin {
         passage_name: &str,
         passage_tags: &[String],
         passage_text: &str,
+        _file_uri: &str,
     ) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
         let is_special = special_def.is_some();

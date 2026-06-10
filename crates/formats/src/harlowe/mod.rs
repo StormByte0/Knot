@@ -1195,7 +1195,7 @@ impl FormatPlugin for HarlowePlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         // Use the full classification system which handles tag-matched
         // passages (e.g., [header], [footer], [startup]) in addition to
         // name-matched passages.
@@ -1769,7 +1769,7 @@ mod tests {
     #[test]
     fn incremental_reparse() {
         let plugin = HarlowePlugin::new();
-        let passage = plugin.parse_passage("Start", &[], "You have $gold coins.\n");
+        let passage = plugin.parse_passage("Start", &[], "You have $gold coins.\n", "");
 
         assert!(passage.is_some());
         let p = passage.unwrap();
@@ -1814,6 +1814,7 @@ mod tests {
             "Nav",
             &["header".to_string()],
             "Some header content\n",
+            "",
         );
         let p = result.expect("tagged [header] passage should be classified as special");
         assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
@@ -1829,6 +1830,7 @@ mod tests {
             "Credits",
             &["footer".to_string()],
             "Thanks for playing.\n",
+            "",
         );
         let p = result.expect("tagged [footer] passage should be classified as special");
         assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
@@ -1844,6 +1846,7 @@ mod tests {
             "Init",
             &["startup".to_string()],
             "(set: $x to 1)\n",
+            "",
         );
         let p = result.expect("tagged [startup] passage should be classified as special");
         assert!(p.is_special, "Passage tagged 'startup' should be special via classify_passage");
@@ -1859,6 +1862,7 @@ mod tests {
             "PassageHeader",
             &[],
             "Header content\n",
+            "",
         );
         let p = result.expect("PassageHeader (name-matched) should be classified as special");
         assert!(p.is_special, "PassageHeader should be special via name matching");

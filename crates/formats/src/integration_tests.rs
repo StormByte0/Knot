@@ -1294,7 +1294,7 @@ fn sugarcube_incremental_reparse_updates_registries() {
 
     assert!(plugin.workspace_variable_names().contains("$gold"));
 
-    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>");
+    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>", "");
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();
@@ -1306,7 +1306,7 @@ fn sugarcube_incremental_reparse_keeps_other_passages() {
     let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
     let (plugin, _) = sc_parse(src);
 
-    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>");
+    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>", "");
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();

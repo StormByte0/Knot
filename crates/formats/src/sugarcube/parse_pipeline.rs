@@ -162,6 +162,7 @@ pub(super) fn parse_single(
     passage_name: &str,
     passage_tags: &[String],
     passage_text: &str,
+    file_uri: &str,
 ) -> Option<Passage> {
     let registry = plugin.registry();
 
@@ -238,7 +239,7 @@ pub(super) fn parse_single(
     let cp = ClassifiedPassage {
         header,
         body_text: passage_text.to_string(),
-        file_uri: String::new(),
+        file_uri: file_uri.to_string(),
         category: classifier::PassageCategory::Regular,
         special_def: None,
         processing_priority: 40, // Normal passage priority
@@ -248,7 +249,7 @@ pub(super) fn parse_single(
         registry,
         &passage_ast,
         &cp,
-        "",
+        file_uri,
     );
 
     // For script passages, also do oxc walk
@@ -257,7 +258,7 @@ pub(super) fn parse_single(
             registry,
             passage_text,
             &cp,
-            "",
+            file_uri,
         );
     }
 
@@ -267,7 +268,7 @@ pub(super) fn parse_single(
             registry,
             &passage_ast.nodes,
             passage_name,
-            "",
+            file_uri,
             passage_text,
         );
     }

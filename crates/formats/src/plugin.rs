@@ -283,7 +283,7 @@ pub trait FormatPlugin: Send + Sync {
     /// `[widget]`, `[init]`). Without tags, the classification system cannot
     /// identify tag-matched special passages, which would cause them to be
     /// misclassified as regular passages during incremental re-parse.
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage>;
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage>;
 
     /// Returns the name-matched special passage definitions for this format.
     ///

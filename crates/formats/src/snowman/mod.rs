@@ -992,7 +992,7 @@ impl FormatPlugin for SnowmanPlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str) -> Option<Passage> {
+    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         // For incremental re-parse: we receive body text and tags.
         let special_def = self.classify_passage(passage_name, passage_tags);
 
@@ -1607,6 +1607,7 @@ mod tests {
             "TopBar",
             &["header".to_string()],
             "Header content\n",
+            "",
         );
         let p = result.expect("tagged [header] passage should be classified as special");
         assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
@@ -1622,6 +1623,7 @@ mod tests {
             "BottomBar",
             &["footer".to_string()],
             "Footer content\n",
+            "",
         );
         let p = result.expect("tagged [footer] passage should be classified as special");
         assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
@@ -1637,6 +1639,7 @@ mod tests {
             "PassageHeader",
             &[],
             "Header content\n",
+            "",
         );
         let p = result.expect("PassageHeader (name-matched) should be classified as special");
         assert!(p.is_special, "PassageHeader should be special via name matching");
