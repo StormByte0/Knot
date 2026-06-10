@@ -69,14 +69,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // FormatPluginMut in Phase 4).
     inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
 
-    // StoryData processing is one-shot, init-only. After the format is
-    // frozen (post-indexing), we NEVER re-extract metadata or trigger
-    // format switch cascades. If the user edits StoryData, a server
-    // restart is required.
-    if !inner.workspace.format_frozen {
-        helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-    }
-
+    // StoryData parsing is a CORE operation handled exclusively by the
+    // two-pass indexing in index_workspace(). Individual format plugins
+    // (SugarCube, etc.) treat StoryData as a special passage name with
+    // JSON highlighting only. The format switch logic never reaches
+    // format-specific code. See: Format Isolation (useinteraction.md §7).
     inner.workspace.insert_document(doc);
     tracing::info!(
         passage_count = inner.workspace.get_document(&uri)
@@ -428,12 +425,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                         inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
 
-                        // StoryData processing is one-shot, init-only.
-                        // When format is frozen, skip extract_and_set_metadata.
-                        if !inner.workspace.format_frozen {
-                            helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-                        }
-
+                        // StoryData parsing is a core-only operation (see: Format Isolation).
                         inner.workspace.insert_document(doc);
 
                         // Format is frozen after indexing — no dynamic format switches.
@@ -553,12 +545,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                             inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
 
-                            // StoryData processing is one-shot, init-only.
-                            // When format is frozen, skip extract_and_set_metadata.
-                            if !inner.workspace.format_frozen {
-                                helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-                            }
-
+                            // StoryData parsing is a core-only operation (see: Format Isolation).
                             inner.workspace.insert_document(doc);
 
                             let format_after = inner.workspace.resolve_format();

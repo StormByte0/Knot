@@ -84,15 +84,7 @@ pub struct ServerStateInner {
     /// can temporarily remove documents from the cache. Stale tokens are
     /// better than no tokens because VS Code will re-request after a refresh.
     pub semantic_tokens: HashMap<Url, Vec<SemanticToken>>,
-    /// Flag indicating that a format switch cascade is in progress.
-    ///
-    /// When set to `true`, `did_open` and `did_change` should suppress
-    /// semantic token refreshes. The cascade completes when the extension
-    /// sends `knot/formatSwitchComplete`, at which point ONE unified
-    /// refresh is sent. This prevents the O(N²) token request flood that
-    /// would otherwise occur when N files have their language IDs switched
-    /// in quick succession.
-    pub format_switch_in_progress: bool,
+
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +146,7 @@ impl ServerState {
                 format_diagnostics: HashMap::new(),
                 doc_versions: HashMap::new(),
                 semantic_tokens: HashMap::new(),
-                format_switch_in_progress: false,
+
             })),
             shutting_down: AtomicBool::new(false),
             client_ready: Arc::new(Notify::new()),

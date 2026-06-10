@@ -296,7 +296,7 @@ pub fn build_json_body_tokens(body: &str, body_offset: usize) -> Vec<SemanticTok
                 if bytes[pos] == b'-' {
                     pos += 1;
                 }
-                while pos < len && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.' || bytes[pos] == b'e' || bytes[pos] == b'E' || bytes[pos] == b'+' || bytes[pos] == b'-') && pos > start || bytes[pos].is_ascii_digit() {
+                while pos < len && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.' || bytes[pos] == b'e' || bytes[pos] == b'E' || bytes[pos] == b'+' || bytes[pos] == b'-') {
                     pos += 1;
                 }
                 if pos == start + 1 && bytes[start] == b'-' {
