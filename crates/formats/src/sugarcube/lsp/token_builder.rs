@@ -104,11 +104,16 @@ fn emit_var_op_tokens(op: &ast::AnalyzedVarOp, tokens: &mut Vec<SemanticToken>, 
     };
 
     if !op.segment_spans.is_empty() {
-        for seg_span in &op.segment_spans {
+        for (i, seg_span) in op.segment_spans.iter().enumerate() {
+            let token_type = if i == 0 {
+                SemanticTokenType::Variable  // $foo — the root variable
+            } else {
+                SemanticTokenType::Property  // .bar, .baz — property access
+            };
             tokens.push(SemanticToken {
                 start: body_offset + seg_span.start,
                 length: seg_span.end - seg_span.start,
-                token_type: SemanticTokenType::Variable,
+                token_type,
                 modifier,
             });
         }

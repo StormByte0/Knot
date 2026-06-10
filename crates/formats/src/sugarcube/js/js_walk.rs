@@ -28,6 +28,7 @@ use oxc_span::GetSpan;
 use crate::sugarcube::ast::{
     AnalyzedVarOp, FunctionDefInfo, JsAnalysis, MacroAddInfo, TemplateAddInfo,
 };
+use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
 
 // ---------------------------------------------------------------------------
@@ -216,14 +217,15 @@ fn walk_expression(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Read,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -240,14 +242,15 @@ fn walk_expression(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Read,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -289,14 +292,15 @@ fn walk_expression(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Read,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -456,14 +460,15 @@ fn check_assignment_for_state_var(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Write,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -479,14 +484,15 @@ fn check_assignment_for_state_var(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Write,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -502,14 +508,15 @@ fn check_assignment_for_state_var(
                 let var_name = format!("${}", prop_name);
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
 
                 analysis.var_ops.push(AnalyzedVarOp {
                     name: var_name,
                     is_temporary: false,
                     access_kind: VarAccessKind::Write,
-                    span: original_start..original_end,
+                    span: span.clone(),
                     property_path: String::new(),
-                    segment_spans: Vec::new(),
+                    segment_spans: vec![span],
                     construct_span: None,
                 });
             }
@@ -705,14 +712,16 @@ fn check_identifier_for_substituted_var(
         let var_name = format!("${}", base_name);
         let original_start = preprocessed.map_to_original(id.span.start as usize);
         let original_end = preprocessed.map_to_original(id.span.end as usize);
+        let span = original_start..original_end;
+        let segment_spans = compute_target_segment_spans(&var_name, property_path, &span);
 
         analysis.var_ops.push(AnalyzedVarOp {
             name: var_name,
             is_temporary: false,
             access_kind: if is_write { VarAccessKind::Write } else { VarAccessKind::Read },
-            span: original_start..original_end,
+            span,
             property_path: property_path.to_string(),
-            segment_spans: Vec::new(),
+            segment_spans,
             construct_span: None,
         });
     }
@@ -721,14 +730,16 @@ fn check_identifier_for_substituted_var(
         let var_name = format!("_{}", var_part);
         let original_start = preprocessed.map_to_original(id.span.start as usize);
         let original_end = preprocessed.map_to_original(id.span.end as usize);
+        let span = original_start..original_end;
+        let segment_spans = compute_target_segment_spans(&var_name, "", &span);
 
         analysis.var_ops.push(AnalyzedVarOp {
             name: var_name,
             is_temporary: true,
             access_kind: if is_write { VarAccessKind::Write } else { VarAccessKind::Read },
-            span: original_start..original_end,
+            span,
             property_path: String::new(),
-            segment_spans: Vec::new(),
+            segment_spans,
             construct_span: None,
         });
     }
