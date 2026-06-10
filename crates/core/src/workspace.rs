@@ -429,9 +429,18 @@ impl Workspace {
         diagnostics
     }
 
-    /// Mark the workspace as indexed.
+    /// Mark the workspace as indexed and freeze the format.
+    ///
+    /// After indexing, the story format is **readonly** — no subsequent
+    /// file open, edit, or watch event may re-trigger format detection
+    /// or overwrite `metadata`. If the user edits StoryData, a server
+    /// restart is required.
     pub fn mark_indexed(&mut self) {
         self.indexed = true;
+        tracing::info!(
+            format = ?self.resolve_format(),
+            "Workspace indexing complete — format resolved"
+        );
     }
 
     /// The number of documents in the workspace.
@@ -549,20 +558,12 @@ impl Workspace {
         // 5. Rebuild upstream lifecycle edges
         self.rebuild_upstream_edges();
 
-        // 6. Extract StoryData metadata from the newly inserted document
-        if let Some(new_doc) = self.get_document(uri) {
-            if let Some(story_data) = new_doc.story_data() {
-                let body_text = extract_passage_body_from_blocks(&story_data.body);
-                if let Some(metadata) = parse_story_data_json_body(&body_text) {
-                    tracing::info!(
-                        "apply_document_update: found StoryData format={:?} start={}",
-                        metadata.format,
-                        metadata.start_passage
-                    );
-                    self.metadata = Some(metadata);
-                }
-            }
-        }
+        // 6. Format isolation: StoryData parsing is a CORE operation handled
+        // exclusively by the two-pass indexing in index_workspace(). This
+        // method must NOT re-extract StoryData metadata or trigger format
+        // switches. Individual format plugins (SugarCube, etc.) treat
+        // StoryData as a special passage name with JSON highlighting only.
+        // See: Format Isolation (useinteraction.md §7).
 
         let format_after = self.resolve_format();
 
@@ -644,63 +645,6 @@ impl Workspace {
     pub fn generate_ifid() -> String {
         uuid::Uuid::new_v4().to_string().to_uppercase()
     }
-}
-
-/// Extract the body text of a passage from its body blocks.
-///
-/// Concatenates all `Block::Text` content from the body blocks into a
-/// single string. Used by `apply_document_update` to extract the
-/// StoryData JSON body for metadata parsing.
-fn extract_passage_body_from_blocks(body: &[Block]) -> String {
-    body.iter()
-        .filter_map(|block| match block {
-            Block::Text { content, .. } => Some(content.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Parse the JSON body of a StoryData passage and return metadata.
-///
-/// This is the core equivalent of the server's `parse_story_data_json`
-/// helper. It extracts `format`, `format-version`, `start`, and `ifid`
-/// from the JSON body. Returns `None` if the body is not valid JSON or
-/// doesn't contain a JSON object.
-fn parse_story_data_json_body(body: &str) -> Option<StoryMetadata> {
-    // Find the first `{` in the body — skip any leading whitespace or tags
-    let json_start = body.find('{')?;
-    let json_text = &body[json_start..];
-
-    let value: serde_json::Value = serde_json::from_str(json_text).ok()?;
-
-    let format = value
-        .get("format")
-        .and_then(|v| v.as_str())
-        .and_then(|s| StoryFormat::from_str(s).ok())
-        .unwrap_or_else(StoryFormat::default_format);
-
-    let format_version = value
-        .get("format-version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let start_passage = value
-        .get("start")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Start")
-        .to_string();
-
-    let ifid = value
-        .get("ifid")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    Some(StoryMetadata {
-        format,
-        format_version,
-        start_passage,
-        ifid,
-    })
 }
 
 #[cfg(test)]

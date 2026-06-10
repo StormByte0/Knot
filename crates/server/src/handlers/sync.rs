@@ -3,7 +3,6 @@
 
 use crate::handlers::helpers;
 use crate::state::{ServerState, ServerStateInner};
-use knot_core::passage::StoryFormat;
 use lsp_types::*;
 use url::Url;
 
@@ -55,9 +54,6 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     inner.editor_open_docs.insert(uri.clone());
     inner.open_documents.insert(uri.clone(), text.clone());
 
-    // Capture format before StoryData extraction so we can detect changes
-    let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
-
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
         helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format, version);
@@ -73,9 +69,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // FormatPluginMut in Phase 4).
     inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
 
-    // Check for StoryData in the newly opened document
-    helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
-
+    // StoryData parsing is a CORE operation handled exclusively by the
+    // two-pass indexing in index_workspace(). Individual format plugins
+    // (SugarCube, etc.) treat StoryData as a special passage name with
+    // JSON highlighting only. The format switch logic never reaches
+    // format-specific code. See: Format Isolation (useinteraction.md §7).
     inner.workspace.insert_document(doc);
     tracing::info!(
         passage_count = inner.workspace.get_document(&uri)
@@ -98,13 +96,8 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         return;
     }
 
-    let format_after = inner.workspace.resolve_format();
-    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
-
-    // If the format changed (or was first detected), notify the client
-    let should_notify = format_before != Some(format_after.clone());
-    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
-
+    let format = inner.workspace.resolve_format();
+    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format.clone());
 
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
@@ -129,26 +122,9 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
-    if should_notify {
-        // Format switch cascade starting — set the flag so that
-        // did_change and subsequent did_open calls suppress their
-        // semantic token refreshes. The extension will send
-        // `knot/formatSwitchComplete` when all language ID switches
-        // are done, which clears the flag and sends ONE unified refresh.
-        {
-            let mut inner = state.inner.write().await;
-            inner.format_switch_in_progress = true;
-        }
-        let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
-        helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
-    }
-
-    // Schedule a debounced semantic token refresh if no format switch
-    // is in progress. During a cascade, the formatSwitchComplete
-    // handler will send ONE unified refresh.
-    if !state.inner.read().await.format_switch_in_progress {
-        state.schedule_semantic_token_refresh().await;
-    }
+    // Schedule a debounced semantic token refresh. Format is frozen
+    // after indexing — no format switch cascades are possible.
+    state.schedule_semantic_token_refresh().await;
 }
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
@@ -240,12 +216,6 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // the shorter the write-lock hold time, the less likely a restart
     // will catch in-flight handlers still waiting for the lock.
 
-    // Check if format changed after StoryData extraction
-    let format_after = update_result.format_after;
-    let should_notify = update_result.format_before != Some(format_after.clone());
-    let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
-
-
     drop(inner); // ← release write lock
 
     // ── Phase 2: read-lock — analysis (read-only) ──────────────────
@@ -293,24 +263,9 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
     }
 
-    if should_notify {
-        // Format switch cascade starting — set the flag so that
-        // subsequent operations suppress their semantic token refreshes.
-        {
-            let mut inner = state.inner.write().await;
-            inner.format_switch_in_progress = true;
-        }
-        let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
-        helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
-    }
-
-    // Schedule a debounced semantic token refresh if no format switch
-    // is in progress. During a cascade, the formatSwitchComplete
-    // handler will send ONE unified refresh. This fixes the bug from
-    // the original commits where did_change didn't check the flag.
-    if !state.inner.read().await.format_switch_in_progress {
-        state.schedule_semantic_token_refresh().await;
-    }
+    // Schedule a debounced semantic token refresh. Format is frozen
+    // after indexing — no format switch cascades are possible.
+    state.schedule_semantic_token_refresh().await;
 
 }
 
@@ -462,9 +417,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     && let Ok(text) = std::fs::read_to_string(&path) {
                         let mut inner = state.inner.write().await;
 
-                        // Remember the current format before inserting the new document
-                        let format_before = inner.workspace.resolve_format();
-
                         let format = inner.workspace.resolve_format();
                         let (doc, parse_result) =
                             helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
@@ -472,42 +424,14 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         inner.open_documents.insert(uri.clone(), text.clone());
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                         inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
-                        helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
+
+                        // StoryData parsing is a core-only operation (see: Format Isolation).
                         inner.workspace.insert_document(doc);
 
-                        // If the new file's StoryData changed the format, re-parse
-                        // ALL existing documents with the updated format.
+                        // Format is frozen after indexing — no dynamic format switches.
+                        // Just rebuild the graph with the current (frozen) format.
                         let format_after = inner.workspace.resolve_format();
-                        if format_before != format_after {
-                            tracing::info!(
-                                "Format changed from {:?} to {:?} after file creation — re-parsing all documents",
-                                format_before, format_after
-                            );
-                            // Re-parse all documents with the new format
-                            let uris: Vec<url::Url> = inner.open_documents.keys().cloned().collect();
-                            let texts: Vec<String> = uris.iter()
-                                .filter_map(|u| inner.open_documents.get(u).cloned())
-                                .collect();
-
-                            for (doc_uri, doc_text) in uris.iter().zip(texts.iter()) {
-                                // Skip the newly created file — it's already parsed above
-                                if *doc_uri == uri {
-                                    continue;
-                                }
-                                let (re_parsed, re_result) =
-                                    helpers::parse_with_format_plugin(&mut inner.format_registry, doc_uri, doc_text, format_after.clone(), 0);
-                                inner.format_diagnostics.insert(doc_uri.clone(), re_result.diagnostics);
-                                inner.semantic_tokens.insert(doc_uri.clone(), re_result.tokens);
-                                helpers::extract_and_set_metadata(&mut inner.workspace, &re_parsed, doc_text);
-                                inner.workspace.insert_document(re_parsed);
-                            }
-                        }
-
                         inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
-
-                        // Collect doc URIs before dropping the lock
-                        let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
-                        let should_notify = format_before != format_after;
 
                         // Release write lock before analysis
                         drop(inner);
@@ -530,17 +454,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                                 .unwrap_or_default();
                             helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
-                        }
-
-                        // Notify client if format changed after file creation
-                        if should_notify {
-                            // Format switch cascade starting — set the flag
-                            {
-                                let mut inner = state.inner.write().await;
-                                inner.format_switch_in_progress = true;
-                            }
-                            let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
-                            helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
                         }
 
                         // Schedule debounced semantic token refresh
@@ -624,9 +537,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                         && let Ok(text) = std::fs::read_to_string(&path) {
                             let mut inner = state.inner.write().await;
 
-                            // Capture format before StoryData extraction
-                            let format_before: Option<StoryFormat> = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
-
                             let format = inner.workspace.resolve_format();
                             let (doc, parse_result) =
                                 helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
@@ -634,15 +544,12 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             inner.open_documents.insert(uri.clone(), text.clone());
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
                             inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
-                            helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
+
+                            // StoryData parsing is a core-only operation (see: Format Isolation).
                             inner.workspace.insert_document(doc);
 
                             let format_after = inner.workspace.resolve_format();
                             inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
-
-                            // Check if format changed
-                            let should_notify = format_before != Some(format_after.clone());
-                            let doc_uris: Vec<String> = inner.open_documents.keys().map(|u| u.to_string()).collect();
 
                             // Release write lock before analysis
                             drop(inner);
@@ -665,16 +572,6 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                     .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                                     .unwrap_or_default();
                                 helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
-                            }
-
-                            if should_notify {
-                                // Format switch cascade starting — set the flag
-                                {
-                                    let mut inner = state.inner.write().await;
-                                    inner.format_switch_in_progress = true;
-                                }
-                                let workspace_uri = state.inner.read().await.workspace.root_uri.to_string();
-                                helpers::send_format_detected(&state.client, format_after, doc_uris, workspace_uri).await;
                             }
 
                             // Schedule debounced semantic token refresh

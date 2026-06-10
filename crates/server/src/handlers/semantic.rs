@@ -407,7 +407,7 @@ pub(crate) async fn semantic_tokens_full(
             // "tokens not available yet, re-request after refresh."
             // VS Code will re-request after receiving
             // workspace/semanticTokens/refresh, which is sent by the
-            // debounced refresh or the formatSwitchComplete handler.
+            // debounced refresh or the formatDetected cascade.
             // This is an upgrade from Phase 2 (which returned empty
             // SemanticTokens) — returning null ensures VS Code doesn't
             // cache empty tokens and suppress future re-requests.

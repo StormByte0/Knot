@@ -1,7 +1,7 @@
 //! Lifecycle handlers: initialize, initialized, shutdown.
 
 use crate::handlers::helpers;
-use crate::lsp_ext::{KnotClientReadyResponse, KnotFormatSwitchCompleteParams, KnotFormatSwitchCompleteResponse};
+use crate::lsp_ext::{KnotClientReadyParams, KnotClientReadyResponse, KnotFormatSwitchCompleteParams, KnotFormatSwitchCompleteResponse};
 use crate::state::ServerState;
 use lsp_types::*;
 use std::time::Duration;
@@ -286,6 +286,7 @@ impl ServerState {
     /// extension has registered notification handlers.
     pub async fn knot_client_ready(
         &self,
+        _params: KnotClientReadyParams,
     ) -> Result<KnotClientReadyResponse, tower_lsp::jsonrpc::Error> {
         tracing::info!("knot/clientReady received — notifying indexing task");
         self.client_ready.notify_one();
@@ -296,9 +297,12 @@ impl ServerState {
     ///
     /// The extension sends this after all document language IDs have been
     /// switched following a `formatDetected` notification. The server
-    /// clears the `format_switch_in_progress` flag and sends ONE unified
-    /// `workspace/semanticTokens/refresh`, preventing the O(N²) token
-    /// request flood that would otherwise occur.
+    /// sends ONE unified `workspace/semanticTokens/refresh` to ensure all
+    /// visible editors get fresh tokens after the language ID cascade.
+    ///
+    /// Note: Format is frozen after initial indexing — no dynamic format
+    /// switches are possible. This handshake only fires once, during the
+    /// initial `formatDetected` cascade after workspace indexing.
     pub async fn knot_format_switch_complete(
         &self,
         params: KnotFormatSwitchCompleteParams,
@@ -307,10 +311,6 @@ impl ServerState {
             "knot/formatSwitchComplete received — workspace_uri={}, switched_count={}",
             params.workspace_uri, params.switched_count
         );
-        {
-            let mut inner = self.inner.write().await;
-            inner.format_switch_in_progress = false;
-        }
         // Send ONE unified refresh now that the cascade is complete
         self.schedule_semantic_token_refresh().await;
         Ok(KnotFormatSwitchCompleteResponse { acknowledged: true })
