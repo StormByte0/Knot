@@ -200,6 +200,14 @@ pub struct Workspace {
     pub config: KnotConfig,
     /// Whether the workspace has been fully indexed.
     pub indexed: bool,
+    /// Whether the story format has been frozen after initial indexing.
+    ///
+    /// StoryData processing is **one-shot, init-only**. After the format
+    /// is resolved during workspace indexing, it becomes readonly — no
+    /// subsequent file open, edit, or watch event may re-trigger format
+    /// detection or overwrite `metadata`. If the user edits StoryData,
+    /// a server restart is required.
+    pub format_frozen: bool,
 }
 
 impl Workspace {
@@ -212,6 +220,7 @@ impl Workspace {
             metadata: None,
             config: KnotConfig::default(),
             indexed: false,
+            format_frozen: false,
         }
     }
 
@@ -429,9 +438,19 @@ impl Workspace {
         diagnostics
     }
 
-    /// Mark the workspace as indexed.
+    /// Mark the workspace as indexed and freeze the format.
+    ///
+    /// After indexing, the story format is **readonly** — no subsequent
+    /// file open, edit, or watch event may re-trigger format detection
+    /// or overwrite `metadata`. If the user edits StoryData, a server
+    /// restart is required.
     pub fn mark_indexed(&mut self) {
         self.indexed = true;
+        self.format_frozen = true;
+        tracing::info!(
+            format = ?self.resolve_format(),
+            "Format frozen after indexing — no dynamic format switches"
+        );
     }
 
     /// The number of documents in the workspace.
@@ -549,17 +568,22 @@ impl Workspace {
         // 5. Rebuild upstream lifecycle edges
         self.rebuild_upstream_edges();
 
-        // 6. Extract StoryData metadata from the newly inserted document
-        if let Some(new_doc) = self.get_document(uri) {
-            if let Some(story_data) = new_doc.story_data() {
-                let body_text = extract_passage_body_from_blocks(&story_data.body);
-                if let Some(metadata) = parse_story_data_json_body(&body_text) {
-                    tracing::info!(
-                        "apply_document_update: found StoryData format={:?} start={}",
-                        metadata.format,
-                        metadata.start_passage
-                    );
-                    self.metadata = Some(metadata);
+        // 6. Extract StoryData metadata from the newly inserted document.
+        // When format is frozen (after indexing), skip this entirely —
+        // StoryData processing is one-shot, init-only. If the user edits
+        // StoryData, a server restart is required.
+        if !self.format_frozen {
+            if let Some(new_doc) = self.get_document(uri) {
+                if let Some(story_data) = new_doc.story_data() {
+                    let body_text = extract_passage_body_from_blocks(&story_data.body);
+                    if let Some(metadata) = parse_story_data_json_body(&body_text) {
+                        tracing::info!(
+                            "apply_document_update: found StoryData format={:?} start={}",
+                            metadata.format,
+                            metadata.start_passage
+                        );
+                        self.metadata = Some(metadata);
+                    }
                 }
             }
         }
