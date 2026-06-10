@@ -69,6 +69,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         parse_result.diagnostics.clone(),
     );
 
+    // Cache semantic tokens at parse time so semantic_tokens_full
+    // never needs to re-parse (critical for avoiding deadlock with
+    // FormatPluginMut in Phase 4).
+    inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
+
     // Check for StoryData in the newly opened document
     helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
@@ -185,6 +190,9 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         uri.clone(),
         parse_result.diagnostics.clone(),
     );
+
+    // Cache semantic tokens at parse time
+    inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
 
     let old_passages: Vec<Passage> = inner
         .workspace
@@ -521,6 +529,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         inner.open_documents.insert(uri.clone(), text.clone());
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
+                        inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
                         helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                         inner.workspace.insert_document(doc);
 
@@ -546,6 +555,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 let (re_parsed, re_result) =
                                     helpers::parse_with_format_plugin(&inner.format_registry, doc_uri, doc_text, format_after.clone(), 0);
                                 inner.format_diagnostics.insert(doc_uri.clone(), re_result.diagnostics);
+                                inner.semantic_tokens.insert(doc_uri.clone(), re_result.tokens);
                                 helpers::extract_and_set_metadata(&mut inner.workspace, &re_parsed, doc_text);
                                 inner.workspace.insert_document(re_parsed);
                             }
@@ -725,6 +735,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                             inner.open_documents.insert(uri.clone(), text.clone());
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
+                            inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
                             helpers::extract_and_set_metadata(&mut inner.workspace, &doc, &text);
                             inner.workspace.insert_document(doc);
 

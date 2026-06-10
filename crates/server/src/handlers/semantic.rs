@@ -371,88 +371,49 @@ pub(crate) async fn semantic_tokens_full(
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
 
-    if let Some(text) = inner.open_documents.get(&uri) {
-        let format = inner.workspace.resolve_format();
-        if let Some(plugin) = inner.format_registry.get(&format) {
-            let parse_result = plugin.parse(&uri, text);
-            let tokens = convert_semantic_tokens(text, &parse_result.tokens);
-
-            // Debug: compact semantic token summary with mismatch detection.
-            {
-                let mut match_count = 0usize;
-                let mut mismatch_count = 0usize;
-                let mut mismatches = Vec::new();
-
-                for (i, tok) in tokens.iter().enumerate() {
-                    let safe_start = parse_result.tokens.get(i)
-                        .map(|pt| pt.start.min(text.len()))
-                        .unwrap_or(0);
-                    let safe_end = parse_result.tokens.get(i)
-                        .map(|pt| (pt.start + pt.length).min(text.len()))
-                        .unwrap_or(0);
-                    let tok_text = if safe_start < safe_end && safe_end <= text.len() {
-                        &text[safe_start..safe_end]
-                    } else {
-                        ""
-                    };
-
-                    let line_text = text.lines().nth(tok.line as usize).unwrap_or("");
-                    let char_end = (tok.start_char as usize + tok.length as usize).min(line_text.len());
-                    let lsp_text = if (tok.start_char as usize) < line_text.len() {
-                        &line_text[tok.start_char as usize..char_end]
-                    } else {
-                        ""
-                    };
-
-                    if tok_text == lsp_text {
-                        match_count += 1;
-                    } else {
-                        mismatch_count += 1;
-                        // Truncate text to 40 chars for readability
-                        let trunc = |s: &str| -> String {
-                            if s.len() <= 40 { s.to_string() }
-                            else { format!("{}...", &s[..s.char_indices().take(40).last().map(|(i,c)| i + c.len_utf8()).unwrap_or(40)]) }
-                        };
-                        mismatches.push(format!(
-                            "  [{}] line={} char={} len={} type={} byte_text={:?} lsp_text={:?}",
-                            i, tok.line, tok.start_char, tok.length, tok.token_type,
-                            trunc(tok_text), trunc(lsp_text)
-                        ));
-                    }
+    // Read tokens from the cache (populated at parse time in did_open,
+    // did_change, and indexing). This avoids re-parsing on every request,
+    // which is critical for avoiding deadlock when FormatPluginMut (Phase 4)
+    // requires the write lock for parsing.
+    match inner.semantic_tokens.get(&uri) {
+        Some(cached_tokens) => {
+            // We need the document text to convert byte-offset tokens to
+            // LSP line/character positions. If the text is unavailable
+            // (shouldn't happen in normal operation), return empty tokens.
+            let text = match inner.open_documents.get(&uri) {
+                Some(t) => t.clone(),
+                None => {
+                    return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                        result_id: None,
+                        data: vec![],
+                    })));
                 }
+            };
 
-                tracing::debug!(
-                    file = %uri,
-                    total_tokens = tokens.len(),
-                    match_count,
-                    mismatch_count,
-                    "semantic_tokens_full: token summary"
-                );
-
-                if !mismatches.is_empty() {
-                    // Log up to 10 mismatches to avoid flooding
-                    for m in mismatches.iter().take(10) {
-                        tracing::debug!(mismatch = m, "semantic token mismatch");
-                    }
-                    if mismatches.len() > 10 {
-                        tracing::debug!(remaining = mismatches.len() - 10, "... more mismatches");
-                    }
-                }
-            }
+            let tokens = convert_semantic_tokens(&text, cached_tokens);
 
             let data = encode_semantic_tokens(&tokens);
 
             // Add result_id based on document version for delta support
             let result_id = inner.doc_versions.get(&uri).map(|v| v.to_string());
 
-            return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id,
                 data,
-            })));
+            })))
+        }
+        None => {
+            // No cached tokens — return empty tokens. VS Code will
+            // re-request after a workspace/semanticTokens/refresh.
+            // We return an empty SemanticTokens (not JSON null) at this
+            // phase. Phase 3 will upgrade this to return JSON null for
+            // better handling during format switch cascades.
+            Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: vec![],
+            })))
         }
     }
-
-    Ok(None)
 }
 
 pub(crate) async fn code_lens(

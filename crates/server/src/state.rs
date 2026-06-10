@@ -5,7 +5,7 @@
 
 use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
-use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SourceTextProvider};
+use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SemanticToken, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
@@ -69,6 +69,19 @@ pub struct ServerStateInner {
     /// re-parses so that `did_change` can always use the authoritative client
     /// version.
     pub doc_versions: HashMap<Url, i32>,
+    /// Semantic token cache (URI → format-plugin tokens).
+    ///
+    /// Tokens are stored at parse time so that `semantic_tokens_full` never
+    /// needs to re-parse. This is critical for avoiding deadlock when
+    /// FormatPluginMut (Phase 4) requires the write lock for parsing — if
+    /// `semantic_tokens_full` had to parse, it would need the write lock
+    /// while already holding the read lock.
+    ///
+    /// Tokens are NOT removed on `did_close` — preserving them is important
+    /// for the format-switch cascade (Phase 3), where didClose+didOpen pairs
+    /// can temporarily remove documents from the cache. Stale tokens are
+    /// better than no tokens because VS Code will re-request after a refresh.
+    pub semantic_tokens: HashMap<Url, Vec<SemanticToken>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +124,7 @@ impl ServerState {
                 open_documents: HashMap::new(),
                 format_diagnostics: HashMap::new(),
                 doc_versions: HashMap::new(),
+                semantic_tokens: HashMap::new(),
             }),
             shutting_down: AtomicBool::new(false),
         }

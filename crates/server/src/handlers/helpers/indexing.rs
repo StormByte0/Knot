@@ -220,11 +220,19 @@ pub(crate) async fn index_workspace(
         // Store format diagnostics
         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
 
+        // Cache semantic tokens at parse time so semantic_tokens_full
+        // never needs to re-parse
+        inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
+
         // Check for StoryData (may update metadata with start passage, ifid, etc.)
         extract_and_set_metadata(&mut inner.workspace, &doc, &text);
 
         inner.workspace.insert_document(doc);
         drop(inner);
+
+        // Yield to the tokio runtime between files so other tasks
+        // (did_open, did_change, etc.) can acquire the lock.
+        tokio::task::yield_now().await;
 
         parsed_count += 1;
 
