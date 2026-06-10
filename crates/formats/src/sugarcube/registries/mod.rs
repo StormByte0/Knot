@@ -18,12 +18,13 @@
 //! | **Functions** | [`FunctionRegistry`] | `function`, `const fn = () =>` in `[script]` |
 //! | **Templates** | [`TemplateRegistry`] | `Template.add()` in `[script]` |
 //!
-//! ## Thread Safety
+//! ## Synchronization
 //!
-//! Each sub-registry is wrapped in its own [`RwLock`], allowing fine-grained
-//! concurrent access. Multiple readers (completion, hover, references) can
-//! access different registries simultaneously. Only the parse pipeline needs
-//! write locks, and it only locks the registries it needs to update.
+//! All sub-registries are stored as plain fields (no interior mutability).
+//! The caller must hold exclusive access (`&mut self`) to mutate them.
+//! In the LSP server, this is guaranteed by the `tokio::RwLock` on
+//! `ServerStateInner` — the server's write lock is the SOLE synchronization
+//! mechanism.
 //!
 //! ## Template for Other Formats
 //!
@@ -58,7 +59,6 @@ pub mod custom_macros;
 pub mod var_extract;
 pub mod registry_populate;
 
-use parking_lot::RwLock;
 use std::collections::HashSet;
 
 use custom_macros::CustomMacroRegistry;
@@ -75,21 +75,20 @@ pub use template_registry::{TemplateEntry, TemplateKind, TemplateRegistry};
 /// The unified registry hub for the SugarCube format.
 ///
 /// Owns all sub-registries and provides both fine-grained access (individual
-/// read/write guards) and bulk operations (clear/remove for re-parse).
+/// read/write methods) and bulk operations (clear/remove for re-parse).
 ///
-/// This struct replaces the previous design where `SugarCubePlugin` held
-/// separate `RwLock<VariableTree>` and `RwLock<CustomMacroRegistry>` fields.
-/// Consolidating into a hub makes the registry structure explicit, enables
-/// coordinated bulk operations, and serves as a template for other formats.
+/// All sub-registries are stored as plain fields — no interior mutability.
+/// The caller must hold `&mut self` to mutate, which in the server means
+/// holding the write lock on `ServerStateInner`.
 pub struct SugarCubeRegistry {
     /// Side table tracking all `$var` / `_var` references across the workspace.
-    variables: RwLock<VariableTree>,
+    variables: VariableTree,
     /// Registry of user-defined macros (widgets and `Macro.add()` calls).
-    custom_macros: RwLock<CustomMacroRegistry>,
+    custom_macros: CustomMacroRegistry,
     /// Registry of JS function definitions found in script passages.
-    functions: RwLock<FunctionRegistry>,
+    functions: FunctionRegistry,
     /// Registry of `Template.add()` definitions found in script passages.
-    templates: RwLock<TemplateRegistry>,
+    templates: TemplateRegistry,
 }
 
 impl Default for SugarCubeRegistry {
@@ -102,55 +101,62 @@ impl SugarCubeRegistry {
     /// Create a new registry hub with all sub-registries empty.
     pub fn new() -> Self {
         Self {
-            variables: RwLock::new(VariableTree::new()),
-            custom_macros: RwLock::new(CustomMacroRegistry::new()),
-            functions: RwLock::new(FunctionRegistry::new()),
-            templates: RwLock::new(TemplateRegistry::new()),
+            variables: VariableTree::new(),
+            custom_macros: CustomMacroRegistry::new(),
+            functions: FunctionRegistry::new(),
+            templates: TemplateRegistry::new(),
         }
     }
 
-    // ── Individual sub-registry access (read guards) ──────────────────
+    // ── Individual sub-registry access (read) ──────────────────────────
 
     /// Get read access to the variable tree.
-    pub fn variables(&self) -> parking_lot::RwLockReadGuard<'_, VariableTree> {
-        self.variables.read()
+    pub fn variables(&self) -> &VariableTree {
+        &self.variables
     }
 
     /// Get read access to the custom macro registry.
-    pub fn custom_macros(&self) -> parking_lot::RwLockReadGuard<'_, CustomMacroRegistry> {
-        self.custom_macros.read()
+    pub fn custom_macros(&self) -> &CustomMacroRegistry {
+        &self.custom_macros
     }
 
     /// Get read access to the function registry.
-    pub fn functions(&self) -> parking_lot::RwLockReadGuard<'_, FunctionRegistry> {
-        self.functions.read()
+    pub fn functions(&self) -> &FunctionRegistry {
+        &self.functions
     }
 
     /// Get read access to the template registry.
-    pub fn templates(&self) -> parking_lot::RwLockReadGuard<'_, TemplateRegistry> {
-        self.templates.read()
+    pub fn templates(&self) -> &TemplateRegistry {
+        &self.templates
     }
 
-    // ── Individual sub-registry access (write guards) ─────────────────
+    // ── Individual sub-registry access (write) ─────────────────────────
 
     /// Get write access to the variable tree.
-    pub fn variables_mut(&self) -> parking_lot::RwLockWriteGuard<'_, VariableTree> {
-        self.variables.write()
+    pub fn variables_mut(&mut self) -> &mut VariableTree {
+        &mut self.variables
     }
 
     /// Get write access to the custom macro registry.
-    pub fn custom_macros_mut(&self) -> parking_lot::RwLockWriteGuard<'_, CustomMacroRegistry> {
-        self.custom_macros.write()
+    pub fn custom_macros_mut(&mut self) -> &mut CustomMacroRegistry {
+        &mut self.custom_macros
     }
 
     /// Get write access to the function registry.
-    pub fn functions_mut(&self) -> parking_lot::RwLockWriteGuard<'_, FunctionRegistry> {
-        self.functions.write()
+    pub fn functions_mut(&mut self) -> &mut FunctionRegistry {
+        &mut self.functions
     }
 
     /// Get write access to the template registry.
-    pub fn templates_mut(&self) -> parking_lot::RwLockWriteGuard<'_, TemplateRegistry> {
-        self.templates.write()
+    pub fn templates_mut(&mut self) -> &mut TemplateRegistry {
+        &mut self.templates
+    }
+
+    /// Get mutable access to the definition registries (custom macros,
+    /// functions, templates) for populate functions that need to write
+    /// to multiple registries at once.
+    pub fn definition_registries_mut(&mut self) -> (&mut CustomMacroRegistry, &mut FunctionRegistry, &mut TemplateRegistry) {
+        (&mut self.custom_macros, &mut self.functions, &mut self.templates)
     }
 
     // ── Bulk operations (coordinated across all sub-registries) ────────
@@ -158,43 +164,42 @@ impl SugarCubeRegistry {
     /// Remove all entries for a specific file from ALL sub-registries.
     ///
     /// Called during full re-parse to clear stale data before re-populating.
-    pub fn remove_file(&self, file_uri: &str) {
-        self.variables.write().remove_file(file_uri);
-        self.custom_macros.write().remove_file(file_uri);
-        self.functions.write().remove_file(file_uri);
-        self.templates.write().remove_file(file_uri);
+    pub fn remove_file(&mut self, file_uri: &str) {
+        self.variables.remove_file(file_uri);
+        self.custom_macros.remove_file(file_uri);
+        self.functions.remove_file(file_uri);
+        self.templates.remove_file(file_uri);
     }
 
     /// Remove all entries for a specific passage from ALL sub-registries.
     ///
     /// Called during incremental single-passage re-parse to clear the old
     /// entries before adding new ones from the re-parsed AST.
-    pub fn remove_passage(&self, passage_name: &str) {
-        self.variables.write().remove_passage(passage_name);
-        self.custom_macros.write().remove_passage(passage_name);
-        self.functions.write().remove_passage(passage_name);
-        self.templates.write().remove_passage(passage_name);
+    pub fn remove_passage(&mut self, passage_name: &str) {
+        self.variables.remove_passage(passage_name);
+        self.custom_macros.remove_passage(passage_name);
+        self.functions.remove_passage(passage_name);
+        self.templates.remove_passage(passage_name);
     }
 
     /// Clear ALL sub-registries (for full workspace re-parse).
-    pub fn clear(&self) {
-        self.variables.write().clear();
-        self.custom_macros.write().clear();
-        self.functions.write().clear();
-        self.templates.write().clear();
+    pub fn clear(&mut self) {
+        self.variables.clear();
+        self.custom_macros.clear();
+        self.functions.clear();
+        self.templates.clear();
     }
 
     // ── Convenience accessors (delegate to sub-registries) ─────────────
 
     /// Get all workspace variable names for completion.
     pub fn variable_names(&self) -> std::collections::HashSet<String> {
-        self.variables.read().completion_names()
+        self.variables.completion_names()
     }
 
     /// Get known property paths for a variable (for dot-notation completion).
     pub fn variable_properties(&self, var_name: &str) -> std::collections::HashSet<String> {
         self.variables
-            .read()
             .get_variable(var_name)
             .map(|e| e.known_properties())
             .unwrap_or_default()
@@ -202,17 +207,17 @@ impl SugarCubeRegistry {
 
     /// Get all custom macro names for completion.
     pub fn custom_macro_names(&self) -> Vec<String> {
-        self.custom_macros.read().names().cloned().collect()
+        self.custom_macros.names().cloned().collect()
     }
 
     /// Get all function names for completion.
     pub fn function_names(&self) -> Vec<String> {
-        self.functions.read().names().cloned().collect()
+        self.functions.names().cloned().collect()
     }
 
     /// Get all template names for completion (with `?` prefix).
     pub fn template_completion_names(&self) -> Vec<String> {
-        self.templates.read().completion_names()
+        self.templates.completion_names()
     }
 
     /// Build the variable tree for the workspace.
@@ -226,7 +231,7 @@ impl SugarCubeRegistry {
         // Compute passage positions from the source text for relative→absolute conversion.
         let passage_positions = self.compute_passage_positions(source_text);
 
-        self.variables.read().build_tree(&passage_positions)
+        self.variables.build_tree(&passage_positions)
     }
 
     /// Compute passage positions for all files referenced in the variable tree.
@@ -240,9 +245,8 @@ impl SugarCubeRegistry {
 
         // Collect all unique file URIs from the variable tree
         let file_uris: HashSet<String> = {
-            let vtree = self.variables.read();
             let mut uris = HashSet::new();
-            for (_, entry) in vtree.iter() {
+            for (_, entry) in self.variables.iter() {
                 collect_file_uris_from_node(&entry.node, &mut uris);
             }
             uris
@@ -266,49 +270,48 @@ impl SugarCubeRegistry {
 // ---------------------------------------------------------------------------
 
 impl FormatRegistry for SugarCubeRegistry {
-    fn remove_file(&self, file_uri: &str) {
-        self.variables.write().remove_file(file_uri);
-        self.custom_macros.write().remove_file(file_uri);
-        self.functions.write().remove_file(file_uri);
-        self.templates.write().remove_file(file_uri);
+    fn remove_file(&mut self, file_uri: &str) {
+        self.variables.remove_file(file_uri);
+        self.custom_macros.remove_file(file_uri);
+        self.functions.remove_file(file_uri);
+        self.templates.remove_file(file_uri);
     }
 
-    fn remove_passage(&self, passage_name: &str) {
-        self.variables.write().remove_passage(passage_name);
-        self.custom_macros.write().remove_passage(passage_name);
-        self.functions.write().remove_passage(passage_name);
-        self.templates.write().remove_passage(passage_name);
+    fn remove_passage(&mut self, passage_name: &str) {
+        self.variables.remove_passage(passage_name);
+        self.custom_macros.remove_passage(passage_name);
+        self.functions.remove_passage(passage_name);
+        self.templates.remove_passage(passage_name);
     }
 
-    fn clear(&self) {
-        self.variables.write().clear();
-        self.custom_macros.write().clear();
-        self.functions.write().clear();
-        self.templates.write().clear();
+    fn clear(&mut self) {
+        self.variables.clear();
+        self.custom_macros.clear();
+        self.functions.clear();
+        self.templates.clear();
     }
 
     fn variable_names(&self) -> std::collections::HashSet<String> {
-        self.variables.read().completion_names()
+        self.variables.completion_names()
     }
 
     fn variable_properties(&self, var_name: &str) -> std::collections::HashSet<String> {
         self.variables
-            .read()
             .get_variable(var_name)
             .map(|e| e.known_properties())
             .unwrap_or_default()
     }
 
     fn custom_definition_names(&self) -> Vec<String> {
-        self.custom_macros.read().names().cloned().collect()
+        self.custom_macros.names().cloned().collect()
     }
 
     fn function_names(&self) -> Vec<String> {
-        self.functions.read().names().cloned().collect()
+        self.functions.names().cloned().collect()
     }
 
     fn template_names(&self) -> Vec<String> {
-        self.templates.read().completion_names()
+        self.templates.completion_names()
     }
 }
 

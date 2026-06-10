@@ -25,7 +25,7 @@ use knot_core::passage::{
 use url::Url;
 
 use crate::header::{self, TweeHeader};
-use crate::plugin::{FormatPlugin, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 // ---------------------------------------------------------------------------
 // Regex patterns (LazyLock for one-time compilation)
@@ -224,26 +224,18 @@ impl TwineCorePlugin {
 // FormatPlugin implementation
 // ---------------------------------------------------------------------------
 
-impl FormatPlugin for TwineCorePlugin {
-    fn format(&self) -> StoryFormat {
-        StoryFormat::Core
-    }
-
-    fn display_name(&self) -> &str {
-        "Twine Core"
-    }
-
-    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
-        let passages_raw = self.split_passages(text);
+impl FormatPluginMut for TwineCorePlugin {
+    fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
+        // Twine Core has no mutable registries — body moved to parse_mut below
         let mut passages = Vec::new();
         let mut tokens = Vec::new();
 
+        let passages_raw = self.split_passages(text);
+
         for (header, body_text) in &passages_raw {
-            // Classify the passage against core special passages
             let special_def = self.classify_passage(&header.name, &header.tags);
             let is_special = special_def.is_some();
 
-            // Build semantic tokens for the header
             let header_line_end = header.header_start
                 + text[header.header_start..]
                     .find('\n')
@@ -255,20 +247,16 @@ impl FormatPlugin for TwineCorePlugin {
                 is_special,
             ));
 
-            // Tag tokens — compute positions from the parsed header.
-            // Core tags ([script], [stylesheet], [style]) get TwineCore
-            // modifier; custom tags get None. This lets themes visually
-            // distinguish special core tags from user-defined tags.
             if !header.tags.is_empty() {
                 let bracket_start = header.tags_raw.find('[')
                     .map(|bs| header.name_start + bs)
                     .unwrap_or(header.name_start + header.name_text_raw.len());
-                let tags_inner_start = bracket_start + 1; // after `[`
+                let tags_inner_start = bracket_start + 1;
                 let mut offset = tags_inner_start;
                 for tag in &header.tags {
                     let modifier = self.classify_tag(tag);
                     if offset > tags_inner_start {
-                        offset += 1; // space between tags
+                        offset += 1;
                     }
                     tokens.push(SemanticToken {
                         start: offset,
@@ -280,7 +268,6 @@ impl FormatPlugin for TwineCorePlugin {
                 }
             }
 
-            // Build link tokens
             let body_offset = header.header_start
                 + text[header.header_start..]
                     .find('\n')
@@ -295,16 +282,14 @@ impl FormatPlugin for TwineCorePlugin {
                 });
             }
 
-            // Build body text blocks
             let body_blocks = crate::core_specials::raw_body_blocks(body_text, body_offset);
-
             let links = Self::extract_links(body_text, body_offset);
 
             let mut passage = Passage::new(header.name.clone(), header.header_start..(header.header_start + text[header.header_start..].find('\n').unwrap_or(text[header.header_start..].len())));
             passage.tags = header.tags.clone();
             passage.body = body_blocks;
             passage.links = links;
-            passage.vars = Vec::new(); // Core has no variable syntax
+            passage.vars = Vec::new();
             passage.is_special = is_special;
             passage.special_def = special_def;
 
@@ -314,18 +299,12 @@ impl FormatPlugin for TwineCorePlugin {
         ParseResult {
             passages,
             tokens,
-            diagnostics: Vec::new(), // Core has no format-specific diagnostics
+            diagnostics: Vec::new(),
             is_complete: true,
         }
     }
 
-    fn parse_passage(
-        &self,
-        passage_name: &str,
-        passage_tags: &[String],
-        passage_text: &str,
-        _file_uri: &str,
-    ) -> Option<Passage> {
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
         let is_special = special_def.is_some();
 
@@ -341,6 +320,21 @@ impl FormatPlugin for TwineCorePlugin {
 
         Some(passage)
     }
+
+    fn remove_file_from_registries(&mut self, _file_uri: &str) {}
+    fn remove_passage_from_registries(&mut self, _passage_name: &str, _file_uri: &str) {}
+}
+
+impl FormatPlugin for TwineCorePlugin {
+    fn format(&self) -> StoryFormat {
+        StoryFormat::Core
+    }
+
+    fn display_name(&self) -> &str {
+        "Twine Core"
+    }
+
+
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         // Core plugin does NOT define its own special passages —

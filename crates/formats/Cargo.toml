@@ -14,4 +14,3 @@ url = { workspace = true }
 oxc_ast = { workspace = true }
 oxc_allocator = { workspace = true }
 oxc_span = { workspace = true }
-parking_lot = { workspace = true }

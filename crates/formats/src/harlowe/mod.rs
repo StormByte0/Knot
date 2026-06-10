@@ -25,7 +25,7 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
 
@@ -1105,12 +1105,8 @@ impl HarlowePlugin {
 
 }
 
-impl FormatPlugin for HarlowePlugin {
-    fn format(&self) -> StoryFormat {
-        StoryFormat::Harlowe
-    }
-
-    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
+impl FormatPluginMut for HarlowePlugin {
+    fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
         let mut tokens = Vec::new();
         let mut diagnostics = Vec::new();
@@ -1144,37 +1140,23 @@ impl FormatPlugin for HarlowePlugin {
             passage.tags = header.tags.clone();
 
             // ── Context-aware parsing ──────────────────────────────────────
-            // Detect script and stylesheet passages. These contain non-Twine
-            // content (JavaScript or CSS) and should NOT be parsed with
-            // Harlowe's hook/changer/macro regexes.
-            //
-            // Script passages: tagged [script] (Twine-core tag)
-            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
             if is_script {
-                // Script passages: store as raw text, skip Harlowe-specific parsing.
-                // Format-specific implicit passage refs can be added here in the future.
                 passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
                 tokens.extend(self.header_tokens(header, true));
             } else if is_stylesheet {
-                // Stylesheet passages: no link extraction, no variable extraction.
                 passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
                 tokens.extend(self.header_tokens(header, true));
             } else {
-                // Extract body elements using Harlowe-specific parsing.
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
                 passage.body = self.extract_blocks(body, body_offset);
 
-                // Semantic tokens for header. Use SpecialPassage type for special passages.
                 tokens.extend(self.header_tokens(header, special_def.is_some()));
-
-                // Semantic tokens for body.
                 tokens.extend(self.body_tokens(body, body_offset));
 
-                // Validation diagnostics.
                 let body_diags = self.validate(body, body_offset);
                 for d in &body_diags {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
@@ -1195,10 +1177,7 @@ impl FormatPlugin for HarlowePlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
-        // Use the full classification system which handles tag-matched
-        // passages (e.g., [header], [footer], [startup]) in addition to
-        // name-matched passages.
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -1209,13 +1188,10 @@ impl FormatPlugin for HarlowePlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        // Context-aware parsing: skip format-specific body parsing for
-        // Twine-core script/stylesheet passages.
         let is_script = passage.is_script_passage();
         let is_stylesheet = passage.is_stylesheet_passage();
 
         if is_script || is_stylesheet {
-            // Script/stylesheet passages: store as raw text.
             passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         } else {
             passage.links = self.extract_links(passage_text, 0);
@@ -1224,6 +1200,15 @@ impl FormatPlugin for HarlowePlugin {
         }
 
         Some(passage)
+    }
+
+    fn remove_file_from_registries(&mut self, _file_uri: &str) {}
+    fn remove_passage_from_registries(&mut self, _passage_name: &str, _file_uri: &str) {}
+}
+
+impl FormatPlugin for HarlowePlugin {
+    fn format(&self) -> StoryFormat {
+        StoryFormat::Harlowe
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -1389,9 +1374,9 @@ mod tests {
 
     #[test]
     fn parse_simple_passage() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\nYou are in a room. [[Forest]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert_eq!(result.passages[0].name, "Start");
@@ -1401,7 +1386,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         // Name-matched passages: detected by passage name alone (no tags needed)
         assert!(plugin.is_special_passage("PassageHeader"));
         assert!(plugin.is_special_passage("PassageFooter"));
@@ -1429,17 +1414,17 @@ mod tests {
 
     #[test]
     fn empty_input_is_ok() {
-        let plugin = HarlowePlugin::new();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), "");
+        let mut plugin = HarlowePlugin::new();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), "");
         assert!(result.passages.is_empty());
         assert!(result.is_complete);
     }
 
     #[test]
     fn parse_set_variable() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(set: $gold to 10)You have $gold coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1449,9 +1434,9 @@ mod tests {
 
     #[test]
     fn parse_put_variable() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(put: 5 + 3 into $score)Your score is $score.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1461,9 +1446,9 @@ mod tests {
 
     #[test]
     fn parse_variable_read_only() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Hallway\nYou have $health remaining.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Read));
@@ -1476,9 +1461,9 @@ mod tests {
 
     #[test]
     fn parse_named_hook() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\nClick here [cave] to enter.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         // Named hooks should appear as links (they can be targeted by link-goto)
@@ -1492,9 +1477,9 @@ mod tests {
 
     #[test]
     fn parse_hook_attachment() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[some text]<red|\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         // Hook attachment should appear as Expression block
@@ -1506,9 +1491,9 @@ mod tests {
 
     #[test]
     fn parse_hook_reference() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n|red>[some text]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         // Hook reference should appear as Expression block
@@ -1520,9 +1505,9 @@ mod tests {
 
     #[test]
     fn parse_collapse_markup() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n{   lots   of   space   }\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         // Collapsing markup should appear as Expression block
@@ -1538,9 +1523,9 @@ mod tests {
 
     #[test]
     fn parse_move_variable() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(move: $source into $dest)\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         // $source should be a read (move reads from it)
@@ -1557,9 +1542,9 @@ mod tests {
 
     #[test]
     fn parse_unpack_variable() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(unpack: (a: 1, b: 2) into $result)\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(
@@ -1574,9 +1559,9 @@ mod tests {
 
     #[test]
     fn unclosed_command_diagnostic() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(set: $x to 5\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result
@@ -1589,9 +1574,9 @@ mod tests {
 
     #[test]
     fn unclosed_link_diagnostic() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[[Target\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "hl-broken-link"),
@@ -1601,9 +1586,9 @@ mod tests {
 
     #[test]
     fn unclosed_hook_diagnostic() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[hook without close\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "hl-unclosed-hook"),
@@ -1613,9 +1598,9 @@ mod tests {
 
     #[test]
     fn mismatched_changer_diagnostic() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[text]<red|\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result
@@ -1632,9 +1617,9 @@ mod tests {
 
     #[test]
     fn parse_multiple_passages() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\nHello [[Forest]]\n:: Forest\nYou are in a forest.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
@@ -1644,9 +1629,9 @@ mod tests {
     #[test]
     fn passages_with_duplicate_lines() {
         // This test specifically targets the old buggy text.find(line) approach.
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\nYou see a cat.\n:: Middle\nYou see a cat.\n:: End\nDone.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 3);
         assert_eq!(result.passages[0].name, "Start");
@@ -1669,9 +1654,9 @@ mod tests {
 
     #[test]
     fn parse_passage_with_tags() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Dark Room [dark interior]\nIt is very dark.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert_eq!(result.passages[0].name, "Dark Room");
@@ -1684,10 +1669,10 @@ mod tests {
 
     #[test]
     fn parse_arrow_link_with_arrow_in_display() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         // Arrow link: display text may contain characters that aren't `]]`
         let src = ":: Start\n[[Go ->Forest]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let links = &result.passages[0].links;
         assert_eq!(links.len(), 1);
@@ -1700,9 +1685,9 @@ mod tests {
 
     #[test]
     fn parse_pipe_link() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[[Go to forest|Forest]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let links = &result.passages[0].links;
         assert_eq!(links.len(), 1);
@@ -1716,9 +1701,9 @@ mod tests {
 
     #[test]
     fn complex_multi_variable_passage() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(set: $health to 100)(set: $name to \"Hero\")(put: 50 into $score)\nYour health is $health, $name.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Init));
@@ -1734,9 +1719,9 @@ mod tests {
 
     #[test]
     fn block_model_has_macro_blocks() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(set: $x to 5)Hello\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         assert!(
@@ -1751,9 +1736,9 @@ mod tests {
 
     #[test]
     fn block_model_has_expression_blocks() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n[hookname] Some text\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let passage = &result.passages[0];
         assert!(
@@ -1768,8 +1753,8 @@ mod tests {
 
     #[test]
     fn incremental_reparse() {
-        let plugin = HarlowePlugin::new();
-        let passage = plugin.parse_passage("Start", &[], "You have $gold coins.\n", "");
+        let mut plugin = HarlowePlugin::new();
+        let passage = plugin.parse_passage_mut("Start", &[], "You have $gold coins.\n", "");
 
         assert!(passage.is_some());
         let p = passage.unwrap();
@@ -1783,9 +1768,9 @@ mod tests {
 
     #[test]
     fn tagged_header_passage() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Nav [header]\nNavigation here.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let p = &result.passages[0];
@@ -1794,9 +1779,9 @@ mod tests {
 
     #[test]
     fn tagged_footer_passage() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Credits [footer]\nThanks for playing.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let p = &result.passages[0];
@@ -1809,8 +1794,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_header() {
-        let plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage_mut(
             "Nav",
             &["header".to_string()],
             "Some header content\n",
@@ -1825,8 +1810,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_footer() {
-        let plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage_mut(
             "Credits",
             &["footer".to_string()],
             "Thanks for playing.\n",
@@ -1841,8 +1826,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_startup() {
-        let plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage_mut(
             "Init",
             &["startup".to_string()],
             "(set: $x to 1)\n",
@@ -1857,8 +1842,8 @@ mod tests {
 
     #[test]
     fn parse_passage_name_matched_passage_header() {
-        let plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = HarlowePlugin::new();
+        let result = plugin.parse_passage_mut(
             "PassageHeader",
             &[],
             "Header content\n",
@@ -1872,7 +1857,7 @@ mod tests {
 
     #[test]
     fn classify_passage_tag_takes_priority_over_name() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         // A passage named "PassageHeader" but tagged [startup] should
         // be classified by its TAG (startup) first per the Twee 3 spec,
         // not by its name (PassageHeader).
@@ -1889,9 +1874,9 @@ mod tests {
 
     #[test]
     fn parse_changer_link() {
-        let plugin = HarlowePlugin::new();
+        let mut plugin = HarlowePlugin::new();
         let src = ":: Start\n(link: \"Click me\")[[Forest]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let links = &result.passages[0].links;
         assert!(links.iter().any(|l| l.target == "Forest" && l.display_text == Some("Click me".into())));

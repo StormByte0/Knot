@@ -61,7 +61,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
-        helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format, version);
+        helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format, version);
 
     // Store format diagnostics for this document
     inner.format_diagnostics.insert(
@@ -187,7 +187,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Parse with format plugin
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
-        helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), version);
+        helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), version);
 
     // Update format diagnostics
     inner.format_diagnostics.insert(
@@ -535,7 +535,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                         let format = inner.workspace.resolve_format();
                         let (doc, parse_result) =
-                            helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
+                            helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
 
                         inner.open_documents.insert(uri.clone(), text.clone());
                         inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
@@ -563,7 +563,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                     continue;
                                 }
                                 let (re_parsed, re_result) =
-                                    helpers::parse_with_format_plugin(&inner.format_registry, doc_uri, doc_text, format_after.clone(), 0);
+                                    helpers::parse_with_format_plugin(&mut inner.format_registry, doc_uri, doc_text, format_after.clone(), 0);
                                 inner.format_diagnostics.insert(doc_uri.clone(), re_result.diagnostics);
                                 inner.semantic_tokens.insert(doc_uri.clone(), re_result.tokens);
                                 helpers::extract_and_set_metadata(&mut inner.workspace, &re_parsed, doc_text);
@@ -628,7 +628,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // from the deleted document persist in completion and hover
                 // until a full workspace re-parse.
                 let format = inner.workspace.resolve_format();
-                if let Some(plug) = inner.format_registry.get(&format) {
+                if let Some(plug) = inner.format_registry.get_mut(&format) {
                     plug.remove_file_from_registries(&uri.to_string());
                 }
 
@@ -736,7 +736,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                             let format = inner.workspace.resolve_format();
                             let (doc, parse_result) =
-                                helpers::parse_with_format_plugin(&inner.format_registry, &uri, &text, format.clone(), 0);
+                                helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
 
                             inner.open_documents.insert(uri.clone(), text.clone());
                             inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);

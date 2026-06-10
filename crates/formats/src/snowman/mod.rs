@@ -23,7 +23,7 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
 
@@ -860,12 +860,8 @@ impl SnowmanPlugin {
     }
 }
 
-impl FormatPlugin for SnowmanPlugin {
-    fn format(&self) -> StoryFormat {
-        StoryFormat::Snowman
-    }
-
-    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
+impl FormatPluginMut for SnowmanPlugin {
+    fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
         let mut tokens = Vec::new();
         let mut diagnostics = Vec::new();
@@ -881,10 +877,6 @@ impl FormatPlugin for SnowmanPlugin {
             let newline_len = if text.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < text.len() { 1 } else { 0 };
             let body_offset = header_line_end + newline_len;
 
-            // Determine if this is a special passage using the unified
-            // classification system. Tags are checked FIRST (per the
-            // Twee 3 spec), then names. This replaces the old manual
-            // three-stage lookup (format defs → core defs → tag fallback).
             let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
@@ -899,26 +891,11 @@ impl FormatPlugin for SnowmanPlugin {
 
             passage.tags = header.tags.clone();
 
-            // ── Context-aware parsing ──────────────────────────────────────
-            // Detect script and stylesheet passages. These contain non-Twine
-            // content (JavaScript or CSS) and should NOT be parsed with
-            // Snowman's ERB template segment regexes.
-            //
-            // Script passages: tagged [script] (Twine-core tag)
-            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
             if is_script || is_stylesheet {
-                // Script/stylesheet passages: store as raw text, skip
-                // Snowman-specific template segment parsing.
                 passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
-
-                // Header + tag tokens.
-                // Use core_specials helpers for correct token types and layer
-                // modifiers — this fixes the bug where tag-matched core passages
-                // (e.g., [script], [stylesheet]) got PassageHeader/PassageName
-                // instead of SpecialPassageHeader/SpecialPassage.
                 let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
                 tokens.extend(crate::core_specials::build_special_header_tokens(
                     header.name_start,
@@ -929,15 +906,9 @@ impl FormatPlugin for SnowmanPlugin {
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
-
-                // Build blocks from template segments
                 let segments = self.parse_template_segments(body, body_offset);
                 passage.body = self.build_blocks(&segments);
 
-                // Header + tag tokens.
-                // Use core_specials helpers for correct token types and layer
-                // modifiers for special passages (both name-matched and
-                // tag-matched core passages).
                 let is_special_for_tokens = crate::core_specials::is_special_for_tokens(
                     self, &header.name, &header.tags, special_def.as_ref(),
                 );
@@ -963,11 +934,8 @@ impl FormatPlugin for SnowmanPlugin {
                     });
                 }
                 tokens.extend(crate::core_specials::build_tag_tokens(header, self));
-
-                // Body tokens.
                 tokens.extend(self.body_tokens(body, body_offset));
 
-                // Validation diagnostics.
                 let body_diags = self.validate(body, body_offset);
                 for d in &body_diags {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
@@ -992,8 +960,7 @@ impl FormatPlugin for SnowmanPlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
-        // For incremental re-parse: we receive body text and tags.
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -1004,24 +971,28 @@ impl FormatPlugin for SnowmanPlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        // Context-aware parsing: skip format-specific body parsing for
-        // Twine-core script/stylesheet passages.
         let is_script = passage.is_script_passage();
         let is_stylesheet = passage.is_stylesheet_passage();
 
         if is_script || is_stylesheet {
-            // Script/stylesheet passages: store as raw text.
             passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         } else {
             passage.links = self.extract_links(passage_text, 0);
             passage.vars = self.extract_vars(passage_text, 0);
-
-            // Build blocks from template segments
             let segments = self.parse_template_segments(passage_text, 0);
             passage.body = self.build_blocks(&segments);
         }
 
         Some(passage)
+    }
+
+    fn remove_file_from_registries(&mut self, _file_uri: &str) {}
+    fn remove_passage_from_registries(&mut self, _passage_name: &str, _file_uri: &str) {}
+}
+
+impl FormatPlugin for SnowmanPlugin {
+    fn format(&self) -> StoryFormat {
+        StoryFormat::Snowman
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -1226,9 +1197,9 @@ mod tests {
 
     #[test]
     fn parse_simple_passage() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nYou are in a room. [[Cave]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert_eq!(result.passages[0].links.len(), 1);
@@ -1237,9 +1208,9 @@ mod tests {
 
     #[test]
     fn parse_variable_operations() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% s.gold = 10; %>You have <%= s.gold %> coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1255,7 +1226,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         assert!(plugin.is_special_passage("Script"));
         assert!(plugin.is_special_passage("Style"));
         assert!(plugin.is_special_passage("PassageHeader"));
@@ -1265,8 +1236,8 @@ mod tests {
 
     #[test]
     fn empty_input_is_ok() {
-        let plugin = SnowmanPlugin::new();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), "");
+        let mut plugin = SnowmanPlugin::new();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), "");
         assert!(result.passages.is_empty());
     }
 
@@ -1276,9 +1247,9 @@ mod tests {
 
     #[test]
     fn expression_block_variable_read() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nYou have <%= s.gold %> coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1301,9 +1272,9 @@ mod tests {
 
     #[test]
     fn script_block_variable_write() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% s.gold = 10; %>\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1327,9 +1298,9 @@ mod tests {
 
     #[test]
     fn unescaped_expression_block() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nRaw: <%- s.gold %>\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
 
@@ -1358,9 +1329,9 @@ mod tests {
 
     #[test]
     fn unclosed_template_diagnostic() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% s.gold = 10\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result
@@ -1373,9 +1344,9 @@ mod tests {
 
     #[test]
     fn unclosed_link_diagnostic() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n[[Unclosed link\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result
@@ -1388,9 +1359,9 @@ mod tests {
 
     #[test]
     fn mixed_text_expression_script_blocks() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nHello <% s.name = \"world\"; %><%= s.name %>!\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let body = &result.passages[0].body;
@@ -1425,9 +1396,9 @@ mod tests {
 
     #[test]
     fn variable_read_in_text_context() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nYou have s.gold coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(
@@ -1438,9 +1409,9 @@ mod tests {
 
     #[test]
     fn variable_write_in_script_context() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% s.health = 100; s.mana = 50; %>\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(
@@ -1455,9 +1426,9 @@ mod tests {
 
     #[test]
     fn multiple_variable_operations() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% s.x = 1; s.y = 2; %>Sum: <%= s.x + s.y %>.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
 
@@ -1484,9 +1455,9 @@ mod tests {
 
     #[test]
     fn empty_script_block() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% %>empty block\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
 
@@ -1505,9 +1476,9 @@ mod tests {
 
     #[test]
     fn incomplete_block_from_unclosed_template() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\nHello <% unclosed\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let incomplete: Vec<_> = result.passages[0]
             .body
@@ -1519,10 +1490,10 @@ mod tests {
 
     #[test]
     fn passage_header_footer_special() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         // Passages tagged with [header] and [footer] should be treated as special
         let src = ":: MyHeader [header]\nHeader content\n:: MyFooter [footer]\nFooter content\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 2);
         assert!(
@@ -1537,10 +1508,10 @@ mod tests {
 
     #[test]
     fn split_passages_byte_offset_tracking() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         // Test with duplicate content that would break text.find()
         let src = ":: Start\nYou are here.\nYou are here.\n:: Cave\nYou are here.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
@@ -1549,9 +1520,9 @@ mod tests {
 
     #[test]
     fn window_story_state_alias() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         let src = ":: Start\n<% window.story.state.gold = 10; %>You have <%= window.story.state.gold %>.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
         assert!(
@@ -1566,10 +1537,10 @@ mod tests {
 
     #[test]
     fn undefined_variable_hint() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         // s.never_written is read but never written anywhere
         let src = ":: Start\nYou have <%= s.never_written %> coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result
@@ -1582,10 +1553,10 @@ mod tests {
 
     #[test]
     fn no_undefined_var_warning_when_written() {
-        let plugin = SnowmanPlugin::new();
+        let mut plugin = SnowmanPlugin::new();
         // s.gold is written in one passage and read in another
         let src = ":: Start\n<% s.gold = 10; %>\n:: Room\nYou have <%= s.gold %> coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             !result
@@ -1602,8 +1573,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_header() {
-        let plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage_mut(
             "TopBar",
             &["header".to_string()],
             "Header content\n",
@@ -1618,8 +1589,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_footer() {
-        let plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage_mut(
             "BottomBar",
             &["footer".to_string()],
             "Footer content\n",
@@ -1634,8 +1605,8 @@ mod tests {
 
     #[test]
     fn parse_passage_name_matched_passage_header() {
-        let plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = SnowmanPlugin::new();
+        let result = plugin.parse_passage_mut(
             "PassageHeader",
             &[],
             "Header content\n",

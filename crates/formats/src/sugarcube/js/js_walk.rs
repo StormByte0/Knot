@@ -61,7 +61,7 @@ pub fn walk_script_passage(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     body_text: &str,
 ) -> JsWalkResult {
     let mut result = JsWalkResult::default();
@@ -95,7 +95,7 @@ pub fn walk_inline_js(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     body_text: &str,
 ) -> JsWalkResult {
     let mut result = JsWalkResult::default();
@@ -119,7 +119,7 @@ fn walk_statement(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -239,7 +239,7 @@ fn walk_expression(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -515,7 +515,7 @@ fn check_assignment_for_state_var(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -614,7 +614,7 @@ fn check_identifier_for_substituted_var(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -680,7 +680,7 @@ fn scan_for_substituted_vars(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -758,7 +758,7 @@ fn walk_argument(
     preprocessed: &super::js_preprocess::PreprocessedJs,
     file_uri: &str,
     passage_name: &str,
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     result: &mut JsWalkResult,
     body_text: &str,
 ) {
@@ -878,7 +878,7 @@ mod tests {
                     origin_offset: 0,
                     wrapping_offset: 0,
                 };
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_script_passage(
@@ -886,7 +886,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Scripts",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });
@@ -909,7 +909,7 @@ mod tests {
                     origin_offset: 0,
                     wrapping_offset: 0,
                 };
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_script_passage(
@@ -917,7 +917,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Scripts",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });
@@ -940,7 +940,7 @@ mod tests {
                     origin_offset: 0,
                     wrapping_offset: 0,
                 };
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_script_passage(
@@ -948,7 +948,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Scripts",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });
@@ -974,7 +974,7 @@ mod tests {
                     origin_offset: 0,
                     wrapping_offset: 0,
                 };
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_script_passage(
@@ -982,7 +982,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Scripts",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });
@@ -1001,7 +1001,7 @@ mod tests {
 
         match parse_js(&preprocessed.source, JsParseMode::Expression) {
             JsParseOutcome::Success(output) => {
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_inline_js(
@@ -1009,7 +1009,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Start",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });
@@ -1037,7 +1037,7 @@ mod tests {
                     origin_offset: 0,
                     wrapping_offset: 0,
                 };
-                let registry = SugarCubeRegistry::new();
+                let mut registry = SugarCubeRegistry::new();
 
                 let result = output.with_program(|program| {
                     walk_inline_js(
@@ -1045,7 +1045,7 @@ mod tests {
                         &preprocessed,
                         "file:///test.tw",
                         "Game",
-                        &registry,
+                        &mut registry,
                         "",
                     )
                 });

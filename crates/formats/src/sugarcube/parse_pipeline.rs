@@ -1,7 +1,7 @@
 //! Full parse pipeline orchestration.
 //!
 //! Contains the two main entry points that were previously the bodies of
-//! `FormatPlugin::parse()` and `FormatPlugin::parse_passage()`. The trait
+//! `FormatPluginMut::parse_mut()` and `FormatPluginMut::parse_passage_mut()`. The trait
 //! impl in `mod.rs` delegates to the free functions here.
 
 use knot_core::passage::{Passage, VarKind, VarOp, PassageCategory as CorePassageCategory};
@@ -16,9 +16,9 @@ use super::registry_populate;
 
 /// Full parse: split → classify → sort → per-passage dispatch.
 ///
-/// This is the body of `FormatPlugin::parse()` for `SugarCubePlugin`.
-pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> ParseResult {
-    let registry = plugin.registry();
+/// This is the body of `FormatPluginMut::parse_mut()` for `SugarCubePlugin`.
+pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) -> ParseResult {
+    let registry = plugin.registry_mut();
 
     // 1. Split into raw passages
     let raw_passages = super::lexer::split_passages(text);
@@ -118,7 +118,7 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
     // Link with `LinkSource::WidgetCall` → `EdgeType::Call` so the graph
     // traces widget invocations as call edges.
     {
-        let custom_macros = registry.custom_macros();
+        let custom_macros = &plugin.registry().custom_macros();
         for passage in &mut passages {
             // Only check passages with body blocks that might contain macros
             for block in &passage.body {
@@ -156,16 +156,14 @@ pub(super) fn parse_full(plugin: &SugarCubePlugin, uri: &Url, text: &str) -> Par
 
 /// Incremental re-parse of a single passage.
 ///
-/// This is the body of `FormatPlugin::parse_passage()` for `SugarCubePlugin`.
+/// This is the body of `FormatPluginMut::parse_passage_mut()` for `SugarCubePlugin`.
 pub(super) fn parse_single(
-    plugin: &SugarCubePlugin,
+    plugin: &mut SugarCubePlugin,
     passage_name: &str,
     passage_tags: &[String],
     passage_text: &str,
     file_uri: &str,
 ) -> Option<Passage> {
-    let registry = plugin.registry();
-
     // Determine the parse mode from the tags
     let mode = if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("script")) {
         ParseMode::Script
@@ -183,21 +181,23 @@ pub(super) fn parse_single(
 
     let passage_ast = super::parser::parse_passage_body(passage_text, 0, mode);
 
-    // Phase H: Incremental registry update for single-passage re-parse.
-    // Remove old entries for this passage from the registries before
-    // adding new ones, so we don't accumulate stale data.
-    registry.remove_passage(passage_name);
-
-    // Classify the passage (using the FormatPlugin default impl)
+    // Classify the passage BEFORE mutably borrowing the registry.
+    // The FormatPlugin classification methods take &self, which would
+    // conflict with the mutable borrow from registry_mut().
     let (_, category) = plugin.classify_passage_category(passage_name, passage_tags);
     let is_special = category != CorePassageCategory::Regular;
 
-    let mut passage = if is_special {
-        let def = plugin.classify_passage(passage_name, passage_tags);
+    let special_def = if is_special {
+        Some(plugin.classify_passage(passage_name, passage_tags))
+    } else {
+        None
+    };
+
+    let mut passage = if let Some(def) = &special_def {
         Passage::new_special(
             passage_name.to_string(),
             0..passage_text.len(),
-            def?,
+            def.clone()?,
         )
     } else {
         Passage::new(passage_name.to_string(), 0..passage_text.len())
@@ -225,7 +225,9 @@ pub(super) fn parse_single(
         }
     }).collect();
 
-    // Phase H: Update registries from the freshly parsed AST
+    // Phase H: Incremental registry update for single-passage re-parse.
+    // Remove old entries for this passage from the registries before
+    // adding new ones, so we don't accumulate stale data.
     // Build a minimal ClassifiedPassage for the registry population methods
     let header = crate::header::TweeHeader {
         name: passage_name.to_string(),
@@ -245,32 +247,38 @@ pub(super) fn parse_single(
         processing_priority: 40, // Normal passage priority
     };
 
-    registry_populate::populate_registries_from_ast(
-        registry,
-        &passage_ast,
-        &cp,
-        file_uri,
-    );
+    // Now mutably borrow the registry for all write operations
+    {
+        let registry = plugin.registry_mut();
+        registry.remove_passage(passage_name);
 
-    // For script passages, also do oxc walk
-    if mode == ParseMode::Script {
-        registry_populate::walk_script_js(
+        registry_populate::populate_registries_from_ast(
             registry,
-            passage_text,
+            &passage_ast,
             &cp,
             file_uri,
         );
-    }
 
-    // For all passages with inline JS, walk the snippets for registry population
-    if mode != ParseMode::Script && !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
-        registry_populate::walk_inline_js_snippets(
-            registry,
-            &passage_ast.nodes,
-            passage_name,
-            file_uri,
-            passage_text,
-        );
+        // For script passages, also do oxc walk
+        if mode == ParseMode::Script {
+            registry_populate::walk_script_js(
+                registry,
+                passage_text,
+                &cp,
+                file_uri,
+            );
+        }
+
+        // For all passages with inline JS, walk the snippets for registry population
+        if mode != ParseMode::Script && !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
+            registry_populate::walk_inline_js_snippets(
+                registry,
+                &passage_ast.nodes,
+                passage_name,
+                file_uri,
+                passage_text,
+            );
+        }
     }
 
     Some(passage)

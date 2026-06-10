@@ -272,19 +272,6 @@ pub trait FormatPlugin: Send + Sync {
     /// Returns the story format this plugin handles.
     fn format(&self) -> StoryFormat;
 
-    /// Parse a complete source file into passages.
-    fn parse(&self, uri: &Url, text: &str) -> ParseResult;
-
-    /// Re-parse only a single passage (for incremental updates).
-    ///
-    /// The `passage_text` is the body text of the passage (after the header line).
-    /// The `passage_tags` are the passage's tags, needed for tag-matched
-    /// special passage classification (e.g., `[script]`, `[stylesheet]`,
-    /// `[widget]`, `[init]`). Without tags, the classification system cannot
-    /// identify tag-matched special passages, which would cause them to be
-    /// misclassified as regular passages during incremental re-parse.
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage>;
-
     /// Returns the name-matched special passage definitions for this format.
     ///
     /// These are passages identified by their exact passage name
@@ -1298,29 +1285,33 @@ pub trait FormatPlugin: Send + Sync {
     // Registry lifecycle (optional — incremental re-parse support)
     // -----------------------------------------------------------------------
 
-    /// Remove all registry entries associated with a specific passage.
-    ///
-    /// Called by the LSP server when a passage is deleted from a document
-    /// (not modified, but actually removed). Without this, stale entries
-    /// remain in the format's side tables (variables, custom macros,
-    /// functions, templates) causing ghost completions and stale hover data
-    /// until a full workspace re-parse occurs.
-    ///
-    /// The default implementation is a no-op. Format plugins that maintain
-    /// incremental side tables (like SugarCube's `SugarCubeRegistry`) should
-    /// override this to clean up entries from the deleted passage.
-    fn remove_passage_from_registries(&self, _passage_name: &str, _file_uri: &str) {
-        // Default: no-op — formats without incremental registries don't need this
-    }
+}
 
-    /// Remove all registry entries associated with a specific file.
-    ///
-    /// Called by the LSP server when a document is deleted from the workspace.
-    /// The default implementation is a no-op. Format plugins that maintain
-    /// incremental side tables should override this.
-    fn remove_file_from_registries(&self, _file_uri: &str) {
-        // Default: no-op
-    }
+// ===========================================================================
+// FormatPluginMut trait
+// ===========================================================================
+
+/// Mutable operations on a format plugin.
+///
+/// All methods take `&mut self`, meaning the caller MUST hold exclusive access
+/// to the plugin. In the server, this means holding the write lock on
+/// `ServerStateInner`.
+///
+/// Read-only operations remain on the `FormatPlugin` trait with `&self`.
+pub trait FormatPluginMut: FormatPlugin {
+    /// Parse an entire file and return structured results.
+    /// The plugin MUST call `registry.remove_file(uri)` before populating.
+    fn parse_mut(&mut self, uri: &Url, text: &str) -> ParseResult;
+
+    /// Re-parse a single passage incrementally.
+    /// The plugin MUST call `registry.remove_passage(name, uri)` before populating.
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage>;
+
+    /// Remove all registry entries for a file.
+    fn remove_file_from_registries(&mut self, file_uri: &str);
+
+    /// Remove all registry entries for a single passage.
+    fn remove_passage_from_registries(&mut self, passage_name: &str, file_uri: &str);
 }
 
 // ===========================================================================
@@ -1329,7 +1320,7 @@ pub trait FormatPlugin: Send + Sync {
 
 /// Registry of available format plugins.
 pub struct FormatRegistry {
-    plugins: Vec<Box<dyn FormatPlugin>>,
+    plugins: Vec<Box<dyn FormatPluginMut>>,
 }
 
 impl FormatRegistry {
@@ -1341,16 +1332,27 @@ impl FormatRegistry {
     }
 
     /// Register a format plugin.
-    pub fn register(&mut self, plugin: Box<dyn FormatPlugin>) {
+    pub fn register(&mut self, plugin: Box<dyn FormatPluginMut>) {
         self.plugins.push(plugin);
     }
 
-    /// Get the plugin for a given story format.
+    /// Get the plugin for a given story format (read-only access).
     pub fn get(&self, format: &StoryFormat) -> Option<&dyn FormatPlugin> {
         self.plugins
             .iter()
             .find(|p| &p.format() == format)
-            .map(|p| p.as_ref())
+            .map(|p| p.as_ref() as &dyn FormatPlugin)
+    }
+
+    /// Get the plugin for a given story format (mutable access).
+    ///
+    /// Use this when calling `parse_mut()`, `parse_passage_mut()`,
+    /// `remove_file_from_registries()`, or `remove_passage_from_registries()`.
+    pub fn get_mut(&mut self, format: &StoryFormat) -> Option<&mut dyn FormatPluginMut> {
+        self.plugins
+            .iter_mut()
+            .find(|p| p.format() == *format)
+            .map(|p| p.as_mut() as &mut dyn FormatPluginMut)
     }
 
     /// Get all registered formats.

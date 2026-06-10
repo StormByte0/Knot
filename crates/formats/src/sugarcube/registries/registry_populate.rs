@@ -65,7 +65,7 @@ fn macro_name_to_access_kind(name: &str) -> VarAccessKind {
 /// variable tree without shifting by `body_offset`. Line numbers are computed
 /// immediately from the passage body text.
 pub fn populate_registries_from_ast(
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     passage_ast: &ast::PassageAst,
     cp: &ClassifiedPassage,
     file_uri: &str,
@@ -111,7 +111,7 @@ pub fn populate_registries_from_ast(
 
     // Extract widget definitions from AST nodes
     {
-        let mut macro_reg = registry.custom_macros_mut();
+        let macro_reg = registry.custom_macros_mut();
         for node in &passage_ast.nodes {
             if let ast::AstNode::Macro { name, args, open_span, .. } = node {
                 // <<widget name>> definitions
@@ -214,7 +214,7 @@ fn refine_access_kinds_from_ast(
 /// via `preprocessed.map_to_original()`. These body-relative spans are
 /// stored directly in the variable tree without any `body_offset` adjustment.
 pub fn walk_script_js(
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     body_text: &str,
     cp: &ClassifiedPassage,
     file_uri: &str,
@@ -286,7 +286,7 @@ pub fn walk_script_js(
 ///    path that detects them — the SugarCube parser doesn't know about
 ///    `State.variables.x` at all.
 pub fn walk_inline_js_snippets(
-    registry: &SugarCubeRegistry,
+    registry: &mut SugarCubeRegistry,
     nodes: &[ast::AstNode],
     passage_name: &str,
     file_uri: &str,
@@ -372,7 +372,7 @@ mod tests {
         // $ITEMS as a READ and _items as a WRITE
         let body = "<<run _items = State.variables.ITEMS>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let registry = SugarCubeRegistry::new();
+        let mut registry = SugarCubeRegistry::new();
 
         // First populate from the SugarCube parser's var_ops (finds _items as a read)
         let header = crate::header::TweeHeader {
@@ -392,11 +392,11 @@ mod tests {
             special_def: None,
             processing_priority: 40,
         };
-        populate_registries_from_ast(&registry, &ast, &cp, "file:///test.tw");
+        populate_registries_from_ast(&mut registry, &ast, &cp, "file:///test.tw");
 
         // Then walk inline JS snippets (should detect State.variables.ITEMS as $ITEMS READ,
         // and State_temporary_items as _items WRITE)
-        walk_inline_js_snippets(&registry, &ast.nodes, "Game", "file:///test.tw", body);
+        walk_inline_js_snippets(&mut registry, &ast.nodes, "Game", "file:///test.tw", body);
 
         // Verify $ITEMS exists with a READ access
         let vtree = registry.variables();

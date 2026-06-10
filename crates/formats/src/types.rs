@@ -579,13 +579,13 @@ pub trait FormatRegistry: Send + Sync {
     // ── Lifecycle ─────────────────────────────────────────────────────
 
     /// Remove all entries for a specific file from all sub-registries.
-    fn remove_file(&self, file_uri: &str);
+    fn remove_file(&mut self, file_uri: &str);
 
     /// Remove all entries for a specific passage from all sub-registries.
-    fn remove_passage(&self, passage_name: &str);
+    fn remove_passage(&mut self, passage_name: &str);
 
     /// Clear all sub-registries (for full workspace re-parse).
-    fn clear(&self);
+    fn clear(&mut self);
 
     // ── Variable queries ──────────────────────────────────────────────
 

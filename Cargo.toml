@@ -41,9 +41,6 @@ oxc_span = "0.134"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 
-# Concurrency
-parking_lot = "0.12"
-
 # Testing
 insta = "1"
 proptest = "1"

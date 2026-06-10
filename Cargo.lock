@@ -486,7 +486,6 @@ dependencies = [
  "oxc_allocator",
  "oxc_ast",
  "oxc_span",
- "parking_lot",
  "regex",
  "serde",
  "serde_json",

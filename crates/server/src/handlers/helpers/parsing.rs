@@ -17,31 +17,31 @@ use url::Url;
 ///
 /// ## Panic safety
 ///
-/// The format plugin's `parse()` method is wrapped in `std::panic::catch_unwind`
+/// The format plugin's `parse_mut()` method is wrapped in `std::panic::catch_unwind`
 /// to prevent a panic in any format parser from killing the entire server
 /// process. If a panic occurs, an empty document with a diagnostic warning
 /// is returned instead, and the error is logged.
 pub(crate) fn parse_with_format_plugin(
-    registry: &fmt_plugin::FormatRegistry,
+    registry: &mut fmt_plugin::FormatRegistry,
     uri: &Url,
     text: &str,
     format: StoryFormat,
     version: i32,
 ) -> (Document, fmt_plugin::ParseResult) {
-    let plugin = registry
-        .get(&format)
-        .or_else(|| {
-            // Try the default format
+    let plugin = match registry.get_mut(&format) {
+        Some(p) => Some(p),
+        None => {
             let default = StoryFormat::default_format();
-            registry.get(&default)
-        });
+            registry.get_mut(&default)
+        }
+    };
 
     if let Some(plugin) = plugin {
         // Wrap the parse call in catch_unwind to prevent panics in format
         // parsers from crashing the server. This is the primary defense
         // against EPIPE errors caused by the server process dying.
         let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plugin.parse(uri, text)
+            plugin.parse_mut(uri, text)
         }));
 
         match parse_result {

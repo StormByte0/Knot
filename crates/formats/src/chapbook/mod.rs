@@ -33,7 +33,7 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, ParseResult, SemanticToken,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
 
@@ -736,12 +736,8 @@ impl ChapbookPlugin {
     }
 }
 
-impl FormatPlugin for ChapbookPlugin {
-    fn format(&self) -> StoryFormat {
-        StoryFormat::Chapbook
-    }
-
-    fn parse(&self, _uri: &Url, text: &str) -> ParseResult {
+impl FormatPluginMut for ChapbookPlugin {
+    fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
         let mut tokens = Vec::new();
         let mut diagnostics = Vec::new();
@@ -756,10 +752,6 @@ impl FormatPlugin for ChapbookPlugin {
                     .unwrap_or(text[header.header_start..].len())
                 + 1;
 
-            // Determine if this is a special passage using the unified
-            // classification system. Tags are checked FIRST (per the
-            // Twee 3 spec), then names. This replaces the old manual
-            // three-stage lookup (format defs → core defs → tag fallback).
             let special_def = self.classify_passage(&header.name, &header.tags);
 
             let mut passage = if let Some(ref def) = special_def {
@@ -770,26 +762,11 @@ impl FormatPlugin for ChapbookPlugin {
 
             passage.tags = header.tags.clone();
 
-            // ── Context-aware parsing ──────────────────────────────────────
-            // Detect script and stylesheet passages. These contain non-Twine
-            // content (JavaScript or CSS) and should NOT be parsed with
-            // Chapbook's template segment regexes.
-            //
-            // Script passages: tagged [script] (Twine-core tag)
-            // Stylesheet passages: tagged [stylesheet] or [style] (Twine-core tags)
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
             if is_script || is_stylesheet {
-                // Script/stylesheet passages: store as raw text, skip
-                // Chapbook-specific template segment parsing.
                 passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
-
-                // Semantic tokens for header + tags.
-                // Use core_specials helpers for correct token types and layer
-                // modifiers — this fixes the bug where tag-matched core passages
-                // (e.g., [script], [stylesheet]) got PassageHeader/PassageName
-                // instead of SpecialPassageHeader/SpecialPassage.
                 let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
                 tokens.extend(crate::core_specials::build_special_header_tokens(
                     header.name_start,
@@ -798,13 +775,9 @@ impl FormatPlugin for ChapbookPlugin {
                 ));
                 tokens.extend(crate::core_specials::build_tag_tokens(header, self));
             } else {
-                // Extract links
                 passage.links = self.extract_links(body, body_offset);
-
-                // Extract variables from template segments
                 let segments = self.parse_template_segments(body);
                 let mut vars = Vec::new();
-
                 for seg in &segments {
                     match seg {
                         TemplateSegment::Javascript { content_start, content_end, .. } => {
@@ -822,16 +795,8 @@ impl FormatPlugin for ChapbookPlugin {
                         _ => {}
                     }
                 }
-
                 passage.vars = vars;
-
-                // Build block model from segments
                 passage.body = self.build_blocks(body, body_offset, &segments);
-
-                // Semantic tokens for header + tags.
-                // Use core_specials helpers for correct token types and layer
-                // modifiers for special passages (both name-matched and
-                // tag-matched core passages).
                 let is_special_for_tokens = crate::core_specials::is_special_for_tokens(
                     self, &header.name, &header.tags, special_def.as_ref(),
                 );
@@ -857,11 +822,7 @@ impl FormatPlugin for ChapbookPlugin {
                     });
                 }
                 tokens.extend(crate::core_specials::build_tag_tokens(header, self));
-
-                // Semantic tokens for body.
                 tokens.extend(self.body_tokens(body, body_offset));
-
-                // Validation diagnostics.
                 let body_diags = self.validate(body, body_offset);
                 for d in &body_diags {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
@@ -882,7 +843,7 @@ impl FormatPlugin for ChapbookPlugin {
         }
     }
 
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -893,21 +854,15 @@ impl FormatPlugin for ChapbookPlugin {
 
         passage.tags = passage_tags.to_vec();
 
-        // Context-aware parsing: skip format-specific body parsing for
-        // Twine-core script/stylesheet passages.
         let is_script = passage.is_script_passage();
         let is_stylesheet = passage.is_stylesheet_passage();
 
         if is_script || is_stylesheet {
-            // Script/stylesheet passages: store as raw text.
             passage.body = crate::core_specials::raw_body_blocks(passage_text, 0);
         } else {
             passage.links = self.extract_links(passage_text, 0);
-
-            // Extract variables from template segments
             let segments = self.parse_template_segments(passage_text);
             let mut vars = Vec::new();
-
             for seg in &segments {
                 match seg {
                     TemplateSegment::Javascript { content_start, content_end, .. } => {
@@ -925,12 +880,20 @@ impl FormatPlugin for ChapbookPlugin {
                     _ => {}
                 }
             }
-
             passage.vars = vars;
             passage.body = self.build_blocks(passage_text, 0, &segments);
         }
 
         Some(passage)
+    }
+
+    fn remove_file_from_registries(&mut self, _file_uri: &str) {}
+    fn remove_passage_from_registries(&mut self, _passage_name: &str, _file_uri: &str) {}
+}
+
+impl FormatPlugin for ChapbookPlugin {
+    fn format(&self) -> StoryFormat {
+        StoryFormat::Chapbook
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -1139,9 +1102,9 @@ mod tests {
 
     #[test]
     fn parse_simple_passage() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nWelcome [[Cave]]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert_eq!(result.passages[0].links.len(), 1);
@@ -1150,7 +1113,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         assert!(plugin.is_special_passage("look"));
         assert!(plugin.is_special_passage("PassageHeader"));
         assert!(plugin.is_special_passage("PassageFooter"));
@@ -1159,8 +1122,8 @@ mod tests {
 
     #[test]
     fn empty_input_is_ok() {
-        let plugin = ChapbookPlugin::new();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), "");
+        let mut plugin = ChapbookPlugin::new();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), "");
         assert!(result.passages.is_empty());
     }
 
@@ -1170,9 +1133,9 @@ mod tests {
 
     #[test]
     fn javascript_block_variable_write() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.gold = 10;\n[/javascript]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1184,9 +1147,9 @@ mod tests {
 
     #[test]
     fn javascript_block_variable_read() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nconsole.log(state.gold);\n[/javascript]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1198,9 +1161,9 @@ mod tests {
 
     #[test]
     fn javascript_block_write_and_read() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.gold = 10;\nconsole.log(state.gold);\n[/javascript]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1210,9 +1173,9 @@ mod tests {
 
     #[test]
     fn javascript_block_creates_macro_block() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.x = 1;\n[/javascript]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let blocks = &result.passages[0].body;
@@ -1224,9 +1187,9 @@ mod tests {
 
     #[test]
     fn unclosed_javascript_block_diagnostic() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.x = 1;\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "cb-unclosed-javascript"),
@@ -1236,9 +1199,9 @@ mod tests {
 
     #[test]
     fn unclosed_javascript_block_creates_incomplete() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.x = 1;\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let blocks = &result.passages[0].body;
         assert!(
@@ -1253,9 +1216,9 @@ mod tests {
 
     #[test]
     fn modify_block_variable_write() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[modify]\ngold: 10\nname: Alice\n[/modify]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1271,9 +1234,9 @@ mod tests {
 
     #[test]
     fn modify_block_creates_macro_block() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[modify]\ngold: 10\n[/modify]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let blocks = &result.passages[0].body;
         assert!(
@@ -1284,9 +1247,9 @@ mod tests {
 
     #[test]
     fn unclosed_modify_block_diagnostic() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[modify]\ngold: 10\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "cb-unclosed-modify"),
@@ -1300,9 +1263,9 @@ mod tests {
 
     #[test]
     fn insert_expression_variable_read() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nYou have {{state.gold}} coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
@@ -1314,9 +1277,9 @@ mod tests {
 
     #[test]
     fn insert_creates_expression_block() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nYou have {{state.gold}} coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let blocks = &result.passages[0].body;
         assert!(
@@ -1327,9 +1290,9 @@ mod tests {
 
     #[test]
     fn unclosed_insert_diagnostic() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nYou have {{state.gold coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "cb-unclosed-insert"),
@@ -1343,9 +1306,9 @@ mod tests {
 
     #[test]
     fn unclosed_link_diagnostic() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nGo to [[Cave\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
             result.diagnostics.iter().any(|d| d.code == "cb-broken-link"),
@@ -1359,9 +1322,9 @@ mod tests {
 
     #[test]
     fn mixed_blocks_and_links() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\nWelcome [[Cave]].\n[javascript]\nstate.visited = true;\n[/javascript]\nYou have {{state.gold}} coins.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let passage = &result.passages[0];
@@ -1389,9 +1352,9 @@ mod tests {
 
     #[test]
     fn empty_javascript_block() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\n[/javascript]\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert!(result.passages[0].vars.is_empty(), "Empty [javascript] block should have no variables");
@@ -1399,9 +1362,9 @@ mod tests {
 
     #[test]
     fn passage_with_tags() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Dark Room [dark interior]\nIt is very dark.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert_eq!(result.passages[0].name, "Dark Room");
@@ -1410,9 +1373,9 @@ mod tests {
 
     #[test]
     fn multiple_passages_with_javascript() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: Start\n[javascript]\nstate.x = 1;\n[/javascript]\n:: Forest\n{{state.x}} trees.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
@@ -1423,9 +1386,9 @@ mod tests {
 
     #[test]
     fn tagged_header_passage() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: MyHeader [header]\nThis is a header passage.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert!(result.passages[0].is_special, "Tagged [header] passage should be special");
@@ -1433,9 +1396,9 @@ mod tests {
 
     #[test]
     fn tagged_footer_passage() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         let src = ":: MyFooter [footer]\nThis is a footer passage.\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         assert!(result.passages[0].is_special, "Tagged [footer] passage should be special");
@@ -1443,10 +1406,10 @@ mod tests {
 
     #[test]
     fn split_passages_byte_offset_tracking() {
-        let plugin = ChapbookPlugin::new();
+        let mut plugin = ChapbookPlugin::new();
         // Two identical header lines to test that text.find doesn't cause issues
         let src = ":: Room\nHello\n:: Room\nWorld\n";
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         // With the buggy approach, this would produce only 1 passage.
         // With byte-offset tracking, we get 2.
@@ -1460,8 +1423,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_header() {
-        let plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage_mut(
             "TopBar",
             &["header".to_string()],
             "Header content\n",
@@ -1476,8 +1439,8 @@ mod tests {
 
     #[test]
     fn parse_passage_tagged_footer() {
-        let plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage_mut(
             "BottomBar",
             &["footer".to_string()],
             "Footer content\n",
@@ -1492,8 +1455,8 @@ mod tests {
 
     #[test]
     fn parse_passage_name_matched_passage_header() {
-        let plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage(
+        let mut plugin = ChapbookPlugin::new();
+        let result = plugin.parse_passage_mut(
             "PassageHeader",
             &[],
             "Header content\n",

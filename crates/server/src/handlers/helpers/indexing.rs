@@ -210,7 +210,7 @@ pub(crate) async fn index_workspace(
         inner.open_documents.insert(uri.clone(), text.clone());
 
         let (doc, parse_result) = parse_with_format_plugin(
-            &inner.format_registry,
+            &mut inner.format_registry,
             &uri,
             &text,
             format,

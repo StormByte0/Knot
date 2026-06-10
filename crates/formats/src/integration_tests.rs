@@ -11,24 +11,27 @@ use knot_core::graph::{DiagnosticKind, PassageEdge, PassageNode, PassageGraph};
 use knot_core::passage::StoryFormat;
 use knot_core::workspace::{StoryMetadata, Workspace};
 use knot_core::AnalysisEngine;
-use crate::plugin::FormatRegistry;
+use crate::plugin::{FormatRegistry, FormatPluginMut};
 use url::Url;
 
 /// Parse a document using the format plugin system and insert it into the workspace.
 fn parse_and_insert(
     workspace: &mut Workspace,
-    registry: &FormatRegistry,
+    registry: &mut FormatRegistry,
     uri: &Url,
     text: &str,
     format: StoryFormat,
 ) {
-    let plugin = registry.get(&format).or_else(|| {
-        let default = StoryFormat::default_format();
-        registry.get(&default)
-    });
+    let plugin = match registry.get_mut(&format) {
+        Some(p) => Some(p),
+        None => {
+            let default = StoryFormat::default_format();
+            registry.get_mut(&default)
+        }
+    };
 
     if let Some(plugin) = plugin {
-        let result = plugin.parse(uri, text);
+        let result = plugin.parse_mut(uri, text);
         let mut doc = Document::new(uri.clone(), format);
         doc.passages = result.passages.clone();
         workspace.insert_document(doc);
@@ -117,7 +120,7 @@ fn workspace_with_metadata(format: StoryFormat, start: &str) -> Workspace {
 
 #[test]
 fn registry_contains_all_formats() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let formats = registry.formats();
     assert_eq!(formats.len(), 5, "Should have 5 format plugins (Core + 4 story formats)");
     assert!(formats.contains(&StoryFormat::Core));
@@ -129,7 +132,7 @@ fn registry_contains_all_formats() {
 
 #[test]
 fn registry_default_includes_core() {
-    let registry = FormatRegistry::default();
+    let mut registry = FormatRegistry::default();
     assert!(registry.get(&StoryFormat::Core).is_some(), "Core plugin should be registered");
     assert!(registry.get(&StoryFormat::SugarCube).is_some());
 }
@@ -140,11 +143,11 @@ fn registry_default_includes_core() {
 
 #[test]
 fn core_parse_passages_and_links() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Core).expect("Core plugin should be registered");
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Core).expect("Core plugin should be registered");
 
     let src = ":: StoryData\n{\"ifid\":\"TEST-IFID\"}\n:: Start\nYou are at the start. [[Forest]]\n:: Forest\nYou are in the forest.\n";
-    let result = plugin.parse(&Url::parse("file:///project/story.tw").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///project/story.tw").unwrap(), src);
 
     // Core should parse passages
     assert!(result.passages.len() >= 2, "Core should parse at least 2 passages");
@@ -168,12 +171,12 @@ fn core_parse_passages_and_links() {
 
 #[test]
 fn sugarcube_parse_and_analyze() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
     let src = ":: StoryData\n{\"format\":\"SugarCube\",\"ifid\":\"TEST-IFID\"}\n:: Start\n<<set $gold to 10>>You have $gold coins. [[Forest]]\n:: Forest\nYou are in the forest.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -194,12 +197,12 @@ fn sugarcube_parse_and_analyze() {
 
 #[test]
 fn harlowe_parse_and_analyze() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Harlowe, "Start");
 
     let src = ":: Start\n(set: $health to 100)You are healthy. [[Forest]]\n:: Forest\nThe trees surround you.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Harlowe);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Harlowe);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -216,12 +219,12 @@ fn harlowe_parse_and_analyze() {
 
 #[test]
 fn harlowe_broken_link_detection() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Harlowe, "Start");
 
     let src = ":: Start\nGo to [[Cave]].\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Harlowe);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Harlowe);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -239,12 +242,12 @@ fn harlowe_broken_link_detection() {
 
 #[test]
 fn chapbook_parse_and_analyze() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Chapbook, "Start");
 
     let src = ":: Start\nWelcome [[Cave]].\n[javascript]\nstate.visited = true;\n[/javascript]\nYou have {{state.gold}} coins.\n:: Cave\nA dark cave.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Chapbook);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Chapbook);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -268,12 +271,12 @@ fn chapbook_parse_and_analyze() {
 
 #[test]
 fn chapbook_modify_block() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Chapbook, "Start");
 
     let src = ":: Start\n[modify]\ngold: 10\nname: Alice\n[/modify]\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Chapbook);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Chapbook);
 
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
@@ -293,12 +296,12 @@ fn chapbook_modify_block() {
 
 #[test]
 fn snowman_parse_and_analyze() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Snowman, "Start");
 
     let src = ":: Start\n<% s.gold = 10; %>You have <%= s.gold %> coins. [[Cave]]\n:: Cave\nA dark cave.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Snowman);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Snowman);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -322,12 +325,12 @@ fn snowman_parse_and_analyze() {
 
 #[test]
 fn snowman_broken_link_and_unreachable() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::Snowman, "Start");
 
     let src = ":: Start\nGo to [[MissingPassage]].\n:: Orphan\nNobody links here.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::Snowman);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::Snowman);
     rebuild_graph(&mut ws);
 
     let diagnostics = AnalysisEngine::analyze(&ws);
@@ -351,12 +354,12 @@ fn snowman_broken_link_and_unreachable() {
 
 #[test]
 fn all_formats_parse_passage_headers() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nHello world.\n:: Forest\nA forest.\n";
 
     for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
-        let plugin = registry.get(format).unwrap();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let plugin = registry.get_mut(format).unwrap();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert_eq!(
             result.passages.len(), 2,
             "{:?}: should parse 2 passages from simple source", format
@@ -368,12 +371,12 @@ fn all_formats_parse_passage_headers() {
 
 #[test]
 fn all_formats_extract_simple_links() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nGo to [[Forest]].\n:: Forest\nTrees.\n";
 
     for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
-        let plugin = registry.get(format).unwrap();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let plugin = registry.get_mut(format).unwrap();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert_eq!(
             result.passages[0].links.len(), 1,
             "{:?}: should extract 1 link from Start", format
@@ -387,11 +390,11 @@ fn all_formats_extract_simple_links() {
 
 #[test]
 fn all_formats_handle_empty_input() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
 
     for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
-        let plugin = registry.get(format).unwrap();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), "");
+        let plugin = registry.get_mut(format).unwrap();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), "");
         assert!(
             result.passages.is_empty(),
             "{:?}: empty input should produce no passages", format
@@ -401,12 +404,12 @@ fn all_formats_handle_empty_input() {
 
 #[test]
 fn all_formats_produce_semantic_tokens() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nHello [[World]].\n:: World\nDone.\n";
 
     for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
-        let plugin = registry.get(format).unwrap();
-        let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+        let plugin = registry.get_mut(format).unwrap();
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert!(
             !result.tokens.is_empty(),
             "{:?}: should produce semantic tokens", format
@@ -416,10 +419,10 @@ fn all_formats_produce_semantic_tokens() {
 
 #[test]
 fn all_formats_define_special_passages() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
 
     for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
-        let plugin = registry.get(format).unwrap();
+        let plugin = registry.get_mut(format).unwrap();
         let specials = plugin.special_passages();
         assert!(
             !specials.is_empty(),
@@ -437,11 +440,11 @@ fn all_formats_define_special_passages() {
 
 #[test]
 fn graph_surgery_with_sugarcube_parse() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
 
     let src = ":: Start\nHello [[Forest]].\n:: Forest\nTrees.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
     graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
@@ -453,11 +456,11 @@ fn graph_surgery_with_sugarcube_parse() {
 
 #[test]
 fn graph_surgery_with_harlowe_parse() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Harlowe).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Harlowe).unwrap();
 
     let src = ":: Start\n(set: $x to 5)Go [[Cave]].\n:: Cave\nDark.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
     graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
@@ -469,11 +472,11 @@ fn graph_surgery_with_harlowe_parse() {
 
 #[test]
 fn graph_surgery_with_chapbook_parse() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Chapbook).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Chapbook).unwrap();
 
     let src = ":: Start\nWelcome [[Cave]].\n:: Cave\nDark.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
     graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
@@ -484,11 +487,11 @@ fn graph_surgery_with_chapbook_parse() {
 
 #[test]
 fn graph_surgery_with_snowman_parse() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Snowman).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Snowman).unwrap();
 
     let src = ":: Start\n<% s.x = 1; %>Go [[Cave]].\n:: Cave\nDark.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
     graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
@@ -503,32 +506,32 @@ fn graph_surgery_with_snowman_parse() {
 
 #[test]
 fn sugarcube_full_variable_tracking() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     assert!(plugin.supports_full_variable_tracking());
     assert!(!plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn snowman_full_variable_tracking() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Snowman).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Snowman).unwrap();
     assert!(plugin.supports_full_variable_tracking());
     assert!(!plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn harlowe_partial_variable_tracking() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Harlowe).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Harlowe).unwrap();
     assert!(!plugin.supports_full_variable_tracking());
     assert!(plugin.supports_partial_variable_tracking());
 }
 
 #[test]
 fn chapbook_no_variable_tracking() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::Chapbook).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Chapbook).unwrap();
     assert!(!plugin.supports_full_variable_tracking());
     assert!(!plugin.supports_partial_variable_tracking());
 }
@@ -567,10 +570,10 @@ fn byte_offset_to_position(text: &str, offset: usize) -> (u32, u32) {
 
 #[test]
 fn sugarcube_header_token_positions_simple() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let src = ":: Start\nHello world.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     // :: prefix should be at byte 0 → LSP (0, 0)
     // Note: "Start" is a core special passage, so it uses SpecialPassageHeader
@@ -603,10 +606,10 @@ fn sugarcube_header_token_positions_simple() {
 
 #[test]
 fn sugarcube_header_token_positions_with_tags() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let src = ":: Forest [dark scary]\nSome content.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     // Print all tokens for debugging
     eprintln!("Tokens for: {:?}", src);
@@ -648,10 +651,10 @@ fn sugarcube_header_token_positions_with_tags() {
 
 #[test]
 fn sugarcube_header_token_positions_with_tags_and_metadata() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let src = ":: Forest [dark scary] {\"position\":\"100,200\"}\nSome content.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     eprintln!("Tokens for: {:?}", src);
     for tok in &result.tokens {
@@ -679,10 +682,10 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
 
 #[test]
 fn sugarcube_body_token_positions() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let src = ":: Start\n<<set $gold to 10>>You have $gold coins.\n:: Forest\nTrees.\n";
-    let result = plugin.parse(&Url::parse("file:///test.twee").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     eprintln!("Tokens for: {:?}", src);
     for tok in &result.tokens {
@@ -716,10 +719,10 @@ fn test_semantic_token_positions_header() {
     use crate::plugin::{FormatPlugin, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
     
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let text = ":: Start [tag] {\"position\":\"100,200\"}\n<<set $x to 5>>\n:: End\n";
     
-    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
     
     // Debug: print all tokens with their positions
     for (i, tok) in result.tokens.iter().enumerate() {
@@ -771,9 +774,9 @@ fn sugarcube_no_space_after_colons_token_positions() {
     use crate::plugin::{FormatPlugin, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let text = "::Start {\"position\":\"420,60\"}\n<<setSceneLoc \"records-desk\">>\n";
-    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== No-space-after-colons test ===");
     for (i, tok) in result.tokens.iter().enumerate() {
@@ -834,9 +837,9 @@ fn sugarcube_script_tag_token_positions() {
     use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let text = "::MyScript [script] {\"position\":\"100,200\"}\nconsole.log('hello');\n";
-    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== Script tag test ===");
     for (i, tok) in result.tokens.iter().enumerate() {
@@ -872,9 +875,9 @@ fn sugarcube_stylesheet_tag_token_positions() {
     use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let text = "::MyCSS [stylesheet] {\"position\":\"100,200\"}\nbody { color: red; }\n";
-    let result = plugin.parse(&url::Url::parse("file:///test.tw").unwrap(), text);
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== Stylesheet tag test ===");
     for (i, tok) in result.tokens.iter().enumerate() {
@@ -909,8 +912,8 @@ use crate::sugarcube::SugarCubePlugin;
 
 /// Helper: Create a SugarCubePlugin and parse the given source, returning both.
 fn sc_parse(text: &str) -> (SugarCubePlugin, crate::plugin::ParseResult) {
-    let plugin = SugarCubePlugin::new();
-    let result = plugin.parse(&Url::parse("file:///project/story.tw").unwrap(), text);
+    let mut plugin = SugarCubePlugin::new();
+    let result = plugin.parse_mut(&Url::parse("file:///project/story.tw").unwrap(), text);
     (plugin, result)
 }
 
@@ -965,7 +968,7 @@ fn sugarcube_js_validation_stylesheet_no_js_diagnostics() {
 
 #[test]
 fn sugarcube_find_macro_at_position_on_name() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<<set $gold to 10>>";
 
     let result = plugin.find_macro_at_position(line, 3);
@@ -977,7 +980,7 @@ fn sugarcube_find_macro_at_position_on_name() {
 
 #[test]
 fn sugarcube_find_macro_at_position_on_args() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<<set $gold to 10>>";
 
     let result = plugin.find_macro_at_position(line, 8);
@@ -987,7 +990,7 @@ fn sugarcube_find_macro_at_position_on_args() {
 
 #[test]
 fn sugarcube_find_macro_at_position_close_tag() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<</if>>";
 
     let result = plugin.find_macro_at_position(line, 3);
@@ -997,7 +1000,7 @@ fn sugarcube_find_macro_at_position_close_tag() {
 
 #[test]
 fn sugarcube_find_macro_at_position_unclosed() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     // A line with << that never closes — missing second >>
     let line = "<<if $x>";
 
@@ -1008,7 +1011,7 @@ fn sugarcube_find_macro_at_position_unclosed() {
 
 #[test]
 fn sugarcube_find_macro_at_position_no_macro() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "Just some text without macros.";
 
     let result = plugin.find_macro_at_position(line, 5);
@@ -1017,7 +1020,7 @@ fn sugarcube_find_macro_at_position_no_macro() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_if_block() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<<if $x>>content<</if>>";
 
     let events = plugin.scan_line_for_macro_events(line, 0);
@@ -1030,7 +1033,7 @@ fn sugarcube_scan_line_for_macro_events_if_block() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_else_modifier() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<<else>>";
 
     let events = plugin.scan_line_for_macro_events(line, 5);
@@ -1043,7 +1046,7 @@ fn sugarcube_scan_line_for_macro_events_else_modifier() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_inline_not_folded() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
     let line = "<<set $x to 5>>";
 
     let events = plugin.scan_line_for_macro_events(line, 0);
@@ -1054,14 +1057,14 @@ fn sugarcube_scan_line_for_macro_events_inline_not_folded() {
 
 #[test]
 fn sugarcube_build_var_string_map_extracts_literals() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
     let src = ":: Start\n<<set $dest to \"Forest\">>\n:: Forest\nTrees.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
 
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
     assert!(var_map.contains_key("$dest"), "Should find $dest in var string map");
@@ -1071,14 +1074,14 @@ fn sugarcube_build_var_string_map_extracts_literals() {
 
 #[test]
 fn sugarcube_build_var_string_map_single_quoted() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
     let src = ":: Start\n<<set $dest to 'Cave'>>\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
 
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
     assert!(var_map.contains_key("$dest"), "Should find $dest with single-quoted value");
@@ -1088,14 +1091,14 @@ fn sugarcube_build_var_string_map_single_quoted() {
 
 #[test]
 fn sugarcube_resolve_dynamic_navigation_goto() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
     let src = ":: Start\n<<set $dest to \"Forest\">><<goto $dest>>\n:: Forest\nTrees.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
 
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
     let doc = ws.get_document(&uri).unwrap();
@@ -1109,14 +1112,14 @@ fn sugarcube_resolve_dynamic_navigation_goto() {
 
 #[test]
 fn sugarcube_resolve_dynamic_navigation_include() {
-    let registry = FormatRegistry::with_defaults();
+    let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
     let src = ":: Start\n<<set $dest to \"Sidebar\">><<include $dest>>\n:: Sidebar\nMenu.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
-    parse_and_insert(&mut ws, &registry, &uri, src, StoryFormat::SugarCube);
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
 
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
     let doc = ws.get_document(&uri).unwrap();
@@ -1131,11 +1134,11 @@ fn sugarcube_resolve_dynamic_navigation_include() {
 
 #[test]
 fn sugarcube_classify_edge_goto_is_jump() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
 
     let src = ":: Start\n<<goto Forest>>\n:: Forest\nTrees.\n";
-    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
@@ -1144,11 +1147,11 @@ fn sugarcube_classify_edge_goto_is_jump() {
 
 #[test]
 fn sugarcube_classify_edge_include_is_include() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
 
     let src = ":: Start\n<<include Sidebar>>\n:: Sidebar\nMenu.\n";
-    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Sidebar");
@@ -1157,11 +1160,11 @@ fn sugarcube_classify_edge_include_is_include() {
 
 #[test]
 fn sugarcube_classify_edge_link_is_navigation() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
 
     let src = ":: Start\n<<link \"Go\" Forest>>\n:: Forest\nTrees.\n";
-    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
@@ -1170,11 +1173,11 @@ fn sugarcube_classify_edge_link_is_navigation() {
 
 #[test]
 fn sugarcube_classify_edge_no_macro_is_none() {
-    let registry = FormatRegistry::with_defaults();
-    let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
 
     let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n";
-    let result = plugin.parse(&Url::parse("file:///test.tw").unwrap(), src);
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
@@ -1198,7 +1201,7 @@ fn sugarcube_variable_tree_populated_after_parse() {
 #[test]
 fn sugarcube_variable_tree_property_tracking() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let props = plugin.variable_properties("$player");
     assert!(props.contains("name"), "Should track $player.name property");
@@ -1208,7 +1211,7 @@ fn sugarcube_variable_tree_property_tracking() {
 #[test]
 fn sugarcube_custom_macros_widget_registration() {
     let src = ":: MyWidgets [widget]\n<<widget myWidget>>Hello<</widget>>\n:: Start\n<<myWidget>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("myWidget"), "Widget should be registered as custom macro");
     let names = plugin.custom_macro_names();
@@ -1218,7 +1221,7 @@ fn sugarcube_custom_macros_widget_registration() {
 #[test]
 fn sugarcube_build_variable_tree_returns_nodes() {
     let src = ":: Start\n<<set $gold to 10>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let tree = plugin.build_variable_tree(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1236,7 +1239,7 @@ fn sugarcube_build_variable_tree_returns_nodes() {
 #[test]
 fn sugarcube_extract_passage_variable_refs() {
     let src = ":: Start\n<<set $gold to 10>>You have $gold.\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let refs = plugin.extract_passage_variable_refs(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1252,7 +1255,7 @@ fn sugarcube_extract_passage_variable_refs() {
 #[test]
 fn sugarcube_build_shape_aware_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let map = plugin.build_shape_aware_property_map(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1270,7 +1273,7 @@ fn sugarcube_build_shape_aware_property_map() {
 #[test]
 fn sugarcube_build_state_variable_registry() {
     let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let reg = plugin.build_state_variable_registry(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1290,11 +1293,11 @@ fn sugarcube_build_state_variable_registry() {
 #[test]
 fn sugarcube_incremental_reparse_updates_registries() {
     let src = ":: Start\n<<set $gold to 10>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     assert!(plugin.workspace_variable_names().contains("$gold"));
 
-    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>", "");
+    let result = plugin.parse_passage_mut("Start", &[], "<<set $silver to 20>>", "");
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();
@@ -1304,9 +1307,9 @@ fn sugarcube_incremental_reparse_updates_registries() {
 #[test]
 fn sugarcube_incremental_reparse_keeps_other_passages() {
     let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
-    let result = plugin.parse_passage("Start", &[], "<<set $silver to 20>>", "");
+    let result = plugin.parse_passage_mut("Start", &[], "<<set $silver to 20>>", "");
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();
@@ -1331,7 +1334,7 @@ fn sugarcube_two_pass_script_before_normal() {
 #[test]
 fn sugarcube_script_passage_macro_add() {
     let src = ":: Scripts [script]\nMacro.add(\"customGreet\", {});\n:: Start\nHello.\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("customGreet"), "Macro.add in [script] should register custom macro");
 }
@@ -1396,7 +1399,7 @@ fn sugarcube_empty_passage_body() {
 #[test]
 fn sugarcube_widget_tag_registration() {
     let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n<<widget farewell>>Bye!<</widget>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("greet"), "Widget 'greet' should be registered");
     assert!(plugin.is_custom_macro("farewell"), "Widget 'farewell' should be registered");
@@ -1405,7 +1408,7 @@ fn sugarcube_widget_tag_registration() {
 #[test]
 fn sugarcube_find_custom_macro_definition() {
     let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let def = plugin.find_custom_macro("greet");
     assert!(def.is_some(), "Should find 'greet' custom macro definition");
@@ -1416,7 +1419,7 @@ fn sugarcube_find_custom_macro_definition() {
 #[test]
 fn sugarcube_build_object_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.level to 5>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let map = plugin.build_object_property_map(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1431,7 +1434,7 @@ fn sugarcube_build_object_property_map() {
 #[test]
 fn sugarcube_special_passage_seeding() {
     let src = ":: StoryInit\n<<set $gold to 100>><<set $hp to 50>>\n:: Start\nYou have $gold.\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let reg = plugin.build_state_variable_registry(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1444,7 +1447,7 @@ fn sugarcube_special_passage_seeding() {
 #[test]
 fn sugarcube_temporary_variable_tracking() {
     let src = ":: Start\n<<for _i to 0; _i lt 5; _i++>><</for>>\n";
-    let (plugin, _) = sc_parse(src);
+    let (mut plugin, _) = sc_parse(src);
 
     let names = plugin.workspace_variable_names();
     assert!(names.contains("_i"), "Temporary variable _i should be tracked");
@@ -1518,7 +1521,7 @@ fn sugarcube_expression_macros() {
 
 #[test]
 fn sugarcube_detect_close_tag_context() {
-    let plugin = SugarCubePlugin::new();
+    let mut plugin = SugarCubePlugin::new();
 
     let ctx = plugin.detect_close_tag_context("some text <</");
     assert!(ctx.is_some(), "Should detect close tag context after <</");

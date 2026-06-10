@@ -86,7 +86,7 @@ use knot_core::passage::{Passage, SpecialPassageDef, StoryFormat};
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
-use crate::plugin::{FormatPlugin, ParseResult};
+use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult};
 use crate::types::{
     GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
     VariableSigilInfo, VariableTreeNode,
@@ -140,19 +140,34 @@ impl SugarCubePlugin {
     pub fn registry(&self) -> &SugarCubeRegistry {
         &self.registry
     }
+
+    /// Get a mutable reference to the unified registry hub.
+    pub fn registry_mut(&mut self) -> &mut SugarCubeRegistry {
+        &mut self.registry
+    }
+}
+
+impl FormatPluginMut for SugarCubePlugin {
+    fn parse_mut(&mut self, uri: &Url, text: &str) -> ParseResult {
+        parse_pipeline::parse_full(self, uri, text)
+    }
+
+    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage> {
+        parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text, file_uri)
+    }
+
+    fn remove_file_from_registries(&mut self, file_uri: &str) {
+        self.registry.remove_file(file_uri);
+    }
+
+    fn remove_passage_from_registries(&mut self, passage_name: &str, _file_uri: &str) {
+        self.registry.remove_passage(passage_name);
+    }
 }
 
 impl FormatPlugin for SugarCubePlugin {
     fn format(&self) -> StoryFormat {
         StoryFormat::SugarCube
-    }
-
-    fn parse(&self, uri: &Url, text: &str) -> ParseResult {
-        parse_pipeline::parse_full(self, uri, text)
-    }
-
-    fn parse_passage(&self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage> {
-        parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text, file_uri)
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -498,13 +513,4 @@ impl FormatPlugin for SugarCubePlugin {
         })
     }
 
-    // ── Registry lifecycle (incremental re-parse support) ─────────────
-
-    fn remove_passage_from_registries(&self, passage_name: &str, _file_uri: &str) {
-        self.registry.remove_passage(passage_name);
-    }
-
-    fn remove_file_from_registries(&self, file_uri: &str) {
-        self.registry.remove_file(file_uri);
-    }
 }
