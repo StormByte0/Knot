@@ -208,6 +208,12 @@ pub(crate) async fn index_workspace(
         let format = resolved_format.clone();
 
         inner.open_documents.insert(uri.clone(), text.clone());
+        // Store version 0 for indexed files so semantic_tokens_full
+        // returns a consistent result_id. Without this, indexed files
+        // get result_id=None while did_open files get result_id=Some("N"),
+        // which can cause VS Code's delta token caching to behave
+        // inconsistently across the indexing → did_open transition.
+        inner.doc_versions.insert(uri.clone(), 0);
 
         let (doc, parse_result) = parse_with_format_plugin(
             &mut inner.format_registry,

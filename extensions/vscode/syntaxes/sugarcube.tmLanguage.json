@@ -3,166 +3,213 @@
     "name": "SugarCube (Twee)",
     "patterns": [
         {
-            "include": "source.twee"
+            "comment": "=====================================================================",
+            "name": "comment.section.passage-embedded-languages.sugarcube"
         },
         {
-            "comment": "Story JavaScript special passage — entire body is JavaScript. Shared across all Twine formats.",
+            "comment": "Script passage: :: Name [script] — entire body is JavaScript. Must come before the base grammar include so the begin/end scope is created correctly and source.js is applied to the body. Handles both single-tag [script] and multi-tag [script widget] / [widget script].",
             "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+[Ss]tory\\s+[Jj]ava[Ss]cript\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+(\\S[^\\[]*?)\\s*\\[([^\\]]*\\bscript\\b[^\\]]*)\\]\\s*(\\{[^}]*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": { "name": "punctuation.definition.passage.twee" },
                 "2": { "name": "entity.name.passage.special.sugarcube" },
-                "3": { "name": "meta.passage.metadata.twee" }
+                "3": { "patterns": [{ "match": "\\bscript\\b", "name": "entity.other.attribute-name.tag.sugarcube" }, { "match": "[^\\s\\]]+", "name": "entity.other.attribute-name.tag.twee" }] },
+                "4": { "name": "meta.passage.metadata.twee" }
             },
             "patterns": [{ "include": "source.js" }]
         },
         {
-            "comment": "Story Stylesheet special passage — entire body is CSS. Shared across all Twine formats.",
+            "comment": "Stylesheet passage: :: Name [stylesheet] — entire body is CSS. Must come before the base grammar include for the same reason as [script]. Handles multi-tag variants.",
             "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+[Ss]tory\\s+[Ss]tylesheet\\s*(\\[.*\\])?\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+(\\S[^\\[]*?)\\s*\\[([^\\]]*\\bstylesheet\\b[^\\]]*)\\]\\s*(\\{[^}]*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": { "name": "punctuation.definition.passage.twee" },
                 "2": { "name": "entity.name.passage.special.sugarcube" },
-                "3": { "name": "meta.passage.metadata.twee" }
+                "3": { "patterns": [{ "match": "\\bstylesheet\\b", "name": "entity.other.attribute-name.tag.sugarcube" }, { "match": "[^\\s\\]]+", "name": "entity.other.attribute-name.tag.twee" }] },
+                "4": { "name": "meta.passage.metadata.twee" }
             },
             "patterns": [{ "include": "source.css" }]
         },
         {
-            "comment": "Script passage: :: Name [script] — entire body is JavaScript (Twine-core tag, shared across all formats)",
-            "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*(\\{.*\\})?\\s*$",
-            "end": "^(?=\\s*::)|\\z",
-            "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.passage.twee"
-                },
-                "2": {
-                    "name": "entity.name.passage.special.sugarcube"
-                },
-                "3": {
-                    "name": "meta.passage.metadata.twee"
-                }
-            },
-            "patterns": [
-                {
-                    "include": "source.js"
-                }
-            ]
-        },
-        {
-            "comment": "Stylesheet passage: :: Name [stylesheet] — entire body is CSS (Twine-core tag, shared across all formats)",
-            "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[stylesheet\\]\\s*(\\{.*\\})?\\s*$",
-            "end": "^(?=\\s*::)|\\z",
-            "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.passage.twee"
-                },
-                "2": {
-                    "name": "entity.name.passage.special.sugarcube"
-                },
-                "3": {
-                    "name": "meta.passage.metadata.twee"
-                }
-            },
-            "patterns": [
-                {
-                    "include": "source.css"
-                }
-            ]
-        },
-        {
-            "comment": "StoryInterface special passage — entire body is HTML (SugarCube-specific)",
+            "comment": "StoryInterface special passage — entire body is HTML (SugarCube-specific). Allows optional tags like [widget].",
             "contentName": "text.html.embedded.twee",
-            "begin": "^(::)\\s+[Ss]tory[Ii]nterface\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+([Ss]tory[Ii]nterface)(?:\\s*\\[([^\\]]*)\\])?\\s*(\\{[^}]*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.passage.twee"
-                },
-                "2": {
-                    "name": "meta.passage.metadata.twee"
-                }
+                "1": { "name": "punctuation.definition.passage.twee" },
+                "2": { "name": "entity.name.passage.special.sugarcube" },
+                "3": { "name": "entity.other.attribute-name.tag.twee" },
+                "4": { "name": "meta.passage.metadata.twee" }
             },
-            "patterns": [
-                {
-                    "include": "text.html.basic"
-                }
-            ]
+            "patterns": [{ "include": "text.html.basic" }]
         },
         {
-            "comment": "Script block: <<script>> ... <</script>> — content is JavaScript",
+            "comment": "Story JavaScript special passage — entire body is JavaScript. Handles optional [script] tag and {metadata}.",
+            "contentName": "source.js.embedded.twee",
+            "begin": "^(::)\\s+([Ss]tory\\s+[Jj]ava[Ss]cript)(?:\\s*\\[([^\\]]*)\\])?\\s*(\\{[^}]*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.passage.twee" },
+                "2": { "name": "entity.name.passage.special.sugarcube" },
+                "3": { "name": "entity.other.attribute-name.tag.twee" },
+                "4": { "name": "meta.passage.metadata.twee" }
+            },
+            "patterns": [{ "include": "source.js" }]
+        },
+        {
+            "comment": "Story Stylesheet special passage — entire body is CSS. Handles optional [stylesheet] tag and {metadata}.",
+            "contentName": "source.css.embedded.twee",
+            "begin": "^(::)\\s+([Ss]tory\\s+[Ss]tylesheet)(?:\\s*\\[([^\\]]*)\\])?\\s*(\\{[^}]*\\})?\\s*$",
+            "end": "^(?=\\s*::)|\\z",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.passage.twee" },
+                "2": { "name": "entity.name.passage.special.sugarcube" },
+                "3": { "name": "entity.other.attribute-name.tag.twee" },
+                "4": { "name": "meta.passage.metadata.twee" }
+            },
+            "patterns": [{ "include": "source.css" }]
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.base-grammar-include.sugarcube"
+        },
+        {
+            "comment": "Base Twee grammar — passage headers, links, comments, $variables. Comes AFTER SugarCube special passage patterns so those take priority.",
+            "include": "source.twee"
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.block-macros.sugarcube"
+        },
+        {
+            "comment": "Script block macro: <<script>> ... <</script>> — content is JavaScript",
             "contentName": "source.js.embedded.twee",
             "begin": "(<<)(script)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "end": "(<</)(script)(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "variable.parameter.macro.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "variable.parameter.macro.sugarcube" },
+                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
-            "patterns": [
-                {
-                    "include": "source.js"
-                }
-            ]
+            "patterns": [{ "include": "source.js" }]
         },
         {
-            "comment": "Style block: <<style>> ... <</style>> — content is CSS",
+            "comment": "Style block macro: <<style>> ... <</style>> — content is CSS",
             "contentName": "source.css.embedded.twee",
             "begin": "(<<)(style)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "end": "(<</)(style)(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "variable.parameter.macro.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "variable.parameter.macro.sugarcube" },
+                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [{ "include": "source.css" }]
+        },
+        {
+            "comment": "Widget definition block: <<widget name>> ... <</widget>> — SugarCube widget definition",
+            "begin": "(<<)(widget)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
+            "end": "(<</)(widget)(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "entity.name.function.widget.sugarcube" },
+                "4": { "name": "variable.parameter.macro.sugarcube" },
+                "5": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
+            }
+        },
+        {
+            "comment": "For loop block: <<for expression>> ... <</for>> — loop with JS expression",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<<)(for)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
-                {
-                    "include": "source.css"
-                }
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
             ]
+        },
+        {
+            "comment": "Capture block: <<capture expression>> ... <</capture>> — variable scoping",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<<)(capture)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
+            ]
+        },
+        {
+            "comment": "Switch block: <<switch expression>> — switch statement with JS expression",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<<)(switch)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
+            ]
+        },
+        {
+            "comment": "Case clause: <<case expression>> — case with JS expression",
+            "contentName": "source.js.embedded.twee",
+            "begin": "(<<)(case)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
+            ]
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.inline-js-macros.sugarcube"
         },
         {
             "comment": "Set macro: <<set expression>> — inline JavaScript variable assignment",
@@ -170,28 +217,16 @@
             "begin": "(<<)(set)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
-                {
-                    "include": "#sugarcube-keywords"
-                },
-                {
-                    "include": "#sugarcube-json"
-                },
-                {
-                    "include": "source.js"
-                }
+                { "include": "#sugarcube-keywords" },
+                { "include": "#sugarcube-json" },
+                { "include": "source.js" }
             ]
         },
         {
@@ -200,25 +235,15 @@
             "begin": "(<<)(if)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
-                {
-                    "include": "#sugarcube-keywords"
-                },
-                {
-                    "include": "source.js"
-                }
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
             ]
         },
         {
@@ -227,25 +252,15 @@
             "begin": "(<<)(elseif)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
-                {
-                    "include": "#sugarcube-keywords"
-                },
-                {
-                    "include": "source.js"
-                }
+                { "include": "#sugarcube-keywords" },
+                { "include": "source.js" }
             ]
         },
         {
@@ -254,23 +269,13 @@
             "begin": "(<<)(run)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
-            "patterns": [
-                {
-                    "include": "source.js"
-                }
-            ]
+            "patterns": [{ "include": "source.js" }]
         },
         {
             "comment": "Inline expression: <<= jsExpression>> — inline JavaScript (outputs result)",
@@ -278,23 +283,13 @@
             "begin": "(<<)(=)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
-            "patterns": [
-                {
-                    "include": "source.js"
-                }
-            ]
+            "patterns": [{ "include": "source.js" }]
         },
         {
             "comment": "Print macro: <<print jsExpression>> — inline JavaScript (outputs result, deprecated in favor of <<=)",
@@ -302,38 +297,64 @@
             "begin": "(<<)(print)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [{ "include": "source.js" }]
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.passage-name-macros.sugarcube"
+        },
+        {
+            "comment": "Include macro: <<include passageName>> or <<include \"passageName\">> — passage transclusion",
+            "begin": "(<<)(include)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
-                {
-                    "include": "source.js"
-                }
+                { "include": "#sugarcube-passage-name-string" },
+                { "include": "source.js" }
             ]
+        },
+        {
+            "comment": "Goto macro: <<goto passageName>> or <<goto \"passageName\">> — navigation",
+            "begin": "(<<)(goto)\\s+",
+            "end": "(>>)",
+            "beginCaptures": {
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" }
+            },
+            "endCaptures": {
+                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
+            },
+            "patterns": [
+                { "include": "#sugarcube-passage-name-string" },
+                { "include": "source.js" }
+            ]
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.generic-macro-tags.sugarcube"
         },
         {
             "comment": "SugarCube closing macro tag: <</name>>",
             "name": "keyword.control.macro.close.sugarcube",
             "match": "(<</)([A-Za-z_][A-Za-z0-9_]*)(>>)",
             "captures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
             }
         },
         {
@@ -341,92 +362,114 @@
             "name": "meta.macro.sugarcube",
             "match": "(<<)([A-Za-z_][A-Za-z0-9_]*)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "captures": {
-                "1": {
-                    "name": "punctuation.definition.macro.begin.sugarcube"
-                },
-                "2": {
-                    "name": "keyword.control.macro.sugarcube"
-                },
-                "3": {
-                    "name": "variable.parameter.macro.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.definition.macro.end.sugarcube"
-                }
+                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
+                "2": { "name": "keyword.control.macro.sugarcube" },
+                "3": { "name": "variable.parameter.macro.sugarcube" },
+                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
             }
+        },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.variables.sugarcube"
+        },
+        {
+            "comment": "SugarCube story variable: $varName — must come before the base grammar's $variable pattern to use SugarCube-specific scope",
+            "name": "variable.other.story.sugarcube",
+            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
         },
         {
             "comment": "SugarCube temporary variable: _varName (must not match identifiers like foo_bar)",
             "name": "variable.other.sugarcube.temp",
             "match": "(?<!\\w)_[A-Za-z_][A-Za-z0-9_]*(?!\\w)"
         },
+
+        {
+            "comment": "=====================================================================",
+            "name": "comment.section.global-objects.sugarcube"
+        },
         {
             "comment": "Implicit passage reference: Engine.play/goto(\"name\")",
             "match": "\\b(Engine)\\s*(\\.)\\s*(play|goto)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
             "captures": {
-                "1": {
-                    "name": "support.class.sugarcube"
-                },
-                "2": {
-                    "name": "punctuation.accessor.js"
-                },
-                "3": {
-                    "name": "support.function.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.section.parens.begin.js"
-                },
-                "5": {
-                    "name": "string.quoted.js markup.underline.link.passageref.twee"
-                }
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" },
+                "4": { "name": "punctuation.section.parens.begin.js" },
+                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
             }
         },
         {
             "comment": "Implicit passage reference: Story.get/passage/has(\"name\")",
             "match": "\\b(Story)\\s*(\\.)\\s*(get|passage|has)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
             "captures": {
-                "1": {
-                    "name": "support.class.sugarcube"
-                },
-                "2": {
-                    "name": "punctuation.accessor.js"
-                },
-                "3": {
-                    "name": "support.function.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.section.parens.begin.js"
-                },
-                "5": {
-                    "name": "string.quoted.js markup.underline.link.passageref.twee"
-                }
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" },
+                "4": { "name": "punctuation.section.parens.begin.js" },
+                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
             }
         },
         {
             "comment": "Implicit passage reference: UI.goto/include(\"name\")",
             "match": "\\b(UI)\\s*(\\.)\\s*(goto|include)\\s*(\\()\\s*(\"[^\"]*\"|'[^']*')",
             "captures": {
-                "1": {
-                    "name": "support.class.sugarcube"
-                },
-                "2": {
-                    "name": "punctuation.accessor.js"
-                },
-                "3": {
-                    "name": "support.function.sugarcube"
-                },
-                "4": {
-                    "name": "punctuation.section.parens.begin.js"
-                },
-                "5": {
-                    "name": "string.quoted.js markup.underline.link.passageref.twee"
-                }
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" },
+                "4": { "name": "punctuation.section.parens.begin.js" },
+                "5": { "name": "string.quoted.js markup.underline.link.passageref.twee" }
             }
         },
         {
-            "comment": "SugarCube global objects: State, Engine, Story, UI, Setup, settings, Dialog, Macro, Config, Passage, Save, SimpleAI",
+            "comment": "State object property access: State.variables, State.active, State.turns, State.history, State.temporary, State.passage",
+            "match": "\\b(State)\\s*(\\.)\\s*(variables|active|turns|history|temporary|passage|prng|metadata)\\b",
+            "captures": {
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "variable.other.property.sugarcube" }
+            }
+        },
+        {
+            "comment": "Config object property access: Config.controls, Config.debug, Config.history, Config.macros, Config.navigation, Config.saves, Config.ui, Config.passages",
+            "match": "\\b(Config)\\s*(\\.)\\s*(controls|debug|history|macros|navigation|saves|ui|passages)\\b",
+            "captures": {
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "variable.other.property.sugarcube" }
+            }
+        },
+        {
+            "comment": "Macro object method access: Macro.add(), Macro.get(), Macro.delete(), Macro.tags()",
+            "match": "\\b(Macro)\\s*(\\.)\\s*(add|get|delete|tags)\\b",
+            "captures": {
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" }
+            }
+        },
+        {
+            "comment": "Save object method access: Save.save(), Save.load(), Save.delete(), Save.slots, Save.autosave",
+            "match": "\\b(Save)\\s*(\\.)\\s*(save|load|delete|slots|autosave|index|clear|ok)\\b",
+            "captures": {
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" }
+            }
+        },
+        {
+            "comment": "Dialog object method access: Dialog.setup(), Dialog.open(), Dialog.close(), Dialog.body(), Dialog.append()",
+            "match": "\\b(Dialog)\\s*(\\.)\\s*(setup|open|close|body|append|stow|openwiki)\\b",
+            "captures": {
+                "1": { "name": "support.class.sugarcube" },
+                "2": { "name": "punctuation.accessor.js" },
+                "3": { "name": "support.function.sugarcube" }
+            }
+        },
+        {
+            "comment": "SugarCube global objects: State, Engine, Story, UI, Setup, settings, Dialog, Macro, Config, Passage, Save, SimpleAI, TempState, MemState",
             "name": "support.class.sugarcube",
-            "match": "(?<!\\w)(State|Engine|Story|UI|Setup|settings|Dialog|Macro|Config|Passage|Save|SimpleAI)(?!\\w)"
+            "match": "(?<!\\w)(State|Engine|Story|UI|Setup|settings|Dialog|Macro|Config|Passage|Save|SimpleAI|TempState|MemState)(?!\\w)"
         }
     ],
     "repository": {
@@ -458,14 +501,10 @@
                             "comment": "JSON property key (string key followed by colon)",
                             "match": "(?:\"|')([^\"']+)(?:\"|')\\s*:",
                             "captures": {
-                                "1": {
-                                    "name": "meta.object-literal.key.json.sugarcube"
-                                }
+                                "1": { "name": "meta.object-literal.key.json.sugarcube" }
                             }
                         },
-                        {
-                            "include": "source.json"
-                        }
+                        { "include": "source.json" }
                     ]
                 },
                 {
@@ -474,10 +513,23 @@
                     "begin": "(?=\\[(?!\\[))",
                     "end": "(?<=\\])",
                     "patterns": [
-                        {
-                            "include": "source.json"
-                        }
+                        { "include": "source.json" }
                     ]
+                }
+            ]
+        },
+        "sugarcube-passage-name-string": {
+            "comment": "Passage name as a quoted string — used inside macros like <<include>> and <<goto>>",
+            "patterns": [
+                {
+                    "comment": "Double-quoted passage name",
+                    "name": "string.quoted.double.js markup.underline.link.passageref.twee",
+                    "match": "\"[^\"]*\""
+                },
+                {
+                    "comment": "Single-quoted passage name",
+                    "name": "string.quoted.single.js markup.underline.link.passageref.twee",
+                    "match": "'[^']*'"
                 }
             ]
         }

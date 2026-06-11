@@ -183,7 +183,8 @@ export async function activate(context: vscode.ExtensionContext) {
             buildOutputChannel: buildOutputChannel!,
             refreshDecorations: () => refreshDecorationsForOpenEditors(client!),
         };
-        registerNotifications(client, notifDeps);
+        const notifDisposable = registerNotifications(client, notifDeps);
+        context.subscriptions.push(notifDisposable);
 
         // Signal to the server that all notification handlers are registered.
         // The server waits for this before starting indexing, ensuring that

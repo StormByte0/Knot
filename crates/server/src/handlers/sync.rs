@@ -49,11 +49,33 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         tracing::debug!("Removing stale URI-equivalent entry: {} (canonical: {})", key, uri);
         inner.open_documents.remove(key);
         inner.format_diagnostics.remove(key);
+        inner.semantic_tokens.remove(key);
     }
 
     inner.editor_open_docs.insert(uri.clone());
     inner.open_documents.insert(uri.clone(), text.clone());
 
+    // If workspace indexing is still in progress, do a lightweight insert
+    // only — the indexing pass will parse with the correct format, build
+    // the graph, and publish diagnostics once all files are loaded.
+    //
+    // CRITICAL: We must NOT parse here during indexing because
+    // resolve_format() returns Core (no StoryData discovered yet),
+    // producing minimal tokens (headers + links only) instead of the
+    // rich format-specific tokens (macros, variables, keywords, etc.).
+    // This causes a visible highlighting inconsistency: files open
+    // during indexing get Core tokens (sparse), then indexing overwrites
+    // them with format-specific tokens (rich), producing a visible
+    // flash/transition. By deferring ALL parsing to the indexing
+    // pipeline, we avoid the Core → SugarCube token mismatch entirely.
+    if indexing_in_progress {
+        tracing::debug!("did_open: deferring parse — workspace indexing in progress (format not yet resolved)");
+        drop(inner);
+        return;
+    }
+
+    // After indexing, the format is frozen. Parse with the resolved
+    // format plugin and cache the results.
     let format = inner.workspace.resolve_format();
     let (doc, parse_result) =
         helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format, version);
@@ -89,17 +111,6 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
             .unwrap_or_default(),
         "did_open: passages defined"
     );
-
-    // If workspace indexing is still in progress, skip the graph rebuild
-    // and diagnostic publish — index_workspace will do both once all
-    // files have been loaded.  Doing it here would race with the
-    // indexing loop and produce a graph built from only the files
-    // loaded so far, causing false "orphaned passage" diagnostics.
-    if indexing_in_progress {
-        tracing::debug!("did_open: skipping graph rebuild — workspace indexing in progress");
-        drop(inner);
-        return;
-    }
 
     // The format is resolved by the indexing pipeline — did_open never
     // changes it. Rebuild the graph with the current (frozen) format.

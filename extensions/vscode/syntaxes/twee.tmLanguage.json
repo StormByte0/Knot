@@ -25,9 +25,9 @@
             ]
         },
         {
-            "comment": "Any passage with [script] tag — entire body is JavaScript. Covers user-named script passages like ':: MyCode [script]'.",
+            "comment": "Any passage with [script] tag — entire body is JavaScript. Covers user-named script passages like ':: MyCode [script]'. Also handles multi-tag variants like ':: MyCode [script widget]' or ':: MyCode [widget script]'.",
             "contentName": "source.js.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[script\\]\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+(\\S[^\\[]*?)\\s*\\[([^\\]]*\\bscript\\b[^\\]]*)\\]\\s*(\\{[^}]*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": {
@@ -37,6 +37,9 @@
                     "name": "entity.name.passage.special.twee"
                 },
                 "3": {
+                    "patterns": [{ "match": "\\bscript\\b", "name": "entity.other.attribute-name.tag.sugarcube" }, { "match": "[^\\s\\]]+", "name": "entity.other.attribute-name.tag.twee" }]
+                },
+                "4": {
                     "name": "meta.passage.metadata.twee"
                 }
             },
@@ -69,9 +72,9 @@
             ]
         },
         {
-            "comment": "Any passage with [stylesheet] tag — entire body is CSS. Covers user-named stylesheet passages like ':: MyStyle [stylesheet]'.",
+            "comment": "Any passage with [stylesheet] tag — entire body is CSS. Covers user-named stylesheet passages like ':: MyStyle [stylesheet]'. Also handles multi-tag variants like ':: MyStyle [stylesheet widget]'.",
             "contentName": "source.css.embedded.twee",
-            "begin": "^(::)\\s+(.*?)\\s+\\[stylesheet\\]\\s*(\\{.*\\})?\\s*$",
+            "begin": "^(::)\\s+(\\S[^\\[]*?)\\s*\\[([^\\]]*\\bstylesheet\\b[^\\]]*)\\]\\s*(\\{[^}]*\\})?\\s*$",
             "end": "^(?=\\s*::)|\\z",
             "beginCaptures": {
                 "1": {
@@ -81,6 +84,9 @@
                     "name": "entity.name.passage.special.twee"
                 },
                 "3": {
+                    "patterns": [{ "match": "\\bstylesheet\\b", "name": "entity.other.attribute-name.tag.sugarcube" }, { "match": "[^\\s\\]]+", "name": "entity.other.attribute-name.tag.twee" }]
+                },
+                "4": {
                     "name": "meta.passage.metadata.twee"
                 }
             },

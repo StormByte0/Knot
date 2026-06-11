@@ -18,6 +18,23 @@ import {
 } from './types';
 
 // ---------------------------------------------------------------------------
+// Detected format state (used by onDidOpenTextDocument handler)
+// ---------------------------------------------------------------------------
+
+/** The format-specific language ID detected by the server (e.g., 'twee-sugarcube').
+ *  Null means the format hasn't been detected yet. */
+let detectedLanguageId: string | null = null;
+
+/** Map format names from the server to VS Code language IDs. */
+const formatToLanguageId: Record<string, string> = {
+    'Core': 'twee',
+    'SugarCube': 'twee-sugarcube',
+    'Harlowe': 'twee-harlowe',
+    'Chapbook': 'twee-chapbook',
+    'Snowman': 'twee-snowman',
+};
+
+// ---------------------------------------------------------------------------
 // Dependencies injected from extension.ts
 // ---------------------------------------------------------------------------
 
@@ -40,11 +57,14 @@ export interface NotificationDeps {
  * Register all custom LSP notification handlers on the language client.
  *
  * Must be called after `client.start()` succeeds.
+ *
+ * Returns a {@link vscode.Disposable} that cleans up the registered handlers.
  */
 export function registerNotifications(
     client: KnotLanguageClient,
     deps: NotificationDeps,
-): void {
+): vscode.Disposable {
+    const disposables: vscode.Disposable[] = [];
     // ── knot/indexProgress ────────────────────────────────────────────
     client.onNotification(
         { method: 'knot/indexProgress' },
@@ -127,22 +147,16 @@ export function registerNotifications(
     client.onNotification(
         { method: 'knot/formatDetected' },
         (params: KnotFormatDetectedParams) => {
-            // Map format names from the server to VS Code language IDs.
-            // "Core" means no format was detected — keep the base 'twee'
-            // language ID so the default TextMate grammar is used.
-            const formatToLanguageId: Record<string, string> = {
-                'Core': 'twee',
-                'SugarCube': 'twee-sugarcube',
-                'Harlowe': 'twee-harlowe',
-                'Chapbook': 'twee-chapbook',
-                'Snowman': 'twee-snowman',
-            };
-
             const languageId = formatToLanguageId[params.format];
             if (!languageId) {
                 console.warn(`[Knot] Unknown format: ${params.format}, keeping base 'twee' language`);
                 return;
             }
+
+            // Store the detected language ID for the onDidOpenTextDocument
+            // handler, so that files opened AFTER this notification also get
+            // the correct language ID automatically.
+            detectedLanguageId = languageId;
 
             // Collect all switch promises so we can wait for them to settle
             const switchPromises: Thenable<void>[] = [];
@@ -202,4 +216,55 @@ export function registerNotifications(
         }
     );
 
+    // ── Auto-switch language ID for newly opened .tw/.twee files ──────
+    //
+    // When a .tw/.twee file is opened after the format has been detected,
+    // VS Code assigns it the default 'twee' language ID (from the file
+    // extension association in package.json). This causes a visual
+    // inconsistency: the file gets the 'twee' semanticTokenScopes mapping
+    // instead of the format-specific one (e.g., 'twee-sugarcube'), which
+    // produces different colors for the same semantic tokens.
+    //
+    // This handler automatically switches the language ID to the detected
+    // format's language ID, ensuring consistent highlighting across all
+    // open documents.
+    disposables.push(
+        vscode.workspace.onDidOpenTextDocument((doc) => {
+            // Skip if the format hasn't been detected yet (before indexing
+            // completes, or if no StoryData was found). In those cases,
+            // 'twee' is the correct language ID.
+            if (!detectedLanguageId) {
+                return;
+            }
+
+            // Only switch .tw/.twee files. Other file types are unaffected.
+            const path = doc.uri.path.toLowerCase();
+            if (!path.endsWith('.tw') && !path.endsWith('.twee')) {
+                return;
+            }
+
+            // Skip if the language ID is already correct (prevents
+            // infinite loop — setTextDocumentLanguage fires another
+            // onDidOpenTextDocument with the new language ID).
+            if (doc.languageId === detectedLanguageId) {
+                return;
+            }
+
+            // Skip non-file URIs (untitled, git, etc.)
+            if (doc.uri.scheme !== 'file') {
+                return;
+            }
+
+            vscode.languages.setTextDocumentLanguage(doc, detectedLanguageId).then(
+                () => {
+                    console.log(`[Knot] Auto-switched ${doc.uri} to language: ${detectedLanguageId}`);
+                },
+                (err: unknown) => {
+                    console.warn(`[Knot] Failed to auto-switch language for ${doc.uri}: ${err}`);
+                }
+            );
+        })
+    );
+
+    return vscode.Disposable.from(...disposables);
 }
