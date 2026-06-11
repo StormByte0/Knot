@@ -1612,6 +1612,110 @@ fn did_open_storydata_before_indexing() {
     assert!(workspace.graph.contains_passage("Start"));
 }
 
+/// Simulate the exact did_open flow that crashes when a file with StoryInit
+/// is opened. The sequence:
+/// 1. Workspace indexing: parse both start.tw and _special.tw (with StoryInit)
+/// 2. Build graph and analyze
+/// 3. did_open for _special.tw: re-parse (remove_file + re-populate) + rebuild graph + analyze
+#[test]
+fn did_open_storyinit_no_crash() {
+    let mut registry = FormatRegistry::with_defaults();
+    let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+
+    // Set metadata to simulate completed indexing
+    workspace.metadata = Some(StoryMetadata {
+        format: StoryFormat::SugarCube,
+        format_version: Some("2.36.1".to_string()),
+        start_passage: "Start".to_string(),
+        ifid: Some("TEST-IFID".to_string()),
+    });
+    workspace.indexed = true;
+
+    let special_text = r#":: StoryInit
+<<set $gold to 100>>
+<<set $hp to 50>>
+<<set $player to {name: "Hero", level: 1}>>
+
+:: Story JavaScript [script]
+State.variables.debug = true;
+
+:: PassageHeader
+<header>
+
+:: PassageFooter
+<footer>
+"#;
+    let special_uri = Url::parse("file:///project/_special.tw").unwrap();
+
+    let start_text = r#":: Start
+You have $gold gold and $hp health.
+[[Forest]]
+
+:: Forest
+The forest is dark.
+[[Start]]
+"#;
+    let start_uri = Url::parse("file:///project/start.tw").unwrap();
+
+    // Phase 1: Workspace indexing — parse both files
+    {
+        let format = workspace.resolve_format();
+        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
+        workspace.insert_document(doc);
+    }
+    {
+        let format = workspace.resolve_format();
+        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &start_uri, start_text, format);
+        workspace.insert_document(doc);
+    }
+
+    // Build graph and analyze (simulating end of indexing)
+    {
+        let format = workspace.resolve_format();
+        rebuild_graph_full(&mut workspace, &registry, format);
+    }
+    {
+        let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+        let _state_vars = plugin.build_state_variable_registry(&workspace);
+        let _seeds = plugin.special_passage_seed_variables(&workspace);
+    }
+
+    // Phase 2: did_open for _special.tw — THIS IS WHERE THE CRASH HAPPENS
+    // parse_with_format_plugin_sim calls parse_mut which calls parse_full
+    // which calls registry.remove_file(uri) + re-populate
+    {
+        let format = workspace.resolve_format();
+        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
+        workspace.insert_document(doc);
+    }
+
+    // Rebuild graph
+    {
+        let format = workspace.resolve_format();
+        rebuild_graph_full(&mut workspace, &registry, format);
+    }
+
+    // Analyze (this is outside catch_unwind in the real server)
+    {
+        let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+        let state_vars = plugin.build_state_variable_registry(&workspace);
+        let seeds = plugin.special_passage_seed_variables(&workspace);
+
+        // Verify StoryInit variables are seeded
+        assert!(seeds.contains("$gold") || state_vars.values().any(|v| v.seeded_by_special),
+                "StoryInit write variables should be seeded");
+    }
+
+    // Phase 3: Verify variable tree is consistent after re-parse
+    {
+        let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
+        let var_names = plugin.workspace_variable_names();
+        assert!(var_names.contains("$gold"), "$gold should exist after re-parse");
+        assert!(var_names.contains("$hp"), "$hp should exist after re-parse");
+        assert!(var_names.contains("$player"), "$player should exist after re-parse");
+    }
+}
+
 /// Test that StoryData passage parsed with SugarCube has no body blocks
 /// but is still findable by doc.story_data().
 #[test]

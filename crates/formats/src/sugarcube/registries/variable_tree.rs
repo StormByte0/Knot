@@ -891,14 +891,31 @@ impl VarArena {
 
     /// Mark a subtree as freed by adding all its NodeIds to the free list.
     ///
-    /// Freed nodes are NOT zeroed — they remain in the arena until
-    /// overwritten by `alloc()`. Callers must ensure no other references
-    /// (e.g., in `path_index`) point to freed nodes.
+    /// Freed nodes have their `parent`, `first_child`, and `next_sibling`
+    /// fields set to `NO_NODE` to prevent stale-pointer traversal. Without
+    /// this, code that walks `first_child`/`next_sibling` chains (e.g.,
+    /// `arena_node_is_alive`, `collect_locations_from_arena_node`) could
+    /// follow dangling pointers into freed/reused nodes, eventually hitting
+    /// `arena.get(NO_NODE)` which panics.
     pub fn free_subtree(&mut self, root_id: NodeId) {
         let ids = self.collect_subtree(root_id);
         for id in ids {
-            // Set parent to NO_NODE as a "freed" sentinel
-            self.get_mut(id).parent = NO_NODE;
+            let node = self.get_mut(id);
+            // Skip if already freed (parent == NO_NODE sentinel).
+            // This prevents duplicate free-list entries if a subtree
+            // contains nodes that were already freed by a prior call.
+            if node.parent == NO_NODE && id != root_id {
+                continue;
+            }
+            node.parent = NO_NODE;
+            // Clear child/sibling pointers to prevent stale-pointer
+            // traversal after freeing. If these are left dangling,
+            // any code walking first_child/next_sibling chains from
+            // a parent node whose child was freed (but not yet
+            // unlinked in all cases) would follow stale pointers
+            // into freed or reused arena slots.
+            node.first_child = NO_NODE;
+            node.next_sibling = NO_NODE;
             self.free_list.push(id);
         }
     }
@@ -1544,9 +1561,14 @@ impl VariableTree {
 
     /// Remove all accesses for a specific file (for incremental re-parse).
     pub fn remove_file(&mut self, file_uri: &str) {
-        // Walk all nodes in the arena, filter accesses
-        // Collect IDs first to avoid borrow conflicts
-        let ids: Vec<NodeId> = self.arena.iter_ids().collect();
+        // Walk all LIVE nodes in the arena, filter accesses.
+        // We skip freed slots (parent == NO_NODE) because:
+        // 1. Their data is stale and shouldn't be modified
+        // 2. Operating on freed nodes can create incorrect refs that
+        //    make arena_node_is_alive return true for dead nodes
+        let ids: Vec<NodeId> = self.arena.iter_ids()
+            .filter(|&id| self.is_live_node(id))
+            .collect();
         for id in ids {
             let node = self.arena.get_mut(id);
             node.meta.refs.retain(|a| a.file_uri != file_uri);
@@ -1559,57 +1581,170 @@ impl VariableTree {
 
     /// Remove all accesses for a specific passage (for incremental re-parse).
     pub fn remove_passage(&mut self, passage_name: &str) {
-        let ids: Vec<NodeId> = self.arena.iter_ids().collect();
+        // Walk all LIVE nodes in the arena, filter accesses.
+        // Skip freed slots for the same reasons as remove_file.
+        let ids: Vec<NodeId> = self.arena.iter_ids()
+            .filter(|&id| self.is_live_node(id))
+            .collect();
         for id in ids {
             let node = self.arena.get_mut(id);
             node.meta.refs.retain(|a| a.passage_name != passage_name);
             node.meta.nav.def_sites.retain(|s| s.passage_name != passage_name);
             node.meta.nav.ref_sites.retain(|s| s.passage_name != passage_name);
         }
-        // Remove the temp root for this passage
+        // Remove the temp root for this passage. We unlink it from its
+        // parent (if any) and remove its path_index entries BEFORE calling
+        // prune_dead_nodes, which handles all freeing. This avoids the
+        // double-free that occurred when free_subtree was called here
+        // AND again inside prune_dead_nodes for the same nodes.
         if let Some(temp_root_id) = self.temp_roots.remove(passage_name) {
-            self.arena.free_subtree(temp_root_id);
+            // Unlink from parent if it has one (temp roots usually don't,
+            // but defensive programming against future changes)
+            let parent_id = self.arena.get(temp_root_id).parent;
+            if parent_id != NO_NODE {
+                self.arena.unlink_child(parent_id, temp_root_id);
+            }
+            // Remove path_index entries for this temp root and its
+            // descendants so prune_dead_nodes doesn't try to process them.
+            // (prune_dead_nodes will still free the nodes since they have
+            // no refs and no parent.)
+            let subtree_ids = self.arena.collect_subtree(temp_root_id);
+            let subtree_set: HashSet<NodeId> = subtree_ids.into_iter().collect();
+            let paths_to_remove: Vec<String> = self.path_index.iter()
+                .filter(|(_, id)| subtree_set.contains(id))
+                .map(|(path, _)| path.clone())
+                .collect();
+            for path in paths_to_remove {
+                self.path_index.remove(&path);
+            }
+            // Do NOT call free_subtree here — let prune_dead_nodes
+            // handle all freeing to prevent double-free.
         }
         self.prune_dead_nodes();
     }
 
     /// Prune property nodes that have no refs and no children with refs.
     /// Root variable nodes are only pruned if they also have no children.
+    ///
+    /// ## Double-free prevention
+    ///
+    /// When a parent node is freed via `free_subtree()`, all its descendants
+    /// are freed too (added to the free list with `parent = NO_NODE`). If we
+    /// naively iterate `dead_paths` and free each one independently, a child
+    /// that was already freed as part of its parent's subtree would be freed
+    /// again — corrupting the arena with duplicate free-list entries and
+    /// potentially traversing stale pointers into live nodes.
+    ///
+    /// To prevent this, we collect all dead root IDs first, then for each
+    /// dead root we compute its full subtree (collect_subtree). All subtree
+    /// IDs are recorded in a `freed_set` so that if a descendant appears
+    /// later in the dead list, we skip it. All descendant paths are also
+    /// removed from `path_index` when the parent is freed, preventing stale
+    /// lookups.
     fn prune_dead_nodes(&mut self) {
-        // Collect paths of dead leaf nodes
-        let mut dead_paths: Vec<String> = Vec::new();
-        for (path, &id) in &self.path_index {
+        // Step 1: Collect dead root node IDs (nodes with no alive descendants).
+        let mut dead_roots: Vec<NodeId> = Vec::new();
+        for (_, &id) in &self.path_index {
             if !self.arena_node_is_alive(id) {
-                dead_paths.push(path.clone());
+                dead_roots.push(id);
             }
         }
-        for path in dead_paths {
-            if let Some(id) = self.path_index.remove(&path) {
-                // Unlink from parent and free
-                let parent_id = self.arena.get(id).parent;
-                if parent_id != NO_NODE {
-                    self.arena.unlink_child(parent_id, id);
-                }
-                self.arena.free_subtree(id);
+
+        // Step 2: Deduplicate — collect the full set of IDs that will be freed
+        // (including all descendants of dead roots). This prevents double-free
+        // when a parent's subtree includes a child that's also in the dead list.
+        let mut freed_set: HashSet<NodeId> = HashSet::new();
+        let mut root_subtrees: Vec<(NodeId, Vec<NodeId>)> = Vec::new();
+        for &root_id in &dead_roots {
+            if freed_set.contains(&root_id) {
+                // Already freed as part of another subtree
+                continue;
+            }
+            let subtree = self.arena.collect_subtree(root_id);
+            for &id in &subtree {
+                freed_set.insert(id);
+            }
+            root_subtrees.push((root_id, subtree));
+        }
+
+        // Step 3: Remove all freed node paths from path_index (both roots
+        // and their descendants). This must happen before freeing to avoid
+        // stale lookups.
+        let mut paths_to_remove: Vec<String> = Vec::new();
+        for (path, &id) in &self.path_index {
+            if freed_set.contains(&id) {
+                paths_to_remove.push(path.clone());
             }
         }
+        for path in paths_to_remove {
+            self.path_index.remove(&path);
+        }
+
+        // Step 4: Unlink dead roots from their parents and free subtrees.
+        // Only unlink/freeze the root of each subtree — descendants are
+        // handled by free_subtree automatically.
+        for (root_id, _subtree) in &root_subtrees {
+            let parent_id = self.arena.get(*root_id).parent;
+            if parent_id != NO_NODE {
+                self.arena.unlink_child(parent_id, *root_id);
+            }
+            self.arena.free_subtree(*root_id);
+        }
+
         // Also remove from seeded_vars if the variable is gone
         self.seeded_vars.retain(|name| self.path_index.contains_key(name));
     }
 
+    /// Check if an arena node ID refers to a live (non-freed) node.
+    ///
+    /// Freed nodes have `parent == NO_NODE` (set by `free_subtree`).
+    /// The persistent root and temp roots are always considered live
+    /// regardless of their parent field.
+    ///
+    /// Uses `try_get` instead of `get` to avoid panicking if a stale
+    /// NodeId is passed (e.g., from a `path_index` entry that points
+    /// to a freed-and-reused slot).
+    fn is_live_node(&self, id: NodeId) -> bool {
+        id == self.persistent_root
+            || self.arena.try_get(id).map_or(false, |n| n.parent != NO_NODE)
+            || self.temp_roots.values().any(|&tr| tr == id)
+    }
+
     /// Check if a node (and its subtree) has any remaining accesses.
+    ///
+    /// Uses `try_get` instead of `get` for child/sibling traversal to
+    /// gracefully handle freed nodes whose `first_child`/`next_sibling`
+    /// pointers might be stale. After `free_subtree` clears these fields
+    /// to `NO_NODE`, this check is a no-op for properly freed nodes, but
+    /// it provides defense-in-depth against any edge cases where a freed
+    /// node might still be reachable from a live parent's child chain.
     fn arena_node_is_alive(&self, id: NodeId) -> bool {
-        let node = self.arena.get(id);
+        let node = match self.arena.try_get(id) {
+            Some(n) => n,
+            None => return false, // Freed or invalid — treat as dead
+        };
         if !node.meta.refs.is_empty() {
             return true;
         }
-        // Check children
+        // Check children — skip any that are freed (parent == NO_NODE)
+        // to avoid following stale pointers deeper into the arena.
         let mut child_id = node.first_child;
         while child_id != NO_NODE {
+            let child = match self.arena.try_get(child_id) {
+                Some(c) => c,
+                None => break, // Stale pointer — stop traversing
+            };
+            // Skip freed children (their parent was set to NO_NODE by
+            // free_subtree). They may still appear in the sibling chain
+            // if unlink_child hasn't been called yet.
+            if child.parent == NO_NODE {
+                child_id = child.next_sibling;
+                continue;
+            }
             if self.arena_node_is_alive(child_id) {
                 return true;
             }
-            child_id = self.arena.get(child_id).next_sibling;
+            child_id = child.next_sibling;
         }
         false
     }
@@ -1687,8 +1822,10 @@ impl VariableTree {
         }
 
         // Assign graph_order to every access in every node
-        // Collect IDs first to avoid borrow conflicts
-        let ids: Vec<NodeId> = self.arena.iter_ids().collect();
+        // Collect LIVE IDs only — skip freed slots to avoid modifying stale data
+        let ids: Vec<NodeId> = self.arena.iter_ids()
+            .filter(|&id| self.is_live_node(id))
+            .collect();
         for id in ids {
             let node = self.arena.get_mut(id);
             for access in &mut node.meta.refs {
@@ -1924,10 +2061,14 @@ impl VariableTree {
     /// need to be scanned.
     pub fn collect_file_uris(&self) -> HashSet<String> {
         let mut uris = HashSet::new();
+        // Only iterate live nodes — skip freed slots to avoid
+        // reading stale refs from reused slots.
         for id in self.arena.iter_ids() {
-            let node = self.arena.get(id);
-            for access in &node.meta.refs {
-                uris.insert(access.file_uri.clone());
+            if self.is_live_node(id) {
+                let node = self.arena.get(id);
+                for access in &node.meta.refs {
+                    uris.insert(access.file_uri.clone());
+                }
             }
         }
         uris
@@ -2494,5 +2635,56 @@ mod tests {
         let names = tree.completion_names();
         assert!(names.contains("$hp"));
         assert!(names.contains("_i"));
+    }
+
+    /// Regression test: remove_file with deep property paths must not
+    /// double-free arena nodes.
+    ///
+    /// Before the fix, `prune_dead_nodes()` would iterate `dead_paths`
+    /// and call `free_subtree()` on each one. When a parent like
+    /// `$player` was freed, its descendants (`hp`, `max`) were also
+    /// freed. But those descendants' paths were still in `dead_paths`,
+    /// causing them to be freed again — corrupting the arena free list
+    /// and eventually leading to a server crash when StoryInit passages
+    /// with deep property paths were opened.
+    #[test]
+    fn arena_remove_file_deep_properties_no_double_free() {
+        let mut tree = VariableTree::new();
+
+        // Simulate StoryInit writing deep property paths like
+        // <<set $player.hp.max to 100>><<set $player.hp.current to 80>>
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 10..30, "hp.max", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 40..65, "hp.current", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 70..85, "name", BT, &[], None);
+
+        // Verify the tree structure
+        let (_, player_node) = tree.get_variable("$player").unwrap();
+        assert!(player_node.has_children(), "$player should have children");
+
+        // Remove the file — this triggers prune_dead_nodes with the
+        // parent and its deep descendants all dead. Without the fix,
+        // this causes a double-free.
+        tree.remove_file("file:///special.tw");
+
+        // The variable should be completely gone
+        assert!(tree.get_variable("$player").is_none(), "$player should be pruned after file removal");
+
+        // Now re-populate with the same file (simulates re-open/re-parse).
+        // This exercises the free-list reuse path — if the free list was
+        // corrupted by double-frees, alloc() would return stale IDs
+        // and the tree would be corrupted.
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 10..30, "hp.max", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 40..65, "hp.current", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 70..85, "name", BT, &[], None);
+
+        // Verify the tree is valid after re-population
+        let (_, player_node) = tree.get_variable("$player").unwrap();
+        assert!(player_node.has_children(), "$player should have children after re-population");
+
+        // Verify path_index consistency — no stale entries
+        let prop_map = tree.property_map();
+        assert!(prop_map.contains_key("$player"));
+        assert!(prop_map["$player"].contains("hp"));
+        assert!(prop_map["$player"].contains("name"));
     }
 }

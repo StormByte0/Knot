@@ -103,8 +103,29 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
     // The format is resolved by the indexing pipeline — did_open never
     // changes it. Rebuild the graph with the current (frozen) format.
+    //
+    // Wrap graph rebuild and analysis in catch_unwind to prevent panics
+    // in format plugin code (e.g., stale arena pointers in variable tree
+    // traversal) from crashing the server. This mirrors the catch_unwind
+    // already applied to parse_with_format_plugin.
     let format = inner.workspace.resolve_format();
-    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
+    let graph_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format)
+    }));
+    match &graph_result {
+        Ok(graph) => inner.workspace.graph = graph.clone(),
+        Err(payload) => {
+            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("did_open: rebuild_graph panicked for {}: {}", uri, msg);
+            // Keep the existing graph — it's stale but better than crashing
+        }
+    }
 
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
@@ -112,7 +133,22 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // Read-lock phase: analysis (read-only)
     let (diagnostics, open_docs, fmt_diags, config) = {
         let inner = state.inner.read().await;
-        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        let diagnostics = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry)
+        })) {
+            Ok(d) => d,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!("did_open: analyze_with_format_vars panicked for {}: {}", uri, msg);
+                Vec::new() // Return empty diagnostics rather than crashing
+            }
+        };
         let open_docs = inner.open_documents.clone();
         let fmt_diags = inner.format_diagnostics.clone();
         let config = inner.workspace.config.clone();

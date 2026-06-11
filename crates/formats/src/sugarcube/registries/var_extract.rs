@@ -40,6 +40,9 @@ pub fn extract_passage_variable_refs_impl(
 }
 
 /// Recursively collect passage variable refs from an arena node and its children.
+///
+/// Uses `try_get` for child/sibling traversal to gracefully handle freed
+/// nodes that might still be in a live parent's child chain.
 fn collect_refs_from_arena_node(
     arena: &VarArena,
     node_id: NodeId,
@@ -48,7 +51,10 @@ fn collect_refs_from_arena_node(
     passage_positions: &PassagePositionMap,
     refs: &mut Vec<PassageVarRef>,
 ) {
-    let node = arena.get(node_id);
+    let node = match arena.try_get(node_id) {
+        Some(n) => n,
+        None => return, // Freed or invalid node — skip
+    };
     for access in &node.meta.refs {
         if access.passage_name != passage_name {
             continue;
@@ -73,13 +79,19 @@ fn collect_refs_from_arena_node(
         });
     }
 
-    // Recurse into children
+    // Recurse into children — skip freed nodes
     let mut child_id = node.first_child;
     while child_id != NO_NODE {
-        let child_name = arena.get(child_id).name.clone();
-        let child_full_name = format!("{}.{}", full_name, child_name);
-        collect_refs_from_arena_node(arena, child_id, &child_full_name, passage_name, passage_positions, refs);
-        child_id = arena.get(child_id).next_sibling;
+        let child = match arena.try_get(child_id) {
+            Some(c) => c,
+            None => break, // Stale pointer — stop traversing
+        };
+        if child.parent != NO_NODE {
+            let child_name = child.name.clone();
+            let child_full_name = format!("{}.{}", full_name, child_name);
+            collect_refs_from_arena_node(arena, child_id, &child_full_name, passage_name, passage_positions, refs);
+        }
+        child_id = child.next_sibling;
     }
 }
 
@@ -196,6 +208,11 @@ pub fn build_state_variable_registry_impl(
 }
 
 /// Recursively collect write/read locations from an arena node tree.
+///
+/// Uses `try_get` for child/sibling traversal to gracefully handle freed
+/// nodes that might still appear in a live parent's child chain after
+/// `free_subtree` + `unlink_child`. Freed nodes (parent == NO_NODE) are
+/// skipped to prevent following stale pointers into reused arena slots.
 fn collect_locations_from_arena_node(
     arena: &VarArena,
     node_id: NodeId,
@@ -203,7 +220,10 @@ fn collect_locations_from_arena_node(
     write_locations: &mut Vec<crate::types::VarLocation>,
     read_locations: &mut Vec<crate::types::VarLocation>,
 ) {
-    let node = arena.get(node_id);
+    let node = match arena.try_get(node_id) {
+        Some(n) => n,
+        None => return, // Freed or invalid node — skip
+    };
     for access in &node.meta.refs {
         let kind = if access.propagated {
             if access.is_write() {
@@ -236,17 +256,29 @@ fn collect_locations_from_arena_node(
         }
     }
 
-    // Recurse into children
+    // Recurse into children — skip freed nodes to avoid stale pointers
     let mut child_id = node.first_child;
     while child_id != NO_NODE {
-        collect_locations_from_arena_node(arena, child_id, passage_positions, write_locations, read_locations);
-        child_id = arena.get(child_id).next_sibling;
+        let child = match arena.try_get(child_id) {
+            Some(c) => c,
+            None => break, // Stale pointer — stop traversing
+        };
+        // Skip freed children (parent == NO_NODE). After free_subtree
+        // clears first_child/next_sibling, this is a no-op for properly
+        // freed nodes, but provides defense-in-depth.
+        if child.parent != NO_NODE {
+            collect_locations_from_arena_node(arena, child_id, passage_positions, write_locations, read_locations);
+        }
+        child_id = child.next_sibling;
     }
 }
 
 /// Collect all property paths from an arena node's children as immediate child names.
+///
+/// Uses `try_get` instead of `get` for defense-in-depth against stale
+/// pointers in the child chain.
 fn collect_all_property_paths_from_arena_node(arena: &VarArena, node_id: NodeId) -> HashSet<String> {
     arena.children_of(node_id)
-        .map(|child_id| arena.get(child_id).name.clone())
+        .filter_map(|child_id| arena.try_get(child_id).map(|n| n.name.clone()))
         .collect()
 }
