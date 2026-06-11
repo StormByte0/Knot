@@ -24,17 +24,19 @@ pub(crate) async fn folding_range(
     for (line_idx, line) in lines.iter().enumerate() {
         if line.starts_with("::") {
             // Find the end of this passage (next :: or end of file)
-            let end_line = lines[line_idx + 1..]
-                .iter()
-                .position(|l| l.starts_with("::"))
-                .map(|i| line_idx + 1 + i)
+            let end_line = lines.get(line_idx + 1..)
+                .and_then(|remaining| {
+                    remaining.iter()
+                        .position(|l| l.starts_with("::"))
+                        .map(|i| line_idx + 1 + i)
+                })
                 .unwrap_or(lines.len());
 
             if end_line > line_idx + 1 {
                 ranges.push(FoldingRange {
                     start_line: (line_idx + 1) as u32,
                     start_character: None,
-                    end_line: (end_line - 1) as u32,
+                    end_line: end_line.saturating_sub(1) as u32,
                     end_character: None,
                     kind: Some(FoldingRangeKind::Region),
                     collapsed_text: None,
@@ -208,11 +210,13 @@ pub(crate) async fn selection_range(
         if helpers::find_passage_at_position(text, *position).is_some() {
             let header_line = position.line;
             let lines: Vec<&str> = text.lines().collect();
-            let end_line = lines[(header_line as usize) + 1..]
-                .iter()
-                .position(|l| l.starts_with("::"))
-                .map(|i| header_line + 1 + i as u32)
-                .unwrap_or(lines.len() as u32 - 1);
+            let end_line = lines.get((header_line as usize) + 1..)
+                .and_then(|remaining| {
+                    remaining.iter()
+                        .position(|l| l.starts_with("::"))
+                        .map(|i| header_line + 1 + i as u32)
+                })
+                .unwrap_or_else(|| lines.len().saturating_sub(1) as u32);
 
             range_chain.push(Range {
                 start: Position { line: header_line + 1, character: 0 },

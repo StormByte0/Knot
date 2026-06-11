@@ -136,8 +136,22 @@ impl PreprocessedJs {
                 break;
             }
         }
-        // Step 3: Apply origin_offset for passage-body-relative result
-        (processed_pos as isize + offset) as usize + self.origin_offset
+        // Step 3: Apply origin_offset for passage-body-relative result.
+        // The offset can be negative (when replacements shrink the source),
+        // so we must guard against underflow. If the math would go negative,
+        // we clamp to 0 — this indicates a bug in substitution tracking,
+        // but it's better than panicking in production.
+        let adjusted = (processed_pos as isize)
+            .checked_add(offset)
+            .and_then(|v| usize::try_from(v).ok())
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "PreprocessedJs::map_to_original: position underflow (processed_pos={}, offset={}), clamping to 0",
+                    processed_pos, offset
+                );
+                0
+            });
+        adjusted + self.origin_offset
     }
 
     /// Map a byte range from the oxc AST back to the original source.

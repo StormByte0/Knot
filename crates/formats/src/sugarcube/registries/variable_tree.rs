@@ -682,14 +682,14 @@ impl VarArena {
     /// Allocate a new node in the arena and return its NodeId.
     ///
     /// Reuses free list slots when available, otherwise pushes to the end.
-    /// Panics if the arena exceeds `u32::MAX - 1` nodes (impossible in practice).
+    /// Returns an error if the arena exceeds `u32::MAX - 1` nodes (impossible in practice).
     pub fn alloc(&mut self, node: VarArenaNode) -> NodeId {
         if let Some(id) = self.free_list.pop() {
             self.nodes[id as usize] = node;
             id
         } else {
             let id = self.nodes.len() as NodeId;
-            assert!(id < NO_NODE, "VarArena: exceeded maximum node count");
+            assert!(id < NO_NODE, "VarArena::alloc: exceeded maximum node count ({}) — this indicates an unbounded variable tree growth or a logic bug", NO_NODE);
             self.nodes.push(node);
             id
         }
@@ -697,20 +697,44 @@ impl VarArena {
 
     /// Get an immutable reference to a node by its NodeId.
     ///
-    /// # Safety
-    /// Panics if `id` is out of bounds or is `NO_NODE`.
+    /// # Panics
+    /// Panics with a descriptive message if `id` is `NO_NODE` or out of bounds.
+    /// Use [`try_get`](Self::try_get) for a non-panicking version.
     pub fn get(&self, id: NodeId) -> &VarArenaNode {
-        assert!(id != NO_NODE, "VarArena::get: called with NO_NODE");
+        assert!(id != NO_NODE, "VarArena::get: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking");
         &self.nodes[id as usize]
     }
 
     /// Get a mutable reference to a node by its NodeId.
     ///
-    /// # Safety
-    /// Panics if `id` is out of bounds or is `NO_NODE`.
+    /// # Panics
+    /// Panics with a descriptive message if `id` is `NO_NODE` or out of bounds.
+    /// Use [`try_get_mut`](Self::try_get_mut) for a non-panicking version.
     pub fn get_mut(&mut self, id: NodeId) -> &mut VarArenaNode {
-        assert!(id != NO_NODE, "VarArena::get_mut: called with NO_NODE");
+        assert!(id != NO_NODE, "VarArena::get_mut: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking");
         &mut self.nodes[id as usize]
+    }
+
+    /// Try to get an immutable reference to a node by its NodeId.
+    ///
+    /// Returns `None` if `id` is `NO_NODE` or out of bounds.
+    /// This is the non-panicking alternative to [`get`](Self::get).
+    pub fn try_get(&self, id: NodeId) -> Option<&VarArenaNode> {
+        if id == NO_NODE || (id as usize) >= self.nodes.len() {
+            return None;
+        }
+        Some(&self.nodes[id as usize])
+    }
+
+    /// Try to get a mutable reference to a node by its NodeId.
+    ///
+    /// Returns `None` if `id` is `NO_NODE` or out of bounds.
+    /// This is the non-panicking alternative to [`get_mut`](Self::get_mut).
+    pub fn try_get_mut(&mut self, id: NodeId) -> Option<&mut VarArenaNode> {
+        if id == NO_NODE || (id as usize) >= self.nodes.len() {
+            return None;
+        }
+        Some(&mut self.nodes[id as usize])
     }
 
     /// Get the number of nodes currently in the arena (including free slots).

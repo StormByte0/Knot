@@ -66,12 +66,11 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
 ///
 /// This is a pure transformation — it does not read or write any plugin state.
 pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
-    let is_special = cp.special_def.is_some();
-    let mut passage = if is_special {
+    let mut passage = if let Some(ref special_def) = cp.special_def {
         Passage::new_special(
             cp.header.name.clone(),
             cp.header.header_start..cp.header.header_start, // span computed in caller
-            cp.special_def.clone().unwrap(),
+            special_def.clone(),
         )
     } else {
         Passage::new(cp.header.name.clone(), cp.header.header_start..cp.header.header_start)

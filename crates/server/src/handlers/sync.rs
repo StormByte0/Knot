@@ -69,12 +69,17 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // FormatPluginMut in Phase 4).
     inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
 
-    // StoryData parsing is a CORE operation handled exclusively by the
-    // two-pass indexing in index_workspace(). Individual format plugins
-    // (SugarCube, etc.) treat StoryData as a special passage name with
-    // JSON highlighting only. The format switch logic never reaches
-    // format-specific code. See: Format Isolation (useinteraction.md §7).
+    // Insert the parsed document into the workspace.
+    //
+    // NOTE: StoryData metadata extraction does NOT belong here. Format
+    // identification is the sole responsibility of the indexing pipeline
+    // (index_workspace), which scans ALL workspace files for StoryData
+    // regardless of whether they are open. did_open simply parses with
+    // the already-resolved format and inserts the document. StoryData
+    // passages are kept as blocks for AST token highlighting only — any
+    // changes to StoryData content should prompt a server restart.
     inner.workspace.insert_document(doc);
+
     tracing::info!(
         passage_count = inner.workspace.get_document(&uri)
             .map(|d| d.passages.len()).unwrap_or(0),
@@ -96,8 +101,10 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         return;
     }
 
+    // The format is resolved by the indexing pipeline — did_open never
+    // changes it. Rebuild the graph with the current (frozen) format.
     let format = inner.workspace.resolve_format();
-    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format.clone());
+    inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format);
 
     // Release write lock before analysis — same two-phase pattern as did_change
     drop(inner);
@@ -191,9 +198,10 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         Vec::new()
     };
 
-    // Check for StoryData changes — use the centralized apply_document_update
-    // which handles insert + graph_surgery + recheck_broken_links +
-    // rebuild_upstream_edges + metadata extraction atomically.
+    // Apply the document update via the centralized method, which handles
+    // insert + graph_surgery + recheck_broken_links + rebuild_upstream_edges.
+    // NOTE: apply_document_update does NOT extract StoryData metadata —
+    // format identification belongs to the indexing pipeline only.
     let update_result = inner.workspace.apply_document_update(
         &uri,
         doc,

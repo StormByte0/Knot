@@ -54,48 +54,51 @@ enum TweeToken {
 
 /// Regex for simple links: `[[Target]]`
 static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
 /// Regex for arrow links: `[[Display->Target]]`
 static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
 /// Regex for pipe links: `[[Display|Target]]`
 static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
 /// Regex for Harlowe link changer: `(link:"text")[[Target]]`
 static RE_LINK_CHANGER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#).expect("invalid regex for RE_LINK_CHANGER"));
 /// Regex for Harlowe (set: $var to ...) variable write.
 static RE_SET_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").expect("invalid regex for RE_SET_VAR"));
 /// Regex for Harlowe (put: ... into $var) variable write.
 static RE_PUT_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").unwrap());
+    LazyLock::new(|| Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").expect("invalid regex for RE_PUT_VAR"));
 /// Regex for Harlowe (move: $var into $other) variable operation.
 static RE_MOVE_VAR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\(move:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
-        .unwrap()
+        .expect("invalid regex for RE_MOVE_VAR")
 });
 /// Regex for Harlowe (unpack: ... into $var) variable write.
 static RE_UNPACK_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").unwrap());
+    LazyLock::new(|| Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").expect("invalid regex for RE_UNPACK_VAR"));
 /// Regex for all $variable references.
 static RE_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    LazyLock::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR"));
 /// Regex for Harlowe macros: (name: ...)
 static RE_MACRO: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)" ).unwrap());
+    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)" ).expect("invalid regex for RE_MACRO"));
 /// Regex for named hooks: [hookname]
 static RE_NAMED_HOOK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").expect("invalid regex for RE_NAMED_HOOK"));
 /// Regex for hook attachment: [text]<changer|
 static RE_HOOK_ATTACH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|").unwrap());
+    LazyLock::new(|| Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|").expect("invalid regex for RE_HOOK_ATTACH"));
 /// Regex for hook reference: |changer>[text]
 static RE_HOOK_REF: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").expect("invalid regex for RE_HOOK_REF"));
 /// Regex for collapsing whitespace markup: {text}
 static RE_COLLAPSE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{([^}]*)\}").unwrap());
+    LazyLock::new(|| Regex::new(r"\{([^}]*)\}").expect("invalid regex for RE_COLLAPSE"));
+/// Regex for macro call detection in body (syntax handler dispatch).
+static RE_MACRO_CALL_IN_BODY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*):").expect("invalid regex for RE_MACRO_CALL_IN_BODY"));
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -191,8 +194,9 @@ impl HarlowePlugin {
 
         // Detect writes via (set: $var to ...)
         for caps in RE_SET_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = format!("${}", caps.get(1).unwrap().as_str());
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let var_name = format!("${}", match1.as_str());
             let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
             let var_end = var_start + var_name.len();
             vars.push(VarOp {
@@ -206,8 +210,9 @@ impl HarlowePlugin {
 
         // Detect writes via (put: ... into $var)
         for caps in RE_PUT_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = format!("${}", caps.get(1).unwrap().as_str());
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let var_name = format!("${}", match1.as_str());
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
                 let var_end = var_start + var_name.len();
@@ -228,9 +233,11 @@ impl HarlowePlugin {
 
         // Detect (move: $src into $dst) — write to $dst, read from $src
         for caps in RE_MOVE_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let src_name = format!("${}", caps.get(1).unwrap().as_str());
-            let dst_name = format!("${}", caps.get(2).unwrap().as_str());
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let src_name = format!("${}", match1.as_str());
+            let dst_name = format!("${}", match2.as_str());
 
             // Source variable is a read
             if let Some(first_dollar) = full.as_str().find('$') {
@@ -277,8 +284,9 @@ impl HarlowePlugin {
 
         // Detect (unpack: ... into $var) — write to $var
         for caps in RE_UNPACK_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = format!("${}", caps.get(1).unwrap().as_str());
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let var_name = format!("${}", match1.as_str());
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
                 let var_end = var_start + var_name.len();
@@ -299,7 +307,7 @@ impl HarlowePlugin {
 
         // Detect all $var references not already writes
         for caps in RE_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
             let is_write = write_spans
@@ -324,9 +332,11 @@ impl HarlowePlugin {
 
         // Harlowe changer links: (link:"text")[[Target]]
         for caps in RE_LINK_CHANGER.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let display = match1.as_str().to_string();
+            let target = match2.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -341,9 +351,11 @@ impl HarlowePlugin {
 
         // Arrow-style links: [[Display->Target]]
         for caps in RE_LINK_ARROW.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let display = match1.as_str().trim().to_string();
+            let target = match2.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -358,9 +370,11 @@ impl HarlowePlugin {
 
         // Pipe-style links: [[Display|Target]]
         for caps in RE_LINK_PIPE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let display = match1.as_str().trim().to_string();
+            let target = match2.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -386,13 +400,14 @@ impl HarlowePlugin {
             .collect();
 
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             let span = m.start()..m.end();
             let overlaps = known_spans
                 .iter()
                 .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
-                let target = caps.get(1).unwrap().as_str().trim().to_string();
+                let Some(match1) = caps.get(1) else { continue };
+                let target = match1.as_str().trim().to_string();
                 // Filter: skip targets containing "::" — this is JavaScript
                 // namespace accessor syntax (e.g., Use::Operation), not a
                 // Twine passage name.
@@ -417,8 +432,9 @@ impl HarlowePlugin {
             .collect();
 
         for caps in RE_NAMED_HOOK.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let hook_name = caps.get(1).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let hook_name = match1.as_str().to_string();
             let hook_span = m.start()..m.end();
             // Skip if this overlaps with an existing link (e.g., [Forest] inside [[Forest]])
             let overlaps_link = all_link_spans
@@ -426,11 +442,11 @@ impl HarlowePlugin {
                 .any(|s| hook_span.start >= s.start && hook_span.end <= s.end);
             // Skip if this is actually part of a hook attachment or reference
             let overlaps_attach = RE_HOOK_ATTACH.captures_iter(body).any(|ac| {
-                let am = ac.get(0).unwrap();
+                let Some(am) = ac.get(0) else { return false };
                 hook_span.start >= am.start() && hook_span.end <= am.end()
             });
             let overlaps_ref = RE_HOOK_REF.captures_iter(body).any(|rc| {
-                let rm = rc.get(0).unwrap();
+                let Some(rm) = rc.get(0) else { return false };
                 hook_span.start >= rm.start() && hook_span.end <= rm.end()
             });
             // Named hooks: single-word inside brackets, no spaces
@@ -457,8 +473,9 @@ impl HarlowePlugin {
 
         // Macros: (macroname: ...)
         for caps in RE_MACRO.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let macro_prefix = caps.get(1).unwrap().as_str();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let macro_prefix = match1.as_str();
             // macro_prefix is like "set:" — extract the name
             let name = macro_prefix.trim_end_matches(':').to_string();
             // Find the full parenthetical command
@@ -488,8 +505,9 @@ impl HarlowePlugin {
 
         // Named hooks: [hookname] — Expression blocks
         for caps in RE_NAMED_HOOK.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let hook_name = caps.get(1).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let hook_name = match1.as_str().to_string();
             // Skip if this overlaps with a hook attachment or reference span
             let span_range = m.start()..m.end();
             let overlaps = non_text_spans
@@ -506,9 +524,11 @@ impl HarlowePlugin {
 
         // Hook attachment: [text]<changer| — Expression block
         for caps in RE_HOOK_ATTACH.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let content = caps.get(1).unwrap().as_str().to_string();
-            let changer = caps.get(2).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let content = match1.as_str().to_string();
+            let changer = match2.as_str().to_string();
             blocks.push(Block::Expression {
                 content: format!("[{}]<{}|", content, changer),
                 span: body_offset + m.start()..body_offset + m.end(),
@@ -518,9 +538,11 @@ impl HarlowePlugin {
 
         // Hook reference: |changer>[text] — Expression block
         for caps in RE_HOOK_REF.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let changer = caps.get(1).unwrap().as_str().to_string();
-            let content = caps.get(2).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let changer = match1.as_str().to_string();
+            let content = match2.as_str().to_string();
             blocks.push(Block::Expression {
                 content: format!("|{}>[{}]", changer, content),
                 span: body_offset + m.start()..body_offset + m.end(),
@@ -530,8 +552,9 @@ impl HarlowePlugin {
 
         // Collapsing whitespace markup: {text} — Expression block
         for caps in RE_COLLAPSE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let content = caps.get(1).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let content = match1.as_str().to_string();
             // Skip if this overlaps with already-tracked spans
             let span_range = m.start()..m.end();
             let overlaps = non_text_spans
@@ -658,7 +681,7 @@ impl HarlowePlugin {
 
         // Macro tokens
         for caps in RE_MACRO.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             let full_cmd = Self::find_paren_span(body, m.start());
             let end = full_cmd.unwrap_or(m.end());
             tokens.push(SemanticToken {
@@ -673,9 +696,10 @@ impl HarlowePlugin {
         let mut write_spans: Vec<Range<usize>> = Vec::new();
 
         for caps in RE_SET_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
             let var_start = body_offset + full.start() + full.as_str().find('$').unwrap_or(0);
-            let var_name = format!("${}", caps.get(1).unwrap().as_str());
+            let var_name = format!("${}", match1.as_str());
             let var_end = var_start + var_name.len();
             tokens.push(SemanticToken {
                 start: var_start,
@@ -687,10 +711,11 @@ impl HarlowePlugin {
         }
 
         for caps in RE_PUT_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
-                let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                let var_name = format!("${}", match1.as_str());
                 let var_end = var_start + var_name.len();
                 let already_covered = write_spans
                     .iter()
@@ -708,7 +733,8 @@ impl HarlowePlugin {
         }
 
         for caps in RE_MOVE_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
             let dollar_positions: Vec<usize> = full
                 .as_str()
                 .char_indices()
@@ -717,7 +743,7 @@ impl HarlowePlugin {
                 .collect();
             if dollar_positions.len() >= 2 {
                 // Destination is a write
-                let dst_name = format!("${}", caps.get(2).unwrap().as_str());
+                let dst_name = format!("${}", match2.as_str());
                 let dst_dollar = dollar_positions[1];
                 let dst_start = body_offset + full.start() + dst_dollar;
                 let dst_end = dst_start + dst_name.len();
@@ -737,10 +763,11 @@ impl HarlowePlugin {
         }
 
         for caps in RE_UNPACK_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
             if let Some(dollar_pos) = full.as_str().rfind('$') {
                 let var_start = body_offset + full.start() + dollar_pos;
-                let var_name = format!("${}", caps.get(1).unwrap().as_str());
+                let var_name = format!("${}", match1.as_str());
                 let var_end = var_start + var_name.len();
                 let already_covered = write_spans
                     .iter()
@@ -759,7 +786,7 @@ impl HarlowePlugin {
 
         // Variable read tokens (skip overlaps with writes)
         for caps in RE_VAR.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
             let is_write = write_spans
@@ -777,8 +804,9 @@ impl HarlowePlugin {
 
         // Hook expression tokens
         for caps in RE_NAMED_HOOK.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let hook_name = caps.get(1).unwrap().as_str();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let hook_name = match1.as_str();
             if !hook_name.contains(' ') {
                 tokens.push(SemanticToken {
                     start: body_offset + m.start(),
@@ -790,7 +818,7 @@ impl HarlowePlugin {
         }
 
         for caps in RE_HOOK_ATTACH.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -800,7 +828,7 @@ impl HarlowePlugin {
         }
 
         for caps in RE_HOOK_REF.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -1024,16 +1052,18 @@ impl HarlowePlugin {
         // Collect all changer names from [text]<name| patterns
         let mut attached_changers: Vec<(String, usize, usize)> = Vec::new(); // (name, start, end)
         for caps in RE_HOOK_ATTACH.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let name = caps.get(2).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match2) = caps.get(2) else { continue };
+            let name = match2.as_str().to_string();
             attached_changers.push((name, m.start(), m.end()));
         }
 
         // Collect all reference changers from |name>[text] patterns
         let mut ref_changers: Vec<(String, usize, usize)> = Vec::new();
         for caps in RE_HOOK_REF.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let name = caps.get(1).unwrap().as_str().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(match1) = caps.get(1) else { continue };
+            let name = match1.as_str().to_string();
             ref_changers.push((name, m.start(), m.end()));
         }
 
@@ -1287,10 +1317,9 @@ impl FormatPlugin for HarlowePlugin {
 
         // Harlowe uses (name:args) syntax.
         // Scan for opening ( followed by identifier: pattern.
-        let re = regex::Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*):").unwrap();
-        for caps in re.captures_iter(line) {
-            let full_match = caps.get(0).unwrap();
-            let name_match = caps.get(1).unwrap();
+        for caps in RE_MACRO_CALL_IN_BODY.captures_iter(line) {
+            let Some(full_match) = caps.get(0) else { continue };
+            let Some(name_match) = caps.get(1) else { continue };
 
             // Find the closing ) for this macro — scan forward from the opening (
             let open_paren = full_match.start();

@@ -40,7 +40,9 @@ async fn main() {
     let directive = "knot_server=debug".parse::<tracing_subscriber::filter::Directive>()
         .unwrap_or_else(|e| {
             eprintln!("Invalid tracing directive: {e}");
-            "info".parse().unwrap()
+            // "info" is guaranteed to parse as a valid directive — this fallback
+            // is infallible and avoids a nested unwrap that could panic.
+            tracing_subscriber::filter::LevelFilter::INFO.into()
         });
 
     let env_filter = tracing_subscriber::EnvFilter::from_default_env()

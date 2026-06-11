@@ -1532,3 +1532,255 @@ fn sugarcube_detect_close_tag_context() {
     let ctx = plugin.detect_close_tag_context("plain text");
     assert!(ctx.is_none(), "Should not detect context in plain text");
 }
+
+// ===========================================================================
+// did_open + StoryData crash reproduction tests
+// ===========================================================================
+
+/// Simulate the exact did_open flow: parse with format plugin, insert document,
+/// rebuild graph, and run analysis — all with a file containing StoryData.
+#[test]
+fn did_open_storydata_with_sugarcube_format() {
+    let mut registry = FormatRegistry::with_defaults();
+    let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+
+    // Simulate indexing having completed: metadata is set to SugarCube
+    workspace.metadata = Some(knot_core::workspace::StoryMetadata {
+        format: StoryFormat::SugarCube,
+        format_version: Some("2.36.1".to_string()),
+        start_passage: "Start".to_string(),
+        ifid: Some("TEST-IFID".to_string()),
+    });
+
+    let src = ":: StoryData\n{\"ifid\":\"TEST-IFID\",\"format\":\"SugarCube\",\"format-version\":\"2.36.1\",\"start\":\"Start\"}\n:: Start\nYou are at the start. [[Forest]]\n:: Forest\nYou are in the forest.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+
+    // Step 1: resolve format (did_open line 57)
+    let format = workspace.resolve_format();
+    assert_eq!(format, StoryFormat::SugarCube);
+
+    // Step 2: parse with format plugin (did_open line 58-59)
+    let (doc, parse_result) = parse_with_format_plugin_sim(&mut registry, &uri, src, format);
+
+    // Step 3: insert document (did_open line 77)
+    workspace.insert_document(doc);
+
+    // Step 4: resolve format again (did_open line 99)
+    let format_after = workspace.resolve_format();
+    assert_eq!(format_after, StoryFormat::SugarCube);
+
+    // Step 5: rebuild graph (did_open line 100)
+    rebuild_graph_full(&mut workspace, &registry, format_after);
+
+    // Step 6: verify graph is consistent
+    assert!(workspace.graph.contains_passage("StoryData"));
+    assert!(workspace.graph.contains_passage("Start"));
+    assert!(workspace.graph.contains_passage("Forest"));
+}
+
+/// Simulate did_open when workspace has NOT been indexed yet (metadata = None).
+/// This is the scenario where format resolution falls back to Core.
+#[test]
+fn did_open_storydata_before_indexing() {
+    let mut registry = FormatRegistry::with_defaults();
+    let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+    // No metadata set — resolve_format returns Core
+
+    let src = ":: StoryData\n{\"ifid\":\"TEST-IFID\",\"format\":\"SugarCube\"}\n:: Start\nHello. [[Forest]]\n:: Forest\nTrees.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+
+    // Step 1: resolve format — should be Core (no metadata)
+    let format = workspace.resolve_format();
+    assert_eq!(format, StoryFormat::Core);
+
+    // Step 2: parse with Core plugin
+    let (doc, parse_result) = parse_with_format_plugin_sim(&mut registry, &uri, src, format);
+    assert!(parse_result.passages.len() >= 2, "Core should parse at least 2 passages");
+
+    // Step 3: insert document
+    workspace.insert_document(doc);
+
+    // Step 4: resolve format again — still Core
+    let format_after = workspace.resolve_format();
+    assert_eq!(format_after, StoryFormat::Core);
+
+    // Step 5: rebuild graph
+    rebuild_graph_full(&mut workspace, &registry, format_after);
+
+    // Verify
+    assert!(workspace.graph.contains_passage("StoryData"));
+    assert!(workspace.graph.contains_passage("Start"));
+}
+
+/// Test that StoryData passage parsed with SugarCube has no body blocks
+/// but is still findable by doc.story_data().
+#[test]
+fn sugarcube_storydata_has_no_body_blocks_but_is_findable() {
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
+
+    let src = ":: StoryData\n{\"ifid\":\"TEST\",\"format\":\"SugarCube\"}\n:: Start\nHello.\n";
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
+
+    let story_data = result.passages.iter().find(|p| p.name == "StoryData");
+    assert!(story_data.is_some(), "SugarCube should find StoryData passage");
+
+    let sd = story_data.unwrap();
+    // SugarCube uses Minimal mode for StoryData — body blocks are empty
+    assert!(sd.body.is_empty(), "SugarCube StoryData should have empty body (Minimal mode)");
+    assert!(sd.is_special, "StoryData should be marked as special");
+    assert!(sd.is_metadata(), "StoryData should be marked as metadata");
+    assert!(sd.special_def.is_some(), "StoryData should have special_def");
+}
+
+/// Test that StoryData passage parsed with Core HAS body blocks.
+#[test]
+fn core_storydata_has_body_blocks() {
+    let mut registry = FormatRegistry::with_defaults();
+    let plugin = registry.get_mut(&StoryFormat::Core).unwrap();
+
+    let src = ":: StoryData\n{\"ifid\":\"TEST\",\"format\":\"SugarCube\"}\n:: Start\nHello.\n";
+    let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
+
+    let story_data = result.passages.iter().find(|p| p.name == "StoryData");
+    assert!(story_data.is_some(), "Core should find StoryData passage");
+
+    let sd = story_data.unwrap();
+    // Core plugin creates body blocks for all passages including StoryData
+    assert!(!sd.body.is_empty(), "Core StoryData should have body blocks");
+    assert!(sd.is_special, "StoryData should be marked as special");
+}
+
+/// Helper: simulate parse_with_format_plugin from the server code.
+fn parse_with_format_plugin_sim(
+    registry: &mut FormatRegistry,
+    uri: &Url,
+    text: &str,
+    format: StoryFormat,
+) -> (Document, crate::plugin::ParseResult) {
+    let plugin = match registry.get_mut(&format) {
+        Some(p) => Some(p),
+        None => {
+            let default = StoryFormat::default_format();
+            registry.get_mut(&default)
+        }
+    };
+
+    if let Some(plugin) = plugin {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            plugin.parse_mut(uri, text)
+        }));
+
+        match result {
+            Ok(parse_result) => {
+                let mut doc = Document::new(uri.clone(), format);
+                doc.passages = parse_result.passages.clone();
+                (doc, parse_result)
+            }
+            Err(panic_payload) => {
+                let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                panic!("Format plugin {:?} panicked while parsing {}: {}", format, uri, panic_msg);
+            }
+        }
+    } else {
+        let doc = Document::new(uri.clone(), format);
+        let result = crate::plugin::ParseResult {
+            passages: Vec::new(),
+            tokens: Vec::new(),
+            diagnostics: Vec::new(),
+            is_complete: false,
+        };
+        (doc, result)
+    }
+}
+
+/// Helper: full graph rebuild (same as server's rebuild_graph).
+fn rebuild_graph_full(
+    workspace: &mut Workspace,
+    registry: &FormatRegistry,
+    format: StoryFormat,
+) {
+    use knot_core::graph::{PassageEdge, PassageNode, EdgeType};
+    use knot_core::passage::PassageCategory;
+
+    let plugin = registry.get(&format);
+    let var_string_map = plugin
+        .map(|p| p.build_var_string_map(workspace))
+        .unwrap_or_default();
+
+    // Collect passage info
+    let info: Vec<(String, String, bool, bool, Option<knot_core::passage::SpecialPassageLayer>, PassageCategory, Option<knot_core::passage::SpecialPassageBehavior>, Vec<(Option<String>, String, Option<EdgeType>)>)> = workspace
+        .documents()
+        .flat_map(|doc| {
+            doc.passages.iter().map(|p| {
+                let mut edges: Vec<(Option<String>, String, Option<EdgeType>)> = p
+                    .links
+                    .iter()
+                    .map(|l| (l.display_text.clone(), l.target.clone(), l.edge_type_hint))
+                    .collect();
+
+                edges.extend(
+                    plugin
+                        .map(|plug| plug.resolve_dynamic_navigation_links(p, &var_string_map))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|link| (link.display_text, link.target, link.edge_type_hint)),
+                );
+
+                (
+                    p.name.clone(),
+                    doc.uri.to_string(),
+                    p.is_special,
+                    p.is_metadata(),
+                    p.special_def.as_ref().map(|d| d.layer.clone()),
+                    p.category(),
+                    p.special_def.as_ref().map(|d| d.behavior.clone()),
+                    edges,
+                )
+            })
+        })
+        .collect();
+
+    let mut graph = knot_core::PassageGraph::new();
+
+    for (name, file_uri, is_special, is_metadata, layer, category, behavior, _edges) in &info {
+        let node = PassageNode {
+            name: name.clone(),
+            file_uri: file_uri.clone(),
+            is_special: *is_special,
+            is_metadata: *is_metadata,
+            is_placeholder: false,
+            layer: layer.clone(),
+            category: *category,
+            behavior: behavior.clone(),
+        };
+        graph.add_passage(node);
+    }
+
+    for (source, _, _, _, _, _, _, edges) in &info {
+        for (display_text, target, hint) in edges {
+            let target_exists = graph.contains_passage(target);
+            let (edge_type, pre_broken_type) = if !target_exists {
+                (EdgeType::Broken, hint.map(|h| h))
+            } else if let Some(hint_type) = hint {
+                (*hint_type, None)
+            } else {
+                (EdgeType::Navigation, None)
+            };
+            let edge = PassageEdge {
+                display_text: display_text.clone(),
+                edge_type,
+                pre_broken_type,
+            };
+            graph.add_edge(source, target, edge);
+        }
+    }
+
+    workspace.graph = graph;
+}

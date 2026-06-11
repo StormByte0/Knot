@@ -170,7 +170,7 @@ impl ServerState {
                 .iter()
                 .map(|&x| (x as f64 - mean).powi(2))
                 .sum::<f64>()
-                / (passage_out_links.len() - 1) as f64;
+                / passage_out_links.len().saturating_sub(1) as f64;
             variance.sqrt()
         } else {
             0.0

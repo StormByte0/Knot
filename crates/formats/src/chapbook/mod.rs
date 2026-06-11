@@ -43,27 +43,33 @@ use crate::plugin::{
 
 /// Regex for simple links: `[[Target]]`
 static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
 /// Regex for arrow links: `[[Display->Target]]`
 static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
 /// Regex for pipe links: `[[Display|Target]]`
 static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
 /// Detect passage header lines: starts with `::` followed by at least one
 /// non-whitespace character. The actual name/tag/metadata extraction is done
 /// by the unified `parse_twee_header()` in `crate::header`.
 static RE_HEADER_DETECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
+    LazyLock::new(|| Regex::new(r"^::\s*\S").expect("invalid regex for RE_HEADER_DETECT"));
 /// Regex for state variable writes: `state.varName =`
 static RE_STATE_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_STATE_WRITE"));
 /// Regex for state variable reads: `state.varName`
 static RE_STATE_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_STATE_READ"));
 /// Regex for `[modify]` key-value lines: `key: value`
 static RE_MODIFY_KV: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").unwrap());
+    LazyLock::new(|| Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").expect("invalid regex for RE_MODIFY_KV"));
+/// Regex for open modifier blocks: `[modifierName]`
+static RE_MODIFIER_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_OPEN"));
+/// Regex for close modifier blocks: `[/modifierName]`
+static RE_MODIFIER_CLOSE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_CLOSE"));
 
 // ---------------------------------------------------------------------------
 // Template segment
@@ -166,9 +172,11 @@ impl ChapbookPlugin {
 
         // Arrow-style links: [[Display->Target]]
         for caps in RE_LINK_ARROW.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(display_match) = caps.get(1) else { continue };
+            let Some(target_match) = caps.get(2) else { continue };
+            let display = display_match.as_str().trim().to_string();
+            let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -183,9 +191,11 @@ impl ChapbookPlugin {
 
         // Pipe-style links: [[Display|Target]]
         for caps in RE_LINK_PIPE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(display_match) = caps.get(1) else { continue };
+            let Some(target_match) = caps.get(2) else { continue };
+            let display = display_match.as_str().trim().to_string();
+            let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -209,11 +219,12 @@ impl ChapbookPlugin {
             .collect();
 
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             let span = m.start()..m.end();
             let overlaps = known_spans.iter().any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
-                let target = caps.get(1).unwrap().as_str().trim().to_string();
+                let Some(target_match) = caps.get(1) else { continue };
+                let target = target_match.as_str().trim().to_string();
                 // Filter: skip targets containing "::" — JS namespace accessor
                 if target.contains("::") {
                     continue;
@@ -353,8 +364,9 @@ impl ChapbookPlugin {
 
         // Detect writes: state.varName = value
         for caps in RE_STATE_WRITE.captures_iter(content) {
-            let full = caps.get(0).unwrap();
-            let var_name = format!("state.{}", caps.get(1).unwrap().as_str());
+            let Some(full) = caps.get(0) else { continue };
+            let Some(var_match) = caps.get(1) else { continue };
+            let var_name = format!("state.{}", var_match.as_str());
             let var_start = content_offset + full.start();
             let var_end = var_start + var_name.len();
             vars.push(VarOp {
@@ -368,7 +380,7 @@ impl ChapbookPlugin {
 
         // Detect reads: state.varName (not already a write)
         for caps in RE_STATE_READ.captures_iter(content) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = content_offset + full.start();
             let var_end = content_offset + full.end();
             let is_write = write_spans
@@ -404,7 +416,8 @@ impl ChapbookPlugin {
 
         for line in content.lines() {
             if let Some(caps) = RE_MODIFY_KV.captures(line) {
-                let key = caps.get(1).unwrap().as_str();
+                let Some(key_match) = caps.get(1) else { continue };
+                let key = key_match.as_str();
                 let var_name = format!("modify.{}", key);
                 // Find the key position within the line
                 if let Some(key_pos) = line.find(key) {
@@ -429,7 +442,7 @@ impl ChapbookPlugin {
         let mut vars = Vec::new();
 
         for caps in RE_STATE_READ.captures_iter(expr) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = expr_offset + full.start();
             let var_end = expr_offset + full.end();
             vars.push(VarOp {
@@ -515,7 +528,7 @@ impl ChapbookPlugin {
 
         // Link tokens.
         for caps in RE_LINK_ARROW.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -524,7 +537,7 @@ impl ChapbookPlugin {
             });
         }
         for caps in RE_LINK_PIPE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -533,7 +546,7 @@ impl ChapbookPlugin {
             });
         }
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -553,8 +566,9 @@ impl ChapbookPlugin {
 
                     // Write tokens
                     for caps in RE_STATE_WRITE.captures_iter(content) {
-                        let full = caps.get(0).unwrap();
-                        let var_name = format!("state.{}", caps.get(1).unwrap().as_str());
+                        let Some(full) = caps.get(0) else { continue };
+                        let Some(var_match) = caps.get(1) else { continue };
+                        let var_name = format!("state.{}", var_match.as_str());
                         let var_start = content_offset + full.start();
                         let var_end = var_start + var_name.len();
                         tokens.push(SemanticToken {
@@ -568,7 +582,7 @@ impl ChapbookPlugin {
 
                     // Read tokens
                     for caps in RE_STATE_READ.captures_iter(content) {
-                        let full = caps.get(0).unwrap();
+                        let Some(full) = caps.get(0) else { continue };
                         let var_start = content_offset + full.start();
                         let var_end = content_offset + full.end();
                         let is_write = write_spans
@@ -954,10 +968,9 @@ impl FormatPlugin for ChapbookPlugin {
 
         // Chapbook uses [modifier]...[/modifier] blocks and {expression} inline.
         // Detect [modifier] at position.
-        let re = regex::Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
-        for caps in re.captures_iter(line) {
-            let full_match = caps.get(0).unwrap();
-            let name_match = caps.get(1).unwrap();
+        for caps in RE_MODIFIER_OPEN.captures_iter(line) {
+            let Some(full_match) = caps.get(0) else { continue };
+            let Some(name_match) = caps.get(1) else { continue };
             let bracket_start = full_match.start();
             let bracket_end = full_match.end();
             let name_start = name_match.start();
@@ -1016,8 +1029,7 @@ impl FormatPlugin for ChapbookPlugin {
         let mut events = Vec::new();
 
         // Open blocks: [modifier]
-        let re_open = regex::Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
-        for caps in re_open.captures_iter(line) {
+        for caps in RE_MODIFIER_OPEN.captures_iter(line) {
             if let Some(name_match) = caps.get(1) {
                 let name = name_match.as_str();
                 // Only certain Chapbook modifiers are "block" modifiers
@@ -1032,8 +1044,7 @@ impl FormatPlugin for ChapbookPlugin {
         }
 
         // Close blocks: [/modifier]
-        let re_close = regex::Regex::new(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]").unwrap();
-        for caps in re_close.captures_iter(line) {
+        for caps in RE_MODIFIER_CLOSE.captures_iter(line) {
             if let Some(name_match) = caps.get(1) {
                 events.push(MacroBlockEvent {
                     name: name_match.as_str().to_string(),

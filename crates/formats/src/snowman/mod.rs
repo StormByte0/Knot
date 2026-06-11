@@ -67,29 +67,35 @@ enum TemplateSegment {
 
 /// Regex for simple links: `[[Target]]`
 static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
 /// Regex for arrow links: `[[Display->Target]]`
 static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
 /// Regex for pipe links: `[[Display|Target]]`
 static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
 /// Regex for Snowman state variable reads: `s.variableName`
 static RE_VAR_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR_READ"));
 /// Regex for Snowman state variable writes: `s.variableName =`
 static RE_VAR_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_VAR_WRITE"));
 /// Regex for window.story.state variable reads: `window.story.state.variableName`
 static RE_WSS_VAR_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_WSS_VAR_READ"));
 /// Regex for window.story.state variable writes: `window.story.state.variableName =`
 static RE_WSS_VAR_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").unwrap());
+    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_WSS_VAR_WRITE"));
 /// Detect passage header lines: starts with `::` followed by at least one
 /// non-whitespace character. Actual parsing done by unified parser.
 static RE_HEADER_DETECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
+    LazyLock::new(|| Regex::new(r"^::\s*\S").expect("invalid regex for RE_HEADER_DETECT"));
+/// Regex for ERB expression tag opening: `<%= `
+static RE_EXPR_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<%=\s*").expect("invalid regex for RE_EXPR_TAG"));
+/// Regex for ERB code tag opening: `<% ` (not `<%=`)
+static RE_CODE_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<%(?!=)\s*").expect("invalid regex for RE_CODE_TAG"));
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -366,9 +372,11 @@ impl SnowmanPlugin {
 
         // Arrow links.
         for caps in RE_LINK_ARROW.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(display_match) = caps.get(1) else { continue };
+            let Some(target_match) = caps.get(2) else { continue };
+            let display = display_match.as_str().trim().to_string();
+            let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -383,9 +391,11 @@ impl SnowmanPlugin {
 
         // Pipe links.
         for caps in RE_LINK_PIPE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().trim().to_string();
-            let target = caps.get(2).unwrap().as_str().trim().to_string();
+            let Some(m) = caps.get(0) else { continue };
+            let Some(display_match) = caps.get(1) else { continue };
+            let Some(target_match) = caps.get(2) else { continue };
+            let display = display_match.as_str().trim().to_string();
+            let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
             if target.contains("::") {
                 continue;
@@ -409,13 +419,14 @@ impl SnowmanPlugin {
             .collect();
 
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             let span = m.start()..m.end();
             let overlaps = known_spans
                 .iter()
                 .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
-                let target = caps.get(1).unwrap().as_str().trim().to_string();
+                let Some(target_match) = caps.get(1) else { continue };
+                let target = target_match.as_str().trim().to_string();
                 // Filter: skip targets containing "::" — JS namespace accessor
                 if target.contains("::") {
                     continue;
@@ -447,8 +458,9 @@ impl SnowmanPlugin {
 
         // Detect writes via s.varName =
         for caps in RE_VAR_WRITE.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = caps.get(1).unwrap().as_str();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(var_name_match) = caps.get(1) else { continue };
+            let var_name = var_name_match.as_str();
             let prefix = format!("s.{}", var_name);
             let var_start = body_offset + full.start();
             let var_end = var_start + prefix.len();
@@ -463,8 +475,9 @@ impl SnowmanPlugin {
 
         // Detect writes via window.story.state.varName =
         for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = caps.get(1).unwrap().as_str();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(var_name_match) = caps.get(1) else { continue };
+            let var_name = var_name_match.as_str();
             let prefix = format!("window.story.state.{}", var_name);
             let var_start = body_offset + full.start();
             let var_end = var_start + prefix.len();
@@ -479,14 +492,15 @@ impl SnowmanPlugin {
 
         // Detect reads via s.varName (not already a write)
         for caps in RE_VAR_READ.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
             let is_write = write_spans
                 .iter()
                 .any(|s| var_start >= s.start && var_end <= s.end);
             if !is_write {
-                let var_name = caps.get(1).unwrap().as_str();
+                let Some(var_name_match) = caps.get(1) else { continue };
+                let var_name = var_name_match.as_str();
                 vars.push(VarOp {
                     name: var_name.to_string(),
                     kind: VarKind::Read,
@@ -498,14 +512,15 @@ impl SnowmanPlugin {
 
         // Detect reads via window.story.state.varName (not already a write)
         for caps in RE_WSS_VAR_READ.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let var_start = body_offset + full.start();
             let var_end = body_offset + full.end();
             let is_write = write_spans
                 .iter()
                 .any(|s| var_start >= s.start && var_end <= s.end);
             if !is_write {
-                let var_name = caps.get(1).unwrap().as_str();
+                let Some(var_name_match) = caps.get(1) else { continue };
+                let var_name = var_name_match.as_str();
                 vars.push(VarOp {
                     name: var_name.to_string(),
                     kind: VarKind::Read,
@@ -678,8 +693,9 @@ impl SnowmanPlugin {
 
         // Variable write tokens (s.varName =)
         for caps in RE_VAR_WRITE.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = caps.get(1).unwrap().as_str();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(var_name_match) = caps.get(1) else { continue };
+            let var_name = var_name_match.as_str();
             let prefix = format!("s.{}", var_name);
             let start = body_offset + full.start();
             let end = start + prefix.len();
@@ -694,8 +710,9 @@ impl SnowmanPlugin {
 
         // Variable write tokens (window.story.state.varName =)
         for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
-            let full = caps.get(0).unwrap();
-            let var_name = caps.get(1).unwrap().as_str();
+            let Some(full) = caps.get(0) else { continue };
+            let Some(var_name_match) = caps.get(1) else { continue };
+            let var_name = var_name_match.as_str();
             let prefix = format!("window.story.state.{}", var_name);
             let start = body_offset + full.start();
             let end = start + prefix.len();
@@ -710,7 +727,7 @@ impl SnowmanPlugin {
 
         // Variable read tokens (s.varName)
         for caps in RE_VAR_READ.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let start = body_offset + full.start();
             let end = body_offset + full.end();
             let is_write = write_spans.iter().any(|s| start >= s.start && end <= s.end);
@@ -726,7 +743,7 @@ impl SnowmanPlugin {
 
         // Variable read tokens (window.story.state.varName)
         for caps in RE_WSS_VAR_READ.captures_iter(body) {
-            let full = caps.get(0).unwrap();
+            let Some(full) = caps.get(0) else { continue };
             let start = body_offset + full.start();
             let end = body_offset + full.end();
             let is_write = write_spans.iter().any(|s| start >= s.start && end <= s.end);
@@ -775,7 +792,7 @@ impl SnowmanPlugin {
 
         // Link tokens.
         for caps in RE_LINK_ARROW.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -784,7 +801,7 @@ impl SnowmanPlugin {
             });
         }
         for caps in RE_LINK_PIPE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -793,7 +810,7 @@ impl SnowmanPlugin {
             });
         }
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let m = caps.get(0).unwrap();
+            let Some(m) = caps.get(0) else { continue };
             tokens.push(SemanticToken {
                 start: body_offset + m.start(),
                 length: m.end() - m.start(),
@@ -1065,8 +1082,7 @@ impl FormatPlugin for SnowmanPlugin {
         // Detect these at position.
 
         // Check for <%= ... %> (expression)
-        let re_expr = regex::Regex::new(r"<%=\s*").unwrap();
-        if let Some(m) = re_expr.find(line) {
+        if let Some(m) = RE_EXPR_TAG.find(line) {
             let start = m.start();
             if byte_pos >= start {
                 // Find closing %>
@@ -1101,8 +1117,7 @@ impl FormatPlugin for SnowmanPlugin {
         }
 
         // Check for <% ... %> (code block)
-        let re_code = regex::Regex::new(r"<%(?!=)\s*").unwrap();
-        if let Some(m) = re_code.find(line) {
+        if let Some(m) = RE_CODE_TAG.find(line) {
             let start = m.start();
             if byte_pos >= start {
                 if let Some(end_offset) = line[start..].find("%>") {

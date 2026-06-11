@@ -129,9 +129,15 @@ impl ServerState {
     /// Create a new server state from a tower-lsp client handle.
     pub fn new(client: Client) -> Self {
         let placeholder_uri = Url::parse("file:///").unwrap_or_else(|e| {
-            tracing::error!("Failed to parse placeholder URI: {e}");
-            // This should never happen with a valid constant, but provide a safe fallback
-            Url::parse("file:///").unwrap()
+            tracing::error!("Failed to parse placeholder URI 'file:///': {e}");
+            // This should never happen — "file:///" is a valid URL. If it does
+            // somehow fail (e.g., URL crate regression), construct one from
+            // components instead of panicking.
+            Url::from_file_path("/").unwrap_or_else(|_| {
+                // Absolute last resort: use a data URI that will never match
+                // a real workspace file. This prevents a panic at server startup.
+                Url::parse("data:,").expect("data:, is always a valid URL")
+            })
         });
         let workspace = Workspace::new(placeholder_uri);
 
