@@ -606,10 +606,13 @@ pub trait FormatPlugin: Send + Sync {
         &[]
     }
 
-    /// Returns the set of macro names that have closing tags (block macros).
+    /// Returns the set of macro names that can have a body (block or polymorphic macros).
     ///
-    /// Used by close-tag completion and structural validation.
-    fn block_macro_names(&self) -> HashSet<&'static str> {
+    /// Derived from the catalog's `BodyRequirement`: macros with `Required` or
+    /// `Optional` body can appear as block macros with close tags.
+    ///
+    /// Used by close-tag completion, folding region detection, and structural validation.
+    fn body_macro_names(&self) -> HashSet<&'static str> {
         HashSet::new()
     }
 
@@ -783,10 +786,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// Override this in format plugins that use different delimiter syntax.
     /// The default implementation produces bare-name snippets (no delimiters).
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
+    fn build_macro_snippet(&self, name: &str, body: BodyRequirement) -> String {
         // Default: bare name + placeholder. Format plugins MUST override this
         // to add their own delimiters and body structure.
-        if has_body {
+        if body != BodyRequirement::Never {
             format!("{} $1\n$2\n", name)
         } else {
             format!("{} $1", name)

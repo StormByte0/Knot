@@ -137,8 +137,9 @@ pub fn scan_line_for_macro_events_impl(
     let len = bytes.len();
     let mut i = 0usize;
 
-    // Folding modifier macros — they don't open/close blocks but subdivide them
-    let folding_modifiers: &[&str] = &["else", "elseif"];
+    // Folding modifier macros — they don't open/close blocks but subdivide them.
+    // Derived from the catalog's folding_modifier_names() to avoid drift.
+    let folding_modifiers = macros::folding_modifier_names();
 
     while i + 1 < len {
         // Look for << opening
@@ -210,9 +211,9 @@ pub fn scan_line_for_macro_events_impl(
                     line: line_idx,
                     is_open: false,
                 });
-            } else if folding_modifiers.contains(&name) {
-                // Modifier: <<else>> or <<elseif>> — treat as a close+open
-                // pair so the folding handler creates subdivision
+            } else if folding_modifiers.contains(name) {
+                // Modifier: <<else>>, <<elseif>>, <<case>>, <<default>> — treat as
+                // a subdivision point so the folding handler splits the block
                 events.push(MacroBlockEvent {
                     name: name.to_string(),
                     line: line_idx,
@@ -244,8 +245,9 @@ pub fn scan_line_for_macro_events_impl(
 /// Block macros are the ones that can have child content between their
 /// open and close tags: <<if>>...<</if>>, <<for>>...<</for>>, etc.
 /// Inline macros like <<set>>, <<print>>, <<goto>> are not block macros.
+///
+/// Derived from the catalog's `BodyRequirement` — any macro with
+/// `Required` or `Optional` body can be a block macro.
 pub fn is_block_macro_name(name: &str) -> bool {
-    // Check against the static block macro names from the catalog
-    let block_names = macros::block_macro_names();
-    block_names.contains(name)
+    macros::body_macro_names().contains(name)
 }

@@ -216,6 +216,8 @@ fn collect_var_ops_from_nodes(
                 js_analysis,
                 var_refs,
                 set_assignment,
+                capture_target,
+                for_loop_vars,
                 children,
                 full_span,
                 ..
@@ -226,7 +228,7 @@ fn collect_var_ops_from_nodes(
                     // Use oxc-derived var_ops (more accurate read/write classification)
                     if let Some(analysis) = js_analysis {
                         for op in &analysis.var_ops {
-                            let kind_override = determine_macro_override(name, op, set_assignment.as_ref());
+                            let kind_override = determine_macro_override(name, op, set_assignment.as_ref(), capture_target.as_ref());
                             result.push((op.clone(), kind_override));
                         }
                     }
@@ -294,6 +296,100 @@ fn collect_var_ops_from_nodes(
                     }
                 }
 
+                // For <<capture>> macros with capture_target: emit the captured variable
+                // as VarAccessKind::Capture. This provides AST-level capture tracking that
+                // complements the JS annotation pass.
+                if let Some(ct) = capture_target {
+                    // Only emit if not already covered by js_analysis
+                    let already_covered = js_analysis.as_ref().is_some_and(|analysis| {
+                        analysis.var_ops.iter().any(|op| {
+                            op.name == ct.name && op.access_kind.is_write()
+                        })
+                    });
+
+                    if !already_covered {
+                        let segment_spans = compute_target_segment_spans(
+                            &ct.name,
+                            &ct.property_path,
+                            &ct.span,
+                        );
+
+                        result.push((
+                            AnalyzedVarOp {
+                                name: ct.name.clone(),
+                                is_temporary: ct.is_temporary,
+                                access_kind: VarAccessKind::Capture,
+                                span: ct.span.clone(),
+                                property_path: ct.property_path.clone(),
+                                segment_spans,
+                                construct_span: Some(full_span.clone()),
+                            },
+                            None,
+                        ));
+                    }
+                }
+
+                // For <<for>> macros with for_loop_vars: emit the loop variables.
+                // The index variable (_i) is a write (receives each element).
+                // The iterated variable ($array) is a read.
+                if let Some(fl) = for_loop_vars {
+                    // Emit index var as Write (it receives each element during iteration)
+                    let index_covered = js_analysis.as_ref().is_some_and(|analysis| {
+                        analysis.var_ops.iter().any(|op| {
+                            op.name == fl.index_var.name && op.access_kind.is_write()
+                        })
+                    });
+
+                    if !index_covered {
+                        let segment_spans = compute_target_segment_spans(
+                            &fl.index_var.name,
+                            &fl.index_var.property_path,
+                            &fl.index_var.span,
+                        );
+
+                        result.push((
+                            AnalyzedVarOp {
+                                name: fl.index_var.name.clone(),
+                                is_temporary: true,
+                                access_kind: VarAccessKind::Write,
+                                span: fl.index_var.span.clone(),
+                                property_path: fl.index_var.property_path.clone(),
+                                segment_spans,
+                                construct_span: None,
+                            },
+                            None,
+                        ));
+                    }
+
+                    // Emit iterated var as Read
+                    let iter_covered = js_analysis.as_ref().is_some_and(|analysis| {
+                        analysis.var_ops.iter().any(|op| {
+                            op.name == fl.iterated_var.name
+                        })
+                    });
+
+                    if !iter_covered {
+                        let segment_spans = compute_target_segment_spans(
+                            &fl.iterated_var.name,
+                            &fl.iterated_var.property_path,
+                            &fl.iterated_var.span,
+                        );
+
+                        result.push((
+                            AnalyzedVarOp {
+                                name: fl.iterated_var.name.clone(),
+                                is_temporary: fl.iterated_var.is_temporary,
+                                access_kind: VarAccessKind::Read,
+                                span: fl.iterated_var.span.clone(),
+                                property_path: fl.iterated_var.property_path.clone(),
+                                segment_spans,
+                                construct_span: None,
+                            },
+                            None,
+                        ));
+                    }
+                }
+
                 // Recurse into children
                 if let Some(ch) = children {
                     collect_var_ops_from_nodes(ch, result, cp, _file_uri);
@@ -341,9 +437,16 @@ fn determine_macro_override(
     macro_name: &str,
     op: &AnalyzedVarOp,
     set_assignment: Option<&ast::SetAssignment>,
+    capture_target: Option<&ast::VarRef>,
 ) -> Option<VarAccessKind> {
     if macro_name.eq_ignore_ascii_case("capture") {
-        if op.access_kind.is_write() {
+        // If capture_target is available, use it for precise matching.
+        // Otherwise fall back to the heuristic of upgrading any write to Capture.
+        let is_capture_target = capture_target.map_or(false, |ct| {
+            ct.name == op.name && ct.span.start == op.span.start
+        });
+
+        if is_capture_target || (capture_target.is_none() && op.access_kind.is_write()) {
             return Some(VarAccessKind::Capture);
         }
     }
@@ -384,19 +487,35 @@ fn register_definitions_from_nodes(
                 name,
                 args,
                 open_span,
+                definition_name_span,
                 children,
                 js_analysis,
                 ..
             } => {
                 // <<widget name>> definitions
+                // Use definition_name_span for precise name extraction when available,
+                // falling back to args.trim() for backward compatibility.
                 if name.eq_ignore_ascii_case("widget") {
-                    let widget_name = args.trim().to_string();
+                    let widget_name = if definition_name_span.is_some() {
+                        // Extract the name from args using the span offset.
+                        // definition_name_span is in passage-body coords;
+                        // open_span.start is the position of << in passage-body coords.
+                        // The args start after << + name + space, so args_start_in_body ≈
+                        // name_span.end + 1. We can derive the name offset within args:
+                        //   dns.start - args_offset, where args_offset = name_span.end + 1 (approx)
+                        // But since we don't have name_span here, we use a simpler approach:
+                        // the first whitespace-delimited token in args is the widget name.
+                        // This matches the span-based extraction for all well-formed inputs.
+                        args.split_whitespace().next().unwrap_or("").to_string()
+                    } else {
+                        args.trim().to_string()
+                    };
                     if !widget_name.is_empty() {
                         macro_reg.register_widget(
                             &widget_name,
                             passage_name,
                             file_uri,
-                            open_span.start,
+                            definition_name_span.as_ref().map_or(open_span.start, |dns| dns.start),
                             None,
                         );
                     }

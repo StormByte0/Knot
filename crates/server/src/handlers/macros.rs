@@ -50,11 +50,11 @@
 //! ## Format Isolation
 //!
 //! All classification is derived from the `FormatPlugin` trait methods —
-//! `builtin_macros()`, `block_macro_names()`, `folding_modifier_names()`,
+//! `builtin_macros()`, `body_macro_names()`, `folding_modifier_names()`,
 //! `dynamic_navigation_macros()`, etc. No format-specific data is imported
 //! directly.
 
-use knot_formats::types::{MacroCategory, MacroDef};
+use knot_formats::types::{BodyRequirement, MacroCategory, MacroDef};
 use knot_formats::plugin::FormatPlugin;
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ use knot_formats::plugin::FormatPlugin;
 /// This classification is derived from the combination of `MacroDef` fields
 /// and `FormatPlugin` trait methods. It provides a single, queryable
 /// classification that replaces the need to check multiple independent
-/// axes (category, has_body, block_macro_names, etc.) separately.
+/// axes (category, body requirement, body_macro_names, etc.) separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MacroKind {
     /// A symbol-like macro that acts as an operator or shorthand
@@ -129,8 +129,8 @@ impl std::fmt::Display for MacroKind {
 /// 2. **Keyword** check: If the macro name is a non-alphabetic operator
 ///    (e.g., `=`, `-`), it's a keyword.
 ///
-/// 3. **Block** check: If the macro name is in `block_macro_names()` AND
-///    has `has_body == true`, it's a block macro. If it's also in the
+/// 3. **Block** check: If the macro has `body != Never` (i.e., it can have
+///    a body section), it's a block macro. If it's also in the
 ///    Control or Navigation category, it additionally gets ControlFlow
 ///    semantics (returned as `Block`, but callers should check category).
 ///
@@ -147,7 +147,7 @@ impl std::fmt::Display for MacroKind {
 ///
 /// * `name` - The bare macro name (e.g., "if", "set", "=")
 /// * `mdef` - The macro definition from the format plugin catalog
-/// * `plugin` - The format plugin (for block_macro_names, etc.)
+/// * `plugin` - The format plugin (for body_macro_names, etc.)
 pub fn classify(
     name: &str,
     mdef: &MacroDef,
@@ -164,8 +164,8 @@ pub fn classify(
     }
 
     // 3. Block check — macros with closeable body sections
-    let is_block = plugin.block_macro_names().contains(name);
-    if is_block && mdef.has_body {
+    let is_block = mdef.body != BodyRequirement::Never;
+    if is_block {
         // Control category blocks (if, for, switch) and Navigation blocks
         // (link, button with goto) are semantically control-flow blocks.
         // Callers can check the category for additional semantics.

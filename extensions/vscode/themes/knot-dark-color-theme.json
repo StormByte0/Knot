@@ -1,0 +1,247 @@
+{
+  "name": "Knot Dark",
+  "$schema": "vscode://schemas/color-theme",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#1a1b26",
+    "editor.foreground": "#c0caf5",
+    "editor.lineHighlightBackground": "#1f2335",
+    "editor.selectionBackground": "#33467c",
+    "editorCursor.foreground": "#c0caf5",
+    "editorWhitespace.foreground": "#3b4261",
+    "editorIndentGuide.background": "#3b4261",
+    "editorIndentGuide.activeBackground": "#565f89",
+    "editor.selectionHighlightBackground": "#33467c55",
+    "editor.wordHighlightBackground": "#33467c55",
+    "editorBracketMatch.background": "#33467c55",
+    "editorBracketMatch.border": "#7aa2f788"
+  },
+
+  "tokenColors": [
+    {
+      "comment": ":: sigil — passage header prefix",
+      "scope": "entity.name.function.passage.twee",
+      "settings": { "foreground": "#7aa2f7", "fontStyle": "bold" }
+    },
+    {
+      "comment": "Normal passage name",
+      "scope": "entity.name.passage.twee",
+      "settings": { "foreground": "#e0af68" }
+    },
+    {
+      "comment": "Special passage name — StoryInit, StoryCaption, StoryInterface, etc.",
+      "scope": ["entity.name.passage.special.twee", "entity.name.passage.special.sugarcube"],
+      "settings": { "foreground": "#bb9af7", "fontStyle": "bold" }
+    },
+    {
+      "comment": "Passage tags [script], [stylesheet], [widget], [init], user tags",
+      "scope": ["entity.other.attribute-name.tag.sugarcube", "entity.other.attribute-name.tag.twee"],
+      "settings": { "foreground": "#73daca" }
+    },
+    {
+      "comment": "Passage metadata JSON blob",
+      "scope": "meta.passage.metadata.twee",
+      "settings": { "foreground": "#565f89" }
+    },
+    {
+      "comment": "Tag brackets and meta.tag grouping",
+      "scope": "meta.tag.twee",
+      "settings": { "foreground": "#565f89" }
+    },
+
+    {
+      "comment": "Link target in [[Target]], [[Display->Target]], [[Display|Target]]",
+      "scope": ["markup.underline.link.target.twee", "markup.underline.link.passage.twee"],
+      "settings": { "foreground": "#73daca", "fontStyle": "underline" }
+    },
+    {
+      "comment": "Link display text in [[Display->Target]]",
+      "scope": "string.other.link.display.twee",
+      "settings": { "foreground": "#9ece6a" }
+    },
+    {
+      "comment": "Link punctuation — [[, ]], ->, |",
+      "scope": ["punctuation.definition.link.begin.twee", "punctuation.definition.link.end.twee", "punctuation.separator.link.arrow.twee", "punctuation.separator.link.pipe.twee"],
+      "settings": { "foreground": "#565f89" }
+    },
+    {
+      "comment": "Passage reference in strings — <<goto \"Forest\">>, Engine.play(\"Forest\"), data-passage=\"Forest\"",
+      "scope": "markup.underline.link.passageref.twee",
+      "settings": { "foreground": "#73daca", "fontStyle": "underline" }
+    },
+
+    {
+      "comment": "Macro delimiters + name: <<, >>, <</, and the macro keyword — all one color block",
+      "scope": ["keyword.control.sugarcube", "keyword.control.macro.sugarcube", "keyword.control.macro.twee"],
+      "settings": { "foreground": "#7aa2f7" }
+    },
+    {
+      "comment": "Macro arguments / parameter expressions",
+      "scope": ["variable.parameter.sugarcube", "variable.parameter.macro.sugarcube"],
+      "settings": { "foreground": "#ff9e64" }
+    },
+    {
+      "comment": "meta.macro wrapper scope",
+      "scope": "meta.macro.sugarcube",
+      "settings": { "foreground": "#c0caf5" }
+    },
+
+    {
+      "comment": "SugarCube story variable: $varName",
+      "scope": ["variable.language.sugarcube", "variable.language.twee"],
+      "settings": { "foreground": "#f7768e", "fontStyle": "italic" }
+    },
+    {
+      "comment": "SugarCube temporary variable: _varName",
+      "scope": "variable.language.sugarcube.temp",
+      "settings": { "foreground": "#bb9af7", "fontStyle": "italic" }
+    },
+
+    {
+      "comment": "Widget name in <<widget widgetName>> definitions",
+      "scope": "entity.name.function.widget.sugarcube",
+      "settings": { "foreground": "#bb9af7", "fontStyle": "bold" }
+    },
+
+    {
+      "comment": "SC assignment keyword: to",
+      "scope": "keyword.operator.assignment.sugarcube",
+      "settings": { "foreground": "#7dcfff" }
+    },
+    {
+      "comment": "SC comparison/logic keywords: is, eq, neq, gt, gte, lt, lte, and, or, not, isnot",
+      "scope": "keyword.operator.comparison.sugarcube",
+      "settings": { "foreground": "#7dcfff" }
+    },
+
+    {
+      "comment": "Global API classes: State, Engine, Story, UI, Config, Macro, Save, Dialog",
+      "scope": "support.class.sugarcube",
+      "settings": { "foreground": "#7dcfff", "fontStyle": "bold" }
+    },
+    {
+      "comment": "API methods: .play(), .goto(), .add(), .open(), .save()",
+      "scope": "support.function.sugarcube",
+      "settings": { "foreground": "#7aa2f7" }
+    },
+    {
+      "comment": "API property access: State.variables, Config.history",
+      "scope": "variable.other.property.sugarcube",
+      "settings": { "foreground": "#73daca" }
+    },
+
+    {
+      "comment": "JSON object-literal key inside SC macro expressions",
+      "scope": "meta.object-literal.key.json.sugarcube",
+      "settings": { "foreground": "#9ece6a" }
+    },
+    {
+      "comment": "JSON structural wrappers inside macros",
+      "scope": ["meta.objectliteral.json.sugarcube", "meta.arrayliteral.json.sugarcube"],
+      "settings": { "foreground": "#c0caf5" }
+    },
+
+    {
+      "comment": "Block comment: /* ... */",
+      "scope": "comment.block.twee",
+      "settings": { "foreground": "#565f89", "fontStyle": "italic" }
+    },
+    {
+      "comment": "Twine-style block comment: /% ... %/",
+      "scope": "comment.block.twine",
+      "settings": { "foreground": "#565f89", "fontStyle": "italic" }
+    },
+    {
+      "comment": "HTML block comment: <!-- ... -->",
+      "scope": "comment.block.html",
+      "settings": { "foreground": "#565f89", "fontStyle": "italic" }
+    },
+    {
+      "comment": "Comment punctuation",
+      "scope": ["punctuation.definition.comment.twee", "punctuation.definition.comment.twine", "punctuation.definition.comment.html"],
+      "settings": { "foreground": "#565f89" }
+    },
+
+    {
+      "comment": "HTML attribute data-passage — the attribute name",
+      "scope": "entity.other.attribute-name.html.twee",
+      "settings": { "foreground": "#73daca" }
+    },
+    {
+      "comment": "HTML attribute key-value separator",
+      "scope": "punctuation.separator.key-value.html.twee",
+      "settings": { "foreground": "#565f89" }
+    },
+    {
+      "comment": "HTML attribute value string (non-passage-ref)",
+      "scope": "string.quoted.html.twee",
+      "settings": { "foreground": "#9ece6a" }
+    },
+
+    {
+      "comment": "Fallback: entity.name.function — semantic tokens for passageHeader/passageName/function",
+      "scope": "entity.name.function",
+      "settings": { "foreground": "#7aa2f7" }
+    },
+    {
+      "comment": "Fallback: keyword.control — semantic tokens for macro/keyword",
+      "scope": "keyword.control",
+      "settings": { "foreground": "#7aa2f7" }
+    },
+    {
+      "comment": "Fallback: variable.language — semantic tokens for variable ($var)",
+      "scope": "variable.language",
+      "settings": { "foreground": "#f7768e", "fontStyle": "italic" }
+    },
+    {
+      "comment": "Fallback: support.class — semantic tokens for namespace (State, Engine)",
+      "scope": "support.class",
+      "settings": { "foreground": "#7dcfff", "fontStyle": "bold" }
+    },
+    {
+      "comment": "Fallback: variable.other.property — semantic tokens for property",
+      "scope": "variable.other.property",
+      "settings": { "foreground": "#73daca" }
+    },
+    {
+      "comment": "Fallback: markup.underline.link — semantic tokens for link/passageRef",
+      "scope": "markup.underline.link",
+      "settings": { "foreground": "#73daca", "fontStyle": "underline" }
+    },
+    {
+      "comment": "Fallback: entity.other.attribute-name — semantic tokens for tag",
+      "scope": "entity.other.attribute-name",
+      "settings": { "foreground": "#73daca" }
+    },
+    {
+      "comment": "Fallback: keyword.operator — semantic tokens for operator",
+      "scope": "keyword.operator",
+      "settings": { "foreground": "#7dcfff" }
+    },
+    {
+      "comment": "Fallback: constant.numeric — semantic tokens for number",
+      "scope": "constant.numeric",
+      "settings": { "foreground": "#ff9e64" }
+    },
+    {
+      "comment": "Fallback: string — semantic tokens for string",
+      "scope": "string",
+      "settings": { "foreground": "#9ece6a" }
+    },
+    {
+      "comment": "Fallback: comment — semantic tokens for comment",
+      "scope": "comment",
+      "settings": { "foreground": "#565f89", "fontStyle": "italic" }
+    },
+    {
+      "comment": "Fallback: constant.language — semantic tokens for boolean (true/false)",
+      "scope": "constant.language",
+      "settings": { "foreground": "#ff9e64" }
+    },
+    {
+      "comment": "Fallback: punctuation — semantic tokens for specialPassageHeader",
+      "scope": "punctuation",
+      "settings": { "foreground": "#7aa2f7" }
+    }
+  ]
+}

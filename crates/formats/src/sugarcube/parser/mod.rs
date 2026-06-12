@@ -40,6 +40,7 @@ mod link_parser;
 mod comment;
 mod variable_scan;
 mod extraction;
+mod tree_builder;
 pub(crate) mod predicates;
 
 // Re-export public API from sub-modules
@@ -66,7 +67,8 @@ use crate::sugarcube::ast::*;
 pub fn parse_passage_body(body: &str, _body_offset: usize, mode: ParseMode) -> PassageAst {
     match mode {
         ParseMode::Normal | ParseMode::Widget => {
-            let nodes = core::parse_body(body, 0);
+            let flat_nodes = core::parse_body(body, 0);
+            let nodes = tree_builder::build_tree(flat_nodes);
             let links = extraction::extract_links_from_ast(&nodes);
             let var_ops = extraction::extract_var_ops_from_ast(&nodes);
             PassageAst {
@@ -81,7 +83,8 @@ pub fn parse_passage_body(body: &str, _body_offset: usize, mode: ParseMode) -> P
             // StoryInterface contains HTML with data-passage attributes.
             // We parse it as normal SC text (to get <<macros>> etc.) and
             // also extract data-passage attribute values as additional links.
-            let nodes = core::parse_body(body, 0);
+            let flat_nodes = core::parse_body(body, 0);
+            let nodes = tree_builder::build_tree(flat_nodes);
             let mut links = extraction::extract_links_from_ast(&nodes);
             // Extract data-passage="PassageName" attributes from HTML
             let data_passage_links = extraction::extract_data_passage_refs(body);

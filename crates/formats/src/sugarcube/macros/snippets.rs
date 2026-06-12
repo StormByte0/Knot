@@ -3,7 +3,7 @@
 //! Provides completion snippet templates for SugarCube macros, including
 //! per-macro overrides and a generic fallback for unknown macros.
 
-use super::classifiers::block_macro_names;
+use crate::types::BodyRequirement;
 
 /// A per-macro snippet body for completion.
 ///
@@ -78,13 +78,13 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
 }
 
 /// Build a snippet for a macro, using the per-macro override or a generic fallback.
-pub fn build_macro_snippet(name: &str, has_body: bool) -> String {
+pub fn build_macro_snippet(name: &str, body: BodyRequirement) -> String {
     if let Some(custom) = macro_snippet(name) {
         return custom.to_string();
     }
 
-    // Generic fallback
-    let is_block = has_body || block_macro_names().contains(name);
+    // Generic fallback: macros with Optional or Required body get a block snippet
+    let is_block = body != BodyRequirement::Never;
     if is_block {
         format!("{name} $1>>\n$2\n<</{name}")
     } else {

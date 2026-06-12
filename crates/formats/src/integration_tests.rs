@@ -1888,3 +1888,296 @@ fn rebuild_graph_full(
 
     workspace.graph = graph;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 4: Deprecated Macro Modifier tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sugarcube_deprecated_macro_token_modifier() {
+    // <<click>> is deprecated — its name token should have the Deprecated modifier
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Find the macro name token for "click"
+    let click_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Macro && tok_text == "click"
+    });
+    assert!(click_tok.is_some(), "Should have a Macro token for 'click'");
+    let tok = click_tok.unwrap();
+    assert_eq!(tok.modifier, Some(SemanticTokenModifier::Deprecated),
+        "Deprecated macro 'click' should have Deprecated modifier");
+}
+
+#[test]
+fn sugarcube_non_deprecated_macro_no_modifier() {
+    // <<link>> is NOT deprecated — its name token should NOT have the Deprecated modifier
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<link \"Go\" \"Forest\">>\n:: Forest\nTrees.\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let link_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Macro && tok_text == "link"
+    });
+    assert!(link_tok.is_some(), "Should have a Macro token for 'link'");
+    let tok = link_tok.unwrap();
+    assert_ne!(tok.modifier, Some(SemanticTokenModifier::Deprecated),
+        "Non-deprecated macro 'link' should NOT have Deprecated modifier");
+}
+
+#[test]
+fn sugarcube_deprecated_macro_diagnostic() {
+    // Deprecated macros should emit a Hint diagnostic with the deprecation message
+    use crate::plugin::{FormatPlugin, FormatDiagnosticSeverity};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let dep_diag = result.diagnostics.iter().find(|d| d.code == "sc-deprecated");
+    assert!(dep_diag.is_some(), "Should have a deprecation diagnostic for <<click>>");
+    let diag = dep_diag.unwrap();
+    assert_eq!(diag.severity, FormatDiagnosticSeverity::Hint);
+    assert!(diag.message.contains("<<link>>"), "Deprecation message should suggest <<link>>");
+}
+
+#[test]
+fn sugarcube_display_deprecated_diagnostic() {
+    // <<display>> is deprecated — should get both Deprecated modifier and diagnostic
+    use crate::plugin::{FormatPlugin, FormatDiagnosticSeverity, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<display \"Intro\">>\n:: Intro\nHello.\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Check token modifier
+    let display_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Macro && tok_text == "display"
+    });
+    assert!(display_tok.is_some(), "Should have a Macro token for 'display'");
+    assert_eq!(display_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated));
+
+    // Check diagnostic
+    let dep_diag = result.diagnostics.iter().find(|d| d.code == "sc-deprecated");
+    assert!(dep_diag.is_some(), "Should have deprecation diagnostic for <<display>>");
+    assert!(dep_diag.unwrap().message.contains("<<include>>"), "Should suggest <<include>>");
+}
+
+#[test]
+fn sugarcube_set_not_deprecated() {
+    // <<set>> is NOT deprecated — no Deprecated modifier, no deprecation diagnostic
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<set $x to 5>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let set_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Macro && tok_text == "set"
+    });
+    assert!(set_tok.is_some(), "Should have a Macro token for 'set'");
+    assert_ne!(set_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated),
+        "<<set>> should NOT have Deprecated modifier");
+
+    let dep_diags: Vec<_> = result.diagnostics.iter().filter(|d| d.code == "sc-deprecated").collect();
+    assert!(dep_diags.is_empty(), "Should have no deprecation diagnostics for <<set>>");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5: Contextual Macro Parsing — Token Emission tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sugarcube_capture_target_variable_definition_token() {
+    // <<capture $target>> should emit a Variable token with Definition modifier
+    // on the capture target variable ($target)
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<capture $target>>Captured!<</capture>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Find a Variable token with Definition modifier covering "$target"
+    let target_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Variable
+            && tok_text == "$target"
+            && t.modifier == Some(SemanticTokenModifier::Definition)
+    });
+    assert!(target_tok.is_some(),
+        "<<capture $target>> should emit Variable+Definition token for $target");
+}
+
+#[test]
+fn sugarcube_for_loop_vars_tokens() {
+    // <<for _i, $items>> should emit:
+    //   - Variable+Definition for _i (the loop index, a write target)
+    //   - Variable (no modifier) for $items (the iterated collection, a read)
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<for _i, $items>>Item<</for>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Check _i token: Variable + Definition
+    let index_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Variable
+            && tok_text == "_i"
+            && t.modifier == Some(SemanticTokenModifier::Definition)
+    });
+    assert!(index_tok.is_some(),
+        "<<for _i, $items>> should emit Variable+Definition token for _i");
+
+    // Check $items token: Variable with no modifier
+    let iter_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Variable
+            && tok_text == "$items"
+            && t.modifier.is_none()
+    });
+    assert!(iter_tok.is_some(),
+        "<<for _i, $items>> should emit Variable token (no modifier) for $items");
+}
+
+#[test]
+fn sugarcube_for_c_style_no_phase5_tokens() {
+    // C-style <<for _i to 0; _i lt 10; _i++>> should NOT emit Phase 5
+    // for_loop_vars tokens (it falls through to JS annotation pass).
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<for _i to 0; _i lt 10; _i++>>Loop<</for>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // There should be no Variable+Definition token for _i that comes from
+    // for_loop_vars (since for_loop_vars is None for C-style).
+    // Note: _i may still appear via var_refs as a plain Variable token
+    // (no modifier), but NOT as Variable+Definition from Phase 5.
+    let index_def_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Variable
+            && tok_text == "_i"
+            && t.modifier == Some(SemanticTokenModifier::Definition)
+    });
+    assert!(index_def_tok.is_none(),
+        "C-style <<for>> should NOT emit Variable+Definition for _i from for_loop_vars");
+}
+
+#[test]
+fn sugarcube_widget_definition_name_token() {
+    // <<widget myHelper>> should emit a Function+Definition token for "myHelper"
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<widget myHelper>>Content<</widget>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Find a Function token with Definition modifier covering "myHelper"
+    let def_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Function
+            && tok_text == "myHelper"
+            && t.modifier == Some(SemanticTokenModifier::Definition)
+    });
+    assert!(def_tok.is_some(),
+        "<<widget myHelper>> should emit Function+Definition token for 'myHelper'");
+}
+
+#[test]
+fn sugarcube_capture_temp_variable_token() {
+    // <<capture _temp>> should emit a Variable+Definition token for _temp
+    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<capture _temp>>Captured!<</capture>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let temp_tok = result.tokens.iter().find(|t| {
+        let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
+        t.token_type == SemanticTokenType::Variable
+            && tok_text == "_temp"
+            && t.modifier == Some(SemanticTokenModifier::Definition)
+    });
+    assert!(temp_tok.is_some(),
+        "<<capture _temp>> should emit Variable+Definition token for _temp");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8: Macro Polymorphy tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sugarcube_link_inline_no_close_tag() {
+    // <<link "Go" "Room">> without close tag should be treated as inline.
+    // The tree builder uses BodyRequirement::Optional from catalog.
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::plugin::FormatPlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<link \"Go\" \"Room\">>After\n:: Room\nHello\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Inline form should NOT produce unclosed-block diagnostics
+    let unclosed: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
+        .collect();
+    assert!(unclosed.is_empty(),
+        "Inline <<link>> without close tag should not produce unclosed-block errors, got: {:?}",
+        unclosed);
+}
+
+#[test]
+fn sugarcube_link_block_with_close_tag() {
+    // <<link "Go">>Clicked!<</link>> — block form with close tag
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::plugin::FormatPlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<link \"Go\">>Clicked!<</link>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    // Block form should not produce errors
+    let errors: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.code != "sc-deprecated")
+        .collect();
+    assert!(errors.is_empty(),
+        "Block <<link>> with close tag should not produce errors, got: {:?}", errors);
+}
+
+#[test]
+fn sugarcube_button_inline_no_close_tag() {
+    // <<button "Go" "Room">> without close tag — inline form
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::plugin::FormatPlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<button \"Go\" \"Room\">>After\n:: Room\nHello\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let unclosed: Vec<_> = result.diagnostics.iter()
+        .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
+        .collect();
+    assert!(unclosed.is_empty(),
+        "Inline <<button>> without close tag should not produce unclosed-block errors, got: {:?}",
+        unclosed);
+}

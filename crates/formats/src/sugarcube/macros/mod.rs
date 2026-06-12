@@ -32,6 +32,7 @@ pub use lookup::*;
 mod tests {
     use std::collections::HashSet;
     use super::*;
+    use crate::types::BodyRequirement;
 
     #[test]
     fn test_builtin_count() {
@@ -40,12 +41,22 @@ mod tests {
     }
 
     #[test]
-    fn test_block_macros() {
-        let blocks = block_macro_names();
+    fn test_body_macros() {
+        let blocks = body_macro_names();
         assert!(blocks.contains("if"));
         assert!(blocks.contains("for"));
         assert!(blocks.contains("link"));
         assert!(blocks.contains("widget"));
+        // Structural modifiers should NOT be in body_macro_names
+        assert!(!blocks.contains("else"));
+        assert!(!blocks.contains("elseif"));
+        assert!(!blocks.contains("case"));
+        assert!(!blocks.contains("default"));
+        // Previously missing from the old hardcoded list
+        assert!(blocks.contains("timed"));
+        assert!(blocks.contains("repeat"));
+        assert!(blocks.contains("css"));
+        assert!(blocks.contains("createplaylist"));
     }
 
     #[test]
@@ -90,15 +101,15 @@ mod tests {
     #[test]
     fn test_build_macro_snippet() {
         // Custom snippet
-        let set_snippet = build_macro_snippet("set", false);
+        let set_snippet = build_macro_snippet("set", BodyRequirement::Never);
         assert!(set_snippet.contains("set"));
 
         // Generic block fallback
-        let custom_block = build_macro_snippet("customblock", true);
+        let custom_block = build_macro_snippet("customblock", BodyRequirement::Required);
         assert!(custom_block.contains("<</customblock"));
 
         // Generic inline fallback
-        let custom_inline = build_macro_snippet("custominline", false);
+        let custom_inline = build_macro_snippet("custominline", BodyRequirement::Never);
         assert!(custom_inline.contains("custominline"));
     }
 
@@ -180,11 +191,102 @@ mod tests {
     }
 
     #[test]
-    fn test_is_block_macro() {
-        assert!(is_block_macro("if"));
-        assert!(is_block_macro("for"));
-        assert!(is_block_macro("link"));
-        assert!(!is_block_macro("set"));
-        assert!(!is_block_macro("goto"));
+    fn test_body_macro_names() {
+        let blocks = body_macro_names();
+        assert!(blocks.contains("if"));
+        assert!(blocks.contains("for"));
+        assert!(blocks.contains("link"));
+        assert!(!blocks.contains("set"));
+        assert!(!blocks.contains("goto"));
+        // Structural modifiers are NOT body macros
+        assert!(!blocks.contains("else"));
+        assert!(!blocks.contains("case"));
+    }
+
+    #[test]
+    fn test_body_requirement() {
+        // Required: always block macros
+        let if_def = builtin_macros().iter().find(|m| m.name == "if").unwrap();
+        assert_eq!(if_def.body, BodyRequirement::Required);
+
+        // Never: always inline macros
+        let set_def = builtin_macros().iter().find(|m| m.name == "set").unwrap();
+        assert_eq!(set_def.body, BodyRequirement::Never);
+
+        // Optional: polymorphic macros
+        let link_def = builtin_macros().iter().find(|m| m.name == "link").unwrap();
+        assert_eq!(link_def.body, BodyRequirement::Optional);
+
+        let button_def = builtin_macros().iter().find(|m| m.name == "button").unwrap();
+        assert_eq!(button_def.body, BodyRequirement::Optional);
+    }
+
+    #[test]
+    fn test_inline_js_macro_names() {
+        let js_macros = inline_js_macro_names();
+        // Control-flow macros with undeclared but always-JS args
+        assert!(js_macros.contains("if"));
+        assert!(js_macros.contains("elseif"));
+        assert!(js_macros.contains("for"));
+        assert!(js_macros.contains("switch"));
+        // Macros with Expression args in the catalog
+        assert!(js_macros.contains("run"));
+        assert!(js_macros.contains("print"));
+        assert!(js_macros.contains("set"));   // has Variable arg
+        assert!(js_macros.contains("capture")); // has Variable arg
+        assert!(js_macros.contains("unset"));   // has Variable arg
+        // Navigation macros with passage-name args are NOT inline JS
+        // (their args are just strings, not JS expressions)
+        assert!(!js_macros.contains("goto"));
+        assert!(!js_macros.contains("include"));
+        // Widget is not JS (just a name identifier)
+        assert!(!js_macros.contains("widget"));
+    }
+
+    #[test]
+    fn test_dynamic_navigation_macros_derived() {
+        let nav = dynamic_navigation_macros();
+        // Macros with passage-ref args in the catalog
+        assert!(nav.contains("goto"));
+        assert!(nav.contains("include"));
+        assert!(nav.contains("link"));
+        assert!(nav.contains("button"));
+        // back/return are added manually (no passage arg but navigate dynamically)
+        assert!(nav.contains("back"));
+        assert!(nav.contains("return"));
+        // replace/append/prepend have selector args, not passage refs
+        // (unless the catalog says otherwise)
+    }
+
+    #[test]
+    fn test_known_macro_names_derived() {
+        let known = known_macro_names();
+        // Should have all catalog macros
+        assert!(known.contains("if"));
+        assert!(known.contains("set"));
+        assert!(known.contains("widget"));
+        assert!(known.contains("audio"));
+        assert!(known.contains("click")); // deprecated but still known
+        // Count should match catalog
+        assert_eq!(known.len(), builtin_macros().len());
+    }
+
+    #[test]
+    fn test_deprecated_macros_derived() {
+        let deprecated = deprecated_macros();
+        // Should match exactly the catalog's deprecated entries
+        let catalog_deprecated: Vec<_> = builtin_macros()
+            .iter()
+            .filter(|m| m.deprecated)
+            .collect();
+        assert_eq!(deprecated.len(), catalog_deprecated.len());
+        assert!(deprecated.contains_key("click"));
+        assert!(deprecated.contains_key("display"));
+        assert!(deprecated.contains_key("remember"));
+        assert!(deprecated.contains_key("forget"));
+        assert!(deprecated.contains_key("setcss"));
+        assert!(deprecated.contains_key("settitle"));
+        // Verify messages come from catalog
+        assert!(deprecated["click"].contains("<<link>>"));
     }
 }

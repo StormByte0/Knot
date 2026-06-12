@@ -86,59 +86,29 @@ pub fn structural_constraints() -> HashMap<&'static str, HashSet<&'static str>> 
 }
 
 /// Deprecated macro names and their deprecation messages.
+///
+/// Derived from the macro catalog's `deprecated` and `deprecation_message`
+/// fields — the catalog is the single source of truth. If a macro is marked
+/// deprecated in the catalog but lacks a `deprecation_message`, its
+/// description is used as a fallback.
 pub fn deprecated_macros() -> HashMap<&'static str, &'static str> {
-    let mut map: HashMap<&'static str, &'static str> = HashMap::new();
-    map.insert("click", "<<click>> is deprecated. Use <<link>> instead.");
-    map.insert("display", "<<display>> is deprecated. Use <<include>> instead.");
-    map.insert("remember", "<<remember>> is deprecated. Use <<set>> with persistent storage instead.");
-    map.insert("forget", "<<forget>> is deprecated. Use <<set>> with persistent storage instead.");
-    map.insert("setcss", "<<setcss>> is deprecated. Use <<addclass>> or <<removeclass>> instead.");
-    map.insert("settitle", "<<settitle>> is deprecated. Set document.title directly via <<run>> instead.");
-    map
+    builtin_macros()
+        .iter()
+        .filter(|m| m.deprecated)
+        .map(|m| {
+            let msg = m.deprecation_message.unwrap_or(m.description);
+            (m.name, msg)
+        })
+        .collect()
 }
 
 /// Known macro names (all builtins). Used for unknown-macro detection.
+///
+/// Derived from the macro catalog — the catalog is the single source of truth.
+/// If a macro is added to the catalog, it automatically appears here.
 pub fn known_macro_names() -> HashSet<&'static str> {
-    [
-        // Control
-        "if", "elseif", "else", "for", "break", "continue", "switch", "case", "default",
-        // Variables
-        "set", "unset", "capture", "run",
-        // Output
-        "print", "=", "-", "type", "nobr", "silently", "done",
-        // DOM
-        "append", "prepend", "replace", "remove", "copy",
-        "addclass", "removeclass", "toggleclass", "css", "script",
-        // Links
-        "link", "button", "linkappend", "linkprepend", "linkreplace",
-        "actions", "click",
-        // Forms
-        "checkbox", "radiobutton", "textarea", "textbox", "numberbox",
-        // Navigation
-        "goto", "back", "return", "include",
-        // Timing
-        "timed", "repeat", "stop",
-        // Widgets
-        "widget",
-        // Audio
-        "audio", "playlist", "masteraudio", "createplaylist", "cacheaudio", "waitforaudio",
-        // Deprecated
-        "display", "remember", "forget", "setcss", "settitle",
-    ]
-    .into_iter()
-    .collect()
-}
-
-/// Check whether a macro name is a block macro (has close tags and can contain children).
-pub fn is_block_macro(name: &str) -> bool {
-    matches!(
-        name,
-        "if" | "for" | "switch"
-        | "link" | "button" | "linkappend" | "linkprepend" | "linkreplace"
-        | "append" | "prepend" | "replace" | "copy"
-        | "widget" | "done" | "nobr" | "silently" | "capture" | "script" | "type"
-        | "actions" | "click"
-        | "timed" | "repeat"
-        | "createplaylist" | "css"
-    )
+    builtin_macros()
+        .iter()
+        .map(|m| m.name)
+        .collect()
 }

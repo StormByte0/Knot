@@ -97,12 +97,41 @@ impl std::fmt::Display for MacroCategory {
     }
 }
 
+/// Whether a macro can have a body (content between open and close tags).
+///
+/// This replaces the old `has_body: bool` with a three-valued enum that
+/// naturally expresses SugarCube macro polymorphy. The tree builder uses
+/// this to determine how to handle an open macro tag that has no matching
+/// close tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyRequirement {
+    /// Always inline — no body, no close tag expected.
+    /// Examples: `<<set>>`, `<<print>>`, `<<goto>>`, `<<run>>`, `<<unset>>`
+    Never,
+
+    /// Can be either inline or block. Inline when no close tag is found;
+    /// block when close tag is present.
+    /// Examples: `<<link>>`, `<<button>>`, `<<click>>`
+    Optional,
+
+    /// Always block — body is required, close tag is expected.
+    /// Unclosed blocks produce a diagnostic.
+    /// Examples: `<<if>>`, `<<for>>`, `<<switch>>`, `<<widget>>`, `<<capture>>`
+    Required,
+}
+
 /// A format-specific macro definition entry.
 #[derive(Debug, Clone)]
 pub struct MacroDef {
     pub name: &'static str,
     pub description: &'static str,
-    pub has_body: bool,
+    /// Whether this macro can have a body (content between open and close tags).
+    ///
+    /// Determines how the tree builder handles an open macro with no close tag:
+    /// - `Never`: inline macro, no children expected
+    /// - `Optional`: polymorphic — inline if no close tag, block if close tag found
+    /// - `Required`: always block — unclosed blocks get a diagnostic
+    pub body: BodyRequirement,
     /// Argument signature definitions. If None, the macro takes arbitrary args.
     pub args: Option<&'static [MacroArgDef]>,
     /// Whether this macro is deprecated.

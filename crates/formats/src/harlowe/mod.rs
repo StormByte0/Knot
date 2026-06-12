@@ -28,6 +28,7 @@ use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
+use crate::types::BodyRequirement;
 
 // ---------------------------------------------------------------------------
 // Logos lexer — passage boundary detection
@@ -1372,8 +1373,8 @@ impl FormatPlugin for HarlowePlugin {
         String::new() // Harlowe has no close tags
     }
 
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        if has_body {
+    fn build_macro_snippet(&self, name: &str, body: BodyRequirement) -> String {
+        if body != BodyRequirement::Never {
             format!("({}: $1)\n$2\n(/{}:)", name, name)
         } else {
             format!("({}: $1)", name)

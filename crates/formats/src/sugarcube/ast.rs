@@ -41,6 +41,14 @@ pub struct JsAnalysis {
     pub template_adds: Vec<TemplateAddInfo>,
     /// Function declarations/expressions found.
     pub function_defs: Vec<FunctionDefInfo>,
+    /// Literal tokens (strings, numbers, booleans, null) found by oxc.
+    pub literal_spans: Vec<LiteralSpan>,
+    /// Operator tokens found by oxc (including SugarCube keyword operators
+    /// mapped back to their original positions via the preprocessor).
+    pub operator_spans: Vec<OperatorSpan>,
+    /// Global object/namespace references found by oxc (e.g., `Engine`,
+    /// `Story`, `Config`, `Save`, `UI`, etc.).
+    pub namespace_spans: Vec<NamespaceSpan>,
 }
 
 /// A variable operation extracted by the oxc AST walker.
@@ -75,6 +83,103 @@ pub struct AnalyzedVarOp {
     /// `span` covers just the property key (e.g., `bar`), but `construct_span`
     /// covers the entire `{...}` expression.
     pub construct_span: Option<Range<usize>>,
+}
+
+/// A literal token found by oxc within a JS snippet.
+///
+/// Produced by Phase 2 (JS annotation pass) alongside `OperatorSpan` entries.
+/// The token builder emits these as `String`, `Number`, `Boolean`, or `Keyword`
+/// semantic tokens, giving fine-grained highlighting for literal values inside
+/// macro arguments and inline expressions.
+#[derive(Debug, Clone)]
+pub struct LiteralSpan {
+    /// The kind of literal.
+    pub kind: LiteralKind,
+    /// Byte range in the passage body (passage-body-relative).
+    pub span: Range<usize>,
+}
+
+/// The kind of literal found by oxc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiteralKind {
+    /// A string literal: `"hello"` or `'world'`.
+    String,
+    /// A numeric literal: `42`, `3.14`, `0xFF`.
+    Number,
+    /// A boolean literal: `true`, `false`.
+    Boolean,
+    /// The `null` keyword.
+    Null,
+}
+
+/// An operator token found by oxc within a JS snippet.
+///
+/// SugarCube keyword operators (`to`, `eq`, `and`, etc.) are normalized to JS
+/// equivalents by the preprocessor before oxc sees them. The preprocessor's
+/// substitution table maps each normalized token back to the original SugarCube
+/// keyword position, so the `span` field references the *original* SugarCube
+/// source position.
+#[derive(Debug, Clone)]
+pub struct OperatorSpan {
+    /// The kind of operator.
+    pub kind: OperatorKind,
+    /// Byte range in the passage body (passage-body-relative).
+    pub span: Range<usize>,
+}
+
+/// The kind of operator found by oxc.
+///
+/// Categorizes operators for semantic token emission. SugarCube keyword
+/// operators like `to`, `eq`, `and` are normalized to JS operators (`=`, `===`,
+/// `&&`) by the preprocessor, but this enum captures the semantic category
+/// of the *original* SugarCube operator, not the JS equivalent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorKind {
+    /// Assignment: `=`, `to`.
+    Assignment,
+    /// Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=`.
+    CompoundAssign,
+    /// Comparison: `===`, `!==`, `>`, `<`, `>=`, `<=`, `eq`, `neq`, `is`,
+    /// `isnot`, `gt`, `gte`, `lt`, `lte`.
+    Comparison,
+    /// Logical: `&&`, `||`, `!`, `and`, `or`, `not`.
+    Logical,
+    /// Arithmetic: `+`, `-`, `*`, `/`, `%`.
+    Arithmetic,
+    /// Other operators: `?:`, `??`, `,`, etc.
+    Other,
+}
+
+/// A reference to a SugarCube global object found by oxc.
+///
+/// When JS code references a known global like `Engine`, `Story`, `Config`,
+/// etc., this records the span of the global name and any properties accessed
+/// on it. Used by the token builder to emit `Namespace` + `Property` tokens.
+///
+/// **Deduplication**: `State.variables.x` patterns are already covered by
+/// `AnalyzedVarOp` (which emits `Variable` + `Property` tokens). This type
+/// is only used for non-`State` globals, or for `State` accesses that are NOT
+/// variable reads/writes (e.g., `State.turns`, `State.passage`).
+#[derive(Debug, Clone)]
+pub struct NamespaceSpan {
+    /// The global object name (e.g., "Engine", "Story", "Config").
+    pub name: String,
+    /// Byte range of the global name in the passage body.
+    pub span: Range<usize>,
+    /// Properties accessed on this global object.
+    pub property_spans: Vec<PropertySpan>,
+}
+
+/// A property access on a SugarCube global object.
+///
+/// Records the name and span of a property accessed via dot notation on a
+/// known global. Used for `Property` token emission.
+#[derive(Debug, Clone)]
+pub struct PropertySpan {
+    /// The property name (e.g., "play", "has", "debug").
+    pub name: String,
+    /// Byte range of the property name in the passage body.
+    pub span: Range<usize>,
 }
 
 /// Information about a `Macro.add()` call found in JS.
@@ -309,6 +414,92 @@ pub struct SetAssignment {
 }
 
 // ---------------------------------------------------------------------------
+// StructuredMacroArg — catalog-driven structured arg extraction
+// ---------------------------------------------------------------------------
+
+/// The semantic kind of a parsed macro argument, derived from the catalog.
+///
+/// Unlike `MacroArgKind` in `types.rs` (which declares what a macro *expects*
+/// in its signature), this enum records what a parsed argument *actually is*
+/// based on the catalog's `MacroArgDef` declarations. The catalog is the
+/// single source of truth — the parser just aligns extracted string/bare
+/// tokens to the catalog's declared positions and kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParsedArgKind {
+    /// A passage name reference (quoted or bare).
+    /// e.g., `"Cave"` in `<<goto "Cave">>`, `Forest` in `<<goto Forest>>`
+    PassageRef,
+    /// A display label (first string arg of link/button macros).
+    /// e.g., `"Talk"` in `<<link "Talk" "Shop">>`
+    Label,
+    /// A CSS selector argument.
+    /// e.g., `"#hp-bar"` in `<<remove "#hp-bar">>`
+    Selector,
+    /// A generic string argument (not a passage ref, label, or selector).
+    /// e.g., `"2s"` in `<<timed "2s">>`
+    String,
+    /// A variable reference argument ($var or _var).
+    /// e.g., `$dest` in `<<goto $dest>>`
+    VariableRef,
+    /// A JS expression argument (the common case for most macros).
+    /// e.g., `$hp gte 50` in `<<if $hp gte 50>>`
+    Expression,
+}
+
+/// A structured macro argument extracted from the raw args string.
+///
+/// Phase 6 populates this by scanning the args string for quoted/bare tokens
+/// and aligning them with the `MacroArgDef` catalog entries. This gives
+/// downstream consumers (token builder, link extraction, completion) direct
+/// access to what each argument position means without re-parsing the raw
+/// `args` string.
+///
+/// **Conservative approach**: Only quoted string arguments and bare passage
+/// names are extracted. Complex JS expressions are left to oxc (Phase 2).
+/// This covers the most impactful use cases: passage name references for
+/// link extraction, graph edges, and go-to-definition.
+#[derive(Debug, Clone)]
+pub struct StructuredMacroArg {
+    /// The semantic kind of this argument, derived from the catalog.
+    pub kind: ParsedArgKind,
+    /// The argument value (string content without quotes for quoted args,
+    /// or the bare token for unquoted args).
+    pub value: String,
+    /// Byte range of the argument in the passage body (passage-body-relative).
+    /// For quoted strings, this covers the content inside the quotes
+    /// (not including the quote characters themselves).
+    pub span: Range<usize>,
+}
+
+// ---------------------------------------------------------------------------
+// ForLoopVars — structured <<for>> macro parsing
+// ---------------------------------------------------------------------------
+
+/// Structured representation of a `<<for>>` macro's loop variables.
+///
+/// SugarCube's `<<for>>` macro has two syntax forms:
+///
+/// 1. **Simplified iteration**: `<<for _i, $array>>` — iterates over `$array`,
+///    binding each element to `_i`. This form is detected by the comma separator
+///    between the index variable and the iterated variable.
+///
+/// 2. **C-style for loop**: `<<for _i to 0; _i lt 10; _i++>>` — uses the
+///    standard three-part loop header. This form falls through to the JS
+///    annotation pass for full oxc analysis; `for_loop_vars` will be `None`.
+///
+/// This type is only populated for the simplified iteration form. The C-style
+/// form relies entirely on `JsAnalysis` for variable extraction.
+#[derive(Debug, Clone)]
+pub struct ForLoopVars {
+    /// The loop iteration variable (e.g., `_i` in `<<for _i, $array>>`).
+    /// This is the variable that receives each element during iteration.
+    pub index_var: VarRef,
+    /// The collection being iterated (e.g., `$array` in `<<for _i, $array>>`).
+    /// This is the variable being read for its contents.
+    pub iterated_var: VarRef,
+}
+
+// ---------------------------------------------------------------------------
 // AstNode — the core AST node enum
 // ---------------------------------------------------------------------------
 
@@ -368,6 +559,45 @@ pub enum AstNode {
         /// When `None`, the macro is not a `<<set>>` (or the args couldn't
         /// be parsed as a simple assignment, e.g. `<<set $arr.push(1)>>`).
         set_assignment: Option<SetAssignment>,
+        /// For definition macros (`<<widget>>`): the span of the name being
+        /// defined (e.g., "myWidget" in `<<widget myWidget>>`).
+        ///
+        /// This enables the token builder to emit a `Function` token with
+        /// `Definition` modifier for the defined name, distinct from the
+        /// `Macro` token on the keyword itself.
+        definition_name_span: Option<Range<usize>>,
+        /// For block macros: byte range of the name portion within the close tag.
+        /// Combined with `close_span`, this provides lossless round-trip capability
+        /// for the close tag — the full `<</name>>` span and the name portion can
+        /// both be reconstructed.
+        close_name_span: Option<Range<usize>>,
+        /// For `<<capture>>` macros: the target variable being captured.
+        ///
+        /// When present, the SugarCube parser has identified the variable reference
+        /// in the args (e.g., `$target` in `<<capture $target>>`). This enables
+        /// registry population to mark the variable as `VarAccessKind::Capture`
+        /// without relying on the JS annotation pass's heuristic.
+        capture_target: Option<VarRef>,
+        /// For `<<for>>` macros: structured loop variable information.
+        ///
+        /// Only populated for the simplified iteration form (`<<for _i, $array>>`).
+        /// The C-style form (`<<for _i to 0; _i lt 10; _i++>>`) falls through
+        /// to the JS annotation pass, and `for_loop_vars` will be `None`.
+        for_loop_vars: Option<ForLoopVars>,
+        /// Structured argument information derived from the `MacroDef` catalog.
+        ///
+        /// When present, each entry corresponds to a parsed argument from the
+        /// raw `args` string, classified by the catalog's `MacroArgDef` declarations.
+        /// Only macros with declared args (`MacroDef.args.is_some()`) get structured
+        /// extraction. Macros with no catalog entry or undeclared args remain `None`.
+        ///
+        /// This field is the **AST-level source of truth** for what each argument
+        /// position means. Downstream consumers (token builder, link extraction,
+        /// completion) should prefer this over re-parsing `args` when available.
+        ///
+        /// **Conservative approach**: Only quoted string arguments and bare passage
+        /// names are extracted. Complex JS expressions are left to oxc (Phase 2).
+        structured_args: Option<Vec<StructuredMacroArg>>,
     },
 
     /// An inline expression: `<<=>>expr>>` or `<<->>expr>>`.
@@ -408,6 +638,23 @@ pub enum AstNode {
         /// What kind of comment this is.
         kind: CommentKind,
         /// Byte range of the entire comment including delimiters.
+        span: Range<usize>,
+    },
+
+    /// A macro close tag: `<</name>>`.
+    ///
+    /// Produced by the flat parser and consumed by the tree builder. Does not
+    /// appear in the final nested AST — its span information is preserved in
+    /// the parent `Macro`'s `close_span` and `close_name_span` fields.
+    ///
+    /// The tree builder pairs `Macro` with `MacroClose` to establish nesting,
+    /// then removes `MacroClose` nodes from the final tree.
+    MacroClose {
+        /// The macro name being closed.
+        name: String,
+        /// Byte range of the name portion in the passage body.
+        name_span: Range<usize>,
+        /// Byte range of the full `<</name>>` tag in the passage body.
         span: Range<usize>,
     },
 
@@ -628,9 +875,6 @@ pub fn collect_js_snippets(nodes: &[AstNode]) -> Vec<JsSnippet> {
 }
 
 fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>) {
-    /// Macro names that contain inline JS expressions (excluding "set",
-    /// which is handled specially via set_assignment).
-    const INLINE_JS_MACROS: &[&str] = &["run", "if", "elseif", "else", "print", "nobr"];
     /// Macro names that contain full JS blocks.
     const BLOCK_JS_MACROS: &[&str] = &["script"];
 
@@ -733,10 +977,27 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                         });
                     }
                 }
-            } else if INLINE_JS_MACROS.contains(&name.as_str()) {
+            } else if super::macros::inline_js_macro_names().contains(name.as_str()) {
                 // Inline JS: the args are a JS expression.
+                // Uses the catalog-derived inline_js_macro_names() so the list
+                // stays in sync with the macro catalog automatically.
                 // Calculate the args start offset similarly to the <<set>> case.
                 // open_span.end - 2 accounts for the >> closing tag.
+                let trimmed = args.trim();
+                if !trimmed.is_empty() {
+                    let leading_ws = args.len() - args.trim_start().len();
+                    let args_body_start = open_span.end - 2 - args.len() + leading_ws;
+                    result.push(JsSnippet {
+                        source: trimmed.to_string(),
+                        body_offset: args_body_start,
+                        macro_name: name.clone(),
+                        is_block: false,
+                    });
+                }
+            } else if args.contains('$') || args.contains('_') {
+                // Fallback: any macro whose args contain $var or _var references
+                // likely contains a JS expression. This catches macros not in
+                // the inline_js_macro_names set (e.g., <<goto $target>>).
                 let trimmed = args.trim();
                 if !trimmed.is_empty() {
                     let leading_ws = args.len() - args.trim_start().len();

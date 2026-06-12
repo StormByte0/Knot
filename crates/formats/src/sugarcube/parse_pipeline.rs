@@ -114,7 +114,15 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset);
             all_tokens.extend(json_tokens);
         } else {
-            super::token_builder::build_semantic_tokens(&passage_ast.nodes, &mut all_tokens, body_offset);
+            // Collect custom macro names for Function token differentiation
+            let custom_names: std::collections::HashSet<String> =
+                registry.custom_macros().names().cloned().collect();
+            super::token_builder::build_semantic_tokens(
+                &passage_ast.nodes,
+                &mut all_tokens,
+                body_offset,
+                &custom_names,
+            );
         }
 
         // Build diagnostics from the body AST (shift spans by body_offset)

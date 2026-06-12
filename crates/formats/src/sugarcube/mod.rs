@@ -88,7 +88,7 @@ use url::Url;
 
 use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult};
 use crate::types::{
-    GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
+    BodyRequirement, GlobalDef, ImplicitPassagePattern, MacroDef, OperatorNormalization,
     VariableSigilInfo, VariableTreeNode,
 };
 use ast::ParseMode;
@@ -188,8 +188,8 @@ impl FormatPlugin for SugarCubePlugin {
         macros::builtin_macros()
     }
 
-    fn block_macro_names(&self) -> HashSet<&'static str> {
-        macros::block_macro_names()
+    fn body_macro_names(&self) -> HashSet<&'static str> {
+        macros::body_macro_names()
     }
 
     fn folding_modifier_names(&self) -> HashSet<&'static str> {
@@ -280,8 +280,8 @@ impl FormatPlugin for SugarCubePlugin {
         format!("<</{}>>", name)
     }
 
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        macros::build_macro_snippet(name, has_body)
+    fn build_macro_snippet(&self, name: &str, body: BodyRequirement) -> String {
+        macros::build_macro_snippet(name, body)
     }
 
     fn detect_close_tag_context(&self, before_cursor: &str) -> Option<String> {

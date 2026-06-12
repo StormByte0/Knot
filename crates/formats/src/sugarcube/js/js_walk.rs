@@ -26,7 +26,8 @@ use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 
 use crate::sugarcube::ast::{
-    AnalyzedVarOp, FunctionDefInfo, JsAnalysis, MacroAddInfo, TemplateAddInfo,
+    AnalyzedVarOp, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
+    NamespaceSpan, OperatorKind, OperatorSpan, PropertySpan, TemplateAddInfo,
 };
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
@@ -53,6 +54,9 @@ pub fn walk_script_passage(
     for stmt in &program.body {
         walk_statement(stmt, preprocessed, &mut analysis);
     }
+
+    // Extract literal and operator spans from the substitution table and oxc AST.
+    extract_substitution_operators(preprocessed, &mut analysis);
 
     analysis
 }
@@ -85,6 +89,9 @@ pub fn walk_inline_js(
     for stmt in &program.body {
         walk_statement(stmt, preprocessed, &mut analysis);
     }
+
+    // Extract literal and operator spans from the substitution table and oxc AST.
+    extract_substitution_operators(preprocessed, &mut analysis);
 
     analysis
 }
@@ -277,6 +284,17 @@ fn walk_expression(
             {
                 // Found Template.add — the parent call expression handles this
             }
+            // ── Namespace detection for SugarCube global objects ───────
+            // After the specific pattern checks above, check if the object
+            // of this member expression is a known SugarCube global. This
+            // covers patterns like Engine.play(), Story.has(), Config.debug,
+            // State.turns, State.passage, etc.
+            //
+            // IMPORTANT: We skip `State.variables.x` and `SugarCube.State.variables.x`
+            // patterns here because those are already handled by var_ops above.
+            // We also skip `Macro.add` and `Template.add` since those are handled
+            // by the call expression handler.
+            emit_namespace_for_member_expr(member, preprocessed, analysis);
             // Recurse into object
             walk_expression(&member.object, preprocessed, analysis);
         }
@@ -387,6 +405,8 @@ fn walk_expression(
             }
         }
         Expr::AssignmentExpression(assign) => {
+            // Emit operator span for the assignment operator.
+            emit_assignment_operator(&assign, preprocessed, analysis);
             // Check for State.variables.x = value
             check_assignment_for_state_var(&assign.left, preprocessed, analysis);
             // Check for object literal assignments to extract property paths
@@ -395,12 +415,23 @@ fn walk_expression(
         }
         Expr::Identifier(id) => {
             check_identifier_for_substituted_var(id, false, preprocessed, analysis);
+            // Note: We do NOT emit standalone NamespaceSpan for global identifiers
+            // here because member expressions like `Engine.play()` are already
+            // handled by `emit_namespace_for_member_expr`, which emits both
+            // the Namespace and Property tokens. When we recurse into the
+            // object of a member expression, we'd double-emit the Namespace.
+            // Standalone global references (e.g., just `State` without `.x`)
+            // are rare and not critical for highlighting.
         }
         Expr::BinaryExpression(bin) => {
+            // Emit operator span for the binary operator.
+            emit_binary_operator(&bin, preprocessed, analysis);
             walk_expression(&bin.left, preprocessed, analysis);
             walk_expression(&bin.right, preprocessed, analysis);
         }
         Expr::LogicalExpression(logic) => {
+            // Emit operator span for the logical operator.
+            emit_logical_operator(&logic, preprocessed, analysis);
             walk_expression(&logic.left, preprocessed, analysis);
             walk_expression(&logic.right, preprocessed, analysis);
         }
@@ -418,7 +449,16 @@ fn walk_expression(
             walk_expression(&pe.expression, preprocessed, analysis);
         }
         Expr::UnaryExpression(unary) => {
+            // Emit operator span for unary operators (!, -, +, typeof, etc.)
+            emit_unary_operator(&unary, preprocessed, analysis);
             walk_expression(&unary.argument, preprocessed, analysis);
+        }
+        Expr::UpdateExpression(update) => {
+            // Emit operator span for update operators (++, --)
+            emit_update_operator(&update, preprocessed, analysis);
+            // UpdateExpression.argument is a SimpleAssignmentTarget, not an Expression.
+            // Walk it for any variable references inside.
+            walk_assignment_target_like(&update.argument, preprocessed, analysis);
         }
         Expr::ObjectExpression(obj) => {
             for prop in &obj.properties {
@@ -431,6 +471,120 @@ fn walk_expression(
             walk_expression(&new_expr.callee, preprocessed, analysis);
             for arg in &new_expr.arguments {
                 walk_argument(arg, preprocessed, analysis);
+            }
+        }
+        // ── Literal expressions: emit literal spans ──────────────────
+        Expr::StringLiteral(str_lit) => {
+            let span = preprocessed.map_range_to_original(
+                str_lit.span.start as usize..str_lit.span.end as usize
+            );
+            analysis.literal_spans.push(LiteralSpan {
+                kind: LiteralKind::String,
+                span,
+            });
+        }
+        Expr::NumericLiteral(num_lit) => {
+            let span = preprocessed.map_range_to_original(
+                num_lit.span.start as usize..num_lit.span.end as usize
+            );
+            analysis.literal_spans.push(LiteralSpan {
+                kind: LiteralKind::Number,
+                span,
+            });
+        }
+        Expr::BooleanLiteral(bool_lit) => {
+            let span = preprocessed.map_range_to_original(
+                bool_lit.span.start as usize..bool_lit.span.end as usize
+            );
+            analysis.literal_spans.push(LiteralSpan {
+                kind: LiteralKind::Boolean,
+                span,
+            });
+        }
+        Expr::NullLiteral(null_lit) => {
+            let span = preprocessed.map_range_to_original(
+                null_lit.span.start as usize..null_lit.span.end as usize
+            );
+            analysis.literal_spans.push(LiteralSpan {
+                kind: LiteralKind::Null,
+                span,
+            });
+        }
+        Expr::TemplateLiteral(tmpl) => {
+            // Template literals with no expressions are effectively strings
+            if tmpl.expressions.is_empty() && tmpl.quasis.len() == 1 {
+                let span = preprocessed.map_range_to_original(
+                    tmpl.span.start as usize..tmpl.span.end as usize
+                );
+                analysis.literal_spans.push(LiteralSpan {
+                    kind: LiteralKind::String,
+                    span,
+                });
+            } else {
+                // Template literals with expressions: walk the expressions
+                // and emit string spans for the quasi parts
+                for quasi in &tmpl.quasis {
+                    if !quasi.value.raw.is_empty() {
+                        let span = preprocessed.map_range_to_original(
+                            quasi.span.start as usize..quasi.span.end as usize
+                        );
+                        analysis.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::String,
+                            span,
+                        });
+                    }
+                }
+                for expr in &tmpl.expressions {
+                    walk_expression(expr, preprocessed, analysis);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal: walk SimpleAssignmentTarget (for UpdateExpression)
+// ---------------------------------------------------------------------------
+
+/// Walk a `SimpleAssignmentTarget` for variable detection.
+///
+/// `UpdateExpression` (like `$i++`) uses `SimpleAssignmentTarget` as its
+/// argument type, not `Expression`. This function handles the common cases
+/// to detect substituted variable references.
+fn walk_assignment_target_like(
+    target: &oxc_ast::ast::SimpleAssignmentTarget<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::SimpleAssignmentTarget;
+
+    match target {
+        SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
+            check_identifier_for_substituted_var(id, true, preprocessed, analysis);
+        }
+        SimpleAssignmentTarget::StaticMemberExpression(member) => {
+            // Check for State.variables.x pattern directly
+            if member.property.name != "variables"
+                && let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object
+                && inner.property.name == "variables"
+                && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
+                && id.name == "State"
+            {
+                let prop_name = member.property.name.as_str();
+                let var_name = format!("${}", prop_name);
+                let original_start = preprocessed.map_to_original(member.span.start as usize);
+                let original_end = preprocessed.map_to_original(member.span.end as usize);
+                let span = original_start..original_end;
+                analysis.var_ops.push(AnalyzedVarOp {
+                    name: var_name,
+                    is_temporary: false,
+                    access_kind: VarAccessKind::Write,
+                    span: span.clone(),
+                    property_path: String::new(),
+                    segment_spans: vec![span],
+                    construct_span: None,
+                });
             }
         }
         _ => {}
@@ -839,6 +993,373 @@ fn split_substituted_var(var_part: &str) -> (&str, &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Operator extraction from substitution table and oxc AST
+// ---------------------------------------------------------------------------
+
+/// Extract operator spans from the preprocessor's substitution table.
+///
+/// SugarCube keyword operators (`to`, `eq`, `and`, etc.) are normalized to JS
+/// equivalents by the preprocessor before oxc sees them. The substitution table
+/// records the original position and text of each normalization. This function
+/// walks those substitutions and emits `OperatorSpan` entries for each one that
+/// represents an operator normalization (skipping `$var` and `_var` substitutions).
+///
+/// This is the primary mechanism for SugarCube keyword operator tokens. Standard
+/// JS operators (like `+`, `>`, `===` that appear directly in the source without
+/// normalization) are emitted by the `emit_*_operator` functions during the
+/// oxc AST walk.
+fn extract_substitution_operators(
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    /// SugarCube keyword operator → operator kind classification.
+    /// Returns `None` for non-operator substitutions (like $var replacements).
+    fn classify_keyword(keyword: &str) -> Option<OperatorKind> {
+        match keyword {
+            "to" => Some(OperatorKind::Assignment),
+            "eq" | "neq" | "is" | "isnot" | "gt" | "gte" | "lt" | "lte" => {
+                Some(OperatorKind::Comparison)
+            }
+            "and" | "or" | "not" => Some(OperatorKind::Logical),
+            _ => None,
+        }
+    }
+
+    for sub in &preprocessed.substitutions {
+        // $var substitutions start with '$' or '_' — skip those.
+        // Operator normalizations have alphabetic original_text (like "to", "eq").
+        if let Some(kind) = classify_keyword(&sub.original_text) {
+            // The substitution's original_range is relative to the preprocessed
+            // source (the snippet), so we need to map it through origin_offset.
+            let span = (sub.original_range.start + preprocessed.origin_offset)
+                ..(sub.original_range.end + preprocessed.origin_offset);
+            analysis.operator_spans.push(OperatorSpan { kind, span });
+        }
+    }
+}
+
+/// Emit an operator span for a binary expression from the oxc AST.
+///
+/// Computes the operator's span from the gap between the left and right operand
+/// spans, then maps it to original source coordinates. Only emits for operators
+/// that were NOT already covered by the substitution table (i.e., standard JS
+/// operators like `+`, `-`, `>`, `<`, `===`, `!==`).
+fn emit_binary_operator(
+    bin: &oxc_ast::ast::BinaryExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::BinaryOperator;
+
+    let kind = match bin.operator {
+        BinaryOperator::Equality
+        | BinaryOperator::Inequality
+        | BinaryOperator::StrictEquality
+        | BinaryOperator::StrictInequality
+        | BinaryOperator::GreaterThan
+        | BinaryOperator::GreaterEqualThan
+        | BinaryOperator::LessThan
+        | BinaryOperator::LessEqualThan
+        | BinaryOperator::In
+        | BinaryOperator::Instanceof => OperatorKind::Comparison,
+        BinaryOperator::Addition | BinaryOperator::Subtraction => OperatorKind::Arithmetic,
+        BinaryOperator::Multiplication
+        | BinaryOperator::Division
+        | BinaryOperator::Remainder
+        | BinaryOperator::Exponential => OperatorKind::Arithmetic,
+        BinaryOperator::BitwiseAnd
+        | BinaryOperator::BitwiseOR
+        | BinaryOperator::BitwiseXOR
+        | BinaryOperator::ShiftLeft
+        | BinaryOperator::ShiftRight
+        | BinaryOperator::ShiftRightZeroFill => OperatorKind::Other,
+    };
+
+    let span = compute_operator_span_between(
+        bin.left.span(),
+        bin.right.span(),
+        preprocessed,
+    );
+
+    // Only emit if this operator wasn't already captured by the substitution
+    // table (which handles SugarCube keyword operators like `eq`, `gt`, etc.)
+    if !is_covered_by_substitution(span.clone(), preprocessed) {
+        analysis.operator_spans.push(OperatorSpan { kind, span });
+    }
+}
+
+/// Emit an operator span for a logical expression from the oxc AST.
+fn emit_logical_operator(
+    logic: &oxc_ast::ast::LogicalExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    let kind = OperatorKind::Logical;
+
+    let span = compute_operator_span_between(
+        logic.left.span(),
+        logic.right.span(),
+        preprocessed,
+    );
+
+    // Only emit if not already covered by substitution (e.g., `and` → `&&`)
+    if !is_covered_by_substitution(span.clone(), preprocessed) {
+        analysis.operator_spans.push(OperatorSpan { kind, span });
+    }
+}
+
+/// Emit an operator span for an assignment expression from the oxc AST.
+fn emit_assignment_operator(
+    assign: &oxc_ast::ast::AssignmentExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::AssignmentOperator;
+
+    let kind = match assign.operator {
+        AssignmentOperator::Assign => OperatorKind::Assignment,
+        AssignmentOperator::Addition
+        | AssignmentOperator::Subtraction
+        | AssignmentOperator::Multiplication
+        | AssignmentOperator::Division
+        | AssignmentOperator::Remainder
+        | AssignmentOperator::Exponential
+        | AssignmentOperator::BitwiseAnd
+        | AssignmentOperator::BitwiseOR
+        | AssignmentOperator::BitwiseXOR
+        | AssignmentOperator::ShiftLeft
+        | AssignmentOperator::ShiftRight
+        | AssignmentOperator::ShiftRightZeroFill
+        | AssignmentOperator::LogicalAnd
+        | AssignmentOperator::LogicalOr
+        | AssignmentOperator::LogicalNullish => OperatorKind::CompoundAssign,
+    };
+
+    let span = compute_operator_span_between(
+        assign.left.span(),
+        assign.right.span(),
+        preprocessed,
+    );
+
+    // Only emit if not already covered by substitution (e.g., `to` → `=`)
+    if !is_covered_by_substitution(span.clone(), preprocessed) {
+        analysis.operator_spans.push(OperatorSpan { kind, span });
+    }
+}
+
+/// Emit an operator span for a unary expression from the oxc AST.
+fn emit_unary_operator(
+    unary: &oxc_ast::ast::UnaryExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::UnaryOperator;
+
+    let kind = match unary.operator {
+        UnaryOperator::LogicalNot => OperatorKind::Logical,
+        UnaryOperator::Typeof | UnaryOperator::Void | UnaryOperator::Delete => OperatorKind::Other,
+        UnaryOperator::UnaryPlus | UnaryOperator::UnaryNegation => OperatorKind::Arithmetic,
+        UnaryOperator::BitwiseNot => OperatorKind::Other,
+    };
+
+    // For prefix unary operators, the operator is at the start of the expression.
+    // Compute span from expression start to argument start.
+    let op_start = preprocessed.map_to_original(unary.span.start as usize);
+    let op_end = preprocessed.map_to_original(unary.argument.span().start as usize);
+    if op_start < op_end {
+        let span = op_start..op_end;
+        if !is_covered_by_substitution(span.clone(), preprocessed) {
+            analysis.operator_spans.push(OperatorSpan { kind, span });
+        }
+    }
+}
+
+/// Emit an operator span for an update expression from the oxc AST.
+fn emit_update_operator(
+    update: &oxc_ast::ast::UpdateExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    // Update operators (++, --) are compound assignments semantically.
+    let kind = OperatorKind::CompoundAssign;
+
+    if update.prefix {
+        // Prefix: operator is before the argument
+        let op_start = preprocessed.map_to_original(update.span.start as usize);
+        let op_end = preprocessed.map_to_original(update.argument.span().start as usize);
+        if op_start < op_end {
+            let span = op_start..op_end;
+            if !is_covered_by_substitution(span.clone(), preprocessed) {
+                analysis.operator_spans.push(OperatorSpan { kind, span });
+            }
+        }
+    } else {
+        // Postfix: operator is after the argument
+        let op_start = preprocessed.map_to_original(update.argument.span().end as usize);
+        let op_end = preprocessed.map_to_original(update.span.end as usize);
+        if op_start < op_end {
+            let span = op_start..op_end;
+            if !is_covered_by_substitution(span.clone(), preprocessed) {
+                analysis.operator_spans.push(OperatorSpan { kind, span });
+            }
+        }
+    }
+}
+
+/// Compute the operator span in original source coordinates from the gap
+/// between two operand spans.
+///
+/// The operator sits between `left_span.end` and `right_span.start` in the
+/// oxc AST. We map both boundaries back to original coordinates to get the
+/// operator span. This may include surrounding whitespace, which is acceptable
+/// for semantic token purposes — LSP clients render only the non-whitespace
+/// portion visually.
+fn compute_operator_span_between(
+    left_span: oxc_span::Span,
+    right_span: oxc_span::Span,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+) -> std::ops::Range<usize> {
+    let op_start = preprocessed.map_to_original(left_span.end as usize);
+    let op_end = preprocessed.map_to_original(right_span.start as usize);
+    op_start..op_end
+}
+
+/// Check whether a span in original source coordinates overlaps with any
+/// substitution's original range.
+///
+/// This is used to avoid double-emitting operator tokens: the substitution
+/// table already captures SugarCube keyword operators (like `eq`, `and`, `to`),
+/// so we skip standard JS operator emission for those positions.
+fn is_covered_by_substitution(
+    span: std::ops::Range<usize>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+) -> bool {
+    // Adjust span from passage-body-relative back to snippet-relative
+    // for comparison against substitution original_ranges.
+    let snippet_start = span.start.saturating_sub(preprocessed.origin_offset);
+    let snippet_end = span.end.saturating_sub(preprocessed.origin_offset);
+    let snippet_range = snippet_start..snippet_end;
+
+    for sub in &preprocessed.substitutions {
+        // Only check operator substitutions (skip $var substitutions)
+        if sub.original_text.starts_with('$') || sub.original_text.starts_with('_') {
+            continue;
+        }
+        // Check for overlap
+        if snippet_range.start < sub.original_range.end
+            && snippet_range.end > sub.original_range.start
+        {
+            return true;
+        }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Namespace detection for SugarCube global objects
+// ---------------------------------------------------------------------------
+
+/// Check if an identifier name is a known SugarCube global object.
+///
+/// Uses the `builtin_globals()` catalog from `macros/globals.rs`. This
+/// includes objects like `State`, `Engine`, `Story`, `Save`, `Config`,
+/// `UI`, `Dialog`, `Macro`, `Template`, `SugarCube`, `setup`, etc.
+fn is_known_global(name: &str) -> bool {
+    crate::sugarcube::macros::builtin_globals()
+        .iter()
+        .any(|g| g.name == name)
+}
+
+/// Emit a `NamespaceSpan` for a `StaticMemberExpression` whose object is
+/// a known SugarCube global.
+///
+/// This function handles several patterns:
+///
+/// - `Engine.play()` → Namespace("Engine") + Property("play")
+/// - `Story.has("Cave")` → Namespace("Story") + Property("has")
+/// - `Config.debug` → Namespace("Config") + Property("debug")
+/// - `State.turns` → Namespace("State") + Property("turns")
+/// - `SugarCube.State` → Namespace("SugarCube") + Property("State")
+/// - `SugarCube.Macro.add(...)` → Namespace("SugarCube") + Property("Macro")
+///
+/// **Skipped patterns** (already handled by other emission paths):
+/// - `State.variables.x` → handled by `var_ops` (Variable + Property tokens)
+/// - `SugarCube.State.variables.x` → handled by `var_ops`
+/// - `Macro.add("name", ...)` → handled by call expression for macro_adds
+/// - `Template.add("name", ...)` → handled by call expression for template_adds
+fn emit_namespace_for_member_expr(
+    member: &oxc_ast::ast::StaticMemberExpression<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::Expression as Expr;
+
+    // Only emit when the object of the member expression is a direct
+    // identifier that's a known SugarCube global. For chained member
+    // expressions like `SugarCube.Engine.play()`, the recursion will
+    // walk into `SugarCube.Engine` and emit a namespace span at that
+    // level (Namespace("SugarCube") + Property("Engine")). The outer
+    // level's property ("play") is not emitted as a separate Property
+    // token since "Engine" is a property of SugarCube, not a namespace.
+    if let Expr::Identifier(id) = &member.object {
+        let global_name = id.name.as_str();
+        if is_known_global(global_name) {
+            // Skip State.variables and State.temporary — they're the prefix
+            // of a variable access that's already handled by var_ops.
+            if global_name == "State"
+                && matches!(member.property.name.as_str(), "variables" | "temporary")
+            {
+                return;
+            }
+            // Skip Macro.add and Template.add — handled by the call expression
+            // handler for macro_adds/template_adds registration.
+            if (global_name == "Macro" || global_name == "Template")
+                && member.property.name == "add"
+            {
+                return;
+            }
+            // Skip SugarCube.State — it's always the prefix of a
+            // SugarCube.State.variables.x chain that's already handled by
+            // var_ops. Emitting Namespace("SugarCube") + Property("State")
+            // would overlap with the Variable token for the entire chain.
+            if global_name == "SugarCube"
+                && member.property.name == "State"
+            {
+                return;
+            }
+            // Skip SugarCube.Macro and SugarCube.Template — they're prefixes
+            // for Macro.add/Template.add patterns handled by the call handler.
+            if global_name == "SugarCube"
+                && matches!(member.property.name.as_str(), "Macro" | "Template")
+            {
+                return;
+            }
+
+            let ns_span = preprocessed.map_range_to_original(
+                id.span.start as usize..id.span.end as usize
+            );
+            let prop_span = preprocessed.map_range_to_original(
+                member.property.span.start as usize..member.property.span.end as usize
+            );
+
+            analysis.namespace_spans.push(NamespaceSpan {
+                name: global_name.to_string(),
+                span: ns_span,
+                property_spans: vec![PropertySpan {
+                    name: member.property.name.to_string(),
+                    span: prop_span,
+                }],
+            });
+        }
+    }
+    // For SugarCube-prefixed chains (e.g., SugarCube.Engine.play()):
+    // The recursion will process the inner StaticMemberExpression
+    // (SugarCube.Engine), where the object is an Identifier "SugarCube"
+    // that IS a known global. At that level, we emit
+    // Namespace("SugarCube") + Property("Engine").
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -991,6 +1512,165 @@ mod tests {
                     .filter(|op| op.name == "_items" && op.access_kind == VarAccessKind::Write)
                     .collect();
                 assert!(!items_writes.is_empty(), "Expected _items WRITE, got {:?}", analysis.var_ops);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    // ── Literal span tests ────────────────────────────────────────────
+
+    #[test]
+    fn walk_inline_string_literal() {
+        let original = r#"$name eq "hello""#;
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let strings: Vec<_> = analysis.literal_spans.iter()
+                    .filter(|l| l.kind == LiteralKind::String)
+                    .collect();
+                assert!(!strings.is_empty(), "Expected at least one String literal, got {:?}", analysis.literal_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_number_literal() {
+        let original = "$hp gte 50";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let numbers: Vec<_> = analysis.literal_spans.iter()
+                    .filter(|l| l.kind == LiteralKind::Number)
+                    .collect();
+                assert!(!numbers.is_empty(), "Expected at least one Number literal, got {:?}", analysis.literal_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_boolean_literal() {
+        let original = "$alive eq true";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let booleans: Vec<_> = analysis.literal_spans.iter()
+                    .filter(|l| l.kind == LiteralKind::Boolean)
+                    .collect();
+                assert!(!booleans.is_empty(), "Expected at least one Boolean literal, got {:?}", analysis.literal_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    // ── Operator span tests ───────────────────────────────────────────
+
+    #[test]
+    fn walk_inline_sugarcube_comparison_operator() {
+        let original = "$hp gte 50";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let comparisons: Vec<_> = analysis.operator_spans.iter()
+                    .filter(|op| op.kind == OperatorKind::Comparison)
+                    .collect();
+                assert!(!comparisons.is_empty(), "Expected at least one Comparison operator (gte), got {:?}", analysis.operator_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_sugarcube_logical_operator() {
+        let original = "$hasKey and $doorOpen";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let logicals: Vec<_> = analysis.operator_spans.iter()
+                    .filter(|op| op.kind == OperatorKind::Logical)
+                    .collect();
+                assert!(!logicals.is_empty(), "Expected at least one Logical operator (and), got {:?}", analysis.operator_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_sugarcube_assignment_operator() {
+        let original = "$name to \"hello\"";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let assignments: Vec<_> = analysis.operator_spans.iter()
+                    .filter(|op| op.kind == OperatorKind::Assignment)
+                    .collect();
+                assert!(!assignments.is_empty(), "Expected at least one Assignment operator (to), got {:?}", analysis.operator_spans);
+            }
+            JsParseOutcome::Error(diags) => {
+                panic!("Parse failed: {:?}", diags);
+            }
+        }
+    }
+
+    #[test]
+    fn walk_inline_js_arithmetic_operator() {
+        // Test a standard JS operator that doesn't get substituted
+        let original = "$x + $y";
+        let preprocessed = js_preprocess::preprocess_for_oxc(original);
+
+        match parse_js(&preprocessed.source, JsParseMode::Expression) {
+            JsParseOutcome::Success(output) => {
+                let analysis = output.with_program(|program| {
+                    walk_inline_js(program, &preprocessed)
+                });
+
+                let arithmetic: Vec<_> = analysis.operator_spans.iter()
+                    .filter(|op| op.kind == OperatorKind::Arithmetic)
+                    .collect();
+                assert!(!arithmetic.is_empty(), "Expected at least one Arithmetic operator (+), got {:?}", analysis.operator_spans);
             }
             JsParseOutcome::Error(diags) => {
                 panic!("Parse failed: {:?}", diags);

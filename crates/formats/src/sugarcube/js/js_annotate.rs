@@ -227,10 +227,7 @@ fn collect_macro_js_snippet(
     open_span: std::ops::Range<usize>,
     set_assignment: Option<&crate::sugarcube::ast::SetAssignment>,
 ) -> Option<(String, usize, bool)> {
-    const INLINE_JS_MACROS: &[&str] = &[
-        "run", "if", "elseif", "else", "print", "nobr",
-        "capture", "unset",
-    ];
+    use crate::sugarcube::macros::inline_js_macro_names;
 
     if name == "script" {
         None
@@ -260,7 +257,7 @@ fn collect_macro_js_snippet(
                 None
             }
         }
-    } else if INLINE_JS_MACROS.contains(&name) {
+    } else if inline_js_macro_names().contains(name) {
         let trimmed = args.trim();
         if !trimmed.is_empty() {
             let leading_ws = args.len() - args.trim_start().len();

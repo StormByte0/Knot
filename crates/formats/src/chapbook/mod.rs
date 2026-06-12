@@ -36,6 +36,7 @@ use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
+use crate::types::BodyRequirement;
 
 // ---------------------------------------------------------------------------
 // Compiled regexes (module-level LazyLock)
@@ -1073,8 +1074,8 @@ impl FormatPlugin for ChapbookPlugin {
         format!("[/{}]", name)
     }
 
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        if has_body {
+    fn build_macro_snippet(&self, name: &str, body: BodyRequirement) -> String {
+        if body != BodyRequirement::Never {
             format!("[{}] $1\n$2\n[/{}]", name, name)
         } else {
             format!("[{}] $1", name)

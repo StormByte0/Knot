@@ -57,6 +57,9 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
                     span: body_offset + span.start..body_offset + span.end,
                 });
             }
+            // MacroClose nodes are consumed by the tree builder and should not
+            // appear in the final AST. If one slips through, skip it.
+            ast::AstNode::MacroClose { .. } => {}
         }
     }
     blocks

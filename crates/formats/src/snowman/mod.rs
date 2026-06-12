@@ -26,6 +26,7 @@ use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
+use crate::types::BodyRequirement;
 
 // ---------------------------------------------------------------------------
 // ERB template segment
@@ -1178,8 +1179,8 @@ impl FormatPlugin for SnowmanPlugin {
         String::new() // Snowman has no close tags
     }
 
-    fn build_macro_snippet(&self, name: &str, has_body: bool) -> String {
-        if has_body {
+    fn build_macro_snippet(&self, name: &str, body: BodyRequirement) -> String {
+        if body != BodyRequirement::Never {
             format!("<% {} %>\n$2\n<% }} %>", name)
         } else {
             format!("<%= {} %>", name)

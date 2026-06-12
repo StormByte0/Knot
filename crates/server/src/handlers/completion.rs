@@ -44,7 +44,7 @@ pub(crate) async fn completion(
 
     // ── Close-tag context: <</ ... ──────────────────────────────────────
     if let Some(plugin) = plugin {
-        if !plugin.block_macro_names().is_empty() {
+        if !plugin.body_macro_names().is_empty() {
             if let Some(close_items) = try_close_tag_completion(before_cursor, &inner.workspace, plugin) {
                 return Ok(Some(CompletionResponse::Array(close_items)));
             }
@@ -348,7 +348,7 @@ fn build_macro_completions(plugin: &dyn FormatPlugin) -> Vec<CompletionItem> {
 
     for mdef in plugin.builtin_macros() {
         let kind = macros::classify(mdef.name, mdef, plugin);
-        let snippet = plugin.build_macro_snippet(mdef.name, mdef.has_body);
+        let snippet = plugin.build_macro_snippet(mdef.name, mdef.body);
         let category = mdef.category.to_string();
 
         items.push(CompletionItem {
@@ -388,7 +388,7 @@ fn try_close_tag_completion(
 
     // Collect macro block events from the text before cursor to determine
     // the stack of unclosed block macros
-    let block_names = plugin.block_macro_names();
+    let block_names = plugin.body_macro_names();
 
     // Only proceed if there are block macros
     if block_names.is_empty() {
