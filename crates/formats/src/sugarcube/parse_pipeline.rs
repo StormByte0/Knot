@@ -123,6 +123,14 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 body_offset,
                 &custom_names,
             );
+            // For script passages, also emit tokens from script_js_analysis
+            if let Some(ref analysis) = passage_ast.script_js_analysis {
+                super::token_builder::build_script_passage_tokens(
+                    analysis,
+                    &mut all_tokens,
+                    body_offset,
+                );
+            }
         }
 
         // Build diagnostics from the body AST (shift spans by body_offset)

@@ -8,6 +8,15 @@
 //! - Passage header hover with metadata
 //! - Global object hover (e.g., State, Engine, Story for SugarCube)
 //!
+//! ## Span-Based Resolution
+//!
+//! Variable, link, and passage header hover use span data from the workspace
+//! index (`passage.vars[].span`, `passage.links[].span`,
+//! `passage.header_name_span`) for precise byte-range matching instead of
+//! re-scanning the line text. This avoids false negatives from manual char
+//! scanning and correctly handles multi-byte characters, arrow/pipe link
+//! syntax, and passage names with spaces.
+//!
 //! ## Format Isolation
 //!
 //! Macro detection is delegated to `FormatPlugin::find_macro_at_position()`,
@@ -18,6 +27,7 @@
 use crate::handlers::helpers;
 use crate::handlers::macros;
 use crate::state::ServerState;
+use knot_core::passage::Passage;
 use knot_formats::plugin as fmt_plugin;
 use knot_formats::types::MacroArgKind;
 use lsp_types::*;
@@ -34,109 +44,88 @@ pub(crate) async fn hover(
         return Ok(None);
     };
 
-    let line_idx = position.line as usize;
-    let char_pos = position.character as usize;
-    let line = text.lines().nth(line_idx).unwrap_or("");
+    // Convert the cursor position to a byte offset for span-based lookups.
+    let byte_offset = helpers::position_to_byte_offset(text, position);
 
     // Resolve the active format plugin for format-aware hover queries.
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
 
+    // Get the document from the workspace for span-based passage lookups.
+    let doc = inner.workspace.get_document(&uri);
+
+    // Find the passage containing the cursor by checking passage.span containment.
+    let current_passage = doc.as_ref().and_then(|d| {
+        d.passages
+            .iter()
+            .find(|p| byte_offset >= p.span.start && byte_offset < p.span.end)
+    });
+
     // 1. Try passage header hover FIRST — if the cursor is on a :: header
     //    line, always show passage info. This prevents global object names
     //    (e.g., "Story" in "Story Stylesheet [stylesheet]") from matching
     //    the global hover before the passage hover gets a chance.
-    if let Some(passage_name) = helpers::find_passage_at_position(text, position)
-        && let Some((_, passage)) = inner.workspace.find_passage(&passage_name)
-    {
-        let links_count = passage.links.len();
-        let vars_count = passage.vars.len();
-        let tags = if passage.tags.is_empty() {
-            "none".to_string()
-        } else {
-            passage.tags.join(", ")
-        };
-
-        let incoming = helpers::count_incoming_links(&inner.workspace, &passage_name);
-        let incoming_sources = helpers::incoming_link_sources(&inner.workspace, &passage_name);
-
-        // Check for special passage info
-        let special_info = if passage.is_special {
-            if let Some(ref def) = passage.special_def {
-                let behavior = match &def.behavior {
-                    knot_core::passage::SpecialPassageBehavior::Startup => "Startup",
-                    knot_core::passage::SpecialPassageBehavior::PassageReady => "PassageReady",
-                    knot_core::passage::SpecialPassageBehavior::Chrome => "Chrome",
-                    knot_core::passage::SpecialPassageBehavior::ChromeInterceptor => "Chrome Interceptor",
-                    knot_core::passage::SpecialPassageBehavior::StructureTemplate => "Structure Template",
-                    knot_core::passage::SpecialPassageBehavior::Metadata => "Metadata",
-                    knot_core::passage::SpecialPassageBehavior::ScriptInjection => "Script Injection",
-                    knot_core::passage::SpecialPassageBehavior::StyleInjection => "Style Injection",
-                    knot_core::passage::SpecialPassageBehavior::Custom(s) => s,
-                };
-                let layer = match &def.layer {
-                    knot_core::passage::SpecialPassageLayer::TwineCore => " (Twine Core)",
-                    knot_core::passage::SpecialPassageLayer::LegacyCore => " (Legacy Core)",
-                    knot_core::passage::SpecialPassageLayer::StoryFormat => "",
-                    knot_core::passage::SpecialPassageLayer::UserDefined => " (User Defined)",
-                };
-                format!("\n**Special passage** — {}{}", behavior, layer)
-            } else {
-                "\n**Special passage**".to_string()
+    if let Some(passage) = current_passage {
+        if let Some(hover) =
+            try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
+        {
+            return Ok(Some(hover));
+        }
+    }
+    // Fallback: if span-based passage lookup didn't find a passage (e.g., the
+    // cursor is on a header line but the passage span hasn't been updated yet,
+    // or the format only spans the header line), try the line-based check.
+    if current_passage.is_none() {
+        if let Some(passage_name) = helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
+            && let Some((_, passage)) = inner.workspace.find_passage(&passage_name)
+        {
+            if let Some(hover) =
+                try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
+            {
+                return Ok(Some(hover));
             }
-        } else {
-            String::new()
-        };
-
-        let incoming_detail = if incoming <= 5 && !incoming_sources.is_empty() {
-            format!("{} ({})", incoming, incoming_sources.join(", "))
-        } else {
-            incoming.to_string()
-        };
-
-        let hover_text = format!(
-            "**{}**{}\n\nLinks: {} | Variables: {} | Tags: {} | Incoming: {}",
-            passage.name, special_info, links_count, vars_count, tags, incoming_detail
-        );
-
-        // Compute an explicit hover range covering the full passage name.
-        // This is critical for passage names with spaces (e.g., "My Passage")
-        // because VS Code's default word-boundary detection splits on whitespace,
-        // causing the hover to appear for only the first word.
-        let hover_range = compute_passage_header_range(text, position);
-
-        return Ok(Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: hover_text,
-            }),
-            range: hover_range,
-        }));
+        }
     }
 
-    // 2. Try macro hover — delegate syntax detection to the format plugin
+    // 2. Try macro hover — delegate syntax detection to the format plugin.
+    //    The plugin operates on a single line + byte offset, so we extract
+    //    the line at the cursor position for it.
     if let Some(plugin) = plugin {
+        let line_idx = position.line as usize;
+        let char_pos = position.character as usize;
+        let line = text.lines().nth(line_idx).unwrap_or("");
         if let Some(hover) = try_macro_hover(line, line_idx, char_pos, plugin) {
             return Ok(Some(hover));
         }
     }
 
-    // 3. Try variable hover — check if cursor is on $variable or _variable
+    // 3. Try variable hover — use span data from the workspace index.
     if let Some(plugin) = plugin {
-        if let Some(hover) = try_variable_hover(line, line_idx, char_pos, &inner.workspace, plugin) {
+        if let Some(hover) = try_variable_hover(
+            text,
+            byte_offset,
+            doc,
+            &inner.workspace,
+            plugin,
+        ) {
             return Ok(Some(hover));
         }
     }
 
-    // 4. Try global object hover — check if cursor is on a format-specific global
+    // 4. Try global object hover — check if cursor is on a format-specific global.
+    //    No stored span data exists for global object occurrences, so this
+    //    uses line-based scanning as a fallback.
     if let Some(plugin) = plugin {
+        let line_idx = position.line as usize;
+        let char_pos = position.character as usize;
+        let line = text.lines().nth(line_idx).unwrap_or("");
         if let Some(hover) = try_global_hover(line, line_idx, char_pos, plugin) {
             return Ok(Some(hover));
         }
     }
 
-    // 5. Try link hover — check if cursor is inside [[...]]
-    if let Some(hover) = try_link_hover(line, line_idx, char_pos, &inner.workspace) {
+    // 5. Try link hover — use span data from the workspace index.
+    if let Some(hover) = try_link_hover(text, byte_offset, doc, &inner.workspace) {
         return Ok(Some(hover));
     }
 
@@ -146,6 +135,109 @@ pub(crate) async fn hover(
 // ===========================================================================
 // Private hover helpers
 // ===========================================================================
+
+/// Try to show hover info for a passage header when the cursor is on the
+/// header line.
+///
+/// Uses `passage.header_name_span` for the hover range when available
+/// (SugarCube), falling back to [`compute_passage_header_range`] for formats
+/// that don't populate it.
+fn try_passage_header_hover(
+    text: &str,
+    byte_offset: usize,
+    passage: &Passage,
+    workspace: &knot_core::Workspace,
+) -> Option<Hover> {
+    // Check if the cursor is on the header line of this passage.
+    // The header line starts at passage.span.start and ends at the first newline.
+    let span_start = passage.span.start.min(text.len());
+    let header_end = text[span_start..]
+        .find('\n')
+        .map(|n| span_start + n)
+        .unwrap_or(passage.span.end.min(text.len()));
+
+    if byte_offset < span_start || byte_offset > header_end {
+        return None;
+    }
+
+    let passage_name = &passage.name;
+    let links_count = passage.links.len();
+    let vars_count = passage.vars.len();
+    let tags = if passage.tags.is_empty() {
+        "none".to_string()
+    } else {
+        passage.tags.join(", ")
+    };
+
+    let incoming = helpers::count_incoming_links(workspace, passage_name);
+    let incoming_sources = helpers::incoming_link_sources(workspace, passage_name);
+
+    // Check for special passage info
+    let special_info = if passage.is_special {
+        if let Some(ref def) = passage.special_def {
+            let behavior = match &def.behavior {
+                knot_core::passage::SpecialPassageBehavior::Startup => "Startup",
+                knot_core::passage::SpecialPassageBehavior::PassageReady => "PassageReady",
+                knot_core::passage::SpecialPassageBehavior::Chrome => "Chrome",
+                knot_core::passage::SpecialPassageBehavior::ChromeInterceptor => {
+                    "Chrome Interceptor"
+                }
+                knot_core::passage::SpecialPassageBehavior::StructureTemplate => {
+                    "Structure Template"
+                }
+                knot_core::passage::SpecialPassageBehavior::Metadata => "Metadata",
+                knot_core::passage::SpecialPassageBehavior::ScriptInjection => {
+                    "Script Injection"
+                }
+                knot_core::passage::SpecialPassageBehavior::StyleInjection => {
+                    "Style Injection"
+                }
+                knot_core::passage::SpecialPassageBehavior::Custom(s) => s,
+            };
+            let layer = match &def.layer {
+                knot_core::passage::SpecialPassageLayer::TwineCore => " (Twine Core)",
+                knot_core::passage::SpecialPassageLayer::LegacyCore => " (Legacy Core)",
+                knot_core::passage::SpecialPassageLayer::StoryFormat => "",
+                knot_core::passage::SpecialPassageLayer::UserDefined => " (User Defined)",
+            };
+            format!("\n**Special passage** — {}{}", behavior, layer)
+        } else {
+            "\n**Special passage**".to_string()
+        }
+    } else {
+        String::new()
+    };
+
+    let incoming_detail = if incoming <= 5 && !incoming_sources.is_empty() {
+        format!("{} ({})", incoming, incoming_sources.join(", "))
+    } else {
+        incoming.to_string()
+    };
+
+    let hover_text = format!(
+        "**{}**{}\n\nLinks: {} | Variables: {} | Tags: {} | Incoming: {}",
+        passage_name, special_info, links_count, vars_count, tags, incoming_detail
+    );
+
+    // Compute an explicit hover range covering the full passage name.
+    // Prefer the span-based header_name_span when available (avoids re-parsing
+    // the header line). Fall back to compute_passage_header_range for formats
+    // that don't populate header_name_span.
+    let hover_range = if let Some(ref name_span) = passage.header_name_span {
+        helpers::byte_range_to_lsp_range(text, name_span)
+    } else {
+        let position = helpers::byte_offset_to_position(text, byte_offset);
+        compute_passage_header_range(text, position)?
+    };
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: Some(hover_range),
+    })
+}
 
 /// Try to show hover info for a macro at the cursor position.
 ///
@@ -188,7 +280,11 @@ fn try_macro_hover(
             if !args.is_empty() {
                 hover_text.push_str("\n\n**Parameters:**\n");
                 for arg in args {
-                    let req = if arg.is_required { " (required)" } else { " (optional)" };
+                    let req = if arg.is_required {
+                        " (required)"
+                    } else {
+                        " (optional)"
+                    };
                     let kind_str = match arg.kind {
                         MacroArgKind::Expression => "expression",
                         MacroArgKind::String => "string",
@@ -214,7 +310,8 @@ fn try_macro_hover(
         if let Some(parents) = mdef.container_any_of {
             hover_text.push_str(&format!(
                 "\nMust be inside one of: {}.",
-                parents.iter()
+                parents
+                    .iter()
                     .map(|p| format!("`{}`", plugin.format_macro_label(p)))
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -246,125 +343,95 @@ fn try_macro_hover(
     None
 }
 
-/// Try to show hover info for a variable when cursor is on a format-specific
-/// variable sigil (e.g., `$var` or `_var` in SugarCube).
+/// Try to show hover info for a variable when the cursor is within a
+/// variable's span.
 ///
-/// Uses `FormatPlugin::variable_sigils()` to detect variable starts instead of
-/// hardcoding sigil characters, so this works across all formats.
+/// Uses `passage.vars[].span` from the workspace index for precise byte-range
+/// matching instead of manually scanning the line text for format-specific
+/// sigils (e.g., `$var` or `_var`). This correctly handles multi-byte
+/// characters, variables inside macros, and avoids false negatives from
+/// manual char scanning.
 fn try_variable_hover(
-    line: &str,
-    line_idx: usize,
-    char_pos: usize,
+    text: &str,
+    byte_offset: usize,
+    doc: Option<&knot_core::Document>,
     workspace: &knot_core::Workspace,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
-    // Build the set of format-specific variable sigils
-    let sigils: Vec<char> = plugin.variable_sigils().iter().map(|s| s.sigil).collect();
-    if sigils.is_empty() {
-        return None;
-    }
+    let doc = doc?;
 
-    let chars: Vec<char> = line.chars().collect();
-    let mut pos = 0;
-    while pos < chars.len() {
-        // Check for a format-specific variable sigil followed by an identifier
-        let is_var_start = sigils.contains(&chars[pos])
-            && pos + 1 < chars.len()
-            && (chars[pos + 1].is_alphabetic() || chars[pos + 1] == '_');
+    // Iterate over all passages in the document and check if the cursor
+    // byte offset falls within any variable's span. Variable spans are
+    // absolute byte offsets in the document text, so we can match directly.
+    for passage in &doc.passages {
+        for var in &passage.vars {
+            if byte_offset >= var.span.start && byte_offset < var.span.end {
+                let var_name = &var.name;
 
-        if !is_var_start {
-            pos += 1;
-            continue;
-        }
-
-        // For sigils that are valid inside identifiers (like `_`), check that
-        // the preceding char is not alphanumeric to avoid false matches
-        // (e.g., matching `_bar` inside `foo_bar`). Only sigils that are
-        // valid identifier characters need this guard.
-        let sigil = chars[pos];
-        let needs_preceding_boundary = sigil.is_alphanumeric() || sigil == '_';
-        if needs_preceding_boundary && pos > 0 && chars[pos - 1].is_alphanumeric() {
-            pos += 1;
-            continue;
-        }
-
-        let start = pos;
-        pos += 1;
-        while pos < chars.len() && (chars[pos].is_alphanumeric() || chars[pos] == '_') {
-            pos += 1;
-        }
-        let var_name: String = chars[start..pos].iter().collect();
-        let byte_start: usize = chars[..start].iter().map(|c| c.len_utf8()).sum();
-        let byte_end: usize = chars[..pos].iter().map(|c| c.len_utf8()).sum();
-
-        // Convert byte positions to UTF-16 code unit offsets for LSP.
-        let utf16_start = helpers::utf16_len_up_to(line, byte_start);
-        let utf16_end = helpers::utf16_len_up_to(line, byte_end);
-        let utf16_pos = char_pos; // already UTF-16 from the client
-
-        if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
-            // Find where this variable is written and read across the workspace
-            let mut write_locations: Vec<String> = Vec::new();
-            let mut read_count = 0;
-            for doc in workspace.documents() {
-                for passage in &doc.passages {
-                    for var in &passage.vars {
-                        if var.name == var_name {
-                            match var.kind {
-                                knot_core::passage::VarKind::Init => {
-                                    write_locations.push(passage.name.clone());
-                                }
-                                knot_core::passage::VarKind::Read => {
-                                    read_count += 1;
+                // Find where this variable is written and read across the workspace
+                let mut write_locations: Vec<String> = Vec::new();
+                let mut read_count = 0;
+                for doc in workspace.documents() {
+                    for passage in &doc.passages {
+                        for v in &passage.vars {
+                            if v.name == *var_name {
+                                match v.kind {
+                                    knot_core::passage::VarKind::Init => {
+                                        write_locations.push(passage.name.clone());
+                                    }
+                                    knot_core::passage::VarKind::Read => {
+                                        read_count += 1;
+                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                let write_info = if write_locations.is_empty() {
+                    "Never written".to_string()
+                } else if write_locations.len() <= 5 {
+                    format!("Written in: {}", write_locations.join(", "))
+                } else {
+                    format!("Written in {} passages", write_locations.len())
+                };
+
+                // Determine the sigil character from the variable name.
+                // The name includes the sigil (e.g., "$gold" or "_temp"),
+                // so the first character is the sigil.
+                let sigil = var_name.chars().next().unwrap_or('$');
+                let sigil_desc = plugin
+                    .describe_variable_sigil(sigil)
+                    .unwrap_or("variable");
+
+                let var_type = plugin
+                    .resolve_variable_sigil(sigil)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "variable".to_string());
+
+                let hover_text = format!(
+                    "**{}** `{}`\n\n{}\nRead in {} location(s)\n\n---\n\n{}",
+                    var_name, var_type, write_info, read_count, sigil_desc
+                );
+
+                // Convert the variable's byte span to an LSP Range.
+                let hover_range = helpers::byte_range_to_lsp_range(text, &var.span);
+
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(hover_range),
+                });
             }
-
-            let write_info = if write_locations.is_empty() {
-                "Never written".to_string()
-            } else if write_locations.len() <= 5 {
-                format!("Written in: {}", write_locations.join(", "))
-            } else {
-                format!("Written in {} passages", write_locations.len())
-            };
-
-            let sigil_desc = plugin.describe_variable_sigil(sigil)
-                .unwrap_or("variable");
-
-            let var_type = plugin.resolve_variable_sigil(sigil)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "variable".to_string());
-
-            let hover_text = format!(
-                "**{}** `{}`\n\n{}\nRead in {} location(s)\n\n---\n\n{}",
-                var_name, var_type, write_info, read_count, sigil_desc
-            );
-
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: hover_text,
-                }),
-                range: Some(Range {
-                    start: Position {
-                        line: line_idx as u32,
-                        character: utf16_start,
-                    },
-                    end: Position {
-                        line: line_idx as u32,
-                        character: utf16_end,
-                    },
-                }),
-            });
         }
     }
+
     None
 }
 
-/// Try to show hover info for a format-specific global object.
+/// Try to show hover info for a global object.
 ///
 /// **Guard**: This function immediately returns `None` when the cursor
 /// is on a passage header line (starts with `::`). Passage header hover
@@ -373,6 +440,9 @@ fn try_variable_hover(
 /// we must not fall through to a global object hover that would split
 /// multi-word passage names like "Story Stylesheet" — where "Story"
 /// is both a passage name component AND a SugarCube global object.
+///
+/// No stored span data exists for global object occurrences, so this
+/// function uses line-based scanning as a fallback.
 fn try_global_hover(
     line: &str,
     line_idx: usize,
@@ -396,7 +466,11 @@ fn try_global_hover(
             if utf16_count >= utf16_offset {
                 return i;
             }
-            utf16_count += if (*ch as u32) < 0x10000 { 1usize } else { 2usize };
+            utf16_count += if (*ch as u32) < 0x10000 {
+                1usize
+            } else {
+                2usize
+            };
         }
         chars.len()
     };
@@ -455,36 +529,28 @@ fn try_global_hover(
     None
 }
 
-/// Try to show hover info for a passage link when cursor is inside [[...]].
+/// Try to show hover info for a passage link when the cursor is within a
+/// link's span.
+///
+/// Uses `passage.links[].span` from the workspace index for precise
+/// byte-range matching instead of manually scanning the line for `[[`/`]]`
+/// patterns. The link's `target` field is used directly, avoiding the need
+/// to parse arrow (`->`) or pipe (`|`) syntax.
 fn try_link_hover(
-    line: &str,
-    line_idx: usize,
-    char_pos: usize,
+    text: &str,
+    byte_offset: usize,
+    doc: Option<&knot_core::Document>,
     workspace: &knot_core::Workspace,
 ) -> Option<Hover> {
-    let mut search_from = 0;
-    while let Some(rel_start) = line[search_from..].find("[[") {
-        let abs_start = search_from + rel_start;
-        if let Some(rel_end) = line[abs_start..].find("]]") {
-            let abs_end = abs_start + rel_end + 2;
-            let content_start = abs_start + 2;
-            let content_end = abs_start + rel_end;
+    let doc = doc?;
 
-            let utf16_start = helpers::utf16_len_up_to(line, abs_start);
-            let utf16_end = helpers::utf16_len_up_to(line, abs_end);
-            let utf16_pos = char_pos;
-
-            if utf16_pos >= utf16_start as usize && utf16_pos <= utf16_end as usize {
-                let link_text = &line[content_start..content_end];
-
-                let target = if let Some(arrow) = link_text.find("->") {
-                    &link_text[arrow + 2..]
-                } else if let Some(pipe) = link_text.find('|') {
-                    &link_text[pipe + 1..]
-                } else {
-                    link_text
-                };
-                let target = target.trim();
+    // Iterate over all passages in the document and check if the cursor
+    // byte offset falls within any link's span. Link spans are absolute
+    // byte offsets in the document text.
+    for passage in &doc.passages {
+        for link in &passage.links {
+            if byte_offset >= link.span.start && byte_offset < link.span.end {
+                let target = link.target.trim();
 
                 if !target.is_empty() {
                     if let Some((doc, passage)) = workspace.find_passage(target) {
@@ -495,61 +561,66 @@ fn try_link_hover(
                             doc.uri.as_str(),
                             passage.links.len(),
                             incoming,
-                            if passage.tags.is_empty() { "none".to_string() } else { passage.tags.join(", ") }
+                            if passage.tags.is_empty() {
+                                "none".to_string()
+                            } else {
+                                passage.tags.join(", ")
+                            }
                         );
 
                         if !passage.vars.is_empty() {
-                            let writes: Vec<&str> = passage.persistent_variable_inits().map(|v| v.name.as_str()).collect();
-                            let reads: Vec<&str> = passage.persistent_variable_reads().map(|v| v.name.as_str()).collect();
+                            let writes: Vec<&str> = passage
+                                .persistent_variable_inits()
+                                .map(|v| v.name.as_str())
+                                .collect();
+                            let reads: Vec<&str> = passage
+                                .persistent_variable_reads()
+                                .map(|v| v.name.as_str())
+                                .collect();
                             if !writes.is_empty() {
-                                hover_text.push_str(&format!("\nVariables written: {}", writes.join(", ")));
+                                hover_text.push_str(&format!(
+                                    "\nVariables written: {}",
+                                    writes.join(", ")
+                                ));
                             }
                             if !reads.is_empty() {
-                                hover_text.push_str(&format!("\nVariables read: {}", reads.join(", ")));
+                                hover_text.push_str(&format!(
+                                    "\nVariables read: {}",
+                                    reads.join(", ")
+                                ));
                             }
                         }
+
+                        // Convert the link's byte span to an LSP Range.
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &link.span);
 
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
                                 value: hover_text,
                             }),
-                            range: Some(Range {
-                                start: Position {
-                                    line: line_idx as u32,
-                                    character: utf16_start,
-                                },
-                                end: Position {
-                                    line: line_idx as u32,
-                                    character: utf16_end,
-                                },
-                            }),
+                            range: Some(hover_range),
                         });
                     } else {
+                        // Broken link — passage doesn't exist
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &link.span);
+
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
-                                value: format!("⚠ **Broken link** — passage `{}` does not exist", target),
+                                value: format!(
+                                    "⚠ **Broken link** — passage `{}` does not exist",
+                                    target
+                                ),
                             }),
-                            range: Some(Range {
-                                start: Position {
-                                    line: line_idx as u32,
-                                    character: utf16_start,
-                                },
-                                end: Position {
-                                    line: line_idx as u32,
-                                    character: utf16_end,
-                                },
-                            }),
+                            range: Some(hover_range),
                         });
                     }
                 }
             }
-            search_from = abs_end;
-        } else {
-            break;
         }
     }
+
     None
 }
 
@@ -560,6 +631,9 @@ fn try_link_hover(
 /// the hover popup for the entire name, not just the first word.
 ///
 /// Returns `None` if the position is not on a `::` header line.
+///
+/// This is used as a fallback when `passage.header_name_span` is not
+/// available (e.g., for formats other than SugarCube).
 fn compute_passage_header_range(text: &str, position: Position) -> Option<Range> {
     let line_text = text.lines().nth(position.line as usize)?;
 

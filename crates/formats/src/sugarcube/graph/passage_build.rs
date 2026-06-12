@@ -81,6 +81,14 @@ pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offs
 
     passage.tags = cp.header.tags.clone();
 
+    // Store the header name span for fine-grained LSP position resolution.
+    // The name starts at `name_start` (after `::` + whitespace) and extends
+    // for `name.len()` bytes. This allows handlers to locate the passage name
+    // without re-scanning the header line.
+    passage.header_name_span = Some(
+        cp.header.name_start..cp.header.name_start + cp.header.name.len()
+    );
+
     // Build body blocks from AST (shift spans by body_offset)
     passage.body = build_body_blocks(&passage_ast.nodes, body_offset);
 

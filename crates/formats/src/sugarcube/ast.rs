@@ -41,6 +41,8 @@ pub struct JsAnalysis {
     pub template_adds: Vec<TemplateAddInfo>,
     /// Function declarations/expressions found.
     pub function_defs: Vec<FunctionDefInfo>,
+    /// Function call sites found (identifiers used as call targets).
+    pub function_calls: Vec<FunctionCallInfo>,
     /// Literal tokens (strings, numbers, booleans, null) found by oxc.
     pub literal_spans: Vec<LiteralSpan>,
     /// Operator tokens found by oxc (including SugarCube keyword operators
@@ -205,12 +207,26 @@ pub struct TemplateAddInfo {
 /// Information about a function declaration/expression found in JS.
 #[derive(Debug, Clone)]
 pub struct FunctionDefInfo {
-    /// The function name.
+    /// The function name (with SugarCube sigil restored, e.g., "_myHelper").
     pub name: String,
     /// Byte offset of the function name in the passage body.
     pub name_offset: usize,
     /// Number of parameters, if known.
     pub param_count: Option<usize>,
+}
+
+/// Information about a function call site found in JS.
+///
+/// When an identifier that was preprocessed from a SugarCube `$var` or `_var`
+/// is used as a function call target (e.g., `_myHelper()`), it should be
+/// classified as a function call, not a variable reference. This struct
+/// records those call sites so the token builder can emit `Function` tokens.
+#[derive(Debug, Clone)]
+pub struct FunctionCallInfo {
+    /// The function name (with SugarCube sigil restored, e.g., "_myHelper").
+    pub name: String,
+    /// Byte range of the function name in the passage body (passage-body-relative).
+    pub span: Range<usize>,
 }
 
 // ---------------------------------------------------------------------------

@@ -18,25 +18,32 @@ pub(crate) async fn folding_range(
     };
 
     let mut ranges = Vec::new();
-    let lines: Vec<&str> = text.lines().collect();
 
-    // ── Passage body folding ──────────────────────────────────────
-    for (line_idx, line) in lines.iter().enumerate() {
-        if line.starts_with("::") {
-            // Find the end of this passage (next :: or end of file)
-            let end_line = lines.get(line_idx + 1..)
-                .and_then(|remaining| {
-                    remaining.iter()
-                        .position(|l| l.starts_with("::"))
-                        .map(|i| line_idx + 1 + i)
-                })
-                .unwrap_or(lines.len());
+    // ── Passage body folding (span-based) ──────────────────────────
+    if let Some(doc) = inner.workspace.get_document(&uri) {
+        let passages = &doc.passages;
+        for (i, passage) in passages.iter().enumerate() {
+            let span_start = passage.span.start.min(text.len());
+            let header_end = text[span_start..]
+                .find('\n')
+                .map(|n| span_start + n)
+                .unwrap_or(passage.span.end.min(text.len()));
 
-            if end_line > line_idx + 1 {
+            // End of passage body: start of next passage or end of document
+            let body_end_offset = if i + 1 < passages.len() {
+                passages[i + 1].span.start.min(text.len())
+            } else {
+                text.len()
+            };
+
+            let body_start_pos = helpers::byte_offset_to_position(text, (header_end + 1).min(text.len()));
+            let body_end_pos = helpers::byte_offset_to_position(text, body_end_offset);
+
+            if body_end_pos.line > body_start_pos.line {
                 ranges.push(FoldingRange {
-                    start_line: (line_idx + 1) as u32,
+                    start_line: body_start_pos.line,
                     start_character: None,
-                    end_line: end_line.saturating_sub(1) as u32,
+                    end_line: body_end_pos.line.saturating_sub(1),
                     end_character: None,
                     kind: Some(FoldingRangeKind::Region),
                     collapsed_text: None,
@@ -49,6 +56,7 @@ pub(crate) async fn folding_range(
     // Use the format plugin for format-agnostic macro block detection.
     let format = inner.workspace.resolve_format();
     if let Some(plugin) = inner.format_registry.get(&format) {
+        let lines: Vec<&str> = text.lines().collect();
         let mut open_stack: Vec<(String, u32)> = Vec::new(); // (name, start_line)
 
         // Collect all macro block events from the format plugin
@@ -104,44 +112,25 @@ pub(crate) async fn document_link(
         return Ok(None);
     };
 
+    let Some(doc) = inner.workspace.get_document(&uri) else {
+        return Ok(None);
+    };
+
     let mut links = Vec::new();
 
-    for (line_idx, line) in text.lines().enumerate() {
-        let mut search_from = 0;
-        while let Some(rel_start) = line[search_from..].find("[[") {
-            let abs_start = search_from + rel_start;
-            if let Some(rel_end) = line[abs_start..].find("]]") {
-                let content_start = abs_start + 2;
-                let content_end = abs_start + rel_end;
-                let link_text = &line[content_start..content_end];
-
-                let target = if let Some(arrow) = link_text.find("->") {
-                    &link_text[arrow + 2..]
-                } else if let Some(pipe) = link_text.find('|') {
-                    &link_text[pipe + 1..]
-                } else {
-                    link_text
-                };
-                let target = target.trim();
-
-                if !target.is_empty() {
-                    // Find the target passage's URI
-                    if let Some(target_uri) = inner.workspace.find_passage_file_uri(target) {
-                        links.push(DocumentLink {
-                            range: Range {
-                                start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_start) },
-                                end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, content_end) },
-                            },
-                            target: Some(target_uri),
-                            tooltip: Some(format!("Go to {}", target)),
-                            data: None,
-                        });
-                    }
+    // Use workspace passage/link data for span-based resolution.
+    for passage in &doc.passages {
+        for link in &passage.links {
+            let target = link.target.trim();
+            if !target.is_empty() {
+                if let Some(target_uri) = inner.workspace.find_passage_file_uri(target) {
+                    links.push(DocumentLink {
+                        range: helpers::byte_range_to_lsp_range(text, &link.span),
+                        target: Some(target_uri),
+                        tooltip: Some(format!("Go to {}", target)),
+                        data: None,
+                    });
                 }
-
-                search_from = abs_start + rel_end + 2;
-            } else {
-                break;
             }
         }
     }
@@ -164,70 +153,83 @@ pub(crate) async fn selection_range(
         return Ok(None);
     };
 
+    let Some(doc) = inner.workspace.get_document(&uri) else {
+        return Ok(None);
+    };
+
     let mut results = Vec::new();
+    let passages = &doc.passages;
 
     for position in &params.positions {
         let mut range_chain: Vec<Range> = Vec::new();
+        let byte_offset = helpers::position_to_byte_offset(text, *position);
 
         // Level 1: Link text (if inside a [[...]])
-        if let Some(_target) = helpers::find_link_target_at_position(text, *position) {
-            let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-            let mut search_from = 0;
-            while let Some(rel_start) = line_text[search_from..].find("[[") {
-                let abs_start = search_from + rel_start;
-                if let Some(rel_end) = line_text[abs_start..].find("]]") {
-                    let content_start = abs_start + 2;
-                    let content_end = abs_start + rel_end;
-                    let byte_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
-                    if byte_pos >= content_start && byte_pos <= content_end {
-                        // Link text range
-                        let target_start = if let Some(arrow) = line_text[content_start..content_end].find("->") {
-                            content_start + arrow + 2
-                        } else if let Some(pipe) = line_text[content_start..content_end].find('|') {
-                            content_start + pipe + 1
-                        } else {
-                            content_start
-                        };
-                        range_chain.push(Range {
-                            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, target_start) },
-                            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, content_end) },
-                        });
-                        // Full link range
-                        range_chain.push(Range {
-                            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, abs_start) },
-                            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, abs_start + rel_end + 2) },
-                        });
-                        break;
-                    }
-                    search_from = abs_start + rel_end + 2;
-                } else {
-                    break;
+        'link_search: for passage in passages.iter() {
+            for link in &passage.links {
+                if byte_offset >= link.span.start && byte_offset < link.span.end {
+                    // Found the link containing the cursor.
+                    // Extract the link content to find the target portion.
+                    let link_text = &text[link.span.start.min(text.len())..link.span.end.min(text.len())];
+                    let content = &link_text[2..link_text.len().saturating_sub(2)];
+
+                    // Compute the target range within the link
+                    let target_start_offset = if let Some(arrow) = content.find("->") {
+                        link.span.start + 2 + arrow + 2
+                    } else if let Some(pipe) = content.find('|') {
+                        link.span.start + 2 + pipe + 1
+                    } else {
+                        link.span.start + 2
+                    };
+                    let target_end_offset = link.span.end.saturating_sub(2);
+
+                    // Link text range (just the target portion)
+                    range_chain.push(helpers::byte_range_to_lsp_range(
+                        text,
+                        &(target_start_offset..target_end_offset),
+                    ));
+
+                    // Full link range (entire [[...]])
+                    range_chain.push(helpers::byte_range_to_lsp_range(text, &link.span));
+
+                    break 'link_search;
                 }
             }
         }
 
-        // Level 2: Passage body range
-        if helpers::find_passage_at_position(text, *position).is_some() {
-            let header_line = position.line;
-            let lines: Vec<&str> = text.lines().collect();
-            let end_line = lines.get((header_line as usize) + 1..)
-                .and_then(|remaining| {
-                    remaining.iter()
-                        .position(|l| l.starts_with("::"))
-                        .map(|i| header_line + 1 + i as u32)
-                })
-                .unwrap_or_else(|| lines.len().saturating_sub(1) as u32);
+        // Level 2: Passage range (if cursor is within a passage)
+        for (i, passage) in passages.iter().enumerate() {
+            let span_start = passage.span.start.min(text.len());
+            let effective_end = if i + 1 < passages.len() {
+                passages[i + 1].span.start.min(text.len())
+            } else {
+                text.len()
+            };
 
-            range_chain.push(Range {
-                start: Position { line: header_line + 1, character: 0 },
-                end: Position { line: end_line, character: 0 },
-            });
+            if byte_offset >= span_start && byte_offset < effective_end {
+                let header_end = text[span_start..]
+                    .find('\n')
+                    .map(|n| span_start + n)
+                    .unwrap_or(effective_end);
 
-            // Level 3: Passage header + body
-            range_chain.push(Range {
-                start: Position { line: header_line, character: 0 },
-                end: Position { line: end_line, character: 0 },
-            });
+                let body_start_pos = helpers::byte_offset_to_position(text, (header_end + 1).min(text.len()));
+                let body_end_pos = helpers::byte_offset_to_position(text, effective_end);
+                let header_start_pos = helpers::byte_offset_to_position(text, span_start);
+
+                // Passage body range (from after header to end of passage)
+                range_chain.push(Range {
+                    start: body_start_pos,
+                    end: body_end_pos,
+                });
+
+                // Passage header + body range
+                range_chain.push(Range {
+                    start: header_start_pos,
+                    end: body_end_pos,
+                });
+
+                break;
+            }
         }
 
         // Build the linked SelectionRange list (innermost first)

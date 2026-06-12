@@ -99,6 +99,8 @@ pub fn build_semantic_tokens(
                     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset);
+                    // Emit function call site tokens from oxc analysis
+                    emit_function_call_tokens(&analysis.function_calls, tokens, body_offset);
                 } else {
                     for vr in var_refs {
                         tokens.push(SemanticToken {
@@ -147,6 +149,8 @@ pub fn build_semantic_tokens(
                     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset);
+                    // Emit function call site tokens from oxc analysis
+                    emit_function_call_tokens(&analysis.function_calls, tokens, body_offset);
                 } else {
                     for vr in var_refs {
                         tokens.push(SemanticToken {
@@ -182,6 +186,27 @@ pub fn build_semantic_tokens(
             ast::AstNode::MacroClose { .. } => {}
         }
     }
+}
+
+/// Build semantic tokens from a script passage's `JsAnalysis`.
+///
+/// Script passages contain pure JS (no SugarCube syntax). Their analysis is
+/// stored on `PassageAst::script_js_analysis` rather than on AST nodes. This
+/// function emits all token types (variables, literals, operators, namespaces,
+/// function defs, function calls) from that analysis.
+pub fn build_script_passage_tokens(
+    analysis: &ast::JsAnalysis,
+    tokens: &mut Vec<SemanticToken>,
+    body_offset: usize,
+) {
+    for op in &analysis.var_ops {
+        emit_var_op_tokens(op, tokens, body_offset);
+    }
+    emit_literal_tokens(&analysis.literal_spans, tokens, body_offset);
+    emit_operator_tokens(&analysis.operator_spans, tokens, body_offset);
+    emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset);
+    emit_function_def_tokens(&analysis.function_defs, tokens, body_offset);
+    emit_function_call_tokens(&analysis.function_calls, tokens, body_offset);
 }
 
 /// Emit semantic tokens for a single `AnalyzedVarOp`.
@@ -309,6 +334,23 @@ fn emit_function_def_tokens(function_defs: &[ast::FunctionDefInfo], tokens: &mut
             length: func_def.name.len(),
             token_type: SemanticTokenType::Function,
             modifier: Some(SemanticTokenModifier::Definition),
+        });
+    }
+}
+
+/// Emit semantic tokens for function call sites found by oxc.
+///
+/// When an identifier that was preprocessed from a SugarCube `$var` or `_var`
+/// is used as a function call target (e.g., `_myHelper()`), it should be
+/// classified as a function call, not a variable reference. This function
+/// emits `Function` tokens for those call sites.
+fn emit_function_call_tokens(function_calls: &[ast::FunctionCallInfo], tokens: &mut Vec<SemanticToken>, body_offset: usize) {
+    for call in function_calls {
+        tokens.push(SemanticToken {
+            start: body_offset + call.span.start,
+            length: call.span.end - call.span.start,
+            token_type: SemanticTokenType::Function,
+            modifier: None,
         });
     }
 }

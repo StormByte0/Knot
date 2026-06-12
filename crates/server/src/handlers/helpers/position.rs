@@ -1,6 +1,8 @@
 //! Position / Range helpers (UTF-16 aware) and passage position parsing.
 
+use knot_core::Workspace;
 use lsp_types::*;
+use url::Url;
 
 // ===========================================================================
 // UTF-16 helpers
@@ -664,6 +666,7 @@ pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: 
 /// Find the byte offset of the first line of a passage's body
 /// (the line AFTER the `:: Name` header line).
 /// Returns 0 if the passage header is not found.
+#[allow(dead_code)]
 pub(crate) fn find_passage_start_offset(text: &str, passage_name: &str) -> usize {
     let mut offset = 0;
     for line in text.lines() {
@@ -681,9 +684,212 @@ pub(crate) fn find_passage_start_offset(text: &str, passage_name: &str) -> usize
 
 /// Convert a byte offset to an LSP Position, returning None if the
 /// offset is out of bounds (unlike the panicking version).
+#[allow(dead_code)]
 pub(crate) fn byte_offset_to_position_safe(text: &str, byte_offset: usize) -> Option<Position> {
     if byte_offset > text.len() {
         return None;
     }
     Some(byte_offset_to_position(text, byte_offset))
+}
+
+// ===========================================================================
+// Span-based lookup helpers (use workspace passage data instead of
+// re-scanning the source text). These are preferred over the line-based
+// versions above because they avoid redundant parsing, correctly handle
+// multi-byte characters, and work with arrow/pipe link syntax.
+// ===========================================================================
+
+/// Span-based version of [`find_passage_header_range`].
+///
+/// Uses `workspace.find_passage(name)` to locate the passage and computes
+/// the full header line range from `passage.span.start` (start of `::` line
+/// to the first newline). Falls back to the line-based implementation when
+/// the workspace doesn't have passage data for the given name.
+pub(crate) fn find_passage_header_range_span_based(
+    text: &str,
+    workspace: &Workspace,
+    passage_name: &str,
+) -> Range {
+    if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
+        let span_start = passage.span.start.min(text.len());
+        let header_end = text[span_start..]
+            .find('\n')
+            .map(|n| span_start + n)
+            .unwrap_or(passage.span.end.min(text.len()));
+        return byte_range_to_lsp_range(text, &(span_start..header_end));
+    }
+    // Fallback: line-based scan
+    find_passage_header_range(text, passage_name)
+}
+
+/// Span-based version of [`find_passage_name_range`].
+///
+/// Uses `passage.header_name_span` when available (SugarCube), which
+/// provides the byte range of just the passage name within the header line.
+/// Falls back to the line-based implementation when `header_name_span` is
+/// `None` or the passage isn't found in the workspace.
+pub(crate) fn find_passage_name_range_span_based(
+    text: &str,
+    workspace: &Workspace,
+    passage_name: &str,
+) -> Range {
+    if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
+        if let Some(ref name_span) = passage.header_name_span {
+            return byte_range_to_lsp_range(text, name_span);
+        }
+        // header_name_span not available — fall through to line-based
+    }
+    // Fallback: line-based scan
+    find_passage_name_range(text, passage_name)
+}
+
+/// Span-based version of [`find_passage_at_position`].
+///
+/// Instead of checking `line.starts_with("::")`, this checks if the cursor's
+/// byte offset falls within any `passage.span` AND is on the header line
+/// (between `passage.span.start` and the first newline after it).
+///
+/// Falls back to the line-based implementation when the workspace doesn't
+/// have document data for the given URI.
+pub(crate) fn find_passage_at_position_span_based(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<String> {
+    if let Some(doc) = workspace.get_document(uri) {
+        let byte_offset = position_to_byte_offset(text, position);
+        for passage in &doc.passages {
+            let span_start = passage.span.start.min(text.len());
+            let header_end = text[span_start..]
+                .find('\n')
+                .map(|n| span_start + n)
+                .unwrap_or(passage.span.end.min(text.len()));
+            if byte_offset >= span_start && byte_offset <= header_end {
+                return Some(passage.name.clone());
+            }
+        }
+        return None;
+    }
+    // Fallback: line-based scan
+    find_passage_at_position(text, position)
+}
+
+/// Span-based version of [`find_link_target_at_position`].
+///
+/// Instead of scanning for `[[`/`]]`, iterates over `passage.links` and
+/// checks if the cursor's byte offset falls within any `link.span`. Returns
+/// the `link.target` passage name.
+///
+/// Falls back to the line-based implementation when the workspace doesn't
+/// have document data for the given URI.
+pub(crate) fn find_link_target_at_position_span_based(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<String> {
+    if let Some(doc) = workspace.get_document(uri) {
+        let byte_offset = position_to_byte_offset(text, position);
+        for passage in &doc.passages {
+            for link in &passage.links {
+                if byte_offset >= link.span.start && byte_offset < link.span.end {
+                    let target = link.target.trim();
+                    if !target.is_empty() {
+                        return Some(target.to_string());
+                    }
+                }
+            }
+        }
+        return None;
+    }
+    // Fallback: line-based scan
+    find_link_target_at_position(text, position)
+}
+
+/// Span-based version of [`find_variable_at_position`].
+///
+/// Instead of scanning backwards for sigils, iterates over `passage.vars`
+/// and checks if the cursor's byte offset falls within any `var.span`.
+/// Returns the variable name (including its sigil).
+///
+/// Falls back to the line-based implementation when the workspace doesn't
+/// have document data for the given URI.
+pub(crate) fn find_variable_at_position_span_based(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+    _sigils: &[char],
+) -> Option<String> {
+    if let Some(doc) = workspace.get_document(uri) {
+        let byte_offset = position_to_byte_offset(text, position);
+        for passage in &doc.passages {
+            for var in &passage.vars {
+                if byte_offset >= var.span.start && byte_offset < var.span.end {
+                    return Some(var.name.clone());
+                }
+            }
+        }
+        return None;
+    }
+    // Fallback: line-based scan
+    find_variable_at_position(text, position, _sigils)
+}
+
+/// Span-based version of [`find_passage_start_offset`].
+///
+/// Instead of scanning lines for `::`, uses `passage.span.start` directly
+/// from the workspace to find the start of the header line, then computes
+/// the body start offset (after the header line's newline).
+///
+/// Falls back to the line-based implementation when the workspace doesn't
+/// have passage data for the given name.
+#[allow(dead_code)]
+pub(crate) fn find_passage_start_offset_span_based(
+    text: &str,
+    workspace: &Workspace,
+    passage_name: &str,
+) -> usize {
+    if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
+        let span_start = passage.span.start.min(text.len());
+        // The body starts after the header line (after the first newline)
+        return text[span_start..]
+            .find('\n')
+            .map(|n| span_start + n + 1)
+            .unwrap_or(span_start);
+    }
+    // Fallback: line-based scan
+    find_passage_start_offset(text, passage_name)
+}
+
+/// Compute the LSP Range for the passage name when `header_name_span` is
+/// not available.
+///
+/// Extracts the header line from the passage span, then uses the unified
+/// header parser (`passage_name_range_in_header`) to locate the name
+/// portion. Falls back to the full header line range if the parser fails.
+///
+/// This avoids using `line_text.find(&name)`, which can match the wrong
+/// occurrence when the name appears in tags or metadata.
+pub(crate) fn compute_passage_name_range_fallback(
+    text: &str,
+    passage_span: &std::ops::Range<usize>,
+) -> Range {
+    let span_start = passage_span.start.min(text.len());
+    let line_end = text[span_start..]
+        .find('\n')
+        .map(|n| span_start + n)
+        .unwrap_or(text.len());
+    let header_line = &text[span_start..line_end];
+    let after_colons = header_line.strip_prefix("::").unwrap_or(header_line);
+
+    if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
+        let abs_start = span_start + 2 + name_range.start;
+        let abs_end = span_start + 2 + name_range.end;
+        byte_range_to_lsp_range(text, &(abs_start..abs_end))
+    } else {
+        // Final fallback: return the full header line range
+        byte_range_to_lsp_range(text, &(span_start..line_end))
+    }
 }

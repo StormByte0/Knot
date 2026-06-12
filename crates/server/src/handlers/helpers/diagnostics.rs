@@ -11,8 +11,7 @@ use url::Url;
 
 use super::code_actions::extract_variable_name;
 use super::position::{
-    byte_range_to_lsp_range, find_passage_name_range,
-    parse_passage_name_from_header, utf16_len, utf16_len_up_to,
+    byte_offset_to_position, byte_range_to_lsp_range, find_passage_name_range_span_based,
 };
 
 // ===========================================================================
@@ -125,11 +124,11 @@ pub(crate) async fn publish_all_diagnostics(
                 // (not the full header line with tags/metadata). This makes
                 // diagnostics more precise and avoids misleading users into
                 // thinking the tags or metadata are the problem.
-                let range = find_passage_name_range(text, &gd.passage_name);
+                let range = find_passage_name_range_span_based(text, workspace, &gd.passage_name);
 
                 // Build related information pointing to source or target passages
                 let related_information = build_related_information_for_push(
-                    open_documents, workspace, &gd.kind, &gd.passage_name, &gd.message, sigils,
+                    open_documents, workspace, &gd.kind, &gd.passage_name, &gd.message, sigils
                 );
 
                 lsp_diagnostics.push(Diagnostic {
@@ -334,15 +333,15 @@ pub(crate) fn build_related_information_for_push(
     match kind {
         DiagnosticKind::BrokenLink => {
             // Point to the passage that contains the broken link
-            find_link_locations(open_documents, passage_name)
+            find_link_locations(workspace, open_documents, passage_name)
         }
         DiagnosticKind::UnreachablePassage => {
             // Point to passages that should link to this one
-            find_definition_location(open_documents, passage_name)
+            find_definition_location(workspace, open_documents, passage_name)
         }
         DiagnosticKind::DuplicatePassageName => {
             // Point to all definitions of this passage name
-            find_all_definition_locations(open_documents, passage_name)
+            find_all_definition_locations(workspace, open_documents, passage_name)
         }
         DiagnosticKind::UninitializedVariable => {
             // Point to where the variable is first read
@@ -354,42 +353,34 @@ pub(crate) fn build_related_information_for_push(
 }
 
 /// Find locations of links to a given passage name (for broken link related info).
+///
+/// Uses the workspace's already-parsed `passage.links` data instead of
+/// re-scanning the source text for `[[`/`]]`. Each link's `span` field
+/// provides the exact byte range, which is converted to an LSP Range via
+/// `byte_range_to_lsp_range()`. Falls back to line-based scanning when
+/// a document isn't in the workspace.
 pub(crate) fn find_link_locations(
+    workspace: &Workspace,
     open_documents: &HashMap<Url, String>,
     passage_name: &str,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     let mut related = Vec::new();
-    for (doc_uri, text) in open_documents {
-        for (line_idx, line) in text.lines().enumerate() {
-            let mut search_from = 0;
-            while let Some(rel_start) = line[search_from..].find("[[") {
-                let abs_start = search_from + rel_start;
-                if let Some(rel_end) = line[abs_start..].find("]]") {
-                    let content_start = abs_start + 2;
-                    let content_end = abs_start + rel_end;
-                    let link_text = &line[content_start..content_end];
-                    let link_target = if let Some(arrow) = link_text.find("->") {
-                        &link_text[arrow + 2..]
-                    } else if let Some(pipe) = link_text.find('|') {
-                        &link_text[pipe + 1..]
-                    } else {
-                        link_text
-                    };
-                    if link_target.trim() == passage_name {
-                        related.push(DiagnosticRelatedInformation {
-                            location: Location {
-                                uri: doc_uri.clone(),
-                                range: Range {
-                                    start: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_start) },
-                                    end: Position { line: line_idx as u32, character: utf16_len_up_to(line, content_end) },
-                                },
-                            },
-                            message: format!("Link to '{}'", passage_name),
-                        });
-                    }
-                    search_from = abs_start + rel_end + 2;
-                } else {
-                    break;
+    for doc in workspace.documents() {
+        let text = match open_documents.get(&doc.uri) {
+            Some(t) => t,
+            None => continue,
+        };
+        for passage in &doc.passages {
+            for link in &passage.links {
+                if link.target.trim() == passage_name {
+                    let range = byte_range_to_lsp_range(text, &link.span);
+                    related.push(DiagnosticRelatedInformation {
+                        location: Location {
+                            uri: doc.uri.clone(),
+                            range,
+                        },
+                        message: format!("Link to '{}'", passage_name),
+                    });
                 }
             }
         }
@@ -398,54 +389,72 @@ pub(crate) fn find_link_locations(
 }
 
 /// Find the definition location of a passage (for unreachable passage related info).
+///
+/// Uses `workspace.find_passage(name)` to locate the passage and its
+/// `header_name_span` (or `passage.span` as fallback) for the LSP Range.
 pub(crate) fn find_definition_location(
+    workspace: &Workspace,
     open_documents: &HashMap<Url, String>,
     passage_name: &str,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
-    for (doc_uri, text) in open_documents {
-        for (line_idx, line) in text.lines().enumerate() {
-            if line.starts_with("::") {
-                let name = parse_passage_name_from_header(&line[2..]);
-                if name == passage_name {
-                    return Some(vec![DiagnosticRelatedInformation {
-                        location: Location {
-                            uri: doc_uri.clone(),
-                            range: Range {
-                                start: Position { line: line_idx as u32, character: 0 },
-                                end: Position { line: line_idx as u32, character: utf16_len(line) },
-                            },
-                        },
-                        message: format!("Definition of '{}'", passage_name),
-                    }]);
-                }
-            }
-        }
+    if let Some((doc, passage)) = workspace.find_passage(passage_name) {
+        let text = open_documents.get(&doc.uri)?;
+        let range = if let Some(ref name_span) = passage.header_name_span {
+            byte_range_to_lsp_range(text, name_span)
+        } else {
+            // Fallback: compute the full header line range from passage.span.start
+            let span_start = passage.span.start.min(text.len());
+            let header_end = text[span_start..]
+                .find('\n')
+                .map(|n| span_start + n)
+                .unwrap_or(passage.span.end.min(text.len()));
+            byte_range_to_lsp_range(text, &(span_start..header_end))
+        };
+        return Some(vec![DiagnosticRelatedInformation {
+            location: Location {
+                uri: doc.uri.clone(),
+                range,
+            },
+            message: format!("Definition of '{}'", passage_name),
+        }]);
     }
     None
 }
 
 /// Find all definition locations of a passage name (for duplicate passage diagnostics).
+///
+/// Uses workspace passage data to locate all passages with the given name,
+/// using `header_name_span` (or `passage.span` as fallback) for the LSP Range.
 pub(crate) fn find_all_definition_locations(
+    workspace: &Workspace,
     open_documents: &HashMap<Url, String>,
     passage_name: &str,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
     let mut related = Vec::new();
-    for (doc_uri, text) in open_documents {
-        for (line_idx, line) in text.lines().enumerate() {
-            if line.starts_with("::") {
-                let name = parse_passage_name_from_header(&line[2..]);
-                if name == passage_name {
-                    related.push(DiagnosticRelatedInformation {
-                        location: Location {
-                            uri: doc_uri.clone(),
-                            range: Range {
-                                start: Position { line: line_idx as u32, character: 0 },
-                                end: Position { line: line_idx as u32, character: utf16_len(line) },
-                            },
-                        },
-                        message: format!("Definition of '{}'", passage_name),
-                    });
-                }
+    for doc in workspace.documents() {
+        let text = match open_documents.get(&doc.uri) {
+            Some(t) => t,
+            None => continue,
+        };
+        for passage in &doc.passages {
+            if passage.name == passage_name {
+                let range = if let Some(ref name_span) = passage.header_name_span {
+                    byte_range_to_lsp_range(text, name_span)
+                } else {
+                    let span_start = passage.span.start.min(text.len());
+                    let header_end = text[span_start..]
+                        .find('\n')
+                        .map(|n| span_start + n)
+                        .unwrap_or(passage.span.end.min(text.len()));
+                    byte_range_to_lsp_range(text, &(span_start..header_end))
+                };
+                related.push(DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: doc.uri.clone(),
+                        range,
+                    },
+                    message: format!("Definition of '{}'", passage_name),
+                });
             }
         }
     }
@@ -484,18 +493,16 @@ pub(crate) fn find_variable_read_locations(
                     }
                 }
 
-                // Compute the line number from the byte span offset
-                let line = text[..var.span.start.min(text.len())]
-                    .lines()
-                    .count()
-                    .saturating_sub(1) as u32;
+                // Use the span-based byte offset to compute an accurate
+                // LSP Position (handles multi-byte characters correctly).
+                let pos = byte_offset_to_position(text, var.span.start.min(text.len()));
 
                 related.push(DiagnosticRelatedInformation {
                     location: Location {
                         uri: doc.uri.clone(),
                         range: Range {
-                            start: Position { line, character: 0 },
-                            end: Position { line, character: 0 },
+                            start: pos,
+                            end: pos,
                         },
                     },
                     message: format!("Variable {} is read in passage '{}'", var.name, passage.name),

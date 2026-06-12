@@ -26,7 +26,7 @@ use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 
 use crate::sugarcube::ast::{
-    AnalyzedVarOp, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
+    AnalyzedVarOp, FunctionCallInfo, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
     NamespaceSpan, OperatorKind, OperatorSpan, PropertySpan, TemplateAddInfo,
 };
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
@@ -110,8 +110,11 @@ fn walk_statement(
     match stmt {
         Statement::FunctionDeclaration(func) => {
             if let Some(id) = &func.id {
-                let name = id.name.to_string();
-                let name_offset = preprocessed.map_to_original(id.span.start as usize);
+                let (name, name_offset) = demangle_function_name(
+                    id.name.as_str(),
+                    id.span.start as usize,
+                    preprocessed,
+                );
                 let param_count = Some(func.params.items.len());
                 analysis.function_defs.push(FunctionDefInfo {
                     name,
@@ -131,8 +134,11 @@ fn walk_statement(
                         oxc_ast::ast::Expression::FunctionExpression(func_expr) => {
                             // var myFunc = function() {...} — name from the var binding
                             if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
-                                let name = binding_name.name.to_string();
-                                let name_offset = preprocessed.map_to_original(binding_name.span.start as usize);
+                                let (name, name_offset) = demangle_function_name(
+                                    binding_name.name.as_str(),
+                                    binding_name.span.start as usize,
+                                    preprocessed,
+                                );
                                 let param_count = Some(func_expr.params.items.len());
                                 analysis.function_defs.push(FunctionDefInfo {
                                     name,
@@ -143,8 +149,11 @@ fn walk_statement(
                         }
                         oxc_ast::ast::Expression::ArrowFunctionExpression(_arrow) => {
                             if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
-                                let name = binding_name.name.to_string();
-                                let name_offset = preprocessed.map_to_original(binding_name.span.start as usize);
+                                let (name, name_offset) = demangle_function_name(
+                                    binding_name.name.as_str(),
+                                    binding_name.span.start as usize,
+                                    preprocessed,
+                                );
                                 analysis.function_defs.push(FunctionDefInfo {
                                     name,
                                     name_offset,
@@ -326,6 +335,22 @@ fn walk_expression(
             walk_expression(&member.expression, preprocessed, analysis);
         }
         Expr::CallExpression(call) => {
+            // ── Detect preprocessed identifiers used as function call targets ──
+            // When a SugarCube variable like `_myHelper` is used as a function
+            // call target (`_myHelper()`), the preprocessor has already replaced
+            // it with `State_temporary_myHelper`. We need to emit a FunctionCallInfo
+            // instead of letting the recursive walk create a Variable var_op.
+            if let Expr::Identifier(id) = &call.callee {
+                if let Some(call_info) = try_classify_as_function_call(id, preprocessed) {
+                    analysis.function_calls.push(call_info);
+                    // Skip the normal recursive walk into the callee — we've
+                    // already handled it as a function call. Just walk args.
+                    for arg in &call.arguments {
+                        walk_argument(arg, preprocessed, analysis);
+                    }
+                    return;
+                }
+            }
             // Check for Macro.add("name", ...) pattern
             if let Expr::StaticMemberExpression(member) = &call.callee
                 && member.property.name == "add"
@@ -902,6 +927,74 @@ fn check_identifier_for_substituted_var(
 // ---------------------------------------------------------------------------
 // Internal: helpers
 // ---------------------------------------------------------------------------
+
+/// Demangle a function name that was preprocessed by the SugarCube variable
+/// substitutor.
+///
+/// The preprocessor replaces `$var` → `State_variables_varName` and
+/// `_var` → `State_temporary_varName`. When these appear as function
+/// declaration names or variable binding names, we need to restore the
+/// original name and compute the correct offset for the original source
+/// position.
+///
+/// Returns `(demangled_name, original_name_offset)`.
+fn demangle_function_name(
+    preprocessed_name: &str,
+    span_start: usize,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+) -> (String, usize) {
+    if let Some(var_part) = preprocessed_name.strip_prefix("State_temporary_") {
+        let original_name = format!("_{}", var_part);
+        let name_offset = preprocessed.map_to_original(span_start);
+        (original_name, name_offset)
+    } else if let Some(var_part) = preprocessed_name.strip_prefix("State_variables_") {
+        let (base_name, _property_path) = split_substituted_var(var_part);
+        let original_name = format!("${}", base_name);
+        let name_offset = preprocessed.map_to_original(span_start);
+        (original_name, name_offset)
+    } else {
+        let name_offset = preprocessed.map_to_original(span_start);
+        (preprocessed_name.to_string(), name_offset)
+    }
+}
+
+/// Try to classify an identifier reference as a function call target.
+///
+/// When a SugarCube variable like `_myHelper` is used as a function call
+/// target (`_myHelper()`), the preprocessor has already replaced it with
+/// `State_temporary_myHelper`. This function detects that case and returns
+/// a `FunctionCallInfo` so the token builder emits a `Function` token
+/// instead of a `Variable` token.
+///
+/// Returns `None` if the identifier is not a preprocessed SugarCube variable
+/// (i.e., it's a regular JS identifier and should be handled normally).
+fn try_classify_as_function_call(
+    id: &oxc_ast::ast::IdentifierReference<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+) -> Option<FunctionCallInfo> {
+    let name = id.name.as_str();
+
+    if let Some(var_part) = name.strip_prefix("State_temporary_") {
+        let func_name = format!("_{}", var_part);
+        let original_start = preprocessed.map_to_original(id.span.start as usize);
+        let original_end = preprocessed.map_to_original(id.span.end as usize);
+        Some(FunctionCallInfo {
+            name: func_name,
+            span: original_start..original_end,
+        })
+    } else if let Some(var_part) = name.strip_prefix("State_variables_") {
+        let (base_name, _property_path) = split_substituted_var(var_part);
+        let func_name = format!("${}", base_name);
+        let original_start = preprocessed.map_to_original(id.span.start as usize);
+        let original_end = preprocessed.map_to_original(id.span.end as usize);
+        Some(FunctionCallInfo {
+            name: func_name,
+            span: original_start..original_end,
+        })
+    } else {
+        None
+    }
+}
 
 /// Extract a string value from a function argument.
 fn extract_string_from_arg(arg: &oxc_ast::ast::Argument<'_>) -> Option<String> {

@@ -713,6 +713,13 @@ pub struct Passage {
     pub tags: Vec<String>,
     /// The byte range of the entire passage in the source document.
     pub span: Range<usize>,
+    /// The byte range of just the passage name within the header line.
+    ///
+    /// For a header like `:: My Passage [tags] {"position":"1,2"}`, this
+    /// spans only "My Passage" (excluding `::`, tags, and JSON metadata).
+    /// When `None`, the name range must be recomputed from the header text.
+    #[serde(default)]
+    pub header_name_span: Option<Range<usize>>,
     /// Content blocks within the passage body.
     pub body: Vec<Block>,
     /// Links from this passage to other passages.
@@ -741,6 +748,7 @@ impl Passage {
             name,
             tags: Vec::new(),
             span,
+            header_name_span: None,
             body: Vec::new(),
             links: Vec::new(),
             vars: Vec::new(),
@@ -756,6 +764,7 @@ impl Passage {
             name,
             tags: Vec::new(),
             span,
+            header_name_span: None,
             body: Vec::new(),
             links: Vec::new(),
             vars: Vec::new(),

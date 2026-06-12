@@ -1,5 +1,8 @@
 //! Editing handlers: formatting, range_formatting, on_type_formatting,
 //! linked_editing_range, prepare_rename, rename.
+//!
+//! Uses span-based resolution via the workspace index for passage and link
+//! lookups instead of re-scanning source text.
 
 use crate::handlers::helpers;
 use crate::state::ServerState;
@@ -125,44 +128,36 @@ pub(crate) async fn linked_editing_range(
     };
 
     // If cursor is on a passage header name, find all [[link]] references
-    if let Some(name) = helpers::find_passage_at_position(text, position) {
-        let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-        let name_start = line_text.find(&name).unwrap_or(2);
+    if let Some(name) = helpers::find_passage_at_position_span_based(
+        text, &inner.workspace, &uri, position,
+    ) {
+        // Use header_name_span for the primary range when available;
+        // fall back to computing from the header line using the header parser.
+        let primary_range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
+            if let Some(ref name_span) = passage.header_name_span {
+                helpers::byte_range_to_lsp_range(text, name_span)
+            } else {
+                helpers::compute_passage_name_range_fallback(text, &passage.span)
+            }
+        } else {
+            // Passage not found in workspace — use line-based fallback
+            let line_text = text.lines().nth(position.line as usize).unwrap_or("");
+            let name_start = line_text.find(&name).unwrap_or(2);
+            Range {
+                start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start) },
+                end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start + name.len()) },
+            }
+        };
 
-        let mut ranges = vec![Range {
-            start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start) },
-            end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start + name.len()) },
-        }];
+        let mut ranges = vec![primary_range];
 
-        // Find all [[name]] links in the document
-        for (line_idx, line) in text.lines().enumerate() {
-            let mut search_from = 0;
-            while let Some(rel_start) = line[search_from..].find("[[") {
-                let abs_start = search_from + rel_start;
-                if let Some(rel_end) = line[abs_start..].find("]]") {
-                    let content_start = abs_start + 2;
-                    let content_end = abs_start + rel_end;
-                    let link_text = &line[content_start..content_end];
-
-                    let link_target = if let Some(arrow) = link_text.find("->") {
-                        &link_text[arrow + 2..]
-                    } else if let Some(pipe) = link_text.find('|') {
-                        &link_text[pipe + 1..]
-                    } else {
-                        link_text
-                    };
-
-                    if link_target.trim() == name {
-                        let target_start = content_start + (link_text.len() - link_target.len());
-                        ranges.push(Range {
-                            start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start) },
-                            end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start + name.len()) },
-                        });
+        // Find all link ranges for this target using workspace data
+        if let Some(doc) = inner.workspace.get_document(&uri) {
+            for passage in &doc.passages {
+                for link in &passage.links {
+                    if link.target.trim() == name {
+                        ranges.push(helpers::byte_range_to_lsp_range(text, &link.span));
                     }
-
-                    search_from = abs_start + rel_end + 2;
-                } else {
-                    break;
                 }
             }
         }
@@ -187,45 +182,51 @@ pub(crate) async fn prepare_rename(
 
     if let Some(text) = inner.open_documents.get(&uri) {
         // Check if cursor is on a passage header
-        if let Some(name) = helpers::find_passage_at_position(text, position) {
-            let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-            let name_start_byte = line_text.find(&name).unwrap_or(2);
-            let name_start_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte);
-            let name_end_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte + name.len());
-            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                range: Range {
+        if let Some(name) = helpers::find_passage_at_position_span_based(
+            text, &inner.workspace, &uri, position,
+        ) {
+            // Use header_name_span for the rename range when available;
+            // fall back to computing from the header line using the header parser.
+            let range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
+                if let Some(ref name_span) = passage.header_name_span {
+                    helpers::byte_range_to_lsp_range(text, name_span)
+                } else {
+                    helpers::compute_passage_name_range_fallback(text, &passage.span)
+                }
+            } else {
+                // Passage not found in workspace — use line-based fallback
+                let line_text = text.lines().nth(position.line as usize).unwrap_or("");
+                let name_start_byte = line_text.find(&name).unwrap_or(2);
+                let name_start_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte);
+                let name_end_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte + name.len());
+                Range {
                     start: Position { line: position.line, character: name_start_utf16 },
                     end: Position { line: position.line, character: name_end_utf16 },
-                },
+                }
+            };
+            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                range,
                 placeholder: name,
             }));
         }
 
         // Check if cursor is on a link target
-        if let Some(target_name) = helpers::find_link_target_at_position(text, position) {
-            let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-            // Find the [[...]] that contains the cursor
-            let mut search_from = 0;
-            while let Some(rel_start) = line_text[search_from..].find("[[") {
-                let abs_start = search_from + rel_start;
-                if let Some(rel_end) = line_text[abs_start..].find("]]") {
-                    let content_start = abs_start + 2;
-                    let content_end = abs_start + rel_end;
-                    // Compare UTF-16 cursor position with UTF-16 offsets of link content
-                    let utf16_content_start = helpers::utf16_len_up_to(line_text, content_start);
-                    let utf16_content_end = helpers::utf16_len_up_to(line_text, content_end);
-                    if position.character >= utf16_content_start && position.character <= utf16_content_end {
-                        return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                            range: Range {
-                                start: Position { line: position.line, character: utf16_content_start },
-                                end: Position { line: position.line, character: utf16_content_end },
-                            },
-                            placeholder: target_name,
-                        }));
+        if let Some(target_name) = helpers::find_link_target_at_position_span_based(
+            text, &inner.workspace, &uri, position,
+        ) {
+            // Find the link span that contains the cursor
+            let byte_offset = helpers::position_to_byte_offset(text, position);
+            if let Some(doc) = inner.workspace.get_document(&uri) {
+                for passage in &doc.passages {
+                    for link in &passage.links {
+                        if byte_offset >= link.span.start && byte_offset < link.span.end {
+                            let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+                                range,
+                                placeholder: target_name,
+                            }));
+                        }
                     }
-                    search_from = abs_start + rel_end + 2;
-                } else {
-                    break;
                 }
             }
         }
@@ -246,8 +247,8 @@ pub(crate) async fn rename(
 
     // Determine what the user is renaming
     let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
-        helpers::find_passage_at_position(text, position)
-            .or_else(|| helpers::find_link_target_at_position(text, position))
+        helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
+            .or_else(|| helpers::find_link_target_at_position_span_based(text, &inner.workspace, &uri, position))
     } else {
         None
     };
@@ -256,67 +257,49 @@ pub(crate) async fn rename(
         return Ok(None);
     };
 
-    // Collect all edits across all documents
+    // Collect all edits across all documents using workspace passage data.
+    // - Header renames: passages where passage.name == old_name → use
+    //   header_name_span (or fallback)
+    // - Link renames: passages where any link.target == old_name → use
+    //   link.span
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
-    for (doc_uri, text) in &inner.open_documents {
+    for doc in inner.workspace.documents() {
+        let text = match inner.open_documents.get(&doc.uri) {
+            Some(t) => t,
+            None => continue,
+        };
         let mut doc_edits = Vec::new();
 
-        for (line_idx, line) in text.lines().enumerate() {
+        for passage in &doc.passages {
             // Rename passage header
-            if line.starts_with("::") {
-                let name = helpers::parse_passage_name_from_header(&line[2..]);
-                if name == old_name {
-                    let name_start = line.find(&name).unwrap_or(2);
-                    doc_edits.push(TextEdit {
-                        range: Range {
-                            start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, name_start) },
-                            end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, name_start + name.len()) },
-                        },
-                        new_text: new_name.clone(),
-                    });
-                }
+            if passage.name == old_name {
+                let range = if let Some(ref name_span) = passage.header_name_span {
+                    helpers::byte_range_to_lsp_range(text, name_span)
+                } else {
+                    // Fallback: compute from the header line using the header parser
+                    helpers::compute_passage_name_range_fallback(text, &passage.span)
+                };
+                doc_edits.push(TextEdit {
+                    range,
+                    new_text: new_name.clone(),
+                });
             }
 
             // Rename links
-            let mut search_from = 0;
-            while let Some(rel_start) = line[search_from..].find("[[") {
-                let abs_start = search_from + rel_start;
-                if let Some(rel_end) = line[abs_start..].find("]]") {
-                    let content_start = abs_start + 2;
-                    let content_end = abs_start + rel_end;
-                    let link_text = &line[content_start..content_end];
-
-                    let link_target = if let Some(arrow) = link_text.find("->") {
-                        &link_text[arrow + 2..]
-                    } else if let Some(pipe) = link_text.find('|') {
-                        &link_text[pipe + 1..]
-                    } else {
-                        link_text
-                    };
-
-                    if link_target.trim() == old_name {
-                        // Find the exact position of the target name in the link
-                        let target_start = content_start + (link_text.len() - link_target.len());
-                        let target_end = target_start + link_target.trim().len();
-                        doc_edits.push(TextEdit {
-                            range: Range {
-                                start: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_start) },
-                                end: Position { line: line_idx as u32, character: helpers::utf16_len_up_to(line, target_end) },
-                            },
-                            new_text: new_name.clone(),
-                        });
-                    }
-
-                    search_from = abs_start + rel_end + 2;
-                } else {
-                    break;
+            for link in &passage.links {
+                if link.target.trim() == old_name {
+                    let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                    doc_edits.push(TextEdit {
+                        range,
+                        new_text: new_name.clone(),
+                    });
                 }
             }
         }
 
         if !doc_edits.is_empty() {
-            changes.insert(doc_uri.clone(), doc_edits);
+            changes.insert(doc.uri.clone(), doc_edits);
         }
     }
 

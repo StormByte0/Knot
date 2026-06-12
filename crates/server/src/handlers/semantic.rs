@@ -207,98 +207,84 @@ pub(crate) async fn document_symbol(
         return Ok(None);
     };
 
+    // Use workspace passage data for span-based resolution.
+    let Some(doc) = inner.workspace.get_document(&uri) else {
+        return Ok(None);
+    };
+
     let mut symbols = Vec::new();
+    let passages = &doc.passages;
 
-    for (line_idx, line) in text.lines().enumerate() {
-        if line.starts_with("::") {
-            let name = helpers::parse_passage_name_from_header(&line[2..]);
+    for (i, passage) in passages.iter().enumerate() {
+        let name = passage.name.clone();
 
-            // Find the end of this passage (next :: or end of file)
-            let end_line = text
-                .lines()
-                .enumerate()
-                .skip(line_idx + 1)
-                .find(|(_, l)| l.starts_with("::"))
-                .map(|(i, _)| i as u32 - 1)
-                .unwrap_or_else(|| text.lines().count() as u32 - 1);
+        let kind = if name == "StoryData" || name == "StoryTitle" {
+            SymbolKind::CONSTANT
+        } else {
+            SymbolKind::MODULE
+        };
 
-            let kind = if name == "StoryData" || name == "StoryTitle" {
-                SymbolKind::CONSTANT
+        // Extract tags detail directly from passage data
+        let detail = if passage.tags.is_empty() {
+            None
+        } else {
+            Some(format!("Tags: {}", passage.tags.join(", ")))
+        };
+
+        // Full range: from passage start to just before the next passage
+        // (or end of document for the last passage).
+        let full_range = {
+            let start_offset = passage.span.start.min(text.len());
+            let end_offset = if i + 1 < passages.len() {
+                passages[i + 1].span.start.min(text.len())
             } else {
-                SymbolKind::MODULE
+                text.len()
             };
+            helpers::byte_range_to_lsp_range(text, &(start_offset..end_offset))
+        };
 
-            // Extract tags from the header line if present
-            let detail = if let Some(bracket_start) = line[2..].find('[') {
-                let header = &line[2..];
-                if let Some(bracket_end) = header[bracket_start..].find(']') {
-                    let tags = &header[bracket_start + 1..bracket_start + bracket_end];
-                    Some(format!("Tags: {}", tags))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // Compute the selection range to cover ONLY the passage name
-            // (after `::` + whitespace, before `[` tags or `{` JSON metadata).
-            // This must be contained within the full range.
-            //
-            // Use the unified header parser for accurate name range computation
-            // that correctly handles multiple [tags] and {} metadata blocks.
-            let after_colons = &line[2..];
-            let (sel_start_char, sel_end_char) =
+        // Selection range: just the passage name within the header.
+        // Use header_name_span when available; fall back to computing
+        // from the header line using the header parser.
+        let selection_range = passage
+            .header_name_span
+            .as_ref()
+            .map(|name_span| helpers::byte_range_to_lsp_range(text, name_span))
+            .unwrap_or_else(|| {
+                let span_start = passage.span.start.min(text.len());
+                let line_end = text[span_start..]
+                    .find('\n')
+                    .map(|n| span_start + n)
+                    .unwrap_or(text.len());
+                let header_line = &text[span_start..line_end];
+                let after_colons = header_line.strip_prefix("::").unwrap_or(header_line);
                 if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
-                    let start = 2 + helpers::utf16_len(&after_colons[..name_range.start]);
-                    let end = start + helpers::utf16_len(&after_colons[name_range.start..name_range.end]);
-                    (start, end)
+                    let prefix_len = helpers::utf16_len(&header_line[..2]);
+                    let start_char = prefix_len + helpers::utf16_len(&after_colons[..name_range.start]);
+                    let end_char = start_char + helpers::utf16_len(&after_colons[name_range.start..name_range.end]);
+                    Range {
+                        start: Position { line: full_range.start.line, character: start_char },
+                        end: Position { line: full_range.start.line, character: end_char },
+                    }
                 } else {
-                    // Fallback: use the whole after-colons portion
-                    let start = 2 + helpers::utf16_len(&after_colons[..after_colons.len() - after_colons.trim_start().len()]);
-                    (start, helpers::utf16_len(line))
-                };
-
-            // Ensure range.end is at least as far as selectionRange.end
-            // when the passage is a single-line passage (end_line == line_idx).
-            let range_end_char = if end_line == line_idx as u32 {
-                helpers::utf16_len(line)
-            } else {
-                0
-            };
-
-            // lsp_types 0.94 still requires the `deprecated` field in the struct literal
-            // even though it was deprecated in LSP 3.16+ in favor of `tags`.
-            #[allow(deprecated)]
-            symbols.push(DocumentSymbol {
-                name,
-                detail,
-                kind,
-                tags: None,
-                deprecated: None,
-                range: Range {
-                    start: Position {
-                        line: line_idx as u32,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: end_line,
-                        character: range_end_char,
-                    },
-                },
-                selection_range: Range {
-                    start: Position {
-                        line: line_idx as u32,
-                        character: sel_start_char,
-                    },
-                    end: Position {
-                        line: line_idx as u32,
-                        character: sel_end_char,
-                    },
-                },
-                children: None,
+                    Range {
+                        start: Position { line: full_range.start.line, character: 0 },
+                        end: Position { line: full_range.start.line, character: helpers::utf16_len(header_line) },
+                    }
+                }
             });
-        }
+
+        #[allow(deprecated)]
+        symbols.push(DocumentSymbol {
+            name,
+            detail,
+            kind,
+            tags: None,
+            deprecated: None,
+            range: full_range,
+            selection_range,
+            children: None,
+        });
     }
 
     if symbols.is_empty() {
@@ -323,37 +309,45 @@ pub(crate) async fn symbol(
             None => continue,
         };
 
-        for (line_idx, line) in text.lines().enumerate() {
-            if line.starts_with("::") {
-                let name = helpers::parse_passage_name_from_header(&line[2..]);
-
-                // Filter by query (case-insensitive substring match)
-                if !query.is_empty() && !name.to_lowercase().contains(&query) {
-                    continue;
-                }
-
-                let kind = if name == "StoryData" || name == "StoryTitle" {
-                    SymbolKind::CONSTANT
-                } else {
-                    SymbolKind::MODULE
-                };
-
-                #[allow(deprecated)]
-                symbols.push(SymbolInformation {
-                    name,
-                    kind,
-                    tags: None,
-                    deprecated: None,
-                    location: Location {
-                        uri: doc.uri.clone(),
-                        range: Range {
-                            start: Position { line: line_idx as u32, character: 0 },
-                            end: Position { line: line_idx as u32, character: helpers::utf16_len(line) },
-                        },
-                    },
-                    container_name: None,
-                });
+        for passage in &doc.passages {
+            // Filter by query (case-insensitive substring match)
+            if !query.is_empty() && !passage.name.to_lowercase().contains(&query) {
+                continue;
             }
+
+            let kind = if passage.name == "StoryData" || passage.name == "StoryTitle" {
+                SymbolKind::CONSTANT
+            } else {
+                SymbolKind::MODULE
+            };
+
+            // Use header_name_span for the location range when available,
+            // otherwise compute from the passage span (header line only).
+            let range = passage
+                .header_name_span
+                .as_ref()
+                .map(|name_span| helpers::byte_range_to_lsp_range(text, name_span))
+                .unwrap_or_else(|| {
+                    let span_start = passage.span.start.min(text.len());
+                    let line_end = text[span_start..]
+                        .find('\n')
+                        .map(|n| span_start + n)
+                        .unwrap_or(text.len());
+                    helpers::byte_range_to_lsp_range(text, &(span_start..line_end))
+                });
+
+            #[allow(deprecated)]
+            symbols.push(SymbolInformation {
+                name: passage.name.clone(),
+                kind,
+                tags: None,
+                deprecated: None,
+                location: Location {
+                    uri: doc.uri.clone(),
+                    range,
+                },
+                container_name: None,
+            });
         }
     }
 
@@ -427,32 +421,38 @@ pub(crate) async fn code_lens(
         return Ok(None);
     };
 
+    let Some(doc) = inner.workspace.get_document(&uri) else {
+        return Ok(None);
+    };
+
     let mut lenses = Vec::new();
 
-    for (line_idx, line) in text.lines().enumerate() {
-        if line.starts_with("::") {
-            let name = helpers::parse_passage_name_from_header(&line[2..]);
-            let outgoing = inner.workspace.graph.outgoing_neighbors(&name).len();
-            let incoming = helpers::count_incoming_links(&inner.workspace, &name);
+    for passage in &doc.passages {
+        let outgoing = inner.workspace.graph.outgoing_neighbors(&passage.name).len();
+        let incoming = helpers::count_incoming_links(&inner.workspace, &passage.name);
 
-            if outgoing > 0 || incoming > 0 {
-                lenses.push(CodeLens {
-                    range: Range {
-                        start: Position { line: line_idx as u32, character: 0 },
-                        end: Position { line: line_idx as u32, character: helpers::utf16_len(line) },
+        if outgoing > 0 || incoming > 0 {
+            // Compute range from the passage header line using span data
+            let span_start = passage.span.start.min(text.len());
+            let line_end = text[span_start..]
+                .find('\n')
+                .map(|n| span_start + n)
+                .unwrap_or(text.len());
+            let range = helpers::byte_range_to_lsp_range(text, &(span_start..line_end));
+
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title: if outgoing > 0 {
+                        format!("{} links →", outgoing)
+                    } else {
+                        format!("{} refs", incoming)
                     },
-                    command: Some(Command {
-                        title: if outgoing > 0 {
-                            format!("{} links →", outgoing)
-                        } else {
-                            format!("{} refs", incoming)
-                        },
-                        command: String::new(),
-                        arguments: None,
-                    }),
-                    data: None,
-                });
-            }
+                    command: String::new(),
+                    arguments: None,
+                }),
+                data: None,
+            });
         }
     }
 
@@ -498,61 +498,63 @@ pub(crate) async fn inlay_hint(
 
     let mut hints = Vec::new();
 
-    for (line_idx, line) in text.lines().enumerate() {
-        if line.starts_with("::") {
-            let name = helpers::parse_passage_name_from_header(&line[2..]);
+    // Use workspace passage data for span-based resolution.
+    let Some(doc) = inner.workspace.get_document(&uri) else {
+        return Ok(None);
+    };
 
-            if let Some(state) = flow_states.get(&name) {
-                let mut init_vars: Vec<&String> = state.entry.iter().collect();
-                init_vars.sort();
+    for passage in &doc.passages {
+        if let Some(state) = flow_states.get(&passage.name) {
+            let mut init_vars: Vec<&String> = state.entry.iter().collect();
+            init_vars.sort();
 
-                if !init_vars.is_empty() {
-                    let label = format!("// initialized: {}", init_vars.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
-                    hints.push(InlayHint {
-                        position: Position { line: line_idx as u32, character: 0 },
-                        label: InlayHintLabel::String(label),
-                        kind: Some(InlayHintKind::TYPE),
-                        text_edits: None,
-                        tooltip: None,
-                        padding_left: Some(true),
-                        padding_right: Some(true),
-                        data: None,
-                    });
-                }
+            if !init_vars.is_empty() {
+                let label = format!("// initialized: {}", init_vars.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
+                // Position the hint at the start of the passage header
+                let position = helpers::byte_offset_to_position(text, passage.span.start.min(text.len()));
+                hints.push(InlayHint {
+                    position,
+                    label: InlayHintLabel::String(label),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: Some(true),
+                    data: None,
+                });
+            }
 
-                // Check for potentially uninitialized variables
-                let mut local_init = state.entry.clone();
-                let mut uninit_vars = Vec::new();
-                if let Some((_, passage)) = inner.workspace.find_passage(&name) {
-                    for var in passage.vars_sorted_by_span() {
-                        if var.is_temporary { continue; }
-                        match var.kind {
-                            knot_core::passage::VarKind::Read => {
-                                if !local_init.contains(&var.name)
-                                    && !uninit_vars.contains(&var.name) {
-                                        uninit_vars.push(var.name.clone());
-                                    }
+            // Check for potentially uninitialized variables
+            let mut local_init = state.entry.clone();
+            let mut uninit_vars = Vec::new();
+            for var in passage.vars_sorted_by_span() {
+                if var.is_temporary { continue; }
+                match var.kind {
+                    knot_core::passage::VarKind::Read => {
+                        if !local_init.contains(&var.name)
+                            && !uninit_vars.contains(&var.name) {
+                                uninit_vars.push(var.name.clone());
                             }
-                            knot_core::passage::VarKind::Init => {
-                                local_init.insert(var.name.clone());
-                            }
-                        }
+                    }
+                    knot_core::passage::VarKind::Init => {
+                        local_init.insert(var.name.clone());
                     }
                 }
+            }
 
-                if !uninit_vars.is_empty() {
-                    let label = format!("// may be uninitialized: {}", uninit_vars.join(", "));
-                    hints.push(InlayHint {
-                        position: Position { line: line_idx as u32, character: 0 },
-                        label: InlayHintLabel::String(label),
-                        kind: Some(InlayHintKind::PARAMETER),
-                        text_edits: None,
-                        tooltip: None,
-                        padding_left: Some(true),
-                        padding_right: Some(true),
-                        data: None,
-                    });
-                }
+            if !uninit_vars.is_empty() {
+                let label = format!("// may be uninitialized: {}", uninit_vars.join(", "));
+                let position = helpers::byte_offset_to_position(text, passage.span.start.min(text.len()));
+                hints.push(InlayHint {
+                    position,
+                    label: InlayHintLabel::String(label),
+                    kind: Some(InlayHintKind::PARAMETER),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: Some(true),
+                    data: None,
+                });
             }
         }
     }
