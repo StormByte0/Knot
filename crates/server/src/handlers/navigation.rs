@@ -55,8 +55,8 @@ pub(crate) async fn goto_definition(
                 // reads, and prefer passages that appear earlier in the document
                 // order to give the most likely "definition" site.
                 //
-                // Note: var.span is an absolute byte range within the document,
-                // so we use it directly without adding any passage offset.
+                // Note: var.span is passage-relative; use passage.abs_range()
+                // to convert to document-absolute at the LSP boundary.
                 let mut best: Option<(url::Url, Range)> = None;
                 for doc in inner.workspace.documents() {
                     if let Some(doc_text) = inner.open_documents.get(&doc.uri) {
@@ -64,16 +64,16 @@ pub(crate) async fn goto_definition(
                             for var in &passage.vars {
                                 if var.name == var_name && !var.is_temporary {
                                     if matches!(var.kind, knot_core::passage::VarKind::Init) {
-                                        // Found an initialization — use the var's absolute
-                                        // byte span directly for the LSP range.
-                                        let range = helpers::byte_range_to_lsp_range(doc_text, &var.span);
+                                        // Found an initialization — convert the
+                                        // passage-relative span to document-absolute.
+                                        let range = helpers::byte_range_to_lsp_range(doc_text, &passage.abs_range(&var.span));
                                         return Ok(Some(GotoDefinitionResponse::Scalar(Location {
                                             uri: doc.uri.clone(),
                                             range,
                                         })));
                                     } else if best.is_none() {
                                         // Keep the first read as a fallback
-                                        let range = helpers::byte_range_to_lsp_range(doc_text, &var.span);
+                                        let range = helpers::byte_range_to_lsp_range(doc_text, &passage.abs_range(&var.span));
                                         best = Some((doc.uri.clone(), range));
                                     }
                                 }
@@ -132,7 +132,7 @@ pub(crate) async fn goto_implementation(
         for passage in &doc.passages {
             for link in &passage.links {
                 if link.target.trim() == target_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                     locations.push(Location {
                         uri: doc.uri.clone(),
                         range,
@@ -218,14 +218,14 @@ pub(crate) async fn references(
             // Header definition reference
             if passage.name == target_name {
                 let range = if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, name_span)
+                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
                 } else {
                     // Fallback: compute the full header line range
-                    let span_start = passage.span.start.min(text.len());
+                    let span_start = passage.abs_offset(passage.span.start).min(text.len());
                     let header_end = text[span_start..]
                         .find('\n')
                         .map(|n| span_start + n)
-                        .unwrap_or(passage.span.end.min(text.len()));
+                        .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
                     helpers::byte_range_to_lsp_range(text, &(span_start..header_end))
                 };
                 locations.push(Location {
@@ -237,7 +237,7 @@ pub(crate) async fn references(
             // Link references
             for link in &passage.links {
                 if link.target.trim() == target_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                     locations.push(Location {
                         uri: doc.uri.clone(),
                         range,

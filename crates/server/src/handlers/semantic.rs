@@ -56,64 +56,74 @@ struct SemTok {
     token_modifiers: u32,
 }
 
-/// Convert format-plugin semantic tokens (byte-offset based) to the
-/// intermediate `SemTok` representation (line/character based).
+/// Convert passage-relative token groups to the intermediate `SemTok`
+/// representation (line/character based).
 ///
-/// The `start` and `length` fields from the format plugin are in **byte**
-/// offsets and byte lengths respectively. We convert:
-/// - `start` → LSP Position via `byte_offset_to_position` (UTF-16 character)
+/// Each `PassageTokenGroup` contains tokens with passage-relative byte
+/// offsets (0 = the `::` prefix of the passage header). We add
+/// `passage_offset` to convert to document-absolute byte offsets, then
+/// convert to LSP line/character positions.
+///
+/// The `length` field from the format plugin is in byte lengths. We convert:
+/// - `passage_offset + start` → LSP Position via `byte_offset_to_position`
 /// - `length` → UTF-16 code unit count (LSP requires UTF-16, not byte length)
 fn convert_semantic_tokens(
     text: &str,
-    plugin_tokens: &[fmt_plugin::SemanticToken],
+    token_groups: &[fmt_plugin::PassageTokenGroup],
 ) -> Vec<SemTok> {
     let mut tokens = Vec::new();
-    let line_count = text.lines().count() as u32;
+    let text_len = text.len();
+    let line_count = if text.is_empty() { 0u32 } else { text.lines().count() as u32 };
 
-    for pt in plugin_tokens {
-        // Clamp byte offsets to document length to prevent out-of-bounds access
-        let safe_start = pt.start.min(text.len());
-        let safe_end = (pt.start + pt.length).min(text.len());
-        
-        // Skip zero-length tokens (can happen from incorrect position math)
-        if safe_start >= safe_end {
-            continue;
+    for group in token_groups {
+        for pt in &group.tokens {
+            // Resolve passage-relative offset to document-absolute
+            let doc_absolute_start = group.passage_offset + pt.start;
+
+            // Clamp byte offsets to document length to prevent out-of-bounds access
+            let safe_start = doc_absolute_start.min(text_len);
+            let safe_end = (doc_absolute_start + pt.length).min(text_len);
+            
+            // Skip zero-length tokens (can happen from incorrect position math)
+            if safe_start >= safe_end {
+                continue;
+            }
+
+            let pos = helpers::byte_offset_to_position(text, safe_start);
+            
+            // Skip tokens whose line exceeds the document
+            if pos.line >= line_count {
+                continue;
+            }
+
+            let token_type = map_token_type(&pt.token_type);
+            let modifiers = map_token_modifier(&pt.modifier);
+
+            // Convert byte length to UTF-16 code unit length for the LSP wire format.
+            let token_text = &text[safe_start..safe_end];
+            let utf16_length: u32 = token_text.chars()
+                .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
+                .sum();
+
+            // Clamp start_char to the line length to prevent "end character > model.getLineLength"
+            let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
+            let line_utf16_len = helpers::utf16_len(line_text);
+            let clamped_char = pos.character.min(line_utf16_len);
+            let clamped_length = utf16_length.min(line_utf16_len.saturating_sub(clamped_char));
+            
+            // Skip if the token would have zero or negative length after clamping
+            if clamped_length == 0 {
+                continue;
+            }
+
+            tokens.push(SemTok {
+                line: pos.line,
+                start_char: clamped_char,
+                length: clamped_length,
+                token_type,
+                token_modifiers: modifiers,
+            });
         }
-
-        let pos = helpers::byte_offset_to_position(text, safe_start);
-        
-        // Skip tokens whose line exceeds the document
-        if pos.line >= line_count {
-            continue;
-        }
-
-        let token_type = map_token_type(&pt.token_type);
-        let modifiers = map_token_modifier(&pt.modifier);
-
-        // Convert byte length to UTF-16 code unit length for the LSP wire format.
-        let token_text = &text[safe_start..safe_end];
-        let utf16_length: u32 = token_text.chars()
-            .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
-            .sum();
-
-        // Clamp start_char to the line length to prevent "end character > model.getLineLength"
-        let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-        let line_utf16_len = helpers::utf16_len(line_text);
-        let clamped_char = pos.character.min(line_utf16_len);
-        let clamped_length = utf16_length.min(line_utf16_len.saturating_sub(clamped_char));
-        
-        // Skip if the token would have zero or negative length after clamping
-        if clamped_length == 0 {
-            continue;
-        }
-
-        tokens.push(SemTok {
-            line: pos.line,
-            start_char: clamped_char,
-            length: clamped_length,
-            token_type,
-            token_modifiers: modifiers,
-        });
     }
 
     tokens
@@ -234,9 +244,9 @@ pub(crate) async fn document_symbol(
         // Full range: from passage start to just before the next passage
         // (or end of document for the last passage).
         let full_range = {
-            let start_offset = passage.span.start.min(text.len());
+            let start_offset = passage.abs_offset(passage.span.start).min(text.len());
             let end_offset = if i + 1 < passages.len() {
-                passages[i + 1].span.start.min(text.len())
+                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
             } else {
                 text.len()
             };
@@ -249,9 +259,9 @@ pub(crate) async fn document_symbol(
         let selection_range = passage
             .header_name_span
             .as_ref()
-            .map(|name_span| helpers::byte_range_to_lsp_range(text, name_span))
+            .map(|name_span| helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span)))
             .unwrap_or_else(|| {
-                let span_start = passage.span.start.min(text.len());
+                let span_start = passage.abs_offset(passage.span.start).min(text.len());
                 let line_end = text[span_start..]
                     .find('\n')
                     .map(|n| span_start + n)
@@ -326,9 +336,9 @@ pub(crate) async fn symbol(
             let range = passage
                 .header_name_span
                 .as_ref()
-                .map(|name_span| helpers::byte_range_to_lsp_range(text, name_span))
+                .map(|name_span| helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span)))
                 .unwrap_or_else(|| {
-                    let span_start = passage.span.start.min(text.len());
+                    let span_start = passage.abs_offset(passage.span.start).min(text.len());
                     let line_end = text[span_start..]
                         .find('\n')
                         .map(|n| span_start + n)
@@ -433,7 +443,7 @@ pub(crate) async fn code_lens(
 
         if outgoing > 0 || incoming > 0 {
             // Compute range from the passage header line using span data
-            let span_start = passage.span.start.min(text.len());
+            let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let line_end = text[span_start..]
                 .find('\n')
                 .map(|n| span_start + n)
@@ -511,7 +521,7 @@ pub(crate) async fn inlay_hint(
             if !init_vars.is_empty() {
                 let label = format!("// initialized: {}", init_vars.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
                 // Position the hint at the start of the passage header
-                let position = helpers::byte_offset_to_position(text, passage.span.start.min(text.len()));
+                let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
                 hints.push(InlayHint {
                     position,
                     label: InlayHintLabel::String(label),
@@ -544,7 +554,7 @@ pub(crate) async fn inlay_hint(
 
             if !uninit_vars.is_empty() {
                 let label = format!("// may be uninitialized: {}", uninit_vars.join(", "));
-                let position = helpers::byte_offset_to_position(text, passage.span.start.min(text.len()));
+                let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
                 hints.push(InlayHint {
                     position,
                     label: InlayHintLabel::String(label),

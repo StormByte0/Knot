@@ -5,7 +5,7 @@
 
 use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
-use knot_formats::plugin::{FormatDiagnostic, FormatRegistry, SemanticToken, SourceTextProvider};
+use knot_formats::plugin::{FormatRegistry, PassageDiagnosticGroup, PassageTokenGroup, SourceTextProvider};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub struct ServerStateInner {
     /// Per-document format plugin diagnostics (URI → diagnostics).
     /// These are separate from graph diagnostics because they are produced
     /// by the format parser during parsing, not by graph analysis.
-    pub format_diagnostics: HashMap<Url, Vec<FormatDiagnostic>>,
+    pub format_diagnostics: HashMap<Url, Vec<PassageDiagnosticGroup>>,
     /// Per-document version tracking (URI → LSP version number).
     /// The LSP version is monotonically increasing and comes from the client.
     /// This is stored separately from `Document.version` because re-parsing
@@ -71,7 +71,7 @@ pub struct ServerStateInner {
     /// re-parses so that `did_change` can always use the authoritative client
     /// version.
     pub doc_versions: HashMap<Url, i32>,
-    /// Semantic token cache (URI → format-plugin tokens).
+    /// Semantic token cache (URI → passage-relative token groups).
     ///
     /// Tokens are stored at parse time so that `semantic_tokens_full` never
     /// needs to re-parse. This is critical for avoiding deadlock when
@@ -79,11 +79,19 @@ pub struct ServerStateInner {
     /// `semantic_tokens_full` had to parse, it would need the write lock
     /// while already holding the read lock.
     ///
+    /// Each `PassageTokenGroup` contains tokens with passage-relative byte
+    /// offsets (0 = the `::` prefix of the passage header). The
+    /// `passage_offset` field stores the document-absolute position of the
+    /// passage head, enabling conversion to document-absolute positions at
+    /// the LSP boundary. This design supports incremental passage updates —
+    /// when a single passage is edited, only that passage's group needs to
+    /// be regenerated.
+    ///
     /// Tokens are NOT removed on `did_close` — preserving them is important
     /// for the format-switch cascade (Phase 3), where didClose+didOpen pairs
     /// can temporarily remove documents from the cache. Stale tokens are
     /// better than no tokens because VS Code will re-request after a refresh.
-    pub semantic_tokens: HashMap<Url, Vec<SemanticToken>>,
+    pub semantic_tokens: HashMap<Url, Vec<PassageTokenGroup>>,
 
 }
 

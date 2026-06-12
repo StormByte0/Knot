@@ -23,7 +23,7 @@
 use knot_core::passage::{Passage, PassageCategory as CorePassageCategory};
 use url::Url;
 
-use crate::plugin::{FormatPlugin, ParseResult};
+use crate::plugin::{FormatPlugin, ParseResult, PassageDiagnosticGroup, PassageTokenGroup};
 use super::SugarCubePlugin;
 use super::ast::ParseMode;
 use super::classifier::{self, ClassifiedPassage, is_script_passage};
@@ -51,8 +51,8 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
 
     // 5. Process each passage in order
     let mut passages = Vec::new();
-    let mut all_tokens = Vec::new();
-    let mut all_diagnostics = Vec::new();
+    let mut all_token_groups = Vec::new();
+    let mut all_diagnostic_groups = Vec::new();
 
     for cp in &classified {
         let mode = SugarCubePlugin::parse_mode_for(cp);
@@ -62,6 +62,13 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             .find('\n')
             .map_or(text.len(), |pos| cp.header.header_start + pos + 1);
         let body_offset = header_line_end;
+
+        // The passage head is at header_start (the `::` prefix).
+        // body_offset_in_passage is the offset from the passage head to the
+        // body start — used to convert body-relative AST spans to
+        // passage-relative token offsets.
+        let passage_head = cp.header.header_start;
+        let body_offset_in_passage = body_offset - passage_head;
 
         // Phase 1: Structural parse (SugarCube parser)
         pipeline_log::parse_phase1_enter(&cp.header.name, uri.as_ref());
@@ -97,53 +104,75 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             registry.templates().len(),
         );
 
-        // Build the Passage struct (shift all AST spans by body_offset)
-        let mut passage = passage_build::build_passage(cp, &passage_ast, body_offset);
-        passage.span = cp.header.header_start..header_line_end + cp.body_text.len();
+        // Build the Passage struct (passage-relative spans via body_offset_in_passage)
+        let mut passage = passage_build::build_passage(cp, &passage_ast, body_offset_in_passage, passage_head);
+        passage.span = 0..(header_line_end - passage_head + cp.body_text.len());
+        passage.passage_offset = passage_head;
 
         // Build passage.vars from the unified AST (including js_analysis + script_js_analysis)
-        passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, body_offset);
+        passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, body_offset_in_passage);
 
-        // Build semantic tokens for the header
+        // Build semantic tokens for this passage (passage-relative offsets).
+        // The passage_offset is the document-absolute position of the `::`
+        // prefix, applied at the LSP boundary to produce document-absolute
+        // positions from the passage-relative token offsets.
+        let mut passage_tokens = Vec::new();
         let is_special = cp.special_def.is_some();
-        let header_tokens = super::token_builder::build_header_tokens(&cp.header, is_special);
-        all_tokens.extend(header_tokens);
 
-        // Build semantic tokens from the body AST (shift spans by body_offset)
+        // Header tokens (already passage-relative from build_header_tokens)
+        let header_tokens = super::token_builder::build_header_tokens(&cp.header, is_special);
+        passage_tokens.extend(header_tokens);
+
+        // Body tokens (shift body-relative AST spans by body_offset_in_passage)
         if matches!(mode, ParseMode::Minimal) {
-            let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset);
-            all_tokens.extend(json_tokens);
+            let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
+            passage_tokens.extend(json_tokens);
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
                 registry.custom_macros().names().cloned().collect();
             super::token_builder::build_semantic_tokens(
                 &passage_ast.nodes,
-                &mut all_tokens,
-                body_offset,
+                &mut passage_tokens,
+                body_offset_in_passage,
                 &custom_names,
             );
             // For script passages, also emit tokens from script_js_analysis
             if let Some(ref analysis) = passage_ast.script_js_analysis {
                 super::token_builder::build_script_passage_tokens(
                     analysis,
-                    &mut all_tokens,
-                    body_offset,
+                    &mut passage_tokens,
+                    body_offset_in_passage,
                 );
             }
         }
 
-        // Build diagnostics from the body AST (shift spans by body_offset)
-        super::token_builder::build_diagnostics(&passage_ast.nodes, &mut all_diagnostics, body_offset);
+        all_token_groups.push(PassageTokenGroup {
+            passage_name: cp.header.name.clone(),
+            passage_offset: passage_head,
+            tokens: passage_tokens,
+        });
+
+        // Build diagnostics from the body AST (passage-relative offsets).
+        // The passage_offset is applied at the LSP boundary to produce
+        // document-absolute ranges — same pattern as semantic tokens.
+        let mut passage_diagnostics = Vec::new();
+        super::token_builder::build_diagnostics(&passage_ast.nodes, &mut passage_diagnostics, body_offset_in_passage);
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
             let js_diagnostics = super::js_validate::validate_inline_js(
                 &passage_ast.nodes,
-                body_offset,
+                body_offset_in_passage,
             );
-            all_diagnostics.extend(js_diagnostics);
+            passage_diagnostics.extend(js_diagnostics);
         }
+
+        all_diagnostic_groups.push(PassageDiagnosticGroup {
+            passage_name: cp.header.name.clone(),
+            passage_offset: passage_head,
+            diagnostics: passage_diagnostics,
+        });
 
         passages.push(passage);
     }
@@ -176,14 +205,14 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
     pipeline_log::parse_full_summary(
         uri.as_ref(),
         passages.len(),
-        all_tokens.len(),
-        all_diagnostics.len(),
+        all_token_groups.iter().map(|g| g.tokens.len()).sum::<usize>(),
+        all_diagnostic_groups.iter().map(|g| g.diagnostics.len()).sum::<usize>(),
     );
 
     ParseResult {
         passages,
-        tokens: all_tokens,
-        diagnostics: all_diagnostics,
+        token_groups: all_token_groups,
+        diagnostic_groups: all_diagnostic_groups,
         is_complete: true,
     }
 }
@@ -284,39 +313,19 @@ pub(super) fn parse_single(
     let is_special = category != CorePassageCategory::Regular;
 
     let special_def = if is_special {
-        Some(plugin.classify_passage(passage_name, passage_tags))
+        plugin.classify_passage(passage_name, passage_tags)
     } else {
         None
     };
 
-    let mut passage = if let Some(def) = &special_def {
-        Passage::new_special(
-            passage_name.to_string(),
-            0..passage_text.len(),
-            def.clone()?,
-        )
-    } else {
-        Passage::new(passage_name.to_string(), 0..passage_text.len())
-    };
+    // If this was supposed to be special but classify_passage returned None, bail.
+    if is_special && special_def.is_none() {
+        return None;
+    }
 
-    passage.tags = passage_tags.to_vec();
-    passage.body = passage_build::build_body_blocks(&passage_ast.nodes, 0);
-    passage.links = passage_ast.links.iter()
-        .filter(|li| !li.target.is_empty())
-        .map(|li| {
-            let edge_type_hint = passage_build::link_source_to_edge_type(li.source);
-            knot_core::passage::Link {
-                display_text: li.display.clone(),
-                target: li.target.clone(),
-                span: li.span.start..li.span.end,
-                edge_type_hint,
-            }
-        }).collect();
-
-    // Build passage.vars from the unified AST
-    passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, 0);
-
-    // Phase 3: Registry mutation — clear old passage data, then populate.
+    // Build ClassifiedPassage for build_passage and registry population.
+    // parse_single works with isolated passage text (no document context),
+    // so header_start = 0, name_start = 0.
     let header = crate::header::TweeHeader {
         name: passage_name.to_string(),
         tags: passage_tags.to_vec(),
@@ -331,10 +340,26 @@ pub(super) fn parse_single(
         body_text: passage_text.to_string(),
         file_uri: file_uri.to_string(),
         category: classifier::PassageCategory::Regular,
-        special_def: None,
+        special_def,
         processing_priority: 40,
     };
 
+    // Build the Passage struct (passage-relative spans, passage_head = 0).
+    // body_offset_in_passage = 0 because parse_single has no document context.
+    let mut passage = passage_build::build_passage(&cp, &passage_ast, 0, 0);
+    passage.span = 0..passage_text.len();
+    passage.passage_offset = 0;
+
+    // header_name_span: in parse_single, header_start=0, name_start=0,
+    // so the span is already passage-relative.
+    passage.header_name_span = Some(
+        cp.header.name_start..cp.header.name_start + cp.header.name.len()
+    );
+
+    // Override vars with unified AST vars (includes js_analysis + script_js_analysis)
+    passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, 0);
+
+    // Phase 3: Registry mutation — clear old passage data, then populate.
     {
         let registry = plugin.registry_mut();
         registry.remove_passage(passage_name);

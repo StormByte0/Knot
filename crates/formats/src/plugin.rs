@@ -60,9 +60,19 @@ impl SourceTextProvider for NoSourceText {
 }
 
 /// A semantic token produced by a format plugin.
+///
+/// The `start` field is a **passage-relative** byte offset: byte 0 is the
+/// `::` prefix of the passage header. This design enables incremental
+/// passage updates — when a single passage is edited, only that passage's
+/// token group needs to be regenerated, and the passage's document offset
+/// is applied at the LSP boundary to produce document-absolute positions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticToken {
-    /// The byte offset where the token starts.
+    /// The byte offset where the token starts, **relative to the passage
+    /// head** (the `::` prefix of the passage header).
+    ///
+    /// To convert to a document-absolute byte offset, add the
+    /// `PassageTokenGroup::passage_offset` value.
     pub start: usize,
     /// The length of the token in bytes.
     pub length: usize,
@@ -70,6 +80,31 @@ pub struct SemanticToken {
     pub token_type: SemanticTokenType,
     /// Optional modifier (e.g., "deprecated", "definition").
     pub modifier: Option<SemanticTokenModifier>,
+}
+
+/// A group of semantic tokens for a single passage, with passage-relative
+/// byte offsets.
+///
+/// All `SemanticToken::start` values in this group are relative to the
+/// passage head (the `::` prefix of the passage header). To convert to
+/// document-absolute byte offsets, add `passage_offset` to each token's
+/// `start`.
+///
+/// This design enables incremental passage updates: when a single passage
+/// is edited, only that passage's token group needs to be regenerated.
+/// The `passage_offset` is updated when the passage's position in the
+/// document changes (e.g., due to edits in a preceding passage).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassageTokenGroup {
+    /// The passage name (for lookup during incremental updates).
+    pub passage_name: String,
+    /// Byte offset of the passage head (`::` prefix) in the document.
+    ///
+    /// Adding this to any token's `start` gives a document-absolute byte
+    /// offset.
+    pub passage_offset: usize,
+    /// Semantic tokens with passage-relative byte offsets.
+    pub tokens: Vec<SemanticToken>,
 }
 
 /// Types of semantic tokens a format plugin can produce.
@@ -163,9 +198,21 @@ pub enum SemanticTokenModifier {
 }
 
 /// A diagnostic produced by a format plugin during parsing.
+///
+/// The `range` field is a **passage-relative** byte range: byte 0 is the
+/// `::` prefix of the passage header. To convert to a document-absolute
+/// byte range, add the `PassageDiagnosticGroup::passage_offset` value.
+///
+/// This design mirrors `SemanticToken` and enables incremental per-passage
+/// diagnostic updates — when a single passage is edited, only that passage's
+/// diagnostic group needs to be regenerated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormatDiagnostic {
-    /// The byte range of the issue.
+    /// The byte range of the issue, **relative to the passage head**
+    /// (the `::` prefix of the passage header).
+    ///
+    /// To convert to a document-absolute byte range, add the
+    /// `PassageDiagnosticGroup::passage_offset` value.
     pub range: std::ops::Range<usize>,
     /// The diagnostic message.
     pub message: String,
@@ -184,15 +231,45 @@ pub enum FormatDiagnosticSeverity {
     Hint,
 }
 
+/// A group of diagnostics for a single passage, with passage-relative
+/// byte offsets.
+///
+/// All `FormatDiagnostic::range` values in this group are relative to the
+/// passage head (the `::` prefix of the passage header). To convert to
+/// document-absolute byte ranges, add `passage_offset` to each diagnostic's
+/// range start and end.
+///
+/// This design mirrors `PassageTokenGroup` and enables incremental passage
+/// updates: when a single passage is edited, only that passage's diagnostic
+/// group needs to be regenerated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PassageDiagnosticGroup {
+    /// The passage name (for lookup during incremental updates).
+    pub passage_name: String,
+    /// Byte offset of the passage head (`::` prefix) in the document.
+    ///
+    /// Adding this to any diagnostic's range start/end gives a
+    /// document-absolute byte offset.
+    pub passage_offset: usize,
+    /// Diagnostics with passage-relative byte ranges.
+    pub diagnostics: Vec<FormatDiagnostic>,
+}
+
 /// The result of parsing a document with a format plugin.
 #[derive(Debug, Clone)]
 pub struct ParseResult {
     /// The parsed passages.
     pub passages: Vec<Passage>,
-    /// Semantic tokens for the document.
-    pub tokens: Vec<SemanticToken>,
-    /// Format-specific diagnostics.
-    pub diagnostics: Vec<FormatDiagnostic>,
+    /// Semantic token groups, one per passage, with passage-relative byte
+    /// offsets. Each group's `passage_offset` is the document-absolute byte
+    /// position of that passage's `::` header prefix, enabling conversion
+    /// to document-absolute positions at the LSP boundary.
+    pub token_groups: Vec<PassageTokenGroup>,
+    /// Diagnostic groups, one per passage, with passage-relative byte
+    /// offsets. Each group's `passage_offset` is the document-absolute byte
+    /// position of that passage's `::` header prefix, enabling conversion
+    /// to document-absolute ranges at the LSP boundary.
+    pub diagnostic_groups: Vec<PassageDiagnosticGroup>,
     /// Whether the parse was fully successful (no errors).
     pub is_complete: bool,
 }

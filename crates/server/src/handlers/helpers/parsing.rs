@@ -75,12 +75,16 @@ pub(crate) fn parse_with_format_plugin(
 
                 let result = fmt_plugin::ParseResult {
                     passages: Vec::new(),
-                    tokens: Vec::new(),
-                    diagnostics: vec![fmt_plugin::FormatDiagnostic {
-                        range: 0..text.len().min(1),
-                        message: format!("Internal error: parser panicked — {}", panic_msg),
-                        severity: fmt_plugin::FormatDiagnosticSeverity::Error,
-                        code: "knot-panic".to_string(),
+                    token_groups: Vec::new(),
+                    diagnostic_groups: vec![fmt_plugin::PassageDiagnosticGroup {
+                        passage_name: String::new(),
+                        passage_offset: 0,
+                        diagnostics: vec![fmt_plugin::FormatDiagnostic {
+                            range: 0..text.len().min(1),
+                            message: format!("Internal error: parser panicked — {}", panic_msg),
+                            severity: fmt_plugin::FormatDiagnosticSeverity::Error,
+                            code: "knot-panic".to_string(),
+                        }],
                     }],
                     is_complete: false,
                 };
@@ -94,8 +98,8 @@ pub(crate) fn parse_with_format_plugin(
         doc.set_snapshot_from_text(text);
         let result = fmt_plugin::ParseResult {
             passages: Vec::new(),
-            tokens: Vec::new(),
-            diagnostics: Vec::new(),
+            token_groups: Vec::new(),
+            diagnostic_groups: Vec::new(),
             is_complete: false,
         };
         (doc, result)
@@ -109,7 +113,7 @@ pub(crate) fn extract_and_set_metadata(workspace: &mut Workspace, doc: &Document
         // Extract the body text of the StoryData passage.
         // The passage span covers the entire passage (header + body).
         // We need to find the body portion after the header line.
-        let body_text = extract_passage_body(text, story_data.span.start);
+        let body_text = extract_passage_body(text, story_data.abs_offset(story_data.span.start));
 
         if let Some(metadata) = parse_story_data_json(&body_text) {
             tracing::info!(

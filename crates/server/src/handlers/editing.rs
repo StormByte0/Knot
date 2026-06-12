@@ -135,9 +135,9 @@ pub(crate) async fn linked_editing_range(
         // fall back to computing from the header line using the header parser.
         let primary_range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
             if let Some(ref name_span) = passage.header_name_span {
-                helpers::byte_range_to_lsp_range(text, name_span)
+                helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
             } else {
-                helpers::compute_passage_name_range_fallback(text, &passage.span)
+                helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
             }
         } else {
             // Passage not found in workspace — use line-based fallback
@@ -156,7 +156,7 @@ pub(crate) async fn linked_editing_range(
             for passage in &doc.passages {
                 for link in &passage.links {
                     if link.target.trim() == name {
-                        ranges.push(helpers::byte_range_to_lsp_range(text, &link.span));
+                        ranges.push(helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
                     }
                 }
             }
@@ -189,9 +189,9 @@ pub(crate) async fn prepare_rename(
             // fall back to computing from the header line using the header parser.
             let range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
                 if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, name_span)
+                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
                 } else {
-                    helpers::compute_passage_name_range_fallback(text, &passage.span)
+                    helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
                 }
             } else {
                 // Passage not found in workspace — use line-based fallback
@@ -219,8 +219,8 @@ pub(crate) async fn prepare_rename(
             if let Some(doc) = inner.workspace.get_document(&uri) {
                 for passage in &doc.passages {
                     for link in &passage.links {
-                        if byte_offset >= link.span.start && byte_offset < link.span.end {
-                            let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                        if passage.span_contains_abs_offset(&link.span, byte_offset) {
+                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                             return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
                                 range,
                                 placeholder: target_name,
@@ -275,10 +275,10 @@ pub(crate) async fn rename(
             // Rename passage header
             if passage.name == old_name {
                 let range = if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, name_span)
+                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
                 } else {
                     // Fallback: compute from the header line using the header parser
-                    helpers::compute_passage_name_range_fallback(text, &passage.span)
+                    helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
                 };
                 doc_edits.push(TextEdit {
                     range,
@@ -289,7 +289,7 @@ pub(crate) async fn rename(
             // Rename links
             for link in &passage.links {
                 if link.target.trim() == old_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &link.span);
+                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                     doc_edits.push(TextEdit {
                         range,
                         new_text: new_name.clone(),

@@ -54,6 +54,13 @@
 //! for tag-matched core passages because they only check `special_def.is_some()`)
 //! and duplicated logic across 4+ plugins. Centralizing it here ensures
 //! consistent, correct behavior.
+//!
+//! ## Passage-Relative Offsets
+//!
+//! All spans and token positions produced by this module are **passage-relative**:
+//! offset 0 corresponds to the passage head `::`. The caller sets
+//! `Passage.passage_offset` separately to the document-absolute position of the
+//! passage head for LSP boundary conversion.
 
 use knot_core::passage::{Block, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer};
 use crate::header::TweeHeader;
@@ -192,8 +199,13 @@ pub fn is_special_for_tokens(
 /// # Arguments
 ///
 /// * `body` - The raw body text of the passage
-/// * `body_offset` - The byte offset where the body starts in the document
-/// * `name_start` - The byte offset where the name starts in the header
+/// * `body_offset_in_passage` - The passage-relative byte offset where the body
+///   starts (i.e., relative to the passage head `::`)
+/// * `passage_head` - The document-absolute byte offset of the passage head
+///   `::`. Used to convert document-absolute header positions (e.g.
+///   `name_start`) into passage-relative positions for semantic tokens.
+/// * `name_start` - The document-absolute byte offset where the name starts in
+///   the header
 /// * `name_len` - The byte length of the passage name
 /// * `layer` - The special passage layer (TwineCore, StoryFormat, etc.)
 ///
@@ -202,13 +214,14 @@ pub fn is_special_for_tokens(
 /// A `CoreSpecialBodyResult` with the body blocks and header semantic tokens.
 pub fn parse_stylesheet_body(
     body: &str,
-    body_offset: usize,
+    body_offset_in_passage: usize,
+    passage_head: usize,
     name_start: usize,
     name_len: usize,
     layer: Option<SpecialPassageLayer>,
 ) -> CoreSpecialBodyResult {
-    let blocks = raw_body_blocks(body, body_offset);
-    let header_tokens = build_special_header_tokens(name_start, name_len, layer);
+    let blocks = raw_body_blocks(body, body_offset_in_passage);
+    let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
     CoreSpecialBodyResult { blocks, header_tokens }
 }
@@ -227,8 +240,13 @@ pub fn parse_stylesheet_body(
 /// # Arguments
 ///
 /// * `body` - The raw body text of the passage
-/// * `body_offset` - The byte offset where the body starts in the document
-/// * `name_start` - The byte offset where the name starts in the header
+/// * `body_offset_in_passage` - The passage-relative byte offset where the body
+///   starts (i.e., relative to the passage head `::`)
+/// * `passage_head` - The document-absolute byte offset of the passage head
+///   `::`. Used to convert document-absolute header positions (e.g.
+///   `name_start`) into passage-relative positions for semantic tokens.
+/// * `name_start` - The document-absolute byte offset where the name starts in
+///   the header
 /// * `name_len` - The byte length of the passage name
 /// * `layer` - The special passage layer (TwineCore, StoryFormat, etc.)
 ///
@@ -237,13 +255,14 @@ pub fn parse_stylesheet_body(
 /// A `CoreSpecialBodyResult` with the body blocks and header semantic tokens.
 pub fn parse_script_body(
     body: &str,
-    body_offset: usize,
+    body_offset_in_passage: usize,
+    passage_head: usize,
     name_start: usize,
     name_len: usize,
     layer: Option<SpecialPassageLayer>,
 ) -> CoreSpecialBodyResult {
-    let blocks = raw_body_blocks(body, body_offset);
-    let header_tokens = build_special_header_tokens(name_start, name_len, layer);
+    let blocks = raw_body_blocks(body, body_offset_in_passage);
+    let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
     CoreSpecialBodyResult { blocks, header_tokens }
 }
@@ -254,30 +273,41 @@ pub fn parse_script_body(
 /// # Arguments
 ///
 /// * `body` - The raw body text of the passage
-/// * `body_offset` - The byte offset where the body starts in the document
-/// * `name_start` - The byte offset where the name starts in the header
+/// * `body_offset_in_passage` - The passage-relative byte offset where the body
+///   starts (i.e., relative to the passage head `::`)
+/// * `passage_head` - The document-absolute byte offset of the passage head
+///   `::`. Used to convert document-absolute header positions (e.g.
+///   `name_start`) into passage-relative positions for semantic tokens.
+/// * `name_start` - The document-absolute byte offset where the name starts in
+///   the header
 /// * `name_len` - The byte length of the passage name
 /// * `layer` - The special passage layer (TwineCore, StoryFormat, etc.)
 pub fn parse_metadata_body(
     body: &str,
-    body_offset: usize,
+    body_offset_in_passage: usize,
+    passage_head: usize,
     name_start: usize,
     name_len: usize,
     layer: Option<SpecialPassageLayer>,
 ) -> CoreSpecialBodyResult {
-    let blocks = raw_body_blocks(body, body_offset);
-    let header_tokens = build_special_header_tokens(name_start, name_len, layer);
+    let blocks = raw_body_blocks(body, body_offset_in_passage);
+    let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
     CoreSpecialBodyResult { blocks, header_tokens }
 }
 
-/// Create raw body blocks for any core special passage. Used by both
-/// `parse()` (which has a body_offset) and `parse_passage()` (which uses
-/// offset 0).
-pub fn raw_body_blocks(body: &str, body_offset: usize) -> Vec<Block> {
+/// Create raw body blocks for any core special passage.
+///
+/// The returned span is **passage-relative**: offset 0 corresponds to the
+/// passage head `::`. Callers that still have a document-absolute body offset
+/// should subtract `passage_offset` before passing it here.
+///
+/// Used by both `parse()` (which computes a passage-relative body offset)
+/// and `parse_passage()` (which uses offset 0).
+pub fn raw_body_blocks(body: &str, body_offset_in_passage: usize) -> Vec<Block> {
     vec![Block::Text {
         content: body.to_string(),
-        span: body_offset..body_offset + body.len(),
+        span: body_offset_in_passage..body_offset_in_passage + body.len(),
     }]
 }
 
@@ -288,10 +318,22 @@ pub fn raw_body_blocks(body: &str, body_offset: usize) -> Vec<Block> {
 /// Build semantic tokens for a special passage header.
 ///
 /// Generates:
-/// - `SpecialPassageHeader` token for the `::` prefix
-/// - `SpecialPassage` token for the passage name
+/// - `SpecialPassageHeader` token for the `::` prefix (always at
+///   passage-relative offset 0, length 2)
+/// - `SpecialPassage` token for the passage name (passage-relative)
 /// - Layer modifier (`TwineCore`, `StoryFormat`, etc.) if applicable
+///
+/// # Arguments
+///
+/// * `passage_head` - The document-absolute byte offset of the passage head
+///   `::`. Used to convert `name_start` from document-absolute to
+///   passage-relative.
+/// * `name_start` - The document-absolute byte offset where the name starts in
+///   the header
+/// * `name_len` - The byte length of the passage name
+/// * `layer` - The special passage layer (TwineCore, StoryFormat, etc.)
 pub fn build_special_header_tokens(
+    passage_head: usize,
     name_start: usize,
     name_len: usize,
     layer: Option<SpecialPassageLayer>,
@@ -305,17 +347,17 @@ pub fn build_special_header_tokens(
 
     let mut tokens = Vec::new();
 
-    // `::` prefix token
+    // `::` prefix token — always at passage-relative offset 0
     tokens.push(SemanticToken {
-        start: name_start.saturating_sub(2),
+        start: 0,
         length: 2,
         token_type: SemanticTokenType::SpecialPassageHeader,
         modifier: layer_modifier,
     });
 
-    // Passage name token
+    // Passage name token — passage-relative
     tokens.push(SemanticToken {
-        start: name_start,
+        start: name_start - passage_head,
         length: name_len,
         token_type: SemanticTokenType::SpecialPassage,
         modifier: layer_modifier,
@@ -328,12 +370,20 @@ pub fn build_special_header_tokens(
 /// plugin's `classify_tag()` to determine modifiers for special core tags
 /// like `[script]`, `[stylesheet]`, `[style]`.
 ///
+/// All token positions are **passage-relative**: offset 0 corresponds to the
+/// passage head `::`.
+///
 /// # Arguments
 ///
-/// * `header` - The parsed TweeHeader (contains tag positions)
+/// * `header` - The parsed TweeHeader (contains tag positions; `name_start` is
+///   document-absolute)
+/// * `passage_head` - The document-absolute byte offset of the passage head
+///   `::`. Used to convert document-absolute header positions into
+///   passage-relative positions.
 /// * `plugin` - The format plugin (for `classify_tag()`)
 pub fn build_tag_tokens(
     header: &TweeHeader,
+    passage_head: usize,
     plugin: &dyn FormatPlugin,
 ) -> Vec<SemanticToken> {
     if header.tags.is_empty() {
@@ -341,8 +391,8 @@ pub fn build_tag_tokens(
     }
 
     let bracket_start = header.tags_raw.find('[')
-        .map(|bs| header.name_start + bs)
-        .unwrap_or(header.name_start + header.name_text_raw.len());
+        .map(|bs| header.name_start - passage_head + bs)
+        .unwrap_or(header.name_start - passage_head + header.name_text_raw.len());
     let tags_inner_start = bracket_start + 1; // after `[`
     let mut offset = tags_inner_start;
     let mut tokens = Vec::new();

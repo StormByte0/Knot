@@ -25,8 +25,8 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
+    PassageDiagnosticGroup, PassageTokenGroup, SemanticToken, SemanticTokenModifier, SemanticTokenType,
 };
 use crate::types::BodyRequirement;
 
@@ -903,7 +903,7 @@ impl HarlowePlugin {
     }
 
     /// Validate passage body for common Harlowe errors.
-    fn validate(&self, body: &str, body_offset: usize) -> Vec<FormatDiagnostic> {
+    fn validate(&self, body: &str, body_offset_in_passage: usize) -> Vec<FormatDiagnostic> {
         let mut diagnostics = Vec::new();
         let bytes = body.as_bytes();
 
@@ -944,7 +944,7 @@ impl HarlowePlugin {
                 paren_depth -= 1;
                 if paren_depth < 0 {
                     diagnostics.push(FormatDiagnostic {
-                        range: body_offset + i..body_offset + i + 1,
+                        range: body_offset_in_passage + i..body_offset_in_passage + i + 1,
                         message: "Unexpected `)` without matching `(`".into(),
                         severity: FormatDiagnosticSeverity::Warning,
                         code: "hl-unclosed-command".into(),
@@ -958,7 +958,7 @@ impl HarlowePlugin {
         if paren_depth > 0
             && let Some(pos) = paren_open {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset + pos..body_offset + pos + 1,
+                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
                     message: "Unclosed parenthetical command — missing `)`".into(),
                     severity: FormatDiagnosticSeverity::Warning,
                     code: "hl-unclosed-command".into(),
@@ -982,7 +982,7 @@ impl HarlowePlugin {
                 link_depth -= 1;
                 if link_depth < 0 {
                     diagnostics.push(FormatDiagnostic {
-                        range: body_offset + j..body_offset + j + 2,
+                        range: body_offset_in_passage + j..body_offset_in_passage + j + 2,
                         message: "Unexpected `]]` without matching `[[`".into(),
                         severity: FormatDiagnosticSeverity::Warning,
                         code: "hl-broken-link".into(),
@@ -998,7 +998,7 @@ impl HarlowePlugin {
         if link_depth > 0
             && let Some(pos) = link_open {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset + pos..body_offset + pos + 2,
+                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 2,
                     message: "Unclosed link `[[` — missing `]]`".into(),
                     severity: FormatDiagnosticSeverity::Warning,
                     code: "hl-broken-link".into(),
@@ -1028,7 +1028,7 @@ impl HarlowePlugin {
                 hook_depth -= 1;
                 if hook_depth < 0 {
                     diagnostics.push(FormatDiagnostic {
-                        range: body_offset + k..body_offset + k + 1,
+                        range: body_offset_in_passage + k..body_offset_in_passage + k + 1,
                         message: "Unexpected `]` without matching `[`".into(),
                         severity: FormatDiagnosticSeverity::Warning,
                         code: "hl-unclosed-hook".into(),
@@ -1042,7 +1042,7 @@ impl HarlowePlugin {
         if hook_depth > 0
             && let Some(pos) = hook_open {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset + pos..body_offset + pos + 1,
+                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
                     message: "Unclosed hook `[` — missing `]`".into(),
                     severity: FormatDiagnosticSeverity::Warning,
                     code: "hl-unclosed-hook".into(),
@@ -1073,7 +1073,7 @@ impl HarlowePlugin {
             let has_ref = ref_changers.iter().any(|(rn, _, _)| rn == name);
             if !has_ref {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset + *start..body_offset + *end,
+                    range: body_offset_in_passage + *start..body_offset_in_passage + *end,
                     message: format!(
                         "Changer `<{}|` is attached but has no matching `|{}>[...]` hook reference",
                         name, name
@@ -1089,7 +1089,7 @@ impl HarlowePlugin {
             let has_attached = attached_changers.iter().any(|(an, _, _)| an == name);
             if !has_attached {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset + *start..body_offset + *end,
+                    range: body_offset_in_passage + *start..body_offset_in_passage + *end,
                     message: format!(
                         "Hook reference `|{}>[...]` has no matching `<{}|` changer attachment",
                         name, name
@@ -1139,8 +1139,8 @@ impl HarlowePlugin {
 impl FormatPluginMut for HarlowePlugin {
     fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
-        let mut tokens = Vec::new();
-        let mut diagnostics = Vec::new();
+        let mut token_groups = Vec::new();
+        let mut diagnostic_groups = Vec::new();
         let mut has_errors = false;
 
         let raw_passages = self.split_passages(text);
@@ -1157,6 +1157,14 @@ impl FormatPluginMut for HarlowePlugin {
             // Twee 3 spec), then names. This replaces the old manual
             // three-stage lookup (format defs → core defs → tag fallback).
             let special_def = self.classify_passage(&header.name, &header.tags);
+            let passage_head = header.header_start;
+
+            // body_offset_in_passage: the offset from the passage head to
+            // the body start — used to convert body-relative positions to
+            // passage-relative diagnostic ranges. (The conversion to
+            // document-absolute happens at the LSP boundary via
+            // PassageDiagnosticGroup::passage_offset.)
+            let body_offset_in_passage = body_offset - passage_head;
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
@@ -1174,36 +1182,62 @@ impl FormatPluginMut for HarlowePlugin {
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
+            // Collect tokens with passage-relative offsets.
+            let mut passage_tokens = Vec::new();
+            let mut passage_diagnostics = Vec::new();
+
             if is_script {
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
-                tokens.extend(self.header_tokens(header, true));
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset_in_passage);
+                // header_tokens returns document-absolute offsets; convert to passage-relative
+                for mut tok in self.header_tokens(header, true) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
             } else if is_stylesheet {
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
-                tokens.extend(self.header_tokens(header, true));
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset_in_passage);
+                for mut tok in self.header_tokens(header, true) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
                 passage.body = self.extract_blocks(body, body_offset);
 
-                tokens.extend(self.header_tokens(header, special_def.is_some()));
-                tokens.extend(self.body_tokens(body, body_offset));
+                for mut tok in self.header_tokens(header, special_def.is_some()) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
+                for mut tok in self.body_tokens(body, body_offset) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
 
-                let body_diags = self.validate(body, body_offset);
-                for d in &body_diags {
+                passage_diagnostics = self.validate(body, body_offset_in_passage);
+                for d in &passage_diagnostics {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
                         has_errors = true;
                     }
                 }
-                diagnostics.extend(body_diags);
             }
 
             passages.push(passage);
+            token_groups.push(PassageTokenGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                tokens: passage_tokens,
+            });
+            diagnostic_groups.push(PassageDiagnosticGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                diagnostics: passage_diagnostics,
+            });
         }
 
         ParseResult {
             passages,
-            tokens,
-            diagnostics,
+            token_groups,
+            diagnostic_groups,
             is_complete: !has_errors,
         }
     }
@@ -1595,8 +1629,9 @@ mod tests {
 
         assert!(
             result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "hl-unclosed-command"),
             "Should detect unclosed parenthetical command"
         );
@@ -1609,7 +1644,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "hl-broken-link"),
+            result.diagnostic_groups.iter().flat_map(|g| &g.diagnostics).any(|d| d.code == "hl-broken-link"),
             "Should detect unclosed link syntax"
         );
     }
@@ -1621,7 +1656,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "hl-unclosed-hook"),
+            result.diagnostic_groups.iter().flat_map(|g| &g.diagnostics).any(|d| d.code == "hl-unclosed-hook"),
             "Should detect unclosed hook syntax"
         );
     }
@@ -1634,8 +1669,9 @@ mod tests {
 
         assert!(
             result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "hl-mismatched-changer"),
             "Should detect mismatched changer (attached without reference)"
         );

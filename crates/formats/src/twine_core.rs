@@ -25,7 +25,7 @@ use knot_core::passage::{
 use url::Url;
 
 use crate::header::{self, TweeHeader};
-use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult, PassageTokenGroup, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 // ---------------------------------------------------------------------------
 // Regex patterns (LazyLock for one-time compilation)
@@ -171,14 +171,17 @@ impl TwineCorePlugin {
     // Semantic tokens
     // -----------------------------------------------------------------------
 
+    /// Build semantic tokens for a passage header with passage-relative offsets.
+    ///
+    /// All returned `start` values are relative to the passage head (the `::`
+    /// prefix at offset 0 within the passage).
     fn build_passage_tokens(
         header_line: &str,
-        header_offset: usize,
         is_special: bool,
     ) -> Vec<SemanticToken> {
         let mut tokens = Vec::new();
 
-        // "::" prefix token
+        // "::" prefix token — always at passage-relative offset 0
         let prefix_len = if header_line.starts_with("::") { 2 } else { 0 };
         let prefix_type = if is_special {
             SemanticTokenType::SpecialPassageHeader
@@ -191,7 +194,7 @@ impl TwineCorePlugin {
             None
         };
         tokens.push(SemanticToken {
-            start: header_offset,
+            start: 0,
             length: prefix_len,
             token_type: prefix_type,
             modifier: prefix_modifier,
@@ -208,7 +211,7 @@ impl TwineCorePlugin {
                     SemanticTokenType::PassageName
                 };
                 tokens.push(SemanticToken {
-                    start: header_offset + 2 + name_range.start,
+                    start: 2 + name_range.start,
                     length: name_range.end - name_range.start,
                     token_type: name_type,
                     modifier: prefix_modifier,
@@ -228,37 +231,43 @@ impl FormatPluginMut for TwineCorePlugin {
     fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         // Twine Core has no mutable registries — body moved to parse_mut below
         let mut passages = Vec::new();
-        let mut tokens = Vec::new();
+        let mut token_groups = Vec::new();
 
         let passages_raw = self.split_passages(text);
 
         for (header, body_text) in &passages_raw {
             let special_def = self.classify_passage(&header.name, &header.tags);
             let is_special = special_def.is_some();
+            let passage_head = header.header_start;
 
             let header_line_end = header.header_start
                 + text[header.header_start..]
                     .find('\n')
                     .unwrap_or(text[header.header_start..].len());
             let header_line = &text[header.header_start..header_line_end];
-            tokens.extend(Self::build_passage_tokens(
+
+            let mut passage_tokens = Vec::new();
+            passage_tokens.extend(Self::build_passage_tokens(
                 header_line,
-                header.header_start,
                 is_special,
             ));
 
             if !header.tags.is_empty() {
-                let bracket_start = header.tags_raw.find('[')
-                    .map(|bs| header.name_start + bs)
-                    .unwrap_or(header.name_start + header.name_text_raw.len());
-                let tags_inner_start = bracket_start + 1;
-                let mut offset = tags_inner_start;
+                // Compute tag positions relative to the passage head.
+                // tags_raw is aligned with name_start, so
+                // name_start + find('[') gives the document-absolute bracket
+                // position; subtract passage_head for passage-relative.
+                let bracket_start_rel = header.tags_raw.find('[')
+                    .map(|bs| header.name_start - passage_head + bs)
+                    .unwrap_or(header.name_start - passage_head + header.name_text_raw.len());
+                let tags_inner_start_rel = bracket_start_rel + 1;
+                let mut offset = tags_inner_start_rel;
                 for tag in &header.tags {
                     let modifier = self.classify_tag(tag);
-                    if offset > tags_inner_start {
+                    if offset > tags_inner_start_rel {
                         offset += 1;
                     }
-                    tokens.push(SemanticToken {
+                    passage_tokens.push(SemanticToken {
                         start: offset,
                         length: tag.len(),
                         token_type: SemanticTokenType::Tag,
@@ -274,15 +283,16 @@ impl FormatPluginMut for TwineCorePlugin {
                     .unwrap_or(text[header.header_start..].len())
                 + 1;
             for link in Self::extract_links(body_text, body_offset) {
-                tokens.push(SemanticToken {
-                    start: link.span.start,
+                passage_tokens.push(SemanticToken {
+                    start: link.span.start - passage_head,
                     length: link.span.len(),
                     token_type: SemanticTokenType::Link,
                     modifier: None,
                 });
             }
 
-            let body_blocks = crate::core_specials::raw_body_blocks(body_text, body_offset);
+            let body_offset_in_passage = body_offset - passage_head;
+            let body_blocks = crate::core_specials::raw_body_blocks(body_text, body_offset_in_passage);
             let links = Self::extract_links(body_text, body_offset);
 
             let mut passage = Passage::new(header.name.clone(), header.header_start..(header.header_start + text[header.header_start..].find('\n').unwrap_or(text[header.header_start..].len())));
@@ -294,12 +304,17 @@ impl FormatPluginMut for TwineCorePlugin {
             passage.special_def = special_def;
 
             passages.push(passage);
+            token_groups.push(PassageTokenGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                tokens: passage_tokens,
+            });
         }
 
         ParseResult {
             passages,
-            tokens,
-            diagnostics: Vec::new(),
+            token_groups,
+            diagnostic_groups: Vec::new(),
             is_complete: true,
         }
     }

@@ -711,11 +711,11 @@ pub(crate) fn find_passage_header_range_span_based(
     passage_name: &str,
 ) -> Range {
     if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
-        let span_start = passage.span.start.min(text.len());
+        let span_start = passage.abs_offset(passage.span.start).min(text.len());
         let header_end = text[span_start..]
             .find('\n')
             .map(|n| span_start + n)
-            .unwrap_or(passage.span.end.min(text.len()));
+            .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
         return byte_range_to_lsp_range(text, &(span_start..header_end));
     }
     // Fallback: line-based scan
@@ -735,7 +735,7 @@ pub(crate) fn find_passage_name_range_span_based(
 ) -> Range {
     if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
         if let Some(ref name_span) = passage.header_name_span {
-            return byte_range_to_lsp_range(text, name_span);
+            return byte_range_to_lsp_range(text, &passage.abs_range(name_span));
         }
         // header_name_span not available — fall through to line-based
     }
@@ -760,11 +760,11 @@ pub(crate) fn find_passage_at_position_span_based(
     if let Some(doc) = workspace.get_document(uri) {
         let byte_offset = position_to_byte_offset(text, position);
         for passage in &doc.passages {
-            let span_start = passage.span.start.min(text.len());
+            let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let header_end = text[span_start..]
                 .find('\n')
                 .map(|n| span_start + n)
-                .unwrap_or(passage.span.end.min(text.len()));
+                .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
             if byte_offset >= span_start && byte_offset <= header_end {
                 return Some(passage.name.clone());
             }
@@ -793,7 +793,7 @@ pub(crate) fn find_link_target_at_position_span_based(
         let byte_offset = position_to_byte_offset(text, position);
         for passage in &doc.passages {
             for link in &passage.links {
-                if byte_offset >= link.span.start && byte_offset < link.span.end {
+                if passage.span_contains_abs_offset(&link.span, byte_offset) {
                     let target = link.target.trim();
                     if !target.is_empty() {
                         return Some(target.to_string());
@@ -826,7 +826,7 @@ pub(crate) fn find_variable_at_position_span_based(
         let byte_offset = position_to_byte_offset(text, position);
         for passage in &doc.passages {
             for var in &passage.vars {
-                if byte_offset >= var.span.start && byte_offset < var.span.end {
+                if passage.span_contains_abs_offset(&var.span, byte_offset) {
                     return Some(var.name.clone());
                 }
             }
@@ -852,7 +852,7 @@ pub(crate) fn find_passage_start_offset_span_based(
     passage_name: &str,
 ) -> usize {
     if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
-        let span_start = passage.span.start.min(text.len());
+        let span_start = passage.abs_offset(passage.span.start).min(text.len());
         // The body starts after the header line (after the first newline)
         return text[span_start..]
             .find('\n')

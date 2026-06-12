@@ -19,7 +19,10 @@ pub fn link_source_to_edge_type(source: ast::LinkSource) -> Option<knot_core::gr
 }
 
 /// Build `Block` list from AST nodes (backward compatibility).
-pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Block> {
+///
+/// `body_offset_in_passage` is the passage-relative offset of the body region;
+/// all spans produced here are passage-relative (0 = start of passage header `::`).
+pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) -> Vec<Block> {
     let mut blocks = Vec::new();
     for node in nodes {
         match node {
@@ -27,7 +30,7 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
                 if !content.is_empty() {
                     blocks.push(Block::Text {
                         content: content.clone(),
-                        span: body_offset + span.start..body_offset + span.end,
+                        span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
                     });
                 }
             }
@@ -35,13 +38,13 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
                 blocks.push(Block::Macro {
                     name: name.clone(),
                     args: args.clone(),
-                    span: body_offset + full_span.start..body_offset + full_span.end,
+                    span: body_offset_in_passage + full_span.start..body_offset_in_passage + full_span.end,
                 });
             }
             ast::AstNode::Expression { content, span, .. } => {
                 blocks.push(Block::Expression {
                     content: content.clone(),
-                    span: body_offset + span.start..body_offset + span.end,
+                    span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
                 });
             }
             ast::AstNode::Link { .. } => {
@@ -54,7 +57,7 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
             ast::AstNode::Error { message, span } => {
                 blocks.push(Block::Incomplete {
                     content: message.clone(),
-                    span: body_offset + span.start..body_offset + span.end,
+                    span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
                 });
             }
             // MacroClose nodes are consumed by the tree builder and should not
@@ -68,31 +71,44 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset: usize) -> Vec<Bloc
 /// Build a [`Passage`] from a classified passage and its AST.
 ///
 /// This is a pure transformation — it does not read or write any plugin state.
-pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offset: usize) -> Passage {
+///
+/// All spans in the returned `Passage` are **passage-relative**: offset 0
+/// corresponds to the `::` prefix of the passage header. The caller must set
+/// `passage.passage_offset = passage_head` so that LSP handlers can convert
+/// back to document-absolute positions at the boundary.
+///
+/// * `body_offset_in_passage` — passage-relative offset of the body region.
+/// * `passage_head` — document-absolute byte offset of the passage header `::`.
+pub fn build_passage(
+    cp: &ClassifiedPassage,
+    passage_ast: &PassageAst,
+    body_offset_in_passage: usize,
+    passage_head: usize,
+) -> Passage {
     let mut passage = if let Some(ref special_def) = cp.special_def {
         Passage::new_special(
             cp.header.name.clone(),
-            cp.header.header_start..cp.header.header_start, // span computed in caller
+            0..0, // passage-relative: passage head is at 0; full span computed in caller
             special_def.clone(),
         )
     } else {
-        Passage::new(cp.header.name.clone(), cp.header.header_start..cp.header.header_start)
+        Passage::new(cp.header.name.clone(), 0..0) // passage-relative: passage head is at 0
     };
 
     passage.tags = cp.header.tags.clone();
 
     // Store the header name span for fine-grained LSP position resolution.
     // The name starts at `name_start` (after `::` + whitespace) and extends
-    // for `name.len()` bytes. This allows handlers to locate the passage name
-    // without re-scanning the header line.
+    // for `name.len()` bytes. `name_start` is document-absolute, so subtract
+    // `passage_head` to make it passage-relative.
     passage.header_name_span = Some(
-        cp.header.name_start..cp.header.name_start + cp.header.name.len()
+        (cp.header.name_start - passage_head)..(cp.header.name_start - passage_head + cp.header.name.len())
     );
 
-    // Build body blocks from AST (shift spans by body_offset)
-    passage.body = build_body_blocks(&passage_ast.nodes, body_offset);
+    // Build body blocks from AST (shift spans by body_offset_in_passage)
+    passage.body = build_body_blocks(&passage_ast.nodes, body_offset_in_passage);
 
-    // Build links from AST (shift spans by body_offset)
+    // Build links from AST (shift spans by body_offset_in_passage)
     // Skip links with empty targets — these are dynamic navigation macros
     // (e.g., <<back "Display">> or <<return "Display">>) where the target
     // is determined at runtime via browser history. An empty target would
@@ -104,20 +120,25 @@ pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offs
             knot_core::passage::Link {
                 display_text: link_info.display.clone(),
                 target: link_info.target.clone(),
-                span: body_offset + link_info.span.start..body_offset + link_info.span.end,
+                span: body_offset_in_passage + link_info.span.start..body_offset_in_passage + link_info.span.end,
                 edge_type_hint,
             }
         }).collect();
 
-    // Build var ops from AST (shift spans by body_offset)
+    // Build var ops from AST (shift spans by body_offset_in_passage)
     passage.vars = passage_ast.var_ops.iter().map(|var_op| {
         VarOp {
             name: var_op.name.clone(),
             kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
-            span: body_offset + var_op.span.start..body_offset + var_op.span.end,
+            span: body_offset_in_passage + var_op.span.start..body_offset_in_passage + var_op.span.end,
             is_temporary: var_op.is_temporary,
         }
     }).collect();
+
+    // Record the document-absolute offset of the passage head so that
+    // handlers can convert passage-relative spans back to document-absolute
+    // positions at the LSP boundary.
+    passage.passage_offset = passage_head;
 
     passage
 }
@@ -133,7 +154,7 @@ pub fn build_passage(cp: &ClassifiedPassage, passage_ast: &PassageAst, body_offs
 /// - `AstNode::Expression { var_refs }` (fallback when js_analysis is None)
 ///
 /// Falls back to the SugarCube parser's `var_ops` when no js_analysis is available.
-pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset: usize) -> Vec<VarOp> {
+pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset_in_passage: usize) -> Vec<VarOp> {
     let mut vars = Vec::new();
 
     // For script passages, collect from script_js_analysis
@@ -142,14 +163,14 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset: usize)
             vars.push(VarOp {
                 name: op.name.clone(),
                 kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
-                span: body_offset + op.span.start..body_offset + op.span.end,
+                span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
                 is_temporary: op.is_temporary,
             });
         }
     }
 
     // Walk AST nodes
-    collect_vars_from_nodes(&passage_ast.nodes, &mut vars, body_offset);
+    collect_vars_from_nodes(&passage_ast.nodes, &mut vars, body_offset_in_passage);
 
     // If we got nothing from js_analysis, fall back to the parser's var_ops
     if vars.is_empty() && !passage_ast.var_ops.is_empty() {
@@ -157,7 +178,7 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset: usize)
             vars.push(VarOp {
                 name: var_op.name.clone(),
                 kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
-                span: body_offset + var_op.span.start..body_offset + var_op.span.end,
+                span: body_offset_in_passage + var_op.span.start..body_offset_in_passage + var_op.span.end,
                 is_temporary: var_op.is_temporary,
             });
         }
@@ -166,7 +187,7 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset: usize)
     vars
 }
 
-fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_offset: usize) {
+fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_offset_in_passage: usize) {
     for node in nodes {
         match node {
             ast::AstNode::Text { var_refs, .. } => {
@@ -174,7 +195,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                     vars.push(VarOp {
                         name: vr.name.clone(),
                         kind: VarKind::Read,
-                        span: body_offset + vr.span.start..body_offset + vr.span.end,
+                        span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
                         is_temporary: vr.is_temporary,
                     });
                 }
@@ -190,7 +211,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                             vars.push(VarOp {
                                 name: op.name.clone(),
                                 kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
-                                span: body_offset + op.span.start..body_offset + op.span.end,
+                                span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
                                 is_temporary: op.is_temporary,
                             });
                         }
@@ -209,7 +230,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                             vars.push(VarOp {
                                 name: sa.target.name.clone(),
                                 kind: VarKind::Init,
-                                span: body_offset + sa.target.span.start..body_offset + sa.target.span.end,
+                                span: body_offset_in_passage + sa.target.span.start..body_offset_in_passage + sa.target.span.end,
                                 is_temporary: sa.target.is_temporary,
                             });
                         }
@@ -222,7 +243,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                         vars.push(VarOp {
                             name: vr.name.clone(),
                             kind: if vr.is_write || is_assignment { VarKind::Init } else { VarKind::Read },
-                            span: body_offset + vr.span.start..body_offset + vr.span.end,
+                            span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
                             is_temporary: vr.is_temporary,
                         });
                     }
@@ -236,14 +257,14 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                             vars.push(VarOp {
                                 name: sa.target.name.clone(),
                                 kind: VarKind::Init,
-                                span: body_offset + sa.target.span.start..body_offset + sa.target.span.end,
+                                span: body_offset_in_passage + sa.target.span.start..body_offset_in_passage + sa.target.span.end,
                                 is_temporary: sa.target.is_temporary,
                             });
                         }
                     }
                 }
                 if let Some(ch) = children {
-                    collect_vars_from_nodes(ch, vars, body_offset);
+                    collect_vars_from_nodes(ch, vars, body_offset_in_passage);
                 }
             }
             ast::AstNode::Expression { js_analysis, var_refs, .. } => {
@@ -254,7 +275,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                             vars.push(VarOp {
                                 name: op.name.clone(),
                                 kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
-                                span: body_offset + op.span.start..body_offset + op.span.end,
+                                span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
                                 is_temporary: op.is_temporary,
                             });
                         }
@@ -264,7 +285,7 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                         vars.push(VarOp {
                             name: vr.name.clone(),
                             kind: VarKind::Read,
-                            span: body_offset + vr.span.start..body_offset + vr.span.end,
+                            span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
                             is_temporary: vr.is_temporary,
                         });
                     }

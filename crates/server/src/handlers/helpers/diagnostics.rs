@@ -71,7 +71,7 @@ pub(crate) fn incoming_link_sources(workspace: &Workspace, passage_name: &str) -
 pub(crate) async fn publish_all_diagnostics(
     client: &tower_lsp::Client,
     graph_diagnostics: &[knot_core::graph::GraphDiagnostic],
-    format_diagnostics: &std::collections::HashMap<Url, Vec<fmt_plugin::FormatDiagnostic>>,
+    format_diagnostics: &std::collections::HashMap<Url, Vec<fmt_plugin::PassageDiagnosticGroup>>,
     open_documents: &std::collections::HashMap<Url, String>,
     workspace: &Workspace,
     config: &knot_core::workspace::KnotConfig,
@@ -144,25 +144,30 @@ pub(crate) async fn publish_all_diagnostics(
         }
 
         // Add format plugin diagnostics for this file
-        if let Some(fmt_diags) = format_diagnostics.get(uri) {
-            for fd in fmt_diags {
-                let range = byte_range_to_lsp_range(text, &fd.range);
+        if let Some(fmt_diag_groups) = format_diagnostics.get(uri) {
+            for group in fmt_diag_groups {
+                let offset = group.passage_offset;
+                for fd in &group.diagnostics {
+                    // Convert passage-relative range to document-absolute range
+                    let abs_range = (fd.range.start + offset)..(fd.range.end + offset);
+                    let range = byte_range_to_lsp_range(text, &abs_range);
 
-                let severity = match fd.severity {
-                    fmt_plugin::FormatDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                    fmt_plugin::FormatDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                    fmt_plugin::FormatDiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
-                    fmt_plugin::FormatDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
-                };
+                    let severity = match fd.severity {
+                        fmt_plugin::FormatDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+                        fmt_plugin::FormatDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+                        fmt_plugin::FormatDiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+                        fmt_plugin::FormatDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
+                    };
 
-                lsp_diagnostics.push(Diagnostic {
-                    range,
-                    severity: Some(severity),
-                    code: Some(NumberOrString::String(format!("format:{}", fd.code))),
-                    source: Some("knot".to_string()),
-                    message: fd.message.clone(),
-                    ..Default::default()
-                });
+                    lsp_diagnostics.push(Diagnostic {
+                        range,
+                        severity: Some(severity),
+                        code: Some(NumberOrString::String(format!("format:{}", fd.code))),
+                        source: Some("knot".to_string()),
+                        message: fd.message.clone(),
+                        ..Default::default()
+                    });
+                }
             }
         }
 
@@ -373,7 +378,7 @@ pub(crate) fn find_link_locations(
         for passage in &doc.passages {
             for link in &passage.links {
                 if link.target.trim() == passage_name {
-                    let range = byte_range_to_lsp_range(text, &link.span);
+                    let range = byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                     related.push(DiagnosticRelatedInformation {
                         location: Location {
                             uri: doc.uri.clone(),
@@ -400,14 +405,14 @@ pub(crate) fn find_definition_location(
     if let Some((doc, passage)) = workspace.find_passage(passage_name) {
         let text = open_documents.get(&doc.uri)?;
         let range = if let Some(ref name_span) = passage.header_name_span {
-            byte_range_to_lsp_range(text, name_span)
+            byte_range_to_lsp_range(text, &passage.abs_range(name_span))
         } else {
             // Fallback: compute the full header line range from passage.span.start
-            let span_start = passage.span.start.min(text.len());
+            let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let header_end = text[span_start..]
                 .find('\n')
                 .map(|n| span_start + n)
-                .unwrap_or(passage.span.end.min(text.len()));
+                .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
             byte_range_to_lsp_range(text, &(span_start..header_end))
         };
         return Some(vec![DiagnosticRelatedInformation {
@@ -439,13 +444,13 @@ pub(crate) fn find_all_definition_locations(
         for passage in &doc.passages {
             if passage.name == passage_name {
                 let range = if let Some(ref name_span) = passage.header_name_span {
-                    byte_range_to_lsp_range(text, name_span)
+                    byte_range_to_lsp_range(text, &passage.abs_range(name_span))
                 } else {
-                    let span_start = passage.span.start.min(text.len());
+                    let span_start = passage.abs_offset(passage.span.start).min(text.len());
                     let header_end = text[span_start..]
                         .find('\n')
                         .map(|n| span_start + n)
-                        .unwrap_or(passage.span.end.min(text.len()));
+                        .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
                     byte_range_to_lsp_range(text, &(span_start..header_end))
                 };
                 related.push(DiagnosticRelatedInformation {
@@ -495,7 +500,7 @@ pub(crate) fn find_variable_read_locations(
 
                 // Use the span-based byte offset to compute an accurate
                 // LSP Position (handles multi-byte characters correctly).
-                let pos = byte_offset_to_position(text, var.span.start.min(text.len()));
+                let pos = byte_offset_to_position(text, passage.abs_offset(var.span.start).min(text.len()));
 
                 related.push(DiagnosticRelatedInformation {
                     location: Location {

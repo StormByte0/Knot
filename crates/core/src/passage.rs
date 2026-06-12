@@ -705,26 +705,51 @@ pub fn legacy_core_special_passages() -> Vec<SpecialPassageDef> {
 }
 
 /// A passage — the fundamental unit of narrative structure in a Twine story.
+///
+/// ## Passage-Relative Spans
+///
+/// All span fields (`span`, `header_name_span`, `links[].span`,
+/// `vars[].span`, `body[].span`) use **passage-relative** byte offsets:
+/// offset 0 is the `::` prefix of the passage header. This design enables
+/// incremental per-passage re-parsing — when a single passage is edited,
+/// only that passage's data needs to be regenerated.
+///
+/// To convert any passage-relative offset to a document-absolute byte
+/// offset, add `passage_offset`. This conversion should happen ONLY at
+/// the LSP wire boundary (when calling `byte_range_to_lsp_range()` or
+/// `byte_offset_to_position()`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Passage {
     /// The passage name (used as its identifier and link target).
     pub name: String,
     /// Tags assigned to this passage.
     pub tags: Vec<String>,
-    /// The byte range of the entire passage in the source document.
+    /// The byte range of the entire passage, **relative to the passage
+    /// head** (0 = the `::` prefix of the passage header).
+    ///
+    /// To convert to document-absolute, add `passage_offset`.
     pub span: Range<usize>,
-    /// The byte range of just the passage name within the header line.
+    /// The byte range of just the passage name within the header line,
+    /// **relative to the passage head** (0 = the `::` prefix).
     ///
     /// For a header like `:: My Passage [tags] {"position":"1,2"}`, this
     /// spans only "My Passage" (excluding `::`, tags, and JSON metadata).
     /// When `None`, the name range must be recomputed from the header text.
+    ///
+    /// To convert to document-absolute, add `passage_offset`.
     #[serde(default)]
     pub header_name_span: Option<Range<usize>>,
     /// Content blocks within the passage body.
+    ///
+    /// All block spans are **passage-relative** (0 = passage head `::`).
     pub body: Vec<Block>,
     /// Links from this passage to other passages.
+    ///
+    /// All link spans are **passage-relative** (0 = passage head `::`).
     pub links: Vec<Link>,
     /// Variable operations within this passage.
+    ///
+    /// All variable spans are **passage-relative** (0 = passage head `::`).
     pub vars: Vec<VarOp>,
     /// Whether this passage is a format-specific special passage.
     pub is_special: bool,
@@ -739,10 +764,23 @@ pub struct Passage {
     /// this is `None` and the graph view will use an automatic layout.
     #[serde(default)]
     pub position: Option<(f64, f64)>,
+    /// Byte offset of the passage head (`::` prefix) in the document.
+    ///
+    /// Adding this to any passage-relative span/offset produces a
+    /// document-absolute byte offset. This conversion should happen ONLY
+    /// at the LSP wire boundary.
+    ///
+    /// For passages produced by `parse_passage_mut()` (incremental
+    /// re-parse), this is 0 because the passage text is isolated.
+    #[serde(default)]
+    pub passage_offset: usize,
 }
 
 impl Passage {
     /// Create a new regular (non-special) passage.
+    ///
+    /// The `span` should be passage-relative (0 = passage head `::`).
+    /// Set `passage_offset` after construction for full-document contexts.
     pub fn new(name: String, span: Range<usize>) -> Self {
         Self {
             name,
@@ -755,10 +793,14 @@ impl Passage {
             is_special: false,
             special_def: None,
             position: None,
+            passage_offset: 0,
         }
     }
 
     /// Create a new special passage with the given definition.
+    ///
+    /// The `span` should be passage-relative (0 = passage head `::`).
+    /// Set `passage_offset` after construction for full-document contexts.
     pub fn new_special(name: String, span: Range<usize>, def: SpecialPassageDef) -> Self {
         Self {
             name,
@@ -771,7 +813,44 @@ impl Passage {
             is_special: true,
             special_def: Some(def),
             position: None,
+            passage_offset: 0,
         }
+    }
+
+    /// Convert a passage-relative byte range to document-absolute.
+    ///
+    /// This should be called ONLY at the LSP wire boundary, immediately
+    /// before passing the range to `byte_range_to_lsp_range()` or
+    /// `byte_offset_to_position()`.
+    #[inline]
+    pub fn abs_range(&self, range: &Range<usize>) -> Range<usize> {
+        (range.start + self.passage_offset)..(range.end + self.passage_offset)
+    }
+
+    /// Convert a passage-relative byte offset to document-absolute.
+    ///
+    /// This should be called ONLY at the LSP wire boundary, immediately
+    /// before passing the offset to `byte_offset_to_position()`.
+    #[inline]
+    pub fn abs_offset(&self, offset: usize) -> usize {
+        offset + self.passage_offset
+    }
+
+    /// Check whether a document-absolute byte offset falls within this
+    /// passage. Converts the offset to passage-relative first.
+    #[inline]
+    pub fn contains_abs_offset(&self, abs_offset: usize) -> bool {
+        let rel = abs_offset.saturating_sub(self.passage_offset);
+        rel >= self.span.start && rel < self.span.end
+    }
+
+    /// Convert a passage-relative link/var span to document-absolute
+    /// and check whether a document-absolute byte offset falls within it.
+    #[inline]
+    pub fn span_contains_abs_offset(&self, span: &Range<usize>, abs_offset: usize) -> bool {
+        let abs_start = span.start + self.passage_offset;
+        let abs_end = span.end + self.passage_offset;
+        abs_offset >= abs_start && abs_offset < abs_end
     }
 
     /// Returns true if this passage participates in narrative flow (graph edges).

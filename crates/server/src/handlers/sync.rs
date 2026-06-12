@@ -83,13 +83,13 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // Store format diagnostics for this document
     inner.format_diagnostics.insert(
         uri.clone(),
-        parse_result.diagnostics.clone(),
+        parse_result.diagnostic_groups.clone(),
     );
 
     // Cache semantic tokens at parse time so semantic_tokens_full
     // never needs to re-parse (critical for avoiding deadlock with
     // FormatPluginMut in Phase 4).
-    inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
+    inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups.clone());
 
     // Insert the parsed document into the workspace.
     //
@@ -221,11 +221,11 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // Update format diagnostics
     inner.format_diagnostics.insert(
         uri.clone(),
-        parse_result.diagnostics.clone(),
+        parse_result.diagnostic_groups.clone(),
     );
 
     // Cache semantic tokens at parse time
-    inner.semantic_tokens.insert(uri.clone(), parse_result.tokens.clone());
+    inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups.clone());
 
     // Compute dynamic navigation edges for the new passages
     // Include the edge_type_hint from ResolvedNavLink so that dynamic
@@ -477,8 +477,8 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                             helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
 
                         inner.open_documents.insert(uri.clone(), text.clone());
-                        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
-                        inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
+                        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
+                        inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
 
                         // StoryData parsing is a core-only operation (see: Format Isolation).
                         inner.workspace.insert_document(doc);
@@ -597,8 +597,8 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                                 helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
 
                             inner.open_documents.insert(uri.clone(), text.clone());
-                            inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
-                            inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
+                            inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
+                            inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
 
                             // StoryData parsing is a core-only operation (see: Format Isolation).
                             inner.workspace.insert_document(doc);

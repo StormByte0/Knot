@@ -23,8 +23,9 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
+    PassageDiagnosticGroup, PassageTokenGroup, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType,
 };
 use crate::types::BodyRequirement;
 
@@ -652,9 +653,11 @@ impl SnowmanPlugin {
 
     /// Check for undefined variable access across all passages.
     /// A variable read with no preceding write anywhere is suspicious.
-    fn check_undefined_vars(passages: &[Passage]) -> Vec<FormatDiagnostic> {
-        let mut diagnostics = Vec::new();
-
+    ///
+    /// Returns `PassageDiagnosticGroup`s with passage-relative ranges
+    /// (var spans from `extract_vars()` are document-absolute; we subtract
+    /// `passage.span.start` to make them passage-relative).
+    fn check_undefined_vars(passages: &[Passage]) -> Vec<PassageDiagnosticGroup> {
         // Collect all variable names that are written anywhere
         let written_vars: std::collections::HashSet<String> = passages
             .iter()
@@ -663,12 +666,15 @@ impl SnowmanPlugin {
             .map(|v| v.name.clone())
             .collect();
 
-        // Check reads for variables that are never written
+        // Check reads for variables that are never written, grouped by passage
+        let mut groups = Vec::new();
         for passage in passages {
+            let passage_head = passage.span.start;
+            let mut passage_diags = Vec::new();
             for var in &passage.vars {
                 if var.kind == VarKind::Read && !written_vars.contains(&var.name) {
-                    diagnostics.push(FormatDiagnostic {
-                        range: var.span.clone(),
+                    passage_diags.push(FormatDiagnostic {
+                        range: var.span.start - passage_head..var.span.end - passage_head,
                         message: format!(
                             "Variable `s.{}` is read but never written to in any passage",
                             var.name
@@ -678,9 +684,16 @@ impl SnowmanPlugin {
                     });
                 }
             }
+            if !passage_diags.is_empty() {
+                groups.push(PassageDiagnosticGroup {
+                    passage_name: passage.name.clone(),
+                    passage_offset: passage_head,
+                    diagnostics: passage_diags,
+                });
+            }
         }
 
-        diagnostics
+        groups
     }
 
     // -----------------------------------------------------------------------
@@ -881,8 +894,8 @@ impl SnowmanPlugin {
 impl FormatPluginMut for SnowmanPlugin {
     fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
-        let mut tokens = Vec::new();
-        let mut diagnostics = Vec::new();
+        let mut token_groups = Vec::new();
+        let mut diagnostic_groups = Vec::new();
         let mut has_errors = false;
 
         let raw_passages = self.split_passages(text);
@@ -896,6 +909,13 @@ impl FormatPluginMut for SnowmanPlugin {
             let body_offset = header_line_end + newline_len;
 
             let special_def = self.classify_passage(&header.name, &header.tags);
+            let passage_head = header.header_start;
+
+            // body_offset_in_passage: passage-relative offset of the body.
+            // Used for diagnostic ranges (which must be passage-relative).
+            // extract_*() methods continue using document-absolute body_offset
+            // because their spans go into the Passage struct.
+            let body_offset_in_passage = body_offset - passage_head;
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(
@@ -912,16 +932,23 @@ impl FormatPluginMut for SnowmanPlugin {
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
+            // Collect tokens with passage-relative offsets.
+            let mut passage_tokens = Vec::new();
+            // Per-passage diagnostics (passage-relative ranges)
+            let mut passage_diags = Vec::new();
+
             if is_script || is_stylesheet {
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset_in_passage);
                 let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
-                tokens.extend(crate::core_specials::build_special_header_tokens(
+                passage_tokens.extend(crate::core_specials::build_special_header_tokens(
+                    passage_head,
                     header.name_start,
                     header.name.len(),
                     layer,
                 ));
-                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
             } else {
+                // extract_* use document-absolute body_offset
                 passage.links = self.extract_links(body, body_offset);
                 passage.vars = self.extract_vars(body, body_offset);
                 let segments = self.parse_template_segments(body, body_offset);
@@ -932,48 +959,72 @@ impl FormatPluginMut for SnowmanPlugin {
                 );
                 if is_special_for_tokens {
                     let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
-                    tokens.extend(crate::core_specials::build_special_header_tokens(
+                    passage_tokens.extend(crate::core_specials::build_special_header_tokens(
+                        passage_head,
                         header.name_start,
                         header.name.len(),
                         layer,
                     ));
                 } else {
-                    tokens.push(SemanticToken {
-                        start: header.header_start,
+                    passage_tokens.push(SemanticToken {
+                        start: 0, // passage-relative: `::` is at offset 0
                         length: 2,
                         token_type: SemanticTokenType::PassageHeader,
                         modifier: None,
                     });
-                    tokens.push(SemanticToken {
-                        start: header.name_start,
+                    passage_tokens.push(SemanticToken {
+                        start: header.name_start - passage_head, // passage-relative
                         length: header.name.len(),
                         token_type: SemanticTokenType::PassageName,
                         modifier: None,
                     });
                 }
-                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
-                tokens.extend(self.body_tokens(body, body_offset));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                // body_tokens returns document-absolute offsets; convert to passage-relative
+                for mut tok in self.body_tokens(body, body_offset) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
 
-                let body_diags = self.validate(body, body_offset);
+                // validate() uses passage-relative offset for diagnostic ranges
+                let body_diags = self.validate(body, body_offset_in_passage);
                 for d in &body_diags {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
                         has_errors = true;
                     }
                 }
-                diagnostics.extend(body_diags);
+                passage_diags.extend(body_diags);
             }
 
             passages.push(passage);
+            token_groups.push(PassageTokenGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                tokens: passage_tokens,
+            });
+            diagnostic_groups.push(PassageDiagnosticGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                diagnostics: passage_diags,
+            });
         }
 
-        // Cross-passage undefined variable check
-        let var_diags = Self::check_undefined_vars(&passages);
-        diagnostics.extend(var_diags);
+        // Cross-passage undefined variable check — returns PassageDiagnosticGroups
+        // with passage-relative ranges.
+        let var_diag_groups = Self::check_undefined_vars(&passages);
+        // Merge undefined-var diagnostics into existing per-passage groups
+        for vg in var_diag_groups {
+            if let Some(existing) = diagnostic_groups.iter_mut().find(|g| g.passage_name == vg.passage_name) {
+                existing.diagnostics.extend(vg.diagnostics);
+            } else {
+                diagnostic_groups.push(vg);
+            }
+        }
 
         ParseResult {
             passages,
-            tokens,
-            diagnostics,
+            token_groups,
+            diagnostic_groups,
             is_complete: !has_errors,
         }
     }
@@ -1351,8 +1402,9 @@ mod tests {
 
         assert!(
             result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "sm-unclosed-template"),
             "Should produce unclosed template diagnostic"
         );
@@ -1366,8 +1418,9 @@ mod tests {
 
         assert!(
             result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "sm-unclosed-link"),
             "Should produce unclosed link diagnostic"
         );
@@ -1560,8 +1613,9 @@ mod tests {
 
         assert!(
             result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "sm-undefined-var"),
             "Should warn about undefined variable"
         );
@@ -1576,8 +1630,9 @@ mod tests {
 
         assert!(
             !result
-                .diagnostics
+                .diagnostic_groups
                 .iter()
+                .flat_map(|g| &g.diagnostics)
                 .any(|d| d.code == "sm-undefined-var" && d.message.contains("gold")),
             "Should NOT warn about s.gold when it is written in another passage"
         );

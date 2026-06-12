@@ -224,11 +224,11 @@ pub(crate) async fn index_workspace(
         );
 
         // Store format diagnostics
-        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostics);
+        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
 
         // Cache semantic tokens at parse time so semantic_tokens_full
         // never needs to re-parse
-        inner.semantic_tokens.insert(uri.clone(), parse_result.tokens);
+        inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
 
         // Check for StoryData (may update metadata with start passage, ifid, etc.)
         extract_and_set_metadata(&mut inner.workspace, &doc, &text);

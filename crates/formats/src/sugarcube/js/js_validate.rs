@@ -11,7 +11,9 @@
 //!
 //! ## Position Mapping
 //!
-//! The position mapping chain is:
+//! All diagnostic ranges produced by this module are **passage-relative**:
+//! byte 0 is the `::` prefix of the passage header. The position mapping
+//! chain is:
 //!
 //! ```text
 //! oxc diagnostic range  (in preprocessed source)
@@ -20,10 +22,12 @@
 //! original JS range     (in SugarCube source, relative to snippet start)
 //!       │
 //!       ▼  + snippet.body_offset
-//! passage body range    (relative to body start in the document)
+//! passage body range    (relative to body start)
 //!       │
-//!       ▼  + body_offset (passed from parse() pipeline)
-//! document range        (absolute byte range for LSP)
+//!       ▼  + body_offset_in_passage (offset of body start from passage head)
+//! passage-relative range  (0 = passage head `::`)
+//!       │
+//!       ▼  at LSP boundary: + passage_offset → document-absolute
 //! ```
 //!
 //! For expression-mode snippets (<<set>>, <<run>>), the oxc parser wraps
@@ -42,17 +46,19 @@ use crate::sugarcube::ast::{self, JsSnippet};
 /// JS-containing macro arguments and block bodies, preprocesses them,
 /// and validates them with oxc.
 ///
-/// `body_offset` is the byte offset of the passage body start within
-/// the document. All returned diagnostic ranges are document-absolute.
+/// `body_offset_in_passage` is the byte offset of the passage body start
+/// relative to the passage head (`::` prefix). All returned diagnostic
+/// ranges are passage-relative (0 = passage head `::`). The LSP boundary
+/// adds `passage_offset` to produce document-absolute ranges.
 pub fn validate_inline_js(
     nodes: &[ast::AstNode],
-    body_offset: usize,
+    body_offset_in_passage: usize,
 ) -> Vec<FormatDiagnostic> {
     let snippets = ast::collect_js_snippets(nodes);
     let mut diagnostics = Vec::new();
 
     for snippet in &snippets {
-        let snippet_diagnostics = validate_snippet(snippet, body_offset);
+        let snippet_diagnostics = validate_snippet(snippet, body_offset_in_passage);
         diagnostics.extend(snippet_diagnostics);
     }
 
@@ -60,7 +66,7 @@ pub fn validate_inline_js(
 }
 
 /// Validate a single JS snippet.
-fn validate_snippet(snippet: &JsSnippet, body_offset: usize) -> Vec<FormatDiagnostic> {
+fn validate_snippet(snippet: &JsSnippet, body_offset_in_passage: usize) -> Vec<FormatDiagnostic> {
     // Preprocess $var references for oxc
     let preprocessed = super::js_preprocess::preprocess_for_oxc(&snippet.source);
 
@@ -81,7 +87,7 @@ fn validate_snippet(snippet: &JsSnippet, body_offset: usize) -> Vec<FormatDiagno
             js_diagnostics
                 .into_iter()
                 .filter_map(|js_diag| {
-                    convert_js_diagnostic(&js_diag, &preprocessed, snippet, body_offset, js_mode)
+                    convert_js_diagnostic(&js_diag, &preprocessed, snippet, body_offset_in_passage, js_mode)
                 })
                 .collect()
         }
@@ -92,13 +98,13 @@ fn validate_snippet(snippet: &JsSnippet, body_offset: usize) -> Vec<FormatDiagno
 ///
 /// Maps the diagnostic's byte range from the preprocessed source back
 /// to the original SugarCube source, then shifts by the snippet's body
-/// offset and the passage's body offset to produce a document-absolute
-/// byte range.
+/// offset and `body_offset_in_passage` to produce a passage-relative
+/// byte range (0 = passage head `::`).
 fn convert_js_diagnostic(
     js_diag: &knot_core::oxc::JsDiagnostic,
     preprocessed: &super::js_preprocess::PreprocessedJs,
     snippet: &JsSnippet,
-    body_offset: usize,
+    body_offset_in_passage: usize,
     js_mode: JsParseMode,
 ) -> Option<FormatDiagnostic> {
     // Step 1: Unwrap the expression-mode parenthesization offset.
@@ -120,15 +126,15 @@ fn convert_js_diagnostic(
     let original_end = preprocessed.map_to_original(adjusted_end);
 
     // Step 3: Shift by the snippet's body offset (where this snippet
-    // starts within the passage body) and then by the passage's
-    // body_offset to get document-absolute positions.
-    let doc_start = body_offset + snippet.body_offset + original_start;
-    let doc_end = body_offset + snippet.body_offset + original_end;
+    // starts within the passage body) and then by body_offset_in_passage
+    // to get passage-relative positions (0 = passage head `::`).
+    let passage_start = body_offset_in_passage + snippet.body_offset + original_start;
+    let passage_end = body_offset_in_passage + snippet.body_offset + original_end;
 
     // Clamp to prevent empty or inverted ranges
-    let doc_end = doc_end.max(doc_start + 1);
+    let passage_end = passage_end.max(passage_start + 1);
 
-    // Step 4: Create the FormatDiagnostic
+    // Step 4: Create the FormatDiagnostic with passage-relative range
     let severity = match js_diag.severity {
         knot_core::oxc::JsDiagnosticSeverity::Error => FormatDiagnosticSeverity::Error,
         knot_core::oxc::JsDiagnosticSeverity::Warning => FormatDiagnosticSeverity::Warning,
@@ -142,7 +148,7 @@ fn convert_js_diagnostic(
     };
 
     Some(FormatDiagnostic {
-        range: doc_start..doc_end,
+        range: passage_start..passage_end,
         message,
         severity,
         code: "sc-js".to_string(),
@@ -217,10 +223,11 @@ mod tests {
 
     #[test]
     fn validate_body_offset_shifts_ranges() {
-        // Verify that diagnostics are shifted by body_offset
+        // Verify that diagnostics are shifted by body_offset_in_passage
         let body = "<<run bad[>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 100);
+        let body_offset_in_passage = 20; // e.g. header line + newline
+        let diagnostics = validate_inline_js(&ast.nodes, body_offset_in_passage);
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -228,11 +235,11 @@ mod tests {
             .collect();
 
         if !js_errors.is_empty() {
-            // All diagnostic ranges should be at or past body_offset (100)
+            // All diagnostic ranges should be at or past body_offset_in_passage (20)
             for diag in &js_errors {
                 assert!(
-                    diag.range.start >= 100,
-                    "Diagnostic range should be shifted by body_offset, got start={}",
+                    diag.range.start >= body_offset_in_passage,
+                    "Diagnostic range should be shifted by body_offset_in_passage, got start={}",
                     diag.range.start
                 );
             }

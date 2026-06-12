@@ -33,8 +33,9 @@ use url::Url;
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
-    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType,
+    FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
+    PassageDiagnosticGroup, PassageTokenGroup,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType,
 };
 use crate::types::BodyRequirement;
 
@@ -754,8 +755,8 @@ impl ChapbookPlugin {
 impl FormatPluginMut for ChapbookPlugin {
     fn parse_mut(&mut self, _uri: &Url, text: &str) -> ParseResult {
         let mut passages = Vec::new();
-        let mut tokens = Vec::new();
-        let mut diagnostics = Vec::new();
+        let mut token_groups = Vec::new();
+        let mut diagnostic_groups = Vec::new();
         let mut has_errors = false;
 
         let raw_passages = self.split_passages(text);
@@ -768,6 +769,8 @@ impl FormatPluginMut for ChapbookPlugin {
                 + 1;
 
             let special_def = self.classify_passage(&header.name, &header.tags);
+            let passage_head = header.header_start;
+            let body_offset_in_passage = body_offset - passage_head;
 
             let mut passage = if let Some(ref def) = special_def {
                 Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
@@ -780,15 +783,20 @@ impl FormatPluginMut for ChapbookPlugin {
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
 
+            // Collect tokens with passage-relative offsets.
+            let mut passage_tokens = Vec::new();
+            let mut passage_diagnostics = Vec::new();
+
             if is_script || is_stylesheet {
-                passage.body = crate::core_specials::raw_body_blocks(body, body_offset);
+                passage.body = crate::core_specials::raw_body_blocks(body, body_offset_in_passage);
                 let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
-                tokens.extend(crate::core_specials::build_special_header_tokens(
+                passage_tokens.extend(crate::core_specials::build_special_header_tokens(
+                    passage_head,
                     header.name_start,
                     header.name.len(),
                     layer,
                 ));
-                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 let segments = self.parse_template_segments(body);
@@ -817,43 +825,58 @@ impl FormatPluginMut for ChapbookPlugin {
                 );
                 if is_special_for_tokens {
                     let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
-                    tokens.extend(crate::core_specials::build_special_header_tokens(
+                    passage_tokens.extend(crate::core_specials::build_special_header_tokens(
+                        passage_head,
                         header.name_start,
                         header.name.len(),
                         layer,
                     ));
                 } else {
-                    tokens.push(SemanticToken {
-                        start: header.header_start,
+                    passage_tokens.push(SemanticToken {
+                        start: 0, // passage-relative: `::` is at offset 0
                         length: 2,
                         token_type: SemanticTokenType::PassageHeader,
                         modifier: None,
                     });
-                    tokens.push(SemanticToken {
-                        start: header.name_start,
+                    passage_tokens.push(SemanticToken {
+                        start: header.name_start - passage_head, // passage-relative
                         length: header.name.len(),
                         token_type: SemanticTokenType::PassageName,
                         modifier: None,
                     });
                 }
-                tokens.extend(crate::core_specials::build_tag_tokens(header, self));
-                tokens.extend(self.body_tokens(body, body_offset));
-                let body_diags = self.validate(body, body_offset);
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                // body_tokens returns document-absolute offsets; convert to passage-relative
+                for mut tok in self.body_tokens(body, body_offset) {
+                    tok.start -= passage_head;
+                    passage_tokens.push(tok);
+                }
+                let body_diags = self.validate(body, body_offset_in_passage);
                 for d in &body_diags {
                     if matches!(d.severity, FormatDiagnosticSeverity::Error) {
                         has_errors = true;
                     }
                 }
-                diagnostics.extend(body_diags);
+                passage_diagnostics.extend(body_diags);
             }
 
             passages.push(passage);
+            token_groups.push(PassageTokenGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                tokens: passage_tokens,
+            });
+            diagnostic_groups.push(PassageDiagnosticGroup {
+                passage_name: header.name.clone(),
+                passage_offset: passage_head,
+                diagnostics: passage_diagnostics,
+            });
         }
 
         ParseResult {
             passages,
-            tokens,
-            diagnostics,
+            token_groups,
+            diagnostic_groups,
             is_complete: !has_errors,
         }
     }
@@ -1204,7 +1227,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "cb-unclosed-javascript"),
+            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-javascript"),
             "Should warn about unclosed [javascript] block"
         );
     }
@@ -1264,7 +1287,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "cb-unclosed-modify"),
+            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-modify"),
             "Should warn about unclosed [modify] block"
         );
     }
@@ -1307,7 +1330,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "cb-unclosed-insert"),
+            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-insert"),
             "Should warn about unclosed {{ insert"
         );
     }
@@ -1323,7 +1346,7 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostics.iter().any(|d| d.code == "cb-broken-link"),
+            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-broken-link"),
             "Should warn about unclosed link"
         );
     }

@@ -95,7 +95,7 @@ pub(crate) async fn incoming_calls(
             );
 
             let from_ranges: Vec<Range> = matching_links.iter()
-                .map(|link| helpers::byte_range_to_lsp_range(text, &link.span))
+                .map(|link| helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)))
                 .collect();
 
             calls.push(CallHierarchyIncomingCall {

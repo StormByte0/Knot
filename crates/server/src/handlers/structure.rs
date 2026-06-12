@@ -23,15 +23,15 @@ pub(crate) async fn folding_range(
     if let Some(doc) = inner.workspace.get_document(&uri) {
         let passages = &doc.passages;
         for (i, passage) in passages.iter().enumerate() {
-            let span_start = passage.span.start.min(text.len());
+            let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let header_end = text[span_start..]
                 .find('\n')
                 .map(|n| span_start + n)
-                .unwrap_or(passage.span.end.min(text.len()));
+                .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
 
             // End of passage body: start of next passage or end of document
             let body_end_offset = if i + 1 < passages.len() {
-                passages[i + 1].span.start.min(text.len())
+                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
             } else {
                 text.len()
             };
@@ -125,7 +125,7 @@ pub(crate) async fn document_link(
             if !target.is_empty() {
                 if let Some(target_uri) = inner.workspace.find_passage_file_uri(target) {
                     links.push(DocumentLink {
-                        range: helpers::byte_range_to_lsp_range(text, &link.span),
+                        range: helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)),
                         target: Some(target_uri),
                         tooltip: Some(format!("Go to {}", target)),
                         data: None,
@@ -167,21 +167,22 @@ pub(crate) async fn selection_range(
         // Level 1: Link text (if inside a [[...]])
         'link_search: for passage in passages.iter() {
             for link in &passage.links {
-                if byte_offset >= link.span.start && byte_offset < link.span.end {
+                if passage.span_contains_abs_offset(&link.span, byte_offset) {
                     // Found the link containing the cursor.
                     // Extract the link content to find the target portion.
-                    let link_text = &text[link.span.start.min(text.len())..link.span.end.min(text.len())];
+                    let abs_link_span = passage.abs_range(&link.span);
+                    let link_text = &text[abs_link_span.start.min(text.len())..abs_link_span.end.min(text.len())];
                     let content = &link_text[2..link_text.len().saturating_sub(2)];
 
                     // Compute the target range within the link
                     let target_start_offset = if let Some(arrow) = content.find("->") {
-                        link.span.start + 2 + arrow + 2
+                        abs_link_span.start + 2 + arrow + 2
                     } else if let Some(pipe) = content.find('|') {
-                        link.span.start + 2 + pipe + 1
+                        abs_link_span.start + 2 + pipe + 1
                     } else {
-                        link.span.start + 2
+                        abs_link_span.start + 2
                     };
-                    let target_end_offset = link.span.end.saturating_sub(2);
+                    let target_end_offset = abs_link_span.end.saturating_sub(2);
 
                     // Link text range (just the target portion)
                     range_chain.push(helpers::byte_range_to_lsp_range(
@@ -190,7 +191,7 @@ pub(crate) async fn selection_range(
                     ));
 
                     // Full link range (entire [[...]])
-                    range_chain.push(helpers::byte_range_to_lsp_range(text, &link.span));
+                    range_chain.push(helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
 
                     break 'link_search;
                 }
@@ -199,9 +200,9 @@ pub(crate) async fn selection_range(
 
         // Level 2: Passage range (if cursor is within a passage)
         for (i, passage) in passages.iter().enumerate() {
-            let span_start = passage.span.start.min(text.len());
+            let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let effective_end = if i + 1 < passages.len() {
-                passages[i + 1].span.start.min(text.len())
+                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
             } else {
                 text.len()
             };

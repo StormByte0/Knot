@@ -40,7 +40,7 @@ pub(crate) fn find_link_ranges_for_target(
         for passage in &doc.passages {
             for link in &passage.links {
                 if link.target.trim() == target {
-                    ranges.push(byte_range_to_lsp_range(text, &link.span));
+                    ranges.push(byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
                 }
             }
         }

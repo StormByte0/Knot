@@ -58,7 +58,7 @@ pub(crate) async fn hover(
     let current_passage = doc.as_ref().and_then(|d| {
         d.passages
             .iter()
-            .find(|p| byte_offset >= p.span.start && byte_offset < p.span.end)
+            .find(|p| p.contains_abs_offset(byte_offset))
     });
 
     // 1. Try passage header hover FIRST — if the cursor is on a :: header
@@ -150,11 +150,11 @@ fn try_passage_header_hover(
 ) -> Option<Hover> {
     // Check if the cursor is on the header line of this passage.
     // The header line starts at passage.span.start and ends at the first newline.
-    let span_start = passage.span.start.min(text.len());
+    let span_start = passage.abs_offset(passage.span.start).min(text.len());
     let header_end = text[span_start..]
         .find('\n')
         .map(|n| span_start + n)
-        .unwrap_or(passage.span.end.min(text.len()));
+        .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
 
     if byte_offset < span_start || byte_offset > header_end {
         return None;
@@ -224,7 +224,7 @@ fn try_passage_header_hover(
     // the header line). Fall back to compute_passage_header_range for formats
     // that don't populate header_name_span.
     let hover_range = if let Some(ref name_span) = passage.header_name_span {
-        helpers::byte_range_to_lsp_range(text, name_span)
+        helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
     } else {
         let position = helpers::byte_offset_to_position(text, byte_offset);
         compute_passage_header_range(text, position)?
@@ -365,7 +365,7 @@ fn try_variable_hover(
     // absolute byte offsets in the document text, so we can match directly.
     for passage in &doc.passages {
         for var in &passage.vars {
-            if byte_offset >= var.span.start && byte_offset < var.span.end {
+            if passage.span_contains_abs_offset(&var.span, byte_offset) {
                 let var_name = &var.name;
 
                 // Find where this variable is written and read across the workspace
@@ -415,7 +415,7 @@ fn try_variable_hover(
                 );
 
                 // Convert the variable's byte span to an LSP Range.
-                let hover_range = helpers::byte_range_to_lsp_range(text, &var.span);
+                let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&var.span));
 
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -549,7 +549,7 @@ fn try_link_hover(
     // byte offsets in the document text.
     for passage in &doc.passages {
         for link in &passage.links {
-            if byte_offset >= link.span.start && byte_offset < link.span.end {
+            if passage.span_contains_abs_offset(&link.span, byte_offset) {
                 let target = link.target.trim();
 
                 if !target.is_empty() {
@@ -592,7 +592,7 @@ fn try_link_hover(
                         }
 
                         // Convert the link's byte span to an LSP Range.
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &link.span);
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
 
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
@@ -603,7 +603,7 @@ fn try_link_hover(
                         });
                     } else {
                         // Broken link — passage doesn't exist
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &link.span);
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
 
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
