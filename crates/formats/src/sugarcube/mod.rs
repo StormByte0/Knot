@@ -30,7 +30,7 @@
 //!     |--> StoryData:      minimal
 //!     |
 //!     v
-//! ParseResult { passages, tokens, diagnostics }
+//! ParseResult { passages, token_groups, diagnostics }
 //! ```
 //!
 //! ## Classification Priority (Twee 3 spec: tags override names)

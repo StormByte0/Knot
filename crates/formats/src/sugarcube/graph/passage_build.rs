@@ -3,7 +3,7 @@
 //! None of these functions access plugin state; they are pure conversions
 //! from the SugarCube AST representation to the core `Passage` type.
 
-use knot_core::passage::{Block, Passage, VarKind, VarOp};
+use knot_core::passage::{Block, MacroArgRef, Passage, VarKind, VarOp};
 use crate::sugarcube::ast::{self, PassageAst};
 use crate::sugarcube::classifier::ClassifiedPassage;
 use crate::sugarcube::parser::predicates::is_assignment_macro;
@@ -135,6 +135,22 @@ pub fn build_passage(
         }
     }).collect();
 
+    // Build macro arg refs from AST (passage-ref args with individual spans
+    // for layered hover). Only `PassageRef` args are stored — other arg
+    // kinds don't need layering.
+    passage.macro_arg_refs = build_macro_arg_refs(&passage_ast.nodes, body_offset_in_passage);
+
+    // Narrow link spans: macro-based links from `extract_macro_passage_refs()`
+    // use the entire `open_span` as the link span (e.g., the whole
+    // `<<link "Talk" "Shop">>` range). This is too broad — hovering over
+    // "Talk" (display text) would trigger link hover for "Shop" (target).
+    //
+    // We fix this by cross-referencing with `macro_arg_refs`: for each link
+    // whose target matches a `MacroArgRef`, narrow the link's span to the
+    // arg's individual span (just the passage name, e.g., just "Shop").
+    // `[[passage]]` links are unaffected — they don't have `macro_arg_refs`.
+    narrow_link_spans(&mut passage.links, &passage.macro_arg_refs);
+
     // Record the document-absolute offset of the passage head so that
     // handlers can convert passage-relative spans back to document-absolute
     // positions at the LSP boundary.
@@ -185,6 +201,108 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset_in_pass
     }
 
     vars
+}
+
+/// Narrow link spans to match individual passage-ref arg spans.
+///
+/// Macro-based links (e.g., from `<<link "Talk" "Shop">>`) currently use the
+/// entire macro open span as the link span. This function cross-references
+/// with `macro_arg_refs` to narrow each link's span to just the passage-ref
+/// arg's individual span (e.g., just "Shop" instead of the whole `<<link ...>>`).
+///
+/// For each link, we look for a `MacroArgRef` with a matching `target` whose
+/// `macro_open_span` overlaps with the link's span. If found, we replace the
+/// link's span with the arg's narrower span.
+///
+/// `[[passage]]` links are unaffected — they have no matching `MacroArgRef`.
+fn narrow_link_spans(links: &mut [knot_core::passage::Link], arg_refs: &[MacroArgRef]) {
+    for link in links.iter_mut() {
+        // Find a MacroArgRef that targets the same passage and whose macro
+        // open span overlaps with this link's span. We check overlap rather
+        // than equality because the link span may be the open_span itself
+        // (for single-arg macros like <<goto "Passage">>) or may differ
+        // slightly due to span computation differences.
+        for arg_ref in arg_refs {
+            if arg_ref.target == link.target {
+                // Check if the link span overlaps with the macro_open_span.
+                // A link from `<<link "Talk" "Shop">>` has span == open_span,
+                // so the overlap is exact. A `[[Shop]]` link has no macro_open_span
+                // and won't match any arg_ref.
+                let link_overlaps_macro = link.span.start >= arg_ref.macro_open_span.start
+                    && link.span.end <= arg_ref.macro_open_span.end;
+                if link_overlaps_macro {
+                    link.span = arg_ref.span.clone();
+                    break; // One arg ref per link
+                }
+            }
+        }
+    }
+}
+
+/// Build `MacroArgRef` entries from the AST for layered hover.
+///
+/// Walks all `AstNode::Macro` nodes and extracts `StructuredMacroArg` entries
+/// where `kind == ParsedArgKind::PassageRef`. Each produces a `MacroArgRef`
+/// with:
+/// - The passage name as `target`
+/// - The arg's individual span as `span` (shifted by `body_offset_in_passage`)
+/// - The macro's `name_span` as `macro_name_span` (shifted)
+/// - The macro's `open_span` as `macro_open_span` (shifted)
+///
+/// Recurses into block macro children.
+pub fn build_macro_arg_refs(nodes: &[ast::AstNode], body_offset_in_passage: usize) -> Vec<MacroArgRef> {
+    let mut refs = Vec::new();
+    collect_macro_arg_refs(nodes, &mut refs, body_offset_in_passage);
+    refs
+}
+
+fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, body_offset_in_passage: usize) {
+    let label_then_passage: std::collections::HashSet<&str> =
+        crate::sugarcube::macros::label_then_passage_macros();
+
+    for node in nodes {
+        if let ast::AstNode::Macro {
+            name,
+            name_span,
+            open_span,
+            children,
+            structured_args,
+            ..
+        } = node {
+            // `children: Some(_)` means the macro has a body (block variant with
+            // close tag). `None` means inline (no body, no close tag). This is
+            // the polymorphy signal for macros like <<link>> where body=Optional.
+            let has_body = children.is_some();
+
+            if let Some(sargs) = structured_args {
+                for sarg in sargs {
+                    let is_passage_ref = matches!(sarg.kind, ast::ParsedArgKind::PassageRef);
+                    // For label_then_passage macros (e.g., <<link "Talk">>), when the
+                    // single arg is classified as Label, it doubles as the passage target
+                    // (equivalent to [[Talk]]). Treat it as a PassageRef for hover layering.
+                    let is_label_as_passage = !is_passage_ref
+                        && matches!(sarg.kind, ast::ParsedArgKind::Label)
+                        && label_then_passage.contains(name.as_str())
+                        && sargs.len() == 1;
+
+                    if is_passage_ref || is_label_as_passage {
+                        refs.push(MacroArgRef {
+                            target: sarg.value.clone(),
+                            span: body_offset_in_passage + sarg.span.start..body_offset_in_passage + sarg.span.end,
+                            macro_name: name.clone(),
+                            macro_name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                            macro_open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
+                            has_body,
+                        });
+                    }
+                }
+            }
+            // Recurse into block macro children
+            if let Some(ch) = children {
+                collect_macro_arg_refs(ch, refs, body_offset_in_passage);
+            }
+        }
+    }
 }
 
 fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_offset_in_passage: usize) {

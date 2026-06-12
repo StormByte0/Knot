@@ -103,6 +103,43 @@ pub enum VarKind {
     Init,
 }
 
+/// A passage reference inside a macro argument.
+///
+/// Used for **layered hover**: when the cursor is on a `PassageRef` arg
+/// inside a macro (e.g., `"Shop"` in `<<link "Talk" "Shop">>`), the
+/// arg's passage hover overrides the outer macro hover. When the cursor
+/// is on the macro name, macro hover fires. When the cursor is on a
+/// non-`PassageRef` arg (e.g., a Label), the macro hover fires as the
+/// outer-layer fallback.
+///
+/// All spans are **passage-relative** (0 = passage head `::`). Add
+/// `passage_offset` to convert to document-absolute at the LSP boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroArgRef {
+    /// The passage name referenced by this arg.
+    pub target: String,
+    /// Passage-relative byte span of just the reference text
+    /// (e.g., `Shop` inside `"Shop"` — not including quotes).
+    pub span: Range<usize>,
+    /// The macro name containing this arg (e.g., `"link"`).
+    pub macro_name: String,
+    /// Passage-relative byte span of the macro name portion
+    /// (e.g., just `link` in `<<link "Talk" "Shop">>`).
+    /// Used to detect when the cursor is on the macro name itself
+    /// (→ show macro hover) vs. on an arg (→ show arg hover).
+    pub macro_name_span: Range<usize>,
+    /// Passage-relative byte span of the full macro opening tag
+    /// (`<<link "Talk" "Shop">>`). Used for fallback macro hover
+    /// when the cursor is inside the macro but not on the name or a
+    /// specific `PassageRef` arg (e.g., on a Label arg).
+    pub macro_open_span: Range<usize>,
+    /// Whether this macro invocation has a body (children between open and
+    /// close tags). Used for polymorphic hover: macros like `<<link>>` are
+    /// inline when used without a body (`<<link "Talk" "Shop">>`) and block
+    /// when used with a body (`<<link "Talk" "Shop">>…<</link>>`).
+    pub has_body: bool,
+}
+
 /// A variable operation within a passage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VarOp {
@@ -709,7 +746,8 @@ pub fn legacy_core_special_passages() -> Vec<SpecialPassageDef> {
 /// ## Passage-Relative Spans
 ///
 /// All span fields (`span`, `header_name_span`, `links[].span`,
-/// `vars[].span`, `body[].span`) use **passage-relative** byte offsets:
+/// `vars[].span`, `body[].span`, `macro_arg_refs[].span`) use
+/// **passage-relative** byte offsets:
 /// offset 0 is the `::` prefix of the passage header. This design enables
 /// incremental per-passage re-parsing — when a single passage is edited,
 /// only that passage's data needs to be regenerated.
@@ -751,6 +789,22 @@ pub struct Passage {
     ///
     /// All variable spans are **passage-relative** (0 = passage head `::`).
     pub vars: Vec<VarOp>,
+    /// Passage references from macro arguments, with individual spans.
+    ///
+    /// Used for **layered hover**: the inner `PassageRef` arg hover
+    /// overrides the outer macro hover. For example, in
+    /// `<<link "Talk" "Shop">>`, hovering over `"Shop"` shows
+    /// passage info for "Shop", while hovering over `link` shows
+    /// the macro hover.
+    ///
+    /// Only `PassageRef` args are stored. Other arg kinds (Selector,
+    /// VariableRef, String, Label) are not stored because they don't
+    /// need layering — `VariableRef` is already covered by `vars[]`,
+    /// and the others have no hover target.
+    ///
+    /// All spans are **passage-relative** (0 = passage head `::`).
+    #[serde(default)]
+    pub macro_arg_refs: Vec<MacroArgRef>,
     /// Whether this passage is a format-specific special passage.
     pub is_special: bool,
     /// If this is a special passage, its definition from the format plugin.
@@ -790,6 +844,7 @@ impl Passage {
             body: Vec::new(),
             links: Vec::new(),
             vars: Vec::new(),
+            macro_arg_refs: Vec::new(),
             is_special: false,
             special_def: None,
             position: None,
@@ -810,6 +865,7 @@ impl Passage {
             body: Vec::new(),
             links: Vec::new(),
             vars: Vec::new(),
+            macro_arg_refs: Vec::new(),
             is_special: true,
             special_def: Some(def),
             position: None,

@@ -11,8 +11,22 @@ use knot_core::graph::{DiagnosticKind, PassageEdge, PassageNode, PassageGraph};
 use knot_core::passage::StoryFormat;
 use knot_core::workspace::{StoryMetadata, Workspace};
 use knot_core::AnalysisEngine;
-use crate::plugin::{FormatRegistry, FormatPluginMut};
+use crate::plugin::{FormatRegistry, FormatPluginMut, SemanticToken, SemanticTokenType, SemanticTokenModifier};
 use url::Url;
+
+/// Flatten `ParseResult::token_groups` into a single `Vec<SemanticToken>` with
+/// document-absolute byte offsets. This is a convenience for tests that need
+/// to iterate over all tokens without dealing with per-passage grouping.
+fn flatten_token_groups(result: &crate::plugin::ParseResult) -> Vec<SemanticToken> {
+    result.token_groups.iter().flat_map(|g| {
+        g.tokens.iter().map(|t| SemanticToken {
+            start: t.start + g.passage_offset,
+            length: t.length,
+            token_type: t.token_type.clone(),
+            modifier: t.modifier,
+        })
+    }).collect()
+}
 
 /// Parse a document using the format plugin system and insert it into the workspace.
 fn parse_and_insert(
@@ -411,7 +425,7 @@ fn all_formats_produce_semantic_tokens() {
         let plugin = registry.get_mut(format).unwrap();
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert!(
-            !result.tokens.is_empty(),
+            !flatten_token_groups(&result).is_empty(),
             "{:?}: should produce semantic tokens", format
         );
     }
@@ -577,7 +591,7 @@ fn sugarcube_header_token_positions_simple() {
 
     // :: prefix should be at byte 0 → LSP (0, 0)
     // Note: "Start" is a core special passage, so it uses SpecialPassageHeader
-    let header_tok = result.tokens.iter().find(|t| 
+    let header_tok = flatten_token_groups(&result).into_iter().find(|t| 
         t.token_type == crate::plugin::SemanticTokenType::PassageHeader 
         || t.token_type == crate::plugin::SemanticTokenType::SpecialPassageHeader
     );
@@ -591,7 +605,7 @@ fn sugarcube_header_token_positions_simple() {
 
     // Passage name "Start" should be at byte 3 → LSP (0, 3)
     // Note: "Start" is a core special passage, so it uses SpecialPassage
-    let name_tok = result.tokens.iter().find(|t| 
+    let name_tok = flatten_token_groups(&result).into_iter().find(|t| 
         t.token_type == crate::plugin::SemanticTokenType::PassageName 
         || t.token_type == crate::plugin::SemanticTokenType::SpecialPassage
     );
@@ -613,7 +627,7 @@ fn sugarcube_header_token_positions_with_tags() {
 
     // Print all tokens for debugging
     eprintln!("Tokens for: {:?}", src);
-    for tok in &result.tokens {
+    for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
         eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
@@ -625,7 +639,7 @@ fn sugarcube_header_token_positions_with_tags() {
     // [ is at byte 10, "dark" starts at byte 11, "scary" starts at byte 16
 
     // Name "Forest" at byte 3 → LSP (0, 3)
-    let name_tok = result.tokens.iter().find(|t| t.token_type == crate::plugin::SemanticTokenType::PassageName);
+    let name_tok = flatten_token_groups(&result).into_iter().find(|t| t.token_type == crate::plugin::SemanticTokenType::PassageName);
     assert!(name_tok.is_some(), "Should have PassageName token");
     let nt = name_tok.unwrap();
     assert_eq!(nt.start, 3, "Name 'Forest' should start at byte 3");
@@ -633,7 +647,7 @@ fn sugarcube_header_token_positions_with_tags() {
     assert_eq!(char, 3, "Name 'Forest' should start at char 3");
 
     // Tags should be present
-    let tag_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
+    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens");
 
     if tag_toks.len() >= 2 {
@@ -657,7 +671,7 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     eprintln!("Tokens for: {:?}", src);
-    for tok in &result.tokens {
+    for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
         eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
@@ -668,7 +682,7 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
     //           1111111111222222222233333333
     // [ is at byte 10, "dark" at byte 11, "scary" at byte 16
 
-    let tag_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
+    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens even with metadata");
 
     if tag_toks.len() >= 2 {
@@ -688,7 +702,7 @@ fn sugarcube_body_token_positions() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     eprintln!("Tokens for: {:?}", src);
-    for tok in &result.tokens {
+    for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
         eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
@@ -699,7 +713,7 @@ fn sugarcube_body_token_positions() {
     // "set" name starts at byte 11 (after <<)
     // Expected: macro "set" at LSP (1, 2)
 
-    let macro_toks: Vec<_> = result.tokens.iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Macro).collect();
+    let macro_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Macro).collect();
     assert!(!macro_toks.is_empty(), "Should have Macro tokens");
 
     let set_macro = macro_toks.iter().find(|t| {
@@ -725,7 +739,7 @@ fn test_semantic_token_positions_header() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
     
     // Debug: print all tokens with their positions
-    for (i, tok) in result.tokens.iter().enumerate() {
+    for (i, tok) in flatten_token_groups(&result).into_iter().enumerate() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
@@ -739,29 +753,29 @@ fn test_semantic_token_positions_header() {
     // 8: ' ', 9: '[', 10: 't', 11: 'a', 12: 'g', 13: ']'
     
     // The :: prefix should be at byte 0, length 2
-    let prefix_tokens: Vec<_> = result.tokens.iter()
+    let prefix_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader))
         .collect();
     assert!(!prefix_tokens.is_empty(), "Should have at least one passage header prefix token");
-    let first_prefix = prefix_tokens[0];
+    let first_prefix = &prefix_tokens[0];
     assert_eq!(first_prefix.start, 0, ":: prefix should start at byte 0, got {}", first_prefix.start);
     assert_eq!(first_prefix.length, 2, ":: prefix should have length 2");
     
     // The passage name "Start" should be at byte 3, length 5
-    let name_tokens: Vec<_> = result.tokens.iter()
+    let name_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage))
         .collect();
     assert!(!name_tokens.is_empty(), "Should have at least one passage name token");
-    let first_name = name_tokens[0];
+    let first_name = &name_tokens[0];
     assert_eq!(first_name.start, 3, "Passage name should start at byte 3, got {}", first_name.start);
     assert_eq!(first_name.length, 5, "Passage name should have length 5, got {}", first_name.length);
     
     // The tag "tag" should be at byte 10, length 3
-    let tag_tokens: Vec<_> = result.tokens.iter()
+    let tag_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| matches!(t.token_type, SemanticTokenType::Tag))
         .collect();
     assert!(!tag_tokens.is_empty(), "Should have at least one tag token");
-    let first_tag = tag_tokens[0];
+    let first_tag = &tag_tokens[0];
     assert_eq!(first_tag.start, 10, "Tag should start at byte 10, got {}", first_tag.start);
     assert_eq!(first_tag.length, 3, "Tag should have length 3, got {}", first_tag.length);
 }
@@ -779,7 +793,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== No-space-after-colons test ===");
-    for (i, tok) in result.tokens.iter().enumerate() {
+    for (i, tok) in flatten_token_groups(&result).into_iter().enumerate() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
@@ -792,7 +806,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
     // 0123456789012345678901234567890
     // :: at bytes 0-1, Start at bytes 2-6
 
-    let prefix_tok = result.tokens.iter().find(|t|
+    let prefix_tok = flatten_token_groups(&result).into_iter().find(|t|
         matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader)
     );
     assert!(prefix_tok.is_some(), "Should have header prefix token");
@@ -800,7 +814,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
     assert_eq!(pt.start, 0, ":: prefix should start at byte 0, got {}", pt.start);
     assert_eq!(pt.length, 2, ":: prefix should be 2 bytes");
 
-    let name_tok = result.tokens.iter().find(|t|
+    let name_tok = flatten_token_groups(&result).into_iter().find(|t|
         matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage)
     );
     assert!(name_tok.is_some(), "Should have passage name token");
@@ -813,7 +827,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
     assert_eq!(char, 2, "Name should start at char 2 (no space after ::), got {}", char);
 
     // Body tokens: macro "setSceneLoc" should be at the right position
-    let macro_toks: Vec<_> = result.tokens.iter()
+    let macro_toks: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Macro)
         .collect();
     assert!(!macro_toks.is_empty(), "Should have Macro tokens in body");
@@ -842,7 +856,7 @@ fn sugarcube_script_tag_token_positions() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== Script tag test ===");
-    for (i, tok) in result.tokens.iter().enumerate() {
+    for (i, tok) in flatten_token_groups(&result).into_iter().enumerate() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
@@ -851,7 +865,7 @@ fn sugarcube_script_tag_token_positions() {
     }
 
     // Should have a Tag token for "script"
-    let tag_toks: Vec<_> = result.tokens.iter()
+    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Tag)
         .collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens for [script]");
@@ -880,7 +894,7 @@ fn sugarcube_stylesheet_tag_token_positions() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     eprintln!("=== Stylesheet tag test ===");
-    for (i, tok) in result.tokens.iter().enumerate() {
+    for (i, tok) in flatten_token_groups(&result).into_iter().enumerate() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
@@ -888,7 +902,7 @@ fn sugarcube_stylesheet_tag_token_positions() {
                  i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
     }
 
-    let tag_toks: Vec<_> = result.tokens.iter()
+    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Tag)
         .collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens for [stylesheet]");
@@ -924,7 +938,7 @@ fn sugarcube_js_validation_invalid_run_produces_diagnostic() {
     let src = ":: Start\n<<run invalid{{{>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostics.iter()
+    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
     assert!(!js_diags.is_empty(), "Invalid JS in <<run>> should produce a JS diagnostic");
@@ -935,7 +949,7 @@ fn sugarcube_js_validation_valid_set_no_diagnostic() {
     let src = ":: Start\n<<set $hp to 100>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostics.iter()
+    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
     assert!(js_diags.is_empty(), "Valid <<set>> should produce no JS diagnostics, got: {:?}", js_diags);
@@ -947,7 +961,7 @@ fn sugarcube_js_validation_valid_print_expression() {
     let src = ":: Start\n<<print $gold>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostics.iter()
+    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
     assert!(js_diags.is_empty(), "Valid <<print>> should produce no JS diagnostics, got: {:?}", js_diags);
@@ -958,7 +972,7 @@ fn sugarcube_js_validation_stylesheet_no_js_diagnostics() {
     let src = ":: Styles [stylesheet]\nbody { color: red; }\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostics.iter()
+    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
     assert!(js_diags.is_empty(), "Stylesheet passage should not produce JS diagnostics");
@@ -1346,7 +1360,7 @@ fn sugarcube_unclosed_block_macro_diagnostic() {
     let src = ":: Start\n<<if $x>>unclosed\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostics.iter()
+    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
     assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
@@ -1360,7 +1374,7 @@ fn sugarcube_nested_block_macros_no_false_unclosed() {
     let src = ":: Start\n<<if $x>>inner<<for _i to 0>><</for>><</if>>\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostics.iter()
+    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
     assert!(unclosed.is_empty(), "Properly nested different block macros should not produce unclosed diagnostics, got: {:?}", unclosed);
@@ -1372,7 +1386,7 @@ fn sugarcube_parse_error_diagnostic() {
     let src = ":: Start\n<<if $x>>no close tag\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostics.iter()
+    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
     assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
@@ -1458,12 +1472,12 @@ fn sugarcube_block_comment_parsing() {
     let src = ":: Start\n/% comment %/ visible text\n";
     let (.., pr) = sc_parse(src);
 
-    let parse_errors: Vec<_> = pr.diagnostics.iter()
+    let parse_errors: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-parse")
         .collect();
     assert!(parse_errors.is_empty(), "Block comment should not produce parse errors, got: {:?}", parse_errors);
 
-    let comment_toks: Vec<_> = pr.tokens.iter()
+    let comment_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
         .collect();
     assert!(!comment_toks.is_empty(), "Should produce comment semantic token");
@@ -1474,7 +1488,7 @@ fn sugarcube_html_comment_parsing() {
     let src = ":: Start\n<!-- HTML comment --> visible\n";
     let (.., pr) = sc_parse(src);
 
-    let comment_toks: Vec<_> = pr.tokens.iter()
+    let comment_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
         .collect();
     assert!(!comment_toks.is_empty(), "HTML comment should produce comment semantic token");
@@ -1508,12 +1522,12 @@ fn sugarcube_expression_macros() {
     let src = ":: Start\n<<=>>$gold>> coins.\n";
     let (.., pr) = sc_parse(src);
 
-    let parse_errors: Vec<_> = pr.diagnostics.iter()
+    let parse_errors: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-parse")
         .collect();
     assert!(parse_errors.is_empty(), "Expression macro <<=>>$gold>> should parse cleanly, got: {:?}", parse_errors);
 
-    let var_toks: Vec<_> = pr.tokens.iter()
+    let var_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Variable)
         .collect();
     assert!(!var_toks.is_empty(), "Should produce variable token for $gold in expression");
@@ -1796,8 +1810,8 @@ fn parse_with_format_plugin_sim(
         let doc = Document::new(uri.clone(), format);
         let result = crate::plugin::ParseResult {
             passages: Vec::new(),
-            tokens: Vec::new(),
-            diagnostics: Vec::new(),
+            token_groups: Vec::new(),
+            diagnostic_groups: Vec::new(),
             is_complete: false,
         };
         (doc, result)
@@ -1904,7 +1918,7 @@ fn sugarcube_deprecated_macro_token_modifier() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Find the macro name token for "click"
-    let click_tok = result.tokens.iter().find(|t| {
+    let click_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "click"
     });
@@ -1924,7 +1938,7 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
     let text = ":: Start\n<<link \"Go\" \"Forest\">>\n:: Forest\nTrees.\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let link_tok = result.tokens.iter().find(|t| {
+    let link_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "link"
     });
@@ -1944,7 +1958,7 @@ fn sugarcube_deprecated_macro_diagnostic() {
     let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let dep_diag = result.diagnostics.iter().find(|d| d.code == "sc-deprecated");
+    let dep_diag = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).find(|d| d.code == "sc-deprecated");
     assert!(dep_diag.is_some(), "Should have a deprecation diagnostic for <<click>>");
     let diag = dep_diag.unwrap();
     assert_eq!(diag.severity, FormatDiagnosticSeverity::Hint);
@@ -1962,7 +1976,7 @@ fn sugarcube_display_deprecated_diagnostic() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Check token modifier
-    let display_tok = result.tokens.iter().find(|t| {
+    let display_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "display"
     });
@@ -1970,7 +1984,7 @@ fn sugarcube_display_deprecated_diagnostic() {
     assert_eq!(display_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated));
 
     // Check diagnostic
-    let dep_diag = result.diagnostics.iter().find(|d| d.code == "sc-deprecated");
+    let dep_diag = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).find(|d| d.code == "sc-deprecated");
     assert!(dep_diag.is_some(), "Should have deprecation diagnostic for <<display>>");
     assert!(dep_diag.unwrap().message.contains("<<include>>"), "Should suggest <<include>>");
 }
@@ -1985,7 +1999,7 @@ fn sugarcube_set_not_deprecated() {
     let text = ":: Start\n<<set $x to 5>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let set_tok = result.tokens.iter().find(|t| {
+    let set_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "set"
     });
@@ -1993,7 +2007,7 @@ fn sugarcube_set_not_deprecated() {
     assert_ne!(set_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated),
         "<<set>> should NOT have Deprecated modifier");
 
-    let dep_diags: Vec<_> = result.diagnostics.iter().filter(|d| d.code == "sc-deprecated").collect();
+    let dep_diags: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).filter(|d| d.code == "sc-deprecated").collect();
     assert!(dep_diags.is_empty(), "Should have no deprecation diagnostics for <<set>>");
 }
 
@@ -2013,7 +2027,7 @@ fn sugarcube_capture_target_variable_definition_token() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Find a Variable token with Definition modifier covering "$target"
-    let target_tok = result.tokens.iter().find(|t| {
+    let target_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Variable
             && tok_text == "$target"
@@ -2036,7 +2050,7 @@ fn sugarcube_for_loop_vars_tokens() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Check _i token: Variable + Definition
-    let index_tok = result.tokens.iter().find(|t| {
+    let index_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Variable
             && tok_text == "_i"
@@ -2046,7 +2060,7 @@ fn sugarcube_for_loop_vars_tokens() {
         "<<for _i, $items>> should emit Variable+Definition token for _i");
 
     // Check $items token: Variable with no modifier
-    let iter_tok = result.tokens.iter().find(|t| {
+    let iter_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Variable
             && tok_text == "$items"
@@ -2071,7 +2085,7 @@ fn sugarcube_for_c_style_no_phase5_tokens() {
     // for_loop_vars (since for_loop_vars is None for C-style).
     // Note: _i may still appear via var_refs as a plain Variable token
     // (no modifier), but NOT as Variable+Definition from Phase 5.
-    let index_def_tok = result.tokens.iter().find(|t| {
+    let index_def_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Variable
             && tok_text == "_i"
@@ -2092,7 +2106,7 @@ fn sugarcube_widget_definition_name_token() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Find a Function token with Definition modifier covering "myHelper"
-    let def_tok = result.tokens.iter().find(|t| {
+    let def_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Function
             && tok_text == "myHelper"
@@ -2112,7 +2126,7 @@ fn sugarcube_capture_temp_variable_token() {
     let text = ":: Start\n<<capture _temp>>Captured!<</capture>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let temp_tok = result.tokens.iter().find(|t| {
+    let temp_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Variable
             && tok_text == "_temp"
@@ -2138,7 +2152,7 @@ fn sugarcube_link_inline_no_close_tag() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Inline form should NOT produce unclosed-block diagnostics
-    let unclosed: Vec<_> = result.diagnostics.iter()
+    let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
     assert!(unclosed.is_empty(),
@@ -2157,7 +2171,7 @@ fn sugarcube_link_block_with_close_tag() {
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Block form should not produce errors
-    let errors: Vec<_> = result.diagnostics.iter()
+    let errors: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code != "sc-deprecated")
         .collect();
     assert!(errors.is_empty(),
@@ -2174,7 +2188,7 @@ fn sugarcube_button_inline_no_close_tag() {
     let text = ":: Start\n<<button \"Go\" \"Room\">>After\n:: Room\nHello\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let unclosed: Vec<_> = result.diagnostics.iter()
+    let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
     assert!(unclosed.is_empty(),
