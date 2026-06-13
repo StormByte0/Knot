@@ -3,6 +3,7 @@
 use crate::handlers::helpers;
 use crate::lsp_ext::{KnotClientReadyParams, KnotClientReadyResponse, KnotFormatSwitchCompleteParams, KnotFormatSwitchCompleteResponse};
 use crate::state::ServerState;
+use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
 use std::time::Duration;
 
@@ -118,38 +119,14 @@ pub(crate) async fn initialize(
                 SemanticTokensOptions {
                     work_done_progress_options: Default::default(),
                     legend: SemanticTokensLegend {
-                        token_types: vec![
-                            // ── Passage structure ──────────────────────────
-                            SemanticTokenType::new("passageHeader"),         // 0  — :: prefix on regular passages
-                            SemanticTokenType::new("passageName"),           // 1  — passage name on regular passages
-                            SemanticTokenType::new("link"),                  // 2  — passage name in [[links]]
-                            SemanticTokenType::new("passageRef"),            // 3  — implicit passage refs
-                            SemanticTokenType::new("specialPassageHeader"),  // 4  — :: prefix on special passages
-                            SemanticTokenType::new("specialPassage"),        // 5  — passage name on special passages
-                            SemanticTokenType::new("tag"),                   // 6  — passage tags
-                            // ── Code constructs ───────────────────────────
-                            SemanticTokenType::new("macro"),                 // 7  — macro name
-                            SemanticTokenType::new("function"),              // 8  — widget/function definition
-                            SemanticTokenType::new("variable"),              // 9  — $variable
-                            SemanticTokenType::new("keyword"),               // 10 — format keywords
-                            SemanticTokenType::new("boolean"),               // 11 — true/false
-                            SemanticTokenType::new("number"),                // 12 — numeric literals
-                            SemanticTokenType::new("string"),                // 13 — string literals
-                            SemanticTokenType::new("comment"),               // 14 — comments
-                            SemanticTokenType::new("operator"),              // 15 — format-specific operators
-                            // ── Object model ──────────────────────────────
-                            SemanticTokenType::new("namespace"),             // 16 — global objects (State, Engine)
-                            SemanticTokenType::new("property"),              // 17 — object properties
-                        ],
-                        token_modifiers: vec![
-                            lsp_types::SemanticTokenModifier::DEFINITION,    // bit 0
-                            lsp_types::SemanticTokenModifier::READONLY,      // bit 1
-                            lsp_types::SemanticTokenModifier::DEPRECATED,    // bit 2
-                            lsp_types::SemanticTokenModifier::new("controlFlow"), // bit 3
-                            lsp_types::SemanticTokenModifier::STATIC,        // bit 4 — TwineCore layer scope
-                            lsp_types::SemanticTokenModifier::ASYNC,         // bit 5 — StoryFormat layer scope
-                            lsp_types::SemanticTokenModifier::MODIFICATION,  // bit 6 — UserDefined layer scope
-                        ],
+                        token_types: fmt_plugin::SemanticTokenType::all_types()
+                            .iter()
+                            .map(|t| lsp_types::SemanticTokenType::new(t.lsp_name()))
+                            .collect(),
+                        token_modifiers: fmt_plugin::SemanticTokenModifier::all_modifiers()
+                            .iter()
+                            .map(|m| lsp_types::SemanticTokenModifier::new(m.lsp_name()))
+                            .collect(),
                     },
                     range: Some(false),
                     full: Some(SemanticTokensFullOptions::Bool(true)),

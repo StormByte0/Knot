@@ -1,6 +1,6 @@
 {
   "name": "knot",
-  "displayName": "Knot — Twine IDE",
+  "displayName": "Knot \u2014 Twine IDE",
   "description": "Next-generation IDE for Twine and Twee projects",
   "version": "2.0.0",
   "publisher": "stormbyte",
@@ -429,116 +429,366 @@
         "_comment": "All five language IDs use identical scopes so that semantic tokens render with the same colors regardless of which language ID is active. This prevents visual inconsistency when the formatDetected notification switches language IDs after workspace indexing. Format-specific TextMate grammars handle syntax pattern differences independently.",
         "language": "twee",
         "scopes": {
-          "passageHeader": ["entity.name.section.passage.twee"],
-          "passageName": ["entity.name.passage.twee"],
-          "specialPassageHeader": ["punctuation.definition.passage.special.twee"],
-          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
-          "link": ["markup.underline.link.passage.twee"],
-          "macro": ["support.function.macro.twee"],
-          "function": ["entity.name.function.widget.twee"],
-          "variable": ["variable.other.readwrite.twee"],
-          "string": ["string.unquoted.twee"],
-          "number": ["constant.numeric.twee"],
-          "comment": ["comment.block.twee"],
-          "operator": ["keyword.operator.assignment.twee"],
-          "namespace": ["support.constant.global-object.twee"],
-          "property": ["variable.other.property.twee"],
-          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
-          "keyword": ["keyword.control.twee"],
-          "boolean": ["constant.language.boolean.twee"],
-          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+          "passageHeader": [
+            "entity.name.section.passage.twee"
+          ],
+          "passageName": [
+            "entity.name.passage.twee"
+          ],
+          "specialPassageHeader": [
+            "punctuation.definition.passage.special.twee"
+          ],
+          "specialPassage": [
+            "entity.name.section.special-passage.twee",
+            "markup.bold.entity.name.section.twee"
+          ],
+          "link": [
+            "markup.underline.link.passage.twee"
+          ],
+          "macro": [
+            "support.function.macro.twee"
+          ],
+          "function": [
+            "entity.name.function.widget.twee"
+          ],
+          "variable": [
+            "variable.other.readwrite.twee"
+          ],
+          "string": [
+            "string.unquoted.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ],
+          "operator": [
+            "keyword.operator.assignment.twee"
+          ],
+          "namespace": [
+            "support.constant.global-object.twee"
+          ],
+          "property": [
+            "variable.other.property.twee"
+          ],
+          "tag": [
+            "meta.decorator.tag.twee",
+            "entity.other.attribute-name.twee"
+          ],
+          "keyword": [
+            "keyword.control.twee"
+          ],
+          "boolean": [
+            "constant.language.boolean.twee"
+          ],
+          "passageRef": [
+            "support.function.passage-ref.twee",
+            "string.interpolated.passage-ref.twee"
+          ],
+          "prose": [
+            "markup.prose.twee",
+            "string.other.prose.twee"
+          ],
+          "inlineStyle": [
+            "entity.other.attribute-name.class.twee"
+          ],
+          "textFormat": [
+            "markup.bold.twee",
+            "markup.italic.twee"
+          ]
         }
       },
       {
         "language": "twee-sugarcube",
         "scopes": {
-          "passageHeader": ["entity.name.section.passage.twee"],
-          "passageName": ["entity.name.passage.twee"],
-          "specialPassageHeader": ["punctuation.definition.passage.special.twee"],
-          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
-          "link": ["markup.underline.link.passage.twee"],
-          "macro": ["support.function.macro.twee"],
-          "function": ["entity.name.function.widget.twee"],
-          "variable": ["variable.other.readwrite.twee"],
-          "string": ["string.unquoted.twee"],
-          "number": ["constant.numeric.twee"],
-          "comment": ["comment.block.twee"],
-          "operator": ["keyword.operator.assignment.twee"],
-          "namespace": ["support.constant.global-object.twee"],
-          "property": ["variable.other.property.twee"],
-          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
-          "keyword": ["keyword.control.twee"],
-          "boolean": ["constant.language.boolean.twee"],
-          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+          "passageHeader": [
+            "entity.name.section.passage.twee"
+          ],
+          "passageName": [
+            "entity.name.passage.twee"
+          ],
+          "specialPassageHeader": [
+            "punctuation.definition.passage.special.twee"
+          ],
+          "specialPassage": [
+            "entity.name.section.special-passage.twee",
+            "markup.bold.entity.name.section.twee"
+          ],
+          "link": [
+            "markup.underline.link.passage.twee"
+          ],
+          "macro": [
+            "support.function.macro.twee"
+          ],
+          "function": [
+            "entity.name.function.widget.twee"
+          ],
+          "variable": [
+            "variable.other.readwrite.twee"
+          ],
+          "string": [
+            "string.unquoted.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ],
+          "operator": [
+            "keyword.operator.assignment.twee"
+          ],
+          "namespace": [
+            "support.constant.global-object.twee"
+          ],
+          "property": [
+            "variable.other.property.twee"
+          ],
+          "tag": [
+            "meta.decorator.tag.twee",
+            "entity.other.attribute-name.twee"
+          ],
+          "keyword": [
+            "keyword.control.twee"
+          ],
+          "boolean": [
+            "constant.language.boolean.twee"
+          ],
+          "passageRef": [
+            "support.function.passage-ref.twee",
+            "string.interpolated.passage-ref.twee"
+          ],
+          "prose": [
+            "markup.prose.twee",
+            "string.other.prose.twee"
+          ],
+          "inlineStyle": [
+            "entity.other.attribute-name.class.twee"
+          ],
+          "textFormat": [
+            "markup.bold.twee",
+            "markup.italic.twee"
+          ]
         }
       },
       {
         "language": "twee-harlowe",
         "scopes": {
-          "passageHeader": ["entity.name.section.passage.twee"],
-          "passageName": ["entity.name.passage.twee"],
-          "specialPassageHeader": ["punctuation.definition.passage.special.twee"],
-          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
-          "link": ["markup.underline.link.passage.twee"],
-          "macro": ["support.function.macro.twee"],
-          "function": ["entity.name.function.widget.twee"],
-          "variable": ["variable.other.readwrite.twee"],
-          "string": ["string.unquoted.twee"],
-          "number": ["constant.numeric.twee"],
-          "comment": ["comment.block.twee"],
-          "operator": ["keyword.operator.assignment.twee"],
-          "namespace": ["support.constant.global-object.twee"],
-          "property": ["variable.other.property.twee"],
-          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
-          "keyword": ["keyword.control.twee"],
-          "boolean": ["constant.language.boolean.twee"],
-          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+          "passageHeader": [
+            "entity.name.section.passage.twee"
+          ],
+          "passageName": [
+            "entity.name.passage.twee"
+          ],
+          "specialPassageHeader": [
+            "punctuation.definition.passage.special.twee"
+          ],
+          "specialPassage": [
+            "entity.name.section.special-passage.twee",
+            "markup.bold.entity.name.section.twee"
+          ],
+          "link": [
+            "markup.underline.link.passage.twee"
+          ],
+          "macro": [
+            "support.function.macro.twee"
+          ],
+          "function": [
+            "entity.name.function.widget.twee"
+          ],
+          "variable": [
+            "variable.other.readwrite.twee"
+          ],
+          "string": [
+            "string.unquoted.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ],
+          "operator": [
+            "keyword.operator.assignment.twee"
+          ],
+          "namespace": [
+            "support.constant.global-object.twee"
+          ],
+          "property": [
+            "variable.other.property.twee"
+          ],
+          "tag": [
+            "meta.decorator.tag.twee",
+            "entity.other.attribute-name.twee"
+          ],
+          "keyword": [
+            "keyword.control.twee"
+          ],
+          "boolean": [
+            "constant.language.boolean.twee"
+          ],
+          "passageRef": [
+            "support.function.passage-ref.twee",
+            "string.interpolated.passage-ref.twee"
+          ],
+          "prose": [
+            "markup.prose.twee",
+            "string.other.prose.twee"
+          ],
+          "inlineStyle": [
+            "entity.other.attribute-name.class.twee"
+          ],
+          "textFormat": [
+            "markup.bold.twee",
+            "markup.italic.twee"
+          ]
         }
       },
       {
         "language": "twee-chapbook",
         "scopes": {
-          "passageHeader": ["entity.name.section.passage.twee"],
-          "passageName": ["entity.name.passage.twee"],
-          "specialPassageHeader": ["punctuation.definition.passage.special.twee"],
-          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
-          "link": ["markup.underline.link.passage.twee"],
-          "macro": ["support.function.macro.twee"],
-          "function": ["entity.name.function.widget.twee"],
-          "variable": ["variable.other.readwrite.twee"],
-          "string": ["string.unquoted.twee"],
-          "number": ["constant.numeric.twee"],
-          "comment": ["comment.block.twee"],
-          "operator": ["keyword.operator.assignment.twee"],
-          "namespace": ["support.constant.global-object.twee"],
-          "property": ["variable.other.property.twee"],
-          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
-          "keyword": ["keyword.control.twee"],
-          "boolean": ["constant.language.boolean.twee"],
-          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+          "passageHeader": [
+            "entity.name.section.passage.twee"
+          ],
+          "passageName": [
+            "entity.name.passage.twee"
+          ],
+          "specialPassageHeader": [
+            "punctuation.definition.passage.special.twee"
+          ],
+          "specialPassage": [
+            "entity.name.section.special-passage.twee",
+            "markup.bold.entity.name.section.twee"
+          ],
+          "link": [
+            "markup.underline.link.passage.twee"
+          ],
+          "macro": [
+            "support.function.macro.twee"
+          ],
+          "function": [
+            "entity.name.function.widget.twee"
+          ],
+          "variable": [
+            "variable.other.readwrite.twee"
+          ],
+          "string": [
+            "string.unquoted.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ],
+          "operator": [
+            "keyword.operator.assignment.twee"
+          ],
+          "namespace": [
+            "support.constant.global-object.twee"
+          ],
+          "property": [
+            "variable.other.property.twee"
+          ],
+          "tag": [
+            "meta.decorator.tag.twee",
+            "entity.other.attribute-name.twee"
+          ],
+          "keyword": [
+            "keyword.control.twee"
+          ],
+          "boolean": [
+            "constant.language.boolean.twee"
+          ],
+          "passageRef": [
+            "support.function.passage-ref.twee",
+            "string.interpolated.passage-ref.twee"
+          ],
+          "prose": [
+            "markup.prose.twee",
+            "string.other.prose.twee"
+          ],
+          "inlineStyle": [
+            "entity.other.attribute-name.class.twee"
+          ],
+          "textFormat": [
+            "markup.bold.twee",
+            "markup.italic.twee"
+          ]
         }
       },
       {
         "language": "twee-snowman",
         "scopes": {
-          "passageHeader": ["entity.name.section.passage.twee"],
-          "passageName": ["entity.name.passage.twee"],
-          "specialPassageHeader": ["punctuation.definition.passage.special.twee"],
-          "specialPassage": ["entity.name.section.special-passage.twee", "markup.bold.entity.name.section.twee"],
-          "link": ["markup.underline.link.passage.twee"],
-          "macro": ["support.function.macro.twee"],
-          "function": ["entity.name.function.widget.twee"],
-          "variable": ["variable.other.readwrite.twee"],
-          "string": ["string.unquoted.twee"],
-          "number": ["constant.numeric.twee"],
-          "comment": ["comment.block.twee"],
-          "operator": ["keyword.operator.assignment.twee"],
-          "namespace": ["support.constant.global-object.twee"],
-          "property": ["variable.other.property.twee"],
-          "tag": ["meta.decorator.tag.twee", "entity.other.attribute-name.twee"],
-          "keyword": ["keyword.control.twee"],
-          "boolean": ["constant.language.boolean.twee"],
-          "passageRef": ["support.function.passage-ref.twee", "string.interpolated.passage-ref.twee"]
+          "passageHeader": [
+            "entity.name.section.passage.twee"
+          ],
+          "passageName": [
+            "entity.name.passage.twee"
+          ],
+          "specialPassageHeader": [
+            "punctuation.definition.passage.special.twee"
+          ],
+          "specialPassage": [
+            "entity.name.section.special-passage.twee",
+            "markup.bold.entity.name.section.twee"
+          ],
+          "link": [
+            "markup.underline.link.passage.twee"
+          ],
+          "macro": [
+            "support.function.macro.twee"
+          ],
+          "function": [
+            "entity.name.function.widget.twee"
+          ],
+          "variable": [
+            "variable.other.readwrite.twee"
+          ],
+          "string": [
+            "string.unquoted.twee"
+          ],
+          "number": [
+            "constant.numeric.twee"
+          ],
+          "comment": [
+            "comment.block.twee"
+          ],
+          "operator": [
+            "keyword.operator.assignment.twee"
+          ],
+          "namespace": [
+            "support.constant.global-object.twee"
+          ],
+          "property": [
+            "variable.other.property.twee"
+          ],
+          "tag": [
+            "meta.decorator.tag.twee",
+            "entity.other.attribute-name.twee"
+          ],
+          "keyword": [
+            "keyword.control.twee"
+          ],
+          "boolean": [
+            "constant.language.boolean.twee"
+          ],
+          "passageRef": [
+            "support.function.passage-ref.twee",
+            "string.interpolated.passage-ref.twee"
+          ],
+          "prose": [
+            "markup.prose.twee",
+            "string.other.prose.twee"
+          ],
+          "inlineStyle": [
+            "entity.other.attribute-name.class.twee"
+          ],
+          "textFormat": [
+            "markup.bold.twee",
+            "markup.italic.twee"
+          ]
         }
       }
     ],

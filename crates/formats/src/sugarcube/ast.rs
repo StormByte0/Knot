@@ -296,6 +296,8 @@ pub enum LinkKind {
     ArrowLeft,
     /// Setter link: [[Target][$var to value]]
     Setter,
+    /// Image link: [[img[URL][Passage]] — clickable image linking to a passage
+    Image,
 }
 
 // ---------------------------------------------------------------------------
@@ -358,6 +360,27 @@ impl LinkSource {
 }
 
 // ---------------------------------------------------------------------------
+// Text formatting kind
+// ---------------------------------------------------------------------------
+
+/// The kind of SugarCube text formatting markup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFormatKind {
+    /// `''bold''` → `<strong>`
+    Bold,
+    /// `//italic//` → `<em>`
+    Italic,
+    /// `__underline__` → `<u>`
+    Underline,
+    /// `==strike==` → `<s>`
+    Strike,
+    /// `~~sub~~` → `<sub>`
+    Sub,
+    /// `^^super^^` → `<sup>`
+    Super,
+}
+
+// ---------------------------------------------------------------------------
 // Expression kind
 // ---------------------------------------------------------------------------
 
@@ -384,6 +407,8 @@ pub enum ExprKind {
 pub enum SetOperator {
     /// `to` keyword (SugarCube-specific assignment)
     To,
+    /// `into` keyword (SugarCube-specific reverse assignment: value into variable)
+    Into,
     /// `=` operator
     Eq,
     /// `+=` operator
@@ -529,6 +554,15 @@ pub enum AstNode {
     ///
     /// May contain `$var` and `_var` references that were extracted
     /// from the text gap — these are inline variable reads.
+    ///
+    /// The `is_prose` flag indicates whether this text is narrative/story
+    /// content (rendered to the player) vs. non-prose text (inside
+    /// `<<silently>>`, `<<script>>`, `<<style>>`, or other non-rendering
+    /// contexts). Top-level text in a passage body is always prose.
+    /// Text inside block macros like `<<if>>`, `<<for>>`, `<<nobr>>`,
+    /// `<<capture>>`, `<<type>>` is also prose, because those macros
+    /// render their body content. Text inside `<<silently>>`,
+    /// `<<script>>`, or `<<style>>` is NOT prose.
     Text {
         /// The text content.
         content: String,
@@ -536,6 +570,13 @@ pub enum AstNode {
         var_refs: Vec<VarRef>,
         /// Byte range in the passage body.
         span: Range<usize>,
+        /// Whether this text is prose (narrative content rendered to the player).
+        ///
+        /// Prose text gets a `Prose` semantic token, enabling themes to
+        /// style narrative content distinctly from code/comments. Non-prose
+        /// text (inside `<<silently>>`, `<<script>>`, `<<style>>`) does not
+        /// get a prose token.
+        is_prose: bool,
     },
 
     /// A macro invocation: `<<name args>>` or `<<name args>>...<</name>>`.
@@ -639,10 +680,12 @@ pub enum AstNode {
         display: Option<String>,
         /// Target passage name.
         target: String,
-        /// How the link was formatted (pipe, arrow, simple, setter).
+        /// How the link was formatted (pipe, arrow, simple, setter, image).
         kind: LinkKind,
         /// For setter links: the setter variable name (e.g., `$var`).
         setter_var: Option<String>,
+        /// For image links: the image URL (e.g., `http://example.com/pic.jpg`).
+        image_url: Option<String>,
         /// Byte range of the entire link construct.
         span: Range<usize>,
     },
@@ -654,6 +697,33 @@ pub enum AstNode {
         /// What kind of comment this is.
         kind: CommentKind,
         /// Byte range of the entire comment including delimiters.
+        span: Range<usize>,
+    },
+
+    /// SugarCube inline styling: `@@class;text@@` or `@class;text@`.
+    ///
+    /// Produces `<span class="class">text</span>` in the rendered output.
+    /// The `children` contain the parsed body content (Text nodes with prose,
+    /// variable references, etc.). The `class` field holds the CSS class(es).
+    InlineStyle {
+        /// CSS class name(s) — e.g., ".highlight", ".red;.bold"
+        class: String,
+        /// Byte range of the class name within the passage body.
+        class_span: Range<usize>,
+        /// Parsed body content (Text nodes, variable refs, etc.)
+        children: Vec<AstNode>,
+        /// Byte range of the entire inline style construct.
+        span: Range<usize>,
+    },
+
+    /// SugarCube text formatting markup: `''bold''`, `//italic//`, `__underline__`,
+    /// `==strike==`, `~~sub~~`, `^^super^^`.
+    TextFormat {
+        /// What kind of formatting this is.
+        kind: TextFormatKind,
+        /// The formatted text content.
+        content: String,
+        /// Byte range of the entire formatting construct including delimiters.
         span: Range<usize>,
     },
 

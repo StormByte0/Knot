@@ -158,7 +158,23 @@ pub fn build_semantic_tokens(
                     modifier: None,
                 });
             }
-            ast::AstNode::Expression { js_analysis, var_refs, .. } => {
+            ast::AstNode::Expression { kind, js_analysis, var_refs, span, .. } => {
+                // Emit a Macro token for the expression sigil (= or -) so
+                // it's visually consistent with <<print>> getting a Macro token.
+                // The sigil is at span.start + 2 (after the opening <<).
+                let sigil_offset = body_offset_in_passage + span.start + 2;
+                let modifier = match kind {
+                    ast::ExprKind::Print => None,
+                    // Silent expressions suppress output — use ControlFlow to
+                    // signal that visually.
+                    ast::ExprKind::Silent => Some(SemanticTokenModifier::ControlFlow),
+                };
+                tokens.push(SemanticToken {
+                    start: sigil_offset,
+                    length: 1,
+                    token_type: SemanticTokenType::Macro,
+                    modifier,
+                });
                 // Variable references: prefer js_analysis, fallback to var_refs
                 if let Some(analysis) = js_analysis {
                     for op in &analysis.var_ops {
@@ -193,7 +209,20 @@ pub fn build_semantic_tokens(
                     modifier: None,
                 });
             }
-            ast::AstNode::Text { var_refs, .. } => {
+            ast::AstNode::Text { var_refs, span, is_prose, .. } => {
+                // Emit a Prose token for the entire text span if it's narrative content.
+                // This enables themes to style story prose distinctly from code/comments.
+                // Non-prose text (inside <<silently>>, <<script>>, <<style>>) does not
+                // get a prose token — it's just unhighlighted text.
+                if *is_prose {
+                    tokens.push(SemanticToken {
+                        start: body_offset_in_passage + span.start,
+                        length: span.end - span.start,
+                        token_type: SemanticTokenType::Prose,
+                        modifier: None,
+                    });
+                }
+                // Variable references inside text still get Variable tokens
                 for vr in var_refs {
                     tokens.push(SemanticToken {
                         start: body_offset_in_passage + vr.span.start,
@@ -204,6 +233,26 @@ pub fn build_semantic_tokens(
                 }
             }
             ast::AstNode::Error { .. } => {}
+            // Inline styling: emit InlineStyle token for the class name,
+            // then recurse into children for prose/variable tokens.
+            ast::AstNode::InlineStyle { class_span, children, .. } => {
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + class_span.start,
+                    length: class_span.end - class_span.start,
+                    token_type: SemanticTokenType::InlineStyle,
+                    modifier: None,
+                });
+                build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names);
+            }
+            // Text formatting markup: emit TextFormat token for the construct
+            ast::AstNode::TextFormat { span, .. } => {
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: span.end - span.start,
+                    token_type: SemanticTokenType::TextFormat,
+                    modifier: None,
+                });
+            }
             // MacroClose nodes are consumed by the tree builder and should not
             // appear in the final AST. If one slips through, skip it.
             ast::AstNode::MacroClose { .. } => {}

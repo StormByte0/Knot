@@ -47,6 +47,7 @@ pub fn describe_variable_sigil(sigil: char) -> Option<&'static str> {
 pub fn operator_normalization() -> Vec<OperatorNormalization> {
     vec![
         OperatorNormalization { from: "to",    to: "=" },
+        OperatorNormalization { from: "into",  to: "=" },
         OperatorNormalization { from: "eq",    to: "===" },
         OperatorNormalization { from: "neq",   to: "!==" },
         OperatorNormalization { from: "is",    to: "===" },
@@ -80,7 +81,7 @@ pub fn operator_precedence() -> Vec<(&'static str, u8)> {
 
 /// SugarCube assignment operators.
 pub fn assignment_operators() -> Vec<&'static str> {
-    vec!["to", "="]
+    vec!["to", "into", "="]
 }
 
 /// SugarCube comparison operators.

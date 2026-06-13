@@ -559,4 +559,70 @@ mod tests {
             js_errors
         );
     }
+
+    #[test]
+    fn validate_set_multiline_object_with_block_comments() {
+        // Regression test: <<set>> with a multiline object literal containing
+        // /* ... */ block comments must NOT produce "Unterminated multiline comment".
+        // The comments are valid JS and oxc must recognize the closing */.
+        let body = r#"<<set $gs = {
+  /* -- TIME ----------------------------------------------------
+     week: int
+  */
+  time: { week: 0 },
+  /* -- SCENE ---------------------------------------------------
+     id: string
+  */
+  scene: { id: "test" },
+  /* -- JOURNAL -------------------------------------------------
+     Quest tracker. Used by <<questLog>> and <<questStatus>>
+  */
+  journal: { quests: [] }
+}>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        for e in &js_errors {
+            eprintln!("JS error: {:?} range={:?}", e.message, e.range);
+        }
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for <<set>> with block comments in object literal, got: {:?}",
+            js_errors
+        );
+    }
+
+    #[test]
+    fn validate_special_twee_no_false_unterminated_comment() {
+        // Regression test: _special.twee contains a large <<set $gs = { ... }>>
+        // with many /* ... */ block comments, some containing <<macro>> refs
+        // (which have >> inside comments). The parser must correctly skip these
+        // comments and oxc must not report "Unterminated multiline comment".
+        let content = include_str!("../../../testdata/_special.twee");
+        // Strip the ::StoryInit header
+        let body = if content.starts_with("::") {
+            &content[content.find('\n').unwrap_or(0) + 1..]
+        } else {
+            content
+        };
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0);
+
+        let unterminated: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js" && d.message.to_lowercase().contains("unterminated"))
+            .collect();
+        for e in &unterminated {
+            eprintln!("Unterminated comment diag: {:?} range={:?}", e.message, e.range);
+        }
+        assert!(
+            unterminated.is_empty(),
+            "Expected no 'unterminated comment' diagnostics for _special.twee, got: {:?}",
+            unterminated
+        );
+    }
 }

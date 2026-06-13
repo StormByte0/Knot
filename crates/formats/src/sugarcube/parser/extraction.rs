@@ -307,6 +307,11 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
     let mut i = 0usize;
     let mut strings_found = 0usize;
 
+    // Helper: advance by full UTF-8 character
+    let advance = |pos: usize| -> usize {
+        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
+    };
+
     // Skip past the quoted string args
     while i < len && strings_found < num_string_args {
         while i < len && bytes[i] == b' ' {
@@ -322,7 +327,7 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
                 if bytes[i] == b'\\' && i + 1 < len {
                     i += 2;
                 } else {
-                    i += 1;
+                    i += advance(i);
                 }
             }
             if i < len {
@@ -330,9 +335,9 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
             }
             strings_found += 1;
         } else {
-            // Non-string token — skip
+            // Non-string token — skip (advance by UTF-8 char)
             while i < len && bytes[i] != b' ' {
-                i += 1;
+                i += advance(i);
             }
         }
     }
@@ -353,7 +358,7 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
                 if bytes[i] == b'\\' && i + 1 < len {
                     i += 2;
                 } else {
-                    i += 1;
+                    i += advance(i);
                 }
             }
             if i < len {
@@ -363,7 +368,7 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
             // Bare token
             let start = i;
             while i < len && bytes[i] != b' ' {
-                i += 1;
+                i += advance(i);
             }
             let token = args[start..i].to_string();
             if !token.is_empty() {
@@ -385,6 +390,11 @@ pub fn extract_string_args(args: &str) -> Vec<String> {
     let len = bytes.len();
     let mut i = 0usize;
 
+    // Helper: advance by full UTF-8 character
+    let advance = |pos: usize| -> usize {
+        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
+    };
+
     while i < len {
         // Skip whitespace
         while i < len && bytes[i] == b' ' {
@@ -403,7 +413,7 @@ pub fn extract_string_args(args: &str) -> Vec<String> {
                 if bytes[i] == b'\\' && i + 1 < len {
                     i += 2; // skip escaped char
                 } else {
-                    i += 1;
+                    i += advance(i);
                 }
             }
             let content = args[start..i].to_string();
@@ -414,7 +424,7 @@ pub fn extract_string_args(args: &str) -> Vec<String> {
         } else {
             // Non-string token — skip to next whitespace or end
             while i < len && bytes[i] != b' ' {
-                i += 1;
+                i += advance(i);
             }
         }
     }
@@ -478,7 +488,8 @@ pub fn extract_data_passage_refs(body: &str) -> Vec<LinkInfo> {
                     i += 1; // skip opening quote
                     let value_start = i;
                     while i < len && bytes[i] != quote {
-                        i += 1;
+                        // Advance by full UTF-8 character to avoid mid-char slicing.
+                        i += stripped[i..].chars().next().map_or(1, |c| c.len_utf8());
                     }
                     let value = stripped[value_start..i].to_string();
                     if i < len {
@@ -499,7 +510,8 @@ pub fn extract_data_passage_refs(body: &str) -> Vec<LinkInfo> {
             // being rendered. We don't create a link for this since the
             // target is dynamic (the current passage at render time).
         } else {
-            i += 1;
+            // Advance by full UTF-8 character to stay on char boundaries.
+            i += stripped[i..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
 

@@ -71,7 +71,8 @@ pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
                     i += 2;
                     break;
                 }
-                i += 1;
+                // Advance by full UTF-8 character to avoid mid-char position.
+                i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -80,7 +81,8 @@ pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
         if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
             i += 2;
             while i < len && bytes[i] != b'\n' {
-                i += 1;
+                // Advance by full UTF-8 character to avoid mid-char position.
+                i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -104,13 +106,15 @@ pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
                 refs.push(vr);
                 i = end;
             } else {
-                i += 1;
+                // Advance by full UTF-8 character to avoid mid-char position.
+                i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
             }
         } else if bytes[i] == b'$' && i + 1 < len && bytes[i + 1] == b'$' {
             // $$ — escaped dollar, skip
             i += 2;
         } else {
-            i += 1;
+            // Advance by full UTF-8 character to avoid mid-char position.
+            i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
 

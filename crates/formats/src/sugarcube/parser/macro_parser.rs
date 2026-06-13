@@ -270,7 +270,9 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
             continue;
         }
         if in_single_quote || in_double_quote {
-            *i += 1;
+            // Advance by full UTF-8 character to avoid landing inside
+            // a multi-byte sequence, which would cause a panic on slicing.
+            *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             continue;
         }
 
@@ -284,7 +286,8 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
                     *i += 2; // Skip */
                     break;
                 }
-                *i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -295,7 +298,8 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
         if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'/' {
             *i += 2; // Skip //
             while *i < len && bytes[*i] != b'\n' {
-                *i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -324,7 +328,8 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
             continue;
         }
 
-        *i += 1;
+        // Advance by full UTF-8 character to avoid mid-char slicing.
+        *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
     }
 
     // Unclosed macro — everything is args
@@ -573,6 +578,7 @@ fn parse_for_loop_vars(args: &str, args_offset: usize) -> Option<ForLoopVars> {
 ///
 /// Supported patterns:
 /// - `<<set $hp to 100>>`     → target=$hp, op=To,     expr="100"
+/// - `<<set 100 into $hp>>`   → target=$hp, op=Into,   expr="100"
 /// - `<<set $hp = 100>>`      → target=$hp, op=Eq,     expr="100"
 /// - `<<set $hp += 10>>`      → target=$hp, op=PlusEq, expr="10"
 /// - `<<set $hp -= 5>>`       → target=$hp, op=MinusEq,expr="5"
@@ -592,6 +598,25 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
 
     if len == 0 {
         return None;
+    }
+
+    // Check for reverse-assignment form: `<<set expr into $var>>`
+    // In this form, `into` is a keyword and the target variable is on the RIGHT.
+    if let Some(into_pos) = find_into_keyword(args) {
+        let expr_part = args[..into_pos].trim();
+        let after_into = args[into_pos + 4..].trim(); // skip "into"
+        if let Some(target) = scan_set_target(after_into, args_offset + into_pos + 4 + (args[into_pos + 4..].len() - after_into.len())) {
+            if !expr_part.is_empty() {
+                return Some(SetAssignment {
+                    target,
+                    operator: SetOperator::Into,
+                    expression: Some(expr_part.to_string()),
+                    expression_span: Some(args_offset..args_offset + into_pos),
+                });
+            }
+        }
+        // `into` found but no valid target on the right — fall through
+        // to standard parsing (might be a false positive match).
     }
 
     // Must start with a variable reference ($var or _var)
@@ -733,6 +758,140 @@ fn is_to_keyword_boundary(args: &str, pos: usize) -> bool {
     bytes[after_to] == b' ' || bytes[after_to] == b'\t' || bytes[after_to] == b'\n'
 }
 
+/// Find the `into` keyword in a `<<set>>` args string.
+///
+/// Searches for `into` as a standalone keyword (word-boundary delimited)
+/// preceded by at least one whitespace character. Returns the byte position
+/// of the `i` in `into`, or `None` if not found.
+///
+/// This is used for the reverse-assignment form: `<<set 100 into $hp>>`.
+fn find_into_keyword(args: &str) -> Option<usize> {
+    let bytes = args.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Track whether we're inside a string literal
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i + 4 <= len {
+        let b = bytes[i];
+
+        // ── String tracking: skip content inside string literals ──
+        if b == b'\\' && i + 1 < len {
+            i += 2; // skip escaped char
+            continue;
+        }
+        if b == b'"' && !in_single_quote {
+            in_double_quote = !in_double_quote;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double_quote {
+            in_single_quote = !in_single_quote;
+            i += 1;
+            continue;
+        }
+        if in_single_quote || in_double_quote {
+            // Advance by full UTF-8 character
+            i += args[i..].chars().next().map_or(1, |c| c.len_utf8());
+            continue;
+        }
+
+        // ── Block comment: /* ... */ — skip entirely ──
+        // "into" inside a comment must NOT be matched as a keyword.
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2; // skip /*
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2; // skip */
+                    break;
+                }
+                // Advance by full UTF-8 character
+                i += args[i..].chars().next().map_or(1, |c| c.len_utf8());
+            }
+            continue;
+        }
+
+        // ── Line comment: // ... — skip to end of line ──
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2; // skip //
+            while i < len && bytes[i] != b'\n' {
+                // Advance by full UTF-8 character
+                i += args[i..].chars().next().map_or(1, |c| c.len_utf8());
+            }
+            continue;
+        }
+
+        // Only attempt the match at char boundaries where the byte is 'i'.
+        // Since "into" starts with an ASCII char, it can only begin at a
+        // char boundary. This also avoids slicing at positions inside
+        // multi-byte UTF-8 characters, which would panic.
+        if b == b'i' && &args[i..i + 4] == "into" {
+            // Must be preceded by whitespace (or be at start — unlikely for `into`)
+            let preceded_by_ws = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\r';
+            // Must be followed by whitespace or end-of-args
+            let followed_by_ws = i + 4 >= len || bytes[i + 4] == b' ' || bytes[i + 4] == b'\t' || bytes[i + 4] == b'\n' || bytes[i + 4] == b'\r';
+            if preceded_by_ws && followed_by_ws {
+                return Some(i);
+            }
+        }
+        // Advance by full UTF-8 character to stay on char boundaries.
+        i += args[i..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+    None
+}
+
+/// Scan a set-assignment target variable from the start of a string.
+///
+/// Used by the `into` reverse-assignment parser to extract the target
+/// variable on the right side. Returns `None` if the string doesn't
+/// start with a valid `$var` or `_var`.
+fn scan_set_target(text: &str, offset: usize) -> Option<VarRef> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if len == 0 {
+        return None;
+    }
+
+    let is_story_var = bytes[0] == b'$' && len > 1 && is_ident_start(bytes[1]);
+    let is_temp_var = bytes[0] == b'_' && len > 1 && is_ident_start(bytes[1]);
+
+    if !is_story_var && !is_temp_var {
+        return None;
+    }
+
+    let mut vi = 1usize;
+    while vi < len && is_var_ident_char(bytes[vi]) {
+        vi += 1;
+    }
+
+    // Scan dot-notation property path
+    let path_start = vi;
+    let mut property_path = String::new();
+    while vi < len && bytes[vi] == b'.' {
+        vi += 1;
+        let prop_start = vi;
+        while vi < len && is_var_ident_char(bytes[vi]) {
+            vi += 1;
+        }
+        if vi > prop_start {
+            if !property_path.is_empty() {
+                property_path.push('.');
+            }
+            property_path.push_str(&text[prop_start..vi]);
+        }
+    }
+
+    Some(VarRef {
+        name: text[..path_start].to_string(),
+        property_path,
+        is_temporary: is_temp_var,
+        is_write: true,
+        span: offset..offset + vi,
+    })
+}
+
 /// Skip to the closing `>>` of a macro (for close tags and simple cases).
 pub(super) fn skip_to_macro_close(text: &str, i: &mut usize) {
     let bytes = text.as_bytes();
@@ -743,7 +902,8 @@ pub(super) fn skip_to_macro_close(text: &str, i: &mut usize) {
             *i += 2;
             return;
         }
-        *i += 1;
+        // Advance by full UTF-8 character to avoid mid-char slicing.
+        *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
     }
 }
 
@@ -787,7 +947,8 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
             continue;
         }
         if in_single_quote || in_double_quote {
-            *i += 1;
+            // Advance by full UTF-8 character to avoid mid-char slicing.
+            *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             continue;
         }
 
@@ -800,7 +961,8 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
                     *i += 2; // Skip */
                     break;
                 }
-                *i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -811,7 +973,8 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
         if b == b'/' && *i + 1 < len && bytes[*i + 1] == b'/' {
             *i += 2; // Skip //
             while *i < len && bytes[*i] != b'\n' {
-                *i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             }
             continue;
         }
@@ -822,7 +985,8 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
             *i += 2;
             return content_end;
         }
-        *i += 1;
+        // Advance by full UTF-8 character to avoid mid-char slicing.
+        *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
     }
 
     // No closing >> found — everything is content
@@ -847,25 +1011,37 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
     let close_tag = format!("<</{}>>", macro_name);
     let close_tag_alt = format!("<</ {}>>", macro_name); // with space after /
 
-    let bytes = text.as_bytes();
-    let len = bytes.len();
+    let len = text.len();
 
-    // Simple scan for close tag (no depth tracking — script/style can't nest)
-    for search_from in 0..len {
-        if text[search_from..].starts_with(&close_tag)
-            || text[search_from..].starts_with(&close_tag_alt)
-        {
-            let body_content = &text[..search_from];
-            let mut children = Vec::new();
-            if !body_content.is_empty() {
-                children.push(AstNode::Text {
-                    content: body_content.to_string(),
-                    var_refs: Vec::new(),
-                    span: offset..offset + search_from,
-                });
+    // Scan for close tag at char boundaries only (no depth tracking —
+    // script/style can't nest). Iterating by char ensures we never
+    // slice at a byte position that falls inside a multi-byte UTF-8
+    // character, which would cause a panic.
+    let mut search_from = 0usize;
+    while search_from < len {
+        // Only attempt the match at char boundaries. Since `close_tag`
+        // starts with '<' (a single-byte ASCII char), it can only begin
+        // at a char boundary. If we're inside a multi-byte char, its
+        // leading byte is not '<', so we can safely skip.
+        if text.as_bytes()[search_from] == b'<' {
+            if text[search_from..].starts_with(&close_tag)
+                || text[search_from..].starts_with(&close_tag_alt)
+            {
+                let body_content = &text[..search_from];
+                let mut children = Vec::new();
+                if !body_content.is_empty() {
+                    children.push(AstNode::Text {
+                        content: body_content.to_string(),
+                        var_refs: Vec::new(),
+                        span: offset..offset + search_from,
+                        is_prose: false, // script/style bodies are code, not narrative
+                    });
+                }
+                return (children, Some(search_from));
             }
-            return (children, Some(search_from));
         }
+        // Advance by full UTF-8 character to stay on char boundaries.
+        search_from += text[search_from..].chars().next().map_or(1, |c| c.len_utf8());
     }
 
     // Unclosed — the rest is raw body
@@ -875,6 +1051,7 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
             content: text.to_string(),
             var_refs: Vec::new(),
             span: offset..offset + len,
+            is_prose: false, // script/style bodies are code, not narrative
         });
     }
     (children, None)
@@ -1054,6 +1231,11 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
     let len = bytes.len();
     let mut i = 0usize;
 
+    // Helper: advance by full UTF-8 character
+    let advance = |pos: usize| -> usize {
+        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
+    };
+
     while i < len {
         // Skip whitespace and commas (arg separators)
         while i < len && (bytes[i] == b' ' || bytes[i] == b',') {
@@ -1075,7 +1257,7 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
                 if bytes[i] == b'\\' && i + 1 < len {
                     i += 2; // skip escaped char
                 } else {
-                    i += 1;
+                    i += advance(i);
                 }
             }
             let content_end = i;
@@ -1129,7 +1311,7 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
                         if bytes[i] == b'\\' && i + 1 < len {
                             i += 2;
                         } else {
-                            i += 1;
+                            i += advance(i);
                         }
                     }
                     if i < len {
@@ -1146,7 +1328,8 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
                 } else if bytes[i] == b'}' && open == b'{' {
                     depth -= 1;
                 }
-                i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                i += advance(i);
             }
             continue;
         }
@@ -1155,7 +1338,8 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
         if b == b'=' || b == b'+' || b == b'-' || b == b'*' || b == b'/' || b == b'%' || b == b'!' || b == b'<' || b == b'>' || b == b'&' || b == b'|' || b == b'?' || b == b':' {
             // Skip to next space or end of operator sequence
             while i < len && !bytes[i].is_ascii_whitespace() && bytes[i] != b',' && bytes[i] != b'"' && bytes[i] != b'\'' && bytes[i] != b'(' && bytes[i] != b')' && bytes[i] != b'[' && bytes[i] != b']' && bytes[i] != b'{' && bytes[i] != b'}' && bytes[i] != b'$' && bytes[i] != b'_' {
-                i += 1;
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                i += advance(i);
             }
             continue;
         }
@@ -1179,8 +1363,8 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
             continue;
         }
 
-        // Anything else: skip
-        i += 1;
+        // Anything else: skip by full UTF-8 character
+        i += advance(i);
     }
 
     tokens
@@ -2068,5 +2252,49 @@ mod tests {
         assert_eq!(args[0].value, "Cave");
         // The span should cover "Cave" (4 chars), starting after the opening quote
         assert_eq!(args[0].span.end - args[0].span.start, 4);
+    }
+
+    #[test]
+    fn set_into_assignment() {
+        // <<set 100 into $hp>> — reverse-assignment form
+        let ast = parse_passage_body("<<set 100 into $hp>>", 0, ParseMode::Normal);
+        let sa = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
+            _ => None,
+        }).expect("should find <<set>> with set_assignment");
+
+        assert_eq!(sa.target.name, "$hp");
+        assert_eq!(sa.operator, SetOperator::Into);
+        assert_eq!(sa.expression.as_deref(), Some("100"));
+        assert!(sa.target.is_write, "into target should be marked as write");
+    }
+
+    #[test]
+    fn set_into_keyword_boundary() {
+        // `intogether` should NOT match as `into` keyword
+        // This is an edge case — `intogether` is not valid SugarCube but
+        // we must not accidentally parse it as `into`.
+        let ast = parse_passage_body("<<set $x intogether $y>>", 0, ParseMode::Normal);
+        let sa = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
+            _ => None,
+        });
+        // Should NOT parse as Into — `intogether` is not a keyword boundary
+        assert!(sa.is_none() || sa.as_ref().map(|s| s.operator != SetOperator::Into).unwrap_or(true),
+            "intogether should not be parsed as 'into' keyword");
+    }
+
+    #[test]
+    fn set_into_with_expression() {
+        // <<set $base + $bonus into $total>> — complex expression on the left
+        let ast = parse_passage_body("<<set $base + $bonus into $total>>", 0, ParseMode::Normal);
+        let sa = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
+            _ => None,
+        }).expect("should find <<set>> with set_assignment");
+
+        assert_eq!(sa.target.name, "$total");
+        assert_eq!(sa.operator, SetOperator::Into);
+        assert_eq!(sa.expression.as_deref(), Some("$base + $bonus"));
     }
 }

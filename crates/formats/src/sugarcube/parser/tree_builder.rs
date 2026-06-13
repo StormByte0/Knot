@@ -4,6 +4,11 @@
 //! and `MacroClose` nodes for close tags. This module walks the flat list with a
 //! stack, pairs open/close tags, and establishes parent-child relationships.
 //!
+//! After pairing, the tree builder also propagates **prose context**: Text nodes
+//! inside non-rendering macros (`<<silently>>`, `<<script>>`, `<<style>>`) are
+//! marked `is_prose = false`, while Text inside rendering macros (`<<if>>`,
+//! `<<for>>`, `<<nobr>>`, etc.) remains `is_prose = true`.
+//!
 //! The result is the same nested AST structure that the old recursive parser
 //! produced, but constructed from a clean separation of concerns:
 //! - Parser: flat syntactic recognition (no block/inline awareness)
@@ -26,6 +31,10 @@ use crate::sugarcube::macros;
 /// For macros without a matching `MacroClose`, the tree builder consults
 /// the catalog's `BodyRequirement` to determine whether they're inline
 /// or unclosed blocks.
+///
+/// After tree construction, prose context is propagated: Text nodes inside
+/// non-rendering macros (`<<silently>>`, `<<script>>`, `<<style>>`) are
+/// marked `is_prose = false`.
 pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
     let mut stack: Vec<StackEntry> = Vec::new();
     let mut roots: Vec<AstNode> = Vec::new();
@@ -108,6 +117,9 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
         let node = entry.into_node_with_catalog();
         roots.push(node);
     }
+
+    // Propagate prose context: mark Text nodes inside non-rendering macros
+    propagate_prose_context(&mut roots);
 
     roots
 }
@@ -282,4 +294,69 @@ fn lookup_body_requirement(name: &str) -> BodyRequirement {
         // the tree builder will pair it regardless.
         BodyRequirement::Never
     }
+}
+
+// ---------------------------------------------------------------------------
+// Prose context propagation
+// ---------------------------------------------------------------------------
+
+/// Walk the AST and set `is_prose = false` on Text nodes inside non-rendering
+/// macros. Top-level Text nodes and Text inside rendering macros retain their
+/// default `is_prose = true`.
+///
+/// A **non-rendering macro** is one whose body content is NOT displayed to the
+/// player. In SugarCube, this is:
+/// - `<<silently>>` — executes code but produces no output
+/// - `<<script>>` — opaque JS (already handled with `is_prose = false` at
+///   parse time, but included here for completeness)
+/// - `<<style>>` / `<<css>>` — opaque CSS (same as script)
+///
+/// All other block macros render their body content (even `<<if>>`, `<<for>>`,
+/// `<<nobr>>`, `<<capture>>`, `<<type>>`, `<<widget>>`, `<<link>>`,
+/// `<<button>>`, `<<click>>`, `<<switch>>`, `<<timed>>`, `<<repeat>>`, etc.)
+/// — their Text children are prose.
+fn propagate_prose_context(nodes: &mut [AstNode]) {
+    for node in nodes.iter_mut() {
+        if let AstNode::Macro { name, children, .. } = node {
+            if !is_prose_rendering_macro(name) {
+                // Non-rendering macro: mark all descendant Text nodes as non-prose
+                if let Some(ch) = children {
+                    mark_non_prose(ch);
+                }
+            } else if let Some(ch) = children {
+                // Rendering macro: recurse to check nested macros
+                propagate_prose_context(ch);
+            }
+        }
+    }
+}
+
+/// Mark all Text nodes in the given list (and their descendants) as non-prose.
+fn mark_non_prose(nodes: &mut [AstNode]) {
+    for node in nodes.iter_mut() {
+        match node {
+            AstNode::Text { is_prose, .. } => {
+                *is_prose = false;
+            }
+            AstNode::Macro { children, .. } => {
+                if let Some(ch) = children {
+                    mark_non_prose(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Returns `true` if the named macro renders its body content as narrative
+/// output (prose). Returns `false` for macros whose body is code or is
+/// suppressed.
+///
+/// The default is `true` — most block macros render their content. Only
+/// `<<silently>>`, `<<done>>`, `<<script>>`, and `<<style>>`/`<<css>>` are
+/// non-rendering. `<<done>>` executes code after rendering, so its body is
+/// imperative code rather than narrative prose.
+fn is_prose_rendering_macro(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !matches!(lower.as_str(), "silently" | "done" | "script" | "style" | "css")
 }

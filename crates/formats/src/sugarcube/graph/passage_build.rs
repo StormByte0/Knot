@@ -54,6 +54,18 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) 
             ast::AstNode::Comment { .. } => {
                 // Comments don't produce body blocks
             }
+            ast::AstNode::InlineStyle { class, span, .. } => {
+                blocks.push(Block::Text {
+                    content: class.clone(),
+                    span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                });
+            }
+            ast::AstNode::TextFormat { content, span, .. } => {
+                blocks.push(Block::Text {
+                    content: content.clone(),
+                    span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                });
+            }
             ast::AstNode::Error { message, span } => {
                 blocks.push(Block::Incomplete {
                     content: message.clone(),

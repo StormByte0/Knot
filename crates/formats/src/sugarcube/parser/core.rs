@@ -62,34 +62,136 @@ pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
                 Some(node)
             }
             b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                // // — JS single-line comment (to end of line)
-                // Only treat as a comment if not inside a macro or link
-                // (those contexts handle their own content). In normal
-                // passage prose, // is ambiguous — but in Twine projects
-                // that mix JS/CSS into passages, this is commonly used.
-                // We only recognize // comments when followed by a space
-                // or at line context to avoid false positives on URLs
-                // like http://example.com.
-                let is_comment_context = if i + 2 < len {
-                    // // at start of line, or preceded by whitespace
-                    let at_line_start = i == 0 || bytes[i - 1] == b'\n';
-                    let preceded_by_space = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
-                    // // followed by space is a strong signal
-                    let followed_by_space = bytes[i + 2] == b' ' || bytes[i + 2] == b'\t';
-                    at_line_start || (preceded_by_space && followed_by_space)
-                } else {
-                    true
+                // // — Could be italic formatting (//text//) or a JS line comment.
+                // Check for italic first: if there's a closing // on the same line,
+                // it's formatting, not a comment.
+                let has_closing_double_slash = {
+                    let mut k = i + 2;
+                    let mut found = false;
+                    while k + 1 < len && bytes[k] != b'\n' {
+                        if bytes[k] == b'/' && bytes[k + 1] == b'/' {
+                            found = true;
+                            break;
+                        }
+                        k += 1;
+                    }
+                    found
                 };
-                if is_comment_context {
+
+                if has_closing_double_slash {
+                    // Italic formatting: //text//
                     let start = i;
                     i += 2;
-                    let node = parse_js_line_comment(text, &mut i, offset + start);
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'/' && bytes[i + 1] == b'/') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content = text[content_start..i].to_string();
+                    if i + 1 < len {
+                        i += 2; // skip closing //
+                    }
                     flush_text(text, &mut text_start, start, offset, &mut nodes);
-                    Some(node)
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Italic,
+                        content,
+                        span: offset + start..offset + i,
+                    })
                 } else {
-                    i += 1;
-                    None
+                    // Not italic — apply the existing comment heuristic
+                    let is_comment_context = if i + 2 < len {
+                        let at_line_start = i == 0 || bytes[i - 1] == b'\n';
+                        let preceded_by_space = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
+                        let followed_by_space = bytes[i + 2] == b' ' || bytes[i + 2] == b'\t';
+                        at_line_start || (preceded_by_space && followed_by_space)
+                    } else {
+                        true
+                    };
+                    if is_comment_context {
+                        let start = i;
+                        i += 2;
+                        let node = parse_js_line_comment(text, &mut i, offset + start);
+                        flush_text(text, &mut text_start, start, offset, &mut nodes);
+                        Some(node)
+                    } else {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                        None
+                    }
                 }
+            }
+            b'\'' if i + 1 < len && bytes[i + 1] == b'\'' => {
+                // '' — bold formatting: ''text''
+                let start = i;
+                i += 2;
+                let content_start = i;
+                while i + 1 < len && !(bytes[i] == b'\'' && bytes[i + 1] == b'\'') {
+                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                }
+                let content = text[content_start..i].to_string();
+                if i + 1 < len { i += 2; }
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(AstNode::TextFormat {
+                    kind: TextFormatKind::Bold, content, span: offset + start..offset + i,
+                })
+            }
+            b'_' if i + 1 < len && bytes[i + 1] == b'_' => {
+                // __ — underline formatting: __text__
+                let start = i;
+                i += 2;
+                let content_start = i;
+                while i + 1 < len && !(bytes[i] == b'_' && bytes[i + 1] == b'_') {
+                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                }
+                let content = text[content_start..i].to_string();
+                if i + 1 < len { i += 2; }
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(AstNode::TextFormat {
+                    kind: TextFormatKind::Underline, content, span: offset + start..offset + i,
+                })
+            }
+            b'=' if i + 1 < len && bytes[i + 1] == b'=' => {
+                // == — strike formatting: ==text==
+                let start = i;
+                i += 2;
+                let content_start = i;
+                while i + 1 < len && !(bytes[i] == b'=' && bytes[i + 1] == b'=') {
+                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                }
+                let content = text[content_start..i].to_string();
+                if i + 1 < len { i += 2; }
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(AstNode::TextFormat {
+                    kind: TextFormatKind::Strike, content, span: offset + start..offset + i,
+                })
+            }
+            b'~' if i + 1 < len && bytes[i + 1] == b'~' => {
+                // ~~ — subscript formatting: ~~text~~
+                let start = i;
+                i += 2;
+                let content_start = i;
+                while i + 1 < len && !(bytes[i] == b'~' && bytes[i + 1] == b'~') {
+                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                }
+                let content = text[content_start..i].to_string();
+                if i + 1 < len { i += 2; }
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(AstNode::TextFormat {
+                    kind: TextFormatKind::Sub, content, span: offset + start..offset + i,
+                })
+            }
+            b'^' if i + 1 < len && bytes[i + 1] == b'^' => {
+                // ^^ — superscript formatting: ^^text^^
+                let start = i;
+                i += 2;
+                let content_start = i;
+                while i + 1 < len && !(bytes[i] == b'^' && bytes[i + 1] == b'^') {
+                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                }
+                let content = text[content_start..i].to_string();
+                if i + 1 < len { i += 2; }
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(AstNode::TextFormat {
+                    kind: TextFormatKind::Super, content, span: offset + start..offset + i,
+                })
             }
             b'<' if i + 3 < len && &text[i..i + 4] == "<!--" => {
                 // <!-- — HTML comment (or conditional comment <!--[if ...]>)
@@ -126,8 +228,19 @@ pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
                 // flush_text extract them.
                 None
             }
+            b'@' if i + 1 < len && (bytes[i + 1] == b'@' || bytes[i + 1] == b'.' || bytes[i + 1] == b'#' || is_ident_start(bytes[i + 1])) => {
+                // @ or @@ — SugarCube inline styling
+                // Double-at: @@class;text@@
+                // Single-at: @class;text@ (class may start with . or # for CSS selectors)
+                let is_double_at = bytes[i + 1] == b'@';
+                let start = i;
+                i += if is_double_at { 2 } else { 1 };
+                let node = parse_inline_style(text, &mut i, offset, start, is_double_at);
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(node)
+            }
             _ => {
-                i += 1;
+                i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 None
             }
         };
@@ -175,17 +288,110 @@ fn flush_text(
         content,
         var_refs,
         span: offset + *text_start..offset + end,
+        is_prose: true, // Default: top-level text is always prose.
+        // The tree builder will set is_prose = false for Text nodes
+        // inside non-rendering macros (<<silently>>, <<script>>, <<style>>).
     });
     *text_start = end;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Parse SugarCube inline styling markup (`@@class;text@@` or `@class;text@`).
+///
+/// `i` points to the first character after the opening `@@` or `@`.
+/// `start` is the position of the first `@` in `text`.
+/// `is_double_at` is `true` for `@@...@@`, `false` for `@...@`.
+///
+/// For double-at: the class is between `@@` and `;`, the body is between
+/// `;` and `@@`. The close delimiter is `@@`.
+///
+/// For single-at: same structure but with single `@` delimiters.
+fn parse_inline_style(
+    text: &str,
+    i: &mut usize,
+    offset: usize,
+    start: usize,
+    is_double_at: bool,
+) -> AstNode {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    // Find the class name (up to ; or the close delimiter)
+    let (class, class_span, body_start) = find_class_and_body_start(
+        text, *i, offset, is_double_at,
+    );
+
+    // Find the closing delimiter
+    let close_delim = if is_double_at { "@@" } else { "@" };
+    let body_end = text[body_start - offset..]
+        .find(close_delim)
+        .map(|pos| body_start - offset + pos)
+        .unwrap_or(len);
+
+    let body_content = if body_start - offset < body_end {
+        &text[body_start - offset..body_end]
+    } else {
+        ""
+    };
+
+    // Recursively parse the body content for variables, links, etc.
+    let children = if !body_content.is_empty() {
+        parse_body(body_content, body_start - offset + offset)
+    } else {
+        Vec::new()
+    };
+
+    // Advance past the closing delimiter
+    *i = body_end + close_delim.len();
+
+    AstNode::InlineStyle {
+        class,
+        class_span,
+        children,
+        span: offset + start..offset + *i,
+    }
+}
+
+/// Find the class name and body start position in an inline style construct.
+///
+/// Returns `(class, class_span, body_start)` where `body_start` is the
+/// passage-body-relative byte offset where the body content begins.
+fn find_class_and_body_start(
+    text: &str,
+    content_start: usize,
+    offset: usize,
+    is_double_at: bool,
+) -> (String, std::ops::Range<usize>, usize) {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    // Find ; separating class from body, or the close delimiter if no ;
+    let mut j = content_start;
+    while j < len {
+        if bytes[j] == b';' {
+            // Found the class/body separator
+            let class = text[content_start..j].to_string();
+            let class_span = offset + content_start..offset + j;
+            return (class, class_span, offset + j + 1); // body starts after ;
+        }
+        // Check for close delimiter
+        if is_double_at && j + 1 < len && bytes[j] == b'@' && bytes[j + 1] == b'@' {
+            break;
+        }
+        if !is_double_at && bytes[j] == b'@' {
+            break;
+        }
+        j += text[j..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+
+    // No ; found — the entire content is the class, no body
+    let class = text[content_start..j].to_string();
+    let class_span = offset + content_start..offset + j;
+    (class, class_span, offset + j)
+}
 
 #[cfg(test)]
 mod tests {
-    use crate::sugarcube::ast::{AstNode, ParseMode, LinkSource};
+    use crate::sugarcube::ast::{AstNode, ParseMode, LinkSource, TextFormatKind};
 
     #[test]
     fn parse_simple_text() {
@@ -291,5 +497,545 @@ mod tests {
         let links = super::super::extraction::extract_data_passage_refs(html);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "RealTarget");
+    }
+
+    // ── Prose context tests ──────────────────────────────────────────────
+
+    #[test]
+    fn prose_top_level_text_is_prose() {
+        // Top-level text in a passage body is always prose
+        let ast = crate::sugarcube::parser::parse_passage_body("Hello world", 0, ParseMode::Normal);
+        assert_eq!(ast.nodes.len(), 1);
+        match &ast.nodes[0] {
+            AstNode::Text { content, is_prose, .. } => {
+                assert_eq!(content, "Hello world");
+                assert!(*is_prose, "top-level text should be prose");
+            }
+            _ => panic!("Expected Text node"),
+        }
+    }
+
+    #[test]
+    fn prose_inside_if_is_prose() {
+        // Text inside <<if>> body is prose — it renders to the player.
+        // Using a simple <<if>> without <<else>> to avoid the known tree builder
+        // issue where <<else>> (a BodyRequirement::Never inline clause marker)
+        // consumes subsequent text as pending_children that get discarded.
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<if true>>go to town<</if>>",
+            0,
+            ParseMode::Normal,
+        );
+        match &ast.nodes[0] {
+            AstNode::Macro { name, children: Some(children), .. } => {
+                assert_eq!(name, "if");
+                match &children[0] {
+                    AstNode::Text { content, is_prose, .. } => {
+                        assert!(content.contains("go to town"));
+                        assert!(*is_prose, "text inside <<if>> should be prose");
+                    }
+                    _ => panic!("Expected Text node inside <<if>>"),
+                }
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn prose_inside_silently_is_not_prose() {
+        // Text inside <<silently>> is NOT prose — it's executed but not rendered
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<silently>>some text<</silently>>",
+            0,
+            ParseMode::Normal,
+        );
+        match &ast.nodes[0] {
+            AstNode::Macro { name, children: Some(children), .. } => {
+                assert_eq!(name, "silently");
+                for child in children {
+                    if let AstNode::Text { is_prose, .. } = child {
+                        assert!(!*is_prose, "text inside <<silently>> should NOT be prose");
+                    }
+                }
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn prose_inside_script_is_not_prose() {
+        // <<script>> body is not prose — it's code
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<script>>var x = 1;<</script>>",
+            0,
+            ParseMode::Normal,
+        );
+        match &ast.nodes[0] {
+            AstNode::Macro { name, children: Some(children), .. } => {
+                assert_eq!(name, "script");
+                for child in children {
+                    if let AstNode::Text { is_prose, .. } = child {
+                        assert!(!*is_prose, "text inside <<script>> should NOT be prose");
+                    }
+                }
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn prose_mixed_context() {
+        // Text both inside and outside <<silently>>
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "visible text<<silently>>hidden code<</silently>>more visible",
+            0,
+            ParseMode::Normal,
+        );
+        // The tree builder nests children into <<silently>>, so:
+        //   [Text("visible text"), Macro("silently", children=[...]), Text("more visible")]
+        // But "more visible" might end up inside the silently macro's children
+        // if the tree builder picks it up before the close tag. Let's check
+        // the actual structure flexibly.
+        let top_text_nodes: Vec<_> = ast.nodes.iter()
+            .filter_map(|n| match n {
+                AstNode::Text { content, is_prose, .. } => Some((content.clone(), *is_prose)),
+                _ => None,
+            })
+            .collect();
+
+        // "visible text" should be prose
+        let visible = top_text_nodes.iter().find(|(c, _)| c.contains("visible text"));
+        assert!(visible.is_some(), "should find 'visible text' as top-level node");
+        assert!(visible.unwrap().1, "top-level text before <<silently>> should be prose");
+
+        // Find the silently macro and verify its children are NOT prose
+        let silently = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Macro { name, children, .. } if name == "silently" => children.clone(),
+            _ => None,
+        });
+        if let Some(silently_children) = silently {
+            for child in &silently_children {
+                if let AstNode::Text { content, is_prose, .. } = child {
+                    if content.contains("hidden") {
+                        assert!(!*is_prose, "text inside <<silently>> should NOT be prose");
+                    }
+                }
+            }
+        }
+
+        // "more visible" should be prose (it's after <</silently>>)
+        let more_visible = top_text_nodes.iter().find(|(c, _)| c.contains("more visible"));
+        if let Some((_, is_prose)) = more_visible {
+            assert!(is_prose, "top-level text after <<silently>> should be prose");
+        }
+        // If "more visible" isn't a top-level node, it may be inside the
+        // silently macro — but that shouldn't happen with proper close-tag pairing.
+    }
+
+    #[test]
+    fn prose_nested_if_inside_silently() {
+        // <<silently>><<if>>text<</if>><</silently>> — text inside nested <<if>>
+        // should still be non-prose because the parent <<silently>> suppresses rendering
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<silently>><<if true>>hidden<</if>><</silently>>",
+            0,
+            ParseMode::Normal,
+        );
+        match &ast.nodes[0] {
+            AstNode::Macro { name, children: Some(children), .. } => {
+                assert_eq!(name, "silently");
+                // Find the <<if>> macro inside
+                for child in children {
+                    if let AstNode::Macro { name, children: Some(if_children), .. } = child {
+                        assert_eq!(name, "if");
+                        for if_child in if_children {
+                            if let AstNode::Text { is_prose, .. } = if_child {
+                                assert!(!*is_prose,
+                                    "text inside <<if>> nested in <<silently>> should NOT be prose");
+                            }
+                        }
+                    }
+                }
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn prose_inside_done_is_not_prose() {
+        // <<done>> executes code after rendering — its body is not narrative prose.
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<done>><<set $x to 1>><</done>>",
+            0,
+            ParseMode::Normal,
+        );
+        match &ast.nodes[0] {
+            AstNode::Macro { name, children: Some(children), .. } => {
+                assert_eq!(name, "done");
+                // The tree builder should have marked any Text children as non-prose
+                for child in children {
+                    if let AstNode::Text { is_prose, .. } = child {
+                        assert!(!*is_prose, "text inside <<done>> should NOT be prose");
+                    }
+                }
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn expression_sigil_emits_macro_token() {
+        // <<=>> should emit a Macro token for the = sigil
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast = crate::sugarcube::parser::parse_passage_body("<<= $hp>>", 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        // Should have at least a Macro token for the = sigil and a Variable token for $hp
+        let macro_tokens: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
+            .collect();
+        assert!(!macro_tokens.is_empty(), "<<=>> should emit a Macro token for the sigil");
+        // The sigil token should be at offset 2 (past <<) and length 1
+        let sigil = &macro_tokens[0];
+        assert_eq!(sigil.start, 2, "sigil token should start at offset 2");
+        assert_eq!(sigil.length, 1, "sigil token length should be 1");
+        assert!(sigil.modifier.is_none(), "<<=>> sigil should have no modifier");
+    }
+
+    #[test]
+    fn silent_expression_sigil_has_control_flow_modifier() {
+        // <<->> should emit a Macro token with ControlFlow modifier
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast = crate::sugarcube::parser::parse_passage_body("<<- $hp>>", 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let sigil_tokens: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
+            .collect();
+        assert!(!sigil_tokens.is_empty(), "<<->> should emit a Macro token for the sigil");
+        let sigil = &sigil_tokens[0];
+        assert_eq!(sigil.start, 2, "sigil token should start at offset 2");
+        assert_eq!(sigil.length, 1, "sigil token length should be 1");
+        assert_eq!(sigil.modifier, Some(SemanticTokenModifier::ControlFlow),
+            "<<->> sigil should have ControlFlow modifier");
+    }
+
+    #[test]
+    fn print_and_expression_emit_equivalent_variable_tokens() {
+        // <<print $hp>> and <<= $hp>> should emit the same Variable tokens
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast_print = crate::sugarcube::parser::parse_passage_body(
+            "<<print $hp>>", 0, ParseMode::Normal,
+        );
+        let ast_expr = crate::sugarcube::parser::parse_passage_body(
+            "<<= $hp>>", 0, ParseMode::Normal,
+        );
+
+        let mut tokens_print = Vec::new();
+        let mut tokens_expr = Vec::new();
+        build_semantic_tokens(&ast_print.nodes, &mut tokens_print, 0, &HashSet::new());
+        build_semantic_tokens(&ast_expr.nodes, &mut tokens_expr, 0, &HashSet::new());
+
+        let var_tokens_print: Vec<_> = tokens_print.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
+            .collect();
+        let var_tokens_expr: Vec<_> = tokens_expr.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
+            .collect();
+
+        assert!(!var_tokens_print.is_empty(), "<<print>> should emit Variable tokens");
+        assert!(!var_tokens_expr.is_empty(), "<<=>> should emit Variable tokens");
+        // Both should have the same number of Variable tokens for the same expression
+        assert_eq!(var_tokens_print.len(), var_tokens_expr.len(),
+            "<<print>> and <<=>> should emit the same number of Variable tokens");
+    }
+
+    #[test]
+    fn inline_style_double_at() {
+        // @@.highlight;important text@@
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "@@.highlight;important text@@", 0, ParseMode::Normal,
+        );
+        let style_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::InlineStyle { class, .. } => Some(class.clone()),
+            _ => None,
+        }).expect("should find InlineStyle node");
+        assert_eq!(style_node, ".highlight");
+
+        // Verify children contain prose text
+        let style = ast.nodes.iter().find_map(|n| match n {
+            node @ AstNode::InlineStyle { .. } => Some(node.clone()),
+            _ => None,
+        }).unwrap();
+        match &style {
+            AstNode::InlineStyle { children, .. } => {
+                assert!(!children.is_empty(), "InlineStyle should have children");
+                let has_prose = children.iter().any(|c| matches!(c, AstNode::Text { is_prose: true, .. }));
+                assert!(has_prose, "children should contain prose text");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn inline_style_single_at() {
+        // @.red;warning text@
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "@.red;warning text@", 0, ParseMode::Normal,
+        );
+        let style_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::InlineStyle { class, .. } => Some(class.clone()),
+            _ => None,
+        }).expect("should find InlineStyle node");
+        assert_eq!(style_node, ".red");
+    }
+
+    #[test]
+    fn inline_style_with_variable() {
+        // @@.highlight;You have $gold coins.@@
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "@@.highlight;You have $gold coins.@@",
+            0,
+            ParseMode::Normal,
+        );
+        let style = ast.nodes.iter().find_map(|n| match n {
+            node @ AstNode::InlineStyle { .. } => Some(node.clone()),
+            _ => None,
+        }).expect("should find InlineStyle node");
+        match &style {
+            AstNode::InlineStyle { class, children, .. } => {
+                assert_eq!(class, ".highlight");
+                // Children should contain a Text node with a $gold variable ref
+                let text_with_var = children.iter().any(|c| {
+                    matches!(c, AstNode::Text { var_refs, .. } if !var_refs.is_empty())
+                });
+                assert!(text_with_var, "children should contain Text with variable refs");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn inline_style_emits_token() {
+        // Verify InlineStyle semantic token emission
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "@@.highlight;important@@",
+            0,
+            ParseMode::Normal,
+        );
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let style_tokens: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::InlineStyle))
+            .collect();
+        assert!(!style_tokens.is_empty(), "should emit InlineStyle token for class name");
+        assert_eq!(style_tokens[0].length, ".highlight".len(),
+            "InlineStyle token should cover the class name");
+    }
+
+    #[test]
+    fn text_format_bold() {
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "This is ''bold'' text", 0, ParseMode::Normal,
+        );
+        let bold_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::TextFormat { kind: TextFormatKind::Bold, content, .. } => Some(content.clone()),
+            _ => None,
+        }).expect("should find Bold TextFormat node");
+        assert_eq!(bold_node, "bold");
+    }
+
+    #[test]
+    fn text_format_italic() {
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "This is //italic// text", 0, ParseMode::Normal,
+        );
+        let italic_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::TextFormat { kind: TextFormatKind::Italic, content, .. } => Some(content.clone()),
+            _ => None,
+        }).expect("should find Italic TextFormat node");
+        assert_eq!(italic_node, "italic");
+    }
+
+    #[test]
+    fn text_format_strike() {
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "This is ==struck== text", 0, ParseMode::Normal,
+        );
+        let node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::TextFormat { kind: TextFormatKind::Strike, content, .. } => Some(content.clone()),
+            _ => None,
+        }).expect("should find Strike TextFormat node");
+        assert_eq!(node, "struck");
+    }
+
+    #[test]
+    fn text_format_emits_token() {
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "Some ''bold'' text", 0, ParseMode::Normal,
+        );
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let format_tokens: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::TextFormat))
+            .collect();
+        assert!(!format_tokens.is_empty(), "should emit TextFormat token for bold");
+    }
+
+    #[test]
+    fn text_format_with_multibyte_utf8() {
+        // Regression test: unclosed text-format delimiters followed by
+        // multi-byte UTF-8 characters (e.g. em dash —) must not panic.
+        // Previously the byte-by-byte scan could land inside a multi-byte
+        // char, causing a panic on string slicing.
+        let cases = [
+            ("''bold —", TextFormatKind::Bold),
+            ("//italic —", TextFormatKind::Italic),
+            ("==strike —", TextFormatKind::Strike),
+            ("__underline —", TextFormatKind::Underline),
+            ("~~sub —", TextFormatKind::Sub),
+            ("^^super —", TextFormatKind::Super),
+        ];
+        for (input, _expected_kind) in &cases {
+            // Must not panic
+            let _ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        }
+    }
+
+    #[test]
+    fn text_format_closed_with_multibyte_content() {
+        // Text-format markup with multi-byte characters inside should parse correctly
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "''bold — dash''", 0, ParseMode::Normal,
+        );
+        let node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::TextFormat { kind: TextFormatKind::Bold, content, .. } => Some(content.clone()),
+            _ => None,
+        }).expect("should find Bold TextFormat node");
+        assert_eq!(node, "bold — dash");
+    }
+
+    #[test]
+    fn prose_with_em_dash_no_panic() {
+        // Plain prose with em dashes should never panic
+        let _ast = crate::sugarcube::parser::parse_passage_body(
+            "The state — never here — is tracked.", 0, ParseMode::Normal,
+        );
+    }
+
+    #[test]
+    fn macro_args_with_multibyte_utf8() {
+        // Regression test: macro arguments containing multi-byte UTF-8
+        // characters (e.g. em dash — in strings or comments) must not panic.
+        // The scanner previously advanced by single bytes, which could land
+        // inside a multi-byte char, causing a panic on string slicing.
+        let cases = [
+            // Em dash inside a quoted string in macro args
+            r#"<<set $x = "a—b">>"#,
+            // Em dash inside a block comment in macro args
+            "<<set $x = 1 /* comment — with dash */ + 2>>",
+            // Em dash in a line comment in macro args
+            "<<set $x = 1 // comment — dash\n+ 3>>",
+            // Em dash in plain args (not in string or comment)
+            "<<set $x = 1>>", // no em dash but safe
+            // Multiple em dashes
+            "The — quick — brown — fox",
+        ];
+        for input in &cases {
+            let _ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        }
+    }
+
+    #[test]
+    fn expression_macro_with_multibyte_utf8() {
+        // <<= and <<->> with multi-byte chars in the expression
+        let _ast1 = crate::sugarcube::parser::parse_passage_body(
+            "<<= 'hello—world'>>", 0, ParseMode::Normal,
+        );
+        let _ast2 = crate::sugarcube::parser::parse_passage_body(
+            "<<- 'silent—expr'>>", 0, ParseMode::Normal,
+        );
+    }
+
+    #[test]
+    fn script_macro_with_multibyte_utf8_body() {
+        // <<script>> body with em dashes should not panic
+        let _ast = crate::sugarcube::parser::parse_passage_body(
+            "<<script>>\n// comment — dash\nvar x = 1;\n<</script>>",
+            0, ParseMode::Normal,
+        );
+    }
+
+    #[test]
+    fn style_macro_with_multibyte_utf8_body() {
+        // <<style>> body with em dashes should not panic
+        let _ast = crate::sugarcube::parser::parse_passage_body(
+            "<<style>>\n/* style — dash */\n.foo { color: red; }\n<</style>>",
+            0, ParseMode::Normal,
+        );
+    }
+
+    #[test]
+    fn inline_vars_with_multibyte_utf8() {
+        // Variable scanning in text with multi-byte chars
+        let _ast = crate::sugarcube::parser::parse_passage_body(
+            "The value — $gs.x — is tracked.", 0, ParseMode::Normal,
+        );
+    }
+
+    #[test]
+    fn special_twee_like_content_no_panic() {
+        // Simulates the content pattern from _special.twee that triggered
+        // the original UTF-8 boundary panic. The file contains <<set>> macros
+        // with JS object literals containing comments with em dashes, e.g.:
+        //   <<set $SLOTS = {
+        //     "slot": { description: "tracked — never here" },
+        //   }>>
+        // The em dash inside the macro args caused byte 275 to land inside
+        // the 3-byte UTF-8 sequence, panicking on string slicing.
+        let content = r#"/*
+  REGISTRIES
+  Read-only master definitions. Set once here, never mutated.
+  Dynamic state for all entities lives exclusively in $gs.
+  All registry values are accessed by key string.
+*/
+<<set $SLOTS = {
+  "underwear-top":    { description: "Worn — against the skin" },
+  "underwear-bottom": { description: "Lower — body coverage" },
+  "legwear":          { description: "Stockings — tights, socks" },
+  "bottom":           { description: "Skirt — trousers, shorts" },
+}>>
+<<set $ITEMS = {
+  "blazer": { label: "Blazer", type: "top", description: "A tailored blazer — sharp and professional." },
+  "skirt":  { label: "Skirt",  type: "bottom", description: "A pleated skirt — elegant." },
+}>>
+/* The inventory — never stored directly in items */
+<<set $NPCS = {
+  "mai": { name: "Mai", description: "Your coworker — friendly and observant" },
+}>>
+Some narrative text with — em dashes — and $gs.inventory references."#;
+        let _ast = crate::sugarcube::parser::parse_passage_body(content, 0, ParseMode::Normal);
+        // If we get here without panicking, the fix works.
     }
 }

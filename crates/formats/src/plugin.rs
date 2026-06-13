@@ -111,8 +111,10 @@ pub struct PassageTokenGroup {
 ///
 /// Each variant maps to a distinct entry in the LSP semantic token legend,
 /// giving themes fine-grained control over how each construct is colored.
-/// The legend order is defined in `lifecycle.rs` and the mapping in
-/// `semantic.rs` — all three must stay in sync.
+///
+/// The legend order and LSP wire names are derived from [`Self::all_types`]
+/// and [`Self::lsp_name`], so the server handlers never hardcode token-type
+/// indices or names — adding a new variant here is the only change needed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenType {
     // ── Passage structure ───────────────────────────────────────────
@@ -158,6 +160,19 @@ pub enum SemanticTokenType {
     /// (e.g., `+=`, `-=`, assignment shorthand).
     Operator,
 
+    // ── Narrative content ───────────────────────────────────────────
+    /// Narrative prose text — plain text content that is rendered to the
+    /// player (as opposed to code inside macros, comments, or non-rendering
+    /// blocks like `<<silently>>`). This enables themes to style story
+    /// content distinctly from structural/code elements.
+    Prose,
+    /// SugarCube inline styling markup (`@@class;text@@` or `@class;text@`).
+    /// Produces `<span class="class">text</span>` in the rendered output.
+    InlineStyle,
+    /// SugarCube text formatting markup (`''bold''`, `//italic//`, `__underline__`,
+    /// `==strike==`, `~~sub~~`, `^^super^^`). These produce HTML inline elements.
+    TextFormat,
+
     // ── Object model ────────────────────────────────────────────────
     /// A global object/namespace (e.g., `State`, `Engine`, `Story`,
     /// `Dialog`, `settings` in SugarCube).
@@ -170,8 +185,11 @@ pub enum SemanticTokenType {
 /// Modifiers for semantic tokens.
 ///
 /// Each variant maps to a bit position in the LSP modifier bitset.
-/// The legend order is defined in `lifecycle.rs` and the mapping in
-/// `semantic.rs` — all three must stay in sync.
+///
+/// The legend order and LSP wire names are derived from
+/// [`Self::all_modifiers`] and [`Self::lsp_name`], so the server handlers
+/// never hardcode modifier indices or names — adding a new variant here is
+/// the only change needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenModifier {
     /// This token is a definition (not just a reference).
@@ -195,6 +213,129 @@ pub enum SemanticTokenModifier {
     /// This token is a user-defined special passage.
     /// LSP modifier: `modification` (indicates user-level customization)
     UserDefined,
+}
+
+impl SemanticTokenType {
+    /// Return all variants in **legend order** — the order that the LSP
+    /// semantic-token legend advertises to the client.
+    ///
+    /// This is the single source of truth; the server handlers derive the
+    /// legend list and index mapping from this, so adding a new variant here
+    /// is the only change needed (no parallel edits in `lifecycle.rs` or
+    /// `semantic.rs`).
+    pub fn all_types() -> &'static [SemanticTokenType] {
+        // ── Passage structure ───────────────────────────────────────
+        &[
+            Self::PassageHeader,       // 0
+            Self::PassageName,         // 1
+            Self::Link,                // 2
+            Self::PassageRef,          // 3
+            Self::SpecialPassageHeader,// 4
+            Self::SpecialPassage,      // 5
+            Self::Tag,                 // 6
+            // ── Code constructs ─────────────────────────────────────
+            Self::Macro,               // 7
+            Self::Function,            // 8
+            Self::Variable,            // 9
+            Self::Keyword,             // 10
+            Self::Boolean,             // 11
+            Self::Number,              // 12
+            Self::String,              // 13
+            Self::Comment,             // 14
+            Self::Operator,            // 15
+            // ── Object model ────────────────────────────────────────
+            Self::Namespace,           // 16
+            Self::Property,            // 17
+            // ── Narrative content ───────────────────────────────────
+            Self::Prose,               // 18
+            Self::InlineStyle,         // 19
+            Self::TextFormat,          // 20
+        ]
+    }
+
+    /// The LSP wire name for this token type (e.g. `"macro"`, `"variable"`).
+    ///
+    /// These names are what VS Code themes match against when applying
+    /// color rules (e.g. `entity.name.function.macro.twee`).
+    pub fn lsp_name(&self) -> &'static str {
+        match self {
+            Self::PassageHeader       => "passageHeader",
+            Self::PassageName         => "passageName",
+            Self::Link                => "link",
+            Self::PassageRef          => "passageRef",
+            Self::SpecialPassageHeader => "specialPassageHeader",
+            Self::SpecialPassage      => "specialPassage",
+            Self::Tag                 => "tag",
+            Self::Macro               => "macro",
+            Self::Function            => "function",
+            Self::Variable            => "variable",
+            Self::Keyword             => "keyword",
+            Self::Boolean             => "boolean",
+            Self::Number              => "number",
+            Self::String              => "string",
+            Self::Comment             => "comment",
+            Self::Operator            => "operator",
+            Self::Namespace           => "namespace",
+            Self::Property            => "property",
+            Self::Prose               => "prose",
+            Self::InlineStyle         => "inlineStyle",
+            Self::TextFormat          => "textFormat",
+        }
+    }
+
+    /// The index of this variant in the LSP semantic-token legend.
+    ///
+    /// Derived from [`Self::all_types`]; server handlers use this instead
+    /// of maintaining parallel `ST_*` constants.
+    pub fn legend_index(&self) -> u32 {
+        Self::all_types()
+            .iter()
+            .position(|t| t == self)
+            .expect("every SemanticTokenType variant must appear in all_types()") as u32
+    }
+}
+
+impl SemanticTokenModifier {
+    /// Return all variants in **legend order** — the order that the LSP
+    /// semantic-token modifier legend advertises to the client.
+    pub fn all_modifiers() -> &'static [SemanticTokenModifier] {
+        &[
+            Self::Definition,    // bit 0
+            Self::ReadOnly,      // bit 1
+            Self::Deprecated,    // bit 2
+            Self::ControlFlow,   // bit 3
+            Self::TwineCore,     // bit 4
+            Self::StoryFormat,   // bit 5
+            Self::UserDefined,   // bit 6
+        ]
+    }
+
+    /// The LSP wire name for this modifier.
+    ///
+    /// Standard LSP modifiers use their canonical names; custom modifiers
+    /// use names that VS Code themes can match.
+    pub fn lsp_name(&self) -> &'static str {
+        match self {
+            Self::Definition  => "definition",
+            Self::ReadOnly    => "readonly",
+            Self::Deprecated  => "deprecated",
+            Self::ControlFlow => "controlFlow",
+            Self::TwineCore   => "static",
+            Self::StoryFormat => "async",
+            Self::UserDefined => "modification",
+        }
+    }
+
+    /// The bit position of this modifier in the LSP modifier bitset.
+    ///
+    /// Derived from [`Self::all_modifiers`]; server handlers use this
+    /// instead of maintaining parallel `SM_*` constants.
+    pub fn bit(&self) -> u32 {
+        1u32 << Self::all_modifiers()
+            .iter()
+            .position(|m| m == self)
+            .expect("every SemanticTokenModifier variant must appear in all_modifiers()")
+    }
 }
 
 /// A diagnostic produced by a format plugin during parsing.

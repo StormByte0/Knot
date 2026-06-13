@@ -34,7 +34,7 @@ use super::SugarCubeRegistry;
 /// Map a `SetOperator` from the AST to the appropriate `VarAccessKind`.
 fn set_operator_to_access_kind(op: &SetOperator) -> VarAccessKind {
     match op {
-        SetOperator::To | SetOperator::Eq => VarAccessKind::Write,
+        SetOperator::To | SetOperator::Eq | SetOperator::Into => VarAccessKind::Write,
         SetOperator::PlusEq
         | SetOperator::MinusEq
         | SetOperator::StarEq

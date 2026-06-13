@@ -31,7 +31,10 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
             *i += 2;
             continue;
         }
-        *i += 1;
+        // Advance by full UTF-8 character to avoid landing inside
+        // a multi-byte sequence (e.g. em dash —), which would cause
+        // a panic when slicing `text` later.
+        *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
     }
 
     let content_end = *i;
@@ -49,20 +52,40 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
     }
 
     // Parse the link content
-    let (display, target, kind, setter_var) = parse_link_content(content);
+    let (display, target, kind, setter_var, image_url) = parse_link_content(content);
 
     AstNode::Link {
         display,
         target,
         kind,
         setter_var,
+        image_url,
         span: offset + link_start..offset + *i,
     }
 }
 
 /// Parse the content between `[[` and `]]` into display/target.
-pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, LinkKind, Option<String>) {
+pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, LinkKind, Option<String>, Option<String>) {
     let trimmed = content.trim();
+
+    // Check for image link syntax: [[img[URL][Passage]] or [[img[URL][Display|Passage]]
+    // This must be checked BEFORE the setter ][ detection, because image links
+    // also contain ][ but it separates the image URL from the passage target.
+    if let Some(rest) = trimmed.strip_prefix("img[") {
+        // Find the closing ] of the image URL
+        if let Some(url_end) = rest.find(']') {
+            let image_url = rest[..url_end].to_string();
+            // After the URL's ], skip any ] and [ to reach the passage target.
+            // The content structure is: img[url][passage  (outer [[ ]] stripped)
+            // So after url_end we have: ][passage
+            let remaining = &rest[url_end..];
+            let remaining = remaining.trim_start_matches(']').trim_start_matches('[');
+            if !remaining.is_empty() {
+                let (display, target, _kind) = parse_link_display_target(remaining);
+                return (display, target, LinkKind::Image, None, Some(image_url));
+            }
+        }
+    }
 
     // Check for setter syntax: [[target][$var to value]]
     if let Some(bracket_pos) = trimmed.rfind("][") {
@@ -78,32 +101,32 @@ pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, Link
         } else {
             None
         };
-        return (display, target, kind, setter_var);
+        return (display, target, kind, setter_var, None);
     }
 
     // Check for pipe syntax: [[display|target]]
     if let Some(pipe_pos) = trimmed.rfind('|') {
         let display = trimmed[..pipe_pos].to_string();
         let target = trimmed[pipe_pos + 1..].trim().to_string();
-        return (Some(display), target, LinkKind::Pipe, None);
+        return (Some(display), target, LinkKind::Pipe, None, None);
     }
 
     // Check for right arrow syntax: [[display->target]]
     if let Some(arrow_pos) = trimmed.rfind("->") {
         let display = trimmed[..arrow_pos].to_string();
         let target = trimmed[arrow_pos + 2..].trim().to_string();
-        return (Some(display), target, LinkKind::ArrowRight, None);
+        return (Some(display), target, LinkKind::ArrowRight, None, None);
     }
 
     // Check for left arrow syntax: [[target<-display]]
     if let Some(arrow_pos) = trimmed.rfind("<-") {
         let target = trimmed[..arrow_pos].trim().to_string();
         let display = trimmed[arrow_pos + 2..].to_string();
-        return (Some(display), target, LinkKind::ArrowLeft, None);
+        return (Some(display), target, LinkKind::ArrowLeft, None, None);
     }
 
     // Simple link: [[target]]
-    (None, trimmed.to_string(), LinkKind::Simple, None)
+    (None, trimmed.to_string(), LinkKind::Simple, None, None)
 }
 
 pub(super) fn parse_link_display_target(content: &str) -> (Option<String>, String, LinkKind) {
@@ -193,5 +216,62 @@ mod tests {
         assert_eq!(nav_links.len(), 1);
         assert_eq!(nav_links[0].display.as_deref(), Some("Go to forest"));
         assert_eq!(nav_links[0].target, "Forest");
+    }
+
+    #[test]
+    fn image_link_simple() {
+        // [[img[http://example.com/pic.jpg][Forest]]
+        let ast = parse_passage_body("[[img[http://example.com/pic.jpg][Forest]]", 0, ParseMode::Normal);
+        // Find the link node in the AST
+        let link_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
+            _ => None,
+        }).expect("should find an Image link");
+        match &link_node {
+            AstNode::Link { target, image_url, kind, .. } => {
+                assert_eq!(*kind, LinkKind::Image);
+                assert_eq!(target, "Forest", "image link target should be the passage name");
+                assert_eq!(image_url.as_deref(), Some("http://example.com/pic.jpg"),
+                    "image_url should contain the URL");
+            }
+            _ => panic!("Expected Link node"),
+        }
+    }
+
+    #[test]
+    fn image_link_with_display() {
+        // [[img[http://example.com/pic.jpg][Dark Forest|Forest]]
+        let ast = parse_passage_body("[[img[http://example.com/pic.jpg][Dark Forest|Forest]]", 0, ParseMode::Normal);
+        let link_node = ast.nodes.iter().find_map(|n| match n {
+            AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
+            _ => None,
+        }).expect("should find an Image link");
+        match &link_node {
+            AstNode::Link { display, target, image_url, kind, .. } => {
+                assert_eq!(*kind, LinkKind::Image);
+                assert_eq!(target, "Forest");
+                assert_eq!(display.as_deref(), Some("Dark Forest"));
+                assert_eq!(image_url.as_deref(), Some("http://example.com/pic.jpg"));
+            }
+            _ => panic!("Expected Link node"),
+        }
+    }
+
+    #[test]
+    fn link_with_multibyte_utf8_no_panic() {
+        // Regression test: links containing multi-byte UTF-8 characters
+        // (e.g. em dash —) must not panic. Previously the byte-by-byte
+        // scan in the link parser could land inside a multi-byte char,
+        // causing a panic on string slicing.
+        let _ast = parse_passage_body("Go [[a—b]] there", 0, ParseMode::Normal);
+    }
+
+    #[test]
+    fn link_with_multibyte_utf8_content_correct() {
+        // Link with em dash should parse correctly, not just not-panic
+        let ast = parse_passage_body("Go [[a—b]] there", 0, ParseMode::Normal);
+        assert!(ast.links.len() >= 1, "should find a link");
+        // The target should include the em dash
+        assert!(ast.links[0].target.contains("—"), "target should contain em dash, got: {:?}", ast.links[0].target);
     }
 }
