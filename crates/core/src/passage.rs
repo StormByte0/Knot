@@ -134,9 +134,7 @@ pub struct MacroArgRef {
     /// specific `PassageRef` arg (e.g., on a Label arg).
     pub macro_open_span: Range<usize>,
     /// Whether this macro invocation has a body (children between open and
-    /// close tags). Used for polymorphic hover: macros like `<<link>>` are
-    /// inline when used without a body (`<<link "Talk" "Shop">>`) and block
-    /// when used with a body (`<<link "Talk" "Shop">>…<</link>>`).
+    /// close tags). Container macros always have a body; Inline macros never do.
     pub has_body: bool,
 }
 

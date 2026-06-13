@@ -2137,13 +2137,13 @@ fn sugarcube_capture_temp_variable_token() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 8: Macro Polymorphy tests
+// Phase 8: Container macro tests
 // ---------------------------------------------------------------------------
 
 #[test]
-fn sugarcube_link_inline_no_close_tag() {
-    // <<link "Go" "Room">> without close tag should be treated as inline.
-    // The tree builder uses BodyRequirement::Optional from catalog.
+fn sugarcube_link_requires_close_tag() {
+    // <<link "Go" "Room">> without close tag SHOULD produce an error.
+    // Since <<link>> is a Container macro, it always requires <</link>>.
     use crate::sugarcube::SugarCubePlugin;
     use crate::plugin::FormatPlugin;
 
@@ -2151,12 +2151,12 @@ fn sugarcube_link_inline_no_close_tag() {
     let text = ":: Start\n<<link \"Go\" \"Room\">>After\n:: Room\nHello\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    // Inline form should NOT produce unclosed-block diagnostics
+    // Unclosed <<link>> should produce an unclosed-block diagnostic
     let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
-    assert!(unclosed.is_empty(),
-        "Inline <<link>> without close tag should not produce unclosed-block errors, got: {:?}",
+    assert!(!unclosed.is_empty(),
+        "<<link>> without close tag should produce an unclosed-block error, got: {:?}",
         unclosed);
 }
 
@@ -2179,8 +2179,9 @@ fn sugarcube_link_block_with_close_tag() {
 }
 
 #[test]
-fn sugarcube_button_inline_no_close_tag() {
-    // <<button "Go" "Room">> without close tag — inline form
+fn sugarcube_button_requires_close_tag() {
+    // <<button "Go" "Room">> without close tag SHOULD produce an error.
+    // Since <<button>> is a Container macro, it always requires <</button>>.
     use crate::sugarcube::SugarCubePlugin;
     use crate::plugin::FormatPlugin;
 
@@ -2191,7 +2192,7 @@ fn sugarcube_button_inline_no_close_tag() {
     let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
-    assert!(unclosed.is_empty(),
-        "Inline <<button>> without close tag should not produce unclosed-block errors, got: {:?}",
+    assert!(!unclosed.is_empty(),
+        "<<button>> without close tag should produce an unclosed-block error, got: {:?}",
         unclosed);
 }

@@ -716,6 +716,23 @@ impl FormatPlugin for SugarCubePlugin {
         })
     }
 
+    /// Look up a custom macro with full detail for completion resolve.
+    fn find_custom_macro_detail(
+        &self,
+        name: &str,
+    ) -> Option<crate::plugin::CustomMacroDetail> {
+        self.registry.custom_macros().get(name).map(|m| {
+            crate::plugin::CustomMacroDetail {
+                defined_in: m.defined_in.clone(),
+                file_uri: m.file_uri.clone(),
+                is_widget: m.is_widget,
+                is_container: m.is_container,
+                arg_count: m.arg_count,
+                description: m.description.clone(),
+            }
+        })
+    }
+
     /// Check if a macro name is a known custom macro.
     fn is_custom_macro(&self, name: &str) -> bool {
         self.registry.custom_macros().contains(name)
@@ -1085,27 +1102,34 @@ impl FormatPlugin for SugarCubePlugin {
         }
 
         // ── 4. < trigger → CloseTag or MacroName ──────────────────────
+        //
+        // IMPORTANT: A single `<` is a trigger character, but we only show
+        // completions when the user has actually typed `<<` (macro delimiter).
+        // Typing `a < b` should NOT trigger macro suggestions — the single
+        // `<` is far too common in comparison expressions. We return empty
+        // for a bare `<` so VS Code dismisses the suggestion list instantly.
         if trigger == Some('<') {
             // Close-tag context (<</)
             if before_cursor.ends_with("<</") {
                 let partial = before_cursor.rfind("<</")
                     .map(|pos| before_cursor[pos + 3..].to_string())
                     .unwrap_or_default();
-                return self.build_close_tag_completions(&partial, workspace);
+                return self.build_close_tag_completions(&partial, text, byte_offset, line, character);
             }
             // Macro open context (<<)
             if before_cursor.ends_with("<<") {
-                return self.build_macro_completions(workspace, "", line, character);
+                return self.build_macro_completions(workspace, "", line, character, text, byte_offset);
             }
             // Partial macro name after << (e.g., <<li)
             if let Some(delim_pos) = before_cursor.rfind("<<") {
                 let after = &before_cursor[delim_pos + 2..];
                 if after.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                    return self.build_macro_completions(workspace, after, line, character);
+                    return self.build_macro_completions(workspace, after, line, character, text, byte_offset);
                 }
             }
-            // Default: try as macro name
-            return self.build_macro_completions(workspace, "", line, character);
+            // Single `<` without `<<` — not a macro context, return empty.
+            // This prevents annoying suggestions when typing `a < b` etc.
+            return Vec::new();
         }
 
         // ── 5. [ trigger → Link (passage names) ────────────────────────
@@ -1153,7 +1177,7 @@ impl FormatPlugin for SugarCubePlugin {
             let after = &before_cursor[delim_pos + 2..];
             if after.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == ' ') {
                 let name = after.trim();
-                return self.build_macro_completions(workspace, name, line, character);
+                return self.build_macro_completions(workspace, name, line, character, text, byte_offset);
             }
         }
 
@@ -1193,6 +1217,204 @@ impl FormatPlugin for SugarCubePlugin {
 }
 
 // ===========================================================================
+// Macro open/close pair scanning (Phase 2 infrastructure)
+// ===========================================================================
+
+/// A detected macro open/close tag pair in source text.
+///
+/// Used by `find_enclosing_block_macro()` and `find_unclosed_block_macros()`
+/// to determine which container macros surround a cursor position and which
+/// container macros are unclosed.
+#[derive(Debug, Clone)]
+struct MacroTag {
+    /// The macro name (e.g., "if", "for", "link").
+    name: String,
+    /// Byte offset where the tag starts in the document.
+    start: usize,
+    /// Byte offset where the tag ends in the document.
+    end: usize,
+    /// Whether this is an open tag (`<<name>>`) or close tag (`<</name>>`).
+    is_close: bool,
+}
+
+/// Scan text for all `<<name>>` and `<</name>>` tags up to a byte limit.
+///
+/// Returns tags sorted by byte position. Skips content inside string literals,
+/// block comments, and line comments within macro args (between `<<` and `>>`).
+/// This is a heuristic scan — it doesn't build a full AST, but handles the
+/// common cases well enough for completion filtering.
+fn scan_macro_tags(text: &str, up_to: usize) -> Vec<MacroTag> {
+    let mut tags = Vec::new();
+    let bytes = text.as_bytes();
+    let limit = up_to.min(text.len());
+    let mut i = 0;
+
+    while i < limit {
+        // Look for `<<` delimiter
+        if bytes[i] == b'<' && i + 1 < limit && bytes[i + 1] == b'<' {
+            let tag_start = i;
+
+            // Check for close tag: `<</`
+            let is_close = i + 2 < limit && bytes[i + 2] == b'/';
+            let name_start = if is_close { i + 3 } else { i + 2 };
+
+            // Extract the macro name (alphanumeric + underscore + hyphen)
+            let mut name_end = name_start;
+            while name_end < limit {
+                let ch = bytes[name_end];
+                if ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'-' {
+                    name_end += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let name = &text[name_start..name_end];
+
+            // Skip empty names or names that look like operators (`<=`, `<<`, `<-`)
+            if name.is_empty() {
+                i += 1;
+                continue;
+            }
+
+            // For open tags, skip to the closing `>>` while handling strings/comments
+            // For close tags, find the `>>` directly
+            let mut scan_pos = name_end;
+            let mut found_close = false;
+
+            if !is_close {
+                // Skip args content inside the open tag: strings, comments, etc.
+                let mut in_dq = false;
+                let mut in_sq = false;
+                while scan_pos + 1 < limit {
+                    let ch = bytes[scan_pos];
+                    let next = bytes[scan_pos + 1];
+
+                    if in_dq {
+                        if ch == b'\\' {
+                            scan_pos += 2; // Skip escaped char
+                            continue;
+                        }
+                        if ch == b'"' {
+                            in_dq = false;
+                        }
+                    } else if in_sq {
+                        if ch == b'\\' {
+                            scan_pos += 2;
+                            continue;
+                        }
+                        if ch == b'\'' {
+                            in_sq = false;
+                        }
+                    } else {
+                        // Check for block comment `/* ... */`
+                        if ch == b'/' && next == b'*' {
+                            scan_pos += 2;
+                            while scan_pos + 1 < limit {
+                                if bytes[scan_pos] == b'*' && bytes[scan_pos + 1] == b'/' {
+                                    scan_pos += 2;
+                                    break;
+                                }
+                                scan_pos += 1;
+                            }
+                            continue;
+                        }
+                        // Check for line comment `//`
+                        if ch == b'/' && next == b'/' {
+                            scan_pos += 2;
+                            while scan_pos < limit {
+                                if bytes[scan_pos] == b'\n' {
+                                    scan_pos += 1;
+                                    break;
+                                }
+                                scan_pos += 1;
+                            }
+                            continue;
+                        }
+                        if ch == b'"' {
+                            in_dq = true;
+                        } else if ch == b'\'' {
+                            in_sq = true;
+                        } else if ch == b'>' && next == b'>' {
+                            found_close = true;
+                            scan_pos += 2;
+                            break;
+                        }
+                    }
+                    scan_pos += 1;
+                }
+            } else {
+                // Close tag: find `>>`
+                while scan_pos + 1 < limit {
+                    if bytes[scan_pos] == b'>' && bytes[scan_pos + 1] == b'>' {
+                        found_close = true;
+                        scan_pos += 2;
+                        break;
+                    }
+                    scan_pos += 1;
+                }
+            }
+
+            if found_close {
+                tags.push(MacroTag {
+                    name: name.to_string(),
+                    start: tag_start,
+                    end: scan_pos,
+                    is_close,
+                });
+                i = scan_pos;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    tags
+}
+
+/// Build a stack of currently-open container macro names at a given byte offset.
+///
+/// Scans the text up to `byte_offset`, tracking `<<name>>` opens and `<</name>>`
+/// closes. Returns the stack of unclosed macro names from outermost to innermost.
+///
+/// Only considers macros that are in the `body_macro_names()` set (Container macros).
+/// Structural modifiers like `<<else>>`, `<<elseif>>`, `<<case>>` are not pushed
+/// because they don't open a new scope.
+fn build_open_macro_stack_at_offset(text: &str, byte_offset: usize, body_macros: &HashSet<&'static str>) -> Vec<String> {
+    let tags = scan_macro_tags(text, byte_offset);
+    let mut stack: Vec<String> = Vec::new();
+
+    for tag in &tags {
+        if tag.is_close {
+            // Pop the matching open tag
+            if let Some(pos) = stack.iter().rposition(|n| n == &tag.name) {
+                stack.truncate(pos);
+            }
+        } else {
+            // Only push if this is a container macro
+            if body_macros.contains(tag.name.as_str()) {
+                stack.push(tag.name.clone());
+            }
+        }
+    }
+
+    stack
+}
+
+/// Find the names of the enclosing container macro(s) at a cursor position.
+///
+/// Returns a list from outermost to innermost. For example, when the cursor
+/// is inside `<<if>><<for>>...<</for>><</if>>`, returns `["if", "for"]`.
+///
+/// If the cursor is at the top level (not inside any container macro), returns
+/// an empty vector.
+fn find_enclosing_block_macros(text: &str, byte_offset: usize, body_macros: &HashSet<&'static str>) -> Vec<String> {
+    build_open_macro_stack_at_offset(text, byte_offset, body_macros)
+}
+
+// ===========================================================================
 // Private completion builders (SugarCube-specific)
 // ===========================================================================
 
@@ -1205,38 +1427,82 @@ enum PassageCompletionKind {
     MacroArg,
 }
 
-/// Compute a `FormatTextEdit` that replaces the `<<prefix` text before the cursor
-/// with the full macro snippet (including `<<`).
+/// Compute a `FormatTextEdit` for macro completions.
 ///
-/// When `filter_prefix` is non-empty, the user typed something like `<<li`
-/// and we need to replace from the `<<` to the cursor. When empty, the user
-/// just typed `<<` and we replace from the `<<` position.
+/// ## Design: why textEdit does NOT cover `<<`
+///
+/// VS Code uses the text inside a completion's `textEdit` range as the
+/// "prefix" for client-side filtering. If the range covers `<<`, the prefix
+/// would be `<<` (or `<<li`), and VS Code would filter out items whose
+/// `filter_text` doesn't start with `<<`. Since our `filter_text` values are
+/// bare macro names (`"if"`, `"set"`, `"link"`), ALL items would be removed.
+///
+/// The fix: the textEdit range covers ONLY the partial name the user typed
+/// AFTER `<<`. The `<<` itself remains in the document and the snippet is
+/// inserted after it. This works because:
+///
+/// 1. **Empty prefix** (user typed `<<`): textEdit range starts at the
+///    cursor (after `<<`) and extends to cover any auto-closed `>>`.
+///    `new_text` is the snippet WITHOUT `<<`. The `<<` already in the
+///    document + snippet = `<<macro ...>>`. VS Code's word at cursor is
+///    empty → all items pass the filter.
+///
+/// 2. **Partial prefix** (user typed `<<li`): textEdit range covers just
+///    `li` (from after `<<` to cursor), plus any auto-closed `>>`.
+///    `new_text` is the snippet WITHOUT `<<`. The `<<` remains, `li` and
+///    `>>` are replaced by the full snippet. VS Code's prefix is `li` →
+///    matches `filter_text = "link"`.
+///
+/// ## Auto-close `>>` handling
+///
+/// When the user types `<<`, VS Code's auto-close pair feature may add `>>`
+/// immediately after the cursor. If we don't consume this `>>`, accepting a
+/// completion would leave a dangling `>>` at the end. We detect this by
+/// checking if `>>` follows the cursor position and including it in the
+/// textEdit range so it gets replaced.
 fn compute_macro_text_edit(
     filter_prefix: &str,
     line: u32,
     character: u32,
     snippet: &str,
+    after_cursor: &str,
 ) -> Option<crate::types::FormatTextEdit> {
     use crate::types::FormatTextEdit;
 
-    let new_text = format!("<<{}", snippet);
+    // The snippet does NOT include `<<` — it starts with the macro name.
+    // The `<<` is already in the document and will remain there.
+    // The snippet IS self-contained with `>>` (and closing tags for block
+    // macros). If VS Code auto-close also inserted `>>`, we consume it by
+    // extending the replacement range so there's no duplication.
+    let new_text = snippet.to_string();
+
+    // Check if auto-close added `>>` after the cursor — if so, we need to
+    // include it in the replacement range so it gets consumed.
+    let auto_close_len = if after_cursor.starts_with(">>") {
+        2u32
+    } else {
+        0u32
+    };
 
     if !filter_prefix.is_empty() {
-        let prefix_len = filter_prefix.len() as u32;
-        let start_char = character.saturating_sub(prefix_len + 2);
+        // User typed `<<li` — replace just the partial name `li`
+        let prefix_len = filter_prefix.chars().count() as u32;
+        let start_char = character.saturating_sub(prefix_len);
+        let end_char = character + auto_close_len;
         Some(FormatTextEdit {
             start_line: line,
             start_character: start_char,
             end_line: line,
-            end_character: character,
+            end_character: end_char,
             new_text,
         })
     } else {
+        // User typed `<<` — insert snippet at cursor (possibly replacing auto-close `>>`)
         Some(FormatTextEdit {
             start_line: line,
-            start_character: character.saturating_sub(2),
+            start_character: character,
             end_line: line,
-            end_character: character,
+            end_character: character + auto_close_len,
             new_text,
         })
     }
@@ -1316,41 +1582,102 @@ impl SugarCubePlugin {
         filter_prefix: &str,
         line: u32,
         character: u32,
+        text: &str,
+        byte_offset: usize,
     ) -> Vec<crate::types::FormatCompletionItem> {
         use crate::types::{
-            FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat,
+            FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat, MacroKind,
         };
 
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
+
+        // ── Compute text after cursor (for auto-close `>>` detection) ──
+        let after_cursor = &text[byte_offset..];
+
+        // ── Determine enclosing block macros for sub-macro filtering ──
+        let body_macros = self.body_macro_names();
+        let enclosing = find_enclosing_block_macros(text, byte_offset, &body_macros);
+        let parent_constraints = macros::macro_parent_constraints();
 
         // ── Builtin macros ────────────────────────────────────────────
         for mdef in self.builtin_macros() {
             if !filter_prefix.is_empty() && !mdef.name.starts_with(filter_prefix) {
                 continue;
             }
+
+            // Phase 2: Sub-macro scoping — filter SubMacro items when the
+            // cursor is not inside a valid parent container.
+            if mdef.kind == MacroKind::SubMacro {
+                // Look up which parents this sub-macro requires
+                if let Some(valid_parents) = parent_constraints.get(mdef.name) {
+                    // Check if ANY enclosing macro is a valid parent
+                    let inside_valid_parent = enclosing.iter()
+                        .any(|enc| valid_parents.contains(enc.as_str()));
+                    if !inside_valid_parent {
+                        // If the user's filter prefix partially matches this
+                        // sub-macro name, still show it but deprioritize it
+                        // (user might be typing it intentionally).
+                        if filter_prefix.is_empty() || !mdef.name.starts_with(filter_prefix) {
+                            continue;
+                        }
+                        // Partial match — include but deprioritize (sort prefix "9_")
+                        // Fall through to normal processing with sort adjustment below
+                    }
+                }
+            }
+
             seen.insert(mdef.name.to_string());
 
             let category = mdef.category.to_string();
+
+            // Determine sort prefix (lower = higher priority in completion list):
+            // - "0" = context-smart: sub-macro inside its valid parent (top priority)
+            // - "1" = normal macro (default priority)
+            // - "2" = deprecated macro (still shown but after non-deprecated)
+            // - "9" = sub-macro outside valid parent (lowest priority)
+            let sort_prefix = if mdef.kind == MacroKind::SubMacro {
+                // Check if this was a partial-prefix match outside valid parent
+                if let Some(valid_parents) = parent_constraints.get(mdef.name) {
+                    let inside_valid_parent = enclosing.iter()
+                        .any(|enc| valid_parents.contains(enc.as_str()));
+                    if !inside_valid_parent {
+                        "9" // Deprioritized — outside valid parent
+                    } else {
+                        "0" // Context-smart: inside valid parent, boost to top
+                    }
+                } else {
+                    "1"
+                }
+            } else if mdef.deprecated {
+                "2" // Deprecated — shown after normal macros
+            } else {
+                "1"
+            };
 
             // Check for multi-form completions first
             if let Some(forms) = macros::macro_completion_forms(mdef.name) {
                 for form in forms {
                     let snippet = macros::convert_snippet_newlines(form.snippet);
                     let text_edit = compute_macro_text_edit(
-                        filter_prefix, line, character, &snippet,
+                        filter_prefix, line, character, &snippet, after_cursor,
                     );
+                    let detail_text = if mdef.deprecated {
+                        format!("[Deprecated] [{}] {}", category, form.detail)
+                    } else {
+                        format!("[{}] {}", category, form.detail)
+                    };
                     items.push(FormatCompletionItem {
                         label: form.label.to_string(),
                         kind: FormatCompletionKind::Function,
-                        detail: Some(format!("[{}] {}", category, form.detail)),
-                        sort_text: Some(format!("1_{}_{:02}", mdef.name, form.sort_priority)),
+                        detail: Some(detail_text),
+                        sort_text: Some(format!("{}_{}_{:02}", sort_prefix, mdef.name, form.sort_priority)),
                         filter_text: Some(mdef.name.to_string()),
                         insert_text: Some(snippet),
                         insert_text_format: FormatInsertTextFormat::Snippet,
                         text_edit,
                         deprecated: mdef.deprecated,
-                        preselect: form.sort_priority == 0,
+                        preselect: form.sort_priority == 0 && (sort_prefix == "0" || sort_prefix == "1"),
                         data: Some(serde_json::json!({"type": "macro", "name": mdef.name})),
                         commit_characters: Vec::new(),
                     });
@@ -1359,13 +1686,18 @@ impl SugarCubePlugin {
                 // Single-form macro: use the existing snippet system
                 let snippet = self.build_macro_snippet(mdef.name, mdef.body);
                 let text_edit = compute_macro_text_edit(
-                    filter_prefix, line, character, &snippet,
+                    filter_prefix, line, character, &snippet, after_cursor,
                 );
+                let detail_text = if mdef.deprecated {
+                    format!("[Deprecated] [{}] {}", category, mdef.description)
+                } else {
+                    format!("[{}] {}", category, mdef.description)
+                };
                 items.push(FormatCompletionItem {
                     label: format!("<<{}>>", mdef.name),
                     kind: FormatCompletionKind::Function,
-                    detail: Some(format!("[{}] {}", category, mdef.description)),
-                    sort_text: Some(format!("1_{}_00", mdef.name)),
+                    detail: Some(detail_text),
+                    sort_text: Some(format!("{}_{}_00", sort_prefix, mdef.name)),
                     filter_text: Some(mdef.name.to_string()),
                     insert_text: Some(snippet),
                     insert_text_format: FormatInsertTextFormat::Snippet,
@@ -1391,6 +1723,7 @@ impl SugarCubePlugin {
 
             let custom = self.registry.custom_macros().get(name);
             let is_widget = custom.map(|m| m.is_widget).unwrap_or(false);
+            let is_container = custom.map(|m| m.is_container).unwrap_or(false);
             let arg_count = custom.and_then(|m| m.arg_count);
             let description = custom.and_then(|m| m.description.as_deref());
 
@@ -1401,14 +1734,42 @@ impl SugarCubePlugin {
                 format!("Custom macro — {}", name)
             };
 
-            // For widgets, offer both inline and block forms
-            if is_widget {
-                // Block form: <<name>>…<</name>>
+            // Container widgets: offer block form only with _contents tabstop
+            // Non-container widgets: offer block form as primary, inline form as secondary
+            if is_widget && is_container {
+                // Container widget: block form only with _contents at $2
                 let block_snippet = macros::convert_snippet_newlines(
-                    &format!("{} $1>>\\n$2\\n<</{}", name, name),
+                    &format!("{} $1>>\\n$2\\n<</{}>>", name, name),
                 );
                 let block_text_edit = compute_macro_text_edit(
-                    filter_prefix, line, character, &block_snippet,
+                    filter_prefix, line, character, &block_snippet, after_cursor,
+                );
+                let block_detail = if let Some(desc) = description {
+                    format!("{} (container) — {}", name, desc)
+                } else {
+                    format!("{} (container)", name)
+                };
+                items.push(FormatCompletionItem {
+                    label: format!("<<{}>>…<</{}>>", name, name),
+                    kind: FormatCompletionKind::Function,
+                    detail: Some(format!("Custom widget — {}", block_detail)),
+                    sort_text: Some(format!("2_{}_00", name)),
+                    filter_text: Some(name.clone()),
+                    insert_text: Some(block_snippet),
+                    insert_text_format: FormatInsertTextFormat::Snippet,
+                    text_edit: block_text_edit,
+                    deprecated: false,
+                    preselect: true,
+                    data: Some(serde_json::json!({"type": "macro", "name": name})),
+                    commit_characters: Vec::new(),
+                });
+            } else if is_widget {
+                // Block form: <<name>>…<</name>>
+                let block_snippet = macros::convert_snippet_newlines(
+                    &format!("{} $1>>\\n$2\\n<</{}>>", name, name),
+                );
+                let block_text_edit = compute_macro_text_edit(
+                    filter_prefix, line, character, &block_snippet, after_cursor,
                 );
                 let block_detail = if let Some(desc) = description {
                     format!("{} (with body) — {}", name, desc)
@@ -1439,9 +1800,9 @@ impl SugarCubePlugin {
                 } else {
                     "${1:args}".to_string()
                 };
-                let inline_snippet = format!("{} {}", name, arg_placeholder);
+                let inline_snippet = format!("{} {}>>", name, arg_placeholder);
                 let inline_text_edit = compute_macro_text_edit(
-                    filter_prefix, line, character, &inline_snippet,
+                    filter_prefix, line, character, &inline_snippet, after_cursor,
                 );
                 let inline_detail = if let Some(desc) = description {
                     format!("{} (inline) — {}", name, desc)
@@ -1472,9 +1833,9 @@ impl SugarCubePlugin {
                 } else {
                     "${1:args}".to_string()
                 };
-                let snippet = format!("{} {}", name, arg_placeholder);
+                let snippet = format!("{} {}>>", name, arg_placeholder);
                 let text_edit = compute_macro_text_edit(
-                    filter_prefix, line, character, &snippet,
+                    filter_prefix, line, character, &snippet, after_cursor,
                 );
                 let full_detail = if let Some(desc) = description {
                     format!("{} — {}", detail_base, desc)
@@ -1543,18 +1904,45 @@ impl SugarCubePlugin {
     }
 
     /// Build close-tag completions for unclosed block macros.
+    ///
+    /// Phase 2: Now uses proper open/close pair scanning instead of the old
+    /// stub that returned ALL body macro names. Only macros that are actually
+    /// unclosed at the cursor position are offered as close-tag completions.
+    /// Also provides `text_edit` for each close-tag item, replacing from `<</`
+    /// to the cursor with `name>>`.
     fn build_close_tag_completions(
         &self,
         partial: &str,
-        workspace: &knot_core::Workspace,
+        text: &str,
+        byte_offset: usize,
+        line: u32,
+        character: u32,
     ) -> Vec<crate::types::FormatCompletionItem> {
-        use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat};
+        use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat, FormatTextEdit};
 
-        // Try to find unclosed block macros in the current file
-        let unclosed = self.find_unclosed_block_macros(workspace);
+        // Find actually unclosed block macros at cursor position
+        let unclosed = self.find_unclosed_block_macros(text, byte_offset);
 
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
+
+        // Compute text_edit that replaces partial after `<</` with `name>>`
+        // Same design principle as compute_macro_text_edit: don't include `<</`
+        // in the textEdit range because VS Code uses it as filter prefix.
+        // The textEdit range covers only the partial name after `<</`.
+        let compute_close_text_edit = |name: &str| -> Option<FormatTextEdit> {
+            let partial_len = partial.chars().count() as u32;
+            // Replace just the partial name (after `<</` and before cursor)
+            let start_char = character.saturating_sub(partial_len);
+            Some(FormatTextEdit {
+                start_line: line,
+                start_character: start_char,
+                end_line: line,
+                end_character: character,
+                // Insert the name + `>>`. The `<</` stays in the document.
+                new_text: format!("{name}>>"),
+            })
+        };
 
         // First offer close tags for actually unclosed macros
         for name in unclosed.iter().rev() {
@@ -1562,15 +1950,16 @@ impl SugarCubePlugin {
                 continue;
             }
             seen.insert(name.clone());
+            let text_edit = compute_close_text_edit(name);
             items.push(FormatCompletionItem {
                 label: format!("/{name}>>"),
                 kind: FormatCompletionKind::Function,
                 detail: Some(format!("Close <<{}>>", name)),
                 sort_text: Some(format!("0_{}", name)),
                 filter_text: Some(name.clone()),
-                insert_text: Some(name.clone()),
+                insert_text: Some(format!("{name}>>")),
                 insert_text_format: FormatInsertTextFormat::PlainText,
-                text_edit: None,
+                text_edit,
                 deprecated: false,
                 preselect: false,
                 data: None,
@@ -1578,22 +1967,23 @@ impl SugarCubePlugin {
             });
         }
 
-        // If no unclosed macros found, offer all block macro close tags
+        // If no unclosed macros found, offer all block macro close tags as fallback
         if items.is_empty() {
             for name in self.body_macro_names() {
                 if seen.contains(name) || (!partial.is_empty() && !name.starts_with(partial)) {
                     continue;
                 }
                 seen.insert(name.to_string());
+                let text_edit = compute_close_text_edit(name);
                 items.push(FormatCompletionItem {
                     label: format!("/{name}>>"),
                     kind: FormatCompletionKind::Function,
                     detail: Some(format!("Close <<{}>>", name)),
                     sort_text: Some(format!("1_{}", name)),
                     filter_text: Some(name.to_string()),
-                    insert_text: Some(name.to_string()),
+                    insert_text: Some(format!("{name}>>")),
                     insert_text_format: FormatInsertTextFormat::PlainText,
-                    text_edit: None,
+                    text_edit,
                     deprecated: false,
                     preselect: false,
                     data: None,
@@ -1859,13 +2249,342 @@ impl SugarCubePlugin {
         detect_passage_in_quote(before_cursor, self).is_some()
     }
 
-    /// Find unclosed block macros by scanning workspace passage data.
+    /// Find unclosed block macros by scanning text for open/close pairs.
+    ///
+    /// Phase 2: Now properly scans the source text using `scan_macro_tags()`
+    /// and `build_open_macro_stack_at_offset()` instead of the old stub that
+    /// returned ALL body macro names. Returns only macros that are actually
+    /// unclosed at the cursor position, from outermost to innermost.
     fn find_unclosed_block_macros(
         &self,
-        _workspace: &knot_core::Workspace,
+        text: &str,
+        byte_offset: usize,
     ) -> Vec<String> {
-        // For now, just return the block macro names.
-        // A proper implementation would scan the document for open/close pairs.
-        self.body_macro_names().into_iter().map(|s| s.to_string()).collect()
+        let body_macros = self.body_macro_names();
+        build_open_macro_stack_at_offset(text, byte_offset, &body_macros)
+    }
+}
+
+// ===========================================================================
+// Tests for Phase 2 scanning infrastructure
+// ===========================================================================
+
+#[cfg(test)]
+mod completion_debug_tests {
+    use super::*;
+    use knot_core::Workspace;
+    use crate::types::FormatCompletionKind;
+
+    /// Test that `provide_completions` returns macro items when cursor is after `<<`.
+    #[test]
+    fn test_macro_completions_after_double_angle() {
+        let plugin = SugarCubePlugin::new();
+        let text = "<<";
+        let line = 0u32;
+        let character = 2u32; // cursor after "<<"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        // Test with no trigger (Ctrl+Space)
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        assert!(!items.is_empty(), "Expected macro completions after <<, got {} items", items.len());
+
+        // Check that at least some items have Function kind (macro completions)
+        let macro_items: Vec<_> = items.iter().filter(|i| matches!(i.kind, FormatCompletionKind::Function)).collect();
+        assert!(!macro_items.is_empty(), "Expected Function-typed macro completions, got none");
+    }
+
+    /// Test that `build_macro_completions` directly returns items.
+    #[test]
+    fn test_build_macro_completions_direct() {
+        let plugin = SugarCubePlugin::new();
+        let text = "<<";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.build_macro_completions(
+            &workspace, "", 0, 2, text, 2,
+        );
+        assert!(!items.is_empty(), "build_macro_completions returned {} items, expected > 0", items.len());
+    }
+
+    /// Test `<` as trigger character when cursor is after `<<`.
+    #[test]
+    fn test_macro_completions_with_angle_trigger() {
+        let plugin = SugarCubePlugin::new();
+        let text = "<<";
+        let line = 0u32;
+        let character = 2u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('<'), &[],
+        );
+        assert!(!items.is_empty(), "Expected macro completions with < trigger after <<, got {} items", items.len());
+    }
+
+    /// Test macro completions in a realistic passage document.
+    #[test]
+    fn test_macro_completions_in_passage() {
+        let plugin = SugarCubePlugin::new();
+        // Simulate a passage with text then <<
+        let text = ":: Start\nSome text <<";
+        let line = 1u32; // second line (after passage header)
+        let character = 12u32; // cursor after "<<"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        assert!(!items.is_empty(), "Expected macro completions inside passage after <<, got {} items", items.len());
+        let macro_items: Vec<_> = items.iter().filter(|i| matches!(i.kind, FormatCompletionKind::Function)).collect();
+        assert!(!macro_items.is_empty(), "Expected Function-typed macro completions inside passage, got none");
+    }
+
+    /// Test that text_edit ranges are valid (not out-of-bounds).
+    #[test]
+    fn test_macro_completions_text_edit_ranges_valid() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello <<";
+        let line = 1u32;
+        let character = 9u32; // cursor after "<<"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        assert!(!items.is_empty(), "Expected completions");
+
+        for item in &items {
+            if let Some(te) = &item.text_edit {
+                // start should be <= end, and both should be on the same line
+                assert!(te.start_line == te.end_line,
+                    "text_edit spans multiple lines: start={}, end={}", te.start_line, te.end_line);
+                assert!(te.start_character <= te.end_character,
+                    "text_edit start > end: start={}, end={}", te.start_character, te.end_character);
+                // start should not be negative (would underflow to huge number via saturating_sub)
+                // but the range should also make sense relative to the line
+            }
+        }
+    }
+
+    /// Test that text_edit correctly handles auto-closed `>>` after cursor.
+    #[test]
+    fn test_macro_completions_auto_close_handling() {
+        let plugin = SugarCubePlugin::new();
+        // User typed `<<` and auto-close added `>>`, cursor is between them
+        let text = ":: Start\nHello <<>>";
+        let line = 1u32;
+        let character = 8u32; // cursor after "<<", before ">>"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        assert!(!items.is_empty(), "Expected completions with auto-close >>");
+
+        // The text_edit should cover the auto-closed ">>" (end_character = character + 2)
+        for item in &items {
+            if let Some(te) = &item.text_edit {
+                // The textEdit should extend past the cursor to cover ">>"
+                assert!(te.end_character >= character,
+                    "textEdit end ({}) should be >= cursor ({}) to consume auto-close >>",
+                    te.end_character, character);
+                // For auto-close case, the textEdit should replace the ">>"
+                // So end should be character + 2
+                assert_eq!(te.end_character, character + 2,
+                    "textEdit should cover auto-closed >>: end={}, expected={}",
+                    te.end_character, character + 2);
+            }
+        }
+    }
+
+    /// Test that textEdit does NOT cover `<<` (the key fix for VS Code filtering).
+    #[test]
+    fn test_macro_text_edit_excludes_angle_brackets() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<";
+        let line = 1u32;
+        let character = 2u32; // cursor after "<<"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        assert!(!items.is_empty(), "Expected completions");
+
+        // The textEdit start should NOT be before the cursor (i.e., should not cover <<)
+        for item in &items {
+            if let Some(te) = &item.text_edit {
+                assert!(te.start_character >= character.saturating_sub(0),
+                    "textEdit start ({}) should not cover << before cursor ({})",
+                    te.start_character, character);
+                // For empty prefix, start should be at cursor position (no prefix to replace)
+                assert_eq!(te.start_character, character,
+                    "textEdit start should be at cursor position for empty prefix: start={}, cursor={}",
+                    te.start_character, character);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod phase2_tests {
+    use super::*;
+
+    fn body_macros() -> HashSet<&'static str> {
+        macros::body_macro_names()
+    }
+
+    #[test]
+    fn test_scan_macro_tags_simple() {
+        let text = "<<if $x>>hello<</if>>";
+        let tags = scan_macro_tags(text, text.len());
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "if");
+        assert!(!tags[0].is_close);
+        assert_eq!(tags[1].name, "if");
+        assert!(tags[1].is_close);
+    }
+
+    #[test]
+    fn test_scan_macro_tags_nested() {
+        let text = "<<if $x>><<for _i range $arr>>text<</for>><</if>>";
+        let tags = scan_macro_tags(text, text.len());
+        assert_eq!(tags.len(), 4);
+        assert_eq!(tags[0].name, "if");
+        assert!(!tags[0].is_close);
+        assert_eq!(tags[1].name, "for");
+        assert!(!tags[1].is_close);
+        assert_eq!(tags[2].name, "for");
+        assert!(tags[2].is_close);
+        assert_eq!(tags[3].name, "if");
+        assert!(tags[3].is_close);
+    }
+
+    #[test]
+    fn test_scan_macro_tags_with_string_args() {
+        // String args containing > or << should not confuse the scanner
+        let text = r#"<<link "Go >>" "Passage">>click<</link>>"#;
+        let tags = scan_macro_tags(text, text.len());
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "link");
+        assert!(!tags[0].is_close);
+        assert_eq!(tags[1].name, "link");
+        assert!(tags[1].is_close);
+    }
+
+    #[test]
+    fn test_scan_macro_tags_with_comments() {
+        let text = "<<set $x to 1 /* >> not a close */ >>";
+        let tags = scan_macro_tags(text, text.len());
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "set");
+        assert!(!tags[0].is_close);
+    }
+
+    #[test]
+    fn test_scan_macro_tags_close_tag() {
+        let text = "<</if>>";
+        let tags = scan_macro_tags(text, text.len());
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "if");
+        assert!(tags[0].is_close);
+    }
+
+    #[test]
+    fn test_find_enclosing_block_macros_inside_if() {
+        let text = "<<if $x>>hello<</if>>";
+        let offset = 12; // Inside the "hello" text
+        let enclosing = find_enclosing_block_macros(text, offset, &body_macros());
+        assert_eq!(enclosing, vec!["if"]);
+    }
+
+    #[test]
+    fn test_find_enclosing_block_macros_outside() {
+        let text = "some text <<if $x>>hello<</if>>";
+        let offset = 5; // Before the if
+        let enclosing = find_enclosing_block_macros(text, offset, &body_macros());
+        assert!(enclosing.is_empty());
+    }
+
+    #[test]
+    fn test_find_enclosing_block_macros_nested() {
+        let text = "<<if $x>><<for _i range $arr>>inner<</for>><</if>>";
+        let offset = 30; // Inside "inner"
+        let enclosing = find_enclosing_block_macros(text, offset, &body_macros());
+        assert_eq!(enclosing, vec!["if", "for"]);
+    }
+
+    #[test]
+    fn test_find_enclosing_block_macros_after_close() {
+        let text = "<<if $x>>hello<</if>>after";
+        let offset = text.len() - 3; // In "after"
+        let enclosing = find_enclosing_block_macros(text, offset, &body_macros());
+        assert!(enclosing.is_empty());
+    }
+
+    #[test]
+    fn test_find_unclosed_macros_simple() {
+        let text = "<<if $x>>hello";
+        let unclosed = build_open_macro_stack_at_offset(text, text.len(), &body_macros());
+        assert_eq!(unclosed, vec!["if"]);
+    }
+
+    #[test]
+    fn test_find_unclosed_macros_nested_unclosed() {
+        let text = "<<if $x>><<for _i range $arr>>inner";
+        let unclosed = build_open_macro_stack_at_offset(text, text.len(), &body_macros());
+        assert_eq!(unclosed, vec!["if", "for"]);
+    }
+
+    #[test]
+    fn test_find_unclosed_macros_one_closed_one_open() {
+        let text = "<<if $x>><<for _i range $arr>>inner<</for>>more";
+        let unclosed = build_open_macro_stack_at_offset(text, text.len(), &body_macros());
+        assert_eq!(unclosed, vec!["if"]);
+    }
+
+    #[test]
+    fn test_find_unclosed_macros_all_closed() {
+        let text = "<<if $x>><<for _i range $arr>>inner<</for>><</if>>";
+        let unclosed = build_open_macro_stack_at_offset(text, text.len(), &body_macros());
+        assert!(unclosed.is_empty());
+    }
+
+    #[test]
+    fn test_sub_macro_else_not_pushed() {
+        // <<else>> is a SubMacro, not a Container — it should NOT be pushed
+        let text = "<<if $x>>hello<<else>>world<</if>>";
+        let unclosed = build_open_macro_stack_at_offset(text, text.len(), &body_macros());
+        // After the full text, everything is closed
+        assert!(unclosed.is_empty());
+
+        // Inside after <<else>>, only <<if>> should be on the stack
+        let else_pos = text.find("<<else>>").unwrap();
+        let after_else = else_pos + "<<else>>".len() + 3; // In "world"
+        let enclosing = find_enclosing_block_macros(text, after_else, &body_macros());
+        assert_eq!(enclosing, vec!["if"]);
+    }
+
+    #[test]
+    fn test_scan_ignores_expression_macros() {
+        // <<=>> is an expression macro, not a tag-based macro
+        let text = "<<set $x to 1>><<=$x>>";
+        let tags = scan_macro_tags(text, text.len());
+        // Should find <<set>> and <<=>> but <<= should not be treated as a tag
+        // Actually, the scanner will pick up "=" as the name after <<
+        // Let's verify it doesn't crash and handles it gracefully
+        assert!(tags.len() >= 1); // At least <<set>>
+        // The = expression should have an empty-ish name
+        let set_tag = tags.iter().find(|t| t.name == "set");
+        assert!(set_tag.is_some(), "Should find <<set>> tag");
     }
 }

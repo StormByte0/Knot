@@ -35,6 +35,10 @@ pub struct CustomMacro {
     pub arg_count: Option<usize>,
     /// Whether this was defined via `<<widget>>` (vs `Macro.add()`).
     pub is_widget: bool,
+    /// Whether this is a container widget (`<<widget "name" container>>`)
+    /// that requires a closing tag and has access to `_contents`.
+    /// Non-container widgets are inline (self-closing).
+    pub is_container: bool,
     /// Description/documentation (from comments above the definition).
     pub description: Option<String>,
 }
@@ -60,6 +64,10 @@ impl CustomMacroRegistry {
     }
 
     /// Register a widget definition from a `[widget]` passage.
+    ///
+    /// `is_container` should be `true` if the widget was defined with the
+    /// `container` keyword (e.g., `<<widget "name" container>>`), meaning
+    /// it requires a closing tag and has access to `_contents`.
     pub fn register_widget(
         &mut self,
         name: &str,
@@ -67,6 +75,7 @@ impl CustomMacroRegistry {
         file_uri: &str,
         defined_at_offset: usize,
         arg_count: Option<usize>,
+        is_container: bool,
     ) {
         self.macros.insert(
             name.to_string(),
@@ -78,6 +87,7 @@ impl CustomMacroRegistry {
                 defined_at_line: 0,
                 arg_count,
                 is_widget: true,
+                is_container,
                 description: None,
             },
         );
@@ -102,6 +112,7 @@ impl CustomMacroRegistry {
                 defined_at_line: 0,
                 arg_count,
                 is_widget: false,
+                is_container: false,
                 description: None,
             },
         );
@@ -177,12 +188,23 @@ mod tests {
     #[test]
     fn register_widget() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "Widgets", "file:///test.tw", 100, None);
+        registry.register_widget("myWidget", "Widgets", "file:///test.tw", 100, None, false);
 
         let m = registry.get("myWidget").unwrap();
         assert_eq!(m.name, "myWidget");
         assert!(m.is_widget);
+        assert!(!m.is_container);
         assert_eq!(m.defined_in, "Widgets");
+    }
+
+    #[test]
+    fn register_container_widget() {
+        let mut registry = CustomMacroRegistry::new();
+        registry.register_widget("wrapWidget", "Widgets", "file:///test.tw", 200, None, true);
+
+        let m = registry.get("wrapWidget").unwrap();
+        assert!(m.is_widget);
+        assert!(m.is_container);
     }
 
     #[test]
@@ -199,9 +221,9 @@ mod tests {
     #[test]
     fn completion_names() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "W", "f", 0, None);
-        registry.register_widget("myMacro", "W", "f", 0, None);
-        registry.register_widget("otherThing", "W", "f", 0, None);
+        registry.register_widget("myWidget", "W", "f", 0, None, false);
+        registry.register_widget("myMacro", "W", "f", 0, None, false);
+        registry.register_widget("otherThing", "W", "f", 0, None, false);
 
         let names = registry.completion_names("my");
         assert_eq!(names.len(), 2);
@@ -210,8 +232,8 @@ mod tests {
     #[test]
     fn remove_file() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("a", "W", "file:///a.tw", 0, None);
-        registry.register_widget("b", "W", "file:///b.tw", 0, None);
+        registry.register_widget("a", "W", "file:///a.tw", 0, None, false);
+        registry.register_widget("b", "W", "file:///b.tw", 0, None, false);
 
         registry.remove_file("file:///a.tw");
         assert!(!registry.contains("a"));

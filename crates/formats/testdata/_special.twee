@@ -1,0 +1,755 @@
+::StoryInit
+
+/*
+  ================================================================
+  REGISTRIES
+  ================================================================
+  Read-only master definitions. Set once here, never mutated.
+  Dynamic state for all entities lives exclusively in $gs.
+  All registry values are accessed by key string.
+
+  Registry shape contracts are documented in AUTHORING.md.
+  ================================================================
+*/
+
+
+/* ----------------------------------------------------------------
+   BODY SLOTS  ($SLOTS)
+   Canonical equip slots in canvas render order (ascending zIndex).
+
+   Shape:
+   {
+     label:        string   Display name shown in inventory UI
+     zIndex:       int      Canvas layer order (lower = drawn first)
+     allowedTypes: string[] Item type strings that may occupy this slot
+     description:  string   Tooltip / flavour text for the slot
+   }
+---------------------------------------------------------------- */
+<<set $SLOTS = {
+  "underwear-top":    { label: "Underwear Top",     zIndex: 1,  allowedTypes: ["underwear-top"],                  description: "Worn directly against the skin, torso." },
+  "underwear-bottom": { label: "Underwear Bottom",  zIndex: 2,  allowedTypes: ["underwear-bottom"],               description: "Worn directly against the skin, lower body." },
+  "legwear":          { label: "Legwear",           zIndex: 3,  allowedTypes: ["legwear"],                        description: "Stockings, tights, socks." },
+  "bottom":           { label: "Bottom",            zIndex: 4,  allowedTypes: ["bottom"],                         description: "Skirt, trousers, shorts." },
+  "top":              { label: "Top",               zIndex: 5,  allowedTypes: ["top"],                            description: "Blouse, shirt, knit." },
+  "dress":            { label: "Dress / Jumpsuit",  zIndex: 5,  allowedTypes: ["dress"],                          description: "One-piece garments. Conflicts with top + bottom." },
+  "outerwear":        { label: "Outerwear",         zIndex: 6,  allowedTypes: ["outerwear"],                      description: "Blazer, cardigan, coat, vest, corset." },
+  "shoes":            { label: "Shoes",             zIndex: 7,  allowedTypes: ["shoes"],                          description: "Footwear." },
+  "head":             { label: "Head",              zIndex: 8,  allowedTypes: ["hat","hair-accessory"],           description: "Hats, fascinators, headbands." },
+  "bag":              { label: "Bag",               zIndex: 9,  allowedTypes: ["bag"],                            description: "Handbag, tote, briefcase." },
+  "accessory-left":   { label: "Left Accessory",   zIndex: 10, allowedTypes: ["accessory"],                      description: "Ring, bracelet, watch (left hand)." },
+  "accessory-right":  { label: "Right Accessory",  zIndex: 11, allowedTypes: ["accessory"],                      description: "Ring, bracelet (right hand)." },
+  "accessory-neck":   { label: "Necklace",         zIndex: 12, allowedTypes: ["accessory"],                      description: "Necklace, scarf, collar." },
+  "badge":            { label: "Badge",             zIndex: 13, allowedTypes: ["badge"],                          description: "ID badges and visitor passes." }
+}>>
+
+
+/* ----------------------------------------------------------------
+   ITEMS  ($ITEMS)
+   Every obtainable object in the game. Availability and equipped
+   state are tracked in $gs.inventory — never here.
+
+   Shape:
+   {
+     name:        string         Display name
+     description: string         Flavour text shown in tooltip and inspect view
+     category:    string         "apparel" | "tool" | "key" | "document" | "cosmetic"
+     type:        string         Subcategory used for slot compatibility checks
+     slot:        string | null  Slot key from $SLOTS; null for non-apparel
+     zIndex:      int | null     Canvas layer order; null for non-apparel
+     image:       string | null  Filename only — no path prefix (e.g. "blazer-navy.png")
+                                 Icon path:  images/items/<image>
+                                 Layer path: images/items/layers/<image>
+                                 null if no art yet
+     tags:        string[]       Arbitrary tags for filtering and conditional logic
+     value:       int            Worth in cents (0 = no monetary value)
+     consumable:  bool           true = removed from inventory after use
+                                 false = persists after use (default: false)
+     effects:     object | null  Stat deltas applied on use (Category A items only)
+                                 Keys must match keys in $gs.stats
+                                 null = no automatic effect; use passage routing instead
+                                 Example: { stamina: 15, stress: -8 }
+   }
+
+   Items with a passage named Use::<key> in the story are Category B items.
+   Their use action navigates to that passage in sector-3.
+   Items without such a passage and with non-null effects are Category A.
+   Items with neither are non-functional (inspect only).
+   See AUTHORING.md for the full use routing decision tree.
+---------------------------------------------------------------- */
+<<set $ITEMS = {
+
+  /* -- UNDERWEAR ------------------------------------------------ */
+  "plain-bra-white": {
+    name: "White Cotton Bra", description: "Unremarkable. The kind you forget is there.",
+    category: "apparel", type: "underwear-top", slot: "underwear-top", zIndex: 1,
+    image: "test.png", tags: ["underwear","basic","white"], value: 800,
+    consumable: false, effects: null
+  },
+  "plain-bra-black": {
+    name: "Black Cotton Bra", description: "Slightly less unremarkable.",
+    category: "apparel", type: "underwear-top", slot: "underwear-top", zIndex: 1,
+    image: "test.png", tags: ["underwear","basic","black"], value: 800,
+    consumable: false, effects: null
+  },
+  "plain-underwear-white": {
+    name: "White Cotton Underwear", description: "Standard issue. Comfortable.",
+    category: "apparel", type: "underwear-bottom", slot: "underwear-bottom", zIndex: 2,
+    image: "test.png", tags: ["underwear","basic","white"], value: 600,
+    consumable: false, effects: null
+  },
+
+  /* -- LEGWEAR -------------------------------------------------- */
+  "sheer-tights-nude": {
+    name: "Nude Sheer Tights", description: "Nearly invisible. Office-appropriate.",
+    category: "apparel", type: "legwear", slot: "legwear", zIndex: 3,
+    image: "test.png", tags: ["legwear","sheer","nude","office"], value: 600,
+    consumable: false, effects: null
+  },
+  "sheer-tights-black": {
+    name: "Black Sheer Tights", description: "Thin enough for the season, dark enough to mean business.",
+    category: "apparel", type: "legwear", slot: "legwear", zIndex: 3,
+    image: "test.png", tags: ["legwear","sheer","black","office"], value: 600,
+    consumable: false, effects: null
+  },
+
+  /* -- BOTTOMS -------------------------------------------------- */
+  "pencil-skirt-navy": {
+    name: "Navy Pencil Skirt", description: "Knee-length. Structured. Meets dress code without effort.",
+    category: "apparel", type: "bottom", slot: "bottom", zIndex: 4,
+    image: "test.png", tags: ["skirt","navy","office","formal"], value: 4500,
+    consumable: false, effects: null
+  },
+  "trousers-charcoal": {
+    name: "Charcoal Trousers", description: "High-waisted, tapered. Practically a uniform.",
+    category: "apparel", type: "bottom", slot: "bottom", zIndex: 4,
+    image: "test.png", tags: ["trousers","charcoal","office","formal"], value: 5200,
+    consumable: false, effects: null
+  },
+
+  /* -- TOPS ----------------------------------------------------- */
+  "blouse-white-button": {
+    name: "White Button Blouse", description: "Crisp. Pressed. Exactly what is expected.",
+    category: "apparel", type: "top", slot: "top", zIndex: 5,
+    image: "test.png", tags: ["blouse","white","office","formal"], value: 3800,
+    consumable: false, effects: null
+  },
+  "blouse-ivory-silk": {
+    name: "Ivory Silk Blouse", description: "Slightly too nice for this job. You wear it anyway.",
+    category: "apparel", type: "top", slot: "top", zIndex: 5,
+    image: "test.png", tags: ["blouse","ivory","silk","elegant"], value: 7200,
+    consumable: false, effects: null
+  },
+
+  /* -- OUTERWEAR ------------------------------------------------ */
+  "blazer-navy": {
+    name: "Navy Office Blazer", description: "Standard-issue. Keeps you presentable for inspections.",
+    category: "apparel", type: "outerwear", slot: "outerwear", zIndex: 6,
+    image: "test.png", tags: ["blazer","navy","office","formal"], value: 8900,
+    consumable: false, effects: null
+  },
+  "cardigan-grey": {
+    name: "Grey Cardigan", description: "Casual. Acceptable on Fridays only, technically.",
+    category: "apparel", type: "outerwear", slot: "outerwear", zIndex: 6,
+    image: "test.png", tags: ["cardigan","grey","casual"], value: 3200,
+    consumable: false, effects: null
+  },
+  "corset-black": {
+    name: "Black Lace Corset", description: "Not regulation. Nobody has said anything yet.",
+    category: "apparel", type: "outerwear", slot: "outerwear", zIndex: 6,
+    image: "test.png", tags: ["corset","black","lace","unconventional"], value: 6500,
+    consumable: false, effects: null
+  },
+
+  /* -- SHOES ---------------------------------------------------- */
+  "heels-black-low": {
+    name: "Black Low Heels", description: "Two inches. The acceptable limit.",
+    category: "apparel", type: "shoes", slot: "shoes", zIndex: 7,
+    image: "test.png", tags: ["heels","black","office"], value: 5500,
+    consumable: false, effects: null
+  },
+  "flats-nude": {
+    name: "Nude Ballet Flats", description: "Quiet. Practical. Invisible in the best way.",
+    category: "apparel", type: "shoes", slot: "shoes", zIndex: 7,
+    image: "test.png", tags: ["flats","nude","office","comfortable"], value: 4200,
+    consumable: false, effects: null
+  },
+
+  /* -- BAGS ----------------------------------------------------- */
+  "tote-black": {
+    name: "Black Canvas Tote", description: "Holds everything. Shows nothing.",
+    category: "apparel", type: "bag", slot: "bag", zIndex: 9,
+    image: "test.png", tags: ["bag","black","canvas","large"], value: 2200,
+    consumable: false, effects: null
+  },
+  "briefcase-tan": {
+    name: "Tan Leather Briefcase", description: "Inherited, or found. Either way it projects authority.",
+    category: "apparel", type: "bag", slot: "bag", zIndex: 9,
+    image: "test.png", tags: ["bag","tan","leather","formal"], value: 12000,
+    consumable: false, effects: null
+  },
+
+  /* -- ACCESSORIES ---------------------------------------------- */
+  "watch-silver": {
+    name: "Silver Wristwatch", description: "Analogue. A quiet statement of punctuality.",
+    category: "apparel", type: "accessory", slot: "accessory-left", zIndex: 10,
+    image: "test.png", tags: ["watch","silver","accessory"], value: 8000,
+    consumable: false, effects: null
+  },
+
+  /* -- BADGES --------------------------------------------------- */
+  "name-badge": {
+    name: "Staff Name Badge", description: "Policy requires it visible at all times on the floor.",
+    category: "apparel", type: "badge", slot: "badge", zIndex: 13,
+    image: "test.png", tags: ["badge","id","required","staff"], value: 0,
+    consumable: false, effects: null
+  },
+  "visitor-pass": {
+    name: "Visitor Pass", description: "A laminated single-day access card. Expires at midnight.",
+    category: "apparel", type: "badge", slot: "badge", zIndex: 13,
+    image: "test.png", tags: ["badge","visitor","temporary"], value: 0,
+    consumable: false, effects: null
+  },
+
+  /* -- TOOLS ---------------------------------------------------- */
+  "ink-pen": {
+    name: "Ink Pen", description: "Black, fine-tip. Officially required for all formal signatures.",
+    category: "tool", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["pen","writing","required"], value: 200,
+    consumable: false, effects: null
+  },
+  "coffee-cup": {
+    name: "Coffee", description: "Mediocre filter coffee. Does the job.",
+    category: "tool", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["food","consumable","stimulant"], value: 350,
+    consumable: true, effects: { stamina: 15, stress: -8 }
+  },
+  "energy-drink": {
+    name: "Energy Drink", description: "Too sweet. Too effective. No regrets.",
+    category: "tool", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["food","consumable","stimulant"], value: 280,
+    consumable: true, effects: { stamina: 25, stress: 10 }
+  },
+  "painkiller": {
+    name: "Painkiller", description: "Two tablets. Takes the edge off.",
+    category: "tool", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["medicine","consumable"], value: 150,
+    consumable: true, effects: { stress: -20, stamina: -5 }
+  },
+
+  /* -- KEYS ----------------------------------------------------- */
+  "ledger-key": {
+    name: "Ledger Key", description: "A small brass key that opens the locked filing cabinet in Bay 3.",
+    category: "key", type: "key", slot: null, zIndex: null,
+    image: "test.png", tags: ["key","cabinet","bay-3"], value: 0,
+    consumable: false, effects: null
+  },
+
+  /* -- COSMETICS ------------------------------------------------
+     Items with a Use::<key> passage are Category B items.
+     Their use action routes to that passage in sector-3.
+     The passage handles all conditional logic (paired items, etc.).
+  ---------------------------------------------------------------- */
+  "hand-mirror": {
+    name: "Hand Mirror", description: "Small enough to fit in any bag. Useful before any meeting.",
+    category: "cosmetic", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["mirror","cosmetic","personal"], value: 1500,
+    consumable: false, effects: null
+    /* Use::hand-mirror passage handles makeup/grooming routing */
+  },
+  "makeup-kit": {
+    name: "Makeup Kit", description: "A compact set. Foundation, liner, a neutral lip.",
+    category: "cosmetic", type: "tool", slot: null, zIndex: null,
+    image: "test.png", tags: ["makeup","cosmetic","grooming"], value: 2800,
+    consumable: false, effects: null
+    /* Use::makeup-kit passage handles same grooming interface */
+  },
+
+  /* -- DOCUMENTS ------------------------------------------------ */
+  "case-folder": {
+    name: "Case Folder", description: "Holds the active request set for the afternoon window.",
+    category: "document", type: "document", slot: null, zIndex: null,
+    image: "test.png", tags: ["folder","work","active"], value: 0,
+    consumable: false, effects: null
+  },
+  "compliance-memo": {
+    name: "Compliance Memo", description: "This week's inspection priorities. Keep it somewhere visible.",
+    category: "document", type: "document", slot: null, zIndex: null,
+    image: "test.png", tags: ["memo","compliance","work"], value: 0,
+    consumable: false, effects: null
+  }
+
+}>>
+
+
+/* ----------------------------------------------------------------
+   NPCS  ($NPCS)
+   Static data for every named character. Dynamic relationship state
+   is tracked in $gs.npcs keyed by the same keys.
+
+   Shape:
+   {
+     name:         string   Display name
+     description:  string   Brief character note shown on hover / inspect
+     image:        string   Filename only (e.g. "supervisor-holt.png")
+                            Rendered from: images/npcs/<image>
+                            Must be 1:2 aspect ratio, transparent background
+                            Minimum production width: 400px
+     defaultState: object   Initial values written to $gs.npcs[key] on first
+                            encounter. Keys are arbitrary — define whatever
+                            relationship axes the story uses.
+                            Common axes: affection, anger, trust, suspicion
+                            Range convention: 0-100 for all axes
+   }
+---------------------------------------------------------------- */
+<<set $NPCS = {
+  "supervisor-holt": {
+    name: "Supervisor Holt",
+    description: "Middle management. Watches the door more than the work.",
+    image: "test.png",
+    defaultState: { affection: 40, anger: 20, trust: 30, suspicion: 25 }
+  },
+  "clerk-osei": {
+    name: "Clerk Osei",
+    description: "Two desks over. Reliable. Knows where everything is filed.",
+    image: "test.png",
+    defaultState: { affection: 60, anger: 5,  trust: 50, suspicion: 5  }
+  },
+  "auditor-voss": {
+    name: "Auditor Voss",
+    description: "Compliance division. Here for the week. Taking notes.",
+    image: "test.png",
+    defaultState: { affection: 20, anger: 10, trust: 15, suspicion: 60 }
+  }
+}>>
+
+
+/* ----------------------------------------------------------------
+   SCENES  ($SCENES)
+   Default visual and descriptive data per location.
+   $gs.scene.image and $gs.scene.description override these when
+   non-null. Use <<setSceneLoc>> to switch locations.
+
+   Shape:
+   {
+     title:       string        Display name shown in sector-2
+     image:       string | null Filename only (e.g. "records-desk.jpg")
+                                Rendered from: images/scenes/<image>
+                                Must be 5:2 aspect ratio
+                                Minimum production width: 1200px
+                                null if no art yet
+     description: string        Default descriptive text for the scene
+                                Shown in Scene::<id> passage if no override
+   }
+---------------------------------------------------------------- */
+<<set $SCENES = {
+  "records-desk":       { title: "Records Desk",         image: "test.png", description: "You sit at the records desk, away from the phones, with a neat stack of requests waiting for review." },
+  "file-review-bay":    { title: "File Review Bay",      image: "test.png", description: "You move from folder to folder, logging each discrepancy before it can become someone else's problem." },
+  "break-room":         { title: "Break Room",           image: "test.png", description: "The humming vending machine and a lukewarm coffee buy you ten minutes of peace." },
+  "compliance-bulletin":{ title: "Compliance Bulletin",  image: "test.png", description: "A fresh memo outlines the week's inspection priorities and reminds everyone to keep their stations immaculate." },
+  "overflow-archive":   { title: "Overflow Archive",     image: "test.png", description: "You stay with the backlog long enough for the office lights to feel harsher than usual." },
+  "hallway":            { title: "Hallway",              image: "test.png", description: "A quick conversation reminds you that everyone is improvising their way through policy and pressure." },
+  "locker-room":        { title: "Locker Room",          image: "test.png", description: "The narrow corridor of lockers. The mirror at the end reflects whoever you've decided to be today." }
+}>>
+
+
+/* ----------------------------------------------------------------
+   SCHEDULE  ($SCHEDULE)
+   Seven-day work schedule template. Index 0 = Monday, 6 = Sunday.
+   This is reference data — the schedule is not enforced. It provides
+   shift labels for the UI and base pay rates for payout calculations.
+   $gs.time.context is set explicitly by passage authors via
+   <<setContext>>, not derived from this schedule.
+
+   Shape (each day):
+   {
+     label:  string    Day name
+     shifts: array     Each shift: { start, end, label, context, baseRate }
+       start:    int   Hour (0-23) when shift begins (inclusive)
+       end:      int   Hour (0-23) when shift ends (exclusive)
+       label:    string Display label ("Morning", "Afternoon", etc.)
+       context:  string "work" | "off" | "transit" | "personal"
+       baseRate: int   Cents per in-game minute while context = "work"
+                       0 for non-work shifts
+   }
+---------------------------------------------------------------- */
+<<set $SCHEDULE = [
+  { label: "Monday",    shifts: [ { start: 9,  end: 13, label: "Morning",   context: "work", baseRate: 14 }, { start: 13, end: 14, label: "Lunch",     context: "off",  baseRate: 0  }, { start: 14, end: 17, label: "Afternoon", context: "work", baseRate: 14 } ] },
+  { label: "Tuesday",   shifts: [ { start: 9,  end: 13, label: "Morning",   context: "work", baseRate: 14 }, { start: 13, end: 14, label: "Lunch",     context: "off",  baseRate: 0  }, { start: 14, end: 17, label: "Afternoon", context: "work", baseRate: 14 } ] },
+  { label: "Wednesday", shifts: [ { start: 9,  end: 13, label: "Morning",   context: "work", baseRate: 14 }, { start: 13, end: 14, label: "Lunch",     context: "off",  baseRate: 0  }, { start: 14, end: 18, label: "Afternoon", context: "work", baseRate: 14 } ] },
+  { label: "Thursday",  shifts: [ { start: 9,  end: 13, label: "Morning",   context: "work", baseRate: 14 }, { start: 13, end: 14, label: "Lunch",     context: "off",  baseRate: 0  }, { start: 14, end: 17, label: "Afternoon", context: "work", baseRate: 14 } ] },
+  { label: "Friday",    shifts: [ { start: 9,  end: 13, label: "Morning",   context: "work", baseRate: 16 }, { start: 13, end: 14, label: "Lunch",     context: "off",  baseRate: 0  }, { start: 14, end: 16, label: "Afternoon", context: "work", baseRate: 16 } ] },
+  { label: "Saturday",  shifts: [] },
+  { label: "Sunday",    shifts: [] }
+]>>
+
+
+/*
+  ================================================================
+  GAME STATE  ($gs)
+  ================================================================
+  Single serialisable object. All save/load operates on $gs.
+  Registries ($SLOTS, $ITEMS, $NPCS, $SCENES, $SCHEDULE) are never
+  saved — they are reconstituted from StoryInit on every load.
+  ================================================================
+*/
+<<set $gs = {
+
+  /* -- TIME ----------------------------------------------------
+     week:    int   0-indexed from game start
+     day:     int   0 = Monday ... 6 = Sunday
+     hour:    int   0-23
+     minute:  int   0-59
+     context: string  "work" | "off" | "transit" | "personal"
+              Set explicitly via <<setContext>>.
+              NOT derived from $SCHEDULE automatically.
+              Performance meters only increment when context = "work".
+  */
+  time: {
+    week:    0,
+    day:     0,
+    hour:    11,
+    minute:  40,
+    context: "work"
+  },
+
+  /* -- STATS ---------------------------------------------------
+     All values clamped 0-100 by <<adjustStat>>.
+     Add new stat keys here to make them available to <<adjustStat>>.
+  */
+  stats: {
+    stress:  35,
+    stamina: 60
+  },
+
+  /* -- FINANCE -------------------------------------------------
+     All values in cents (int) to avoid floating-point errors.
+     balance: 112000 = $1,120.00
+     debt:    840000 = $8,400.00
+  */
+  finance: {
+    balance: 112000,
+    debt:    840000
+  },
+
+  /* -- PERFORMANCE ---------------------------------------------
+     Resets after each salary payout cycle.
+     score:              float  Weighted quality accumulator
+     tasksCompleted:     int    Discrete task count this cycle
+     minutesInWork:      int    In-game minutes while context = "work"
+     cycleStartDay:      int    Day the current cycle began
+     cycleStartWeek:     int    Week the current cycle began
+     payoutIntervalDays: int    Days between payouts (7 = weekly)
+     baseSalary:         int    Cents paid at each payout unconditionally
+     bonusThreshold:     float  Score required to earn the bonus
+     bonusAmount:        int    Cents added when score >= bonusThreshold
+  */
+  performance: {
+    score:              0.0,
+    tasksCompleted:     0,
+    minutesInWork:      0,
+    cycleStartDay:      0,
+    cycleStartWeek:     0,
+    payoutIntervalDays: 7,
+    baseSalary:         180000,
+    bonusThreshold:     50.0,
+    bonusAmount:        25000
+  },
+
+  /* -- STATUS --------------------------------------------------
+     strikes: 0-3. Three strikes triggers a game-over check.
+              Check $gs.status.strikes in passages after <<warn>>.
+  */
+  status: {
+    strikes: 1
+  },
+
+  /* -- SCENE ---------------------------------------------------
+     id:          string        Key into $SCENES
+     image:       string | null null = use $SCENES[id].image
+                                string = override for this passage only
+     description: string | null null = use $SCENES[id].description
+     npcs:        string[]      NPC keys declared by the current passage.
+                                Reset to [] at the start of every scene render.
+                                Populated by <<setNPC>> calls in the passage.
+  */
+  scene: {
+    id:          "records-desk",
+    image:       null,
+    description: null,
+    npcs:        []
+  },
+
+  /* -- INVENTORY -----------------------------------------------
+     states: object  itemKey -> "locked" | "world" | "carried" | "equipped"
+       "locked"   Item does not yet exist in the world
+       "world"    Exists somewhere but not with the player
+       "carried"  In the player's bag (not occupying a slot)
+       "equipped" In a body slot (see equipped map below)
+       Keys absent from states are implicitly "locked".
+
+     equipped: object  slotKey -> itemKey | null
+       Authoritative slot contents.
+       Must remain in sync with states at all times.
+       Only <<equipItem>> and <<unequipItem>> should mutate both.
+  */
+  inventory: {
+    states: {
+      "plain-bra-white":       "equipped",
+      "plain-underwear-white": "equipped",
+      "sheer-tights-nude":     "equipped",
+      "pencil-skirt-navy":     "equipped",
+      "blouse-white-button":   "equipped",
+      "blazer-navy":           "equipped",
+      "heels-black-low":       "equipped",
+      "tote-black":            "equipped",
+      "name-badge":            "equipped",
+      "ink-pen":               "carried",
+      "ledger-key":            "carried",
+      "case-folder":           "carried",
+      "hand-mirror":           "world",
+      "compliance-memo":       "world",
+      "plain-bra-black":       "locked",
+      "sheer-tights-black":    "locked",
+      "trousers-charcoal":     "locked",
+      "blouse-ivory-silk":     "locked",
+      "cardigan-grey":         "locked",
+      "corset-black":          "locked",
+      "flats-nude":            "locked",
+      "briefcase-tan":         "locked",
+      "watch-silver":          "locked",
+      "visitor-pass":          "locked",
+      "coffee-cup":            "world",
+      "energy-drink":          "locked",
+      "painkiller":            "world",
+      "makeup-kit":            "world"
+    },
+    equipped: {
+      "underwear-top":    "plain-bra-white",
+      "underwear-bottom": "plain-underwear-white",
+      "legwear":          "sheer-tights-nude",
+      "bottom":           "pencil-skirt-navy",
+      "top":              "blouse-white-button",
+      "dress":            null,
+      "outerwear":        "blazer-navy",
+      "shoes":            "heels-black-low",
+      "head":             null,
+      "bag":              "tote-black",
+      "accessory-left":   null,
+      "accessory-right":  null,
+      "accessory-neck":   null,
+      "badge":            "name-badge"
+    }
+  },
+
+  /* -- NPC RELATIONSHIP STATE ----------------------------------
+     Keys match $NPCS. Values start from $NPCS[key].defaultState
+     and are mutated by gameplay events.
+     Initialised lazily on first <<setNPC>> or relationship macro
+     call — not pre-populated here to avoid maintenance burden
+     when new NPCs are added to $NPCS.
+     Structure once populated:
+       "supervisor-holt": { affection: 40, anger: 20, trust: 30, suspicion: 25 }
+  */
+  npcs: {},
+
+  /* -- JOURNAL -------------------------------------------------
+     Quest and objective tracker. Not a chronological activity log.
+     quests: array of quest objects:
+       id:      string  Unique identifier — used by <<questLog>> and <<questStatus>>
+       title:   string  Display name shown in journal tab
+       status:  string  "hidden" | "active" | "complete" | "failed"
+                        hidden quests are never shown in the journal tab
+       entries: array   Objectives and notes appended by <<questLog>>
+         text:    string  Objective text displayed in journal
+         week:    int     Time of entry (stored for reference, not displayed)
+         day:     int
+         hour:    int
+         minute:  int
+  */
+  journal: {
+    quests: [
+      {
+        id:     "first-day",
+        title:  "Getting Through the Day",
+        status: "active",
+        entries: [
+          { text: "Arrive on time for the filing window.",   week: 0, day: 0, hour: 8,  minute: 0  },
+          { text: "Review witness statements before lunch.", week: 0, day: 0, hour: 9,  minute: 15 },
+          { text: "Keep the desk clear for inspections.",   week: 0, day: 0, hour: 10, minute: 30 }
+        ]
+      }
+    ]
+  },
+
+  /* -- META ----------------------------------------------------
+     Runtime flags and UI state that must persist across saves.
+
+     uiProfile: int    Index into $UI_PROFILES. Controls which
+                       sidebar profile is currently active.
+                       Change with <<setProfile n>>.
+     employed:  bool   True once the player has a job. Used by
+                       showIf in sidebar profile specs to hide/show
+                       employment-dependent cards.
+     debug:     bool   When true, profile spec validation runs on
+                       startup and logs warnings to browser console.
+                       Set true during authoring; false for release.
+  */
+  meta: {
+    uiProfile: 0,
+    employed:  false,
+    debug:     false
+  }
+
+}>>
+
+
+/* ----------------------------------------------------------------
+   UI PROFILES  ($UI_PROFILES)
+   ----------------------------------------------------------------
+   Array of sidebar profile specs. Index matches $gs.meta.uiProfile.
+   Profiles are read-only display configuration — never saved in $gs.
+   Change the active profile at runtime with <<setProfile n>>.
+
+   Profile shape:
+   {
+     id:      string          Unique label for debug messages
+     extends: int | null      Index of parent profile to inherit from.
+                              Child cards REPLACE parent cards at the
+                              same array index. To add a card, append
+                              at a new index; to change a card, copy
+                              and modify at the same index.
+     left:    array of cards  See card shape below.
+   }
+
+   Card shape:
+   {
+     title:  string | null  Optional card header label
+     showIf: string | null  Dotted VM path resolving to boolean.
+                            null = always shown.
+                            Path must exist on the ViewModel.
+                            Example: "meta.employed"
+     rows:   array of rows  Each row is an array of element specs.
+                            One element = full width.
+                            Two elements = split 50/50.
+   }
+
+   Element spec shape:
+   {
+     t:      string   Primitive type. One of:
+                        "string"   — label + text value
+                        "number"   — label + formatted number
+                        "progress" — label + continuous fill bar (0-100)
+                        "steps"    — label + N discrete pip cells
+     label:  string   Display label shown above/beside the value
+     v:      string   Dotted path into the ViewModel.
+                      Example: "stats.stress", "dateLabel", "finance.balance"
+     fmt:    string   Optional formatter. Valid values:
+                        "percent"  — appends %  (for string/number)
+                        "money"    — cents to $X,XXX (for number)
+                        "int"      — Math.round (for number)
+     min:    number   Optional. Lower bound for progress (default 0)
+     max:    number   Optional. Upper bound for progress/steps (default 100)
+     style:  string   Optional visual variant.
+                        "danger"   — red fill (progress)
+                        "good"     — green fill (progress, default)
+                        "warning"  — amber fill (progress/steps)
+     showIf: string | null  Same as card-level showIf but for this
+                            element only. Hides single cell.
+   }
+
+   ViewModel paths available to v and showIf:
+     dateLabel          — formatted "Mon · Mar 18" string
+     timeLabel          — formatted "11:40 AM" string
+     shiftLabel         — shift name from $SCHEDULE or "Off"
+     stats.stress       — int 0-100
+     stats.stamina      — int 0-100
+     finance.balance    — int cents
+     finance.debt       — int cents
+     status.strikes     — int 0-3
+     performance.score  — float
+     performance.tasksCompleted  — int
+     meta.employed      — bool
+     meta.uiProfile     — int
+     meta.debug         — bool
+---------------------------------------------------------------- */
+<<set $UI_PROFILES = [
+
+  /* -- PROFILE 0: base (pre-employment) ------------------------
+     Shown from game start. No shift or employment indicators.
+     Extend this for employed stages.
+  */
+  {
+    id:      "base",
+    extends: null,
+    left: [
+
+      /* Card 0 — Date, time, shift */
+      {
+        title:  null,
+        showIf: null,
+        rows: [
+          [
+            { t: "string", label: "Date",  v: "dateLabel",  fmt: null, showIf: null },
+            { t: "string", label: "Time",  v: "timeLabel",  fmt: null, showIf: null }
+          ],
+          [
+            { t: "string", label: "Shift", v: "shiftLabel", fmt: null, showIf: "meta.employed" }
+          ]
+        ]
+      },
+
+      /* Card 1 — Stress and stamina */
+      {
+        title:  null,
+        showIf: null,
+        rows: [
+          [ { t: "progress", label: "Stress",  v: "stats.stress",  min: 0, max: 100, style: "danger", showIf: null } ],
+          [ { t: "progress", label: "Stamina", v: "stats.stamina", min: 0, max: 100, style: "good",   showIf: null } ]
+        ]
+      },
+
+      /* Card 2 — Finance and warnings */
+      {
+        title:  null,
+        showIf: null,
+        rows: [
+          [
+            { t: "number", label: "Balance", v: "finance.balance", fmt: "money",   showIf: null },
+            { t: "number", label: "Debt",    v: "finance.debt",    fmt: "money",   showIf: null }
+          ],
+          [
+            { t: "steps", label: "Warnings", v: "status.strikes", max: 3, style: "danger", showIf: null }
+          ]
+        ]
+      }
+
+    ]
+  },
+
+  /* -- PROFILE 1: employed ------------------------------------
+     Extends profile 0. Shift row is now visible (meta.employed = true).
+     Add employment-specific cards here.
+  */
+  {
+    id:      "employed",
+    extends: 0,
+    left: [
+      /* Card 0 overrides profile 0 card 0 — same structure,
+         shift row showIf removed so it always shows */
+      {
+        title:  null,
+        showIf: null,
+        rows: [
+          [
+            { t: "string", label: "Date",  v: "dateLabel",  fmt: null, showIf: null },
+            { t: "string", label: "Time",  v: "timeLabel",  fmt: null, showIf: null }
+          ],
+          [
+            { t: "string", label: "Shift", v: "shiftLabel", fmt: null, showIf: null }
+          ]
+        ]
+      }
+      /* Cards 1 and 2 inherited from profile 0 unchanged */
+    ]
+  }
+]>>

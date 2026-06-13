@@ -482,6 +482,25 @@ pub struct MacroBlockEvent {
 /// Handlers must always query these methods through the active format plugin
 /// obtained from `FormatRegistry::get()`. Never import format-specific data
 /// directly from a format module.
+
+/// Detail information about a custom macro, returned by
+/// [`FormatPlugin::find_custom_macro_detail()`] for completion resolve.
+#[derive(Debug, Clone)]
+pub struct CustomMacroDetail {
+    /// The passage where this macro is defined.
+    pub defined_in: String,
+    /// The file URI where this macro is defined.
+    pub file_uri: String,
+    /// Whether this was defined via `<<widget>>` (vs `Macro.add()`).
+    pub is_widget: bool,
+    /// Whether this is a container widget.
+    pub is_container: bool,
+    /// The number of arguments this macro accepts (if known).
+    pub arg_count: Option<usize>,
+    /// Description/documentation (from comments above the definition).
+    pub description: Option<String>,
+}
+
 pub trait FormatPlugin: Send + Sync {
     // -----------------------------------------------------------------------
     // Parsing methods (required)
@@ -824,10 +843,10 @@ pub trait FormatPlugin: Send + Sync {
         &[]
     }
 
-    /// Returns the set of macro names that can have a body (block or polymorphic macros).
+    /// Returns the set of macro names that can have a body (Container macros).
     ///
-    /// Derived from the catalog's `BodyRequirement`: macros with `Required` or
-    /// `Optional` body can appear as block macros with close tags.
+    /// Derived from the catalog's `BodyRequirement`: macros with `Required` body
+    /// are Container macros that always need close tags.
     ///
     /// Used by close-tag completion, folding region detection, and structural validation.
     fn body_macro_names(&self) -> HashSet<&'static str> {
@@ -887,26 +906,21 @@ pub trait FormatPlugin: Send + Sync {
         None
     }
 
-    /// Whether a macro invocation that normally can have a body should be
-    /// treated as inline (no body) for this specific usage.
+    /// Whether a macro invocation should be treated as inline (no body).
     ///
-    /// Some macros are polymorphic: they can be used with or without a body.
-    /// For example, SugarCube's `<<link>>` is inline when used without a
-    /// close tag (`<<link "Talk" "Shop">>`) and block when used with one
-    /// (`<<link "Talk" "Shop">>…<</link>>`). This method lets the format
-    /// plugin determine, given the actual body presence, whether the macro
-    /// should be treated as inline for classification purposes.
+    /// Since SugarCube macros are now classified as either Container (always
+    /// needs close tag) or Inline (never has close tag), this always returns
+    /// `false`. The method is kept for API compatibility with the trait.
     ///
     /// Returns `true` if the macro is being used inline (no body), `false`
     /// if it's being used as a block (has body) or if the format doesn't
-    /// support polymorphic macros. When `has_body` is `None` (unknown, e.g.,
-    /// line-scanning fallback), returns `false` (default to block).
-    fn is_inline_macro_usage(&self, _macro_name: &str, has_body: Option<bool>) -> bool {
-        // Default: not inline. Formats with polymorphic macros override this.
-        has_body == Some(false)
-            && self.find_macro(_macro_name).is_some_and(|m| {
-                m.body == crate::types::BodyRequirement::Optional
-            })
+    /// support polymorphic macros.
+    ///
+    /// Since SugarCube macros are either Container (always need close tag) or
+    /// Inline (never have close tag), this always returns `false` — there are
+    /// no polymorphic macros that can be used either way.
+    fn is_inline_macro_usage(&self, _macro_name: &str, _has_body: Option<bool>) -> bool {
+        false
     }
 
     /// Returns the structural parent constraints: maps child macro name →
@@ -1538,6 +1552,17 @@ pub trait FormatPlugin: Send + Sync {
     /// Returns `true` if the name matches a widget or `Macro.add()` definition.
     fn is_custom_macro(&self, _name: &str) -> bool {
         false
+    }
+
+    /// Look up a custom macro definition with full detail for completion resolve.
+    ///
+    /// Returns `(defined_in, file_uri, is_widget, is_container, arg_count, description)`
+    /// if found, or `None`. The default returns `None`.
+    fn find_custom_macro_detail(
+        &self,
+        _name: &str,
+    ) -> Option<CustomMacroDetail> {
+        None
     }
 
     // -----------------------------------------------------------------------

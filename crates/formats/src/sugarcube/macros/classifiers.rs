@@ -9,12 +9,12 @@ use std::collections::{HashMap, HashSet};
 use crate::types::MacroArgKind;
 use super::catalog::builtin_macros;
 
-/// Macro names that can have a body (block or polymorphic macros).
+/// Macro names that can have a body (Container macros).
 ///
-/// Derived from the catalog's `BodyRequirement`: macros with `Required` or
-/// `Optional` body can appear as block macros with close tags. This replaces
-/// the old hardcoded list that had drifted from the catalog and incorrectly
-/// included structural modifiers (`else`, `case`, `default`).
+/// Derived from the catalog's `BodyRequirement`: macros with `Required` body
+/// are Container macros that always need close tags. This replaces the old
+/// hardcoded list that had drifted from the catalog and incorrectly included
+/// structural modifiers (`else`, `case`, `default`).
 ///
 /// Used by folding region detection and close-tag completion.
 pub fn body_macro_names() -> HashSet<&'static str> {

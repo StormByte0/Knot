@@ -511,12 +511,20 @@ fn register_definitions_from_nodes(
                         args.trim().to_string()
                     };
                     if !widget_name.is_empty() {
+                        // Detect the `container` keyword in widget args.
+                        // SugarCube syntax: <<widget "name" container>>
+                        // The word "container" must appear after the name token,
+                        // outside of any quoted string.
+                        let is_container = detect_widget_container_keyword(&args);
+                        // Extract arg_count from _args[N] / $args[N] references in the widget body
+                        let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
                         macro_reg.register_widget(
                             &widget_name,
                             passage_name,
                             file_uri,
                             definition_name_span.as_ref().map_or(open_span.start, |dns| dns.start),
-                            None,
+                            arg_count,
+                            is_container,
                         );
                     }
                 }
@@ -709,6 +717,129 @@ pub fn walk_script_js(
     }
 }
 
+/// Detect whether the `container` keyword appears in widget args.
+///
+/// SugarCube widget syntax: `<<widget "name" container>>` or `<<widget 'name' container>>`.
+/// The keyword must appear as a bare token (not inside quotes) after the name.
+/// This function skips quoted strings and checks for the bare word "container".
+fn detect_widget_container_keyword(args: &str) -> bool {
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut i = 0;
+    let bytes = args.as_bytes();
+    let len = bytes.len();
+
+    while i < len {
+        let ch = bytes[i];
+        if in_double_quote {
+            if ch == b'"' && (i == 0 || bytes[i - 1] != b'\\') {
+                in_double_quote = false;
+            }
+        } else if in_single_quote {
+            if ch == b'\'' && (i == 0 || bytes[i - 1] != b'\\') {
+                in_single_quote = false;
+            }
+        } else {
+            if ch == b'"' {
+                in_double_quote = true;
+            } else if ch == b'\'' {
+                in_single_quote = true;
+            } else if ch == b'c' {
+                // Check for "container" keyword outside quotes
+                if args[i..].starts_with("container") {
+                    let end = i + 9; // "container".len()
+                    // Must be a word boundary: preceded by whitespace and followed
+                    // by end-of-string or whitespace
+                    let prev_ok = i == 0 || args.as_bytes()[i - 1].is_ascii_whitespace();
+                    let next_ok = end >= len || args.as_bytes()[end].is_ascii_whitespace();
+                    if prev_ok && next_ok {
+                        return true;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Extract the number of arguments a widget accepts by scanning its children
+/// for `_args[N]` or `$args[N]` references.
+///
+/// Returns `Some(max_index + 1)` if any `_args[N]` / `$args[N]` patterns are
+/// found, where `max_index` is the highest array index referenced. Returns
+/// `None` if no such patterns exist (the widget doesn't reference its args).
+///
+/// This walks all text and expression nodes recursively within the widget body.
+fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
+    let mut max_index: Option<usize> = None;
+
+    fn scan_node(node: &ast::AstNode, max_index: &mut Option<usize>) {
+        match node {
+            ast::AstNode::Text { content, .. } => {
+                scan_for_args_index(content, max_index);
+            }
+            ast::AstNode::Expression { content, .. } => {
+                scan_for_args_index(content, max_index);
+            }
+            ast::AstNode::Macro { args, children, .. } => {
+                scan_for_args_index(args, max_index);
+                if let Some(ch) = children {
+                    for child in ch {
+                        scan_node(child, max_index);
+                    }
+                }
+            }
+            // Links can contain text that references _args
+            ast::AstNode::Link { .. } => {}
+            // These node types don't contain _args references
+            ast::AstNode::Comment { .. }
+            | ast::AstNode::InlineStyle { .. }
+            | ast::AstNode::TextFormat { .. }
+            | ast::AstNode::MacroClose { .. }
+            | ast::AstNode::Error { .. } => {}
+        }
+    }
+
+    for child in children {
+        scan_node(child, &mut max_index);
+    }
+
+    max_index.map(|mi| mi + 1)
+}
+
+/// Scan a string for `_args[N]` or `$args[N]` patterns and update `max_index`
+/// if a higher index is found.
+fn scan_for_args_index(text: &str, max_index: &mut Option<usize>) {
+    // Match patterns like _args[0], _args[1], $args[5], etc.
+    // Hand-written scanner to avoid regex overhead on hot paths.
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        // Look for _args[ or $args[
+        if (bytes[i] == b'_' || bytes[i] == b'$') && i + 5 < len {
+            if &text[i + 1..i + 5] == "args" && text.as_bytes()[i + 5] == b'[' {
+                // Found _args[ or $args[ — extract the index
+                let bracket_start = i + 6;
+                let mut bracket_end = bracket_start;
+                while bracket_end < len && bytes[bracket_end].is_ascii_digit() {
+                    bracket_end += 1;
+                }
+                if bracket_end > bracket_start && bracket_end < len && bytes[bracket_end] == b']' {
+                    if let Ok(idx) = text[bracket_start..bracket_end].parse::<usize>() {
+                        *max_index = Some(max_index.map_or(idx, |mi| mi.max(idx)));
+                    }
+                }
+                i = bracket_end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -752,6 +883,70 @@ mod tests {
         if let Some((_, node)) = items_var {
             let reads: Vec<_> = node.meta.refs.iter().filter(|a| a.is_read()).collect();
             assert!(!reads.is_empty(), "$ITEMS should have at least one READ");
+        }
+    }
+
+    #[test]
+    fn test_detect_widget_container_keyword() {
+        // Double-quoted name with container
+        assert!(detect_widget_container_keyword(r#""myWidget" container"#));
+        // Single-quoted name with container
+        assert!(detect_widget_container_keyword(r#"'myWidget' container"#));
+        // Container at the end
+        assert!(detect_widget_container_keyword(r#""myWidget" container"#));
+        // No container keyword
+        assert!(!detect_widget_container_keyword(r#""myWidget""#));
+        assert!(!detect_widget_container_keyword(r#""myWidget" "#));
+        // "container" inside quotes should NOT be detected
+        assert!(!detect_widget_container_keyword(r#""container""#));
+        assert!(!detect_widget_container_keyword(r#""myContainer""#));
+        // "container" as part of another word should NOT be detected
+        assert!(!detect_widget_container_keyword(r#""myWidget" containers"#));
+    }
+
+    #[test]
+    fn test_scan_for_args_index() {
+        let mut max_index = None;
+        scan_for_args_index("_args[0]", &mut max_index);
+        assert_eq!(max_index, Some(0));
+
+        let mut max_index = None;
+        scan_for_args_index("_args[2]", &mut max_index);
+        assert_eq!(max_index, Some(2));
+
+        let mut max_index = None;
+        scan_for_args_index("$args[5]", &mut max_index);
+        assert_eq!(max_index, Some(5));
+
+        // Multiple references — should pick the highest
+        let mut max_index = None;
+        scan_for_args_index("<<print _args[0]>> <<print _args[3]>>", &mut max_index);
+        assert_eq!(max_index, Some(3));
+
+        // No _args references
+        let mut max_index = None;
+        scan_for_args_index("Hello world", &mut max_index);
+        assert_eq!(max_index, None);
+
+        // $args mixed with _args
+        let mut max_index = None;
+        scan_for_args_index("$args[1] and _args[4]", &mut max_index);
+        assert_eq!(max_index, Some(4));
+    }
+
+    #[test]
+    fn test_extract_widget_arg_count_from_ast() {
+        // Parse a widget that uses _args
+        let body = r#"<<widget "greet">><<print _args[0]>> says <<print _args[1]>><</widget>>"#;
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Widget);
+
+        // Find the widget macro node
+        if let Some(ast::AstNode::Macro { children, .. }) = ast.nodes.first() {
+            let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
+            // _args[0] and _args[1] means 2 args
+            assert_eq!(arg_count, Some(2), "Expected arg_count=2 from _args[0] and _args[1]");
+        } else {
+            panic!("Expected a Macro node as the first AST node");
         }
     }
 }

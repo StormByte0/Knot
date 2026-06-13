@@ -282,8 +282,8 @@ fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, b
             ..
         } = node {
             // `children: Some(_)` means the macro has a body (block variant with
-            // close tag). `None` means inline (no body, no close tag). This is
-            // the polymorphy signal for macros like <<link>> where body=Optional.
+            // close tag). `None` means inline (no body, no close tag). Container
+            // macros like <<link>> always have children; Inline macros never do.
             let has_body = children.is_some();
 
             if let Some(sargs) = structured_args {

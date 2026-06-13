@@ -53,11 +53,33 @@ pub(crate) async fn completion(
 
     let text = match inner.open_documents.get(&uri) {
         Some(t) => t,
-        None => return Ok(None),
+        None => {
+            tracing::warn!("completion: document not found in open_documents cache: {}", uri);
+            return Ok(None);
+        }
     };
+
+    // If workspace indexing hasn't completed yet, the format is not resolved
+    // (resolve_format() returns Core because StoryData hasn't been found).
+    // The Core plugin provides zero completions, so short-circuit here to
+    // avoid silently returning empty results. Completions will work once
+    // indexing finishes and the correct format is resolved.
+    if !inner.workspace.indexed {
+        tracing::debug!(
+            "completion: workspace not indexed yet, deferring (format would be {:?})",
+            inner.workspace.resolve_format()
+        );
+        return Ok(None);
+    }
 
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
+
+    tracing::info!(
+        "completion: uri={}, pos={}:{}, trigger={:?}, format={:?}, plugin={}",
+        uri, position.line, position.character, trigger, format,
+        if plugin.is_some() { "Some" } else { "None" }
+    );
 
     let token_groups = inner.semantic_tokens.get(&uri).cloned().unwrap_or_default();
 
@@ -76,8 +98,11 @@ pub(crate) async fn completion(
             &token_groups,
         )
     } else {
+        tracing::warn!("completion: no plugin for format {:?}", format);
         Vec::new()
     };
+
+    tracing::info!("completion: format_items.len() = {}", format_items.len());
 
     if format_items.is_empty() {
         return Ok(None);
@@ -191,6 +216,38 @@ pub(crate) async fn completion_resolve(
                                     ));
                                 }
                             }
+                        }
+                        return Ok(CompletionItem {
+                            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: doc_markdown,
+                            })),
+                            ..params
+                        });
+                    }
+
+                    // Builtin not found — try custom macro registry
+                    if let Some(detail) = plugin.find_custom_macro_detail(name) {
+                        let type_label = if detail.is_widget {
+                            if detail.is_container { "Container widget" } else { "Widget" }
+                        } else {
+                            "Custom macro"
+                        };
+                        let mut doc_markdown = format!(
+                            "**{}** `{}`\n\n{} macro",
+                            type_label,
+                            name,
+                            type_label
+                        );
+                        if let Some(desc) = &detail.description {
+                            doc_markdown.push_str(&format!(" — {}", desc));
+                        }
+                        doc_markdown.push_str(&format!("\n\n**Defined in:** {}", detail.defined_in));
+                        if let Some(n) = detail.arg_count {
+                            doc_markdown.push_str(&format!("\n\n**Arguments:** {}", n));
+                        }
+                        if detail.is_container {
+                            doc_markdown.push_str("\n\nHas access to `_contents` via `<<include _contents>>`");
                         }
                         return Ok(CompletionItem {
                             documentation: Some(Documentation::MarkupContent(MarkupContent {

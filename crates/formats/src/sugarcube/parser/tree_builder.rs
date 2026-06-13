@@ -216,27 +216,6 @@ impl StackEntry {
                         }
                     }
 
-                    // No close tag, Optional body — inline form (correct, no error)
-                    (false, BodyRequirement::Optional) => {
-                        AstNode::Macro {
-                            name,
-                            args,
-                            var_refs,
-                            js_analysis,
-                            children: None,
-                            name_span,
-                            open_span,
-                            close_span: None,
-                            full_span,
-                            set_assignment,
-                            definition_name_span,
-                            close_name_span: None,
-                            capture_target,
-                            for_loop_vars,
-                            structured_args,
-                        }
-                    }
-
                     // No close tag, Required body — unclosed block (error)
                     // The pending children become the macro's body (same as old parser)
                     (false, BodyRequirement::Required) => {

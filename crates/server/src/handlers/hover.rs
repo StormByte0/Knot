@@ -474,53 +474,21 @@ fn try_macro_hover(
 /// the span-based path and the line-scanning fallback.
 ///
 /// `has_body` indicates whether this specific invocation has a body (children
-/// between open and close tags). Used to resolve polymorphic macros where
-/// `body: Optional` — e.g., `<<link "Talk" "Shop">>` (no body = inline) vs
-/// `<<link "Talk" "Shop">>…<</link>>` (has body = block). Pass `None` when
-/// body presence is unknown (fallback).
+/// between open and close tags). Since all SugarCube macros are now classified
+/// as either Container (always needs close tag) or Inline (never has close tag),
+/// this parameter is currently unused but kept for API compatibility.
+/// Pass `None` when body presence is unknown.
 fn build_macro_hover_text(
     mdef: &knot_formats::types::MacroDef,
     plugin: &dyn fmt_plugin::FormatPlugin,
-    has_body: Option<bool>,
+    _has_body: Option<bool>,
 ) -> String {
     let kind = macros::classify(mdef.name, mdef, plugin);
 
-    // Resolve polymorphic variant: macros with body=Optional (e.g., <<link>>,
-    // <<button>>) are inline when used without a body (no close tag) and
-    // block when used with a body (close tag present).
-    let is_polymorphic = mdef.body == knot_formats::types::BodyRequirement::Optional;
-    let effective_kind = if is_polymorphic {
-        match has_body {
-            Some(false) => {
-                // Inline variant: <<link "Talk" "Shop">> — no body, no close tag.
-                // Functions as a simple navigation link.
-                macros::MacroKind::Statement
-            }
-            Some(true) => {
-                // Block variant: <<link "Talk" "Shop">>…<</link>>
-                kind
-            }
-            None => kind, // Unknown — use default classification
-        }
-    } else {
-        kind
-    };
+    let mut hover_text = macros::hover_header(kind, &plugin.format_macro_label(mdef.name));
 
-    let mut hover_text = macros::hover_header(effective_kind, &plugin.format_macro_label(mdef.name));
-
-    // For polymorphic macros, add variant-specific description
-    if is_polymorphic {
-        match has_body {
-            Some(false) => {
-                hover_text.push_str("\n\nInline navigation link — no body section. Equivalent to a passage link with a click handler.");
-            }
-            _ => {
-                hover_text.push_str(&format!("\n\n{}", mdef.description));
-            }
-        }
-    } else {
-        hover_text.push_str(&format!("\n\n{}", mdef.description));
-    }
+    // Add description
+    hover_text.push_str(&format!("\n\n{}", mdef.description));
 
     // Add deprecation warning
     if mdef.deprecated {
@@ -530,11 +498,8 @@ fn build_macro_hover_text(
     }
 
     // Add kind-specific note (e.g., "Close with <</if>>")
-    // For the inline variant of polymorphic macros, suppress the "Close with" note
-    if !(is_polymorphic && has_body == Some(false)) {
-        if let Some(note) = macros::hover_kind_note(effective_kind, mdef.name, plugin) {
-            hover_text.push_str(&format!("\n\n{}", note));
-        }
+    if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
+        hover_text.push_str(&format!("\n\n{}", note));
     }
 
     // Add parameter info
