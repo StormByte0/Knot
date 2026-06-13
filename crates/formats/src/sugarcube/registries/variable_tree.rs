@@ -2081,6 +2081,210 @@ impl VariableTree {
     pub fn get_variable_mut_id(&mut self, name: &str) -> Option<NodeId> {
         self.path_index.get(name).copied()
     }
+
+    /// Find the variable path at a given body-relative byte offset.
+    ///
+    /// Scans all `VarAccess` records in the tree for the given `file_uri` and
+    /// `passage_name`, checking each access's `segment_spans` to find which
+    /// path segment contains the offset. Returns the full variable path up to
+    /// (and including) the matching segment.
+    ///
+    /// This is designed for span-based dot-notation completion: when the user
+    /// types `$player.state.` and the cursor is right after the dot, this
+    /// method finds the `$player.state` path by matching the offset against
+    /// the `segment_spans` of accesses in that passage.
+    ///
+    /// The offset should be **passage-body-relative** (0 = first byte after
+    /// the `:: Name` header line). Returns `None` if no segment spans contain
+    /// the offset.
+    pub fn path_at_offset(
+        &self,
+        file_uri: &str,
+        passage_name: &str,
+        body_offset: usize,
+    ) -> Option<String> {
+        let mut best_path: Option<String> = None;
+        let mut best_end: usize = 0;
+
+        for id in self.arena.iter_ids() {
+            if !self.is_live_node(id) {
+                continue;
+            }
+            let node = self.arena.get(id);
+            for access in &node.meta.refs {
+                // Skip accesses from other files/passages
+                if access.file_uri != file_uri || access.passage_name != passage_name {
+                    continue;
+                }
+
+                // Check segment_spans — each segment corresponds to a path
+                // component: [0] = root var span, [1..] = property spans.
+                // Build the path incrementally as we check each segment.
+                if access.segment_spans.is_empty() {
+                    continue;
+                }
+
+                // Check if the offset falls within any segment span, or
+                // right after the last segment span (cursor after the dot).
+                for (seg_idx, seg_span) in access.segment_spans.iter().enumerate() {
+                    // Offset is within this segment's span
+                    if body_offset >= seg_span.start && body_offset <= seg_span.end {
+                        // Reconstruct the path up to this segment
+                        let path = self.build_path_for_segment(id, seg_idx, &access.segment_spans);
+                        if let Some(ref p) = path {
+                            // Prefer longer (more specific) paths
+                            if seg_span.end > best_end {
+                                best_path = Some(p.clone());
+                                best_end = seg_span.end;
+                            }
+                        }
+                    }
+                }
+
+                // Also check if offset is right after the last segment span
+                // (cursor after the final dot, which isn't in any segment)
+                if let Some(last_span) = access.segment_spans.last() {
+                    // Allow up to 5 bytes gap for the dot separator
+                    if body_offset > last_span.end && body_offset <= last_span.end + 5 {
+                        let path = self.build_path_for_segment(
+                            id,
+                            access.segment_spans.len() - 1,
+                            &access.segment_spans,
+                        );
+                        if let Some(ref p) = path {
+                            if last_span.end > best_end {
+                                best_path = Some(p.clone());
+                                best_end = last_span.end;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        best_path
+    }
+
+    /// Build the full variable path for a given segment index.
+    ///
+    /// Walks from the node up to the root, collecting segment names.
+    /// The segment_spans array provides the spans, and we reconstruct
+    /// the path by walking the tree structure.
+    fn build_path_for_segment(
+        &self,
+        node_id: NodeId,
+        seg_idx: usize,
+        _segment_spans: &[Range<usize>],
+    ) -> Option<String> {
+        // Walk up from the node to collect the path components.
+        // The node's own name is the last component.
+        let mut parts: Vec<String> = Vec::new();
+        let mut current_id = node_id;
+
+        // We need exactly seg_idx + 1 path components
+        // (segment 0 = root var, segment 1 = first property, etc.)
+        for _ in 0..=seg_idx {
+            let node = self.arena.try_get(current_id)?;
+            parts.push(node.name.clone());
+            current_id = node.parent;
+            if current_id == NO_NODE || current_id == self.persistent_root {
+                break;
+            }
+        }
+
+        // The parts are in leaf-to-root order; reverse to get root-to-leaf
+        parts.reverse();
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("."))
+        }
+    }
+
+    /// Get the children of a variable path as typed completion data.
+    ///
+    /// Unlike `known_properties()` which returns just the names, this
+    /// method returns each child's name along with its inferred kind
+    /// (Object, Array, Scalar, Unknown). This is the span-based
+    /// equivalent of `build_shape_aware_property_map()` for a single
+    /// path — it queries the tree directly without building a full map.
+    ///
+    /// Returns an empty Vec if the path doesn't exist in the tree.
+    pub fn children_with_kind(&self, path: &str) -> Vec<(String, PropertyKind)> {
+        let Some((node_id, _)) = self.get_node_by_path(path) else {
+            return Vec::new();
+        };
+
+        self.arena
+            .children_of(node_id)
+            .map(|child_id| {
+                let child = self.arena.get(child_id);
+                let child_path = format!("{}.{}", path, child.name);
+                let kind = self.infer_kind_for_node(child_id, &child_path);
+                (child.name.clone(), kind)
+            })
+            .collect()
+    }
+
+    /// Infer the PropertyKind for a node based on its children.
+    ///
+    /// This mirrors the logic in `build_shape_aware_property_map_impl()`
+    /// but works on a single node without building the full map.
+    fn infer_kind_for_node(&self, node_id: NodeId, _path: &str) -> PropertyKind {
+        // Check if the node's NavIndex has an inferred type
+        let node = self.arena.get(node_id);
+        if let Some(ref inferred) = node.meta.nav.inferred_type {
+            return match inferred {
+                InferredType::Object => PropertyKind::Object,
+                InferredType::Array => PropertyKind::Array,
+                InferredType::Scalar => PropertyKind::Scalar,
+                InferredType::Function => PropertyKind::Scalar,
+                InferredType::Unknown => {
+                    // Fall back to child-based inference
+                    self.infer_kind_from_children(node_id)
+                }
+            };
+        }
+
+        // Fall back to child-based inference
+        self.infer_kind_from_children(node_id)
+    }
+
+    /// Infer PropertyKind from the names of a node's children.
+    ///
+    /// If the node has children named "length", "push", or "pop",
+    /// it's likely an Array. Otherwise, it's an Object (or Scalar
+    /// if it has no children).
+    fn infer_kind_from_children(&self, node_id: NodeId) -> PropertyKind {
+        let children: Vec<String> = self
+            .arena
+            .children_of(node_id)
+            .map(|child_id| self.arena.get(child_id).name.clone())
+            .collect();
+
+        if children.is_empty() {
+            PropertyKind::Scalar
+        } else if children.iter().any(|c| c == "length" || c == "push" || c == "pop") {
+            PropertyKind::Array
+        } else {
+            PropertyKind::Object
+        }
+    }
+
+    /// Get the inferred `PropertyKind` of a variable at a given path.
+    ///
+    /// This queries the tree directly for the node at the given path and
+    /// returns its inferred kind (Object, Array, Scalar, Unknown). This
+    /// is more efficient than `build_shape_aware_property_map()` when only
+    /// a single path's kind is needed (e.g., in dot-notation completion to
+    /// decide whether to offer array methods vs. object properties).
+    ///
+    /// Returns `None` if the path doesn't exist in the tree.
+    pub fn kind_at_path(&self, path: &str) -> Option<PropertyKind> {
+        let (node_id, _) = self.get_node_by_path(path)?;
+        Some(self.infer_kind_for_node(node_id, path))
+    }
 }
 
 // ---------------------------------------------------------------------------

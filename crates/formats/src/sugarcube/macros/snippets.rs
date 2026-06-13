@@ -2,17 +2,40 @@
 //!
 //! Provides completion snippet templates for SugarCube macros, including
 //! per-macro overrides and a generic fallback for unknown macros.
+//!
+//! ## Snippet format
+//!
+//! The snippet text is the body that appears between the `<<` the user
+//! already typed and the `>>` the editor auto-inserts (if auto-closing
+//! is enabled). This mirrors the legacy TypeScript implementation where:
+//!
+//!   - label:       `<<name>>`   (what's displayed in the completion list)
+//!   - filterText:  `name`       (what the editor matches against)
+//!   - insertText:  snippet      (replaces the word the editor detected)
+//!
+//! Tabstop conventions:
+//! - `$1`, `$2` … — positional tab stops
+//! - `${1:placeholder}` — tab stop with placeholder text
+//! - `\$` — escaped dollar sign (literal `$` in the snippet output)
+//! - `$0` — final cursor position
+//!
+//! ## Newline handling
+//!
+//! Snippet definitions use raw strings (`r#"..."#`) to preserve the `\$`
+//! escape sequences that VS Code snippet syntax requires for literal `$`
+//! characters (e.g., `${1:\$var}` → tab stop 1 with placeholder `$var`).
+//!
+//! Since raw strings don't interpret `\n` as newlines, the `build_macro_snippet()`
+//! function replaces literal `\n` sequences with actual newline characters
+//! before returning the snippet. This keeps the definition readable while
+//! producing correct multi-line snippets.
 
 use crate::types::BodyRequirement;
 
 /// A per-macro snippet body for completion.
 ///
-/// The snippet is inserted AFTER `<<` and BEFORE the auto-closed `>>`.
-///
-/// Tabstop conventions:
-/// - `$1`, `$2` … — positional tab stops
-/// - `${1:placeholder}` — tab stop with placeholder text
-/// - `$0` — final cursor position
+/// Defined in raw strings to preserve `\$` escapes. The `build_macro_snippet()`
+/// function converts `\n` to actual newlines before returning the snippet.
 pub fn macro_snippet(name: &str) -> Option<&'static str> {
     match name {
         // ── Variables ─────────────────────────────────────────────────────
@@ -78,16 +101,32 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
 }
 
 /// Build a snippet for a macro, using the per-macro override or a generic fallback.
+///
+/// Converts literal `\n` in raw-string definitions to actual newline characters,
+/// matching the VS Code snippet format expected by LSP clients.
 pub fn build_macro_snippet(name: &str, body: BodyRequirement) -> String {
     if let Some(custom) = macro_snippet(name) {
-        return custom.to_string();
+        return convert_snippet_newlines(custom);
     }
 
     // Generic fallback: macros with Optional or Required body get a block snippet
     let is_block = body != BodyRequirement::Never;
     if is_block {
-        format!("{name} $1>>\n$2\n<</{name}")
+        convert_snippet_newlines(&format!("{name} $1>>\\n$2\\n<</{name}"))
     } else {
         format!("{name} $1")
     }
+}
+
+/// Convert literal `\n` sequences in a raw-string snippet to actual newline characters.
+///
+/// Snippet definitions use raw strings (`r#"..."#`) to preserve `\$` escape
+/// sequences required by VS Code snippet syntax. However, raw strings also
+/// prevent `\n` from being interpreted as newlines. This function converts
+/// the two-character sequence `\n` to actual newlines so multi-line snippets
+/// render correctly in the editor.
+///
+/// This is also used by `completion_forms.rs` to convert multi-form snippets.
+pub fn convert_snippet_newlines(snippet: &str) -> String {
+    snippet.replace("\\n", "\n")
 }

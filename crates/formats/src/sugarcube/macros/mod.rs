@@ -9,6 +9,7 @@
 
 mod catalog;
 mod classifiers;
+mod completion_forms;
 mod passages;
 mod globals;
 mod snippets;
@@ -18,6 +19,7 @@ mod lookup;
 // Re-export all public items to preserve the external API
 pub use catalog::*;
 pub use classifiers::*;
+pub use completion_forms::*;
 pub use passages::*;
 pub use globals::*;
 pub use snippets::*;
@@ -256,6 +258,71 @@ mod tests {
         assert!(nav.contains("return"));
         // replace/append/prepend have selector args, not passage refs
         // (unless the catalog says otherwise)
+    }
+
+    #[test]
+    fn test_completion_forms_link() {
+        // <<link>> should have 5 forms
+        let forms = macro_completion_forms("link");
+        assert!(forms.is_some(), "link should have multi-form completions");
+        let forms = forms.unwrap();
+        assert_eq!(forms.len(), 5, "link should have 5 completion forms, got {}", forms.len());
+        // First form should be the 2-arg navigation (most common)
+        assert!(forms[0].label.contains("passage"));
+        assert_eq!(forms[0].sort_priority, 0);
+    }
+
+    #[test]
+    fn test_completion_forms_button() {
+        // <<button>> should have 5 forms (same pattern as link)
+        let forms = macro_completion_forms("button");
+        assert!(forms.is_some());
+        assert_eq!(forms.unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_completion_forms_set() {
+        // <<set>> should have multiple forms (to, ++, +=, --, -=)
+        let forms = macro_completion_forms("set");
+        assert!(forms.is_some());
+        let forms = forms.unwrap();
+        assert!(forms.len() >= 3, "set should have at least 3 forms, got {}", forms.len());
+    }
+
+    #[test]
+    fn test_completion_forms_for() {
+        // <<for>> should have multiple loop variants
+        let forms = macro_completion_forms("for");
+        assert!(forms.is_some());
+        let forms = forms.unwrap();
+        assert!(forms.len() >= 2, "for should have at least 2 forms, got {}", forms.len());
+    }
+
+    #[test]
+    fn test_completion_forms_if() {
+        // <<if>> should have multiple forms (simple, else, elseif)
+        let forms = macro_completion_forms("if");
+        assert!(forms.is_some());
+        assert!(forms.unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn test_completion_forms_single_form() {
+        // Macros without explicit forms should return None
+        assert!(macro_completion_forms("print").is_none());
+        assert!(macro_completion_forms("run").is_none());
+        assert!(macro_completion_forms("unset").is_none());
+        assert!(macro_completion_forms("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_completion_form_snippet_conversion() {
+        // Ensure snippets with \n get properly converted
+        let forms = macro_completion_forms("link").unwrap();
+        let block_form = &forms[1]; // "…<</link>>" form
+        let converted = convert_snippet_newlines(block_form.snippet);
+        assert!(converted.contains('\n'), "Block snippet should contain actual newlines after conversion");
+        assert!(!converted.contains("\\n"), "Block snippet should not contain literal \\n after conversion");
     }
 
     #[test]

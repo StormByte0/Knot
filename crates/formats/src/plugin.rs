@@ -746,6 +746,28 @@ pub trait FormatPlugin: Send + Sync {
         None
     }
 
+    /// Whether a macro invocation that normally can have a body should be
+    /// treated as inline (no body) for this specific usage.
+    ///
+    /// Some macros are polymorphic: they can be used with or without a body.
+    /// For example, SugarCube's `<<link>>` is inline when used without a
+    /// close tag (`<<link "Talk" "Shop">>`) and block when used with one
+    /// (`<<link "Talk" "Shop">>…<</link>>`). This method lets the format
+    /// plugin determine, given the actual body presence, whether the macro
+    /// should be treated as inline for classification purposes.
+    ///
+    /// Returns `true` if the macro is being used inline (no body), `false`
+    /// if it's being used as a block (has body) or if the format doesn't
+    /// support polymorphic macros. When `has_body` is `None` (unknown, e.g.,
+    /// line-scanning fallback), returns `false` (default to block).
+    fn is_inline_macro_usage(&self, _macro_name: &str, has_body: Option<bool>) -> bool {
+        // Default: not inline. Formats with polymorphic macros override this.
+        has_body == Some(false)
+            && self.find_macro(_macro_name).is_some_and(|m| {
+                m.body == crate::types::BodyRequirement::Optional
+            })
+    }
+
     /// Returns the structural parent constraints: maps child macro name →
     /// set of valid parent macro names.
     ///
@@ -1302,6 +1324,58 @@ pub trait FormatPlugin: Send + Sync {
         HashSet::new()
     }
 
+    /// Find the variable path at a passage-body-relative byte offset.
+    ///
+    /// Uses the format's variable arena tree's `segment_spans` to determine
+    /// which variable path the offset falls within. Returns the full path
+    /// (e.g., `"$player.state"`) or `None` if no segment spans contain the
+    /// offset.
+    ///
+    /// This is used by the span-based completion handler to resolve the
+    /// variable path at the cursor position without line-scanning the
+    /// source text. The arena tree's segment_spans track per-segment spans
+    /// for each dot-notation access (e.g., `$player.state.stress` has
+    /// spans for `$player`, `.state`, and `.stress`).
+    ///
+    /// The `body_offset` is **passage-body-relative** (0 = first byte after
+    /// the `:: Name` header line).
+    fn variable_path_at_offset(
+        &self,
+        _file_uri: &str,
+        _passage_name: &str,
+        _body_offset: usize,
+    ) -> Option<String> {
+        None
+    }
+
+    /// Get the children of a variable path with their inferred kinds.
+    ///
+    /// Queries the format's variable arena tree directly for the children
+    /// of a given path, returning each child's name and inferred kind
+    /// (Object, Array, Scalar, Unknown). This is the span-based equivalent
+    /// of `build_shape_aware_property_map()` for a single path — it
+    /// queries the tree directly without building a full map.
+    ///
+    /// Returns an empty Vec if the path doesn't exist in the tree or
+    /// the format doesn't have a variable tree.
+    fn variable_children_with_kind(&self, _path: &str) -> Vec<(String, crate::types::PropertyKind)> {
+        Vec::new()
+    }
+
+    /// Get the inferred kind of a variable at a given path.
+    ///
+    /// Queries the format's variable arena tree for the `PropertyKind`
+    /// (Object, Array, Scalar, Unknown) of the node at the given path.
+    /// This avoids building a full `build_shape_aware_property_map()` when
+    /// only a single path's kind is needed (e.g., to decide whether to
+    /// offer array methods vs. object properties in dot-notation completion).
+    ///
+    /// Returns `None` if the path doesn't exist in the tree or the format
+    /// doesn't have a variable tree.
+    fn variable_kind_at_path(&self, _path: &str) -> Option<crate::types::PropertyKind> {
+        None
+    }
+
     /// Get all custom macro names for completion.
     ///
     /// Returns names of user-defined macros (widgets and `Macro.add()` calls)
@@ -1359,6 +1433,108 @@ pub trait FormatPlugin: Send + Sync {
     /// Look up a template definition for hover/go-to-definition.
     fn find_template(&self, _name: &str) -> Option<TemplateDefInfo> {
         None
+    }
+
+    // -----------------------------------------------------------------------
+    // Completion context resolution (format-owned behavior)
+    // -----------------------------------------------------------------------
+
+    /// Return the characters that trigger completion in this format.
+    ///
+    /// These are registered with the LSP client so that it sends
+    /// `textDocument/completion` when the user types one of them.
+    /// The default returns an empty list (no trigger characters).
+    ///
+    /// Format plugins should return the characters that start a
+    /// format-specific construct. For example, SugarCube returns
+    /// `["$", "_", "<", "[", ".", "\""]`.
+    fn completion_trigger_characters(&self) -> Vec<char> {
+        Vec::new()
+    }
+
+    /// Resolve what kind of completion context the cursor is in.
+    ///
+    /// This is the **primary entry point** for completion context detection.
+    /// The completion handler calls this method with the cursor position and
+    /// workspace data, and the format plugin returns a `CompletionContext`
+    /// variant describing what completions to offer.
+    ///
+    /// ## Parameters
+    ///
+    /// - `text`: The full document source text.
+    /// - `workspace`: The workspace data (passages, vars, links, etc.).
+    /// - `uri`: The document URI.
+    /// - `line`: The 0-indexed line number of the cursor.
+    /// - `character`: The 0-indexed UTF-16 character offset on the line.
+    /// - `trigger`: The trigger character (if any) that caused this
+    ///   completion request. `None` means the user pressed Ctrl+Space
+    ///   or the client triggered it automatically.
+    /// - `token_groups`: Semantic token groups for the document.
+    ///
+    /// ## Default implementation
+    ///
+    /// The default returns `CompletionContext::Other`, which causes the
+    /// handler to offer default completions (passage names). Format plugins
+    /// that support interactive completion MUST override this.
+    fn resolve_completion_context(
+        &self,
+        _text: &str,
+        _workspace: &knot_core::Workspace,
+        _uri: &url::Url,
+        _line: u32,
+        _character: u32,
+        _trigger: Option<char>,
+        _token_groups: &[PassageTokenGroup],
+    ) -> crate::types::CompletionContext {
+        crate::types::CompletionContext::Other
+    }
+
+    // -----------------------------------------------------------------------
+    // Completion (primary — format-owned completion building)
+    // -----------------------------------------------------------------------
+
+    /// Provide completions for the given cursor position.
+    ///
+    /// This method handles **ALL** context detection and completion building.
+    /// The format plugin owns the mapping from trigger characters, workspace
+    /// data, and cursor position to concrete completion items. The handler
+    /// is a thin layer that just maps `FormatCompletionItem` to
+    /// `lsp_types::CompletionItem`.
+    ///
+    /// ## Architecture
+    ///
+    /// Following the legacy TypeScript adapter pattern:
+    ///
+    /// - The adapter's `provideFormatCompletions()` detects context and
+    ///   returns `CompletionItem[]` directly.
+    /// - The handler adds workspace-level symbols (variables, custom macros,
+    ///   passages, JS globals) on top of the adapter's format-specific items.
+    ///
+    /// In the Rust version, the format plugin has access to both its own
+    /// registries AND the workspace, so it can build ALL completions.
+    /// The handler just maps types.
+    ///
+    /// ## Context detection priority
+    ///
+    /// 1. Passage header line → suppress (return empty)
+    /// 2. Variable sigil (`$`, `_`) → variable completions
+    /// 3. Property access (`$var.prop`, `State.prop`) → property completions
+    /// 4. Passage-arg in macro quote (`<<goto "|`) → passage name completions
+    /// 5. Close-tag context (`<</`) → close-tag completions
+    /// 6. Macro open context (`<<`) → macro completions (builtins + custom)
+    /// 7. Link context (`[[`) → passage name completions
+    /// 8. No trigger / default → workspace symbols
+    fn provide_completions(
+        &self,
+        _text: &str,
+        _workspace: &knot_core::Workspace,
+        _uri: &url::Url,
+        _line: u32,
+        _character: u32,
+        _trigger: Option<char>,
+        _token_groups: &[PassageTokenGroup],
+    ) -> Vec<crate::types::FormatCompletionItem> {
+        Vec::new()
     }
 
     // -----------------------------------------------------------------------

@@ -198,6 +198,40 @@ impl MacroSignature {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-form macro completion
+// ---------------------------------------------------------------------------
+
+/// A single completion form for a macro.
+///
+/// Many SugarCube macros are polymorphic — the same macro name can be used
+/// with different argument counts and with/without a closing tag. Each form
+/// produces a separate completion item so the user can choose the right variant.
+///
+/// For example, `<<link>>` has 5 forms:
+/// 1. `<<link "label">>` — 1-arg, inline click handler (no navigation)
+/// 2. `<<link "label">>…<</link>>` — 1-arg, block click handler
+/// 3. `<<link "label" "passage">>` — 2-arg, inline navigation
+/// 4. `<<link "label" "passage">>…<</link>>` — 2-arg, block navigation
+/// 5. `<<link "label" "passage" "tooltip">>` — 3-arg, with tooltip
+///
+/// The `snippet` field contains the body **after** `<<` and is used as
+/// `insertText` with `InsertTextFormat.Snippet`. For block macros, the
+/// snippet includes the `>>`, body tabstop, and closing tag.
+#[derive(Debug, Clone)]
+pub struct MacroCompletionForm {
+    /// Display label for the completion list (e.g., `<<link "label" "passage">>…<</link>>`).
+    pub label: &'static str,
+    /// Human-readable description of this specific form.
+    pub detail: &'static str,
+    /// Snippet body (placed after `<<`). For block macros, includes `>>`, newlines,
+    /// body tabstop, and closing tag. Uses raw-string conventions from `snippets.rs`.
+    pub snippet: &'static str,
+    /// Sort priority within the same macro. Lower = higher priority (shown first).
+    /// The final `sortText` is `1_{name}_{priority}` for builtins.
+    pub sort_priority: u8,
+}
+
+// ---------------------------------------------------------------------------
 // Implicit passage reference pattern
 // ---------------------------------------------------------------------------
 
@@ -679,4 +713,214 @@ pub struct TemplateDefInfo {
     pub file_uri: String,
     /// The byte offset of the definition within the file.
     pub defined_at_offset: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Completion context (format-owned)
+// ---------------------------------------------------------------------------
+
+/// The kind of completion context at a cursor position, as determined by the
+/// active format plugin.
+///
+/// This enum is the **single source of truth** for what completions to offer.
+/// The completion handler does NOT hardcode trigger-character routing — it
+/// calls `FormatPlugin::resolve_completion_context()` which returns one of
+/// these variants, and the handler simply maps the variant to the appropriate
+/// LSP completion items.
+///
+/// ## Design principle
+///
+/// All format-specific context detection lives in the format plugin. The
+/// handler is a thin dispatcher that:
+/// 1. Calls `plugin.resolve_completion_context()` with the cursor position
+///    and workspace data
+/// 2. Matches on the returned `CompletionContext` variant
+/// 3. Builds LSP `CompletionItem` lists using only format-agnostic data
+///    (workspace passage names, plugin-provided variable lists, etc.)
+///
+/// This ensures that adding a new format (Harlowe, Chapbook, Snowman) only
+/// requires implementing `resolve_completion_context()` — the handler code
+/// doesn't change.
+#[derive(Debug, Clone)]
+pub enum CompletionContext {
+    /// Cursor is on a variable reference or just typed a variable sigil.
+    ///
+    /// - `$` trigger in SugarCube → variables starting with `$`
+    /// - `_` trigger in SugarCube → temporary variables starting with `_`
+    /// - Cursor on an existing variable span
+    Variable {
+        /// The variable name at the cursor (including sigil), or empty if
+        /// the user just typed the sigil character.
+        name: String,
+        /// Whether this is a temporary/scratch variable.
+        is_temporary: bool,
+    },
+
+    /// Cursor is on a passage link target (e.g., `[[Forest]]`).
+    Link {
+        /// The current link target text, or empty if the user just typed `[`.
+        target: String,
+    },
+
+    /// Cursor is on a passage-ref arg inside a macro
+    /// (e.g., `"Shop"` in `<<link "Talk" "Shop">>`).
+    MacroPassageRef {
+        /// The current passage name in the arg, or empty.
+        target: String,
+        /// The macro name containing this passage-ref arg.
+        macro_name: String,
+        /// Whether this macro invocation has a body block.
+        has_body: bool,
+    },
+
+    /// Cursor is on a macro name or typing a new macro name
+    /// (e.g., `if` in `<<if ...>>`, or typing after `<<`).
+    MacroName {
+        /// The partial macro name typed so far, or empty if just after `<<`.
+        name: String,
+    },
+
+    /// Cursor is inside a macro opening tag but not on the name or a
+    /// specific passage-ref arg.
+    MacroInterior {
+        /// The macro name whose interior the cursor is in.
+        name: String,
+    },
+
+    /// Cursor is on a global object namespace (e.g., `State`, `Story`).
+    Namespace {
+        /// The namespace name.
+        name: String,
+    },
+
+    /// Cursor is on a property access (e.g., `.variables` in `State.variables`).
+    Property {
+        /// The namespace/object name (e.g., "State").
+        object_name: String,
+        /// The property name being accessed, if the cursor is past the dot.
+        property_name: Option<String>,
+    },
+
+    /// Cursor is on a passage header name.
+    PassageHeader {
+        /// The passage name.
+        name: String,
+    },
+
+    /// Cursor is in a context where close-tag completion is appropriate
+    /// (e.g., just typed `<</`).
+    CloseTag {
+        /// The partial close-tag name typed so far (may be empty).
+        partial: String,
+    },
+
+    /// Cursor is on a variable with a dot trigger, requesting dot-notation
+    /// property completion (e.g., `$player.` → offer `.name`, `.hp`).
+    VariableDot {
+        /// The variable path up to the dot (e.g., "$player" or "$player.state").
+        path: String,
+    },
+
+    /// No specific context recognized. The handler should offer a sensible
+    /// default (e.g., passage names) or return no completions.
+    Other,
+}
+
+// ---------------------------------------------------------------------------
+// Format completion types
+// ---------------------------------------------------------------------------
+
+/// A completion item kind, independent of the LSP type system.
+///
+/// Maps to `lsp_types::CompletionItemKind` by the handler. Using our own
+/// enum keeps `knot-formats` independent of `lsp_types`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatCompletionKind {
+    Text,
+    Method,
+    Function,
+    Constructor,
+    Field,
+    Variable,
+    Class,
+    Interface,
+    Module,
+    Property,
+    Unit,
+    Value,
+    Enum,
+    Keyword,
+    Snippet,
+    Color,
+    File,
+    Reference,
+    Folder,
+    EnumMember,
+    Constant,
+    Struct,
+    Event,
+    Operator,
+    TypeParameter,
+}
+
+/// Insert text format (plain text or snippet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatInsertTextFormat {
+    PlainText,
+    Snippet,
+}
+
+/// A text edit for a completion item, specifying a range to replace.
+#[derive(Debug, Clone)]
+pub struct FormatTextEdit {
+    /// Start line (0-based).
+    pub start_line: u32,
+    /// Start character (0-based, UTF-16).
+    pub start_character: u32,
+    /// End line (0-based).
+    pub end_line: u32,
+    /// End character (0-based, UTF-16).
+    pub end_character: u32,
+    /// The new text to insert.
+    pub new_text: String,
+}
+
+/// A format-agnostic completion item.
+///
+/// The format plugin builds these directly — it owns ALL context detection
+/// and completion item construction. The handler just maps them to
+/// `lsp_types::CompletionItem`. This follows the legacy TypeScript adapter
+/// pattern where `provideFormatCompletions()` returns `CompletionItem[]`.
+#[derive(Debug, Clone)]
+pub struct FormatCompletionItem {
+    /// The label (display text) for this completion.
+    pub label: String,
+    /// The kind of completion item.
+    pub kind: FormatCompletionKind,
+    /// Human-readable detail text (shown in the completion popup).
+    pub detail: Option<String>,
+    /// Sort text for ordering in the completion list.
+    pub sort_text: Option<String>,
+    /// Filter text for matching against user input.
+    pub filter_text: Option<String>,
+    /// Text to insert (may be a snippet if `insert_text_format` is Snippet).
+    pub insert_text: Option<String>,
+    /// Insert text format (plain text or snippet).
+    pub insert_text_format: FormatInsertTextFormat,
+    /// Optional text edit that replaces a specific range.
+    ///
+    /// When present, the handler converts this to a `lsp_types::TextEdit`
+    /// and sets it as the completion item's `text_edit`. This is more
+    /// reliable than relying on the editor's word-boundary detection,
+    /// especially for `<<macro` patterns where the `<<` delimiters
+    /// confuse word boundaries.
+    pub text_edit: Option<FormatTextEdit>,
+    /// Whether this item is deprecated.
+    pub deprecated: bool,
+    /// Whether to preselect this item in the completion list.
+    pub preselect: bool,
+    /// Opaque data for the resolve handler (JSON value).
+    pub data: Option<serde_json::Value>,
+    /// Commit characters that trigger acceptance of this completion.
+    pub commit_characters: Vec<String>,
 }

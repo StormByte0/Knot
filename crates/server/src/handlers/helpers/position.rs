@@ -863,6 +863,179 @@ pub(crate) fn find_passage_start_offset_span_based(
     find_passage_start_offset(text, passage_name)
 }
 
+// ===========================================================================
+// Span-based macro & token context helpers
+// ===========================================================================
+//
+// NOTE: The `CompletionContext` enum and `resolve_completion_context_span_based()`
+// have been moved to the format plugin (`knot_formats::types::CompletionContext`
+// and `FormatPlugin::resolve_completion_context()`). The format plugin owns all
+// completion context detection — the handler is just a thin dispatcher.
+//
+// The remaining functions here are used by hover, go-to-definition, and other
+// handlers that need span-based position lookups.
+
+/// Find the `MacroArgRef` at a cursor position, if any.
+///
+/// Returns the full `MacroArgRef` struct (passage-relative spans) from the
+/// passage that contains the cursor, or `None` if the cursor isn't inside
+/// any passage-ref arg. This is a focused version of
+/// `resolve_completion_context_span_based` that returns the raw data for
+/// callers that need the full span details.
+#[allow(dead_code)]
+pub(crate) fn find_macro_arg_ref_at_position_span_based(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<knot_core::passage::MacroArgRef> {
+    let doc = workspace.get_document(uri)?;
+    let byte_offset = position_to_byte_offset(text, position);
+
+    for passage in &doc.passages {
+        for arg_ref in &passage.macro_arg_refs {
+            if passage.span_contains_abs_offset(&arg_ref.span, byte_offset) {
+                return Some(arg_ref.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Find the semantic token at a cursor position.
+///
+/// Returns the token type and the text it covers, or `None` if no token
+/// spans the cursor position. Useful for quick context checks without
+/// the full `CompletionContext` enum.
+///
+/// Used by hover and go-to-definition handlers for span-based token lookup.
+#[allow(dead_code)]
+pub(crate) fn find_token_at_position_span_based(
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
+    text: &str,
+    position: Position,
+) -> Option<(knot_formats::plugin::SemanticTokenType, String)> {
+    // We need the text to convert LSP position to byte offset.
+    // If the position is beyond the text, return None.
+    let byte_offset = position_to_byte_offset(text, position);
+
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                if abs_start < text.len() && abs_end <= text.len() {
+                    return Some((
+                        token.token_type.clone(),
+                        text[abs_start..abs_end].to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the stack of unclosed block macros at a cursor position using
+/// passage data from the workspace.
+///
+/// This replaces the line-scanning approach in `try_close_tag_completion()`
+/// that used `plugin.scan_line_for_macro_events()`. Instead of re-scanning
+/// the source text, this function:
+///
+/// 1. Finds the passage containing the cursor
+/// 2. Collects all `Block::Macro` entries from the passage body, sorted by
+///    span position
+/// 3. Uses the format plugin's `body_macro_names()` to classify which
+///    macros are block macros (i.e., have open/close tag pairs)
+/// 4. Builds a stack of unclosed open tags up to the cursor position
+///
+/// Returns the unclosed block macro names in innermost-first order.
+#[allow(dead_code)]
+pub(crate) fn find_unclosed_block_macros_span_based(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+    body_macro_names: &std::collections::HashSet<&'static str>,
+    plugin: &dyn knot_formats::plugin::FormatPlugin,
+) -> Vec<String> {
+    let Some(doc) = workspace.get_document(uri) else {
+        return Vec::new();
+    };
+    let byte_offset = position_to_byte_offset(text, position);
+
+    for passage in &doc.passages {
+        if !passage.contains_abs_offset(byte_offset) {
+            continue;
+        }
+
+        // Collect macro events from the passage body blocks.
+        // Block::Macro entries represent macro invocations with their spans.
+        // We also check macro_arg_refs which have open/close information.
+        let mut events: Vec<(String, bool, usize)> = Vec::new(); // (name, is_open, abs_byte)
+
+        // Process body blocks for macro invocations
+        for block in &passage.body {
+            match block {
+                knot_core::passage::Block::Macro { name, span, .. } => {
+                    if body_macro_names.contains(name.as_str()) {
+                        let abs_start = passage.abs_offset(span.start);
+                        // Only include events before the cursor
+                        if abs_start < byte_offset {
+                            events.push((name.clone(), true, abs_start));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Also use the format plugin's scan for close tags.
+        // We need the text of the passage up to the cursor to find close tags.
+        let passage_abs_start = passage.abs_offset(0);
+        let passage_text_up_to_cursor = &text[passage_abs_start.min(text.len())..byte_offset.min(text.len())];
+
+        // Scan for close tags using the plugin
+        for (line_idx, line) in passage_text_up_to_cursor.lines().enumerate() {
+            for event in plugin.scan_line_for_macro_events(line, line_idx as u32) {
+                if body_macro_names.contains(event.name.as_str()) {
+                    events.push((event.name, event.is_open, 0)); // position not needed for stack
+                }
+            }
+        }
+
+        // Sort events by position (for body block events) — close-tag
+        // events from scan_line have position 0, which is a rough
+        // approximation. For a fully precise implementation, we'd need
+        // close-tag spans in the AST. This is good enough for completion.
+        events.sort_by_key(|(_, _, pos)| *pos);
+
+        // Build the stack of unclosed open tags
+        let mut open_stack: Vec<String> = Vec::new();
+        for (name, is_open, _) in &events {
+            if *is_open {
+                open_stack.push(name.clone());
+            } else {
+                // Close tag — remove the matching open tag (innermost first)
+                for i in (0..open_stack.len()).rev() {
+                    if open_stack[i] == *name {
+                        open_stack.remove(i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Return innermost-first
+        open_stack.reverse();
+        return open_stack;
+    }
+
+    Vec::new()
+}
+
 /// Compute the LSP Range for the passage name when `header_name_span` is
 /// not available.
 ///

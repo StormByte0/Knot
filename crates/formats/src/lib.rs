@@ -45,6 +45,7 @@ pub use types::{
     ResolvedNavLink,
     PropertyKind, PropertyMapEntry,
     PassageVarRef,
+    CompletionContext,
 };
 // Workspace re-exports temporarily removed during ver_3 rewrite.
 // These types will be re-introduced when the workspace module is rebuilt.

@@ -58,7 +58,10 @@ pub(crate) async fn initialize(
             trigger_characters: Some(vec![
                 "[".to_string(),
                 "$".to_string(),
+                "_".to_string(),
                 "<".to_string(),
+                ".".to_string(),
+                "\"".to_string(),
             ]),
             work_done_progress_options: Default::default(),
             all_commit_characters: None,
