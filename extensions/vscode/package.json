@@ -46,28 +46,31 @@
         "aliases": [
           "Twee (SugarCube)"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration-sugarcube.json"
       },
       {
         "id": "twee-harlowe",
         "extensions": [],
         "aliases": [
           "Twee (Harlowe)"
-        ]
+        ],
+        "configuration": "./language-configuration-harlowe.json"
       },
       {
         "id": "twee-chapbook",
         "extensions": [],
         "aliases": [
           "Twee (Chapbook)"
-        ]
+        ],
+        "configuration": "./language-configuration-chapbook.json"
       },
       {
         "id": "twee-snowman",
         "extensions": [],
         "aliases": [
           "Twee (Snowman)"
-        ]
+        ],
+        "configuration": "./language-configuration-snowman.json"
       }
     ],
     "grammars": [

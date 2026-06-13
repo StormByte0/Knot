@@ -242,6 +242,40 @@ fn find_namespace_before_dot(
     }
 }
 
+/// Extract partial text typed inside a quoted string on the current line.
+///
+/// Finds the last unmatched opening `"` and returns the text between it
+/// and the cursor. This is used to extract partial passage names when
+/// the user types `<<goto "Gar` — returning "Gar" for filtering.
+fn extract_partial_in_quote(before_cursor: &str) -> String {
+    // Find the last opening quote that isn't closed
+    let mut quote_positions: Vec<usize> = Vec::new();
+    let bytes = before_cursor.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            // Check if escaped
+            let mut backslash_count = 0;
+            let mut j = i;
+            while j > 0 && bytes[j - 1] == b'\\' {
+                backslash_count += 1;
+                j -= 1;
+            }
+            if backslash_count % 2 == 0 {
+                quote_positions.push(i);
+            }
+        }
+        i += 1;
+    }
+    // If there's an odd number of quotes, the last one is unmatched (open)
+    if quote_positions.len() % 2 == 1 {
+        let last_open = quote_positions[quote_positions.len() - 1];
+        let partial = &before_cursor[last_open + 1..];
+        return partial.to_string();
+    }
+    String::new()
+}
+
 /// Detect passage-in-quote context from before_cursor text.
 ///
 /// Used when the `" ` trigger fires but the span-based data doesn't
@@ -1094,9 +1128,18 @@ impl FormatPlugin for SugarCubePlugin {
         }
 
         // ── 3. " trigger → Passage name in macro string arg ────────────
+        //
+        // When the user types a `"` inside a macro that has a passage-ref
+        // argument (e.g., <<goto "PassageName">>), we show passage name
+        // completions. The `"` is the trigger, but we only fire when we're
+        // inside a passage-ref macro arg context. A lone `"` in normal text
+        // (e.g., `"hello"`) should NOT trigger passage completions.
         if trigger == Some('"') {
             if self.is_in_passage_arg_quote(before_cursor, byte_offset, workspace, uri) {
-                return self.build_passage_name_completions(workspace, "", PassageCompletionKind::MacroArg);
+                // Extract partial passage name typed after the opening quote
+                // e.g., <<goto "Gar → partial = "Gar"
+                let partial = extract_partial_in_quote(before_cursor);
+                return self.build_passage_name_completions(workspace, &partial, PassageCompletionKind::MacroArg);
             }
             return Vec::new();
         }
@@ -1133,8 +1176,38 @@ impl FormatPlugin for SugarCubePlugin {
         }
 
         // ── 5. [ trigger → Link (passage names) ────────────────────────
+        //
+        // IMPORTANT: A single `[` is a trigger character, but we only show
+        // passage name completions when the user has actually typed `[[`
+        // (SugarCube link delimiter). A single `[` is far too common in
+        // array literals, CSS selectors in DOM macros, etc. We return empty
+        // for a bare `[` so VS Code dismisses the suggestion list instantly.
         if trigger == Some('[') {
-            return self.build_passage_name_completions(workspace, "", PassageCompletionKind::Link);
+            // SugarCube link context ([[)
+            if before_cursor.ends_with("[[") {
+                return self.build_passage_name_completions(workspace, "", PassageCompletionKind::Link);
+            }
+            // Partial passage name after [[ (e.g., [[Gar)
+            if let Some(delim_pos) = before_cursor.rfind("[[") {
+                let after = &before_cursor[delim_pos + 2..];
+                // Only trigger if the text after [[ looks like a passage name
+                // (alphanumeric, spaces, underscores, hyphens — no | yet)
+                if !after.is_empty() && after.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '_' || c == '-') {
+                    return self.build_passage_name_completions(workspace, after, PassageCompletionKind::Link);
+                }
+            }
+            // Pipe-link context: [[display|PassageName — after the pipe
+            if let Some(pipe_pos) = before_cursor.rfind('|') {
+                // Check if there's a [[ before the pipe
+                if let Some(bracket_pos) = before_cursor[..pipe_pos].rfind("[[") {
+                    let after_pipe = &before_cursor[pipe_pos + 1..];
+                    if after_pipe.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '_' || c == '-') {
+                        return self.build_passage_name_completions(workspace, after_pipe, PassageCompletionKind::Link);
+                    }
+                }
+            }
+            // Single `[` without `[[` — not a link context, return empty.
+            return Vec::new();
         }
 
         // ── 6. No trigger → context-aware fallback ─────────────────────
@@ -1170,6 +1243,27 @@ impl FormatPlugin for SugarCubePlugin {
             return self.build_passage_name_completions(
                 workspace, &arg_ref.target, PassageCompletionKind::MacroArg,
             );
+        }
+        // Line-based fallback for passage-ref: detect if cursor is inside
+        // a quoted string argument of a passage-ref macro (e.g., <<goto "Gar)
+        // This handles the case where the AST hasn't been updated yet.
+        if detect_passage_in_quote(before_cursor, self).is_some() {
+            let partial = extract_partial_in_quote(before_cursor);
+            return self.build_passage_name_completions(workspace, &partial, PassageCompletionKind::MacroArg);
+        }
+
+        // Check if cursor is in a link context ([[PassageName or [[display|PassageName)
+        if let Some(delim_pos) = before_cursor.rfind("[[") {
+            let after = &before_cursor[delim_pos + 2..];
+            // Check for pipe-link syntax: [[display|PassageName
+            if let Some(pipe_pos) = after.rfind('|') {
+                let after_pipe = &after[pipe_pos + 1..];
+                if after_pipe.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '_' || c == '-') {
+                    return self.build_passage_name_completions(workspace, after_pipe, PassageCompletionKind::Link);
+                }
+            } else if after.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '_' || c == '-') {
+                return self.build_passage_name_completions(workspace, after, PassageCompletionKind::Link);
+            }
         }
 
         // Check if cursor is in a macro open context (no trigger, but text pattern matches)
@@ -1878,7 +1972,14 @@ impl SugarCubePlugin {
             .map(|(i, name)| {
                 let (insert_text, insert_format, commit_chars) = match kind {
                     PassageCompletionKind::Link => {
-                        (format!("[[{}]]", name), FormatInsertTextFormat::Snippet, vec!["]".to_string()])
+                        // For [[ links, the insert_text replaces the partial name
+                        // after [[ with the full [[Name]] pattern
+                        if target.is_empty() {
+                            (format!("[[{}]]", name), FormatInsertTextFormat::Snippet, vec!["]".to_string()])
+                        } else {
+                            // Partial name already typed after [[ — just insert the name part
+                            (name.clone(), FormatInsertTextFormat::PlainText, vec!["]".to_string()])
+                        }
                     }
                     PassageCompletionKind::MacroArg => {
                         (name.clone(), FormatInsertTextFormat::PlainText, Vec::new())
@@ -2433,6 +2534,190 @@ mod completion_debug_tests {
             }
         }
     }
+    /// Test that single `[` (without `[[`) does NOT trigger passage completions.
+    #[test]
+    fn test_single_bracket_no_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [";
+        let line = 1u32;
+        let character = 7u32; // cursor after single "["
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        // Single `[` should NOT trigger passage name completions
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(passage_items.is_empty(),
+            "Single [ should not trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that `[[` DOES trigger passage completions.
+    #[test]
+    fn test_double_bracket_triggers_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [[";
+        let line = 1u32;
+        let character = 8u32; // cursor after "[["
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "[[ should trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that partial passage name after `[[` triggers completions with filter.
+    #[test]
+    fn test_partial_passage_name_after_double_bracket() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [[Gar";
+        let line = 1u32;
+        let character = 11u32; // cursor after "Gar"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        // Should return passage completions filtered by "Gar"
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "[[Gar should trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that pipe-link syntax triggers passage completions for the passage name part.
+    #[test]
+    fn test_pipe_link_triggers_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [[Go to|";
+        let line = 1u32;
+        let character = 14u32; // cursor after "|"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        // Should return passage completions (pipe-link context)
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "[[display| should trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that single `<` (without `<<`) does NOT trigger macro completions.
+    #[test]
+    fn test_single_angle_no_macro_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\na < b";
+        let line = 1u32;
+        let character = 3u32; // cursor after single "<"
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('<'), &[],
+        );
+        assert!(items.is_empty(),
+            "Single < should not trigger macro completions, got {} items",
+            items.len());
+    }
+
+    /// Test that `"` inside a passage-ref macro triggers passage completions.
+    #[test]
+    fn test_quote_in_passage_ref_macro_triggers_completions() {
+        let plugin = SugarCubePlugin::new();
+        // <<goto " — the " is the trigger, and <<goto has is_passage_ref arg
+        let text = ":: Start\n<<goto \"";
+        let line = 1u32;
+        let character = 8u32; // cursor after the "
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "\" in <<goto should trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that `"` in normal text does NOT trigger passage completions.
+    #[test]
+    fn test_quote_in_normal_text_no_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHe said \"";
+        let line = 1u32;
+        let character = 10u32; // cursor after the "
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .collect();
+        assert!(passage_items.is_empty(),
+            "\" in normal text should NOT trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test extract_partial_in_quote helper.
+    #[test]
+    fn test_extract_partial_in_quote() {
+        assert_eq!(extract_partial_in_quote(r#"<<goto "Gar"#), "Gar");
+        assert_eq!(extract_partial_in_quote(r#"<<goto ""#), "");
+        assert_eq!(extract_partial_in_quote(r#"He said "hello""#), ""); // closed quote
+        assert_eq!(extract_partial_in_quote(r#"<<link "Go" "Ga"#), "Ga"); // second open quote
+    }
+}
+
+/// Helper: create a workspace with named passages for completion testing.
+fn make_workspace_with_passages(uri: &Url, names: &[&str]) -> knot_core::Workspace {
+    use knot_core::{Document, Passage};
+    use knot_core::passage::StoryFormat;
+
+    let mut workspace = knot_core::Workspace::new(uri.clone());
+    let mut doc = Document::new(uri.clone(), StoryFormat::SugarCube);
+    for (i, name) in names.iter().enumerate() {
+        let offset = i * 100;
+        doc.passages.push(Passage {
+            name: name.to_string(),
+            tags: Vec::new(),
+            span: offset..(offset + 50),
+            header_name_span: None,
+            body: Vec::new(),
+            links: Vec::new(),
+            vars: Vec::new(),
+            macro_arg_refs: Vec::new(),
+            is_special: false,
+            special_def: None,
+            position: None,
+            passage_offset: offset,
+        });
+    }
+    workspace.insert_document(doc);
+    workspace
 }
 
 #[cfg(test)]
