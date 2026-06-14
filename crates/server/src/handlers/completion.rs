@@ -138,9 +138,31 @@ pub(crate) async fn completion_resolve(
                 if let Some((doc, passage)) = inner.workspace.find_passage(name) {
                     let links_count = passage.links.len();
                     let incoming = helpers::count_incoming_links(&inner.workspace, name);
+
+                    // Build context-aware header from the macro context
+                    // embedded in the completion data payload.
+                    let macro_name = data.get("macro_name").and_then(|v| v.as_str());
+                    let context_header = match macro_name {
+                        Some("goto") => format!("**{}** — Navigation target for <<goto>>\n\n", name),
+                        Some("include") | Some("display") => {
+                            format!("**{}** — Included passage for <<{}>>\n\n", name, macro_name.unwrap())
+                        }
+                        Some("link") | Some("button") | Some("click") => {
+                            format!("**{}** — Link target for <<{}>>\n\n", name, macro_name.unwrap())
+                        }
+                        Some("linkappend") | Some("linkprepend") | Some("linkreplace") | Some("linkrepeat") => {
+                            format!("**{}** — Link target for <<{}>>\n\n", name, macro_name.unwrap())
+                        }
+                        Some("actions") => format!("**{}** — Choice passage for <<actions>>\n\n", name),
+                        Some("back") => format!("**{}** — Return passage for <<back>>\n\n", name),
+                        Some("return") => format!("**{}** — Return passage for <<return>>\n\n", name),
+                        Some(other) => format!("**{}** — Passage target for <<{}>>\n\n", name, other),
+                        None => format!("**{}**\n\n", name),  // Link context, no macro
+                    };
+
                     let doc_markdown = format!(
-                        "**{}**\n\nFile: {}\nLinks out: {} | Incoming: {} | Tags: {}",
-                        name,
+                        "{}File: {}\nLinks out: {} | Incoming: {} | Tags: {}",
+                        context_header,
                         doc.uri.as_str(),
                         links_count,
                         incoming,
@@ -157,6 +179,13 @@ pub(crate) async fn completion_resolve(
             }
             "variable" => {
                 let is_temp = data.get("is_temp").and_then(|v| v.as_bool()).unwrap_or(false);
+                let inferred_kind = data.get("inferred_kind").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let child_count = data.get("child_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let child_names: Vec<&str> = data.get("child_names")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
                 let format_desc = plugin
                     .and_then(|p| {
                         let sigils = p.variable_sigils();
@@ -166,12 +195,85 @@ pub(crate) async fn completion_resolve(
                     })
                     .unwrap_or(if is_temp { "temporary variable" } else { "variable" });
 
-                let doc_markdown = format!(
-                    "**{}**\n\n{} variable — {}",
-                    name,
-                    format_desc,
-                    if is_temp { "scoped to the current passage" } else { "persists across passages" }
+                // Build context-aware header based on structural kind
+                let kind_header = match inferred_kind {
+                    "object" => {
+                        let preview = if child_names.len() <= 5 {
+                            child_names.join(", ")
+                        } else {
+                            format!("{}, …", child_names[..5].join(", "))
+                        };
+                        format!("**{}** — Object {{ {} }}\n\n", name, preview)
+                    }
+                    "array" => {
+                        format!("**{}** — Array ({} element properties)\n\n", name, child_count)
+                    }
+                    "scalar" => {
+                        format!("**{}** — Scalar\n\n", name)
+                    }
+                    _ => {
+                        format!("**{}**\n\n", name)
+                    }
+                };
+
+                let scope_note = if is_temp {
+                    "Scoped to the current passage (`State.temporary.*`)"
+                } else {
+                    "Persists across passages (`State.variables.*`)"
+                };
+
+                let mut doc_markdown = format!(
+                    "{}{} — {}",
+                    kind_header, format_desc, scope_note,
                 );
+
+                // Add child properties section for objects/arrays
+                if !child_names.is_empty() && inferred_kind != "scalar" {
+                    let props_list: Vec<String> = child_names.iter()
+                        .take(10)
+                        .map(|n| format!("- `{}.{} `", name, n))
+                        .collect();
+                    doc_markdown.push_str(&format!(
+                        "\n\n**Properties:**\n{}",
+                        props_list.join("\n"),
+                    ));
+                    if (child_count as usize) > 10 {
+                        doc_markdown.push_str(&format!("\n- … and {} more", child_count - 10));
+                    }
+                }
+
+                return Ok(CompletionItem {
+                    documentation: Some(Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: doc_markdown,
+                    })),
+                    ..params
+                });
+            }
+            "variable_property" => {
+                // Dot-notation property completion (e.g., $player.name)
+                let parent_path = data.get("parent_path").and_then(|v| v.as_str()).unwrap_or("");
+                let property = data.get("property").and_then(|v| v.as_str()).unwrap_or(name);
+                let inferred_kind = data.get("inferred_kind").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let is_method = data.get("is_method").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                let kind_label = match inferred_kind {
+                    "object" => "Object property",
+                    "array" => "Array property",
+                    "scalar" => "Scalar property",
+                    _ => "Property",
+                };
+
+                let method_tag = if is_method { " (method)" } else { "" };
+
+                let doc_markdown = format!(
+                    "**{}.{} ** — {}{} of `{}`\n\nAccessed via `{}.{} `",
+                    parent_path, property,
+                    kind_label, method_tag,
+                    parent_path,
+                    parent_path, property,
+                );
+
                 return Ok(CompletionItem {
                     documentation: Some(Documentation::MarkupContent(MarkupContent {
                         kind: MarkupKind::Markdown,

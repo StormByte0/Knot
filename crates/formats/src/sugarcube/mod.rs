@@ -158,6 +158,55 @@ fn find_variable_name_at_offset(
     None
 }
 
+/// Extract the partial variable/property identifier after a sigil (`$` or `_`)
+/// on the current line.
+///
+/// For `$pl` → returns `"pl"`. For just `$` → returns `""`.
+/// Stops at characters that aren't valid in variable identifiers or
+/// dot-notation paths (spaces, operators, delimiters, etc.).
+fn extract_partial_after_sigil(before_cursor: &str, sigil: char) -> &str {
+    if let Some(pos) = before_cursor.rfind(sigil) {
+        let after = &before_cursor[pos + 1..];
+        let end = after
+            .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+            .unwrap_or(after.len());
+        &after[..end]
+    } else {
+        ""
+    }
+}
+
+/// Compute a `FormatTextEdit` for variable/property completions.
+///
+/// Follows the same design as `compute_macro_text_edit`: the sigil (`$`/`_`)
+/// stays in the document and is NOT covered by the textEdit range.
+/// VS Code uses the text within the textEdit range as the filter prefix,
+/// so covering the `$` would break client-side filtering (our filter_text
+/// values are bare names like "player", not "$player").
+///
+/// When the user types `$pl` and hits Ctrl+Space:
+/// - `partial` = `"pl"` (after the `$`)
+/// - textEdit replaces `"pl"` with `"player"`
+/// - The `$` remains in the document → result: `$player`
+fn compute_variable_text_edit(
+    partial: &str,
+    line: u32,
+    character: u32,
+    replacement: &str,
+) -> Option<crate::types::FormatTextEdit> {
+    use crate::types::FormatTextEdit;
+
+    let partial_len = partial.chars().count() as u32;
+    let start_char = character.saturating_sub(partial_len);
+    Some(FormatTextEdit {
+        start_line: line,
+        start_character: start_char,
+        end_line: line,
+        end_character: character,
+        new_text: replacement.to_string(),
+    })
+}
+
 /// Find the `MacroArgRef` at a byte offset in the workspace.
 fn find_macro_arg_ref_at_offset(
     workspace: &knot_core::Workspace,
@@ -188,7 +237,41 @@ fn find_variable_path_before_dot(
     before_cursor: &str,
     registry: &SugarCubeRegistry,
 ) -> Option<String> {
-    // Strategy 1: Arena tree offset-based lookup
+    // ── Strategy 2 (line-based scan) runs FIRST ──────────────────
+    //
+    // When the text before the cursor contains a variable sigil (`$` or `_`),
+    // the line-based scan is more reliable than the arena offset-based lookup.
+    // The arena lookup's `build_path_for_segment` can return incomplete paths
+    // when the root variable node is found but the deep path isn't resolved.
+    // The line scan directly extracts the full dot-path from the source text.
+    //
+    // We run Strategy 2 first and only fall back to Strategy 1 when no sigil
+    // is present in the text (e.g., namespace completions like `State.`).
+    let before_dot = before_cursor.trim_end_matches('.');
+    let sigils = ['$', '_'];
+    for sigil in &sigils {
+        if let Some(sigil_pos) = before_dot.rfind(*sigil) {
+            let after_sigil = &before_dot[sigil_pos + 1..];
+            // The part after the sigil should be a valid identifier path
+            // (alphanumeric, underscores, dots for nested access)
+            if after_sigil.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                let path = &before_dot[sigil_pos..];
+                if !path.is_empty() {
+                    // Validate: the path should exist in the arena tree.
+                    // If it doesn't, it might be a partially-typed path
+                    // that hasn't been parsed yet — still return it so
+                    // that we can try completions at the right depth.
+                    return Some(path.to_string());
+                }
+            }
+        }
+    }
+
+    // ── Strategy 1: Arena tree offset-based lookup ───────────────
+    //
+    // Used as a fallback when no `$`/`_` sigil appears in the text
+    // before the cursor. This covers namespace completions and cases
+    // where the sigil is outside the current line fragment.
     if let Some(doc) = workspace.get_document(uri) {
         for passage in &doc.passages {
             if passage.contains_abs_offset(byte_offset) {
@@ -201,23 +284,6 @@ fn find_variable_path_before_dot(
                 let file_uri_str = uri.to_string();
                 if let Some(path) = registry.variables().path_at_offset(&file_uri_str, &passage.name, body_offset) {
                     return Some(path);
-                }
-            }
-        }
-    }
-
-    // Strategy 2: Line-based scan for variable sigil + identifier before dot
-    let before_dot = before_cursor.trim_end_matches('.');
-    let sigils = ['$', '_'];
-    for sigil in &sigils {
-        if let Some(sigil_pos) = before_dot.rfind(*sigil) {
-            let after_sigil = &before_dot[sigil_pos + 1..];
-            // The part after the sigil should be a valid identifier path
-            // (alphanumeric, underscores, dots for nested access)
-            if after_sigil.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
-                let path = &before_dot[sigil_pos..];
-                if !path.is_empty() {
-                    return Some(path.to_string());
                 }
             }
         }
@@ -338,6 +404,35 @@ fn detect_passage_in_quote(
         macro_name: macro_name.to_string(),
         has_body: false,
     })
+}
+
+/// Resolve the macro name and has_body from the line text when the
+/// span-based `MacroArgRef` data isn't available yet.
+///
+/// Scans `before_cursor` for the most recent `<<name` pattern and checks
+/// whether the macro is a body macro (container) via the plugin catalog.
+/// This is the fallback for the PassageRef semantic token case where we
+/// have the token text but no MacroArgRef at the offset.
+fn resolve_macro_name_from_offset(
+    before_cursor: &str,
+    _byte_offset: usize,
+    plugin: &dyn FormatPlugin,
+) -> (String, bool) {
+    // Find the most recent << before the cursor
+    if let Some(delim_pos) = before_cursor.rfind("<<") {
+        let after = &before_cursor[delim_pos + 2..];
+        // Extract the macro name (first word after <<)
+        let name = after.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .next()
+            .unwrap_or("");
+        if !name.is_empty() {
+            let has_body = plugin.find_macro(name)
+                .map(|m| m.body != crate::types::BodyRequirement::Never)
+                .unwrap_or(false);
+            return (name.to_string(), has_body);
+        }
+    }
+    (String::new(), false)
 }
 
 /// Find the namespace token that immediately precedes a given byte offset.
@@ -1065,10 +1160,33 @@ impl FormatPlugin for SugarCubePlugin {
                                 is_temporary: name.starts_with('_'),
                             };
                         }
-                        SemanticTokenType::Link | SemanticTokenType::PassageRef => {
+                        SemanticTokenType::Link => {
                             let target = text[abs_start..abs_end].trim().to_string();
                             if !target.is_empty() {
                                 return CompletionContext::Link { target };
+                            }
+                        }
+                        SemanticTokenType::PassageRef => {
+                            // PassageRef tokens are inside macro args, not
+                            // [[ ]] links. Return MacroPassageRef so the
+                            // handler knows to use macro-arg insertion
+                            // semantics (bare name, no [[ ]] wrapping).
+                            let target = text[abs_start..abs_end].trim().to_string();
+                            if !target.is_empty() {
+                                // Resolve macro context from MacroArgRef data
+                                let (macro_name, has_body) =
+                                    find_macro_arg_ref_at_offset(workspace, uri, byte_offset)
+                                        .map(|ar| (ar.macro_name.clone(), ar.has_body))
+                                        .unwrap_or_else(|| {
+                                            resolve_macro_name_from_offset(
+                                                before_cursor, byte_offset, self,
+                                            )
+                                        });
+                                return CompletionContext::MacroPassageRef {
+                                    target,
+                                    macro_name,
+                                    has_body,
+                                };
                             }
                         }
                         _ => {}
@@ -1108,8 +1226,16 @@ impl FormatPlugin for SugarCubePlugin {
         }
 
         // ── 1. $ / _ trigger → Variable completions ───────────────────
+        //
+        // `$` = State.variables. → show children of persistent root
+        // `_` = State.temporary. → show children of temp root
+        // The partial text after the sigil (e.g., "pl" for `$pl`) is
+        // extracted for text_edit range computation.
         if trigger == Some('$') || trigger == Some('_') {
-            return self.build_variable_completions(trigger == Some('_'));
+            let is_temp = trigger == Some('_');
+            let sigil = if is_temp { '_' } else { '$' };
+            let partial = extract_partial_after_sigil(before_cursor, sigil);
+            return self.build_variable_completions(is_temp, line, character, partial);
         }
 
         // ── 2. . trigger → VariableDot or Namespace property ───────────
@@ -1118,7 +1244,9 @@ impl FormatPlugin for SugarCubePlugin {
             if let Some(var_path) = find_variable_path_before_dot(
                 workspace, uri, text, byte_offset, before_cursor, &self.registry,
             ) {
-                return self.build_variable_dot_completions(&var_path);
+                // No partial after the dot — the `.` trigger fires right
+                // after the dot is typed, so there's nothing to replace.
+                return self.build_variable_dot_completions(&var_path, line, character, "");
             }
             // Try namespace property (e.g., State.)
             if let Some(ns_name) = find_namespace_before_dot(before_cursor, self) {
@@ -1135,11 +1263,11 @@ impl FormatPlugin for SugarCubePlugin {
         // inside a passage-ref macro arg context. A lone `"` in normal text
         // (e.g., `"hello"`) should NOT trigger passage completions.
         if trigger == Some('"') {
-            if self.is_in_passage_arg_quote(before_cursor, byte_offset, workspace, uri) {
+            if let Some(macro_ctx) = self.resolve_passage_arg_context(before_cursor, byte_offset, workspace, uri) {
                 // Extract partial passage name typed after the opening quote
                 // e.g., <<goto "Gar → partial = "Gar"
                 let partial = extract_partial_in_quote(before_cursor);
-                return self.build_passage_name_completions(workspace, &partial, PassageCompletionKind::MacroArg);
+                return self.build_passage_name_completions(workspace, &partial, macro_ctx);
             }
             return Vec::new();
         }
@@ -1220,11 +1348,54 @@ impl FormatPlugin for SugarCubePlugin {
 
         // Check if we're inside a variable sigil context (user typed $name and hit Ctrl+Space)
         if before_cursor.ends_with('$') || before_cursor.chars().last() == Some('$') {
-            return self.build_variable_completions(false);
+            return self.build_variable_completions(false, line, character, "");
         }
         if before_cursor.ends_with('_') && !before_cursor.ends_with("::_") {
             // _ at end but not in a passage header — likely temp var
-            return self.build_variable_completions(true);
+            return self.build_variable_completions(true, line, character, "");
+        }
+
+        // ── No-trigger dot continuation (BEFORE VarOp span check) ──────
+        // Detect `$varname.partial` or `_varname.partial` patterns where
+        // the user has typed past a dot without a trigger. This handles
+        // Ctrl+Space after typing `$player.n` — the arena tree and
+        // line-based scan both try to resolve the variable path.
+        //
+        // This MUST come before the VarOp span check because a VarOp span
+        // for `$item.work` covers the entire token — when the user types
+        // `$item.work.` and hits Ctrl+Space, the cursor is at/near the end
+        // of the VarOp span, and we want dot-continuation completions
+        // (children of `$item.work`) rather than root variable completions.
+        {
+            let mut found_dot_ctx = None;
+            for sigil in &['$', '_'] {
+                if let Some(sigil_pos) = before_cursor.rfind(*sigil) {
+                    let after = &before_cursor[sigil_pos + 1..];
+                    // Validate: must be a valid identifier + dot + partial
+                    // e.g., "player.n" or "player.address.st"
+                    if after.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                        if let Some(dot_pos) = after.rfind('.') {
+                            let var_path = &before_cursor[sigil_pos..sigil_pos + 1 + dot_pos];
+                            let partial = &after[dot_pos + 1..];
+                            // Verify the path exists in the arena tree
+                            if self.variable_kind_at_path(var_path).is_some() {
+                                found_dot_ctx = Some((var_path.to_string(), partial.to_string()));
+                                break;
+                            }
+                            // Also try arena offset-based resolution
+                            if let Some(resolved) = find_variable_path_before_dot(
+                                workspace, uri, text, byte_offset, before_cursor, &self.registry,
+                            ) {
+                                found_dot_ctx = Some((resolved, partial.to_string()));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((var_path, partial)) = found_dot_ctx {
+                return self.build_variable_dot_completions(&var_path, line, character, &partial);
+            }
         }
 
         // Check if cursor is on an existing variable span
@@ -1232,7 +1403,12 @@ impl FormatPlugin for SugarCubePlugin {
             for passage in &doc.passages {
                 for var in &passage.vars {
                     if passage.span_contains_abs_offset(&var.span, byte_offset) {
-                        return self.build_variable_completions(var.is_temporary);
+                        // Compute partial from the variable name (cursor is
+                        // somewhere on the existing variable span)
+                        let is_temp = var.is_temporary;
+                        let sigil = if is_temp { '_' } else { '$' };
+                        let partial = extract_partial_after_sigil(before_cursor, sigil);
+                        return self.build_variable_completions(is_temp, line, character, partial);
                     }
                 }
             }
@@ -1241,15 +1417,26 @@ impl FormatPlugin for SugarCubePlugin {
         // Check if cursor is inside a passage-ref macro arg
         if let Some(arg_ref) = find_macro_arg_ref_at_offset(workspace, uri, byte_offset) {
             return self.build_passage_name_completions(
-                workspace, &arg_ref.target, PassageCompletionKind::MacroArg,
+                workspace, &arg_ref.target,
+                PassageCompletionKind::MacroArg {
+                    macro_name: arg_ref.macro_name.clone(),
+                    has_body: arg_ref.has_body,
+                },
             );
         }
         // Line-based fallback for passage-ref: detect if cursor is inside
         // a quoted string argument of a passage-ref macro (e.g., <<goto "Gar)
         // This handles the case where the AST hasn't been updated yet.
-        if detect_passage_in_quote(before_cursor, self).is_some() {
+        if let Some(ctx) = detect_passage_in_quote(before_cursor, self) {
             let partial = extract_partial_in_quote(before_cursor);
-            return self.build_passage_name_completions(workspace, &partial, PassageCompletionKind::MacroArg);
+            let (macro_name, has_body) = match ctx {
+                crate::types::CompletionContext::MacroPassageRef { macro_name, has_body, .. } => (macro_name, has_body),
+                _ => (String::new(), false),
+            };
+            return self.build_passage_name_completions(
+                workspace, &partial,
+                PassageCompletionKind::MacroArg { macro_name, has_body },
+            );
         }
 
         // Check if cursor is in a link context ([[PassageName or [[display|PassageName)
@@ -1275,7 +1462,7 @@ impl FormatPlugin for SugarCubePlugin {
             }
         }
 
-        // Check semantic tokens for namespace or property
+        // Check semantic tokens for passage ref, variable, namespace, or property
         for group in token_groups {
             let group_offset = group.passage_offset;
             for token in &group.tokens {
@@ -1284,10 +1471,43 @@ impl FormatPlugin for SugarCubePlugin {
                 if byte_offset >= abs_start && byte_offset < abs_end {
                     use crate::plugin::SemanticTokenType;
                     match token.token_type {
+                        SemanticTokenType::Link => {
+                            // Cursor is on a passage name inside [[ ]] link syntax.
+                            // Offer passage name completions with Link kind.
+                            let name = text[abs_start..abs_end].to_string();
+                            return self.build_passage_name_completions(
+                                workspace, &name, PassageCompletionKind::Link,
+                            );
+                        }
+                        SemanticTokenType::PassageRef => {
+                            // Cursor is on a passage name inside a macro passage-ref arg
+                            // (e.g., "Forest" in <<goto "Forest">>).
+                            // Offer passage name completions with MacroArg kind.
+                            //
+                            // We resolve the macro context from the MacroArgRef
+                            // data first (most accurate), then fall back to
+                            // scanning the line for the enclosing macro name.
+                            let name = text[abs_start..abs_end].to_string();
+                            let (macro_name, has_body) =
+                                find_macro_arg_ref_at_offset(workspace, uri, byte_offset)
+                                    .map(|ar| (ar.macro_name.clone(), ar.has_body))
+                                    .unwrap_or_else(|| {
+                                        // Fallback: scan before_cursor for the macro name
+                                        resolve_macro_name_from_offset(
+                                            before_cursor, byte_offset, self,
+                                        )
+                                    });
+                            return self.build_passage_name_completions(
+                                workspace, &name,
+                                PassageCompletionKind::MacroArg { macro_name, has_body },
+                            );
+                        }
                         SemanticTokenType::Variable => {
                             let name = text[abs_start..abs_end].to_string();
                             let is_temp = name.starts_with('_');
-                            return self.build_variable_completions(is_temp);
+                            let sigil = if is_temp { '_' } else { '$' };
+                            let partial = extract_partial_after_sigil(before_cursor, sigil);
+                            return self.build_variable_completions(is_temp, line, character, partial);
                         }
                         SemanticTokenType::Namespace => {
                             let name = text[abs_start..abs_end].to_string();
@@ -1513,12 +1733,21 @@ fn find_enclosing_block_macros(text: &str, byte_offset: usize, body_macros: &Has
 // ===========================================================================
 
 /// Different contexts where passage names are offered as completions.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum PassageCompletionKind {
     /// Inside a `[[link]]` — inserts `[[name]]`
     Link,
-    /// Inside a macro passage-arg — inserts just the name
-    MacroArg,
+    /// Inside a macro passage-arg — inserts just the name.
+    ///
+    /// Carries the macro context so the builder can produce context-aware
+    /// detail text (e.g., "Navigation target for <<goto>>" vs
+    /// "Included passage for <<include>>") and proper text_edit ranges.
+    MacroArg {
+        /// Which macro this passage-ref arg belongs to (e.g., "goto", "link", "include").
+        macro_name: String,
+        /// Whether the macro invocation has a body block.
+        has_body: bool,
+    },
 }
 
 /// Compute a `FormatTextEdit` for macro completions.
@@ -1603,12 +1832,26 @@ fn compute_macro_text_edit(
 }
 
 impl SugarCubePlugin {
-    /// Build variable completions from the format plugin's variable registry.
+    /// Build variable name completions, enriched with structural data
+    /// from the arena tree.
     ///
-    /// Uses `self.registry.variable_names()` which queries the VariableTree
-    /// (the most accurate source), not `workspace.documents() → passage.vars`.
-    fn build_variable_completions(&self, is_temp: bool) -> Vec<crate::types::FormatCompletionItem> {
-        use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat};
+    /// Since `$` is shorthand for `State.variables.` and `_` for
+    /// `State.temporary.`, this is really "show children of the scope
+    /// root" — the same operation as dot-notation property completions,
+    /// just starting from a different depth in the arena tree.
+    ///
+    /// Each completion item carries the variable's inferred kind
+    /// (Object/Array/Scalar/Unknown) from the arena `NavIndex`, which
+    /// controls the icon, detail text, sort priority, and whether
+    /// the `.` commit character is offered for chaining.
+    fn build_variable_completions(
+        &self,
+        is_temp: bool,
+        line: u32,
+        character: u32,
+        partial: &str,
+    ) -> Vec<crate::types::FormatCompletionItem> {
+        use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat, PropertyKind};
 
         let all_names = self.registry.variable_names();
         let mut sorted_names: Vec<_> = all_names.into_iter().collect();
@@ -1623,8 +1866,7 @@ impl SugarCubePlugin {
                     !name.starts_with('_')
                 }
             })
-            .enumerate()
-            .map(|(i, name)| {
+            .map(|name| {
                 let display_name = if name.starts_with('$') || name.starts_with('_') {
                     name.clone()
                 } else if is_temp {
@@ -1634,27 +1876,112 @@ impl SugarCubePlugin {
                 };
                 let filter_name = name.trim_start_matches('$').trim_start_matches('_').to_string();
 
+                // ── Arena tree enrichment ──────────────────────────────
+                // Look up the inferred structural kind and children for
+                // this variable. `$` = children of <persistent> root,
+                // `_` = children of <temp:Passage> root — the arena
+                // path_index unifies both under the display name.
+                let inferred_kind = self.variable_kind_at_path(&display_name)
+                    .unwrap_or(PropertyKind::Unknown);
+                let children = self.variable_children_with_kind(&display_name);
+                let child_count = children.len();
+
+                // Completion icon: Objects and Arrays use Module (they
+                // have children to explore), Scalars use Variable.
+                let completion_kind = match inferred_kind {
+                    PropertyKind::Object | PropertyKind::Array => FormatCompletionKind::Module,
+                    PropertyKind::Scalar | PropertyKind::Unknown => FormatCompletionKind::Variable,
+                };
+
+                // Detail: type-aware with child preview
+                let detail = match inferred_kind {
+                    PropertyKind::Object => {
+                        let preview: Vec<&str> = children.iter()
+                            .take(3)
+                            .map(|(n, _)| n.as_str())
+                            .collect();
+                        if child_count <= 3 {
+                            format!("Object {{ {} }}", preview.join(", "))
+                        } else {
+                            format!("Object {{ {}, … }} — {} properties", preview.join(", "), child_count)
+                        }
+                    }
+                    PropertyKind::Array => {
+                        format!("Array — {} element properties", child_count)
+                    }
+                    PropertyKind::Scalar => {
+                        if is_temp { "Scalar — scoped to passage".to_string() }
+                        else { "Scalar".to_string() }
+                    }
+                    PropertyKind::Unknown => {
+                        if is_temp { "Temp variable — scoped to passage".to_string() }
+                        else { "Story variable — persists across passages".to_string() }
+                    }
+                };
+
+                // Sort: Objects first (most completable), then Arrays,
+                // then Scalars, then Unknowns. Within each group, sort
+                // alphabetically by name.
+                let sort_prefix = match inferred_kind {
+                    PropertyKind::Object => "0",
+                    PropertyKind::Array => "1",
+                    PropertyKind::Scalar => "2",
+                    PropertyKind::Unknown => "3",
+                };
+
+                // Text edit: replace partial after sigil with full name.
+                // The `$` or `_` stays in the document (like `<<` for
+                // macros) — only the identifier portion is replaced.
+                let text_edit = compute_variable_text_edit(
+                    partial, line, character, &filter_name,
+                );
+
+                // Commit characters: add "." for chaining into properties
+                // on Object/Array variables. Scalars don't need it.
+                let commit_chars = match inferred_kind {
+                    PropertyKind::Object | PropertyKind::Array => {
+                        vec![".".to_string(), " ".to_string(), "\n".to_string()]
+                    }
+                    PropertyKind::Scalar | PropertyKind::Unknown => {
+                        vec![" ".to_string(), "\n".to_string()]
+                    }
+                };
+
+                // Data payload for resolve: carry structural info so
+                // completion_resolve can show type, children, def-site.
+                let kind_str = match inferred_kind {
+                    PropertyKind::Object => "object",
+                    PropertyKind::Array => "array",
+                    PropertyKind::Scalar => "scalar",
+                    PropertyKind::Unknown => "unknown",
+                };
+                let child_names: Vec<&str> = children.iter()
+                    .take(10)
+                    .map(|(n, _)| n.as_str())
+                    .collect();
+
                 FormatCompletionItem {
                     label: display_name.clone(),
-                    kind: FormatCompletionKind::Variable,
-                    detail: Some(if is_temp {
-                        "Temp variable — scoped to current passage".to_string()
-                    } else {
-                        "Story variable — persists across passages".to_string()
-                    }),
-                    sort_text: Some(format!("1_{:06}", i)),
-                    filter_text: Some(filter_name),
-                    insert_text: Some(display_name),
-                    insert_text_format: FormatInsertTextFormat::Snippet,
-                    text_edit: None,
+                    kind: completion_kind,
+                    detail: Some(detail),
+                    sort_text: Some(format!("{}_{}", sort_prefix, name)),
+                    filter_text: Some(filter_name.clone()),
+                    // insert_text is the fallback when text_edit is None;
+                    // insert just the name (sigil already in document).
+                    insert_text: Some(filter_name.clone()),
+                    insert_text_format: FormatInsertTextFormat::PlainText,
+                    text_edit,
                     deprecated: false,
                     preselect: false,
                     data: Some(serde_json::json!({
                         "type": "variable",
                         "name": name,
-                        "is_temp": is_temp
+                        "is_temp": is_temp,
+                        "inferred_kind": kind_str,
+                        "child_count": child_count,
+                        "child_names": child_names,
                     })),
-                    commit_characters: vec![" ".to_string(), "\n".to_string()],
+                    commit_characters: commit_chars,
                 }
             })
             .collect()
@@ -1956,7 +2283,32 @@ impl SugarCubePlugin {
         items
     }
 
-    /// Build passage name completions.
+    /// Build passage name completions with context-aware detail and text_edit.
+    ///
+    /// ## Context-aware detail
+    ///
+    /// Instead of the generic "Passage" label, each item's `detail` reflects the
+    /// macro context that triggered the completion:
+    ///
+    /// - `<<goto "Passage">>` → "Navigation target for \<\<goto\>\>"
+    /// - `<<include "Passage">>` → "Included passage for \<\<include\>\>"
+    /// - `<<link "Talk" "Passage">>` → "Link target for \<\<link\>\>"
+    /// - `[[Passage]]` → "Link target"
+    ///
+    /// The detail is derived from the `LinkSource` semantics and the macro
+    /// catalog's `MacroDef.description`, following format isolation — no
+    /// format-specific data leaks out of the plugin.
+    ///
+    /// ## text_edit
+    ///
+    /// Passage completions provide `text_edit` ranges that replace only the
+    /// partial passage name text, not the surrounding delimiters (`[[`, `]]`,
+    /// or quotes). This follows the same design as `compute_macro_text_edit`:
+    ///
+    /// - For `[[Partial]]`: text_edit replaces `Partial` with the full name.
+    ///   The `[[` and `]]` remain in the document.
+    /// - For `<<goto "Partial">>`: text_edit replaces `Partial` inside the
+    ///   quotes. The quotes and `<<goto` remain.
     fn build_passage_name_completions(
         &self,
         workspace: &knot_core::Workspace,
@@ -1965,12 +2317,50 @@ impl SugarCubePlugin {
     ) -> Vec<crate::types::FormatCompletionItem> {
         use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat};
 
+        // Build a context-aware detail string based on the completion kind.
+        // This uses the macro catalog and LinkSource semantics to produce
+        // descriptions that tell the user *why* they're seeing passage names.
+        let detail_text = match &kind {
+            PassageCompletionKind::Link => "Link target".to_string(),
+            PassageCompletionKind::MacroArg { macro_name, .. } => {
+                // Look up the macro in the catalog for semantic context.
+                // We use the same classification as LinkSource to produce
+                // human-readable descriptions for each macro category.
+                match macro_name.as_str() {
+                    "goto" => "Navigation target for <<goto>>".to_string(),
+                    "include" | "display" => format!("Included passage for <<{}>>", macro_name),
+                    "link" | "button" | "click" => format!("Link target for <<{}>>", macro_name),
+                    "linkappend" | "linkprepend" | "linkreplace" | "linkrepeat" => {
+                        format!("Link target for <<{}>>", macro_name)
+                    }
+                    "actions" => "Choice passage for <<actions>>".to_string(),
+                    "back" => "Return passage for <<back>>".to_string(),
+                    "return" => "Return passage for <<return>>".to_string(),
+                    // Fallback for unknown macros that have passage-ref args
+                    // (e.g., custom macros or newly added catalog entries)
+                    other => format!("Passage target for <<{}>>", other),
+                }
+            }
+        };
+
+        // Look up the MacroDef to enrich completion data further.
+        // If found, we can extract the arg label (e.g., "passage" vs "passageName")
+        // and whether the arg is required — useful for sort priority.
+        // NOTE: Currently used for future enrichment (filtering by required args,
+        // macro-specific sort ordering). The lookup is cheap (static catalog scan).
+        let _macro_def = match &kind {
+            PassageCompletionKind::MacroArg { macro_name, .. } => {
+                self.find_macro(macro_name)
+            }
+            PassageCompletionKind::Link => None,
+        };
+
         let names = workspace.all_passage_names();
         names
             .iter()
             .enumerate()
-            .map(|(i, name)| {
-                let (insert_text, insert_format, commit_chars) = match kind {
+            .map(|(_, name)| {
+                let (insert_text, insert_format, commit_chars) = match &kind {
                     PassageCompletionKind::Link => {
                         // For [[ links, the insert_text replaces the partial name
                         // after [[ with the full [[Name]] pattern
@@ -1981,23 +2371,57 @@ impl SugarCubePlugin {
                             (name.clone(), FormatInsertTextFormat::PlainText, vec!["]".to_string()])
                         }
                     }
-                    PassageCompletionKind::MacroArg => {
+                    PassageCompletionKind::MacroArg { .. } => {
                         (name.clone(), FormatInsertTextFormat::PlainText, Vec::new())
+                    }
+                };
+
+                // Sort priority: context-aware ordering.
+                // - "Start" passage is preselected for navigation macros
+                //   (most likely target for <<goto>>, <<link>>, etc.)
+                // - Exact matches on the partial target get highest priority
+                // - Items are otherwise sorted by index (stable order)
+                let is_exact_match = !target.is_empty() && name == target;
+                let is_start = name == "Start";
+                let sort_prefix = if is_exact_match {
+                    "0" // Exact match — highest priority
+                } else if is_start {
+                    "1" // Start passage — high priority for navigation
+                } else {
+                    "2" // Everything else
+                };
+
+                // Build the data payload. For MacroArg, include macro context
+                // so completion_resolve can provide macro-specific documentation.
+                let data = match &kind {
+                    PassageCompletionKind::Link => {
+                        serde_json::json!({
+                            "type": "passage",
+                            "name": name,
+                        })
+                    }
+                    PassageCompletionKind::MacroArg { macro_name, has_body } => {
+                        serde_json::json!({
+                            "type": "passage",
+                            "name": name,
+                            "macro_name": macro_name,
+                            "has_body": has_body,
+                        })
                     }
                 };
 
                 FormatCompletionItem {
                     label: name.clone(),
                     kind: FormatCompletionKind::Module,
-                    detail: Some("Passage".to_string()),
-                    sort_text: Some(format!("0_{:06}", i)),
+                    detail: Some(detail_text.clone()),
+                    sort_text: Some(format!("{}_{}", sort_prefix, name)),
                     filter_text: Some(name.clone()),
                     insert_text: Some(insert_text),
                     insert_text_format: insert_format,
-                    text_edit: None,
+                    text_edit: None, // text_edit is computed by the caller with position info
                     deprecated: false,
-                    preselect: !target.is_empty() && name == target || name == "Start",
-                    data: Some(serde_json::json!({"type": "passage", "name": name})),
+                    preselect: is_exact_match || is_start,
+                    data: Some(data),
                     commit_characters: commit_chars,
                 }
             })
@@ -2097,9 +2521,20 @@ impl SugarCubePlugin {
     }
 
     /// Build variable dot-notation completions (e.g., $player. → .name, .hp).
+    ///
+    /// This is the same operation as `$`/`_` completions — "show children
+    /// of a node in the arena tree" — just starting from a deeper node
+    /// rather than a scope root. The `var_path` identifies the parent
+    /// node (e.g., `"$player"` or `"$player.address"`).
+    ///
+    /// Includes `text_edit` for partial property replacement and `.`
+    /// commit character for continued chaining on Object/Array children.
     fn build_variable_dot_completions(
         &self,
         var_path: &str,
+        line: u32,
+        character: u32,
+        partial: &str,
     ) -> Vec<crate::types::FormatCompletionItem> {
         use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat, PropertyKind};
 
@@ -2126,6 +2561,9 @@ impl SugarCubePlugin {
                 ];
                 for (i, (prop, detail, is_method)) in array_props.iter().enumerate() {
                     let method_name = prop.trim_start_matches('.');
+                    let text_edit = compute_variable_text_edit(
+                        partial, line, character, method_name,
+                    );
                     items.push(FormatCompletionItem {
                         label: method_name.to_string(),
                         kind: if *is_method { FormatCompletionKind::Method } else { FormatCompletionKind::Property },
@@ -2134,10 +2572,15 @@ impl SugarCubePlugin {
                         filter_text: Some(method_name.to_string()),
                         insert_text: Some(method_name.to_string()),
                         insert_text_format: FormatInsertTextFormat::PlainText,
-                        text_edit: None,
+                        text_edit,
                         deprecated: false,
                         preselect: false,
-                        data: None,
+                        data: Some(serde_json::json!({
+                            "type": "variable_property",
+                            "parent_path": var_path,
+                            "property": method_name,
+                            "is_method": is_method,
+                        })),
                         commit_characters: Vec::new(),
                     });
                 }
@@ -2148,33 +2591,65 @@ impl SugarCubePlugin {
                         PropertyKind::Array => format!("Array property of {}", var_path),
                         _ => format!("Element property of {}", var_path),
                     };
+                    let insert = format!("[0].{}", child_name);
+                    let text_edit = compute_variable_text_edit(
+                        partial, line, character, &insert,
+                    );
+                    // Offer "." commit for object/array element properties
+                    let commit_chars = match child_kind {
+                        PropertyKind::Object | PropertyKind::Array => {
+                            vec![".".to_string()]
+                        }
+                        _ => Vec::new(),
+                    };
                     items.push(FormatCompletionItem {
                         label: format!("[0].{}", child_name),
                         kind: FormatCompletionKind::Property,
                         detail: Some(detail),
                         sort_text: Some(format!("1_{:06}_{}", i, child_name)),
                         filter_text: Some(child_name.clone()),
-                        insert_text: Some(format!("[0].{}", child_name)),
+                        insert_text: Some(insert.clone()),
                         insert_text_format: FormatInsertTextFormat::PlainText,
-                        text_edit: None,
+                        text_edit,
                         deprecated: false,
                         preselect: false,
-                        data: None,
-                        commit_characters: Vec::new(),
+                        data: Some(serde_json::json!({
+                            "type": "variable_property",
+                            "parent_path": var_path,
+                            "property": child_name,
+                            "is_method": false,
+                        })),
+                        commit_characters: commit_chars,
                     });
                 }
             }
             PropertyKind::Object | PropertyKind::Unknown => {
                 for (i, (child_name, child_kind)) in children.iter().enumerate() {
                     let kind = match child_kind {
-                        PropertyKind::Object => FormatCompletionKind::Module,
-                        PropertyKind::Array => FormatCompletionKind::Module,
+                        PropertyKind::Object | PropertyKind::Array => FormatCompletionKind::Module,
                         _ => FormatCompletionKind::Field,
                     };
                     let detail = match child_kind {
                         PropertyKind::Object => format!("Object property of {}", var_path),
                         PropertyKind::Array => format!("Array property of {}", var_path),
                         _ => format!("Property of {}", var_path),
+                    };
+                    let text_edit = compute_variable_text_edit(
+                        partial, line, character, child_name,
+                    );
+                    // Offer "." commit for object/array children so the
+                    // user can chain deeper (e.g., $player.address.)
+                    let commit_chars = match child_kind {
+                        PropertyKind::Object | PropertyKind::Array => {
+                            vec![".".to_string()]
+                        }
+                        _ => Vec::new(),
+                    };
+                    let kind_str = match child_kind {
+                        PropertyKind::Object => "object",
+                        PropertyKind::Array => "array",
+                        PropertyKind::Scalar => "scalar",
+                        PropertyKind::Unknown => "unknown",
                     };
                     items.push(FormatCompletionItem {
                         label: child_name.clone(),
@@ -2184,11 +2659,17 @@ impl SugarCubePlugin {
                         filter_text: Some(child_name.clone()),
                         insert_text: Some(child_name.clone()),
                         insert_text_format: FormatInsertTextFormat::PlainText,
-                        text_edit: None,
+                        text_edit,
                         deprecated: false,
                         preselect: false,
-                        data: None,
-                        commit_characters: Vec::new(),
+                        data: Some(serde_json::json!({
+                            "type": "variable_property",
+                            "parent_path": var_path,
+                            "property": child_name,
+                            "inferred_kind": kind_str,
+                            "is_method": false,
+                        })),
+                        commit_characters: commit_chars,
                     });
                 }
             }
@@ -2334,20 +2815,41 @@ impl SugarCubePlugin {
         items
     }
 
-    /// Check if the cursor is inside a passage-ref macro's string argument.
-    fn is_in_passage_arg_quote(
+    /// Resolve whether the cursor is inside a passage-ref macro arg,
+    /// returning the full `PassageCompletionKind::MacroArg` context if so.
+    ///
+    /// This replaces the old `is_in_passage_arg_quote` which only returned
+    /// a boolean. Now we carry the macro_name and has_body through, which
+    /// enables context-aware detail text in the completion items.
+    ///
+    /// Detection strategy (same as before, but richer return):
+    /// 1. Span-based: check MacroArgRef at cursor offset (most accurate)
+    /// 2. Line-based: detect passage-in-quote pattern (AST lag fallback)
+    fn resolve_passage_arg_context(
         &self,
         before_cursor: &str,
         byte_offset: usize,
         workspace: &knot_core::Workspace,
         uri: &url::Url,
-    ) -> bool {
-        // First try span-based detection
-        if find_macro_arg_ref_at_offset(workspace, uri, byte_offset).is_some() {
-            return true;
+    ) -> Option<PassageCompletionKind> {
+        // First try span-based detection — gives us macro_name and has_body
+        if let Some(arg_ref) = find_macro_arg_ref_at_offset(workspace, uri, byte_offset) {
+            return Some(PassageCompletionKind::MacroArg {
+                macro_name: arg_ref.macro_name.clone(),
+                has_body: arg_ref.has_body,
+            });
         }
         // Fallback to line-based detection
-        detect_passage_in_quote(before_cursor, self).is_some()
+        if let Some(ctx) = detect_passage_in_quote(before_cursor, self) {
+            let (macro_name, has_body) = match ctx {
+                crate::types::CompletionContext::MacroPassageRef { macro_name, has_body, .. } => {
+                    (macro_name, has_body)
+                }
+                _ => return None,
+            };
+            return Some(PassageCompletionKind::MacroArg { macro_name, has_body });
+        }
+        None
     }
 
     /// Find unclosed block macros by scanning text for open/close pairs.
@@ -2549,7 +3051,7 @@ mod completion_debug_tests {
         );
         // Single `[` should NOT trigger passage name completions
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(passage_items.is_empty(),
             "Single [ should not trigger passage completions, got {} passage items",
@@ -2570,7 +3072,7 @@ mod completion_debug_tests {
             text, &workspace, &uri, line, character, Some('['), &[],
         );
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(!passage_items.is_empty(),
             "[[ should trigger passage completions, got {} passage items",
@@ -2592,7 +3094,7 @@ mod completion_debug_tests {
         );
         // Should return passage completions filtered by "Gar"
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(!passage_items.is_empty(),
             "[[Gar should trigger passage completions, got {} passage items",
@@ -2614,7 +3116,7 @@ mod completion_debug_tests {
         );
         // Should return passage completions (pipe-link context)
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(!passage_items.is_empty(),
             "[[display| should trigger passage completions, got {} passage items",
@@ -2654,7 +3156,7 @@ mod completion_debug_tests {
             text, &workspace, &uri, line, character, Some('"'), &[],
         );
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(!passage_items.is_empty(),
             "\" in <<goto should trigger passage completions, got {} passage items",
@@ -2675,10 +3177,112 @@ mod completion_debug_tests {
             text, &workspace, &uri, line, character, Some('"'), &[],
         );
         let passage_items: Vec<_> = items.iter()
-            .filter(|i| i.detail.as_ref().map_or(false, |d| d == "Passage"))
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
             .collect();
         assert!(passage_items.is_empty(),
             "\" in normal text should NOT trigger passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that Ctrl+Space (no trigger) on a Link semantic token returns passage completions.
+    #[test]
+    fn test_ctrl_space_on_link_token_returns_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        // Text: ":: Start\nHello [[Garden]]"
+        // The word "Garden" is at byte offset 17..23 in the document.
+        let text = ":: Start\nHello [[Garden]]";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        // Build a semantic token group simulating what the token builder produces
+        // for a [[ ]] link. The "Garden" text starts at byte 17 in the document.
+        // Passage "Start" is at passage_offset 0, so the token's passage-relative
+        // start = 17 (abs) - 0 (offset) = 17.
+        let token_groups = vec![crate::plugin::PassageTokenGroup {
+            passage_name: "Start".to_string(),
+            passage_offset: 0,
+            tokens: vec![crate::plugin::SemanticToken {
+                start: 17, // passage-relative byte offset of "Garden"
+                length: 6, // "Garden".len()
+                token_type: crate::plugin::SemanticTokenType::Link,
+                modifier: None,
+            }],
+        }];
+
+        // Cursor at byte 20 (inside "Garden"), line 1, char 12
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, 1, 12, None, &token_groups,
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "Ctrl+Space on Link token should return passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that Ctrl+Space (no trigger) on a PassageRef semantic token returns passage completions.
+    #[test]
+    fn test_ctrl_space_on_passageref_token_returns_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        // Text: ":: Start\n<<goto \"Forest\">>"
+        // The word "Forest" is inside the macro arg quotes.
+        let text = ":: Start\n<<goto \"Forest\">>";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest", "Garden"]);
+
+        // Build a semantic token group simulating what the token builder produces
+        // for a passage-ref macro arg. "Forest" starts at byte 17 in the document.
+        let token_groups = vec![crate::plugin::PassageTokenGroup {
+            passage_name: "Start".to_string(),
+            passage_offset: 0,
+            tokens: vec![crate::plugin::SemanticToken {
+                start: 17, // passage-relative byte offset of "Forest"
+                length: 6, // "Forest".len()
+                token_type: crate::plugin::SemanticTokenType::PassageRef,
+                modifier: None,
+            }],
+        }];
+
+        // Cursor at byte 20 (inside "Forest"), line 1, char 12
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, 1, 12, None, &token_groups,
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "Ctrl+Space on PassageRef token should return passage completions, got {} passage items",
+            passage_items.len());
+    }
+
+    /// Test that Ctrl+Space on a Link token uses the current name for filtering.
+    #[test]
+    fn test_ctrl_space_on_link_token_uses_name_as_filter() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [[Gar]]";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate", "Forest"]);
+
+        let token_groups = vec![crate::plugin::PassageTokenGroup {
+            passage_name: "Start".to_string(),
+            passage_offset: 0,
+            tokens: vec![crate::plugin::SemanticToken {
+                start: 17, // passage-relative byte offset of "Gar"
+                length: 3, // "Gar".len()
+                token_type: crate::plugin::SemanticTokenType::Link,
+                modifier: None,
+            }],
+        }];
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, 1, 12, None, &token_groups,
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(),
+            "Ctrl+Space on Link token 'Gar' should return passage completions, got {} passage items",
             passage_items.len());
     }
 
@@ -2689,6 +3293,580 @@ mod completion_debug_tests {
         assert_eq!(extract_partial_in_quote(r#"<<goto ""#), "");
         assert_eq!(extract_partial_in_quote(r#"He said "hello""#), ""); // closed quote
         assert_eq!(extract_partial_in_quote(r#"<<link "Go" "Ga"#), "Ga"); // second open quote
+    }
+
+    // ── Context-aware passage name completion tests ─────────────────────
+
+    /// Test that Link context produces "Link target" detail.
+    #[test]
+    fn test_link_context_has_link_target_detail() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nHello [[";
+        let line = 1u32;
+        let character = 8u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(), "Expected passage completions after [[");
+        // All passage items in Link context should have "Link target" detail
+        for item in &passage_items {
+            assert_eq!(item.detail.as_ref().unwrap(), &"Link target",
+                "Link context passage item should have 'Link target' detail, got: {:?}",
+                item.detail);
+        }
+    }
+
+    /// Test that `<<goto "..."` context produces "Navigation target for <<goto>>" detail.
+    #[test]
+    fn test_goto_context_has_navigation_target_detail() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<goto \"";
+        let line = 1u32;
+        let character = 8u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(), "Expected passage completions after <<goto \"");
+        for item in &passage_items {
+            assert_eq!(item.detail.as_ref().unwrap(), &"Navigation target for <<goto>>",
+                "goto context passage item should have 'Navigation target for <<goto>>' detail, got: {:?}",
+                item.detail);
+        }
+    }
+
+    /// Test that `<<include "..."` context produces "Included passage for <<include>>" detail.
+    #[test]
+    fn test_include_context_has_included_passage_detail() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<include \"";
+        let line = 1u32;
+        let character = 11u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Sidebar", "Header"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(), "Expected passage completions after <<include \"");
+        for item in &passage_items {
+            assert_eq!(item.detail.as_ref().unwrap(), &"Included passage for <<include>>",
+                "include context passage item should have 'Included passage for <<include>>' detail, got: {:?}",
+                item.detail);
+        }
+    }
+
+    /// Test that `<<link "label" "..."` context produces "Link target for <<link>>" detail.
+    #[test]
+    fn test_link_macro_context_has_link_target_detail() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<link \"Go\" \"";
+        let line = 1u32;
+        let character = 14u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Garden", "Gate"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(), "Expected passage completions after <<link \"Go\" \"");
+        for item in &passage_items {
+            assert_eq!(item.detail.as_ref().unwrap(), &"Link target for <<link>>",
+                "link macro context passage item should have 'Link target for <<link>>' detail, got: {:?}",
+                item.detail);
+        }
+    }
+
+    /// Test that PassageRef semantic token (Ctrl+Space) produces macro-context detail.
+    #[test]
+    fn test_passageref_token_has_macro_context_detail() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<goto \"Forest\">>";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest", "Garden"]);
+
+        // Build a PassageRef semantic token for "Forest"
+        let token_groups = vec![crate::plugin::PassageTokenGroup {
+            passage_name: "Start".to_string(),
+            passage_offset: 0,
+            tokens: vec![crate::plugin::SemanticToken {
+                start: 17,
+                length: 6, // "Forest".len()
+                token_type: crate::plugin::SemanticTokenType::PassageRef,
+                modifier: None,
+            }],
+        }];
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, 1, 12, None, &token_groups,
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty(), "Expected passage completions for PassageRef token");
+        // PassageRef inside <<goto>> should have "Navigation target for <<goto>>" detail,
+        // NOT "Link target" (the old bug where PassageRef was conflated with Link).
+        for item in &passage_items {
+            let detail = item.detail.as_ref().unwrap();
+            assert!(detail.contains("<<goto>>"),
+                "PassageRef in <<goto>> should have macro-context detail, got: {:?}", detail);
+            assert_ne!(detail, &"Link target",
+                "PassageRef should NOT have Link target detail (was conflated with Link before fix)");
+        }
+    }
+
+    /// Test that passage completions in MacroArg context include macro_name in data.
+    #[test]
+    fn test_macro_arg_passage_completions_include_macro_context_in_data() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<goto \"";
+        let line = 1u32;
+        let character = 8u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('"'), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty());
+        // All items should have macro_name in their data payload
+        for item in &passage_items {
+            let macro_name = item.data.as_ref()
+                .and_then(|d| d.get("macro_name"))
+                .and_then(|v| v.as_str());
+            assert_eq!(macro_name, Some("goto"),
+                "MacroArg passage completion should include macro_name='goto' in data, got: {:?}",
+                macro_name);
+        }
+    }
+
+    /// Test that Link context does NOT include macro_name in data.
+    #[test]
+    fn test_link_passage_completions_do_not_include_macro_context() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n[[";
+        let line = 1u32;
+        let character = 4u32;
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('['), &[],
+        );
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(!passage_items.is_empty());
+        // Link context should NOT have macro_name in data
+        for item in &passage_items {
+            let macro_name = item.data.as_ref()
+                .and_then(|d| d.get("macro_name"))
+                .and_then(|v| v.as_str());
+            assert_eq!(macro_name, None,
+                "Link passage completion should NOT include macro_name in data, got: {:?}",
+                macro_name);
+        }
+    }
+
+    /// Test that resolve_completion_context returns MacroPassageRef for PassageRef tokens.
+    #[test]
+    fn test_resolve_context_passageref_returns_macro_passage_ref() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<goto \"Forest\">>";
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest"]);
+
+        // Build a PassageRef semantic token
+        let token_groups = vec![crate::plugin::PassageTokenGroup {
+            passage_name: "Start".to_string(),
+            passage_offset: 0,
+            tokens: vec![crate::plugin::SemanticToken {
+                start: 17,
+                length: 6,
+                token_type: crate::plugin::SemanticTokenType::PassageRef,
+                modifier: None,
+            }],
+        }];
+
+        let ctx = plugin.resolve_completion_context(
+            text, &workspace, &uri, 1, 12, None, &token_groups,
+        );
+        // Should be MacroPassageRef, NOT Link
+        match ctx {
+            crate::types::CompletionContext::MacroPassageRef { target, macro_name, .. } => {
+                assert_eq!(target, "Forest", "PassageRef should resolve target to 'Forest'");
+                assert_eq!(macro_name, "goto", "PassageRef should resolve macro_name to 'goto'");
+            }
+            other => panic!("PassageRef token should return MacroPassageRef context, got: {:?}", other),
+        }
+    }
+
+    // ── Variable dot-completion deep nesting tests ────────────────────
+
+    /// Test that `find_variable_path_before_dot` correctly resolves
+    /// deep paths like `$item.work` when cursor is after the dot.
+    #[test]
+    fn test_find_variable_path_before_dot_deep() {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        // Populate the arena tree with deep variable structure
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            10..40, "work.pen.color", "",
+            &[],
+            None,
+        );
+
+        // Line text: "<<set $item.work.>>"
+        // Positions:  0123456789012345678
+        //             <<set $item.work.>>
+        // Cursor after second dot = character 17
+        let text = ":: Init\n<<set $item.work.>>";
+        let line = 1u32;
+        let character = 17u32;
+        let byte_offset = line_char_to_byte_offset(text, line, character);
+        let line_text = text.lines().nth(line as usize).unwrap_or("");
+        let byte_pos = char_to_byte_offset(line_text, character as usize);
+        let before_cursor = &line_text[..byte_pos.min(line_text.len())];
+
+        // before_cursor should be "<<set $item.work."
+        assert!(before_cursor.contains("$item.work."),
+            "before_cursor should contain '$item.work.', got: '{}'", before_cursor);
+
+        let result = find_variable_path_before_dot(
+            &workspace, &uri, text, byte_offset, before_cursor, &plugin.registry(),
+        );
+
+        assert!(result.is_some(), "find_variable_path_before_dot should resolve $item.work, got None");
+        let path = result.unwrap();
+        assert_eq!(path, "$item.work",
+            "Expected path '$item.work', got '{}'", path);
+    }
+
+    /// Test that `build_variable_dot_completions` returns children at
+    /// the correct depth for deeply nested variables.
+    #[test]
+    fn test_dot_completions_deep_nesting() {
+        let mut plugin = SugarCubePlugin::new();
+
+        // Populate the arena tree: $item -> work -> pen -> color
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            10..40, "work.pen.color", "",
+            &[],
+            None,
+        );
+
+        // Level 1: dot completions for $item → should show "work"
+        let items_level1 = plugin.build_variable_dot_completions("$item", 0, 7, "");
+        assert!(!items_level1.is_empty(), "Level 1 ($item.) should have completions");
+        let labels_l1: Vec<&str> = items_level1.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels_l1.contains(&"work"),
+            "Level 1 should contain 'work', got: {:?}", labels_l1);
+
+        // Level 2: dot completions for $item.work → should show "pen"
+        let items_level2 = plugin.build_variable_dot_completions("$item.work", 0, 13, "");
+        assert!(!items_level2.is_empty(), "Level 2 ($item.work.) should have completions");
+        let labels_l2: Vec<&str> = items_level2.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels_l2.contains(&"pen"),
+            "Level 2 should contain 'pen', got: {:?}", labels_l2);
+
+        // Level 3: dot completions for $item.work.pen → should show "color"
+        let items_level3 = plugin.build_variable_dot_completions("$item.work.pen", 0, 17, "");
+        assert!(!items_level3.is_empty(), "Level 3 ($item.work.pen.) should have completions");
+        let labels_l3: Vec<&str> = items_level3.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels_l3.contains(&"color"),
+            "Level 3 should contain 'color', got: {:?}", labels_l3);
+    }
+
+    /// Test the full `provide_completions` pipeline for dot-trigger
+    /// deep nesting.
+    #[test]
+    fn test_provide_completions_dot_trigger_deep() {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        // Populate the arena tree: $item -> work -> pen -> color
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            10..40, "work.pen.color", "",
+            &[],
+            None,
+        );
+
+        // Test: $item. (dot trigger) → should show "work"
+        // Line: "<<set $item.>>" — cursor after dot = character 12
+        let text_l1 = ":: Init\n<<set $item.>>";
+        let items_l1 = plugin.provide_completions(
+            text_l1, &workspace, &uri,
+            1, 12, // cursor after "$item."
+            Some('.'),
+            &[],
+        );
+        let labels_l1: Vec<&str> = items_l1.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels_l1.contains(&"work"),
+            "Dot trigger after $item. should show 'work', got: {:?}", labels_l1);
+
+        // Test: $item.work. (dot trigger) → should show "pen", NOT "work"
+        // Line: "<<set $item.work.>>" — cursor after second dot = character 17
+        let text_l2 = ":: Init\n<<set $item.work.>>";
+        let items_l2 = plugin.provide_completions(
+            text_l2, &workspace, &uri,
+            1, 17, // cursor after "$item.work."
+            Some('.'),
+            &[],
+        );
+        let labels_l2: Vec<&str> = items_l2.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels_l2.contains(&"pen"),
+            "Dot trigger after $item.work. should show 'pen', got: {:?}", labels_l2);
+        assert!(!labels_l2.contains(&"work"),
+            "Dot trigger after $item.work. should NOT show 'work' (that's a sibling, not a child), got: {:?}", labels_l2);
+    }
+
+    /// Test the no-trigger (Ctrl+Space) path for deep dot continuation.
+    /// This simulates the scenario where the user types $item.work. and
+    /// then hits Ctrl+Space instead of relying on the dot trigger.
+    #[test]
+    fn test_no_trigger_deep_dot_continuation() {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        // Populate the arena tree: $item -> work -> pen -> color
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            10..40, "work.pen.color", "",
+            &[],
+            None,
+        );
+
+        // Test: $item.work. with NO trigger → should show "pen"
+        // Line: "<<set $item.work.>>" — cursor after second dot = character 17
+        let text = ":: Init\n<<set $item.work.>>";
+        let items = plugin.provide_completions(
+            text, &workspace, &uri,
+            1, 17, // cursor after "$item.work."
+            None, // NO trigger (Ctrl+Space)
+            &[],
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"pen"),
+            "No-trigger after $item.work. should show 'pen', got: {:?}", labels);
+        assert!(!labels.contains(&"work"),
+            "No-trigger after $item.work. should NOT show 'work' (sibling), got: {:?}", labels);
+    }
+
+    /// Test that when a VarOp span covers the cursor, the dot continuation
+    /// still takes priority for deep nesting (not root variable completions).
+    #[test]
+    fn test_dot_continuation_beats_var_span() {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let mut workspace = knot_core::Workspace::new(uri.clone());
+
+        // Populate the arena tree: $item -> work -> pen -> color
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            10..40, "work.pen.color", "",
+            &[],
+            None,
+        );
+
+        // Add a document with a VarOp for $item.work
+        // This simulates the parser having seen $item.work in the passage
+        use knot_core::{Document, Passage};
+        use knot_core::passage::{VarOp, VarKind, StoryFormat};
+        let mut doc = Document::new(uri.clone(), StoryFormat::SugarCube);
+        let passage_offset = 8; // after ":: Init\n"
+        let var_span_start = passage_offset + 7; // position of "$" in "<<set $item.work.>>"
+        doc.passages.push(Passage {
+            name: "Init".to_string(),
+            tags: Vec::new(),
+            span: passage_offset..(passage_offset + 30),
+            header_name_span: None,
+            body: Vec::new(),
+            links: Vec::new(),
+            vars: vec![VarOp {
+                name: "$item".to_string(),
+                kind: VarKind::Init,
+                span: (var_span_start)..(var_span_start + 10), // covers "$item.work"
+                is_temporary: false,
+            }],
+            macro_arg_refs: Vec::new(),
+            is_special: false,
+            special_def: None,
+            position: None,
+            passage_offset,
+        });
+        workspace.insert_document(doc);
+
+        // Test: no-trigger at position after "$item.work."
+        // The VarOp span covers "$item.work" but the cursor is after the trailing dot
+        let text = ":: Init\n<<set $item.work.>>";
+        let items = plugin.provide_completions(
+            text, &workspace, &uri,
+            1, 17, // cursor after "$item.work."
+            None, // NO trigger
+            &[],
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // Should show dot completions (pen), NOT root variable list ($item)
+        assert!(labels.contains(&"pen"),
+            "No-trigger after $item.work. with VarOp present should show 'pen', got: {:?}", labels);
+    }
+
+    /// Test that `build_path_for_segment` on the variable tree correctly
+    /// resolves deep paths (e.g., "$item.work.pen") when segment_spans
+    /// are provided and the starting node is the root variable.
+    ///
+    /// This is a regression test for the bug where `build_path_for_segment`
+    /// walked UP from the root variable node, hit persistent_root
+    /// immediately, and only returned a single-component path regardless
+    /// of `seg_idx`.
+    #[test]
+    fn test_build_path_for_segment_deep_resolution() {
+        use crate::sugarcube::registries::variable_tree::VariableTree;
+        use crate::sugarcube::registries::variable_tree::VarAccessKind;
+
+        let mut tree = VariableTree::new();
+
+        // Record a deep variable: $item.work.pen.color
+        // With segment_spans that represent each component's byte range.
+        tree.record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            7..27, // full span: "$item.work.pen.color"
+            "work.pen.color", "",
+            &[
+                7..12,  // segment 0: "$item"
+                12..17, // segment 1: ".work"
+                17..21, // segment 2: ".pen"
+                21..27, // segment 3: ".color"
+            ],
+            None,
+        );
+
+        // Test: path_at_offset should resolve correctly at each depth.
+        // When cursor is within segment 1 (work), should return "$item.work"
+        let path_seg1 = tree.path_at_offset("file:///test.twee", "Init", 14);
+        assert_eq!(path_seg1.as_deref(), Some("$item.work"),
+            "path_at_offset at segment 1 (work) should return '$item.work', got {:?}", path_seg1);
+
+        // When cursor is within segment 2 (pen), should return "$item.work.pen"
+        let path_seg2 = tree.path_at_offset("file:///test.twee", "Init", 19);
+        assert_eq!(path_seg2.as_deref(), Some("$item.work.pen"),
+            "path_at_offset at segment 2 (pen) should return '$item.work.pen', got {:?}", path_seg2);
+
+        // When cursor is within segment 3 (color), should return "$item.work.pen.color"
+        let path_seg3 = tree.path_at_offset("file:///test.twee", "Init", 24);
+        assert_eq!(path_seg3.as_deref(), Some("$item.work.pen.color"),
+            "path_at_offset at segment 3 (color) should return '$item.work.pen.color', got {:?}", path_seg3);
+
+        // When cursor is within segment 0 ($item), should return "$item"
+        let path_seg0 = tree.path_at_offset("file:///test.twee", "Init", 9);
+        assert_eq!(path_seg0.as_deref(), Some("$item"),
+            "path_at_offset at segment 0 ($item) should return '$item', got {:?}", path_seg0);
+    }
+
+    /// Test the dot-trigger end-to-end scenario that the user reported:
+    /// typing `$item.work.` should show properties of `work` (like `pen`),
+    /// NOT the root-level children of `$item` (which would be just `work`).
+    ///
+    /// This simulates the real LSP scenario with segment_spans populated.
+    #[test]
+    fn test_dot_trigger_shows_deep_children_not_root_children() {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        // Populate the arena tree with deep variable structure
+        // $item -> work -> pen -> color
+        // $item -> name (scalar)
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            7..27,
+            "work.pen.color", "",
+            &[
+                7..12,  // $item
+                12..17, // .work
+                17..21, // .pen
+                21..27, // .color
+            ],
+            None,
+        );
+        plugin.registry_mut().variables_mut().record_var(
+            "$item", false,
+            VarAccessKind::Write,
+            "Init", "file:///test.twee",
+            35..40,
+            "name", "",
+            &[
+                35..40, // $item
+                40..44, // .name
+            ],
+            None,
+        );
+
+        // Test: $item.work. (dot trigger) → should show "pen", NOT "work" or "name"
+        let text = ":: Init\n<<set $item.work.>>";
+        let items = plugin.provide_completions(
+            text, &workspace, &uri,
+            1, 17, // cursor after "$item.work."
+            Some('.'),
+            &[],
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+        // "pen" is a child of $item.work — should be present
+        assert!(labels.contains(&"pen"),
+            "Dot trigger after $item.work. should show 'pen' (child of work), got: {:?}", labels);
+
+        // "work" is NOT a child of $item.work — it IS $item.work.
+        // It should NOT appear as a suggestion.
+        assert!(!labels.contains(&"work"),
+            "Dot trigger after $item.work. should NOT show 'work' (that's the path itself, not a child), got: {:?}", labels);
+
+        // "name" is a sibling of "work" under $item, not a child of $item.work.
+        // It should NOT appear as a suggestion.
+        assert!(!labels.contains(&"name"),
+            "Dot trigger after $item.work. should NOT show 'name' (sibling under $item, not child of work), got: {:?}", labels);
     }
 }
 

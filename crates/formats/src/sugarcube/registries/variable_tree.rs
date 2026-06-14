@@ -1477,9 +1477,13 @@ impl VariableTree {
     /// - `segment_spans[1]` = first property span
     /// - etc.
     fn depth_from_var(&self, var_id: NodeId, ancestor_id: NodeId) -> usize {
+        // Walk UP from ancestor_id toward var_id, counting steps.
+        // "ancestor_id" is named from the perspective of the leaf node
+        // (it's an ancestor of the leaf), but it's a DESCENDANT of
+        // var_id. So we walk up FROM ancestor_id TO var_id.
         let mut depth = 0;
-        let mut current = var_id;
-        while current != ancestor_id && current != NO_NODE {
+        let mut current = ancestor_id;
+        while current != var_id && current != NO_NODE {
             current = self.arena.get(current).parent;
             depth += 1;
         }
@@ -2167,38 +2171,155 @@ impl VariableTree {
 
     /// Build the full variable path for a given segment index.
     ///
-    /// Walks from the node up to the root, collecting segment names.
-    /// The segment_spans array provides the spans, and we reconstruct
-    /// the path by walking the tree structure.
+    /// Given a node (which may be at any depth in the tree) and a target
+    /// segment index, reconstruct the fully-qualified dot-path up to and
+    /// including that segment. For example, on the `$item` node with
+    /// `seg_idx = 2`, this returns `"$item.work.pen"`.
+    ///
+    /// ## Strategy
+    ///
+    /// The old approach walked UP from the node to the root, but this
+    /// broke for deep paths: when the node IS the root variable, walking
+    /// up hits `persistent_root` immediately and only produces one
+    /// component regardless of `seg_idx`.
+    ///
+    /// The correct approach is:
+    /// 1. Walk UP to find the root variable node (child of persistent/temp root).
+    /// 2. Walk DOWN from the root variable through children, using
+    ///    `segment_spans` to identify which child corresponds to each segment.
+    ///    Since `segment_spans[1]` gives the span of the first property key,
+    ///    we match it against children's `ref_sites` spans.
+    /// 3. If span matching fails (e.g., no ref_sites), fall back to building
+    ///    the path from the node we started on by walking UP (which works
+    ///    when the node is already at the right depth).
     fn build_path_for_segment(
         &self,
         node_id: NodeId,
         seg_idx: usize,
-        _segment_spans: &[Range<usize>],
+        segment_spans: &[Range<usize>],
     ) -> Option<String> {
-        // Walk up from the node to collect the path components.
-        // The node's own name is the last component.
+        // Step 1: Walk up to find the root variable node
+        let mut root_id = node_id;
+        loop {
+            let node = self.arena.try_get(root_id)?;
+            let parent = node.parent;
+            if parent == NO_NODE
+                || parent == self.persistent_root
+                || self.temp_roots.values().any(|&id| id == parent)
+            {
+                break;
+            }
+            root_id = parent;
+        }
+
+        let root_node = self.arena.try_get(root_id)?;
+        let root_name = root_node.name.clone();
+
+        // Step 2: If seg_idx == 0, the path is just the root variable
+        if seg_idx == 0 {
+            return Some(root_name);
+        }
+
+        // Step 3: Walk DOWN from root through children, using segment_spans
+        // to identify which child each segment corresponds to.
+        if segment_spans.len() > seg_idx {
+            let mut path = root_name.clone();
+            let mut current_id = root_id;
+
+            for depth in 1..=seg_idx {
+                let target_span = &segment_spans[depth];
+                let mut found_child = None;
+
+                for child_id in self.arena.children_of(current_id) {
+                    let child = self.arena.get(child_id);
+                    // Match child by checking if any of its ref_sites or
+                    // def_sites overlap with the target segment span.
+                    let span_matches = child
+                        .meta
+                        .nav
+                        .ref_sites
+                        .iter()
+                        .chain(child.meta.nav.def_sites.iter())
+                        .any(|site| {
+                            // The site span should overlap with or be
+                            // contained within the target segment span.
+                            site.span.start >= target_span.start
+                                && site.span.end <= target_span.end
+                        });
+
+                    if span_matches {
+                        path = format!("{}.{}", path, child.name);
+                        found_child = Some(child_id);
+                        break;
+                    }
+                }
+
+                if let Some(child_id) = found_child {
+                    current_id = child_id;
+                } else {
+                    // Span matching failed. Fall back to walking UP from
+                    // the original node (works when the original node is
+                    // already at or below the target depth).
+                    return self.build_path_for_segment_fallback(node_id, seg_idx, &root_name);
+                }
+            }
+
+            // Validate: the built path should exist in path_index
+            if self.path_index.contains_key(&path) {
+                return Some(path);
+            }
+        }
+
+        // Step 4: Final fallback — walk up from the original node.
+        // This works when the original node is a deep child (e.g., `color`)
+        // and seg_idx selects an ancestor path.
+        self.build_path_for_segment_fallback(node_id, seg_idx, &root_name)
+    }
+
+    /// Fallback for `build_path_for_segment`: walk UP from the given node.
+    ///
+    /// This works when the node is a deep child and `seg_idx` selects a path
+    /// that includes some (but not all) of its ancestors. It works because
+    /// walking UP from a deep node collects all ancestor names.
+    fn build_path_for_segment_fallback(
+        &self,
+        node_id: NodeId,
+        seg_idx: usize,
+        root_name: &str,
+    ) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         let mut current_id = node_id;
 
-        // We need exactly seg_idx + 1 path components
-        // (segment 0 = root var, segment 1 = first property, etc.)
         for _ in 0..=seg_idx {
             let node = self.arena.try_get(current_id)?;
             parts.push(node.name.clone());
             current_id = node.parent;
-            if current_id == NO_NODE || current_id == self.persistent_root {
+            if current_id == NO_NODE
+                || current_id == self.persistent_root
+                || self.temp_roots.values().any(|&id| id == current_id)
+            {
                 break;
             }
         }
 
-        // The parts are in leaf-to-root order; reverse to get root-to-leaf
         parts.reverse();
 
         if parts.is_empty() {
             None
         } else {
-            Some(parts.join("."))
+            let path = parts.join(".");
+            // Validate against path_index
+            if self.path_index.contains_key(&path) {
+                Some(path)
+            } else {
+                // Last resort: if the path starts with root_name but isn't
+                // in path_index, return it anyway (might be a partial match)
+                if path.starts_with(root_name) {
+                    Some(path)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -2890,5 +3011,63 @@ mod tests {
         assert!(prop_map.contains_key("$player"));
         assert!(prop_map["$player"].contains("hp"));
         assert!(prop_map["$player"].contains("name"));
+    }
+
+    #[test]
+    fn arena_children_with_kind_deep_nesting() {
+        let mut tree = VariableTree::new();
+        // Create: $item -> work -> pen -> color
+        tree.record_var("$item", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..40, "work.pen.color", BT, &[], None);
+
+        // Level 0: children of $item
+        let root_children = tree.children_with_kind("$item");
+        assert_eq!(root_children.len(), 1);
+        assert_eq!(root_children[0].0, "work");
+
+        // Level 1: children of $item.work
+        let work_children = tree.children_with_kind("$item.work");
+        assert_eq!(work_children.len(), 1);
+        assert_eq!(work_children[0].0, "pen");
+
+        // Level 2: children of $item.work.pen
+        let pen_children = tree.children_with_kind("$item.work.pen");
+        assert_eq!(pen_children.len(), 1);
+        assert_eq!(pen_children[0].0, "color");
+
+        // Level 3: children of $item.work.pen.color (leaf, no children)
+        let color_children = tree.children_with_kind("$item.work.pen.color");
+        assert!(color_children.is_empty());
+
+        // Verify kinds at each level
+        assert_eq!(tree.kind_at_path("$item"), Some(PropertyKind::Object));
+        assert_eq!(tree.kind_at_path("$item.work"), Some(PropertyKind::Object));
+        assert_eq!(tree.kind_at_path("$item.work.pen"), Some(PropertyKind::Object));
+        assert_eq!(tree.kind_at_path("$item.work.pen.color"), Some(PropertyKind::Scalar));
+    }
+
+    #[test]
+    fn arena_children_with_kind_multiple_properties() {
+        let mut tree = VariableTree::new();
+        // $player has hp, name, and address.city
+        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..20, "hp", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 20..30, "name", BT, &[], None);
+        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 30..50, "address.city", BT, &[], None);
+
+        // Root level: should have 3 children
+        let root_children = tree.children_with_kind("$player");
+        assert_eq!(root_children.len(), 3);
+        let child_names: Vec<&str> = root_children.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(child_names.contains(&"hp"));
+        assert!(child_names.contains(&"name"));
+        assert!(child_names.contains(&"address"));
+
+        // address level: should have city
+        let addr_children = tree.children_with_kind("$player.address");
+        assert_eq!(addr_children.len(), 1);
+        assert_eq!(addr_children[0].0, "city");
+
+        // city level: should be a leaf (scalar)
+        let city_children = tree.children_with_kind("$player.address.city");
+        assert!(city_children.is_empty());
     }
 }
