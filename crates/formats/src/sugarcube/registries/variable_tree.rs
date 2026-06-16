@@ -1093,6 +1093,45 @@ impl Default for VariableTree {
     }
 }
 
+// ---------------------------------------------------------------------------
+// path_index key namespacing
+//
+// The `path_index` maps fully-qualified dot-paths (e.g. `"$player.hp.max"`)
+// to `NodeId`s for O(1) lookup. To prevent cross-passage collisions between
+// temporary variables with the same name (passage A's `_x` vs passage B's
+// `_x`), temporary paths are namespaced with a sentinel prefix that cannot
+// appear in a real SugarCube variable path.
+//
+// Persistent paths keep their plain display form (`"$player"`) because:
+//   1. Persistent vars are workspace-global — there is no collision to avoid.
+//   2. External callers (e.g. `kind_at_path("$player.hp")`) and tests use
+//      the display form directly; keeping it stable preserves the API.
+//
+// Temporary paths become `"\u{0}<passage>:<name>"` (NUL prefix). The NUL
+// byte is forbidden in SugarCube source, so no legitimate path can
+// collide with the namespaced form. Callers that resolve temp paths
+// must supply the enclosing passage so the key can be reconstructed;
+// without it, temp lookups return `None` (safe degradation — matches
+// the completion behavior in `completion_names_for_passage`).
+// ---------------------------------------------------------------------------
+fn path_index_key(name: &str, is_temporary: bool, passage_name: Option<&str>) -> String {
+    if is_temporary {
+        // NUL prefix guarantees no collision with persistent paths
+        // (which start with `$` or `_`/alpha) or with display-form
+        // temp paths that older code might still pass in.
+        match passage_name {
+            Some(p) => format!("\u{0}{p}:{name}"),
+            // No passage context → no key. Callers get `None` from the
+            // lookup, which is the correct behavior for an unresolved
+            // temp scope.
+            None => format!("\u{0}:{name}"),
+        }
+    } else {
+        // Persistent vars: plain display form, no namespacing.
+        name.to_string()
+    }
+}
+
 impl VariableTree {
     /// Create an empty arena variable tree.
     pub fn new() -> Self {
@@ -1416,8 +1455,14 @@ impl VariableTree {
             // Update path_index for all nodes along the path, not just the leaf.
             // This ensures O(1) lookup for intermediate paths like "$player.hp"
             // as well as the full path "$player.hp.max".
+            //
+            // For temporary variables, the root key is namespaced with the
+            // declaring passage (see `path_index_key`); intermediate
+            // property paths inherit the namespace by prefixing onto the
+            // namespaced root. This prevents `_x.y` in passage A from
+            // colliding with `_x.y` in passage B.
             let segments: Vec<&str> = property_path.split('.').collect();
-            let mut path_prefix = name.to_string();
+            let mut path_prefix = path_index_key(name, is_temporary, Some(passage_name));
             let mut current_id = var_id;
             for segment in &segments {
                 if let Some(child_id) = self.arena.find_child_by_name(current_id, segment) {
@@ -1428,8 +1473,13 @@ impl VariableTree {
             }
         }
 
-        // Update path_index for the root variable
-        self.path_index.entry(name.to_string()).or_insert(var_id);
+        // Update path_index for the root variable.
+        // Persistent: plain display name (`"$player"`).
+        // Temporary: namespaced with the declaring passage so concurrent
+        // `_x` in two passages don't clobber each other (first-write
+        // would otherwise win, silently dropping the second).
+        let root_key = path_index_key(name, is_temporary, Some(passage_name));
+        self.path_index.entry(root_key).or_insert(var_id);
     }
 
     /// Find or create a temp root for the given passage.
@@ -1491,16 +1541,77 @@ impl VariableTree {
     }
 
     /// Mark a variable as seeded by a special passage.
+    ///
+    /// For persistent (`$`) vars, sets the `seeded_by_special` flag on
+    /// the indexed node. For temporary (`_`) vars, only the
+    /// `seeded_vars` set is updated — the per-passage `path_index`
+    /// key cannot be reconstructed without a passage context, so the
+    /// node flag is skipped. (Temps seeded by special passages is
+    /// semantically odd anyway — startup passages initialize
+    /// persistent state.)
     pub fn mark_seeded(&mut self, name: &str) {
         self.seeded_vars.insert(name.to_string());
+        // Skip the path_index lookup for temp vars: keys are now
+        // namespaced by passage and `mark_seeded` doesn't take one.
+        if name.starts_with('_') {
+            return;
+        }
         if let Some(&id) = self.path_index.get(name) {
             self.arena.get_mut(id).meta.seeded_by_special = true;
         }
     }
 
     /// Look up a node by fully-qualified path (via path_index).
+    ///
+    /// **Warning:** for temporary variable paths (e.g. `"_x.y"`), this
+    /// method cannot resolve the declaring passage and will return
+    /// `None` because `path_index` keys for temps are namespaced by
+    /// passage. Callers in completion/hover contexts that know the
+    /// enclosing passage should use [`get_node_by_path_for_passage`]
+    /// instead. Persistent (`$`) paths work as before.
+    ///
+    /// [`get_node_by_path_for_passage`]: Self::get_node_by_path_for_passage
     pub fn get_node_by_path(&self, path: &str) -> Option<(NodeId, &VarArenaNode)> {
+        // Persistent paths are stored under their display form — direct
+        // lookup works. Temp paths are namespaced; legacy callers that
+        // don't know the passage get `None` (safe degradation).
+        if path.starts_with('_') {
+            return None;
+        }
         let id = self.path_index.get(path)?;
+        Some((*id, self.arena.get(*id)))
+    }
+
+    /// Look up a node by path, scoped to a passage for temp variables.
+    ///
+    /// For persistent paths (`$player.hp`), `passage_name` is ignored —
+    /// persistent vars are workspace-global. For temp paths (`_x.y`),
+    /// the lookup is namespaced with `passage_name`; if `passage_name`
+    /// is `None` or doesn't match the declaring passage of the temp,
+    /// `None` is returned (safe degradation — never returns a
+    /// different passage's temp).
+    ///
+    /// This is the passage-aware variant of [`get_node_by_path`],
+    /// intended for completion, hover, and dot-continuation contexts
+    /// where the enclosing passage is known.
+    ///
+    /// [`get_node_by_path`]: Self::get_node_by_path
+    pub fn get_node_by_path_for_passage(
+        &self,
+        path: &str,
+        passage_name: Option<&str>,
+    ) -> Option<(NodeId, &VarArenaNode)> {
+        // Split into root + property suffix so we can namespace only
+        // the root segment. E.g. `_x.y.z` → root=`_x`, suffix=`.y.z`.
+        let (root, suffix) = match path.find('.') {
+            Some(idx) => (&path[..idx], &path[idx..]),
+            None => (path, ""),
+        };
+
+        let is_temp = root.starts_with('_');
+        let key = path_index_key(root, is_temp, passage_name);
+        let full_key = format!("{key}{suffix}");
+        let id = self.path_index.get(&full_key)?;
         Some((*id, self.arena.get(*id)))
     }
 
@@ -1695,8 +1806,19 @@ impl VariableTree {
             self.arena.free_subtree(*root_id);
         }
 
-        // Also remove from seeded_vars if the variable is gone
-        self.seeded_vars.retain(|name| self.path_index.contains_key(name));
+        // Also remove from seeded_vars if the variable is gone.
+        //
+        // Persistent (`$`) vars: check `path_index` directly — keys are
+        // display-form.
+        // Temporary (`_`) vars: keys are namespaced per-passage, so a
+        // plain `contains_key` would always return false. We retain
+        // them unconditionally here; they get cleaned up via
+        // `remove_passage` when their declaring passage is removed.
+        // (Temps seeded by special passages is a degenerate case
+        // anyway — see `mark_seeded`.)
+        self.seeded_vars.retain(|name| {
+            name.starts_with('_') || self.path_index.contains_key(name)
+        });
     }
 
     /// Check if an arena node ID refers to a live (non-freed) node.
@@ -1756,6 +1878,14 @@ impl VariableTree {
     /// Build a set of variable names for completion.
     ///
     /// Includes both persistent (`$var`) and temporary (`_var`) variable names.
+    ///
+    /// **Warning:** this method returns temporary variables from *all*
+    /// passages. SugarCube `_` variables are passage-scoped at runtime,
+    /// so showing temps from other passages is incorrect in completion
+    /// contexts. Use [`completion_names_for_passage`] instead when the
+    /// caller knows the enclosing passage.
+    ///
+    /// [`completion_names_for_passage`]: Self::completion_names_for_passage
     pub fn completion_names(&self) -> HashSet<String> {
         let mut names: HashSet<String> = self.arena
             .children_of(self.persistent_root)
@@ -1766,6 +1896,40 @@ impl VariableTree {
         for &temp_root_id in self.temp_roots.values() {
             for child_id in self.arena.children_of(temp_root_id) {
                 names.insert(self.arena.get(child_id).name.clone());
+            }
+        }
+
+        names
+    }
+
+    /// Build a set of variable names for completion, scoped to a passage.
+    ///
+    /// Returns all persistent (`$var`) variable names (these are global
+    /// across passages by design) plus only the temporary (`_var`)
+    /// variable names belonging to `passage_name`.
+    ///
+    /// When `passage_name` is `None` (caller cannot determine the
+    /// enclosing passage — e.g., cursor is in a non-passage region),
+    /// only persistent variables are returned. This is the safe
+    /// degradation: it never leaks another passage's temps.
+    ///
+    /// SugarCube semantics: `_foo` declared in `:: Start` is invisible
+    /// to `:: Inventory`. The arena already partitions temps under
+    /// per-passage roots (`temp_roots`); this method just refuses to
+    /// walk roots that don't belong to the requested passage.
+    pub fn completion_names_for_passage(&self, passage_name: Option<&str>) -> HashSet<String> {
+        // Persistent vars are workspace-global — always included.
+        let mut names: HashSet<String> = self.arena
+            .children_of(self.persistent_root)
+            .map(|id| self.arena.get(id).name.clone())
+            .collect();
+
+        // Temps are passage-scoped — include only the matching root.
+        if let Some(passage) = passage_name {
+            if let Some(&temp_root_id) = self.temp_roots.get(passage) {
+                for child_id in self.arena.children_of(temp_root_id) {
+                    names.insert(self.arena.get(child_id).name.clone());
+                }
             }
         }
 
@@ -2332,8 +2496,45 @@ impl VariableTree {
     /// path — it queries the tree directly without building a full map.
     ///
     /// Returns an empty Vec if the path doesn't exist in the tree.
+    ///
+    /// **Warning:** for temporary variable paths, this method returns
+    /// an empty Vec because `path_index` keys for temps are namespaced
+    /// by passage. Use [`children_with_kind_for_passage`] in
+    /// completion contexts where the enclosing passage is known.
+    ///
+    /// [`children_with_kind_for_passage`]: Self::children_with_kind_for_passage
     pub fn children_with_kind(&self, path: &str) -> Vec<(String, PropertyKind)> {
         let Some((node_id, _)) = self.get_node_by_path(path) else {
+            return Vec::new();
+        };
+
+        self.arena
+            .children_of(node_id)
+            .map(|child_id| {
+                let child = self.arena.get(child_id);
+                let child_path = format!("{}.{}", path, child.name);
+                let kind = self.infer_kind_for_node(child_id, &child_path);
+                (child.name.clone(), kind)
+            })
+            .collect()
+    }
+
+    /// Passage-aware variant of [`children_with_kind`].
+    ///
+    /// For temp variable paths (`_x.y`), resolves against the declaring
+    /// passage's namespaced `path_index` key. For persistent paths,
+    /// behaves identically to [`children_with_kind`].
+    ///
+    /// Returns an empty Vec if the path doesn't exist in the tree (e.g.
+    /// temp path with no matching passage scope).
+    ///
+    /// [`children_with_kind`]: Self::children_with_kind
+    pub fn children_with_kind_for_passage(
+        &self,
+        path: &str,
+        passage_name: Option<&str>,
+    ) -> Vec<(String, PropertyKind)> {
+        let Some((node_id, _)) = self.get_node_by_path_for_passage(path, passage_name) else {
             return Vec::new();
         };
 
@@ -2402,8 +2603,31 @@ impl VariableTree {
     /// decide whether to offer array methods vs. object properties).
     ///
     /// Returns `None` if the path doesn't exist in the tree.
+    ///
+    /// **Warning:** for temporary variable paths, this method returns
+    /// `None` because `path_index` keys for temps are namespaced by
+    /// passage. Use [`kind_at_path_for_passage`] in completion contexts
+    /// where the enclosing passage is known.
+    ///
+    /// [`kind_at_path_for_passage`]: Self::kind_at_path_for_passage
     pub fn kind_at_path(&self, path: &str) -> Option<PropertyKind> {
         let (node_id, _) = self.get_node_by_path(path)?;
+        Some(self.infer_kind_for_node(node_id, path))
+    }
+
+    /// Passage-aware variant of [`kind_at_path`].
+    ///
+    /// For temp variable paths (`_x.y`), resolves against the declaring
+    /// passage's namespaced `path_index` key. For persistent paths,
+    /// behaves identically to [`kind_at_path`].
+    ///
+    /// [`kind_at_path`]: Self::kind_at_path
+    pub fn kind_at_path_for_passage(
+        &self,
+        path: &str,
+        passage_name: Option<&str>,
+    ) -> Option<PropertyKind> {
+        let (node_id, _) = self.get_node_by_path_for_passage(path, passage_name)?;
         Some(self.infer_kind_for_node(node_id, path))
     }
 }

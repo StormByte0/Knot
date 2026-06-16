@@ -193,8 +193,34 @@ impl SugarCubeRegistry {
     // ── Convenience accessors (delegate to sub-registries) ─────────────
 
     /// Get all workspace variable names for completion.
+    ///
+    /// **Warning:** leaks temporary variables from all passages. Use
+    /// [`variable_names_for_passage`] for completion contexts where the
+    /// enclosing passage is known.
+    ///
+    /// [`variable_names_for_passage`]: Self::variable_names_for_passage
     pub fn variable_names(&self) -> std::collections::HashSet<String> {
         self.variables.completion_names()
+    }
+
+    /// Get variable names for completion, scoped to a passage.
+    ///
+    /// Returns all persistent (`$`) vars plus only the temporary (`_`)
+    /// vars declared in `passage_name`. When `passage_name` is `None`,
+    /// only persistent vars are returned (safe degradation — never
+    /// leaks another passage's temps).
+    ///
+    /// SugarCube `_` variables are passage-scoped at runtime; the
+    /// global [`variable_names`] is kept for non-completion callers
+    /// (e.g., workspace symbol enumeration) that legitimately want
+    /// the full set.
+    ///
+    /// [`variable_names`]: Self::variable_names
+    pub fn variable_names_for_passage(
+        &self,
+        passage_name: Option<&str>,
+    ) -> std::collections::HashSet<String> {
+        self.variables.completion_names_for_passage(passage_name)
     }
 
     /// Get known property paths for a variable (for dot-notation completion).

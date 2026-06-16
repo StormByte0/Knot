@@ -1531,6 +1531,44 @@ pub trait FormatPlugin: Send + Sync {
         None
     }
 
+    /// Passage-aware variant of [`variable_kind_at_path`].
+    ///
+    /// For formats that scope temporary variables per-passage (SugarCube
+    /// `_` vars), this method resolves the path against the declaring
+    /// passage. For formats without per-passage scoping, it behaves
+    /// identically to [`variable_kind_at_path`] (passage is ignored).
+    ///
+    /// Default impl delegates to [`variable_kind_at_path`] — formats that
+    /// support per-passage temp vars should override.
+    ///
+    /// [`variable_kind_at_path`]: FormatPlugin::variable_kind_at_path
+    fn variable_kind_at_path_for_passage(
+        &self,
+        path: &str,
+        _passage_name: Option<&str>,
+    ) -> Option<crate::types::PropertyKind> {
+        self.variable_kind_at_path(path)
+    }
+
+    /// Passage-aware variant of [`variable_children_with_kind`].
+    ///
+    /// Same scoping semantics as [`variable_kind_at_path_for_passage`]:
+    /// for per-passage temp var formats, resolves against the declaring
+    /// passage; otherwise identical to [`variable_children_with_kind`].
+    ///
+    /// Default impl delegates to [`variable_children_with_kind`] —
+    /// formats that support per-passage temp vars should override.
+    ///
+    /// [`variable_children_with_kind`]: FormatPlugin::variable_children_with_kind
+    /// [`variable_kind_at_path_for_passage`]: FormatPlugin::variable_kind_at_path_for_passage
+    fn variable_children_with_kind_for_passage(
+        &self,
+        path: &str,
+        _passage_name: Option<&str>,
+    ) -> Vec<(String, crate::types::PropertyKind)> {
+        self.variable_children_with_kind(path)
+    }
+
     /// Get all custom macro names for completion.
     ///
     /// Returns names of user-defined macros (widgets and `Macro.add()` calls)
