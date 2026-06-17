@@ -3,7 +3,7 @@
 //! None of these functions access plugin state; they are pure conversions
 //! from the SugarCube AST representation to the core `Passage` type.
 
-use knot_core::passage::{Block, MacroArgRef, Passage, VarKind, VarOp};
+use knot_core::passage::{Block, MacroArgRef, MacroInvocation, Passage, VarKind, VarOp};
 use crate::sugarcube::ast::{self, PassageAst};
 use crate::sugarcube::classifier::ClassifiedPassage;
 use crate::sugarcube::parser::predicates::is_assignment_macro;
@@ -152,6 +152,11 @@ pub fn build_passage(
     // kinds don't need layering.
     passage.macro_arg_refs = build_macro_arg_refs(&passage_ast.nodes, body_offset_in_passage);
 
+    // Build the full macro invocation list (every macro, not just those with
+    // PassageRef args). Used for span-based hover resolution without
+    // line-scanning fallback.
+    passage.macro_invocations = build_macro_invocations(&passage_ast.nodes, body_offset_in_passage);
+
     // Narrow link spans: macro-based links from `extract_macro_passage_refs()`
     // use the entire `open_span` as the link span (e.g., the whole
     // `<<link "Talk" "Shop">>` range). This is too broad — hovering over
@@ -266,6 +271,42 @@ pub fn build_macro_arg_refs(nodes: &[ast::AstNode], body_offset_in_passage: usiz
     let mut refs = Vec::new();
     collect_macro_arg_refs(nodes, &mut refs, body_offset_in_passage);
     refs
+}
+
+/// Build the list of every macro invocation in the passage body.
+///
+/// Unlike `build_macro_arg_refs` (which only records macros with PassageRef
+/// args), this records **every** parsed macro — `<<set>>`, `<<if>>`,
+/// `<<print>>`, `<<link>>`, etc. — so hover can resolve any macro via span
+/// lookup instead of line-scanning.
+pub fn build_macro_invocations(nodes: &[ast::AstNode], body_offset_in_passage: usize) -> Vec<MacroInvocation> {
+    let mut invs = Vec::new();
+    collect_macro_invocations(nodes, &mut invs, body_offset_in_passage);
+    invs
+}
+
+fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocation>, body_offset_in_passage: usize) {
+    for node in nodes {
+        if let ast::AstNode::Macro {
+            name,
+            name_span,
+            open_span,
+            children,
+            ..
+        } = node {
+            let has_body = children.is_some();
+            invs.push(MacroInvocation {
+                name: name.clone(),
+                name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
+                has_body,
+            });
+            // Recurse into block macro children
+            if let Some(ch) = children {
+                collect_macro_invocations(ch, invs, body_offset_in_passage);
+            }
+        }
+    }
 }
 
 fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, body_offset_in_passage: usize) {

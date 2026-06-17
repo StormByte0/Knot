@@ -955,3 +955,24 @@ pub struct FormatCompletionItem {
     /// Commit characters that trigger acceptance of this completion.
     pub commit_characters: Vec<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Hover type (format-owned, mirroring FormatCompletionItem)
+// ---------------------------------------------------------------------------
+
+/// A hover result produced by a format plugin.
+///
+/// Mirrors `FormatCompletionItem` in spirit: the format plugin owns all
+/// hover-content construction, and the server handler is a thin dispatcher
+/// that maps this to `lsp_types::Hover`.
+///
+/// The `range` is a document-absolute byte range that the server handler
+/// converts to an LSP `Range` via `helpers::byte_range_to_lsp_range`.
+#[derive(Debug, Clone)]
+pub struct FormatHover {
+    /// Markdown content of the hover popup.
+    pub contents: String,
+    /// Document-absolute byte range that the hover applies to.
+    /// When `None`, the editor uses the word at the cursor position.
+    pub range: Option<std::ops::Range<usize>>,
+}

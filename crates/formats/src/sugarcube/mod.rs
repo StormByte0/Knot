@@ -679,6 +679,10 @@ impl FormatPlugin for SugarCubePlugin {
         macros::comparison_operators()
     }
 
+    fn describe_operator(&self, op: &str) -> Option<&'static str> {
+        macros::describe_operator(op)
+    }
+
     // ── Syntax detection ───────────────────────────────────────────────
 
     fn has_block_macros_with_close_tags(&self) -> bool {
@@ -1685,10 +1689,6 @@ impl FormatPlugin for SugarCubePlugin {
 struct MacroTag {
     /// The macro name (e.g., "if", "for", "link").
     name: String,
-    /// Byte offset where the tag starts in the document.
-    start: usize,
-    /// Byte offset where the tag ends in the document.
-    end: usize,
     /// Whether this is an open tag (`<<name>>`) or close tag (`<</name>>`).
     is_close: bool,
 }
@@ -1708,8 +1708,6 @@ fn scan_macro_tags(text: &str, up_to: usize) -> Vec<MacroTag> {
     while i < limit {
         // Look for `<<` delimiter
         if bytes[i] == b'<' && i + 1 < limit && bytes[i + 1] == b'<' {
-            let tag_start = i;
-
             // Check for close tag: `<</`
             let is_close = i + 2 < limit && bytes[i + 2] == b'/';
             let name_start = if is_close { i + 3 } else { i + 2 };
@@ -1814,8 +1812,6 @@ fn scan_macro_tags(text: &str, up_to: usize) -> Vec<MacroTag> {
             if found_close {
                 tags.push(MacroTag {
                     name: name.to_string(),
-                    start: tag_start,
-                    end: scan_pos,
                     is_close,
                 });
                 i = scan_pos;
@@ -3888,6 +3884,7 @@ mod completion_debug_tests {
                 is_temporary: false,
             }],
             macro_arg_refs: Vec::new(),
+            macro_invocations: Vec::new(),
             is_special: false,
             special_def: None,
             position: None,
@@ -4050,6 +4047,7 @@ fn make_workspace_with_passages(uri: &Url, names: &[&str]) -> knot_core::Workspa
             links: Vec::new(),
             vars: Vec::new(),
             macro_arg_refs: Vec::new(),
+            macro_invocations: Vec::new(),
             is_special: false,
             special_def: None,
             position: None,

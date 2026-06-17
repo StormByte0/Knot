@@ -138,6 +138,30 @@ pub struct MacroArgRef {
     pub has_body: bool,
 }
 
+/// A macro invocation recorded for span-based hover/goto-def.
+///
+/// Unlike [`MacroArgRef`] (which is only populated for macros that contain
+/// passage-reference arguments), `MacroInvocation` is recorded for **every**
+/// parsed macro. This lets hover resolve `<<set>>`, `<<if>>`, `<<print>>`, and
+/// other non-PassageRef macros via span lookup instead of line-scanning.
+///
+/// All spans are **passage-relative** (0 = passage head `::`). Add
+/// `passage_offset` to convert to document-absolute at the LSP boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroInvocation {
+    /// The macro name (e.g., `"set"`, `"if"`, `"link"`).
+    pub name: String,
+    /// Passage-relative byte span of the macro name portion
+    /// (e.g., just `set` in `<<set $x to 5>>`).
+    pub name_span: Range<usize>,
+    /// Passage-relative byte span of the full macro opening tag
+    /// (`<<set $x to 5>>`).
+    pub open_span: Range<usize>,
+    /// Whether this macro invocation has a body (children between open and
+    /// close tags). Container macros always have a body; Inline macros never do.
+    pub has_body: bool,
+}
+
 /// A variable operation within a passage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VarOp {
@@ -803,6 +827,13 @@ pub struct Passage {
     /// All spans are **passage-relative** (0 = passage head `::`).
     #[serde(default)]
     pub macro_arg_refs: Vec<MacroArgRef>,
+    /// Every macro invocation in this passage (including non-PassageRef
+    /// macros like `<<set>>`, `<<if>>`, `<<print>>`). Used for span-based
+    /// hover resolution without falling back to line-scanning.
+    ///
+    /// All spans are **passage-relative** (0 = passage head `::`).
+    #[serde(default)]
+    pub macro_invocations: Vec<MacroInvocation>,
     /// Whether this passage is a format-specific special passage.
     pub is_special: bool,
     /// If this is a special passage, its definition from the format plugin.
@@ -843,6 +874,7 @@ impl Passage {
             links: Vec::new(),
             vars: Vec::new(),
             macro_arg_refs: Vec::new(),
+            macro_invocations: Vec::new(),
             is_special: false,
             special_def: None,
             position: None,
@@ -864,6 +896,7 @@ impl Passage {
             links: Vec::new(),
             vars: Vec::new(),
             macro_arg_refs: Vec::new(),
+            macro_invocations: Vec::new(),
             is_special: true,
             special_def: Some(def),
             position: None,

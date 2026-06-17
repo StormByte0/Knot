@@ -906,23 +906,6 @@ pub trait FormatPlugin: Send + Sync {
         None
     }
 
-    /// Whether a macro invocation should be treated as inline (no body).
-    ///
-    /// Since SugarCube macros are now classified as either Container (always
-    /// needs close tag) or Inline (never has close tag), this always returns
-    /// `false`. The method is kept for API compatibility with the trait.
-    ///
-    /// Returns `true` if the macro is being used inline (no body), `false`
-    /// if it's being used as a block (has body) or if the format doesn't
-    /// support polymorphic macros.
-    ///
-    /// Since SugarCube macros are either Container (always need close tag) or
-    /// Inline (never have close tag), this always returns `false` — there are
-    /// no polymorphic macros that can be used either way.
-    fn is_inline_macro_usage(&self, _macro_name: &str, _has_body: Option<bool>) -> bool {
-        false
-    }
-
     /// Returns the structural parent constraints: maps child macro name →
     /// set of valid parent macro names.
     ///
@@ -1137,6 +1120,14 @@ pub trait FormatPlugin: Send + Sync {
     /// Returns the comparison operators this format uses.
     fn comparison_operators(&self) -> Vec<&'static str> {
         Vec::new()
+    }
+
+    /// Human-readable description for a format-specific operator.
+    ///
+    /// Returns `None` for unknown operators. Used by hover to explain
+    /// what an operator like `gt` or `to` means in plain English.
+    fn describe_operator(&self, _op: &str) -> Option<&'static str> {
+        None
     }
 
     // -----------------------------------------------------------------------
@@ -1739,6 +1730,34 @@ pub trait FormatPlugin: Send + Sync {
         _token_groups: &[PassageTokenGroup],
     ) -> Vec<crate::types::FormatCompletionItem> {
         Vec::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Hover (optional — format-owned hover support)
+    // -----------------------------------------------------------------------
+
+    /// Provide hover information for the cursor position.
+    ///
+    /// Format plugins that implement this method own ALL hover-content
+    /// construction. The server handler is a thin dispatcher that maps
+    /// the returned [`FormatHover`] to `lsp_types::Hover`.
+    ///
+    /// Returns `None` when the format doesn't support hover (default) or
+    /// when the cursor isn't on a hover-eligible entity. When `None` is
+    /// returned, the server handler falls back to its built-in hover
+    /// handlers (which will be removed once all formats implement this).
+    ///
+    /// `byte_offset` is a document-absolute byte offset (not line/char).
+    /// `token_groups` are the cached semantic tokens for the document.
+    fn provide_hover(
+        &self,
+        _text: &str,
+        _workspace: &knot_core::Workspace,
+        _uri: &url::Url,
+        _byte_offset: usize,
+        _token_groups: &[PassageTokenGroup],
+    ) -> Option<crate::types::FormatHover> {
+        None
     }
 
     // -----------------------------------------------------------------------

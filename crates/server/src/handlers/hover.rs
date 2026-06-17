@@ -38,6 +38,7 @@ use knot_core::passage::Passage;
 use knot_formats::plugin as fmt_plugin;
 use knot_formats::types::MacroArgKind;
 use lsp_types::*;
+use tracing::info;
 
 pub(crate) async fn hover(
     state: &ServerState,
@@ -51,6 +52,12 @@ pub(crate) async fn hover(
         return Ok(None);
     };
 
+    let format = inner.workspace.resolve_format();
+    info!(
+        "hover: uri={}, pos={}:{}, format={:?}",
+        uri, position.line, position.character, format
+    );
+
     // Convert the cursor position to a byte offset for span-based lookups.
     let byte_offset = helpers::position_to_byte_offset(text, position);
 
@@ -60,6 +67,45 @@ pub(crate) async fn hover(
 
     // Get the document from the workspace for span-based passage lookups.
     let doc = inner.workspace.get_document(&uri);
+
+    // Fetch semantic tokens for entity detection (functions, templates,
+    // properties) that don't have dedicated span data on `Passage`.
+    let token_groups = inner.semantic_tokens.get(&uri).cloned().unwrap_or_default();
+
+    // 0a. Diagnostic-first hover: if the cursor is inside any diagnostic's
+    //     range, show the diagnostic message scoped to the ENTIRE diagnostic
+    //     range — not the individual token. A syntax error's message is more
+    //     valuable than what a random token in the broken statement means.
+    //     This takes priority over ALL token hovers.
+    if let Some(hover) = try_diagnostic_hover(text, byte_offset, &uri, &inner) {
+        return Ok(Some(hover));
+    }
+
+    // 0b. Try the format plugin's `provide_hover` first. This is the
+    //    plugin-owned path that mirrors `provide_completions`. When the
+    //    plugin returns `Some`, we map `FormatHover` → `lsp_types::Hover`
+    //    and return immediately. When it returns `None`, we fall through
+    //    to the built-in handlers below (which will be removed once all
+    //    formats implement `provide_hover`).
+    if let Some(plugin) = plugin {
+        if let Some(fmt_hover) = plugin.provide_hover(
+            text,
+            &inner.workspace,
+            &uri,
+            byte_offset,
+            &token_groups,
+        ) {
+            let range = fmt_hover.range.map(|r| helpers::byte_range_to_lsp_range(text, &r));
+            info!("hover: provide_hover returned Some ({} chars)", fmt_hover.contents.len());
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: fmt_hover.contents,
+                }),
+                range,
+            }));
+        }
+    }
 
     // Find the passage containing the cursor by checking passage.span containment.
     let current_passage = doc.as_ref().and_then(|d| {
@@ -97,8 +143,17 @@ pub(crate) async fn hover(
     // 2. Try macro arg ref hover (inner layer) — if the cursor is on a
     //    PassageRef arg inside a macro, show passage info for the target.
     //    This takes priority over the outer macro hover (step 5).
-    if let Some(hover) = try_macro_arg_ref_hover(text, byte_offset, doc, &inner.workspace) {
-        return Ok(Some(hover));
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_macro_arg_ref_hover(text, byte_offset, doc, &inner.workspace, plugin) {
+            return Ok(Some(hover));
+        }
+    } else {
+        // No plugin available — fall back to workspace-only hover (no macro label).
+        // This path is rarely hit; preserving previous behavior for safety.
+        #[allow(deprecated)]
+        if let Some(hover) = try_macro_arg_ref_hover_no_plugin(text, byte_offset, doc, &inner.workspace) {
+            return Ok(Some(hover));
+        }
     }
 
     // 3. Try variable hover — use span data from the workspace index.
@@ -114,15 +169,54 @@ pub(crate) async fn hover(
         }
     }
 
+    // 3b. Try operator hover — cursor on a SugarCube operator like `gt`,
+    //     `to`, `eq`, `and`. Shows a plain-English description so users
+    //     can model their story logic without memorizing the operator names.
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_operator_hover(text, byte_offset, plugin) {
+            return Ok(Some(hover));
+        }
+    }
+
     // 4. Try link hover — use span data from the workspace index.
     if let Some(hover) = try_link_hover(text, byte_offset, doc, &inner.workspace) {
         return Ok(Some(hover));
+    }
+
+    // 4b. Try function hover — cursor on a JS function call (e.g., `myFunc()`
+    //     inside `<<run>>`). Uses semantic tokens for detection. Only fires
+    //     when the function has meaningful info (definition location + params).
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_function_hover(text, byte_offset, plugin, &token_groups) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 4c. Try property hover — cursor on `.prop` in `$var.prop`. Only fires
+    //     when there are siblings to discover (the value of property hover is
+    //     seeing what other properties exist on the parent object).
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_property_hover(text, byte_offset, plugin, &token_groups, doc) {
+            return Ok(Some(hover));
+        }
     }
 
     // 5. Try macro hover — span-based, using macro_arg_refs.
     //    This is the outer-layer hover: it fires when the cursor is on the
     //    macro name or inside the macro open tag but not on a PassageRef arg
     //    (which was already handled by step 2).
+    //
+    // 5a. Try close-tag hover — cursor on `<</name>>`. Shows which macro
+    //     the close tag belongs to. Close tags don't have span data in
+    //     `macro_invocations` (which tracks open tags only), so we detect
+    //     via line-scanning for the `<</` pattern.
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_close_tag_hover(text, byte_offset, plugin) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 5b. Try macro hover — fires only when cursor is ON the macro name.
     if let Some(plugin) = plugin {
         if let Some(hover) = try_macro_hover(text, byte_offset, doc, plugin) {
             return Ok(Some(hover));
@@ -147,6 +241,137 @@ pub(crate) async fn hover(
 // ===========================================================================
 // Private hover helpers
 // ===========================================================================
+
+/// Diagnostic-first hover: if the cursor is inside any diagnostic's range,
+/// show the diagnostic message scoped to the ENTIRE diagnostic range.
+///
+/// This takes priority over all token hovers. A syntax error's message is
+/// more valuable than what a random token in the broken statement means.
+/// When multiple diagnostics overlap at the cursor, all are shown.
+fn try_diagnostic_hover(
+    text: &str,
+    byte_offset: usize,
+    uri: &url::Url,
+    inner: &crate::state::ServerStateInner,
+) -> Option<Hover> {
+    use knot_formats::plugin::FormatDiagnosticSeverity;
+
+    let groups = inner.format_diagnostics.get(uri)?;
+    let mut hits: Vec<(&knot_formats::plugin::FormatDiagnostic, std::ops::Range<usize>)> = Vec::new();
+
+    for group in groups {
+        for diag in &group.diagnostics {
+            let abs_start = group.passage_offset + diag.range.start;
+            let abs_end = group.passage_offset + diag.range.end;
+            if byte_offset >= abs_start && byte_offset <= abs_end {
+                hits.push((diag, abs_start..abs_end));
+            }
+        }
+    }
+
+    if hits.is_empty() {
+        return None;
+    }
+
+    // Build hover text with severity prefix for each diagnostic.
+    let mut hover_text = String::new();
+    let mut hover_range: Option<std::ops::Range<usize>> = None;
+
+    for (i, (diag, range)) in hits.iter().enumerate() {
+        if i > 0 {
+            hover_text.push_str("\n\n---\n\n");
+        }
+        let sev_prefix = match diag.severity {
+            FormatDiagnosticSeverity::Error => "**Error**",
+            FormatDiagnosticSeverity::Warning => "**Warning****",
+            FormatDiagnosticSeverity::Info => "**Info**",
+            FormatDiagnosticSeverity::Hint => "**Hint**",
+        };
+        hover_text.push_str(&format!("{}: {}", sev_prefix, diag.message));
+
+        // Use the first diagnostic's range as the hover range. When multiple
+        // diagnostics overlap, the first (typically the outermost) wins.
+        if i == 0 {
+            hover_range = Some(range.clone());
+        }
+    }
+
+    let range = hover_range.map(|r| helpers::byte_range_to_lsp_range(text, &r));
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range,
+    })
+}
+
+/// Compute variable diagnostics for the workspace via the format plugin.
+///
+/// This is invoked on-demand from `try_variable_hover` to surface diagnostics
+/// (unused variable, redundant write, unknown property, availability hint)
+/// in the hover popup. Computing on every hover is acceptable because the
+/// state variable registry + diagnostic computation is fast for typical
+/// workspace sizes (hundreds of passages). If this becomes a hot path,
+/// cache the result on `ServerStateInner` keyed by workspace version.
+fn collect_variable_diagnostics(
+    plugin: &dyn fmt_plugin::FormatPlugin,
+    workspace: &knot_core::Workspace,
+) -> Vec<knot_formats::types::VariableDiagnostic> {
+    let start_passage = workspace
+        .metadata
+        .as_ref()
+        .map(|m| m.start_passage.as_str())
+        .unwrap_or("Start");
+    let state_registry = plugin.build_state_variable_registry(workspace);
+    plugin.compute_variable_diagnostics(workspace, start_passage, &state_registry)
+}
+
+/// Build the standard hover text for a passage target (used by link hover and
+/// macro arg ref hover). Renders the passage name, file URI, link counts,
+/// tags, and any persistent variable reads/writes declared in the passage.
+///
+/// Extracted from `try_macro_arg_ref_hover` and `try_link_hover` to DRY up
+/// the duplicated template.
+fn build_passage_target_hover_text(
+    target: &str,
+    target_doc: &knot_core::Document,
+    target_passage: &Passage,
+    workspace: &knot_core::Workspace,
+) -> String {
+    let incoming = helpers::count_incoming_links(workspace, target);
+    let mut hover_text = format!(
+        "**{}**\n\nFile: {}\nLinks out: {} | Incoming: {} | Tags: {}",
+        target,
+        target_doc.uri.as_str(),
+        target_passage.links.len(),
+        incoming,
+        if target_passage.tags.is_empty() {
+            "none".to_string()
+        } else {
+            target_passage.tags.join(", ")
+        }
+    );
+
+    if !target_passage.vars.is_empty() {
+        let writes: Vec<&str> = target_passage
+            .persistent_variable_inits()
+            .map(|v| v.name.as_str())
+            .collect();
+        let reads: Vec<&str> = target_passage
+            .persistent_variable_reads()
+            .map(|v| v.name.as_str())
+            .collect();
+        if !writes.is_empty() {
+            hover_text.push_str(&format!("\nVariables written: {}", writes.join(", ")));
+        }
+        if !reads.is_empty() {
+            hover_text.push_str(&format!("\nVariables read: {}", reads.join(", ")));
+        }
+    }
+
+    hover_text
+}
 
 /// Try to show hover info for a passage header when the cursor is on the
 /// header line.
@@ -266,6 +491,7 @@ fn try_macro_arg_ref_hover(
     byte_offset: usize,
     doc: Option<&knot_core::Document>,
     workspace: &knot_core::Workspace,
+    plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> Option<Hover> {
     let doc = doc?;
 
@@ -278,47 +504,16 @@ fn try_macro_arg_ref_hover(
                 }
 
                 if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
-                    let incoming = helpers::count_incoming_links(workspace, target);
-                    let mut hover_text = format!(
-                        "**{}**\n\nFile: {}\nLinks out: {} | Incoming: {} | Tags: {}",
-                        target,
-                        target_doc.uri.as_str(),
-                        target_passage.links.len(),
-                        incoming,
-                        if target_passage.tags.is_empty() {
-                            "none".to_string()
-                        } else {
-                            target_passage.tags.join(", ")
-                        }
+                    let mut hover_text = build_passage_target_hover_text(
+                        target, target_doc, target_passage, workspace,
                     );
 
-                    if !target_passage.vars.is_empty() {
-                        let writes: Vec<&str> = target_passage
-                            .persistent_variable_inits()
-                            .map(|v| v.name.as_str())
-                            .collect();
-                        let reads: Vec<&str> = target_passage
-                            .persistent_variable_reads()
-                            .map(|v| v.name.as_str())
-                            .collect();
-                        if !writes.is_empty() {
-                            hover_text.push_str(&format!(
-                                "\nVariables written: {}",
-                                writes.join(", ")
-                            ));
-                        }
-                        if !reads.is_empty() {
-                            hover_text.push_str(&format!(
-                                "\nVariables read: {}",
-                                reads.join(", ")
-                            ));
-                        }
-                    }
-
-                    // Show which macro this arg belongs to
+                    // Show which macro this arg belongs to.
+                    // Use the format-owned label so this stays format-agnostic
+                    // (e.g., SugarCube `<<name>>`, Harlowe `(name:)`).
                     hover_text.push_str(&format!(
-                        "\n\n*Referenced by* `<<{}>>`",
-                        arg_ref.macro_name
+                        "\n\n*Referenced by* `{}`",
+                        plugin.format_macro_label(&arg_ref.macro_name)
                     ));
 
                     let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
@@ -338,7 +533,7 @@ fn try_macro_arg_ref_hover(
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
                             value: format!(
-                                "⚠ **Broken link** — passage `{}` does not exist",
+                                "**Broken link** — passage `{}` does not exist",
                                 target
                             ),
                         }),
@@ -350,6 +545,138 @@ fn try_macro_arg_ref_hover(
     }
 
     None
+}
+
+/// Fallback variant of [`try_macro_arg_ref_hover`] used when no format plugin
+/// is available. Renders the macro label as a bare name without format-specific
+/// delimiters. Kept for the rare case where `plugin` is `None` (e.g., workspace
+/// not yet indexed); prefer the plugin-aware variant in new code.
+#[allow(deprecated)]
+fn try_macro_arg_ref_hover_no_plugin(
+    text: &str,
+    byte_offset: usize,
+    doc: Option<&knot_core::Document>,
+    workspace: &knot_core::Workspace,
+) -> Option<Hover> {
+    let doc = doc?;
+    for passage in &doc.passages {
+        for arg_ref in &passage.macro_arg_refs {
+            if passage.span_contains_abs_offset(&arg_ref.span, byte_offset) {
+                let target = arg_ref.target.trim();
+                if target.is_empty() {
+                    continue;
+                }
+                if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
+                    let hover_text = build_passage_target_hover_text(
+                        target, target_doc, target_passage, workspace,
+                    );
+                    let hover_range = helpers::byte_range_to_lsp_range(
+                        text, &passage.abs_range(&arg_ref.span),
+                    );
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: hover_text,
+                        }),
+                        range: Some(hover_range),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Try to show hover info for a close tag (`<</name>>`).
+///
+/// Close tags don't have span data in `macro_invocations` (which tracks
+/// open tags only), so we detect via line-scanning for the `<</` pattern.
+/// Shows "Close tag for `<<name>>`" so users know what they're closing.
+fn try_close_tag_hover(
+    text: &str,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+) -> Option<Hover> {
+    let line_info = helpers::byte_offset_to_position(text, byte_offset);
+    let line_idx = line_info.line as usize;
+    let line = text.lines().nth(line_idx)?;
+    let char_pos = line_info.character as usize;
+    let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
+    let bytes = line.as_bytes();
+
+    // Find the `<</` sequence that the cursor is inside.
+    // Walk backward from the cursor to find `<</`.
+    let mut tag_start = None;
+    let mut search = byte_pos;
+    while search >= 2 {
+        if search + 0 <= bytes.len() && search >= 3
+            && bytes[search - 3] == b'<' && bytes[search - 2] == b'<' && bytes[search - 1] == b'/'
+        {
+            tag_start = Some(search - 3);
+            break;
+        }
+        search -= 1;
+        // Don't walk past a `>>` (we'd be in a different tag).
+        if search < bytes.len() && search >= 1 && bytes[search - 1] == b'>' && search >= 2 && bytes[search - 2] == b'>' {
+            return None;
+        }
+    }
+    let tag_start = tag_start?;
+    // The name starts at tag_start + 3 (after `<</`).
+    let name_start = tag_start + 3;
+    if name_start >= bytes.len() {
+        return None;
+    }
+    // Find end of name (alphanumeric + underscore + hyphen).
+    let mut name_end = name_start;
+    while name_end < bytes.len() {
+        let b = bytes[name_end];
+        if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+            name_end += 1;
+        } else {
+            break;
+        }
+    }
+    if name_end == name_start {
+        return None;
+    }
+    // Cursor must be within the tag (from `<</` to the closing `>>`).
+    // Find the closing `>>` after the name.
+    let mut tag_end = name_end;
+    while tag_end + 1 < bytes.len() {
+        if bytes[tag_end] == b'>' && bytes[tag_end + 1] == b'>' {
+            tag_end += 2;
+            break;
+        }
+        tag_end += 1;
+    }
+    if byte_pos < tag_start || byte_pos > tag_end {
+        return None;
+    }
+
+    let name = &line[name_start..name_end];
+    // Only show hover if this is a known builtin macro (otherwise we'd
+    // show "Close tag for" on arbitrary text that looks like a close tag).
+    // The `find_macro` call confirms it's a builtin; we don't need the
+    // `MacroDef` itself — we just need to know the name is valid.
+    let _ = plugin.find_macro(name)?;
+
+    let hover_text = format!(
+        "**{name}/** `Close tag`\n\nCloses the `{}` block.",
+        plugin.format_macro_label(name)
+    );
+    let utf16_start = helpers::utf16_len_up_to(line, tag_start);
+    let utf16_end = helpers::utf16_len_up_to(line, tag_end);
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: Some(Range {
+            start: Position { line: line_idx as u32, character: utf16_start },
+            end: Position { line: line_idx as u32, character: utf16_end },
+        }),
+    })
 }
 
 /// Try to show hover info for a macro at the cursor position (outer layer).
@@ -377,111 +704,203 @@ fn try_macro_hover(
 ) -> Option<Hover> {
     let doc = doc?;
 
+    // Span-based resolution for ALL macros (not just those with PassageRef args).
+    // `passage.macro_invocations` is populated for every parsed macro, so we
+    // can resolve `<<set>>`, `<<if>>`, `<<print>>`, etc. via span lookup
+    // without falling back to line-scanning.
+    //
+    // Design principle: hover answers "what is THIS thing?" — so macro hover
+    // only fires when the cursor is ON the macro name, not anywhere inside the
+    // open tag. Hovering on `$var` inside `<<set $var to 5>>` should show
+    // variable hover (step 3), not repeat the macro description. The macro
+    // description belongs on the macro name only; explaining it once is enough.
     for passage in &doc.passages {
-        for arg_ref in &passage.macro_arg_refs {
-            let has_body = Some(arg_ref.has_body);
-
-            // Check if cursor is on the macro name
-            if passage.span_contains_abs_offset(&arg_ref.macro_name_span, byte_offset) {
-                if let Some(mdef) = plugin.find_macro(&arg_ref.macro_name) {
-                    let hover_text = build_macro_hover_text(mdef, plugin, has_body);
-                    let hover_range = helpers::byte_range_to_lsp_range(
-                        text,
-                        &passage.abs_range(&arg_ref.macro_name_span),
-                    );
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: hover_text,
-                        }),
-                        range: Some(hover_range),
-                    });
-                }
+        for inv in &passage.macro_invocations {
+            // Only fire when cursor is on the macro name itself.
+            if !passage.span_contains_abs_offset(&inv.name_span, byte_offset) {
+                continue;
             }
 
-            // Check if cursor is inside the macro open tag but not on the name
-            // or a PassageRef arg (those are handled by try_macro_arg_ref_hover).
-            // This is the outer-layer fallback for Label args, whitespace, etc.
-            if passage.span_contains_abs_offset(&arg_ref.macro_open_span, byte_offset) {
-                // Don't show macro hover if the cursor is on a PassageRef arg
-                // (already handled by step 2) or on the macro name (handled above).
-                if passage.span_contains_abs_offset(&arg_ref.span, byte_offset) {
-                    continue; // PassageRef arg — skip, already handled
-                }
-                if passage.span_contains_abs_offset(&arg_ref.macro_name_span, byte_offset) {
-                    continue; // Macro name — already handled above
+            // Try builtin macro first.
+            if let Some(mdef) = plugin.find_macro(&inv.name) {
+                let mut hover_text = build_macro_hover_text(mdef, plugin);
+
+                // Container violation check: if this macro requires a parent
+                // (e.g., `<<else>>` must be inside `<<if>>`), find the
+                // enclosing macro at the cursor and verify it's allowed.
+                if let Some(violation) = check_container_violation(
+                    mdef, passage, byte_offset, plugin,
+                ) {
+                    hover_text.push_str(&format!("\n\n**Container violation**: {}", violation));
                 }
 
-                if let Some(mdef) = plugin.find_macro(&arg_ref.macro_name) {
-                    let hover_text = build_macro_hover_text(mdef, plugin, has_body);
-                    let hover_range = helpers::byte_range_to_lsp_range(
-                        text,
-                        &passage.abs_range(&arg_ref.macro_open_span),
-                    );
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: hover_text,
-                        }),
-                        range: Some(hover_range),
-                    });
-                }
+                let hover_range = helpers::byte_range_to_lsp_range(
+                    text,
+                    &passage.abs_range(&inv.name_span),
+                );
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(hover_range),
+                });
+            }
+
+            // Not a builtin — try custom macro (widget / Macro.add()).
+            if let Some(detail) = plugin.find_custom_macro_detail(&inv.name) {
+                let hover_text = build_custom_macro_hover_text(&inv.name, &detail, plugin);
+                let hover_range = helpers::byte_range_to_lsp_range(
+                    text,
+                    &passage.abs_range(&inv.name_span),
+                );
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(hover_range),
+                });
             }
         }
     }
 
-    // Fallback: for macros that have no macro_arg_refs (no PassageRef args),
-    // we can't do span-based resolution yet. Fall back to line-scanning
-    // via find_macro_at_position(). This handles macros like <<set>>, <<if>>,
-    // <<print>> that don't contain passage references.
-    //
-    // TODO: Once we store macro name spans for ALL macros (not just those
-    // with PassageRef args), this fallback can be removed.
-    let line_idx = helpers::byte_offset_to_position(text, byte_offset).line as usize;
-    let char_pos = helpers::byte_offset_to_position(text, byte_offset).character as usize;
-    let line = text.lines().nth(line_idx).unwrap_or("");
-    let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
-    let macro_info = plugin.find_macro_at_position(line, byte_pos)?;
+    None
+}
 
-    if let Some(mdef) = plugin.find_macro(&macro_info.name) {
-        let hover_text = build_macro_hover_text(mdef, plugin, None);
-        let utf16_start = helpers::utf16_len_up_to(line, macro_info.full_range.start);
-        let utf16_end = helpers::utf16_len_up_to(line, macro_info.full_range.end);
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: hover_text,
-            }),
-            range: Some(Range {
-                start: Position {
-                    line: line_idx as u32,
-                    character: utf16_start,
-                },
-                end: Position {
-                    line: line_idx as u32,
-                    character: utf16_end,
-                },
-            }),
-        });
+/// Check if a macro invocation violates its container constraints.
+///
+/// A macro with `mdef.container = Some("if")` must appear inside an `<<if>>`
+/// block. This function walks `passage.macro_invocations` to find the
+/// enclosing parent macro at `byte_offset` and verifies it matches the
+/// constraint. Returns `Some(message)` if there's a violation, `None` if
+/// the macro is correctly nested (or has no container constraint).
+fn check_container_violation(
+    mdef: &knot_formats::types::MacroDef,
+    passage: &Passage,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+) -> Option<String> {
+    // Determine the allowed parent set.
+    let allowed: Vec<&str> = if let Some(parent) = mdef.container {
+        vec![parent]
+    } else if let Some(parents) = mdef.container_any_of {
+        parents.to_vec()
+    } else {
+        return None; // No container constraint.
+    };
+
+    // Find the enclosing parent macro by walking macro_invocations.
+    // A macro "encloses" the cursor if the cursor is inside its open tag
+    // span AND the macro has a body (container). We pick the innermost
+    // such macro.
+    let mut enclosing_parent: Option<&str> = None;
+    let mut enclosing_span_len = usize::MAX;
+    for inv in &passage.macro_invocations {
+        if !inv.has_body {
+            continue; // Inline macros can't enclose anything.
+        }
+        let abs_open = passage.abs_range(&inv.open_span);
+        // Cursor must be after the open tag and before the close tag.
+        // We approximate "inside the body" by checking the cursor is after
+        // the open tag's end. The close tag isn't stored separately, so
+        // we accept any macro whose open tag starts before the cursor.
+        if byte_offset > abs_open.end && abs_open.end - abs_open.start < enclosing_span_len {
+            enclosing_span_len = abs_open.end - abs_open.start;
+            enclosing_parent = Some(&inv.name);
+        }
     }
 
-    None
+    match enclosing_parent {
+        Some(parent) => {
+            if allowed.contains(&parent) {
+                None // Correctly nested.
+            } else {
+                let allowed_labels: Vec<String> = allowed
+                    .iter()
+                    .map(|p| format!("`{}`", plugin.format_macro_label(p)))
+                    .collect();
+                Some(format!(
+                    "must be inside {} (currently inside `{}`)",
+                    allowed_labels.join(" or "),
+                    plugin.format_macro_label(parent)
+                ))
+            }
+        }
+        None => {
+            // No enclosing parent — macro is at top level but requires one.
+            let allowed_labels: Vec<String> = allowed
+                .iter()
+                .map(|p| format!("`{}`", plugin.format_macro_label(p)))
+                .collect();
+            Some(format!("must be inside {}", allowed_labels.join(" or ")))
+        }
+    }
+}
+
+/// Build hover text for a custom macro (widget / `Macro.add()`).
+///
+/// Custom macros don't have a `MacroDef` (those are builtins only). Instead
+/// we render the definition location, arg count, container-ness, and any
+/// description extracted from comments above the definition.
+fn build_custom_macro_hover_text(
+    name: &str,
+    detail: &knot_formats::plugin::CustomMacroDetail,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+) -> String {
+    let kind_label = if detail.is_widget {
+        "Widget"
+    } else {
+        "Custom macro"
+    };
+    let mut text = format!(
+        "**{}** `{}`\n\nDefined in `:: {}`",
+        plugin.format_macro_label(name),
+        kind_label,
+        detail.defined_in
+    );
+
+    if let Some(n) = detail.arg_count {
+        text.push_str(&format!("\n\n**Args:** {}", n));
+    }
+    if detail.is_container {
+        text.push_str("\n\n*Container* — has a body between open and close tags.");
+    }
+    if let Some(ref desc) = detail.description {
+        if !desc.is_empty() {
+            text.push_str(&format!("\n\n{}", desc));
+        }
+    }
+    text
+}
+
+/// Human-readable description of a macro argument kind.
+///
+/// Used by `build_macro_hover_text` to show what the user should write for
+/// each parameter. Instead of just "expression" or "variable", this gives
+/// a sentence that helps the user model their story (e.g., "a SugarCube
+/// expression — variables, literals, or function calls").
+fn describe_macro_arg_kind(kind: &MacroArgKind, is_passage_ref: bool) -> String {
+    let base = match kind {
+        MacroArgKind::Expression => "a SugarCube expression — variables, literals, or function calls",
+        MacroArgKind::String => "a quoted string literal",
+        MacroArgKind::Selector => "a CSS selector",
+        MacroArgKind::Variable => "a variable reference ($var or _var)",
+    };
+    if is_passage_ref {
+        format!("{} (passage name)", base)
+    } else {
+        base.to_string()
+    }
 }
 
 /// Build the hover text for a macro definition.
 ///
 /// Extracted from the old `try_macro_hover` so it can be shared between
 /// the span-based path and the line-scanning fallback.
-///
-/// `has_body` indicates whether this specific invocation has a body (children
-/// between open and close tags). Since all SugarCube macros are now classified
-/// as either Container (always needs close tag) or Inline (never has close tag),
-/// this parameter is currently unused but kept for API compatibility.
-/// Pass `None` when body presence is unknown.
 fn build_macro_hover_text(
     mdef: &knot_formats::types::MacroDef,
     plugin: &dyn fmt_plugin::FormatPlugin,
-    _has_body: Option<bool>,
 ) -> String {
     let kind = macros::classify(mdef.name, mdef, plugin);
 
@@ -493,7 +912,7 @@ fn build_macro_hover_text(
     // Add deprecation warning
     if mdef.deprecated {
         if let Some(msg) = mdef.deprecation_message {
-            hover_text.push_str(&format!("\n\n⚠ **Deprecated**: {}", msg));
+            hover_text.push_str(&format!("\n\n**Deprecated**: {}", msg));
         }
     }
 
@@ -502,7 +921,8 @@ fn build_macro_hover_text(
         hover_text.push_str(&format!("\n\n{}", note));
     }
 
-    // Add parameter info
+    // Add parameter info — render with human-readable kind descriptions
+    // so users understand what to write, not just the type name.
     if let Some(args) = mdef.args {
         if !args.is_empty() {
             hover_text.push_str("\n\n**Parameters:**\n");
@@ -512,16 +932,10 @@ fn build_macro_hover_text(
                 } else {
                     " (optional)"
                 };
-                let kind_str = match arg.kind {
-                    MacroArgKind::Expression => "expression",
-                    MacroArgKind::String => "string",
-                    MacroArgKind::Selector => "selector",
-                    MacroArgKind::Variable => "variable",
-                };
-                let flags = if arg.is_passage_ref { " 🔗" } else { "" };
+                let kind_desc = describe_macro_arg_kind(&arg.kind, arg.is_passage_ref);
                 hover_text.push_str(&format!(
-                    "- `{}{}`: {}{}\n",
-                    arg.label, req, kind_str, flags
+                    "- `{}{}`: {}\n",
+                    arg.label, req, kind_desc
                 ));
             }
         }
@@ -572,17 +986,33 @@ fn try_variable_hover(
         for var in &passage.vars {
             if passage.span_contains_abs_offset(&var.span, byte_offset) {
                 let var_name = &var.name;
+                let enclosing_passage_name = passage.name.clone();
+                let is_temporary = var.is_temporary;
 
-                // Find where this variable is written and read across the workspace
+                // Find where this variable is written and read.
+                //
+                // For persistent (`$`) vars: aggregate across the whole
+                // workspace — they are workspace-global by design.
+                //
+                // For temporary (`_`) vars: scope to the enclosing passage
+                // only. SugarCube `_` variables are passage-scoped at
+                // runtime; aggregating across passages gives wrong counts.
+                //
+                // TODO: replace with `plugin.variable_hover_info` in Phase 6
+                // (provide_hover refactor) so the `is_temporary` check
+                // lives in the format plugin, not the handler.
                 let mut write_locations: Vec<String> = Vec::new();
                 let mut read_count = 0;
-                for doc in workspace.documents() {
-                    for passage in &doc.passages {
-                        for v in &passage.vars {
+                for wp_doc in workspace.documents() {
+                    for wp_passage in &wp_doc.passages {
+                        if is_temporary && wp_passage.name != enclosing_passage_name {
+                            continue;
+                        }
+                        for v in &wp_passage.vars {
                             if v.name == *var_name {
                                 match v.kind {
                                     knot_core::passage::VarKind::Init => {
-                                        write_locations.push(passage.name.clone());
+                                        write_locations.push(wp_passage.name.clone());
                                     }
                                     knot_core::passage::VarKind::Read => {
                                         read_count += 1;
@@ -603,8 +1033,17 @@ fn try_variable_hover(
 
                 // Determine the sigil character from the variable name.
                 // The name includes the sigil (e.g., "$gold" or "_temp"),
-                // so the first character is the sigil.
-                let sigil = var_name.chars().next().unwrap_or('$');
+                // so the first character is the sigil. Fall back to the
+                // format's primary sigil (or 'v' if none) rather than
+                // hardcoding SugarCube's `$` — Snowman/Chapbook have no
+                // sigil and would otherwise misroute to SugarCube's lookup.
+                let sigil = var_name.chars().next().unwrap_or_else(|| {
+                    plugin
+                        .variable_sigils()
+                        .first()
+                        .map(|s| s.sigil)
+                        .unwrap_or('v')
+                });
                 let sigil_desc = plugin
                     .describe_variable_sigil(sigil)
                     .unwrap_or("variable");
@@ -614,10 +1053,50 @@ fn try_variable_hover(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "variable".to_string());
 
-                let hover_text = format!(
-                    "**{}** `{}`\n\n{}\nRead in {} location(s)\n\n---\n\n{}",
-                    var_name, var_type, write_info, read_count, sigil_desc
+                // Surface variable diagnostics (unused, redundant write,
+                // unknown property, availability hint). These are computed
+                // by the format plugin and filtered to the hovered variable.
+                // For temps, only diagnostics from the enclosing passage
+                // are shown (matching the scope rule above).
+                let var_diagnostics = collect_variable_diagnostics(plugin, workspace);
+                let relevant_diagnostics: Vec<_> = var_diagnostics
+                    .iter()
+                    .filter(|d| {
+                        d.message.contains(var_name)
+                            && (!is_temporary || d.passage_name == enclosing_passage_name)
+                    })
+                    .collect();
+
+                // Meaningfulness gate: skip variable hover when there's
+                // nothing to add beyond what's visible in the code. A
+                // variable with no diagnostics, at most one write, and at
+                // most one read is trivially obvious — the code speaks for
+                // itself. Don't fill the hover with filler.
+                if relevant_diagnostics.is_empty()
+                    && write_locations.len() <= 1
+                    && read_count <= 1
+                {
+                    return None;
+                }
+
+                let mut hover_text = format!(
+                    "**{}** `{}`\n\n{}\nRead in {} location(s)",
+                    var_name, var_type, write_info, read_count
                 );
+
+                // Only show sigil description for temps (the scoping rule
+                // is non-obvious). For persistent vars, the sigil is
+                // self-explanatory boilerplate — skip it.
+                if is_temporary {
+                    hover_text.push_str(&format!("\n\n---\n\n{}", sigil_desc));
+                }
+
+                if !relevant_diagnostics.is_empty() {
+                    hover_text.push_str("\n\n---\n\n**Diagnostics:**\n");
+                    for d in &relevant_diagnostics {
+                        hover_text.push_str(&format!("- {}\n", d.message));
+                    }
+                }
 
                 // Convert the variable's byte span to an LSP Range.
                 let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&var.span));
@@ -634,6 +1113,69 @@ fn try_variable_hover(
     }
 
     None
+}
+
+/// Try to show hover info for a SugarCube operator (e.g., `gt`, `to`, `eq`).
+///
+/// Detects the word at the cursor position and checks if it's a known
+/// operator via `plugin.describe_operator()`. Returns a plain-English
+/// description so users can model their story logic without memorizing
+/// the operator names.
+fn try_operator_hover(
+    text: &str,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+) -> Option<Hover> {
+    // Extract the word at the cursor position.
+    let line_info = helpers::byte_offset_to_position(text, byte_offset);
+    let line_idx = line_info.line as usize;
+    let line = text.lines().nth(line_idx)?;
+    let char_pos = line_info.character as usize;
+    let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
+
+    // Find word boundaries around the cursor.
+    let bytes = line.as_bytes();
+    if byte_pos > bytes.len() {
+        return None;
+    }
+    let mut start = byte_pos;
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    let mut end = byte_pos;
+    while end < bytes.len() {
+        let b = bytes[end];
+        if b.is_ascii_alphanumeric() || b == b'_' {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    if start == end {
+        return None;
+    }
+    let word = &line[start..end];
+
+    // Check if this word is a known operator.
+    let desc = plugin.describe_operator(word)?;
+    let hover_text = format!("**{}** `Operator`\n\n{}", word, desc);
+    let utf16_start = helpers::utf16_len_up_to(line, start);
+    let utf16_end = helpers::utf16_len_up_to(line, end);
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: Some(Range {
+            start: Position { line: line_idx as u32, character: utf16_start },
+            end: Position { line: line_idx as u32, character: utf16_end },
+        }),
+    })
 }
 
 /// Try to show hover info for a global object.
@@ -759,42 +1301,9 @@ fn try_link_hover(
 
                 if !target.is_empty() {
                     if let Some((doc, passage)) = workspace.find_passage(target) {
-                        let incoming = helpers::count_incoming_links(workspace, target);
-                        let mut hover_text = format!(
-                            "**{}**\n\nFile: {}\nLinks out: {} | Incoming: {} | Tags: {}",
-                            target,
-                            doc.uri.as_str(),
-                            passage.links.len(),
-                            incoming,
-                            if passage.tags.is_empty() {
-                                "none".to_string()
-                            } else {
-                                passage.tags.join(", ")
-                            }
+                        let hover_text = build_passage_target_hover_text(
+                            target, doc, passage, workspace,
                         );
-
-                        if !passage.vars.is_empty() {
-                            let writes: Vec<&str> = passage
-                                .persistent_variable_inits()
-                                .map(|v| v.name.as_str())
-                                .collect();
-                            let reads: Vec<&str> = passage
-                                .persistent_variable_reads()
-                                .map(|v| v.name.as_str())
-                                .collect();
-                            if !writes.is_empty() {
-                                hover_text.push_str(&format!(
-                                    "\nVariables written: {}",
-                                    writes.join(", ")
-                                ));
-                            }
-                            if !reads.is_empty() {
-                                hover_text.push_str(&format!(
-                                    "\nVariables read: {}",
-                                    reads.join(", ")
-                                ));
-                            }
-                        }
 
                         // Convert the link's byte span to an LSP Range.
                         let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
@@ -814,7 +1323,7 @@ fn try_link_hover(
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
                                 value: format!(
-                                    "⚠ **Broken link** — passage `{}` does not exist",
+                                    "**Broken link** — passage `{}` does not exist",
                                     target
                                 ),
                             }),
@@ -827,6 +1336,171 @@ fn try_link_hover(
     }
 
     None
+}
+
+/// Try to show hover info for a JS function call (e.g., `myFunc()` inside
+/// `<<run>>` or `<<script>>`).
+///
+/// Uses semantic tokens (`SemanticTokenType::Function`) for cursor-on-span
+/// detection. The plugin's `find_function()` registry provides definition
+/// location + param count.
+fn try_function_hover(
+    text: &str,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
+) -> Option<Hover> {
+    use knot_formats::plugin::SemanticTokenType;
+
+    // Find the function token under the cursor.
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            if token.token_type != SemanticTokenType::Function {
+                continue;
+            }
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                let name = &text[abs_start..abs_end];
+                let info = plugin.find_function(name)?;
+
+                // Meaningfulness gate: only show function hover when there's
+                // info beyond what's visible in the code. The function name
+                // is already visible; we need param count to justify a popup.
+                // "Defined in `:: Story JavaScript`" alone is too thin.
+                let param_count = info.param_count?;
+                let hover_text = format!(
+                    "**{}** `Function` ({} params)\n\nDefined in `:: {}`",
+                    name, param_count, info.defined_in
+                );
+                let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(hover_range),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Try to show hover info for a property access (e.g., `.hp` in `$player.hp`).
+///
+/// Uses semantic tokens (`SemanticTokenType::Property`) for cursor-on-span
+/// detection. Resolves the parent variable path via the document's parsed
+/// `VarOp` spans (walking backward to find the `$var` or `_var` sigil), then
+/// queries the plugin's arena tree for the parent's children to render
+/// "Property `hp` of `$player` (Object). Siblings: hp, mp, name."
+fn try_property_hover(
+    text: &str,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
+    doc: Option<&knot_core::Document>,
+) -> Option<Hover> {
+    use knot_formats::plugin::SemanticTokenType;
+
+    // Find the property token under the cursor.
+    let mut prop_abs_start = None;
+    let mut prop_abs_end = None;
+    let mut prop_name = String::new();
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            if token.token_type != SemanticTokenType::Property {
+                continue;
+            }
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                prop_abs_start = Some(abs_start);
+                prop_abs_end = Some(abs_end);
+                prop_name = text[abs_start..abs_end].to_string();
+                break;
+            }
+        }
+    }
+    let prop_start = prop_abs_start?;
+    let prop_end = prop_abs_end?;
+    if prop_name.is_empty() {
+        return None;
+    }
+
+    // Resolve the parent variable: walk backward from the property token
+    // to find the enclosing `$var` or `_var` VarOp span in the document.
+    // This gives us the parent variable name for the "of `$player`" label.
+    let doc = doc?;
+    let enclosing_passage = doc.passages.iter().find(|p| p.contains_abs_offset(byte_offset))?;
+    let mut parent_var_name: Option<String> = None;
+    let mut parent_kind: Option<knot_formats::types::PropertyKind> = None;
+    for var in &enclosing_passage.vars {
+        let abs_var_span = enclosing_passage.abs_range(&var.span);
+        // The property must come after the variable's span (i.e., the
+        // variable is the root of the dot-path).
+        if abs_var_span.end <= prop_start {
+            // Pick the closest variable before the property.
+            if parent_var_name.as_ref().map(|_| 0).unwrap_or(usize::MAX) < abs_var_span.end {
+                continue;
+            }
+            // Check if this var is the root of the path by verifying
+            // there's no other identifier between var.end and prop_start
+            // except dots.
+            let between = &text[abs_var_span.end..prop_start];
+            if between.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                parent_var_name = Some(var.name.clone());
+                // Query the plugin for the parent's kind.
+                let passage_name = Some(enclosing_passage.name.as_str());
+                if let Some(kind) = plugin.variable_kind_at_path_for_passage(&var.name, passage_name) {
+                    parent_kind = Some(kind);
+                }
+            }
+        }
+    }
+
+    let parent = parent_var_name.unwrap_or_else(|| "unknown".to_string());
+    let kind_label = match parent_kind {
+        Some(knot_formats::types::PropertyKind::Object) => "Object",
+        Some(knot_formats::types::PropertyKind::Array) => "Array",
+        Some(knot_formats::types::PropertyKind::Scalar) => "Scalar",
+        _ => "Unknown",
+    };
+
+    // Get siblings (children of the parent variable).
+    let passage_name = Some(enclosing_passage.name.as_str());
+    let siblings: Vec<String> = plugin
+        .variable_children_with_kind_for_passage(&parent, passage_name)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+
+    // Meaningfulness gate: the value of property hover is discovering
+    // siblings — "oh, `$player` also has `mp` and `name`." If there are
+    // no siblings (the parent is a Scalar or unknown), the hover just
+    // repeats what's visible in the code. Skip it.
+    if siblings.is_empty() {
+        return None;
+    }
+
+    let mut hover_text = format!(
+        "**{}** `Property of {}` ({})",
+        prop_name, parent, kind_label
+    );
+    let preview: Vec<&str> = siblings.iter().take(8).map(|s| s.as_str()).collect();
+    let suffix = if siblings.len() > 8 { ", …" } else { "" };
+    hover_text.push_str(&format!("\n\n**Siblings:** {}{}", preview.join(", "), suffix));
+
+    let hover_range = helpers::byte_range_to_lsp_range(text, &(prop_start..prop_end));
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: Some(hover_range),
+    })
 }
 
 /// Compute the hover range for a passage header at the given position.
