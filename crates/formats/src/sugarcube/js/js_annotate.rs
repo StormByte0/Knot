@@ -208,7 +208,26 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
             } => {
                 let trimmed = content.trim();
                 if !trimmed.is_empty() {
-                    let analysis = analyze_js_snippet(trimmed, span.start, false);
+                    // Compute the body-relative byte offset of `trimmed`
+                    // within the expression construct.
+                    //
+                    // `span.start` is the position of `<<` (the start of the
+                    // full expression construct). `content` is the text
+                    // between `<<=` (or `<<-`) and `>>`, so it starts at
+                    // `span.start + 3` (3 = length of `<<=` / `<<-`).
+                    // `trimmed` is `content.trim()`, so its start is
+                    // `content_start + leading_whitespace_bytes`.
+                    //
+                    // Without this correction, `analyze_js_snippet` would
+                    // compute variable spans as `span.start + pos_within_trimmed`,
+                    // which is offset by `3 + leading_ws` bytes too early.
+                    // That caused variable hover to fire when the cursor was
+                    // on `<<=` or ` ` (inside the open tag) instead of on
+                    // the actual variable — which in turn shadowed the
+                    // macro hover for `<<=>>` / `<<->>`.
+                    let leading_ws = content.len() - content.trim_start().len();
+                    let trimmed_offset = span.start + 3 + leading_ws;
+                    let analysis = analyze_js_snippet(trimmed, trimmed_offset, false);
                     *js_analysis = Some(analysis);
                 }
             }

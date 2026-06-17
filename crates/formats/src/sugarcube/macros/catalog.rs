@@ -19,7 +19,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Control flow ─────────────────────────────────────────────────────
         MacroDef {
             name: "if",
-            description: "Conditional block. `<<if $condition>>…<</if>>`",
+            description: "Executes its contents if the given conditional expression evaluates to `true`. If the condition evaluates to `false` and an `<<elseif>>` or `<<else>>` exists, then other contents can be executed.",
             body: Required,
             kind: Container,
             args: None,
@@ -31,7 +31,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "elseif",
-            description: "Else-if branch within `<<if>>`.",
+            description: "The else-if branch within an `<<if>>` block. Executes its contents when the parent `<<if>>` evaluates to `false` and this `<<elseif>>`'s conditional evaluates to `true`.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -43,7 +43,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "else",
-            description: "Else branch within `<<if>>`.",
+            description: "The else branch within an `<<if>>` block. Executes its contents when the parent `<<if>>` (and any `<<elseif>>` branches) evaluate to `false`.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -55,7 +55,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "for",
-            description: "Iteration. `<<for _i, $arr>>…<</for>>`",
+            description: "Repeatedly executes its contents. There are three forms: a conditional-only form, a 3-part conditional form, and a range form.",
             body: Required,
             kind: Container,
             args: None,
@@ -67,7 +67,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "break",
-            description: "Break out of the nearest enclosing `<<for>>` loop.",
+            description: "Used within `<<for>>` macros. Terminates the execution of the current `<<for>>`.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -79,7 +79,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "continue",
-            description: "Skip to the next iteration of the nearest `<<for>>` loop.",
+            description: "Used within `<<for>>` macros. Terminates the execution of the current iteration of the current `<<for>>` and begins execution of the next iteration.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -91,7 +91,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "while",
-            description: "Loop while a condition is true: `<<while $condition>>…<</while>>`",
+            description: "Loop while a condition is true: `<<while $condition>>…<</while>>`.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -111,7 +111,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "switch",
-            description: "Switch on an expression. `<<switch $v>><<case 1>>…<</switch>>`",
+            description: "Evaluates the given expression and compares it to the value(s) within its `<<case>>` children. Upon a successful match, the matching case will have its contents executed. If no cases match and an optional `<<default>>` case exists, its contents will be executed. At most one case will execute.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -131,7 +131,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "case",
-            description: "Case arm within `<<switch>>`.",
+            description: "A case arm within a `<<switch>>` block. Its value list is compared against the result of the parent `<<switch>>`'s expression; upon a successful match, this case's contents are executed. At most one case will execute.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -143,7 +143,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "default",
-            description: "Default arm within `<<switch>>`.",
+            description: "The default arm within a `<<switch>>` block. Executes its contents when no `<<case>>` matched the parent `<<switch>>`'s expression. Must be the final case.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -157,7 +157,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Variables ─────────────────────────────────────────────────────────
         MacroDef {
             name: "set",
-            description: "Assign a value: `<<set $var to expression>>`",
+            description: "Sets story `$variables` and temporary `_variables` based on the given expression.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -177,7 +177,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "unset",
-            description: "Remove a story variable: `<<unset $var>>`",
+            description: "Unsets story `$variables`, temporary `_variables`, and properties of objects stored within either.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -197,7 +197,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "capture",
-            description: "Capture variables for use in closures.",
+            description: "Captures story `$variables` and temporary `_variables`, creating localized versions of their values within the macro body.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -217,7 +217,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "run",
-            description: "Execute an expression without producing output: `<<run $arr.push(\"item\")>>`",
+            description: "Functionally identical to `<<set>>`. Intended to be mnemonically better for uses where the expression is arbitrary code, rather than variables to set — i.e., `<<run>>` to run code, `<<set>>` to set variables.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -239,7 +239,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Output ────────────────────────────────────────────────────────────
         MacroDef {
             name: "print",
-            description: "Print the result of an expression.",
+            description: "Outputs a string representation of the result of the given expression.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -259,7 +259,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "=",
-            description: "Short alias for `<<print>>`.",
+            description: "Outputs a string representation of the result of the given expression. This macro is an alias for `<<print>>`.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -279,7 +279,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "-",
-            description: "Print without leading/trailing whitespace.",
+            description: "Outputs a string representation of the result of the given expression. This macro is functionally identical to `<<print>>`, save that it also encodes HTML special characters in the output.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -299,7 +299,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "type",
-            description: "Typewriter effect: displays text character by character.",
+            description: "Outputs its contents a character — technically, a code point — at a time, mimicking a teletype/typewriter. Can type most content: links, markup, macros, etc.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -319,7 +319,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "nobr",
-            description: "Remove line breaks from enclosed content.",
+            description: "Executes its contents and outputs the result, after removing leading/trailing newlines and replacing all remaining sequences of newlines with single spaces.",
             body: Required,
             kind: Container,
             args: None,
@@ -331,7 +331,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "silent",
-            description: "Execute enclosed code without producing output: `<<silent>>…<</silent>>`",
+            description: "Causes any output generated within its body to be discarded, except for errors (which will be displayed). Generally useful for formatting blocks of macros for ease of use/readability, while ensuring that no output is generated.",
             body: Required,
             kind: Container,
             args: None,
@@ -343,19 +343,19 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "silently",
-            description: "Deprecated — use `<<silent>>` instead.",
+            description: "Deprecated. This macro has been deprecated and should no longer be used. See `<<silent>>` for its replacement.",
             body: Required,
             kind: Container,
             args: None,
             deprecated: true,
-            deprecation_message: Some("<<silently>> is deprecated. Use <<silent>> instead."),
+            deprecation_message: Some("Use <<silent>> instead."),
             category: MacroCategory::Output,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "do",
-            description: "Create a re-renderable output block: `<<do>>…<</do>>` (v2.37.0+)",
+            description: "Displays its contents. Listens for `<<redo>>` macro commands upon which it updates its contents.",
             body: Required,
             kind: Container,
             args: None,
@@ -367,7 +367,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "redo",
-            description: "Trigger re-render of `<<do>>` blocks: `<<redo>>` (v2.37.0+)",
+            description: "Causes one or more `<<do>>` macros to update their contents.",
             body: Never,
             kind: Inline,
             args: None,
@@ -381,7 +381,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── DOM / Display ─────────────────────────────────────────────────────
         MacroDef {
             name: "append",
-            description: "Append content to a selector: `<<append \"#id\">>…<</append>>`",
+            description: "Executes its contents and appends the output to the contents of the selected element(s).",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -401,7 +401,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "prepend",
-            description: "Prepend content to a selector.",
+            description: "Executes its contents and prepends the output to the contents of the selected element(s).",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -421,7 +421,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "replace",
-            description: "Replace element content.",
+            description: "Executes its contents and replaces the contents of the selected element(s) with the output.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -441,7 +441,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "remove",
-            description: "Remove matching element(s) from the DOM.",
+            description: "Removes the selected element(s).",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -461,7 +461,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "copy",
-            description: "Copy existing element content into another.",
+            description: "Outputs a copy of the contents of the selected element(s).",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -481,7 +481,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "addclass",
-            description: "Add CSS class(es) to element(s).",
+            description: "Adds classes to the selected element(s).",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -512,7 +512,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "removeclass",
-            description: "Remove CSS class(es) from element(s).",
+            description: "Removes classes from the selected element(s).",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -543,7 +543,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "toggleclass",
-            description: "Toggle CSS class(es) on element(s).",
+            description: "Toggles classes on the selected element(s) — i.e., adding them if they don't exist, removing them if they do.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -586,7 +586,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "script",
-            description: "Execute JavaScript: `<<script>>…<</script>>`",
+            description: "Silently executes its contents as either JavaScript or TwineScript code (default: JavaScript).",
             body: Required,
             kind: Container,
             args: None,
@@ -600,7 +600,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Links / Interaction ───────────────────────────────────────────────
         MacroDef {
             name: "link",
-            description: "Inline link with click handler: `<<link \"label\" \"passage\">>…<</link>>`",
+            description: "Creates a link that silently executes its contents when clicked, optionally forwarding the player to another passage. May be called with either the link text and passage name as separate arguments, a link markup, or an image markup.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -631,7 +631,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "button",
-            description: "Button with click handler: `<<button \"label\" \"passage\">>…<</button>>`",
+            description: "Creates a button that silently executes its contents when clicked, optionally forwarding the player to another passage. May be called with either the link text and passage name as separate arguments, a link markup, or an image markup.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -662,7 +662,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "linkappend",
-            description: "Link that appends content when clicked: `<<linkappend \"label\">>…<</linkappend>>`",
+            description: "Creates a single-use link that deactivates itself and appends its contents to its link text when clicked. Essentially, a combination of `<<link>>` and `<<append>>`.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -693,7 +693,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "linkprepend",
-            description: "Link that prepends content when clicked: `<<linkprepend \"label\">>…<</linkprepend>>`",
+            description: "Creates a single-use link that deactivates itself and prepends its contents to its link text when clicked. Essentially, a combination of `<<link>>` and `<<prepend>>`.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -724,7 +724,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "linkreplace",
-            description: "Link that replaces itself with content when clicked: `<<linkreplace \"label\">>…<</linkreplace>>`",
+            description: "Creates a single-use link that deactivates itself and replaces its link text with its contents when clicked. Essentially, a combination of `<<link>>` and `<<replace>>`.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -755,7 +755,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "actions",
-            description: "Deprecated — use `<<link>>` with DOM macros instead.",
+            description: "Deprecated. This macro has been deprecated and should no longer be used.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -768,14 +768,14 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: String,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<actions>> is deprecated. Use <<link>> with DOM macros instead."),
+            deprecation_message: Some("This macro has been deprecated and should no longer be used."),
             category: MacroCategory::Links,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "click",
-            description: "Alias for `<<link>>` (deprecated; prefer `<<link>>`).",
+            description: "Deprecated. Binds its contents to a link, which silently executes them when clicked, optionally forwarding the player to another passage. Removed in SugarCube 2 — use `<<link>>` instead.",
             body: Required,
             kind: Container,
             args: Some(&[
@@ -799,7 +799,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 },
             ]),
             deprecated: true,
-            deprecation_message: Some("<<click>> is deprecated. Use <<link>> instead."),
+            deprecation_message: Some("<<click>> was removed in SugarCube 2. Use <<link>> instead."),
             category: MacroCategory::Links,
             container: None,
             container_any_of: None,
@@ -808,7 +808,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Forms ─────────────────────────────────────────────────────────────
         MacroDef {
             name: "checkbox",
-            description: "Bind a checkbox to a story variable.",
+            description: "Creates a checkbox, used to modify the value of the variable with the given name.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -857,7 +857,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "radiobutton",
-            description: "Bind a radio button to a story variable.",
+            description: "Creates a radio button, used to modify the value of the variable with the given name. Multiple `<<radiobutton>>` macros may be set up to modify the same variable, which makes them part of a radio button group.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -897,7 +897,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "textarea",
-            description: "Bind a `<textarea>` to a story variable.",
+            description: "Creates a multiline text input block, used to modify the value of the variable with the given name.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -928,7 +928,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "textbox",
-            description: "Bind a text input to a story variable.",
+            description: "Creates a text input box, used to modify the value of the variable with the given name, optionally forwarding the player to another passage.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -959,7 +959,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "numberbox",
-            description: "Bind a numeric input to a story variable.",
+            description: "Creates a number input box, used to modify the value of the variable with the given name, optionally forwarding the player to another passage.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -990,7 +990,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "listbox",
-            description: "Bind a select dropdown to a story variable: `<<listbox \"$var\">>…<</listbox>>`",
+            description: "Creates a listbox, used to modify the value of the variable with the given name. The list options are populated via `<<option>>` and/or `<<optionsfrom>>`.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1010,7 +1010,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "cycle",
-            description: "Bind a cycling selector to a story variable: `<<cycle \"$var\">>…<</cycle>>`",
+            description: "Creates a cycling link, used to modify the value of the variable with the given name. The cycling options are populated via `<<option>>` and/or `<<optionsfrom>>`.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1030,7 +1030,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "option",
-            description: "Define an option within `<<listbox>>` or `<<cycle>>`.",
+            description: "Defines an option within a `<<listbox>>` or `<<cycle>>`. The label is shown to the player; the optional value is what gets assigned to the receiver variable when the option is selected (defaults to the label). The `selected` keyword marks an option as the default.",
             body: Never,
             kind: SubMacro,
             args: Some(&[
@@ -1061,7 +1061,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "optionsfrom",
-            description: "Generate options from a collection within `<<listbox>>` or `<<cycle>>`.",
+            description: "Generates options within a `<<listbox>>` or `<<cycle>>` from a collection. Arrays/Sets yield `value, value`; generic objects yield `property name, value`; Maps yield `key, value`.",
             body: Never,
             kind: SubMacro,
             args: Some(&[MacroArgDef {
@@ -1083,7 +1083,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Navigation ────────────────────────────────────────────────────────
         MacroDef {
             name: "goto",
-            description: "Navigate to a passage: `<<goto \"passage\">>`",
+            description: "Immediately forwards the player to the passage with the given name. May be called either with the passage name or with a link markup.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1103,7 +1103,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "back",
-            description: "Navigate back via browser history: `<<back>>` / `<<back \"LinkText\">>` / `<<back \"LinkText\" \"Passage\">>`",
+            description: "Creates a link that undoes past moments within the story history. May be called with, optional, the link text and passage name as separate arguments, a link markup, or an image markup.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -1134,7 +1134,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "return",
-            description: "Navigate using browser history: `<<return>>` / `<<return \"LinkText\">>` / `<<return \"LinkText\" \"Passage\">>`",
+            description: "Creates a link that navigates forward to a previously visited passage. May be called with, optional, the link text and passage name as separate arguments, a link markup, or an image markup.",
             body: Never,
             kind: Inline,
             args: Some(&[
@@ -1165,7 +1165,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "include",
-            description: "Include and render another passage inline: `<<include \"passage\">>`",
+            description: "Outputs the contents of the passage with the given name, optionally wrapping it within an HTML element. May be called either with the passage name or with a link markup.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1187,7 +1187,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Timing ────────────────────────────────────────────────────────────
         MacroDef {
             name: "timed",
-            description: "Display content after a delay: `<<timed 2s>>…<</timed>>`",
+            description: "Executes its contents after the given delay, inserting any output into the passage in its place. Additional timed executions may be chained via `<<next>>`.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1207,7 +1207,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "repeat",
-            description: "Repeat content on an interval.",
+            description: "Repeatedly executes its contents after the given delay, inserting any output into the passage in its place. May be terminated by a `<<stop>>` macro.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1227,7 +1227,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "stop",
-            description: "Stop the nearest `<<timed>>` or `<<repeat>>`.",
+            description: "Used within `<<repeat>>` macros. Terminates the execution of the current `<<repeat>>`.",
             body: Never,
             kind: SubMacro,
             args: None,
@@ -1239,7 +1239,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "next",
-            description: "Chain a delayed content block within `<<timed>>`.",
+            description: "Chains an additional delayed content block within a `<<timed>>` macro. The optional delay is a CSS time value (e.g., `5s`, `500ms`); if omitted, the last delay specified (from a `<<next>>` or the parent `<<timed>>`) is used.",
             body: Never,
             kind: SubMacro,
             args: Some(&[MacroArgDef {
@@ -1261,7 +1261,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Widgets / Audio ───────────────────────────────────────────────────
         MacroDef {
             name: "widget",
-            description: "Define a reusable custom macro.",
+            description: "Creates a new widget macro with the given name. Widgets allow you to create macros by using the standard macros and markup that you use normally within your story. All widgets may access arguments passed to them via the `_args` special variable. Block widgets may access the contents they enclose via the `_contents` special variable.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1281,7 +1281,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "done",
-            description: "Execute code after the passage is fully rendered.",
+            description: "Silently executes its contents when the incoming passage is done rendering and has been added to the page. Generally useful for running code that needs to manipulate elements from the incoming passage, since you must wait until they've been added to the page.",
             body: Required,
             kind: Container,
             args: None,
@@ -1293,7 +1293,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "audio",
-            description: "Control audio: `<<audio \"id\" play>>`",
+            description: "Controls the playback of audio tracks, which must be set up via `<<cacheaudio>>`.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1313,7 +1313,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "playlist",
-            description: "Control an audio playlist.",
+            description: "Controls the playback of the playlist, which must be set up via `<<createplaylist>>`.",
             body: Never,
             kind: Inline,
             args: None,
@@ -1325,7 +1325,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "masteraudio",
-            description: "Control the master audio.",
+            description: "Controls the master audio settings.",
             body: Never,
             kind: Inline,
             args: None,
@@ -1337,7 +1337,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "createplaylist",
-            description: "Define a new audio playlist.",
+            description: "Collects tracks, which must be set up via `<<cacheaudio>>`, into a playlist via its `<<track>>` children.",
             body: Required,
             kind: Container,
             args: None,
@@ -1349,7 +1349,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "cacheaudio",
-            description: "Cache an audio track.",
+            description: "Caches an audio track for use by the other audio macros.",
             body: Never,
             kind: Inline,
             args: None,
@@ -1361,7 +1361,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "waitforaudio",
-            description: "Pause rendering until cached audio is ready.",
+            description: "Displays the loading screen until all currently registered audio has either loaded to a playable state or aborted loading due to errors. Requires tracks to be set up via `<<cacheaudio>>`.",
             body: Never,
             kind: Inline,
             args: None,
@@ -1373,7 +1373,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "createaudiogroup",
-            description: "Group audio tracks for collective control: `<<createaudiogroup :id>>…<</createaudiogroup>>`",
+            description: "Collects tracks, which must be set up via `<<cacheaudio>>`, into a group via its `<<track>>` children. Groups are useful for applying actions to multiple tracks simultaneously and/or excluding the included tracks from a larger set when applying actions.",
             body: Required,
             kind: Container,
             args: Some(&[MacroArgDef {
@@ -1393,7 +1393,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "removeaudiogroup",
-            description: "Remove a previously created audio group.",
+            description: "Removes the audio group with the given ID.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1413,7 +1413,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "removeplaylist",
-            description: "Remove a previously created audio playlist.",
+            description: "Removes the playlist with the given ID.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1433,7 +1433,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         },
         MacroDef {
             name: "track",
-            description: "Reference an audio track within `<<createaudiogroup>>` or `<<createplaylist>>`.",
+            description: "References an audio track within a `<<createaudiogroup>>` or `<<createplaylist>>`. Within `<<createplaylist>>`, an optional action list may follow the track ID (e.g., `volume 0.5`, `own`).",
             body: Never,
             kind: SubMacro,
             args: Some(&[MacroArgDef {
@@ -1455,7 +1455,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         // ── Deprecated macros ─────────────────────────────────────────────────
         MacroDef {
             name: "display",
-            description: "Deprecated — use `<<include>>` instead.",
+            description: "Deprecated. Includes the passage with the given name within the current passage, optionally wrapping it within an HTML element. Removed in SugarCube 2 — use `<<include>>` instead.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1468,14 +1468,14 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: String,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<display>> is deprecated. Use <<include>> instead."),
+            deprecation_message: Some("<<display>> was removed in SugarCube 2. Use <<include>> instead."),
             category: MacroCategory::Navigation,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "remember",
-            description: "Deprecated in SugarCube 2 — use `<<set>>` with persistent storage instead.",
+            description: "Deprecated. Functionally identical to `<<set>>`, save that it also causes the values of `$variables` to persist over page reloads, game restarts, and even browser restarts. Removed in SugarCube 2 — use `<<set>>` with persistent storage instead.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1488,14 +1488,14 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: Expression,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<remember>> is deprecated. Use <<set>> with persistent storage instead."),
+            deprecation_message: Some("<<remember>> was removed in SugarCube 2. Use <<set>> with persistent storage instead."),
             category: MacroCategory::Variables,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "forget",
-            description: "Deprecated in SugarCube 2 — use `<<set>>` with persistent storage instead.",
+            description: "Deprecated. Functionally identical to `<<unset>>`, save that it also removes the `$variables` from the `<<remember>>` store. Removed in SugarCube 2 — use `<<unset>>` with persistent storage instead.",
             body: Never,
             kind: Inline,
             args: Some(&[MacroArgDef {
@@ -1508,31 +1508,31 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: Variable,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<forget>> is deprecated. Use <<set>> with persistent storage instead."),
+            deprecation_message: Some("<<forget>> was removed in SugarCube 2. Use <<unset>> with persistent storage instead."),
             category: MacroCategory::Variables,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "setcss",
-            description: "Deprecated — use `<<addclass>>` or `<<removeclass>>` instead.",
+            description: "Deprecated. Non-standard macro — not part of the official SugarCube 2 documentation. Use `<<addclass>>` / `<<removeclass>>` for class-based styling, or a `<<script>>` block with `$(...).css(...)` for inline styles.",
             body: Never,
             kind: Inline,
             args: None,
             deprecated: true,
-            deprecation_message: Some("<<setcss>> is deprecated. Use <<addclass>> or <<removeclass>> instead."),
+            deprecation_message: Some("<<setcss>> is non-standard and not in the SugarCube 2 docs. Use <<addclass>> / <<removeclass>> or <<script>> with jQuery .css() instead."),
             category: MacroCategory::Dom,
             container: None,
             container_any_of: None,
         },
         MacroDef {
             name: "settitle",
-            description: "Deprecated — set `document.title` directly via `<<run>>` instead.",
+            description: "Deprecated. Non-standard macro — not part of the official SugarCube 2 documentation. Set `document.title` directly via `<<run>>` instead.",
             body: Never,
             kind: Inline,
             args: None,
             deprecated: true,
-            deprecation_message: Some("<<settitle>> is deprecated. Set document.title directly via <<run>> instead."),
+            deprecation_message: Some("<<settitle>> is non-standard and not in the SugarCube 2 docs. Set document.title directly via <<run>> instead."),
             category: MacroCategory::Dom,
             container: None,
             container_any_of: None,

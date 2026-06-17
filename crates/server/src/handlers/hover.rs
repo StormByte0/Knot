@@ -32,7 +32,6 @@
 //! in this file — all syntax-specific logic lives in the format plugin.
 
 use crate::handlers::helpers;
-use crate::handlers::macros;
 use crate::state::ServerState;
 use knot_core::passage::Passage;
 use knot_formats::plugin as fmt_plugin;
@@ -72,16 +71,16 @@ pub(crate) async fn hover(
     // properties) that don't have dedicated span data on `Passage`.
     let token_groups = inner.semantic_tokens.get(&uri).cloned().unwrap_or_default();
 
-    // 0a. Diagnostic-first hover: if the cursor is inside any diagnostic's
-    //     range, show the diagnostic message scoped to the ENTIRE diagnostic
-    //     range — not the individual token. A syntax error's message is more
-    //     valuable than what a random token in the broken statement means.
-    //     This takes priority over ALL token hovers.
-    if let Some(hover) = try_diagnostic_hover(text, byte_offset, &uri, &inner) {
-        return Ok(Some(hover));
-    }
+    // 0. NOTE: We deliberately do NOT do diagnostic-first hover here.
+    //    VS Code natively shows diagnostic messages when the cursor is over a
+    //    squiggly underline, and merges that with our token hover in the same
+    //    popup. Re-emitting diagnostics from the server side would duplicate
+    //    that and force us to pick a winner (diagnostic vs. token info). Our
+    //    hover should just provide token info; diagnostics own their own UI.
+    //    If you need diagnostic context inside a token hover, surface it as a
+    //    dedicated section in the token hover itself — don't intercept.
 
-    // 0b. Try the format plugin's `provide_hover` first. This is the
+    // 0a. Try the format plugin's `provide_hover` first. This is the
     //    plugin-owned path that mirrors `provide_completions`. When the
     //    plugin returns `Some`, we map `FormatHover` → `lsp_types::Hover`
     //    and return immediately. When it returns `None`, we fall through
@@ -241,70 +240,6 @@ pub(crate) async fn hover(
 // ===========================================================================
 // Private hover helpers
 // ===========================================================================
-
-/// Diagnostic-first hover: if the cursor is inside any diagnostic's range,
-/// show the diagnostic message scoped to the ENTIRE diagnostic range.
-///
-/// This takes priority over all token hovers. A syntax error's message is
-/// more valuable than what a random token in the broken statement means.
-/// When multiple diagnostics overlap at the cursor, all are shown.
-fn try_diagnostic_hover(
-    text: &str,
-    byte_offset: usize,
-    uri: &url::Url,
-    inner: &crate::state::ServerStateInner,
-) -> Option<Hover> {
-    use knot_formats::plugin::FormatDiagnosticSeverity;
-
-    let groups = inner.format_diagnostics.get(uri)?;
-    let mut hits: Vec<(&knot_formats::plugin::FormatDiagnostic, std::ops::Range<usize>)> = Vec::new();
-
-    for group in groups {
-        for diag in &group.diagnostics {
-            let abs_start = group.passage_offset + diag.range.start;
-            let abs_end = group.passage_offset + diag.range.end;
-            if byte_offset >= abs_start && byte_offset <= abs_end {
-                hits.push((diag, abs_start..abs_end));
-            }
-        }
-    }
-
-    if hits.is_empty() {
-        return None;
-    }
-
-    // Build hover text with severity prefix for each diagnostic.
-    let mut hover_text = String::new();
-    let mut hover_range: Option<std::ops::Range<usize>> = None;
-
-    for (i, (diag, range)) in hits.iter().enumerate() {
-        if i > 0 {
-            hover_text.push_str("\n\n---\n\n");
-        }
-        let sev_prefix = match diag.severity {
-            FormatDiagnosticSeverity::Error => "**Error**",
-            FormatDiagnosticSeverity::Warning => "**Warning****",
-            FormatDiagnosticSeverity::Info => "**Info**",
-            FormatDiagnosticSeverity::Hint => "**Hint**",
-        };
-        hover_text.push_str(&format!("{}: {}", sev_prefix, diag.message));
-
-        // Use the first diagnostic's range as the hover range. When multiple
-        // diagnostics overlap, the first (typically the outermost) wins.
-        if i == 0 {
-            hover_range = Some(range.clone());
-        }
-    }
-
-    let range = hover_range.map(|r| helpers::byte_range_to_lsp_range(text, &r));
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: hover_text,
-        }),
-        range,
-    })
-}
 
 /// Compute variable diagnostics for the workspace via the format plugin.
 ///
@@ -661,8 +596,16 @@ fn try_close_tag_hover(
     // `MacroDef` itself — we just need to know the name is valid.
     let _ = plugin.find_macro(name)?;
 
+    let close_label = plugin.format_close_macro_label(name);
+    // Wrap the close label in backticks (rendered as inline code) so VS
+    // Code's markdown renderer doesn't strip `<</link>>` as unknown HTML.
+    // Use the plugin's `format_close_macro_label` (returns `<</link>>` for
+    // SugarCube) instead of a literal `{name}/` (which rendered as `link/`
+    // — wrong on two counts: it dropped the `<<>>` delimiters AND left the
+    // trailing slash that's only used internally as a catalog key).
     let hover_text = format!(
-        "**{name}/** `Close tag`\n\nCloses the `{}` block.",
+        "**`{}`** `Close tag`\n\nCloses the `{}` block.",
+        close_label,
         plugin.format_macro_label(name)
     );
     let utf16_start = helpers::utf16_len_up_to(line, tag_start);
@@ -681,17 +624,23 @@ fn try_close_tag_hover(
 
 /// Try to show hover info for a macro at the cursor position (outer layer).
 ///
-/// Uses `passage.macro_arg_refs[]` for span-based resolution instead of
+/// Uses `passage.macro_invocations` for span-based resolution instead of
 /// line-scanning with `find_macro_at_position()`. This works correctly for
 /// multi-line macros and provides precise hover ranges.
 ///
 /// The function checks two conditions:
-/// 1. **Cursor on macro name**: If the cursor falls within `macro_name_span`,
+/// 1. **Cursor on macro name**: If the cursor falls within `name_span`,
 ///    show macro hover with the name as the hover range.
 /// 2. **Cursor inside macro open tag**: If the cursor falls within
-///    `macro_open_span` but not on the name or a PassageRef arg (which was
-///    already handled by `try_macro_arg_ref_hover`), show macro hover as the
-///    outer-layer fallback with the open tag as the hover range.
+///    `open_span` but not on the name (and not on a PassageRef arg,
+///    which was already handled by `try_macro_arg_ref_hover` in step 2,
+///    and not on a variable, which was already handled by
+///    `try_variable_hover` in step 3), show macro hover with the open
+///    tag as the hover range. This is what makes hovering on `<<` or
+///    `>>` of `<<run>>` work — the name span only covers `run`, so
+///    without this fallback, hovering on the delimiters produced no
+///    hover at all (the user saw the variable hover for the first
+///    variable inside the macro, or nothing at all).
 ///
 /// Macros that have no `macro_arg_refs` entries (i.e., no PassageRef args)
 /// still get hover via the `macro_open_span` check — this handles macros
@@ -709,17 +658,42 @@ fn try_macro_hover(
     // can resolve `<<set>>`, `<<if>>`, `<<print>>`, etc. via span lookup
     // without falling back to line-scanning.
     //
-    // Design principle: hover answers "what is THIS thing?" — so macro hover
-    // only fires when the cursor is ON the macro name, not anywhere inside the
-    // open tag. Hovering on `$var` inside `<<set $var to 5>>` should show
-    // variable hover (step 3), not repeat the macro description. The macro
-    // description belongs on the macro name only; explaining it once is enough.
+    // Design principle: hover answers "what is THIS thing?" — so when the
+    // cursor is on the macro NAME, we use the name span as the hover range
+    // (precise). When the cursor is on the delimiters (`<<`, `>>`) or
+    // whitespace inside the open tag, we use the full open_span as the hover
+    // range (the user is clearly asking "what macro is this?", not "what is
+    // this single character?"). The variable and PassageRef layers already
+    // ran before us, so we know the cursor isn't on a variable or arg.
     for passage in &doc.passages {
         for inv in &passage.macro_invocations {
-            // Only fire when cursor is on the macro name itself.
-            if !passage.span_contains_abs_offset(&inv.name_span, byte_offset) {
+            // Determine which span the cursor is in (if any).
+            //
+            // - `on_name`: cursor is inside `name_span` (e.g., on `run` of
+            //   `<<run>>`). Use name_span as the hover range.
+            // - `in_open_tag`: cursor is inside `open_span` but NOT inside
+            //   `name_span`. Use open_span as the hover range. This catches
+            //   `<<`, `>>`, and any whitespace/punctuation that isn't a
+            //   variable or arg (those are handled by earlier layers).
+            //
+            // For Expression macros (`<<=>>`, `<<->>`), the parser sets
+            // name_span == open_span (the full expression construct), so
+            // `on_name` is the only case that fires — which is correct.
+            let on_name = passage.span_contains_abs_offset(&inv.name_span, byte_offset);
+            let in_open_tag = !on_name
+                && passage.span_contains_abs_offset(&inv.open_span, byte_offset);
+            if !on_name && !in_open_tag {
                 continue;
             }
+
+            // Choose the hover range: name_span when cursor is on the name
+            // (precise), open_span when cursor is on the delimiters (the
+            // user is asking about the whole tag).
+            let hover_byte_range = if on_name {
+                passage.abs_range(&inv.name_span)
+            } else {
+                passage.abs_range(&inv.open_span)
+            };
 
             // Try builtin macro first.
             if let Some(mdef) = plugin.find_macro(&inv.name) {
@@ -734,10 +708,7 @@ fn try_macro_hover(
                     hover_text.push_str(&format!("\n\n**Container violation**: {}", violation));
                 }
 
-                let hover_range = helpers::byte_range_to_lsp_range(
-                    text,
-                    &passage.abs_range(&inv.name_span),
-                );
+                let hover_range = helpers::byte_range_to_lsp_range(text, &hover_byte_range);
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -750,10 +721,7 @@ fn try_macro_hover(
             // Not a builtin — try custom macro (widget / Macro.add()).
             if let Some(detail) = plugin.find_custom_macro_detail(&inv.name) {
                 let hover_text = build_custom_macro_hover_text(&inv.name, &detail, plugin);
-                let hover_range = helpers::byte_range_to_lsp_range(
-                    text,
-                    &passage.abs_range(&inv.name_span),
-                );
+                let hover_range = helpers::byte_range_to_lsp_range(text, &hover_byte_range);
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -854,7 +822,7 @@ fn build_custom_macro_hover_text(
         "Custom macro"
     };
     let mut text = format!(
-        "**{}** `{}`\n\nDefined in `:: {}`",
+        "**`{}`** `{}`\n\nDefined in `:: {}`",
         plugin.format_macro_label(name),
         kind_label,
         detail.defined_in
@@ -896,15 +864,23 @@ fn describe_macro_arg_kind(kind: &MacroArgKind, is_passage_ref: bool) -> String 
 
 /// Build the hover text for a macro definition.
 ///
-/// Extracted from the old `try_macro_hover` so it can be shared between
-/// the span-based path and the line-scanning fallback.
+/// The hover header is intentionally minimal: just the format-specific macro
+/// label (e.g. `**\`<<if>>\`**`) followed by the catalog description. We do
+/// NOT emit our own classification labels ("Block macro", "Control-flow macro",
+/// etc.) — those are internal SugarCube categorization names that don't appear
+/// in the official SugarCube documentation and would only confuse users. The
+/// close-tag hint ("Close with `<</if>>`.") is preserved for container macros
+/// because that's actionable guidance, not terminology.
+///
+/// The macro label is wrapped in backticks (rendered as inline code) so that
+/// VS Code's markdown renderer doesn't strip `<<set>>` as an unknown HTML tag
+/// (`<set>`). Without backticks, `**<<set>>**` renders as bold empty text —
+/// the user sees `<>` instead of `<<set>>`.
 fn build_macro_hover_text(
     mdef: &knot_formats::types::MacroDef,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> String {
-    let kind = macros::classify(mdef.name, mdef, plugin);
-
-    let mut hover_text = macros::hover_header(kind, &plugin.format_macro_label(mdef.name));
+    let mut hover_text = format!("**`{}`**", plugin.format_macro_label(mdef.name));
 
     // Add description
     hover_text.push_str(&format!("\n\n{}", mdef.description));
@@ -916,9 +892,14 @@ fn build_macro_hover_text(
         }
     }
 
-    // Add kind-specific note (e.g., "Close with <</if>>")
-    if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
-        hover_text.push_str(&format!("\n\n{}", note));
+    // Close-tag hint for container macros (those that require a body and a
+    // matching `<</name>>` close tag). This is the only structural note we
+    // surface — it's actionable, not jargon.
+    if mdef.kind == knot_formats::types::MacroKind::Container {
+        let close_label = plugin.format_close_macro_label(mdef.name);
+        if !close_label.is_empty() {
+            hover_text.push_str(&format!("\n\nClose with `{}`.", close_label));
+        }
     }
 
     // Add parameter info — render with human-readable kind descriptions
@@ -1572,3 +1553,168 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
         },
     })
 }
+
+#[cfg(test)]
+mod expr_macro_hover_tests {
+    use super::*;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use knot_formats::plugin::FormatPlugin;
+    use knot_formats::FormatPluginMut;
+    use url::Url;
+
+    /// Helper: parse a single-passage document and return the Document plus
+    /// the plugin. The plugin's `parse_mut` returns passages already
+    /// populated with `macro_invocations`, so we just wrap them in a Document.
+    fn parse(src: &str) -> (knot_core::Document, SugarCubePlugin) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let parse_result = plugin.parse_mut(&uri, src);
+        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        for passage in parse_result.passages {
+            doc.passages.push(passage);
+        }
+        (doc, plugin)
+    }
+
+    /// When the cursor is on `<<` of `<<= _parts>>`, hover MUST return the
+    /// macro info for `<<=>>` (catalog name `=`), not `None` and not the
+    /// variable hover for `_parts`.
+    #[test]
+    fn hover_on_print_macro_open_tag_returns_macro_hover() {
+        let src = ":: Init\n<<= _parts>>";
+        let (doc, plugin) = parse(src);
+        // Cursor on the first `<` of `<<=` (start of body, line 1, char 0).
+        let body_offset = ":: Init\n".len();
+        let hover = try_macro_hover(src, body_offset, Some(&doc), &plugin);
+        assert!(hover.is_some(), "hover on `<<=` should fire, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("`<<=>>`"),
+                    "hover text should mention `<<=>>`: got {}", m.value);
+            } else {
+                panic!("expected markup hover, got {:?}", h.contents);
+            }
+        }
+    }
+
+    /// When the cursor is on `=` of `<<=`, hover MUST also return the macro
+    /// info (the entire `<<= _parts>>` is the macro name span for expression
+    /// macros — there's no separate name region).
+    #[test]
+    fn hover_on_print_macro_equal_sign_returns_macro_hover() {
+        let src = ":: Init\n<<= _parts>>";
+        let (doc, plugin) = parse(src);
+        let body_offset = ":: Init\n".len() + 2; // on `=` (after `<<`)
+        let hover = try_macro_hover(src, body_offset, Some(&doc), &plugin);
+        assert!(hover.is_some(), "hover on `=` of `<<=` should fire, got None");
+    }
+
+    /// Cursor on `_parts` (inside the expression) should ALSO return the
+    /// macro hover, since the name_span covers the entire `<<= _parts>>`.
+    /// NOTE: in the real hover() entrypoint, try_variable_hover runs first
+    /// and wins for cursor-on-variable; this test isolates try_macro_hover
+    /// to confirm it would fire if the variable layer didn't intercept.
+    #[test]
+    fn hover_on_variable_inside_expression_still_resolves_macro() {
+        let src = ":: Init\n<<= _parts>>";
+        let (doc, plugin) = parse(src);
+        // Cursor on `_` of `_parts`.
+        let body_offset = ":: Init\n".len() + 4; // `<<= ` is 4 chars
+        let hover = try_macro_hover(src, body_offset, Some(&doc), &plugin);
+        assert!(hover.is_some(), "try_macro_hover should fire for cursor inside expression span");
+    }
+
+    /// End-to-end check: simulate the full layering for cursor on `<<=`. The
+    /// variable-hover layer must NOT fire (cursor is not on a variable), so
+    /// the macro-hover layer should win and return the `<<=>>` info.
+    ///
+    /// This test exists to catch the regression where the user reports "no
+    /// hover on `<<=`" — if variable-hover ever over-matches (e.g., by
+    /// treating the entire expression span as a variable span), this test
+    /// will fail.
+    #[test]
+    fn variable_hover_does_not_fire_on_macro_open_tag() {
+        let src = ":: Init\n<<= _parts>>";
+        let (doc, plugin) = parse(src);
+        let body_offset = ":: Init\n".len(); // cursor on `<<`
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        let hover = try_variable_hover(src, body_offset, Some(&doc), &ws, &plugin);
+        assert!(hover.is_none(),
+            "variable hover must NOT fire when cursor is on `<<` of `<<=>>`, got: {:?}",
+            hover);
+    }
+
+    /// Reproduce the user's exact reported scenario: a passage with multiple
+    /// `<<run _parts = ...>>` lines, where hovering on `<<` of `<<run`
+    /// should fire the macro hover but currently doesn't.
+    ///
+    /// This test exists to catch the regression where the user reports
+    /// "hovering on `<<run>>` shows the variable hover for `_parts` instead".
+    /// The expected behavior is: cursor on `<<` → macro hover; cursor on
+    /// `_parts` → variable hover.
+    #[test]
+    fn reproduce_user_run_macro_hover_scenario() {
+        let src = "::UIOutfitLabel [nobr] {\"position\":\"440,420\"}\n<<run _parts = []>>\n<<run _eq = State.variables.gs.inventory.equipped>>\n";
+        let (doc, plugin) = parse(src);
+
+        // Cursor on `<<` of line 1 (the first `<<run _parts = []>>`).
+        // Line 0 is the header `::UIOutfitLabel ...` plus `\n`, so the body
+        // starts at the byte offset of `<<run`.
+        let line0_end = src.find('\n').unwrap() + 1; // end of header line + \n
+        let cursor_on_open_bracket = line0_end; // first `<`
+        let hover = try_macro_hover(src, cursor_on_open_bracket, Some(&doc), &plugin);
+        assert!(hover.is_some(),
+            "cursor on `<<` of `<<run>>` should fire macro hover, got None. \
+             cursor byte_offset={}, line0_end={}",
+            cursor_on_open_bracket, line0_end);
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("`<<run>>`"),
+                    "hover text should mention `<<run>>`: got {}", m.value);
+            }
+        }
+    }
+
+    /// When the cursor is on `>>` of `<<run _parts = []>>` (the closing
+    /// delimiter), the macro hover should fire using the open_span as the
+    /// hover range. This is the "outer-layer" hover — the user is asking
+    /// "what macro is this?" by hovering on the closing `>>`.
+    #[test]
+    fn hover_on_macro_close_delimiter_uses_open_span() {
+        let src = ":: Init\n<<run _parts = []>>";
+        let (doc, plugin) = parse(src);
+        // Cursor on the second `>` of `>>`.
+        let close_offset = src.len() - 1;
+        let hover = try_macro_hover(src, close_offset, Some(&doc), &plugin);
+        assert!(hover.is_some(), "hover on `>>` of `<<run>>` should fire, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("`<<run>>`"),
+                    "hover text should mention `<<run>>`: got {}", m.value);
+            }
+        }
+    }
+
+    /// When the cursor is on the macro name itself (e.g., `run`), the hover
+    /// range should be the name_span (just `run`), NOT the open_span (the
+    /// whole `<<run>>`). This is the "precise" hover case.
+    #[test]
+    fn hover_on_macro_name_uses_name_span() {
+        let src = ":: Init\n<<run _parts = []>>";
+        let (doc, plugin) = parse(src);
+        // Cursor on `u` of `run` (offset 9 = `:: Init\n<<` is 9 chars + 1 = 10? Let's compute).
+        // `:: Init\n` is 8 chars, `<<` is 2 chars (offsets 8,9), `r` is at offset 10.
+        let on_u_offset = ":: Init\n<<r".len(); // 11
+        let hover = try_macro_hover(src, on_u_offset, Some(&doc), &plugin);
+        assert!(hover.is_some(), "hover on `u` of `run` should fire, got None");
+        if let Some(h) = hover {
+            // Range should cover just `run` (3 chars at offsets 10..13).
+            if let Some(range) = h.range {
+                assert_eq!(range.start.character, 2, "hover range start char: got {}", range.start.character);
+                assert_eq!(range.end.character, 5, "hover range end char: got {}", range.end.character);
+                assert_eq!(range.start.line, 1, "hover range start line");
+            }
+        }
+    }
+}
+

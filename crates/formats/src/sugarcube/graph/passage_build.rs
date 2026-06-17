@@ -287,24 +287,46 @@ pub fn build_macro_invocations(nodes: &[ast::AstNode], body_offset_in_passage: u
 
 fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocation>, body_offset_in_passage: usize) {
     for node in nodes {
-        if let ast::AstNode::Macro {
-            name,
-            name_span,
-            open_span,
-            children,
-            ..
-        } = node {
-            let has_body = children.is_some();
-            invs.push(MacroInvocation {
-                name: name.clone(),
-                name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
-                open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
-                has_body,
-            });
-            // Recurse into block macro children
-            if let Some(ch) = children {
-                collect_macro_invocations(ch, invs, body_offset_in_passage);
+        match node {
+            ast::AstNode::Macro {
+                name,
+                name_span,
+                open_span,
+                children,
+                ..
+            } => {
+                let has_body = children.is_some();
+                invs.push(MacroInvocation {
+                    name: name.clone(),
+                    name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                    open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
+                    has_body,
+                });
+                // Recurse into block macro children
+                if let Some(ch) = children {
+                    collect_macro_invocations(ch, invs, body_offset_in_passage);
+                }
             }
+            // Expression macros (`<<=>>` and `<<->>`) are parsed as
+            // `AstNode::Expression` rather than `AstNode::Macro`, so they
+            // would be silently skipped here unless we handle them
+            // explicitly. Map Print → "=" and Silent → "-" to match the
+            // catalog entries, and use the full expression span as both
+            // the name span and the open span (expression macros have no
+            // separate name region — `<<=>>` / `<<->>` are the whole tag).
+            ast::AstNode::Expression { kind, span, .. } => {
+                let name = match kind {
+                    ast::ExprKind::Print => "=",
+                    ast::ExprKind::Silent => "-",
+                };
+                invs.push(MacroInvocation {
+                    name: name.to_string(),
+                    name_span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                    open_span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                    has_body: false,
+                });
+            }
+            _ => {}
         }
     }
 }
@@ -464,5 +486,129 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sugarcube::ast::ParseMode;
+    use crate::sugarcube::parser::parse_passage_body;
+
+    /// `<<=>>` (Print expression) must produce a `MacroInvocation` with
+    /// name `"="`, so the hover handler can resolve it via span lookup
+    /// just like regular `<<print>>`. Without this, hovering on `<<=>>`
+    /// shows nothing (or falls through to the next token's hover).
+    #[test]
+    fn build_macro_invocations_includes_print_expression() {
+        let src = "<<= _parts>>";
+        let ast = parse_passage_body(src, 0, ParseMode::Normal);
+        let invs = build_macro_invocations(&ast.nodes, 0);
+
+        assert_eq!(
+            invs.len(),
+            1,
+            "expected 1 macro invocation for `<<=>>`, got {}: {:#?}",
+            invs.len(),
+            invs,
+        );
+        assert_eq!(invs[0].name, "=", "Print expression should map to name \"=\"");
+        assert_eq!(invs[0].has_body, false, "expression macros never have a body");
+        // The name_span should cover the entire `<<= _parts>>` construct.
+        assert_eq!(invs[0].name_span, 0..src.len(),
+            "name_span should cover the full expression");
+        assert_eq!(invs[0].open_span, 0..src.len(),
+            "open_span should cover the full expression (expression macros have no separate name region)");
+    }
+
+    /// `<<->>` (Silent expression) must produce a `MacroInvocation` with
+    /// name `"-"`, matching the catalog entry for the silent alias.
+    #[test]
+    fn build_macro_invocations_includes_silent_expression() {
+        let src = "<<- $foo>>";
+        let ast = parse_passage_body(src, 0, ParseMode::Normal);
+        let invs = build_macro_invocations(&ast.nodes, 0);
+
+        assert_eq!(invs.len(), 1, "expected 1 macro invocation for `<<->>`");
+        assert_eq!(invs[0].name, "-", "Silent expression should map to name \"-\"");
+        assert_eq!(invs[0].name_span, 0..src.len());
+    }
+
+    /// Expression macros nested inside a block macro must still be collected
+    /// (the recursion into `children` should not skip them).
+    #[test]
+    fn build_macro_invocations_includes_expression_inside_block() {
+        let src = "<<if true>><<= $x>><</if>>";
+        let ast = parse_passage_body(src, 0, ParseMode::Normal);
+        let invs = build_macro_invocations(&ast.nodes, 0);
+
+        let names: Vec<&str> = invs.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"if"), "expected `if` macro in invocations: {names:?}");
+        assert!(names.contains(&"="), "expected `=` (Print) macro in invocations: {names:?}");
+    }
+
+    /// Variable spans inside `<<=>>` must point at the actual variable
+    /// characters, NOT at the `<<` of the expression tag.
+    ///
+    /// This is a regression test for a bug where the JS annotation pass
+    /// (`js_annotate.rs`) computed variable spans for Expression macros
+    /// using `span.start` (position of `<<`) as the body offset, instead of
+    /// the position of the trimmed content. That caused variable hover to
+    /// fire when the cursor was on `<<=` or the space after it — which
+    /// shadowed the macro hover for `<<=>>`.
+    ///
+    /// With the fix, the variable `$x` in `<<= $x>>` should have a span
+    /// that starts at byte 4 (after `<<= `) and ends at byte 6, NOT at
+    /// byte 0 (the `<<`).
+    #[test]
+    fn expression_macro_var_span_points_at_variable_not_at_macro_tag() {
+        // `<<= $x>>` — body-relative byte offsets:
+        //   0: `<`
+        //   1: `<`
+        //   2: `=`
+        //   3: ` `
+        //   4: `$`
+        //   5: `x`
+        //   6: `>`
+        //   7: `>`
+        let src = "<<= $x>>";
+        let ast = parse_passage_body(src, 0, ParseMode::Normal);
+
+        // Collect all var ops from the AST.
+        let mut var_spans: Vec<(String, std::ops::Range<usize>)> = Vec::new();
+        for op in &ast.var_ops {
+            var_spans.push((op.name.clone(), op.span.clone()));
+        }
+
+        // We expect exactly one variable: `$x` at bytes 4..6.
+        assert_eq!(var_spans.len(), 1,
+            "expected 1 var op, got {}: {:#?}", var_spans.len(), var_spans);
+        assert_eq!(var_spans[0].0, "$x", "var name");
+        assert_eq!(var_spans[0].1, 4..6,
+            "var span should be 4..6 (the `$x` chars), got {:?} — \
+             if this is 0..2 or similar, the JS annotation offset bug is back",
+            var_spans[0].1);
+    }
+
+    /// Same regression test but for `<<->>` (Silent expression) and with a
+    /// temporary variable `_foo`. The `<<->` prefix is also 3 chars, so the
+    /// offset math is the same as for `<<=>`.
+    #[test]
+    fn silent_expression_macro_var_span_points_at_variable_not_at_macro_tag() {
+        // `<<- _foo>>` — body-relative byte offsets:
+        //   0: `<`  1: `<`  2: `-`  3: ` `  4: `_`  5: `f`  6: `o`  7: `o`  8: `>`  9: `>`
+        let src = "<<- _foo>>";
+        let ast = parse_passage_body(src, 0, ParseMode::Normal);
+
+        let mut var_spans: Vec<(String, std::ops::Range<usize>)> = Vec::new();
+        for op in &ast.var_ops {
+            var_spans.push((op.name.clone(), op.span.clone()));
+        }
+
+        assert_eq!(var_spans.len(), 1, "expected 1 var op: {:#?}", var_spans);
+        assert_eq!(var_spans[0].0, "_foo", "var name");
+        assert_eq!(var_spans[0].1, 4..8,
+            "var span should be 4..8 (the `_foo` chars), got {:?}",
+            var_spans[0].1);
     }
 }
