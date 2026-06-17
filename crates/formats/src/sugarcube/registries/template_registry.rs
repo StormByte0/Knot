@@ -43,7 +43,10 @@ pub struct TemplateEntry {
     pub defined_in: String,
     /// The file URI where this template is defined.
     pub file_uri: String,
-    /// The byte offset of the definition within the file.
+    /// The byte offset of the definition within the passage, **passage-relative**
+    /// (0 = the `::` prefix of the passage header). To convert to
+    /// document-absolute, add the passage's `passage_offset`. This matches
+    /// the convention used by the `Passage` struct.
     pub defined_at_offset: usize,
     /// The 0-based line number of the definition (0 until computed).
     pub defined_at_line: u32,

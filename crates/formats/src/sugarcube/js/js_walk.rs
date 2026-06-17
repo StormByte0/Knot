@@ -122,6 +122,12 @@ fn walk_statement(
                     param_count,
                 });
             }
+            // Recurse into the function body — Macro.add() / Template.add() /
+            // nested function declarations inside a function body must be
+            // discovered. Without this, macros registered inside a wrapper
+            // function (e.g., `function registerMacros() { Macro.add(...) }`)
+            // would be invisible to completion, hover, and goto-definition.
+            walk_function_body(&func.body, preprocessed, analysis);
         }
         Statement::ExpressionStatement(expr_stmt) => {
             walk_expression(&expr_stmt.expression, preprocessed, analysis);
@@ -564,13 +570,69 @@ fn walk_expression(
                 }
             }
         }
+        Expr::FunctionExpression(func_expr) => {
+            // Named function expression: `var f = function myFunc() { ... }`
+            // The name (if present) is registered by the VariableDeclaration
+            // handler above. Here we only need to recurse into the body.
+            walk_function_body(&func_expr.body, preprocessed, analysis);
+        }
+        Expr::ArrowFunctionExpression(arrow) => {
+            // Arrow function: `const f = () => { ... }` or `$(el).on('click', () => { ... })`
+            // The name (if assigned to a variable) is registered by the
+            // VariableDeclaration handler. Here we recurse into the body so
+            // that Macro.add() / Template.add() / nested function definitions
+            // inside arrow function bodies are discovered.
+            walk_function_body(&arrow.body, preprocessed, analysis);
+        }
         _ => {}
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal: walk SimpleAssignmentTarget (for UpdateExpression)
-// ---------------------------------------------------------------------------
+/// Walk the body of a function (declaration, expression, or arrow).
+///
+/// This is the shared recursion point for all function-body walking. It's
+/// called from:
+/// - `walk_statement` for `FunctionDeclaration` bodies (`Option<Box<FunctionBody>>`)
+/// - `walk_expression` for `FunctionExpression` bodies (`Option<Box<FunctionBody>>`)
+///   and `ArrowFunctionExpression` bodies (`Box<FunctionBody>` — arrows always
+///   have a body)
+/// - `walk_argument` for callback function/arrow expressions
+///
+/// Without this, `Macro.add()` / `Template.add()` / nested function definitions
+/// inside ANY function body would be invisible — including the common pattern
+/// of wrapping macro registrations in `function registerMacros() { ... }` or
+/// passing callbacks like `$(document).one(':storyready', function() { ... })`.
+fn walk_function_body(
+    body: &impl WalkFunctionBody,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    if let Some(body) = body.as_function_body() {
+        for stmt in &body.statements {
+            walk_statement(stmt, preprocessed, analysis);
+        }
+    }
+}
+
+/// Helper trait to abstract over `Option<Box<FunctionBody>>` (function
+/// declarations and function expressions) and `Box<FunctionBody>` (arrow
+/// functions, which always have a body). This lets `walk_function_body` accept
+/// both types without the caller having to unwrap.
+trait WalkFunctionBody {
+    fn as_function_body(&self) -> Option<&oxc_ast::ast::FunctionBody<'_>>;
+}
+
+impl WalkFunctionBody for Option<oxc_allocator::Box<'_, oxc_ast::ast::FunctionBody<'_>>> {
+    fn as_function_body(&self) -> Option<&oxc_ast::ast::FunctionBody<'_>> {
+        self.as_deref()
+    }
+}
+
+impl WalkFunctionBody for oxc_allocator::Box<'_, oxc_ast::ast::FunctionBody<'_>> {
+    fn as_function_body(&self) -> Option<&oxc_ast::ast::FunctionBody<'_>> {
+        Some(self.as_ref())
+    }
+}
 
 /// Walk a `SimpleAssignmentTarget` for variable detection.
 ///
@@ -1066,6 +1128,16 @@ fn walk_argument(
         }
         Arg::ParenthesizedExpression(pe) => {
             walk_expression(&pe.expression, preprocessed, analysis);
+        }
+        Arg::FunctionExpression(func_expr) => {
+            // Callback function: e.g., `$(el).on('click', function() { ... })`.
+            // Walk the body so Macro.add() / nested definitions inside
+            // callbacks are discovered.
+            walk_function_body(&func_expr.body, preprocessed, analysis);
+        }
+        Arg::ArrowFunctionExpression(arrow) => {
+            // Arrow callback: e.g., `$(el).on('click', () => { ... })`.
+            walk_function_body(&arrow.body, preprocessed, analysis);
         }
         _ => {}
     }

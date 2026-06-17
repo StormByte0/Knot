@@ -81,6 +81,7 @@ pub fn populate_registries_from_unified_ast(
     passage_ast: &ast::PassageAst,
     cp: &ClassifiedPassage,
     file_uri: &str,
+    body_offset_in_passage: usize,
 ) {
     // Record variable operations from the unified AST
     {
@@ -131,14 +132,22 @@ pub fn populate_registries_from_unified_ast(
     {
         let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
 
-        // For script passages, register definitions from script_js_analysis
+        // For script passages, register definitions from script_js_analysis.
+        // The offsets in script_js_analysis are body-relative (relative to the
+        // passage body text, 0 = first byte after the header newline). We add
+        // `body_offset_in_passage` to convert them to passage-relative (0 = `::`
+        // head), matching the convention used by the `Passage` struct. This
+        // keeps all internal offsets passage-relative so that cross-document
+        // passage moves and incremental re-parsing don't require offset
+        // recomputation — only `passage_offset` (document-absolute position of
+        // the passage head) changes, and that's applied at the LSP boundary.
         if let Some(ref analysis) = passage_ast.script_js_analysis {
             for macro_add in &analysis.macro_adds {
                 macro_reg.register_macro_add(
                     &macro_add.name,
                     &cp.header.name,
                     file_uri,
-                    macro_add.name_offset,
+                    macro_add.name_offset + body_offset_in_passage,
                     None,
                 );
             }
@@ -153,7 +162,7 @@ pub fn populate_registries_from_unified_ast(
                     kind,
                     &cp.header.name,
                     file_uri,
-                    template_add.name_offset,
+                    template_add.name_offset + body_offset_in_passage,
                 );
             }
             for func_def in &analysis.function_defs {
@@ -162,7 +171,7 @@ pub fn populate_registries_from_unified_ast(
                     FunctionKind::Declaration,
                     &cp.header.name,
                     file_uri,
-                    func_def.name_offset,
+                    func_def.name_offset + body_offset_in_passage,
                     func_def.param_count,
                 );
             }
@@ -172,6 +181,7 @@ pub fn populate_registries_from_unified_ast(
             &passage_ast.nodes,
             &cp.header.name,
             file_uri,
+            body_offset_in_passage,
             macro_reg,
             func_reg,
             template_reg,
@@ -477,6 +487,7 @@ fn register_definitions_from_nodes(
     nodes: &[ast::AstNode],
     passage_name: &str,
     file_uri: &str,
+    body_offset_in_passage: usize,
     macro_reg: &mut crate::sugarcube::registries::custom_macros::CustomMacroRegistry,
     func_reg: &mut crate::sugarcube::registries::function_registry::FunctionRegistry,
     template_reg: &mut crate::sugarcube::registries::template_registry::TemplateRegistry,
@@ -518,25 +529,34 @@ fn register_definitions_from_nodes(
                         let is_container = detect_widget_container_keyword(&args);
                         // Extract arg_count from _args[N] / $args[N] references in the widget body
                         let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
+                        // definition_name_span and open_span are body-relative
+                        // (0 = body start). Add body_offset_in_passage to convert
+                        // to passage-relative (0 = `::` head).
+                        let name_offset = definition_name_span
+                            .as_ref()
+                            .map_or(open_span.start, |dns| dns.start)
+                            + body_offset_in_passage;
                         macro_reg.register_widget(
                             &widget_name,
                             passage_name,
                             file_uri,
-                            definition_name_span.as_ref().map_or(open_span.start, |dns| dns.start),
+                            name_offset,
                             arg_count,
                             is_container,
                         );
                     }
                 }
 
-                // Register Macro.add(), Template.add(), function definitions from js_analysis
+                // Register Macro.add(), Template.add(), function definitions from js_analysis.
+                // The offsets in js_analysis are body-relative; add
+                // body_offset_in_passage to convert to passage-relative.
                 if let Some(analysis) = js_analysis {
                     for macro_add in &analysis.macro_adds {
                         macro_reg.register_macro_add(
                             &macro_add.name,
                             passage_name,
                             file_uri,
-                            macro_add.name_offset,
+                            macro_add.name_offset + body_offset_in_passage,
                             None,
                         );
                     }
@@ -551,7 +571,7 @@ fn register_definitions_from_nodes(
                             kind,
                             passage_name,
                             file_uri,
-                            template_add.name_offset,
+                            template_add.name_offset + body_offset_in_passage,
                         );
                     }
                     for func_def in &analysis.function_defs {
@@ -560,7 +580,7 @@ fn register_definitions_from_nodes(
                             FunctionKind::Declaration,
                             passage_name,
                             file_uri,
-                            func_def.name_offset,
+                            func_def.name_offset + body_offset_in_passage,
                             func_def.param_count,
                         );
                     }
@@ -569,19 +589,23 @@ fn register_definitions_from_nodes(
                 // Recurse into children
                 if let Some(ch) = children {
                     register_definitions_from_nodes(
-                        ch, passage_name, file_uri,
+                        ch, passage_name, file_uri, body_offset_in_passage,
                         macro_reg, func_reg, template_reg,
                     );
                 }
             }
             ast::AstNode::Expression { js_analysis, .. } => {
+                // Same body-relative → passage-relative conversion as the Macro
+                // branch above. Expression macros (<<=>>, <<->>) can contain
+                // Macro.add() / function definitions in rare cases (e.g.,
+                // <<= Macro.add("x", {}) >>).
                 if let Some(analysis) = js_analysis {
                     for macro_add in &analysis.macro_adds {
                         macro_reg.register_macro_add(
                             &macro_add.name,
                             passage_name,
                             file_uri,
-                            macro_add.name_offset,
+                            macro_add.name_offset + body_offset_in_passage,
                             None,
                         );
                     }
@@ -596,7 +620,7 @@ fn register_definitions_from_nodes(
                             kind,
                             passage_name,
                             file_uri,
-                            template_add.name_offset,
+                            template_add.name_offset + body_offset_in_passage,
                         );
                     }
                     for func_def in &analysis.function_defs {
@@ -605,7 +629,7 @@ fn register_definitions_from_nodes(
                             FunctionKind::Declaration,
                             passage_name,
                             file_uri,
-                            func_def.name_offset,
+                            func_def.name_offset + body_offset_in_passage,
                             func_def.param_count,
                         );
                     }
@@ -629,8 +653,9 @@ pub fn populate_registries_from_ast(
     passage_ast: &ast::PassageAst,
     cp: &ClassifiedPassage,
     file_uri: &str,
+    body_offset_in_passage: usize,
 ) {
-    populate_registries_from_unified_ast(registry, passage_ast, cp, file_uri);
+    populate_registries_from_unified_ast(registry, passage_ast, cp, file_uri, body_offset_in_passage);
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +899,7 @@ mod tests {
             special_def: None,
             processing_priority: 40,
         };
-        populate_registries_from_unified_ast(&mut registry, &ast, &cp, "file:///test.tw");
+        populate_registries_from_unified_ast(&mut registry, &ast, &cp, "file:///test.tw", 0);
 
         // Verify $ITEMS exists with a READ access
         let vtree = registry.variables();

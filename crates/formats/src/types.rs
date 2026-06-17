@@ -724,7 +724,10 @@ pub struct FunctionDefInfo {
     pub defined_in: String,
     /// The file URI where this function is defined.
     pub file_uri: String,
-    /// The byte offset of the definition within the file.
+    /// The byte offset of the definition within the passage, **passage-relative**
+    /// (0 = the `::` prefix of the passage header). To convert to
+    /// document-absolute, add the passage's `passage_offset` (looked up from
+    /// the workspace via `defined_in`).
     pub defined_at_offset: usize,
     /// The number of parameters (if known).
     pub param_count: Option<usize>,
@@ -742,7 +745,10 @@ pub struct TemplateDefInfo {
     pub defined_in: String,
     /// The file URI where this template is defined.
     pub file_uri: String,
-    /// The byte offset of the definition within the file.
+    /// The byte offset of the definition within the passage, **passage-relative**
+    /// (0 = the `::` prefix of the passage header). To convert to
+    /// document-absolute, add the passage's `passage_offset` (looked up from
+    /// the workspace via `defined_in`).
     pub defined_at_offset: usize,
 }
 

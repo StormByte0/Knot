@@ -622,6 +622,7 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
 /// For sigils that are valid identifier characters (e.g., `_`), a word
 /// boundary is required before the sigil to avoid false matches (e.g.,
 /// matching `_bar` inside `foo_bar`).
+#[allow(dead_code)]
 pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: &[char]) -> Option<String> {
     let line_idx = position.line as usize;
     let line = text.lines().nth(line_idx)?;
@@ -815,6 +816,7 @@ pub(crate) fn find_link_target_at_position_span_based(
 ///
 /// Falls back to the line-based implementation when the workspace doesn't
 /// have document data for the given URI.
+#[allow(dead_code)]
 pub(crate) fn find_variable_at_position_span_based(
     text: &str,
     workspace: &Workspace,

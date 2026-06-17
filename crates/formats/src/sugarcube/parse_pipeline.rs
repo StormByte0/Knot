@@ -95,6 +95,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             &passage_ast,
             cp,
             uri.as_ref(),
+            body_offset_in_passage,
         );
         pipeline_log::parse_phase3_exit(
             &cp.header.name,
@@ -369,6 +370,7 @@ pub(super) fn parse_single(
             &passage_ast,
             &cp,
             file_uri,
+            0, // body_offset_in_passage = 0 (parse_single has no document context)
         );
     }
 

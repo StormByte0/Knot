@@ -1353,6 +1353,57 @@ fn sugarcube_script_passage_macro_add() {
     assert!(plugin.is_custom_macro("customGreet"), "Macro.add in [script] should register custom macro");
 }
 
+#[test]
+fn sugarcube_macro_add_inside_function_body_is_discovered() {
+    // Regression test: Macro.add() calls inside a function body must be
+    // discovered. The JS walker previously only walked top-level statements
+    // and did not recurse into FunctionDeclaration / FunctionExpression /
+    // ArrowFunctionExpression bodies. This meant macros registered inside a
+    // wrapper function (e.g., `function registerMacros() { Macro.add(...) }`)
+    // were invisible to completion, hover, and goto-definition.
+    let src = r#":: Scripts [script]
+function registerMacros() {
+  if (typeof Macro === 'undefined') { return; }
+  if (Macro.has('addTime')) { return; }
+  Macro.add('addTime', { handler: function () {} });
+  Macro.add('setContext', { handler: function () {} });
+}
+:: Start
+Hello.
+"#;
+    let (mut plugin, _) = sc_parse(src);
+
+    assert!(plugin.is_custom_macro("addTime"),
+        "Macro.add('addTime') inside registerMacros() should be registered");
+    assert!(plugin.is_custom_macro("setContext"),
+        "Macro.add('setContext') inside registerMacros() should be registered");
+}
+
+#[test]
+fn sugarcube_macro_add_inside_iife_is_discovered() {
+    // Regression test: Macro.add() calls inside an IIFE (immediately-invoked
+    // function expression) must be discovered. The IIFE pattern
+    // `(function() { ... }())` wraps the entire script passage in a function
+    // expression — the walker must recurse into the callee of the call
+    // expression to find the body.
+    let src = r#":: Scripts [script]
+(function () {
+  Macro.add('iifeMacro', { handler: function () {} });
+  $(document).one(':storyready', function () {
+    Macro.add('callbackMacro', { handler: function () {} });
+  });
+}());
+:: Start
+Hello.
+"#;
+    let (mut plugin, _) = sc_parse(src);
+
+    assert!(plugin.is_custom_macro("iifeMacro"),
+        "Macro.add('iifeMacro') inside IIFE body should be registered");
+    assert!(plugin.is_custom_macro("callbackMacro"),
+        "Macro.add('callbackMacro') inside :storyready callback should be registered");
+}
+
 // ── Parse diagnostics ─────────────────────────────────────────────────────
 
 #[test]
