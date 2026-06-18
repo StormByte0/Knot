@@ -182,7 +182,17 @@ pub(crate) async fn hover(
         return Ok(Some(hover));
     }
 
-    // 4b. Try function hover — cursor on a JS function call (e.g., `myFunc()`
+    // 4b. Try template hover — cursor on `?name` in prose. Uses the same
+    //     `Function` semantic tokens as function hover (the token builder
+    //     emits Function tokens for `?name` patterns). Filters to known
+    //     templates via `plugin.find_template()`.
+    if let Some(plugin) = plugin {
+        if let Some(hover) = try_template_hover(text, byte_offset, plugin, &token_groups) {
+            return Ok(Some(hover));
+        }
+    }
+
+    // 4c. Try function hover — cursor on a JS function call (e.g., `myFunc()`
     //     inside `<<run>>`). Uses semantic tokens for detection. Only fires
     //     when the function has meaningful info (definition location + params).
     if let Some(plugin) = plugin {
@@ -1053,7 +1063,19 @@ fn try_variable_hover(
                 // variable with no diagnostics, at most one write, and at
                 // most one read is trivially obvious — the code speaks for
                 // itself. Don't fill the hover with filler.
-                if relevant_diagnostics.is_empty()
+                //
+                // EXCEPTION: persistent (`$`) variables in prose context
+                // (naked variable markup like `You have $gold gold.`) should
+                // always get hover — the user explicitly wrote the variable
+                // to be rendered, and they want to know what it refers to
+                // even if it's only read once. We can't directly tell if a
+                // var is in prose vs code from `VarOp`, but persistent vars
+                // with `Read` kind are overwhelmingly prose references (code
+                // reads go through `<<run>>`/`<<set>>` which have JS analysis).
+                // So we skip the gate for persistent read-only vars.
+                let is_persistent_read = !is_temporary && matches!(var.kind, knot_core::passage::VarKind::Read);
+                if !is_persistent_read
+                    && relevant_diagnostics.is_empty()
                     && write_locations.len() <= 1
                     && read_count <= 1
                 {
@@ -1320,6 +1342,58 @@ fn try_link_hover(
 }
 
 /// Try to show hover info for a JS function call (e.g., `myFunc()` inside
+/// Try to show hover info for a template invocation (`?name` in SugarCube).
+///
+/// Templates are invoked with `?name` syntax in prose text. The token builder
+/// emits `Function` semantic tokens for `?name` occurrences (scanning the text
+/// content of `AstNode::Text` nodes). This hover handler checks if the cursor
+/// is on such a token, then queries `plugin.find_template(name)` for the
+/// definition.
+///
+/// Returns `None` if the cursor isn't on a template token, the plugin doesn't
+/// know the template, or the template has no useful info to display.
+fn try_template_hover(
+    text: &str,
+    byte_offset: usize,
+    plugin: &dyn fmt_plugin::FormatPlugin,
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
+) -> Option<Hover> {
+    use knot_formats::plugin::SemanticTokenType;
+
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            if token.token_type != SemanticTokenType::Function {
+                continue;
+            }
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                let name = &text[abs_start..abs_end];
+                // Check if this is a known template. `Function` tokens are
+                // also emitted for regular JS functions and widgets, so this
+                // check filters to templates only.
+                let info = plugin.find_template(name)?;
+
+                let hover_text = format!(
+                    "**`?{}`** `Template`\n\nDefined in `:: {}`",
+                    name, info.defined_in
+                );
+                let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: hover_text,
+                    }),
+                    range: Some(hover_range),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Try to show hover info for a function call (e.g., `myFunc()` inside
 /// `<<run>>` or `<<script>>`).
 ///
 /// Uses semantic tokens (`SemanticTokenType::Function`) for cursor-on-span

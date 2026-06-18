@@ -209,7 +209,7 @@ pub fn build_semantic_tokens(
                     modifier: None,
                 });
             }
-            ast::AstNode::Text { var_refs, span, is_prose, .. } => {
+            ast::AstNode::Text { content, var_refs, span, is_prose, .. } => {
                 // Emit a Prose token for the entire text span if it's narrative content.
                 // This enables themes to style story prose distinctly from code/comments.
                 // Non-prose text (inside <<silently>>, <<script>>, <<style>>) does not
@@ -230,6 +230,42 @@ pub fn build_semantic_tokens(
                         token_type: SemanticTokenType::Variable,
                         modifier: None,
                     });
+                }
+                // Template invocations (`?name`) inside text get Function tokens.
+                // The parser's `scan_inline_vars` doesn't scan for `?name` (it
+                // only handles `$var` and `_var`), so we scan the text content
+                // here. `content` is the raw text of this Text node; `span.start`
+                // is its body-relative offset. We scan `content` for `?ident`
+                // patterns and emit tokens at `span.start + offset_within_content`.
+                //
+                // We use `SemanticTokenType::Function` because templates are
+                // function-like (defined via `Template.add("name", function() {})`
+                // and invoked with `?name`). This gives them the same highlighting
+                // as widgets and JS functions — visually consistent.
+                {
+                    let content_bytes = content.as_bytes();
+                    let content_len = content_bytes.len();
+                    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                    let mut i = 0usize;
+                    while i < content_len {
+                        if content_bytes[i] == b'?' && i + 1 < content_len && is_ident(content_bytes[i + 1]) {
+                            let name_start = i + 1;
+                            let mut name_end = name_start;
+                            while name_end < content_len && is_ident(content_bytes[name_end]) {
+                                name_end += 1;
+                            }
+                            // Emit a Function token for the name (not the `?`).
+                            tokens.push(SemanticToken {
+                                start: body_offset_in_passage + span.start + name_start,
+                                length: name_end - name_start,
+                                token_type: SemanticTokenType::Function,
+                                modifier: None,
+                            });
+                            i = name_end;
+                        } else {
+                            i += 1;
+                        }
+                    }
                 }
             }
             ast::AstNode::Error { .. } => {}

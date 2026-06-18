@@ -253,8 +253,11 @@ fn find_variable_path_before_dot(
         if let Some(sigil_pos) = before_dot.rfind(*sigil) {
             let after_sigil = &before_dot[sigil_pos + 1..];
             // The part after the sigil should be a valid identifier path
-            // (alphanumeric, underscores, dots for nested access)
-            if after_sigil.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+            // (alphanumeric, underscores, dots for nested access, AND hyphens
+            // — SugarCube property names can contain hyphens, e.g.
+            // `$ITEMS.plain-bra-black`. The parser's `is_ident_char` includes
+            // `-`, so we must match that here.)
+            if after_sigil.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-') {
                 let path = &before_dot[sigil_pos..];
                 if !path.is_empty() {
                     // Validate: the path should exist in the arena tree.
@@ -1094,6 +1097,18 @@ impl FormatPlugin for SugarCubePlugin {
                 return CompletionContext::Link { target: String::new() };
             }
 
+            // ── ? → Template (SugarCube template invocation in prose) ───
+            Some('?') => {
+                // Extract the partial name after `?` (if any).
+                let after_q = &before_cursor[before_cursor.rfind('?').unwrap() + 1..];
+                let name = if after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    after_q.to_string()
+                } else {
+                    String::new()
+                };
+                return CompletionContext::Template { name };
+            }
+
             // ── . → VariableDot or Namespace/Property ───────────────────
             Some('.') => {
                 // Try variable dot-notation first (e.g., $player.)
@@ -1346,6 +1361,23 @@ impl FormatPlugin for SugarCubePlugin {
                 return self.build_passage_name_completions(workspace, &partial, macro_ctx);
             }
             return Vec::new();
+        }
+
+        // ── 3b. ? trigger → Template completions ──────────────────────
+        //
+        // SugarCube templates are invoked with `?name` in prose. When the
+        // user types `?`, offer all known template names. When they type
+        // `?par`, filter to templates starting with "par".
+        if trigger == Some('?') {
+            let partial = {
+                let after_q = &before_cursor[before_cursor.rfind('?').unwrap() + 1..];
+                if after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    after_q.to_string()
+                } else {
+                    String::new()
+                }
+            };
+            return self.build_template_completions(line, character, &partial);
         }
 
         // ── 4. < trigger → CloseTag or MacroName ──────────────────────
@@ -2461,6 +2493,69 @@ impl SugarCubePlugin {
     ///   The `[[` and `]]` remain in the document.
     /// - For `<<goto "Partial">>`: text_edit replaces `Partial` inside the
     ///   quotes. The quotes and `<<goto` remain.
+    /// Build template name completions for the `?` trigger.
+    ///
+    /// SugarCube templates are invoked with `?name` in prose. This method
+    /// queries `self.registry.template_completion_names()` (which returns
+    /// names WITH the `?` prefix, e.g., `?heal`) and filters by the partial
+    /// name the user has typed after `?`.
+    fn build_template_completions(
+        &self,
+        line: u32,
+        character: u32,
+        partial: &str,
+    ) -> Vec<crate::types::FormatCompletionItem> {
+        use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat};
+
+        let all_templates = self.registry.template_completion_names();
+        let mut items = Vec::new();
+
+        for tmpl_name in &all_templates {
+            // `tmpl_name` includes the `?` prefix (e.g., "?heal").
+            // Strip it for filtering against `partial` (which is without `?`).
+            let name_without_prefix = tmpl_name.strip_prefix('?').unwrap_or(tmpl_name);
+
+            // Filter: if partial is non-empty, only show templates whose name
+            // starts with the partial (case-insensitive).
+            if !partial.is_empty()
+                && !name_without_prefix.to_lowercase().starts_with(&partial.to_lowercase())
+            {
+                continue;
+            }
+
+            // The text edit replaces the partial (if any) with the full name.
+            // The `?` prefix is NOT part of the text edit — it's already in
+            // the buffer (the user typed it as the trigger character).
+            let text_edit = crate::types::FormatTextEdit {
+                start_line: line,
+                start_character: character - partial.len() as u32,
+                end_line: line,
+                end_character: character,
+                new_text: name_without_prefix.to_string(),
+            };
+
+            items.push(FormatCompletionItem {
+                label: format!("?{}", name_without_prefix),
+                kind: FormatCompletionKind::Function,
+                detail: Some("Template".to_string()),
+                sort_text: Some(format!("3_{}", name_without_prefix)),
+                filter_text: Some(name_without_prefix.to_string()),
+                insert_text: Some(name_without_prefix.to_string()),
+                insert_text_format: FormatInsertTextFormat::PlainText,
+                text_edit: Some(text_edit),
+                deprecated: false,
+                preselect: false,
+                data: Some(serde_json::json!({
+                    "type": "template",
+                    "name": name_without_prefix,
+                })),
+                commit_characters: Vec::new(),
+            });
+        }
+
+        items
+    }
+
     fn build_passage_name_completions(
         &self,
         workspace: &knot_core::Workspace,

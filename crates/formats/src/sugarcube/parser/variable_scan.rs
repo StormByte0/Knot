@@ -22,6 +22,7 @@ pub(super) fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (Va
     let path_start = i;
     let mut property_path = String::new();
     while i < len && bytes[i] == b'.' {
+        let dot_pos = i;
         i += 1; // Skip the dot
         let prop_start = i;
         while i < len && is_ident_char(bytes[i]) {
@@ -32,6 +33,14 @@ pub(super) fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (Va
                 property_path.push('.');
             }
             property_path.push_str(&text[prop_start..i]);
+        } else {
+            // The dot was not followed by an identifier (e.g., `$var.` at
+            // end of text, or `$var. ` with a space). Rewind `i` back to
+            // the dot position so the span doesn't include the trailing dot.
+            // The dot is NOT part of the variable reference — it's either
+            // a sentence-ending period or the start of a new construct.
+            i = dot_pos;
+            break;
         }
     }
 

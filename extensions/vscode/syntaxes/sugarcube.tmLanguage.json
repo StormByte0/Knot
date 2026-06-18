@@ -374,14 +374,19 @@
             "name": "comment.section.variables.sugarcube"
         },
         {
-            "comment": "SugarCube story variable: $varName — must come before the base grammar's $variable pattern to use SugarCube-specific scope",
+            "comment": "SugarCube story variable with property path: $varName.prop1.prop2 — includes dots and hyphens in property names",
             "name": "variable.other.story.sugarcube",
-            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
+            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*"
         },
         {
-            "comment": "SugarCube temporary variable: _varName (must not match identifiers like foo_bar)",
+            "comment": "SugarCube temporary variable with property path: _varName.prop1.prop2",
             "name": "variable.other.sugarcube.temp",
-            "match": "(?<!\\w)_[A-Za-z_][A-Za-z0-9_]*(?!\\w)"
+            "match": "(?<!\\w)_[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z0-9_-]+)*(?!\\w)"
+        },
+        {
+            "comment": "SugarCube template invocation: ?templateName",
+            "name": "entity.name.function.template.sugarcube",
+            "match": "(?<!\\w)\\?[A-Za-z_][A-Za-z0-9_-]*"
         },
 
         {

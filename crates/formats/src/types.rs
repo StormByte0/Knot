@@ -858,6 +858,14 @@ pub enum CompletionContext {
         path: String,
     },
 
+    /// Cursor is on a template invocation or just typed the `?` sigil
+    /// (SugarCube templates: `?name` in prose).
+    Template {
+        /// The partial template name typed so far (without the `?` prefix),
+        /// or empty if the user just typed `?`.
+        name: String,
+    },
+
     /// No specific context recognized. The handler should offer a sensible
     /// default (e.g., passage names) or return no completions.
     Other,

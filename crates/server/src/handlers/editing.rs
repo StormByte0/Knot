@@ -7,8 +7,6 @@
 use crate::handlers::helpers;
 use crate::state::ServerState;
 use lsp_types::*;
-use std::collections::HashMap;
-use url::Url;
 
 pub(crate) async fn formatting(
     state: &ServerState,
@@ -171,6 +169,7 @@ pub(crate) async fn linked_editing_range(
     Ok(None)
 }
 
+
 pub(crate) async fn prepare_rename(
     state: &ServerState,
     params: TextDocumentPositionParams,
@@ -180,59 +179,18 @@ pub(crate) async fn prepare_rename(
 
     let inner = state.inner.read().await;
 
-    if let Some(text) = inner.open_documents.get(&uri) {
-        // Check if cursor is on a passage header
-        if let Some(name) = helpers::find_passage_at_position_span_based(
-            text, &inner.workspace, &uri, position,
-        ) {
-            // Use header_name_span for the rename range when available;
-            // fall back to computing from the header line using the header parser.
-            let range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
-                if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
-                } else {
-                    helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
-                }
-            } else {
-                // Passage not found in workspace — use line-based fallback
-                let line_text = text.lines().nth(position.line as usize).unwrap_or("");
-                let name_start_byte = line_text.find(&name).unwrap_or(2);
-                let name_start_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte);
-                let name_end_utf16 = helpers::utf16_len_up_to(line_text, name_start_byte + name.len());
-                Range {
-                    start: Position { line: position.line, character: name_start_utf16 },
-                    end: Position { line: position.line, character: name_end_utf16 },
-                }
-            };
-            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                range,
-                placeholder: name,
-            }));
-        }
+    // Delegate to the shared `rename_range_at_cursor` helper. This handles
+    // all renamable target types (passages, custom macros, functions,
+    // templates) with the failsafe: if the definition can't be confirmed,
+    // rename is not allowed (returns None -> F2 does nothing).
+    let Some((range, placeholder)) = crate::handlers::navigation::rename_range_at_cursor(&inner, &uri, position) else {
+        return Ok(None);
+    };
 
-        // Check if cursor is on a link target
-        if let Some(target_name) = helpers::find_link_target_at_position_span_based(
-            text, &inner.workspace, &uri, position,
-        ) {
-            // Find the link span that contains the cursor
-            let byte_offset = helpers::position_to_byte_offset(text, position);
-            if let Some(doc) = inner.workspace.get_document(&uri) {
-                for passage in &doc.passages {
-                    for link in &passage.links {
-                        if passage.span_contains_abs_offset(&link.span, byte_offset) {
-                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-                            return Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
-                                range,
-                                placeholder: target_name,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(None)
+    Ok(Some(PrepareRenameResponse::RangeWithPlaceholder {
+        range,
+        placeholder,
+    }))
 }
 
 pub(crate) async fn rename(
@@ -245,63 +203,28 @@ pub(crate) async fn rename(
 
     let inner = state.inner.read().await;
 
-    // Determine what the user is renaming
-    let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
-        helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
-            .or_else(|| helpers::find_link_target_at_position_span_based(text, &inner.workspace, &uri, position))
-    } else {
-        None
-    };
-
-    let Some(old_name) = target_passage else {
+    // Resolve the target at the cursor. This is the same resolution used by
+    // goto-definition and find-references -- format-isolated, goes through
+    // `&dyn FormatPlugin` trait methods.
+    let Some(target) = crate::handlers::navigation::resolve_target_at_cursor(&inner, &uri, position) else {
         return Ok(None);
     };
 
-    // Collect all edits across all documents using workspace passage data.
-    // - Header renames: passages where passage.name == old_name → use
-    //   header_name_span (or fallback)
-    // - Link renames: passages where any link.target == old_name → use
-    //   link.span
-    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
-
-    for doc in inner.workspace.documents() {
-        let text = match inner.open_documents.get(&doc.uri) {
-            Some(t) => t,
-            None => continue,
-        };
-        let mut doc_edits = Vec::new();
-
-        for passage in &doc.passages {
-            // Rename passage header
-            if passage.name == old_name {
-                let range = if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
-                } else {
-                    // Fallback: compute from the header line using the header parser
-                    helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
-                };
-                doc_edits.push(TextEdit {
-                    range,
-                    new_text: new_name.clone(),
-                });
-            }
-
-            // Rename links
-            for link in &passage.links {
-                if link.target.trim() == old_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-                    doc_edits.push(TextEdit {
-                        range,
-                        new_text: new_name.clone(),
-                    });
-                }
-            }
-        }
-
-        if !doc_edits.is_empty() {
-            changes.insert(doc.uri.clone(), doc_edits);
-        }
+    // **Failsafe**: re-confirm the definition is reachable before producing
+    // any edits. This is critical -- without it, a stale registry could cause
+    // rename to change all call sites while leaving the definition unchanged,
+    // silently breaking the project. The check runs again here (not just in
+    // `prepare_rename`) because the document may have changed between when
+    // the user pressed F2 and when they pressed Enter.
+    if !crate::handlers::navigation::definition_confirmed(&target, &inner) {
+        return Ok(None);
     }
+
+    // Collect all rename edits (definition + all call sites) across the
+    // workspace. This is the rename equivalent of `references_inner` -- it
+    // finds every location that needs to change and produces `TextEdit`s
+    // with the new name.
+    let changes = crate::handlers::navigation::collect_rename_edits(&target, &new_name, &inner);
 
     if changes.is_empty() {
         Ok(None)
