@@ -49,17 +49,48 @@ pub fn build_semantic_tokens(
     body_offset_in_passage: usize,
     custom_macro_names: &HashSet<String>,
 ) {
+    build_semantic_tokens_at_depth(nodes, tokens, body_offset_in_passage, custom_macro_names, 0);
+}
+
+/// Recursive token builder that tracks block-macro nesting depth.
+///
+/// `depth` is the current block nesting level (0 = top-level, 1 = inside one
+/// block macro, etc.). Block macros (those with `children: Some(_)`) get a
+/// `BlockDepthN` modifier on both their open tag name and close tag name
+/// tokens, so themes can color matching open/close pairs by nesting depth.
+/// Inline macros (no children) don't get a depth modifier — they use the
+/// default macro color, making them visually distinct from block macros.
+fn build_semantic_tokens_at_depth(
+    nodes: &[ast::AstNode],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+    custom_macro_names: &HashSet<String>,
+    depth: usize,
+) {
     for node in nodes {
         match node {
-            ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, .. } => {
+            ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, close_name_span, .. } => {
+                // Determine if this is a block macro (has children → open/close pair)
+                let is_block = children.is_some();
+
                 // Macro name token — differentiate builtin vs custom/widget
                 let token_type = if custom_macro_names.contains(name) {
                     SemanticTokenType::Function
                 } else {
                     SemanticTokenType::Macro
                 };
-                // Deprecated macros get the Deprecated modifier (enables strikethrough)
-                let modifier = if deprecated_macros().contains_key(name.as_str()) {
+
+                // Build the modifier: block macros get a depth modifier so
+                // themes can color matching open/close pairs by nesting level.
+                // Inline macros get no depth modifier (default color).
+                //
+                // Note: our SemanticToken.modifier is Option<Modifier>, not a
+                // bitset, so we can't combine Deprecated + BlockDepth. For block
+                // macros, depth takes priority (more visually useful). The
+                // deprecated flag still works via hover/completion/catalog.
+                let modifier = if is_block {
+                    SemanticTokenModifier::from_block_depth(depth + 1)
+                } else if deprecated_macros().contains_key(name.as_str()) {
                     Some(SemanticTokenModifier::Deprecated)
                 } else {
                     None
@@ -70,6 +101,22 @@ pub fn build_semantic_tokens(
                     token_type,
                     modifier,
                 });
+
+                // For block macros: emit a token for the close tag name
+                // (e.g., `if` in `<</if>>`) with the SAME depth modifier.
+                // This makes the open and close tags visually linked — they
+                // share a color because they share a depth level.
+                if is_block {
+                    if let Some(cn_span) = close_name_span {
+                        tokens.push(SemanticToken {
+                            start: body_offset_in_passage + cn_span.start,
+                            length: cn_span.end - cn_span.start,
+                            token_type,
+                            modifier: SemanticTokenModifier::from_block_depth(depth + 1),
+                        });
+                    }
+                }
+
                 // For <<widget>> definitions: emit Function + Definition token
                 // for the name being defined (e.g., "myHelper" in <<widget myHelper>>)
                 if let Some(def_span) = definition_name_span {
@@ -144,9 +191,10 @@ pub fn build_semantic_tokens(
                 if let Some(sargs) = structured_args {
                     emit_structured_arg_tokens(sargs, tokens, body_offset_in_passage);
                 }
-                // Recurse into block macro children
+                // Recurse into block macro children with incremented depth.
+                // Inline macros (children: None) don't recurse.
                 if let Some(ch) = children {
-                    build_semantic_tokens(ch, tokens, body_offset_in_passage, custom_macro_names);
+                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, depth + 1);
                 }
             }
             ast::AstNode::Link { target, span, .. } => {

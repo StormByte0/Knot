@@ -1960,7 +1960,14 @@ fn rebuild_graph_full(
 
 #[test]
 fn sugarcube_deprecated_macro_token_modifier() {
-    // <<click>> is deprecated — its name token should have the Deprecated modifier
+    // <<click>> is deprecated AND a block macro. Block macros get a BlockDepth
+    // modifier (for nesting-depth colorization) which takes priority over the
+    // Deprecated modifier (our SemanticToken.modifier is Option<Modifier>, not
+    // a bitset, so we can't combine them). The deprecation info is still
+    // available via hover and the deprecation diagnostic.
+    //
+    // For a non-block deprecated macro (e.g., <<display>>), the Deprecated
+    // modifier IS used since there's no depth modifier to compete with.
     use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
@@ -1975,13 +1982,20 @@ fn sugarcube_deprecated_macro_token_modifier() {
     });
     assert!(click_tok.is_some(), "Should have a Macro token for 'click'");
     let tok = click_tok.unwrap();
-    assert_eq!(tok.modifier, Some(SemanticTokenModifier::Deprecated),
-        "Deprecated macro 'click' should have Deprecated modifier");
+    // <<click>> is a block macro at depth 1 → BlockDepth1 modifier
+    assert_eq!(tok.modifier, Some(SemanticTokenModifier::BlockDepth1),
+        "Deprecated block macro 'click' should have BlockDepth1 modifier (depth takes priority over deprecated)");
 }
 
 #[test]
 fn sugarcube_non_deprecated_macro_no_modifier() {
-    // <<link>> is NOT deprecated — its name token should NOT have the Deprecated modifier
+    // <<link>> is NOT deprecated. It IS a block macro (has children when used
+    // as <<link>>...<</link>>), but in this test it's used inline (no body),
+    // so it has no children → no depth modifier. The token should NOT have
+    // the Deprecated modifier.
+    //
+    // Note: if <<link>> is used as a block macro (<<link "x">>...<</link>>),
+    // it WOULD get a BlockDepth1 modifier — that's expected and correct.
     use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 

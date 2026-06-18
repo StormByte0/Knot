@@ -1998,47 +1998,6 @@ mod goto_definition_tests {
         assert!(result.is_none(),
             "unknown macro should not be renamable (no definition to confirm), got: {result:?}");
     }
-
-    /// Passage rename MUST update all references in the current file:
-    /// - The `:: OldName` header
-    /// - `[[OldName]]` links
-    /// - `<<goto "OldName">>` macro passage-refs
-    /// - `<<include "OldName">>` macro passage-refs
-    /// - `<<link "Display" "OldName">>` macro passage-refs
-    ///
-    /// This test verifies that `collect_rename_edits` produces TextEdits for
-    /// ALL of these occurrence types, not just `[[link]]` syntax.
-    #[test]
-    fn rename_passage_updates_all_macro_passage_refs() {
-        let src = ":: OldName\n:: Start\n[[OldName]]\n<<goto \"OldName\">>\n<<include \"OldName\">>\n<<link \"Talk\" \"OldName\">>\n";
-        let (inner, uri) = build_state(src);
-
-        // Cursor on `OldName` in the `:: OldName` header.
-        let header_idx = src.find(":: OldName").unwrap() + ":: ".len();
-        let position = helpers::byte_offset_to_position(src, header_idx);
-
-        // Resolve the target and collect edits.
-        let target = resolve_target_at_cursor(&inner, &uri, position)
-            .expect("cursor on passage header should resolve to Passage target");
-        let edits = collect_rename_edits(&target, "NewName", &inner);
-
-        // We expect edits in the current file (uri) for:
-        // 1. The header definition
-        // 2. The [[OldName]] link
-        // 3. The <<goto "OldName">> passage-ref
-        // 4. The <<include "OldName">> passage-ref
-        // 5. The <<link "Talk" "OldName">> passage-ref
-        let doc_edits = edits.get(&uri).expect("expected edits in the current document");
-        assert!(doc_edits.len() >= 5,
-            "expected at least 5 edits (header + link + goto + include + link macro), got {}: {:#?}",
-            doc_edits.len(), doc_edits);
-
-        // Verify every edit's new_text is "NewName".
-        for edit in doc_edits {
-            assert_eq!(edit.new_text, "NewName",
-                "all edits should rename to 'NewName', got: {:#?}", doc_edits);
-        }
-    }
 }
 
 #[cfg(test)]

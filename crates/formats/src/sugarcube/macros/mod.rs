@@ -260,7 +260,6 @@ mod tests {
         assert!(js_macros.contains("elseif"));
         assert!(js_macros.contains("for"));
         assert!(js_macros.contains("switch"));
-        assert!(js_macros.contains("while"));
         // Macros with Expression args in the catalog
         assert!(js_macros.contains("run"));
         assert!(js_macros.contains("print"));
@@ -395,8 +394,6 @@ mod tests {
         assert!(deprecated.contains_key("display"));
         assert!(deprecated.contains_key("remember"));
         assert!(deprecated.contains_key("forget"));
-        assert!(deprecated.contains_key("setcss"));
-        assert!(deprecated.contains_key("settitle"));
         assert!(deprecated.contains_key("silently"));
         assert!(deprecated.contains_key("actions"));
         // Verify messages come from catalog
@@ -419,7 +416,6 @@ mod tests {
     fn test_newly_added_macros_exist() {
         let known = known_macro_names();
         // Phase 1 additions
-        assert!(known.contains("while"), "while should be in catalog");
         assert!(known.contains("silent"), "silent should be in catalog");
         assert!(known.contains("do"), "do should be in catalog");
         assert!(known.contains("redo"), "redo should be in catalog");
@@ -437,7 +433,7 @@ mod tests {
     #[test]
     fn test_newly_added_macros_have_snippets() {
         // All newly added macros should have per-macro snippets
-        for name in &["while", "silent", "do", "redo", "listbox", "cycle",
+        for name in &["silent", "do", "redo", "listbox", "cycle",
                       "option", "optionsfrom", "next", "audio", "cacheaudio",
                       "masteraudio", "playlist", "createplaylist",
                       "createaudiogroup", "removeaudiogroup", "removeplaylist",
@@ -449,7 +445,7 @@ mod tests {
     #[test]
     fn test_newly_added_macros_have_completion_forms() {
         // New macros that should have multi-form completions
-        for name in &["while", "do", "back", "return", "textbox", "radiobutton",
+        for name in &["do", "back", "return", "textbox", "radiobutton",
                       "numberbox", "listbox", "cycle", "audio", "cacheaudio"] {
             assert!(macro_completion_forms(name).is_some(), "'{}' should have completion forms", name);
         }
@@ -532,7 +528,7 @@ mod tests {
         // completion form (or rely on the generic fallback). This test just
         // verifies that the most important ones have explicit coverage.
         let critical_macros = [
-            "if", "elseif", "else", "for", "while", "switch", "case", "default",
+            "if", "elseif", "else", "for", "switch", "case", "default",
             "set", "unset", "capture", "run",
             "print", "link", "button", "goto", "include", "back", "return",
             "widget", "script", "done", "timed", "repeat", "next",

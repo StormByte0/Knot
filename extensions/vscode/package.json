@@ -800,6 +800,7 @@
       "[twee]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
+        "editor.occurrencesHighlight": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,
@@ -815,6 +816,7 @@
       "[twee-sugarcube]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
+        "editor.occurrencesHighlight": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,
@@ -830,6 +832,7 @@
       "[twee-harlowe]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
+        "editor.occurrencesHighlight": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,
@@ -845,6 +848,7 @@
       "[twee-chapbook]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
+        "editor.occurrencesHighlight": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,
@@ -860,6 +864,7 @@
       "[twee-snowman]": {
         "editor.wordWrap": "on",
         "editor.wordBasedSuggestions": "off",
+        "editor.occurrencesHighlight": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,

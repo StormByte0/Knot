@@ -39,7 +39,6 @@ pub fn macro_completion_forms(name: &str) -> Option<&'static [MacroCompletionFor
 
         // ── Control flow ──
         "for" => Some(&FOR_FORMS),
-        "while" => Some(&WHILE_FORMS),
         "if" => Some(&IF_FORMS),
         "switch" => Some(&SWITCH_FORMS),
 
@@ -481,17 +480,6 @@ static WIDGET_FORMS: &[MacroCompletionForm] = &[
         detail: "Define a container widget that wraps content (access via _contents)",
         snippet: r#"widget "${1:name}" container>>\n$2\n<</widget>>"#,
         sort_priority: 1,
-    },
-];
-
-// ── While ────────────────────────────────────────────────────────────
-
-static WHILE_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<while condition>>…<</while>>",
-        detail: "Loop while condition is true",
-        snippet: r#"while ${1:condition}>>\n$2\n<</while>>"#,
-        sort_priority: 0,
     },
 ];
 

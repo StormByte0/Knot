@@ -64,7 +64,6 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
         "if"      => Some(r#"if ${1:condition}>>\n$2\n<</if>>"#),
         "elseif"  => Some(r#"elseif ${1:condition}>>"#),
         "else"    => Some(r#"else>>"#),
-        "while"   => Some(r#"while ${1:condition}>>\n$2\n<</while>>"#),
         "for"     => Some(r#"for ${1:_i} range ${2:\$array}>>\n$3\n<</for>>"#),
         "switch"  => Some(r#"switch ${1:\$var}>>\n<<case ${2:value}>>\n$3\n<</switch>>"#),
         "case"    => Some(r#"case ${1:value}>>"#),
@@ -134,8 +133,6 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
         "removeaudiogroup"  => Some(r#"removeaudiogroup "${1::group}">>"#),
         "removeplaylist"    => Some(r#"removeplaylist "${1:list}">>"#),
         "waitforaudio"      => Some(r#"waitforaudio>>"#),
-        "setcss"            => Some(r#"setcss "${1:selector}" "${2:styles}">>"#),
-        "settitle"          => Some(r#"settitle "${1:title}">>"#),
         "track"             => Some(r#"track "${1:track}">>"#),
 
         _ => None,

@@ -458,11 +458,26 @@ pub(crate) async fn inlay_hint(
 
     for passage in &doc.passages {
         if let Some(state) = flow_states.get(&passage.name) {
+            // ── "initialized" hint ─────────────────────────────────────
+            //
+            // Shows which variables are available at passage entry. Truncated
+            // to 5 names to avoid overwhelming the header line. Compact format:
+            // `// init: $a, $b, $c, …`
             let mut init_vars: Vec<&String> = state.entry.iter().collect();
             init_vars.sort();
 
             if !init_vars.is_empty() {
-                let label = format!("// initialized: {}", init_vars.iter().map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
+                let display_count = init_vars.len().min(5);
+                let names: Vec<&str> = init_vars[..display_count]
+                    .iter()
+                    .map(|v| v.as_str())
+                    .collect();
+                let suffix = if init_vars.len() > 5 {
+                    format!(", … +{}", init_vars.len() - 5)
+                } else {
+                    String::new()
+                };
+                let label = format!("// init: {}{}", names.join(", "), suffix);
                 // Position the hint at the start of the passage header
                 let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
                 hints.push(InlayHint {
@@ -477,7 +492,11 @@ pub(crate) async fn inlay_hint(
                 });
             }
 
-            // Check for potentially uninitialized variables
+            // ── "may be uninitialized" hint ────────────────────────────
+            //
+            // Shows variables that are read but may not have been initialized
+            // at this point in the flow. This is the more actionable hint —
+            // it warns about potential bugs. Truncated to 5 names.
             let mut local_init = state.entry.clone();
             let mut uninit_vars = Vec::new();
             for var in passage.vars_sorted_by_span() {
@@ -496,7 +515,14 @@ pub(crate) async fn inlay_hint(
             }
 
             if !uninit_vars.is_empty() {
-                let label = format!("// may be uninitialized: {}", uninit_vars.join(", "));
+                let display_count = uninit_vars.len().min(5);
+                let names = &uninit_vars[..display_count];
+                let suffix = if uninit_vars.len() > 5 {
+                    format!(", … +{}", uninit_vars.len() - 5)
+                } else {
+                    String::new()
+                };
+                let label = format!("// uninit: {}{}", names.join(", "), suffix);
                 let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
                 hints.push(InlayHint {
                     position,

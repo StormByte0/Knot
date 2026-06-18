@@ -259,26 +259,38 @@ pub(crate) async fn signature_help(
 ) -> Result<Option<SignatureHelp>, tower_lsp::jsonrpc::Error> {
     let uri = helpers::normalize_file_uri(&params.text_document_position_params.text_document.uri);
     let position = params.text_document_position_params.position;
-
     let inner = state.inner.read().await;
+    Ok(signature_help_inner(&inner, &uri, position))
+}
+
+/// Inner synchronous implementation of `signature_help`.
+///
+/// Extracted so tests can call it directly without constructing a full
+/// `ServerState` (which requires a `tower_lsp::Client` handle). Same pattern
+/// as `navigation::references_inner`.
+fn signature_help_inner(
+    inner: &crate::state::ServerStateInner,
+    uri: &url::Url,
+    position: Position,
+) -> Option<SignatureHelp> {
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
 
     // Only provide signature help for formats with macro catalogs
     let Some(plugin) = plugin else {
-        return Ok(None);
+        return None;
     };
     if plugin.builtin_macros().is_empty() {
-        return Ok(None);
+        return None;
     }
 
-    let Some(text) = inner.open_documents.get(&uri) else {
-        return Ok(None);
+    let Some(text) = inner.open_documents.get(uri) else {
+        return None;
     };
 
     let line_text = match text.lines().nth(position.line as usize) {
         Some(l) => l,
-        None => return Ok(None),
+        None => return None,
     };
 
     // Convert UTF-16 position to byte offset for the format plugin
@@ -287,7 +299,7 @@ pub(crate) async fn signature_help(
     // Delegate macro detection to the format plugin
     let macro_info = match plugin.find_macro_at_position(line_text, byte_pos) {
         Some(info) => info,
-        None => return Ok(None),
+        None => return None,
     };
 
     if let Some(mdef) = plugin.find_macro(&macro_info.name) {
@@ -315,7 +327,7 @@ pub(crate) async fn signature_help(
         // Use the format plugin's signature label — no hardcoded <<>>
         let sig_label = plugin.format_macro_signature_label(mdef.name, &sig_str);
 
-        return Ok(Some(SignatureHelp {
+        return Some(SignatureHelp {
             signatures: vec![SignatureInformation {
                 label: sig_label,
                 documentation: Some(Documentation::MarkupContent(MarkupContent {
@@ -327,8 +339,211 @@ pub(crate) async fn signature_help(
             }],
             active_signature: Some(0),
             active_parameter: if has_params { Some(active_param) } else { None },
-        }));
+        });
     }
 
-    Ok(None)
+    // ── Fallback: custom macro / widget ────────────────────────────────
+    //
+    // If `find_macro()` returned None, the cursor is on a user-defined macro
+    // (widget or `Macro.add()` definition). We fall back to
+    // `find_custom_macro_detail()` to get the `arg_count` (if known) and
+    // synthesize a signature with generic placeholder param names
+    // (`arg1`, `arg2`, ...).
+    //
+    // SugarCube widgets and `Macro.add()` macros don't declare parameter
+    // names in their syntax — widgets access args via `_args[0]`, `_args[1]`,
+    // etc., and `Macro.add()` functions access them via `this.args[0]`,
+    // `this.args[1]`, etc. So we can only show arity, not real param names.
+    // The `arg_count` field is populated for widgets (by scanning the body
+    // for `_args[N]` references); for `Macro.add()` macros it's `None`.
+    //
+    // We only fire signature help when `arg_count` is `Some(n)` where `n > 0`.
+    // For argless macros (n=0) or unknown arity (None), there's nothing useful
+    // to show in a signature popup — the user can still get hover info by
+    // hovering over the macro name.
+    if let Some(detail) = plugin.find_custom_macro_detail(&macro_info.name) {
+        // Only fire signature help when we know the macro takes at least 1 arg.
+        // For argless macros (arg_count = Some(0)) or unknown (None), return None.
+        let n = detail.arg_count.unwrap_or(0);
+        if n == 0 {
+            return None;
+        }
+
+        let after_name = &line_text[macro_info.name_range.end..];
+        let active_param = after_name.matches(',').count() as u32;
+
+        // Synthesize placeholder params from arg_count.
+        let labels: Vec<String> = (0..n).map(|i| format!("arg{}", i + 1)).collect();
+        let params_list: Vec<ParameterInformation> = labels.iter().map(|l| ParameterInformation {
+            label: ParameterLabel::Simple(l.clone()),
+            documentation: None,
+        }).collect();
+        let sig_str = labels.join(", ");
+
+        let type_label = if detail.is_widget {
+            if detail.is_container { "Container widget" } else { "Widget" }
+        } else {
+            "Custom macro"
+        };
+        let doc_text = if let Some(desc) = &detail.description {
+            format!("{} — {}", type_label, desc)
+        } else {
+            format!("{} — defined in `:: {}`", type_label, detail.defined_in)
+        };
+
+        let sig_label = plugin.format_macro_signature_label(&macro_info.name, &sig_str);
+
+        return Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label: sig_label,
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: doc_text,
+                })),
+                parameters: Some(params_list),
+                active_parameter: Some(active_param),
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(active_param),
+        });
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod signature_help_tests {
+    use super::*;
+    use knot_formats::plugin::{FormatPlugin, FormatPluginMut};
+    use url::Url;
+
+    /// Build a ServerStateInner fixture: parse a single twee source file via
+    /// the SugarCube plugin, then assemble the inner state. Same pattern as
+    /// the navigation tests.
+    fn build_state(src: &str) -> (crate::state::ServerStateInner, Url) {
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let mut registry = knot_formats::plugin::FormatRegistry::with_defaults();
+        let format = knot_core::passage::StoryFormat::SugarCube;
+        let parse_result = {
+            let plugin = registry.get_mut(&format).expect("SugarCube plugin must be registered");
+            plugin.parse_mut(&uri, src)
+        };
+
+        let workspace = {
+            let mut ws = knot_core::Workspace::new(Url::parse("file:///project/").unwrap());
+            ws.config.format = Some("SugarCube".to_string());
+            let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+            for passage in parse_result.passages {
+                doc.passages.push(passage);
+            }
+            ws.insert_document(doc);
+            ws
+        };
+
+        let inner = crate::state::ServerStateInner {
+            workspace,
+            format_registry: registry,
+            debounce: knot_core::editing::DebounceTimer::new(),
+            editor_open_docs: std::collections::HashSet::new(),
+            open_documents: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(uri.clone(), src.to_string());
+                m
+            },
+            format_diagnostics: std::collections::HashMap::new(),
+            doc_versions: std::collections::HashMap::new(),
+            semantic_tokens: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(uri.clone(), parse_result.token_groups);
+                m
+            },
+        };
+        (inner, uri)
+    }
+
+    /// Helper: build state and call signature_help_inner at the given position.
+    fn get_signature_help(src: &str, line: u32, character: u32) -> Option<SignatureHelp> {
+        let (inner, uri) = build_state(src);
+        signature_help_inner(&inner, &uri, Position { line, character })
+    }
+
+    /// Builtin macro: `<<link "Talk" "Shop">>` should show a signature with
+    /// the builtin `link` macro's params.
+    #[test]
+    fn signature_help_fires_for_builtin_macro() {
+        let src = ":: Start\n<<link \"Talk\" \"Shop\">>\n";
+        // Line 1, char 3 is on `i` of `link` (<< = chars 0-1, link = chars 2-5).
+        let help = get_signature_help(src, 1, 3);
+        assert!(help.is_some(), "signature help should fire for builtin <<link>>");
+        let help = help.unwrap();
+        assert_eq!(help.signatures.len(), 1);
+        assert!(help.signatures[0].label.contains("link"),
+            "signature label should contain 'link': got {}", help.signatures[0].label);
+    }
+
+    /// Custom widget with known arg_count: `<<mywidget>>` invoked after a
+    /// widget definition that uses `_args[0]` and `_args[1]` (so arg_count=2).
+    /// The signature should show `<<mywidget arg1, arg2>>` with placeholder
+    /// param names.
+    #[test]
+    fn signature_help_fires_for_custom_widget_with_arg_count() {
+        let src = ":: Widgets [widget]\n<<widget mywidget>>Args: _args[0], _args[1]<</widget>>\n:: Start\n<<mywidget \"a\", \"b\">>\n";
+        // Line 3 is `<<mywidget "a", "b">>`. `<<` = chars 0-1, `mywidget` = chars 2-9.
+        // Char 5 is on `i` of `mywidget`.
+        let help = get_signature_help(src, 3, 5);
+        assert!(help.is_some(), "signature help should fire for custom widget <<mywidget>>");
+        let help = help.unwrap();
+        assert_eq!(help.signatures.len(), 1);
+        let sig = &help.signatures[0];
+        assert!(sig.label.contains("mywidget"),
+            "signature label should contain 'mywidget': got {}", sig.label);
+        // Should have 2 params (arg1, arg2) since the widget body uses _args[0] and _args[1].
+        assert!(sig.parameters.is_some(), "should have parameters");
+        let params = sig.parameters.as_ref().unwrap();
+        assert_eq!(params.len(), 2, "should have 2 params (arg1, arg2): got {:?}", params);
+        // The label should include the param names.
+        assert!(sig.label.contains("arg1"),
+            "signature label should contain 'arg1': got {}", sig.label);
+        assert!(sig.label.contains("arg2"),
+            "signature label should contain 'arg2': got {}", sig.label);
+        // Documentation should mention "Widget".
+        if let Some(Documentation::MarkupContent(m)) = &sig.documentation {
+            assert!(m.value.contains("Widget"),
+                "doc should mention 'Widget': got {}", m.value);
+        }
+    }
+
+    /// Custom widget with unknown arg_count (no `_args[N]` references in the
+    /// body): signature help should return None — there's nothing useful to
+    /// show in a popup when we don't know the arity.
+    #[test]
+    fn signature_help_returns_none_for_custom_widget_without_arg_count() {
+        let src = ":: Widgets [widget]\n<<widget simple>>Hello world<</widget>>\n:: Start\n<<simple>>\n";
+        // Line 3 is `<<simple>>`. `<<` = chars 0-1, `simple` = chars 2-7.
+        // Char 4 is on `m` of `simple`.
+        let help = get_signature_help(src, 3, 4);
+        assert!(help.is_none(),
+            "signature help should NOT fire for argless widget (arg_count=None): got {:?}", help);
+    }
+
+    /// Macro.add() custom macro: arg_count is always None (the JS walker
+    /// doesn't extract it), so signature help should return None.
+    #[test]
+    fn signature_help_returns_none_for_macro_add_custom_macro() {
+        let src = ":: StoryJavaScript [script]\nMacro.add(\"mymacro\", { fn: function() { return this.args[0]; } });\n:: Start\n<<mymacro \"hello\">>\n";
+        // Line 3 is `<<mymacro "hello">>`. `<<` = chars 0-1, `mymacro` = chars 2-8.
+        // Char 4 is on `m` of `mymacro`.
+        let help = get_signature_help(src, 3, 4);
+        assert!(help.is_none(),
+            "signature help should NOT fire for Macro.add() custom macro (arg_count=None): got {:?}", help);
+    }
+
+    /// Cursor NOT on a macro: signature help should return None.
+    #[test]
+    fn signature_help_returns_none_for_plain_text() {
+        let src = ":: Start\nHello world.\n";
+        let help = get_signature_help(src, 1, 3);
+        assert!(help.is_none(),
+            "signature help should NOT fire for plain text: got {:?}", help);
+    }
 }

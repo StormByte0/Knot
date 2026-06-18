@@ -138,7 +138,7 @@ pub fn inline_js_macro_names() -> HashSet<&'static str> {
     // Add control-flow macros whose args are undeclared but always JS expressions.
     // The catalog has `args: None` for these, but SugarCube always treats their
     // args as JS (conditions for if/elseif, loop spec for for, switch value, etc.)
-    for name in ["if", "elseif", "else", "for", "switch", "while"] {
+    for name in ["if", "elseif", "else", "for", "switch"] {
         set.insert(name);
     }
 

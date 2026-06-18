@@ -115,7 +115,7 @@ pub struct PassageTokenGroup {
 /// The legend order and LSP wire names are derived from [`Self::all_types`]
 /// and [`Self::lsp_name`], so the server handlers never hardcode token-type
 /// indices or names — adding a new variant here is the only change needed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticTokenType {
     // ── Passage structure ───────────────────────────────────────────
     /// The `::` prefix on a regular (user-defined) passage header.
@@ -213,6 +213,26 @@ pub enum SemanticTokenModifier {
     /// This token is a user-defined special passage.
     /// LSP modifier: `modification` (indicates user-level customization)
     UserDefined,
+    /// Block macro at nesting depth 1 (top-level block macro).
+    /// Applied to both the open tag name (`if` in `<<if>>`) and the close
+    /// tag name (`if` in `<</if>>`) so themes can color matching pairs.
+    /// LSP modifier: `blockDepth1`
+    BlockDepth1,
+    /// Block macro at nesting depth 2 (inside one block macro).
+    /// LSP modifier: `blockDepth2`
+    BlockDepth2,
+    /// Block macro at nesting depth 3.
+    /// LSP modifier: `blockDepth3`
+    BlockDepth3,
+    /// Block macro at nesting depth 4.
+    /// LSP modifier: `blockDepth4`
+    BlockDepth4,
+    /// Block macro at nesting depth 5.
+    /// LSP modifier: `blockDepth5`
+    BlockDepth5,
+    /// Block macro at nesting depth 6+ (wraps around for deeper nesting).
+    /// LSP modifier: `blockDepth6`
+    BlockDepth6,
 }
 
 impl SemanticTokenType {
@@ -307,6 +327,12 @@ impl SemanticTokenModifier {
             Self::TwineCore,     // bit 4
             Self::StoryFormat,   // bit 5
             Self::UserDefined,   // bit 6
+            Self::BlockDepth1,   // bit 7
+            Self::BlockDepth2,   // bit 8
+            Self::BlockDepth3,   // bit 9
+            Self::BlockDepth4,   // bit 10
+            Self::BlockDepth5,   // bit 11
+            Self::BlockDepth6,   // bit 12
         ]
     }
 
@@ -316,13 +342,19 @@ impl SemanticTokenModifier {
     /// use names that VS Code themes can match.
     pub fn lsp_name(&self) -> &'static str {
         match self {
-            Self::Definition  => "definition",
-            Self::ReadOnly    => "readonly",
-            Self::Deprecated  => "deprecated",
-            Self::ControlFlow => "controlFlow",
-            Self::TwineCore   => "static",
-            Self::StoryFormat => "async",
-            Self::UserDefined => "modification",
+            Self::Definition   => "definition",
+            Self::ReadOnly     => "readonly",
+            Self::Deprecated   => "deprecated",
+            Self::ControlFlow  => "controlFlow",
+            Self::TwineCore    => "static",
+            Self::StoryFormat  => "async",
+            Self::UserDefined  => "modification",
+            Self::BlockDepth1  => "blockDepth1",
+            Self::BlockDepth2  => "blockDepth2",
+            Self::BlockDepth3  => "blockDepth3",
+            Self::BlockDepth4  => "blockDepth4",
+            Self::BlockDepth5  => "blockDepth5",
+            Self::BlockDepth6  => "blockDepth6",
         }
     }
 
@@ -335,6 +367,28 @@ impl SemanticTokenModifier {
             .iter()
             .position(|m| m == self)
             .expect("every SemanticTokenModifier variant must appear in all_modifiers()")
+    }
+
+    /// Convert a 1-based block nesting depth to a `BlockDepthN` modifier.
+    ///
+    /// Depth wraps around at 6 (depth 7 → BlockDepth1, depth 8 → BlockDepth2,
+    /// etc.) so arbitrarily deep nesting still gets a valid color from the
+    /// 6-color palette.
+    ///
+    /// Returns `None` for depth 0 (not inside any block — no modifier).
+    pub fn from_block_depth(depth: usize) -> Option<Self> {
+        if depth == 0 {
+            return None;
+        }
+        let level = ((depth - 1) % 6) + 1; // 1..=6, wrapping
+        Some(match level {
+            1 => Self::BlockDepth1,
+            2 => Self::BlockDepth2,
+            3 => Self::BlockDepth3,
+            4 => Self::BlockDepth4,
+            5 => Self::BlockDepth5,
+            _ => Self::BlockDepth6,
+        })
     }
 }
 

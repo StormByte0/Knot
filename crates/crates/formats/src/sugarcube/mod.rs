@@ -2426,28 +2426,16 @@ impl SugarCubePlugin {
                     commit_characters: Vec::new(),
                 });
 
-                // Inline form: <<name args>> or <<name>> (if argless)
+                // Inline form: <<name args>>
                 let arg_placeholder = if let Some(n) = arg_count {
-                    if n == 0 {
-                        // Argless widget — no placeholder, no trailing space.
-                        String::new()
-                    } else {
-                        (0..n)
-                            .map(|i| format!("${{{}:{}}}", i + 1, format!("arg{}", i + 1)))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    }
+                    (0..n)
+                        .map(|i| format!("${{{}:{}}}", i + 1, format!("arg{}", i + 1)))
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 } else {
-                    // Unknown arg_count — don't insert a literal "args" placeholder.
-                    // The user can type args manually. Inserting "${1:args}" would
-                    // force them to delete "args" every time, which is bad UX.
-                    String::new()
+                    "${1:args}".to_string()
                 };
-                let inline_snippet = if arg_placeholder.is_empty() {
-                    format!("{}>>", name)
-                } else {
-                    format!("{} {}>>", name, arg_placeholder)
-                };
+                let inline_snippet = format!("{} {}>>", name, arg_placeholder);
                 let inline_text_edit = compute_macro_text_edit(
                     filter_prefix, line, character, &inline_snippet, after_cursor,
                 );
@@ -2473,23 +2461,14 @@ impl SugarCubePlugin {
             } else {
                 // Non-widget custom macro (Macro.add): just inline form
                 let arg_placeholder = if let Some(n) = arg_count {
-                    if n == 0 {
-                        String::new()
-                    } else {
-                        (0..n)
-                            .map(|i| format!("${{{}:{}}}", i + 1, format!("arg{}", i + 1)))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    }
+                    (0..n)
+                        .map(|i| format!("${{{}:{}}}", i + 1, format!("arg{}", i + 1)))
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 } else {
-                    // Unknown arg_count — no literal "args" placeholder.
-                    String::new()
+                    "${1:args}".to_string()
                 };
-                let snippet = if arg_placeholder.is_empty() {
-                    format!("{}>>", name)
-                } else {
-                    format!("{} {}>>", name, arg_placeholder)
-                };
+                let snippet = format!("{} {}>>", name, arg_placeholder);
                 let text_edit = compute_macro_text_edit(
                     filter_prefix, line, character, &snippet, after_cursor,
                 );
@@ -4172,102 +4151,6 @@ mod completion_debug_tests {
         // It should NOT appear as a suggestion.
         assert!(!labels.contains(&"name"),
             "Dot trigger after $item.work. should NOT show 'name' (sibling under $item, not child of work), got: {:?}", labels);
-    }
-
-    // ── Custom macro completion snippet tests ───────────────────────────
-    //
-    // These tests verify that custom macro completions don't insert a
-    // literal "${1:args}" placeholder when arg_count is unknown, and that
-    // argless macros get `<<name>>` (no trailing space).
-
-    /// Helper: register a widget in the plugin's registry.
-    fn register_test_widget(plugin: &mut SugarCubePlugin, name: &str, arg_count: Option<usize>, is_container: bool) {
-        plugin.registry_mut().custom_macros_mut().register_widget(
-            name, "Widgets", "file:///test.twee", 0, arg_count, is_container,
-        );
-    }
-
-    /// Helper: register a Macro.add() custom macro (not a widget).
-    fn register_test_macro_add(plugin: &mut SugarCubePlugin, name: &str, arg_count: Option<usize>) {
-        plugin.registry_mut().custom_macros_mut().register_macro_add(
-            name, "Scripts", "file:///test.twee", 0, arg_count,
-        );
-    }
-
-    /// Widget with known arg_count=2: inline completion should insert
-    /// `mywidget ${1:arg1} ${2:arg2}>>` (space-separated tabstops, no literal "args").
-    #[test]
-    fn custom_widget_completion_with_known_args() {
-        let mut plugin = SugarCubePlugin::new();
-        register_test_widget(&mut plugin, "mywidget", Some(2), false);
-        let text = ":: Start\n<<";
-        let uri = Url::parse("file:///test.twee").unwrap();
-        let workspace = Workspace::new(uri.clone());
-
-        let items = plugin.build_macro_completions(&workspace, "", 1, 4, text, 4);
-        let inline = items.iter().find(|i| i.insert_text.as_deref() == Some("mywidget ${1:arg1} ${2:arg2}>>"))
-            .expect("should have inline form with arg1/arg2 tabstops");
-        assert!(!inline.insert_text.as_ref().unwrap().contains("args"),
-            "inline snippet should NOT contain literal 'args': got {}", inline.insert_text.as_ref().unwrap());
-    }
-
-    /// Widget with unknown arg_count (None): inline completion should insert
-    /// `mywidget>>` (no args, no trailing space, no literal "args" placeholder).
-    #[test]
-    fn custom_widget_completion_with_unknown_args() {
-        let mut plugin = SugarCubePlugin::new();
-        register_test_widget(&mut plugin, "mywidget", None, false);
-        let text = ":: Start\n<<";
-        let uri = Url::parse("file:///test.twee").unwrap();
-        let workspace = Workspace::new(uri.clone());
-
-        let items = plugin.build_macro_completions(&workspace, "", 1, 4, text, 4);
-        // Find the inline form (label is `<<mywidget>>` without `...<</mywidget>>`)
-        let inline = items.iter().find(|i| {
-            i.label == "<<mywidget>>" && !i.label.contains("</")
-        }).expect("should have inline form for argless widget");
-        let snippet = inline.insert_text.as_ref().unwrap();
-        assert_eq!(snippet, "mywidget>>",
-            "argless widget inline snippet should be 'mywidget>>' (no trailing space, no 'args'): got '{}'", snippet);
-        assert!(!snippet.contains("args"),
-            "snippet should NOT contain literal 'args': got '{}'", snippet);
-    }
-
-    /// Widget with arg_count=0: same as unknown — `mywidget>>` with no args.
-    #[test]
-    fn custom_widget_completion_with_zero_args() {
-        let mut plugin = SugarCubePlugin::new();
-        register_test_widget(&mut plugin, "nowidget", Some(0), false);
-        let text = ":: Start\n<<";
-        let uri = Url::parse("file:///test.twee").unwrap();
-        let workspace = Workspace::new(uri.clone());
-
-        let items = plugin.build_macro_completions(&workspace, "", 1, 4, text, 4);
-        let inline = items.iter().find(|i| i.label == "<<nowidget>>" && !i.label.contains("</"))
-            .expect("should have inline form for zero-arg widget");
-        let snippet = inline.insert_text.as_ref().unwrap();
-        assert_eq!(snippet, "nowidget>>",
-            "zero-arg widget inline snippet should be 'nowidget>>': got '{}'", snippet);
-    }
-
-    /// Macro.add() custom macro with unknown arg_count: should insert
-    /// `mymacro>>` (no literal "args" placeholder).
-    #[test]
-    fn macro_add_completion_with_unknown_args() {
-        let mut plugin = SugarCubePlugin::new();
-        register_test_macro_add(&mut plugin, "mymacro", None);
-        let text = ":: Start\n<<";
-        let uri = Url::parse("file:///test.twee").unwrap();
-        let workspace = Workspace::new(uri.clone());
-
-        let items = plugin.build_macro_completions(&workspace, "", 1, 4, text, 4);
-        let item = items.iter().find(|i| i.label == "<<mymacro>>")
-            .expect("should have completion for Macro.add() custom macro");
-        let snippet = item.insert_text.as_ref().unwrap();
-        assert_eq!(snippet, "mymacro>>",
-            "Macro.add() snippet should be 'mymacro>>' (no 'args'): got '{}'", snippet);
-        assert!(!snippet.contains("args"),
-            "snippet should NOT contain literal 'args': got '{}'", snippet);
     }
 
     // ── `?` trigger template completion tests ────────────────────────────
