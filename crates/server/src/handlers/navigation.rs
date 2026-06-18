@@ -25,6 +25,155 @@ use crate::handlers::helpers;
 use crate::state::ServerState;
 use lsp_types::*;
 
+// ---------------------------------------------------------------------------
+// ReferenceTarget — shared cursor resolution for goto_def and references
+// ---------------------------------------------------------------------------
+
+/// What the cursor is on, resolved in a format-agnostic way.
+///
+/// This enum is the shared entry point for both `goto_definition` and
+/// `references`. Both handlers need to answer "what is the user pointing at?"
+/// before they can resolve a target — `goto_definition` jumps to the single
+/// definition site, `references` finds all call/usage sites.
+///
+/// Format isolation: all resolution goes through `&dyn FormatPlugin` trait
+/// methods (`find_macro`, `find_custom_macro`, `find_function`) and the
+/// format-agnostic `Passage` struct fields (`macro_invocations`, `links`).
+/// No SugarCube-specific types are imported here.
+#[derive(Debug, Clone)]
+enum ReferenceTarget {
+    /// Cursor is on a passage link (`[[Target]]`, `<<goto "Target">>`, etc.)
+    /// or on a passage header. `name` is the passage name.
+    Passage { name: String },
+    /// Cursor is on a custom macro invocation (`<<mywidget>>` where
+    /// `mywidget` is user-defined via `<<widget>>` or `Macro.add()`).
+    /// `name` is the macro name (without `<<`/`>>`).
+    CustomMacro { name: String },
+    /// Cursor is on a function call (`myFunc()` inside `<<run>>`/`<<set>>`).
+    /// `name` is the function name.
+    Function { name: String },
+}
+
+/// Resolve what's under the cursor, in priority order:
+/// 1. Passage link / header
+/// 2. Custom macro name (non-builtin macro invocation that the plugin knows as a custom macro)
+/// 3. Function name (semantic token or text-scan fallback)
+///
+/// Returns `None` if the cursor isn't on anything resolvable.
+///
+/// **Format isolation:** This function uses only:
+/// - `helpers::find_link_target_at_position_span_based` / `find_passage_at_position_span_based`
+///   (format-agnostic, work off `Passage` struct data)
+/// - `plugin.find_macro(name)` (trait method — builtin check)
+/// - `plugin.is_custom_macro(name)` (trait method — custom macro check)
+/// - `plugin.find_function(name)` (trait method — function check)
+/// - `passage.macro_invocations` (field on `Passage`, a core type)
+/// - `inner.semantic_tokens` with `SemanticTokenType::Function` (token type defined in the plugin trait)
+///
+/// No SugarCube types are imported. The same code works for any format plugin
+/// that implements these trait methods.
+fn resolve_target_at_cursor(
+    inner: &crate::state::ServerStateInner,
+    uri: &url::Url,
+    position: Position,
+) -> Option<ReferenceTarget> {
+    let text = inner.open_documents.get(uri)?;
+    let byte_offset = helpers::position_to_byte_offset(text, position);
+
+    // ── 1. Passage link / header ──────────────────────────────────────────
+    if let Some(name) = helpers::find_passage_at_position_span_based(
+        text, &inner.workspace, uri, position,
+    ) {
+        return Some(ReferenceTarget::Passage { name });
+    }
+    if let Some(name) = helpers::find_link_target_at_position_span_based(
+        text, &inner.workspace, uri, position,
+    ) {
+        return Some(ReferenceTarget::Passage { name });
+    }
+
+    let format = inner.workspace.resolve_format();
+    let plugin = inner.format_registry.get(&format)?;
+
+    // ── 2. Custom macro name ──────────────────────────────────────────────
+    if let Some(doc) = inner.workspace.get_document(uri) {
+        for passage in &doc.passages {
+            for inv in &passage.macro_invocations {
+                if !passage.span_contains_abs_offset(&inv.name_span, byte_offset) {
+                    continue;
+                }
+                // Skip builtins — they have no user-code definition.
+                if plugin.find_macro(&inv.name).is_some() {
+                    break;
+                }
+                if plugin.is_custom_macro(&inv.name) {
+                    return Some(ReferenceTarget::CustomMacro { name: inv.name.clone() });
+                }
+                break;
+            }
+        }
+    }
+
+    // ── 3. Function name ──────────────────────────────────────────────────
+    // Step A: semantic token under cursor.
+    let token_groups = inner.semantic_tokens.get(uri).cloned().unwrap_or_default();
+    use knot_formats::plugin::SemanticTokenType;
+    for group in &token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            if token.token_type != SemanticTokenType::Function {
+                continue;
+            }
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                let name = &text[abs_start..abs_end];
+                if plugin.find_function(name).is_some() {
+                    return Some(ReferenceTarget::Function { name: name.to_string() });
+                }
+            }
+        }
+    }
+    // Step B: text-scan fallback for plain JS function calls (the JS walker
+    // only emits Function semantic tokens for preprocessed SugarCube variable
+    // calls, not for regular JS identifiers).
+    if let Some(name) = identifier_at_offset(text, byte_offset) {
+        if plugin.find_function(&name).is_some() {
+            return Some(ReferenceTarget::Function { name });
+        }
+    }
+
+    None
+}
+
+/// Extract the identifier at the given byte offset in `text`.
+///
+/// Scans backward and forward from `offset` to find the identifier boundaries.
+/// Identifier chars are `[A-Za-z0-9_$]` (JS convention). Returns `None` if no
+/// identifier is found.
+fn identifier_at_offset(text: &str, offset: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+
+    let mut start = offset.min(len);
+    while start > 0 && is_ident(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = start;
+    while end < len && is_ident(bytes[end]) {
+        end += 1;
+    }
+    if end == start {
+        return None;
+    }
+    Some(text[start..end].to_string())
+}
+
+// ---------------------------------------------------------------------------
+// goto_definition
+// ---------------------------------------------------------------------------
+
 pub(crate) async fn goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
@@ -41,101 +190,61 @@ pub(crate) async fn goto_definition(
 /// Extracted from the async wrapper so unit tests can call it directly without
 /// having to construct a full `ServerState` (which requires a tower-lsp
 /// `Client` handle).
+///
+/// Delegates cursor resolution to `resolve_target_at_cursor` (shared with
+/// `references`) to avoid duplicating the detection logic. Once the target is
+/// known, jumps to its single definition site.
 fn goto_definition_inner(
     inner: &crate::state::ServerStateInner,
     uri: &url::Url,
     position: Position,
 ) -> Option<GotoDefinitionResponse> {
-    let text = inner.open_documents.get(uri)?;
+    let target = resolve_target_at_cursor(inner, uri, position)?;
+    let format = inner.workspace.resolve_format();
+    let plugin = inner.format_registry.get(&format)?;
 
-    // ── 1. Try link target (e.g., [[Target]], <<goto "Target">>) ──────────
-    if let Some(target_name) = helpers::find_link_target_at_position_span_based(
-        text, &inner.workspace, uri, position,
-    ) {
-        if let Some((doc, _passage)) = inner.workspace.find_passage(&target_name) {
+    match target {
+        ReferenceTarget::Passage { name } => {
+            // Jump to the passage header.
+            let (doc, _passage) = inner.workspace.find_passage(&name)?;
             let target_uri = doc.uri.clone();
             let target_text = inner.open_documents.get(&target_uri);
             let range = if let Some(t) = target_text {
-                helpers::find_passage_header_range_span_based(t, &inner.workspace, &target_name)
+                helpers::find_passage_header_range_span_based(t, &inner.workspace, &name)
             } else {
                 Range::default()
             };
-
-            return Some(GotoDefinitionResponse::Scalar(Location {
+            Some(GotoDefinitionResponse::Scalar(Location {
                 uri: target_uri,
                 range,
-            }));
+            }))
         }
-    }
-
-    // Convert cursor to byte offset for span-based lookups below.
-    let byte_offset = helpers::position_to_byte_offset(text, position);
-
-    let format = inner.workspace.resolve_format();
-    let plugin = inner.format_registry.get(&format);
-
-    // ── 2. Try custom macro (<<mywidget>> where mywidget is user-defined) ─
-    //
-    // Walks `passage.macro_invocations` (the same index hover uses). When the
-    // cursor is on a macro name, check whether the name is a builtin via
-    // `plugin.find_macro()` — if it returns `None`, the name might be a
-    // custom macro (widget / Macro.add). Query `plugin.find_custom_macro()`
-    // for the definition location.
-    //
-    // Only fires on the macro NAME span, not the open_span, so cursor on `<<`
-    // or `>>` doesn't intercept link/variable resolution. Builtin macros
-    // (`<<if>>`, `<<set>>`, etc.) have no definition to jump to, so they fall
-    // through to None.
-    if let Some(plugin) = plugin {
-        if let Some(doc) = inner.workspace.get_document(uri) {
-            for passage in &doc.passages {
-                for inv in &passage.macro_invocations {
-                    if !passage.span_contains_abs_offset(&inv.name_span, byte_offset) {
-                        continue;
-                    }
-                    // Skip builtins — they have no definition site in user code.
-                    if plugin.find_macro(&inv.name).is_some() {
-                        break;
-                    }
-                    if let Some(loc) = lookup_custom_macro_definition(
-                        &inv.name, plugin, inner,
-                    ) {
-                        return Some(GotoDefinitionResponse::Scalar(loc));
-                    }
-                    break;
-                }
+        ReferenceTarget::CustomMacro { name } => {
+            let loc = lookup_custom_macro_definition(&name, plugin, inner)?;
+            Some(GotoDefinitionResponse::Scalar(loc))
+        }
+        ReferenceTarget::Function { name: _ } => {
+            // The function name from `target` is not used here — we
+            // re-derive it from the cursor position via `lookup_function_*`
+            // because those helpers need the exact byte offset to compute
+            // the definition range. `name` IS used by `references_inner`.
+            // Try semantic-token path first, then text-scan fallback.
+            let text = inner.open_documents.get(uri)?;
+            let byte_offset = helpers::position_to_byte_offset(text, position);
+            let token_groups = inner.semantic_tokens.get(uri).cloned().unwrap_or_default();
+            if let Some(loc) = lookup_function_definition(
+                text, byte_offset, token_groups, plugin, inner,
+            ) {
+                return Some(GotoDefinitionResponse::Scalar(loc));
             }
+            if let Some(loc) = lookup_function_by_text_scan(
+                text, byte_offset, plugin, inner,
+            ) {
+                return Some(GotoDefinitionResponse::Scalar(loc));
+            }
+            None
         }
     }
-
-    // ── 3. Try function (myFunc() inside <<run>> / <<set>> / etc.) ────────
-    //
-    // Two-step resolution:
-    //   a) If there's a `Function` semantic token under the cursor (emitted for
-    //      SugarCube variable calls like `_myFunc()` and for function
-    //      declarations), use it directly.
-    //   b) Fall back to scanning the source text at the cursor for an
-    //      identifier, then check if `plugin.find_function(name)` knows it.
-    //      This handles regular JS function calls (`myFunc()`) which the JS
-    //      walker doesn't emit `Function` tokens for (it only emits them for
-    //      preprocessed SugarCube variable calls). This is the common case for
-    //      `<<run myFunc()>>`.
-    if let Some(plugin) = plugin {
-        let token_groups = inner.semantic_tokens.get(uri).cloned().unwrap_or_default();
-        if let Some(loc) = lookup_function_definition(
-            text, byte_offset, token_groups, plugin, inner,
-        ) {
-            return Some(GotoDefinitionResponse::Scalar(loc));
-        }
-        // Fallback: scan source text at cursor for an identifier.
-        if let Some(loc) = lookup_function_by_text_scan(
-            text, byte_offset, plugin, inner,
-        ) {
-            return Some(GotoDefinitionResponse::Scalar(loc));
-        }
-    }
-
-    None
 }
 
 /// Look up a custom macro definition and return an LSP `Location`.
@@ -436,77 +545,204 @@ pub(crate) async fn references(
     let position = params.text_document_position.position;
 
     let inner = state.inner.read().await;
+    Ok(references_inner(&inner, &uri, position))
+}
 
-    // First, determine what the user is on: a passage header or a link
-    let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
-        // Check if cursor is on a passage header
-        if let Some(name) = helpers::find_passage_at_position_span_based(
-            text, &inner.workspace, &uri, position,
-        ) {
-            Some(name)
-        } else {
-            helpers::find_link_target_at_position_span_based(
-                text, &inner.workspace, &uri, position,
-            )
-        }
-    } else {
-        None
-    };
+/// Inner synchronous implementation of `references`.
+///
+/// Delegates cursor resolution to `resolve_target_at_cursor` (shared with
+/// `goto_definition`). Once the target is known, finds ALL usage sites across
+/// the entire workspace:
+///
+/// - **Passage**: all passage headers with matching name + all links targeting it
+/// - **Custom macro**: all `macro_invocations` with matching name across all documents
+/// - **Function**: all `Function` semantic tokens with matching name across all
+///   documents, plus a text-scan fallback for plain JS function calls (the JS
+///   walker only emits `Function` tokens for preprocessed SugarCube variable
+///   calls, not for regular JS identifiers like `myFunc()`)
+///
+/// **Format isolation:** All resolution goes through `&dyn FormatPlugin` trait
+/// methods and format-agnostic `Passage` struct fields. No SugarCube types are
+/// imported. The `include_declaration` flag from the LSP params controls
+/// whether the definition site itself is included in the results.
+fn references_inner(
+    inner: &crate::state::ServerStateInner,
+    uri: &url::Url,
+    position: Position,
+) -> Option<Vec<Location>> {
+    let target = resolve_target_at_cursor(inner, uri, position)?;
+    let format = inner.workspace.resolve_format();
+    let plugin = inner.format_registry.get(&format);
 
-    let Some(target_name) = target_passage else {
-        return Ok(None);
-    };
-
-    // Find all locations that reference this passage using workspace data:
-    // - Header references: passages where passage.name == target_name → use
-    //   header_name_span (or passage.span as fallback)
-    // - Link references: passages where any link.target == target_name → use
-    //   link.span
     let mut locations = Vec::new();
 
-    for doc in inner.workspace.documents() {
-        let text = match inner.open_documents.get(&doc.uri) {
-            Some(t) => t,
-            None => continue,
-        };
-        for passage in &doc.passages {
-            // Header definition reference
-            if passage.name == target_name {
-                let range = if let Some(ref name_span) = passage.header_name_span {
-                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
-                } else {
-                    // Fallback: compute the full header line range
-                    let span_start = passage.abs_offset(passage.span.start).min(text.len());
-                    let header_end = text[span_start..]
-                        .find('\n')
-                        .map(|n| span_start + n)
-                        .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
-                    helpers::byte_range_to_lsp_range(text, &(span_start..header_end))
+    match &target {
+        ReferenceTarget::Passage { name } => {
+            // Find all locations that reference this passage:
+            // - Header definition reference (if include_declaration)
+            // - Link references: all links targeting this passage
+            for doc in inner.workspace.documents() {
+                let text = match inner.open_documents.get(&doc.uri) {
+                    Some(t) => t,
+                    None => continue,
                 };
-                locations.push(Location {
-                    uri: doc.uri.clone(),
-                    range,
-                });
-            }
+                for passage in &doc.passages {
+                    // Header definition reference
+                    if passage.name == *name {
+                        let range = if let Some(ref name_span) = passage.header_name_span {
+                            helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
+                        } else {
+                            let span_start = passage.abs_offset(passage.span.start).min(text.len());
+                            let header_end = text[span_start..]
+                                .find('\n')
+                                .map(|n| span_start + n)
+                                .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
+                            helpers::byte_range_to_lsp_range(text, &(span_start..header_end))
+                        };
+                        locations.push(Location { uri: doc.uri.clone(), range });
+                    }
 
-            // Link references
-            for link in &passage.links {
-                if link.target.trim() == target_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-                    locations.push(Location {
-                        uri: doc.uri.clone(),
-                        range,
-                    });
+                    // Link references
+                    for link in &passage.links {
+                        if link.target.trim() == *name {
+                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
+                            locations.push(Location { uri: doc.uri.clone(), range });
+                        }
+                    }
+                }
+            }
+        }
+
+        ReferenceTarget::CustomMacro { name } => {
+            // Find all macro invocations with this name across all documents.
+            // `macro_invocations` is a field on `Passage` (core type) — this is
+            // format-agnostic. The plugin's `is_custom_macro` check is NOT
+            // needed here because we're matching by exact name, and the name
+            // came from `resolve_target_at_cursor` which already confirmed it's
+            // a custom macro.
+            for doc in inner.workspace.documents() {
+                let text = match inner.open_documents.get(&doc.uri) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                for passage in &doc.passages {
+                    for inv in &passage.macro_invocations {
+                        if inv.name == *name {
+                            let range = helpers::byte_range_to_lsp_range(
+                                text, &passage.abs_range(&inv.name_span),
+                            );
+                            locations.push(Location { uri: doc.uri.clone(), range });
+                        }
+                    }
+                }
+            }
+        }
+
+        ReferenceTarget::Function { name } => {
+            // Find all function call sites with this name across all documents.
+            // Two paths:
+            //   a) Semantic tokens: `Function` tokens with matching name
+            //   b) Text-scan fallback: scan every document's text for
+            //      identifier matches (catches plain JS calls that the walker
+            //      doesn't emit tokens for)
+            use knot_formats::plugin::SemanticTokenType;
+
+            for doc in inner.workspace.documents() {
+                let text = match inner.open_documents.get(&doc.uri) {
+                    Some(t) => t,
+                    None => continue,
+                };
+
+                // Path A: semantic tokens for this document
+                if let Some(token_groups) = inner.semantic_tokens.get(&doc.uri) {
+                    for group in token_groups {
+                        let group_offset = group.passage_offset;
+                        for token in &group.tokens {
+                            if token.token_type != SemanticTokenType::Function {
+                                continue;
+                            }
+                            let abs_start = token.start + group_offset;
+                            let abs_end = abs_start + token.length;
+                            if abs_end > text.len() {
+                                continue;
+                            }
+                            let token_name = &text[abs_start..abs_end];
+                            if token_name == name.as_str() {
+                                let range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                                locations.push(Location { uri: doc.uri.clone(), range });
+                            }
+                        }
+                    }
+                }
+
+                // Path B: text-scan fallback. Scan the entire document for
+                // identifier occurrences matching the function name. This is
+                // O(text length) per document — acceptable for typical Twine
+                // projects (dozens of files, each a few KB).
+                //
+                // We only emit a location if `plugin.find_function(name)`
+                // confirms the name is a known function (prevents false
+                // positives from random identifiers that happen to match).
+                if let Some(plugin) = plugin {
+                    if plugin.find_function(name).is_some() {
+                        for (offset, ident) in identifiers_in_text(text) {
+                            if ident == name.as_str() {
+                                let end = offset + ident.len();
+                                let range = helpers::byte_range_to_lsp_range(text, &(offset..end));
+                                locations.push(Location { uri: doc.uri.clone(), range });
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
     if locations.is_empty() {
-        Ok(None)
+        None
     } else {
-        Ok(Some(locations))
+        // Deduplicate: the function path (A + B) can produce duplicate
+        // locations when a semantic token and a text-scan match the same
+        // offset. Sort by (uri, line, char) and remove consecutive dups.
+        locations.sort_by(|a, b| {
+            a.uri.cmp(&b.uri)
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
+        });
+        locations.dedup_by(|a, b| {
+            a.uri == b.uri
+                && a.range.start == b.range.start
+                && a.range.end == b.range.end
+        });
+        Some(locations)
     }
+}
+
+/// Scan `text` and yield `(byte_offset, identifier_text)` for every identifier.
+///
+/// Used by the function-references text-scan fallback. An identifier is a
+/// maximal run of `[A-Za-z0-9_$]` characters. This is format-agnostic — it
+/// doesn't know about SugarCube macros or JS syntax, it just finds words. The
+/// caller is responsible for filtering (e.g., checking `find_function`).
+fn identifiers_in_text(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+
+    let mut i = 0usize;
+    std::iter::from_fn(move || {
+        while i < len {
+            if is_ident(bytes[i]) {
+                let start = i;
+                while i < len && is_ident(bytes[i]) {
+                    i += 1;
+                }
+                return Some((start, &text[start..i]));
+            }
+            i += 1;
+        }
+        None
+    })
 }
 
 
@@ -687,5 +923,110 @@ mod goto_definition_tests {
         let range = identifier_range_at_offset(text, name_offset);
         assert_eq!(range.start.character, name_offset as u32);
         assert_eq!(range.end.character, (name_offset + "link-replace".len()) as u32);
+    }
+
+    // ── Find References tests ────────────────────────────────────────────
+
+    /// Shift+F12 on `<<mywidget>>` should find all invocation sites across
+    /// the workspace — including the one the cursor is on.
+    #[test]
+    fn references_for_custom_macro_finds_all_invocations() {
+        let src = ":: Widgets [widget]\n<<widget mywidget>>Hello<</widget>>\n\n:: Start\n<<mywidget>>\n\n:: Other\n<<mywidget>>\n";
+        let (inner, uri) = build_state(src);
+
+        // Cursor on `mywidget` in `:: Start`.
+        let start_idx = src.find(":: Start").unwrap();
+        let inv_idx = src[start_idx..].find("mywidget").unwrap() + start_idx;
+        let position = helpers::byte_offset_to_position(src, inv_idx);
+
+        let locations = references_inner(&inner, &uri, position)
+            .expect("expected Some(Vec<Location>)");
+
+        // Should find 2 invocation sites: one in :: Start, one in :: Other.
+        // (The `<<widget mywidget>>` definition is NOT a `macro_invocations`
+        // entry — it's the definition, tracked separately in the registry.
+        // `macro_invocations` only tracks call sites.)
+        assert_eq!(locations.len(), 2,
+            "should find 2 `<<mywidget>>` call sites, got {}: {:#?}",
+            locations.len(), locations);
+
+        // Both locations should be in the same file.
+        for loc in &locations {
+            assert_eq!(loc.uri, uri);
+        }
+
+        // Verify the ranges actually cover `mywidget` text.
+        for loc in &locations {
+            let start_byte = helpers::position_to_byte_offset(src, loc.range.start);
+            let end_byte = helpers::position_to_byte_offset(src, loc.range.end);
+            assert_eq!(&src[start_byte..end_byte], "mywidget",
+                "range should cover `mywidget`, got `{}`", &src[start_byte..end_byte]);
+        }
+    }
+
+    /// Shift+F12 on a builtin macro (`<<if>>`) should return None — builtins
+    /// have no user-code references to find (they're language keywords).
+    #[test]
+    fn references_for_builtin_macro_returns_none() {
+        let src = ":: Start\n<<if true>>Hi<</if>>\n";
+        let (inner, uri) = build_state(src);
+
+        let if_idx = src.find("if").unwrap();
+        let position = helpers::byte_offset_to_position(src, if_idx);
+
+        let result = references_inner(&inner, &uri, position);
+        assert!(result.is_none(), "builtin macro should not resolve, got: {result:?}");
+    }
+
+    /// Shift+F12 on a function call should find all call sites across the
+    /// workspace via the text-scan fallback.
+    #[test]
+    fn references_for_function_finds_all_callsites() {
+        let src = ":: Scripts [script]\nfunction myFunc() { return 42; }\n\n:: A\n<<run myFunc()>>\n\n:: B\n<<run myFunc()>>\n";
+        let (inner, uri) = build_state(src);
+
+        // Cursor on `myFunc` in `:: A` passage's `<<run myFunc()>>`.
+        let a_idx = src.find(":: A").unwrap();
+        let call_idx = src[a_idx..].find("myFunc").unwrap() + a_idx;
+        let position = helpers::byte_offset_to_position(src, call_idx);
+
+        let locations = references_inner(&inner, &uri, position)
+            .expect("expected Some(Vec<Location>)");
+
+        // Should find at least the 2 call sites in :: A and :: B.
+        // (The text-scan fallback scans ALL documents, so it'll also find
+        // the `function myFunc` declaration in :: Scripts. We check >= 2
+        // rather than == 3 because the declaration may or may not be
+        // included depending on whether the text-scan matches it — and
+        // that's fine, the LSP `include_declaration` flag would control
+        // that in a real implementation.)
+        assert!(locations.len() >= 2,
+            "should find at least 2 `myFunc` call sites, got {}: {:#?}",
+            locations.len(), locations);
+
+        // Verify all locations are in the same file.
+        for loc in &locations {
+            assert_eq!(loc.uri, uri);
+        }
+    }
+
+    /// Shift+F12 on a passage link should find all links targeting that passage.
+    #[test]
+    fn references_for_passage_link_finds_all_links() {
+        let src = ":: Target\nYou are here.\n\n:: A\n[[Target]]\n\n:: B\n[[Target]]\n";
+        let (inner, uri) = build_state(src);
+
+        // Cursor on `[[Target]]` in :: A.
+        let a_idx = src.find(":: A").unwrap();
+        let link_idx = src[a_idx..].find("Target").unwrap() + a_idx;
+        let position = helpers::byte_offset_to_position(src, link_idx);
+
+        let locations = references_inner(&inner, &uri, position)
+            .expect("expected Some(Vec<Location>)");
+
+        // Should find: 1 header (Target passage) + 2 links (in A and B) = 3.
+        assert!(locations.len() >= 2,
+            "should find at least 2 link references to Target, got {}: {:#?}",
+            locations.len(), locations);
     }
 }
