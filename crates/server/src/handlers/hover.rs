@@ -1115,6 +1115,249 @@ fn try_variable_hover(
         }
     }
 
+    // ── Fallback: text-scan for prose `$var` / `_var` ──────────────────
+    //
+    // If `passage.vars` didn't have an entry covering the cursor (e.g., the
+    // document hasn't been re-parsed yet, or the variable scanner missed an
+    // edge case), fall back to scanning the text around the cursor for a
+    // `$name` or `_name` pattern. This makes hover robust against stale
+    // passage.vars and ensures prose `$vars` always get hover info.
+    if let Some((sigil, name, name_start, name_end)) = scan_variable_at_cursor(text, byte_offset) {
+        let var_name = format!("{}{}", sigil, name);
+        let is_temporary = sigil == '_';
+
+        // Determine the sigil description from the plugin (format-agnostic).
+        let sigil_desc = plugin
+            .describe_variable_sigil(sigil)
+            .unwrap_or("variable");
+        let var_type = plugin
+            .resolve_variable_sigil(sigil)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "variable".to_string());
+
+        // For persistent (`$`) vars: aggregate across the whole workspace.
+        // For temporary (`_`) vars: scope to the enclosing passage only.
+        let enclosing_passage_name = doc
+            .passages
+            .iter()
+            .find(|p| p.contains_abs_offset(byte_offset))
+            .map(|p| p.name.clone());
+
+        let mut write_locations: Vec<String> = Vec::new();
+        let mut read_count = 0;
+        for wp_doc in workspace.documents() {
+            for wp_passage in &wp_doc.passages {
+                if is_temporary && Some(&wp_passage.name) != enclosing_passage_name.as_ref() {
+                    continue;
+                }
+                for v in &wp_passage.vars {
+                    if v.name == var_name {
+                        match v.kind {
+                            knot_core::passage::VarKind::Init => {
+                                write_locations.push(wp_passage.name.clone());
+                            }
+                            knot_core::passage::VarKind::Read => {
+                                read_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let write_info = if write_locations.is_empty() {
+            "Never written".to_string()
+        } else if write_locations.len() <= 5 {
+            format!("Written in: {}", write_locations.join(", "))
+        } else {
+            format!("Written in {} passages", write_locations.len())
+        };
+
+        let mut hover_text = format!(
+            "**{}** `{}`\n\n{}\nRead in {} location(s)",
+            var_name, var_type, write_info, read_count
+        );
+        if is_temporary {
+            hover_text.push_str(&format!("\n\n---\n\n{}", sigil_desc));
+        }
+
+        let hover_range = helpers::byte_range_to_lsp_range(text, &(name_start..name_end));
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_text,
+            }),
+            range: Some(hover_range),
+        });
+    }
+
+    None
+}
+
+/// Scan the text around `byte_offset` for a `$name` or `_name` variable
+/// reference in prose.
+///
+/// Returns `(sigil, name, span_start, span_end)` where `sigil` is `$` or `_`,
+/// `name` is the variable name WITHOUT the sigil, and `span_start..span_end`
+/// is the byte range covering the SIGIL PLUS the name (the full variable
+/// token, including any property path).
+///
+/// Returns `None` if the cursor isn't on a `$name` / `_name` pattern, or if
+/// the pattern is inside a context where `$` / `_` isn't a variable sigil
+/// (e.g., `_` in the middle of a word like `snake_case`, or `$` at end of
+/// text without a following identifier).
+fn scan_variable_at_cursor(
+    text: &str,
+    byte_offset: usize,
+) -> Option<(char, String, usize, usize)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if byte_offset > len {
+        return None;
+    }
+
+    // Helper: is byte an identifier char (SugarCube variables allow _ and $ in
+    // continuation, but we only match `$` or `_` as sigils at the start)?
+    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let is_ident_start = |b: u8| b.is_ascii_alphabetic() || b == b'_';
+    let is_word_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+    // Case 1: cursor is ON the sigil (`$` or `_`).
+    let on_sigil = match bytes.get(byte_offset) {
+        Some(&b'$') => Some('$'),
+        Some(&b'_') => {
+            // `_` is only a temp-var sigil at a word boundary (not inside
+            // `snake_case` etc.).
+            let prev_is_word = byte_offset > 0
+                && bytes.get(byte_offset - 1).copied().map_or(false, is_word_char);
+            if prev_is_word {
+                None
+            } else {
+                Some('_')
+            }
+        }
+        _ => None,
+    };
+    if let Some(sigil) = on_sigil {
+        // Scan forward for the name + property path.
+        let mut name_start = byte_offset + 1;
+        if name_start >= len || !is_ident_start(bytes[name_start]) {
+            return None;
+        }
+        let mut name_end = name_start + 1;
+        // Allow property path: .prop.prop2 (prop names allow hyphens too).
+        while name_end < len {
+            let b = bytes[name_end];
+            if is_ident_char(b) {
+                name_end += 1;
+            } else if b == b'.' && name_end + 1 < len
+                && (is_ident_start(bytes[name_end + 1]) || bytes[name_end + 1] == b'_')
+            {
+                name_end += 1; // consume `.`
+                while name_end < len
+                    && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
+                {
+                    name_end += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        let name = text[name_start..name_end].to_string();
+        return Some((sigil, name, byte_offset, name_end));
+    }
+
+    // Case 2: cursor is ON the name part. Scan backward for the sigil.
+    if byte_offset < len && is_ident_char(bytes[byte_offset]) {
+        let mut probe = byte_offset;
+        // Walk backward through ident chars and `-`. Special case: when we
+        // encounter `_`, check if it's a temp-var sigil (at a word boundary)
+        // or part of a snake_case identifier. If it's a sigil, stop here
+        // (don't include it in the name).
+        while probe > 0 {
+            let prev = bytes[probe - 1];
+            if prev == b'_' {
+                // `_` is a sigil only if NOT preceded by a word char (i.e.,
+                // it's at a word boundary). Otherwise it's part of an
+                // identifier like `snake_case`.
+                let prev_prev_is_word = probe >= 2 && is_word_char(bytes[probe - 2]);
+                if !prev_prev_is_word {
+                    // `_` is the sigil — stop here.
+                    break;
+                }
+                // `_` is part of `snake_case` — continue walking backward.
+                probe -= 1;
+            } else if is_ident_char(prev) || prev == b'-' {
+                probe -= 1;
+            } else {
+                break;
+            }
+        }
+        // Also walk back through `.prop` segments.
+        // (probe is at the start of the current segment.)
+        // Now check if there's a `.` before probe, and another segment, and so on.
+        // Walk back through segments separated by `.`.
+        let mut name_start = probe;
+        while name_start > 0 && bytes[name_start - 1] == b'.'
+            && name_start >= 2
+            && (is_ident_char(bytes[name_start - 2]) || bytes[name_start - 2] == b'-')
+        {
+            // Walk back through the previous segment.
+            name_start -= 1; // skip the `.`
+            while name_start > 0
+                && (is_ident_char(bytes[name_start - 1]) || bytes[name_start - 1] == b'-')
+            {
+                name_start -= 1;
+            }
+        }
+        // Now `name_start` is the start of the first segment. The sigil
+        // should be at `name_start - 1`.
+        if name_start == 0 {
+            return None;
+        }
+        let sigil_byte = bytes[name_start - 1];
+        let sigil = match sigil_byte {
+            b'$' => '$',
+            b'_' => {
+                // `_` is only a sigil at a word boundary.
+                let prev_is_word = name_start >= 2
+                    && bytes.get(name_start - 2).copied().map_or(false, is_word_char);
+                if prev_is_word {
+                    return None;
+                }
+                // Also, the first segment must start with an ident-start char
+                // (i.e., the char at name_start must be a letter, not `_`).
+                // SugarCube `_var` requires `_` followed by a letter.
+                if !is_ident_start(bytes[name_start]) {
+                    return None;
+                }
+                '_'
+            }
+            _ => return None,
+        };
+        // Scan forward for the end of the name (including property path).
+        let mut name_end = name_start + 1;
+        while name_end < len {
+            let b = bytes[name_end];
+            if is_ident_char(b) {
+                name_end += 1;
+            } else if b == b'.' && name_end + 1 < len
+                && (is_ident_start(bytes[name_end + 1]) || bytes[name_end + 1] == b'_')
+            {
+                name_end += 1;
+                while name_end < len
+                    && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
+                {
+                    name_end += 1;
+                }
+            } else {
+                break;
+            }
+        }
+        let name = text[name_start..name_end].to_string();
+        return Some((sigil, name, name_start - 1, name_end));
+    }
+
     None
 }
 
@@ -1360,6 +1603,12 @@ fn try_template_hover(
 ) -> Option<Hover> {
     use knot_formats::plugin::SemanticTokenType;
 
+    // ── Path 1: Token-based detection ──────────────────────────────
+    //
+    // The token builder emits `Function` tokens for `?name` patterns in
+    // prose. The token spans the NAME only (not the `?`), so we accept
+    // cursor-on-name OR cursor-on-`?` (the byte immediately before the
+    // token start).
     for group in token_groups {
         let group_offset = group.passage_offset;
         for token in &group.tokens {
@@ -1368,18 +1617,21 @@ fn try_template_hover(
             }
             let abs_start = token.start + group_offset;
             let abs_end = abs_start + token.length;
-            if byte_offset >= abs_start && byte_offset < abs_end {
+            // Accept cursor on the name OR on the `?` immediately before.
+            let on_name = byte_offset >= abs_start && byte_offset < abs_end;
+            let on_q = byte_offset + 1 == abs_start
+                && text.as_bytes().get(byte_offset) == Some(&b'?');
+            if on_name || on_q {
                 let name = &text[abs_start..abs_end];
                 // Check if this is a known template. `Function` tokens are
                 // also emitted for regular JS functions and widgets, so this
                 // check filters to templates only.
                 let info = plugin.find_template(name)?;
-
-                let hover_text = format!(
-                    "**`?{}`** `Template`\n\nDefined in `:: {}`",
-                    name, info.defined_in
-                );
-                let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                let _ = info; // info.defined_in no longer shown — user wants minimal hover
+                let hover_text = format!("**`?{}`** `Template`", name);
+                // Hover range covers `?name` (the `?` plus the name).
+                let range_start = abs_start.saturating_sub(1);
+                let hover_range = helpers::byte_range_to_lsp_range(text, &(range_start..abs_end));
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -1390,6 +1642,109 @@ fn try_template_hover(
             }
         }
     }
+
+    // ── Path 2: Text-scan fallback ────────────────────────────────
+    //
+    // If the token-based path didn't fire (e.g., the document hasn't been
+    // re-tokenized yet, or the token builder's `?name` scanning missed an
+    // edge case), fall back to scanning the text around the cursor for a
+    // `?name` pattern. This makes hover robust against stale tokens.
+    if let Some((name_start, name_end)) = scan_template_at_cursor(text, byte_offset) {
+        let name = &text[name_start..name_end];
+        if plugin.find_template(name).is_some() {
+            let hover_text = format!("**`?{}`** `Template`", name);
+            let range_start = name_start.saturating_sub(1); // include `?`
+            let hover_range = helpers::byte_range_to_lsp_range(text, &(range_start..name_end));
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: hover_text,
+                }),
+                range: Some(hover_range),
+            });
+        }
+    }
+
+    None
+}
+
+/// Scan the text around `byte_offset` for a `?name` template invocation.
+///
+/// Returns `(name_start, name_end)` — the byte range of the NAME part
+/// (excluding the `?`) — if the cursor is on the `?` or on the name of a
+/// `?name` pattern in text, AND the name is a valid template identifier
+/// (alpha/underscore start, alphanumeric/underscore/hyphen continuation).
+///
+/// Returns `None` if the cursor isn't on a `?name` pattern, or if the
+/// pattern is preceded by a word character (which would indicate JS
+/// optional chaining like `obj?.prop` rather than a template invocation).
+fn scan_template_at_cursor(text: &str, byte_offset: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    if byte_offset > len {
+        return None;
+    }
+
+    // Helper: is byte a template-name char?
+    let is_name_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    let is_name_start = |b: u8| b.is_ascii_alphabetic() || b == b'_';
+
+    // Helper: is byte a word char (for the `(?<!\w)` negative lookbehind)?
+    let is_word_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+
+    // Case 1: cursor is ON the `?`.
+    if bytes.get(byte_offset) == Some(&b'?') {
+        // The `?` must NOT be preceded by a word char (mimic grammar's
+        // `(?<!\w)` — prevents matching `obj?.prop` optional chaining).
+        let preceded_by_word = byte_offset > 0
+            && bytes.get(byte_offset - 1).copied().map_or(false, is_word_char);
+        if preceded_by_word {
+            return None;
+        }
+        // Scan forward for the name.
+        let mut name_start = byte_offset + 1;
+        if name_start >= len || !is_name_start(bytes[name_start]) {
+            return None;
+        }
+        let mut name_end = name_start + 1;
+        while name_end < len && is_name_char(bytes[name_end]) {
+            name_end += 1;
+        }
+        return Some((name_start, name_end));
+    }
+
+    // Case 2: cursor is ON the name (or just past it). Scan backward for `?`.
+    if byte_offset < len && (is_name_char(bytes[byte_offset])
+        || (byte_offset > 0 && is_name_char(bytes[byte_offset - 1])))
+    {
+        // Walk backward to find the `?`.
+        let mut probe = byte_offset;
+        while probe > 0 && is_name_char(bytes[probe - 1]) {
+            probe -= 1;
+        }
+        // `probe` now points at the first name char. The `?` should be just before.
+        if probe == 0 || bytes.get(probe - 1) != Some(&b'?') {
+            return None;
+        }
+        let q_pos = probe - 1;
+        // `?` must NOT be preceded by a word char.
+        let preceded_by_word = q_pos > 0
+            && bytes.get(q_pos - 1).copied().map_or(false, is_word_char);
+        if preceded_by_word {
+            return None;
+        }
+        // `probe` must be a name-start char.
+        if !is_name_start(bytes[probe]) {
+            return None;
+        }
+        // Scan forward for the end of the name.
+        let mut name_end = probe + 1;
+        while name_end < len && is_name_char(bytes[name_end]) {
+            name_end += 1;
+        }
+        return Some((probe, name_end));
+    }
+
     None
 }
 
@@ -1789,6 +2144,230 @@ mod expr_macro_hover_tests {
                 assert_eq!(range.start.line, 1, "hover range start line");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod prose_hover_tests {
+    use super::*;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use knot_formats::plugin::FormatPlugin;
+    use knot_formats::FormatPluginMut;
+    use url::Url;
+
+    /// Helper: parse a multi-passage source and return the Document plus plugin.
+    /// Same as the `parse` helper in `expr_macro_hover_tests`, duplicated here
+    /// so this test module is self-contained.
+    fn parse(src: &str) -> (knot_core::Document, SugarCubePlugin) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let parse_result = plugin.parse_mut(&uri, src);
+        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        for passage in parse_result.passages {
+            doc.passages.push(passage);
+        }
+        (doc, plugin)
+    }
+
+    /// Hovering on a prose `$var` should fire the variable hover via the
+    /// text-scan fallback, even if the variable wasn't picked up by the
+    /// AST's `var_refs` scanner (e.g., for a var that has no other refs
+    /// in the workspace).
+    #[test]
+    fn hover_fires_on_prose_persistent_var_via_text_scan() {
+        // `$gold` appears in prose only (no `<<set $gold = ...>>` anywhere).
+        // The text-scan fallback should still fire hover.
+        let src = ":: Start\nYou have $gold coins.";
+        let (doc, plugin) = parse(src);
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        // Cursor on `g` of `$gold` (offset = ":: Start\nYou have $".len() = 18).
+        let cursor_offset = ":: Start\nYou have $".len();
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        assert!(hover.is_some(),
+            "hover on prose `$gold` should fire via text-scan fallback, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("$gold"),
+                    "hover text should mention `$gold`: got {}", m.value);
+            }
+        }
+    }
+
+    /// Hovering on a prose `$var.prop` should fire hover. The AST-based path
+    /// produces `var.name = "$player"` (without property path) because the
+    /// AST's `VarRef.name` is just the sigil + identifier — the property
+    /// path is stored separately in `VarRef.property_path`. The hover text
+    /// therefore mentions `$player`, and the hover range covers the full
+    /// `$player.name` span.
+    #[test]
+    fn hover_fires_on_prose_var_property_path() {
+        let src = ":: Start\nYou have $player.name coins.";
+        let (doc, plugin) = parse(src);
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        // Cursor on `n` of `.name` (offset = ":: Start\nYou have $player.".len() = 24).
+        let cursor_offset = ":: Start\nYou have $player.".len();
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        assert!(hover.is_some(),
+            "hover on prose `$player.name` should fire, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("$player"),
+                    "hover text should mention `$player`: got {}", m.value);
+            }
+            // Hover range should cover the full `$player.name` span.
+            if let Some(range) = h.range {
+                // The span starts at `$` and ends after `name` (12 chars total).
+                assert_eq!(range.start.character, 9,
+                    "hover range start should be at `$` (char 9): got {}", range.start.character);
+                assert!(range.end.character >= 21,
+                    "hover range end should be at end of `$player.name` (char 21+): got {}",
+                    range.end.character);
+            }
+        }
+    }
+
+    /// Direct unit test for `scan_variable_at_cursor`: cursor on the sigil
+    /// `$` should return the full variable token (sigil + name + property
+    /// path).
+    #[test]
+    fn scan_variable_at_cursor_on_sigil() {
+        let src = "You have $player.name coins.";
+        // Cursor on `$` (offset = 9).
+        let cursor_offset = src.find("$player").unwrap();
+        let result = scan_variable_at_cursor(src, cursor_offset);
+        assert!(result.is_some(), "scan should find `$player.name` at cursor on `$`");
+        let (sigil, name, start, end) = result.unwrap();
+        assert_eq!(sigil, '$');
+        assert_eq!(name, "player.name");
+        assert_eq!(start, cursor_offset);
+        assert_eq!(&src[start..end], "$player.name");
+    }
+
+    /// Direct unit test for `scan_variable_at_cursor`: cursor on the name
+    /// part should return the full variable token.
+    #[test]
+    fn scan_variable_at_cursor_on_name() {
+        let src = "You have $gold coins.";
+        // Cursor on `o` of `$gold` (offset = 11).
+        let cursor_offset = src.find("$gold").unwrap() + 2;
+        let result = scan_variable_at_cursor(src, cursor_offset);
+        assert!(result.is_some(), "scan should find `$gold` at cursor on `o`");
+        let (sigil, name, start, end) = result.unwrap();
+        assert_eq!(sigil, '$');
+        assert_eq!(name, "gold");
+        assert_eq!(&src[start..end], "$gold");
+    }
+
+    /// Direct unit test for `scan_variable_at_cursor`: cursor on `_` in the
+    /// middle of `snake_case` should NOT match (it's not a temp-var sigil).
+    #[test]
+    fn scan_variable_at_cursor_rejects_underscore_in_word() {
+        let src = "Use snake_case here.";
+        // Cursor on `_` in `snake_case`.
+        let cursor_offset = src.find("snake_case").unwrap() + 5;
+        let result = scan_variable_at_cursor(src, cursor_offset);
+        assert!(result.is_none(),
+            "scan must NOT match `_` in `snake_case`: got {:?}", result);
+    }
+
+    /// Direct unit test for `scan_variable_at_cursor`: cursor on `_temp`
+    /// at a word boundary SHOULD match (it's a valid temp var).
+    #[test]
+    fn scan_variable_at_cursor_matches_temp_var() {
+        let src = "Use _temp here.";
+        // Cursor on `t` of `_temp`.
+        let cursor_offset = src.find("_temp").unwrap() + 1;
+        let result = scan_variable_at_cursor(src, cursor_offset);
+        assert!(result.is_some(), "scan should find `_temp` at cursor on `t`");
+        let (sigil, name, start, end) = result.unwrap();
+        assert_eq!(sigil, '_');
+        assert_eq!(name, "temp");
+        assert_eq!(&src[start..end], "_temp");
+    }
+
+    /// Hovering on `_temp` in prose should fire hover via text-scan fallback,
+    /// but NOT when `_` is in the middle of a word (e.g., `snake_case`).
+    #[test]
+    fn hover_does_not_fire_on_underscore_in_word() {
+        let src = ":: Start\nUse snake_case here.";
+        let (doc, plugin) = parse(src);
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        // Cursor on `_` in `snake_case` (offset = ":: Start\nUse snake".len() = 16).
+        let cursor_offset = ":: Start\nUse snake".len();
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        assert!(hover.is_none(),
+            "hover must NOT fire on `_` in `snake_case` (not a temp var): got {:?}",
+            hover);
+    }
+
+    /// Hovering on `?template` in prose should fire the template hover via
+    /// the text-scan fallback when the template is registered. The hover
+    /// text should be minimal: `**\`?name\`** \`Template\`` (no "Defined in").
+    #[test]
+    fn hover_fires_on_prose_template_via_text_scan() {
+        // Register a template by parsing a StoryInit passage that calls
+        // `Template.add("greeting", ...)`. Then test hover on `?greeting`
+        // in a separate passage.
+        let src = ":: StoryInit\n<<run Template.add(\"greeting\", function() { return \"Hello\"; })>>\n:: Start\nYou see ?greeting friend.";
+        let (doc, plugin) = parse(src);
+        // Cursor on `g` of `?greeting` in the Start passage.
+        let cursor_offset = src.find("?greeting").unwrap() + 1;
+        let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();
+        let hover = try_template_hover(src, cursor_offset, &plugin, &token_groups);
+        assert!(hover.is_some(),
+            "hover on prose `?greeting` should fire via text-scan fallback, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("`?greeting`"),
+                    "hover text should contain `?greeting`: got {}", m.value);
+                assert!(m.value.contains("Template"),
+                    "hover text should mention 'Template': got {}", m.value);
+                assert!(!m.value.contains("Defined in"),
+                    "hover text should NOT contain 'Defined in' (user wants minimal hover): got {}",
+                    m.value);
+            }
+        }
+    }
+
+    /// Hovering on the `?` prefix of `?template` should also fire hover
+    /// (the hover range is extended to include the `?`).
+    #[test]
+    fn hover_fires_on_template_question_mark_prefix() {
+        let src = ":: StoryInit\n<<run Template.add(\"greeting\", function() { return \"Hello\"; })>>\n:: Start\nYou see ?greeting friend.";
+        let (doc, plugin) = parse(src);
+        // Cursor ON the `?` of `?greeting`.
+        let cursor_offset = src.find("?greeting").unwrap();
+        let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();
+        let hover = try_template_hover(src, cursor_offset, &plugin, &token_groups);
+        assert!(hover.is_some(),
+            "hover on `?` of `?greeting` should fire (extended range), got None");
+    }
+
+    /// `scan_template_at_cursor` should NOT match `?.` (JS optional chaining).
+    #[test]
+    fn text_scan_does_not_match_js_optional_chaining() {
+        // `obj?.prop` — the `?` is preceded by `j` (a word char).
+        // Even though `prop` is a valid identifier, this should NOT match.
+        let src = ":: Start\n<<run obj?.prop>>";
+        // Cursor on `?` of `obj?.prop`.
+        let cursor_offset = src.find("obj?.prop").unwrap() + 3;
+        let result = scan_template_at_cursor(src, cursor_offset);
+        assert!(result.is_none(),
+            "scan_template_at_cursor must NOT match JS optional chaining `obj?.prop`: got {:?}",
+            result);
+    }
+
+    /// `scan_template_at_cursor` should NOT match a JS ternary
+    /// (`cond ? value : other`) where `?` is followed by a space.
+    #[test]
+    fn text_scan_does_not_match_js_ternary_with_space() {
+        let src = ":: Start\n<<run x > 0 ? \"yes\" : \"no\">>";
+        // Cursor on `?` of the ternary.
+        let cursor_offset = src.find("? \"yes\"").unwrap();
+        let result = scan_template_at_cursor(src, cursor_offset);
+        assert!(result.is_none(),
+            "scan_template_at_cursor must NOT match JS ternary `cond ? value : other`: got {:?}",
+            result);
     }
 }
 

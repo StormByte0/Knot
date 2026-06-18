@@ -1099,13 +1099,24 @@ impl FormatPlugin for SugarCubePlugin {
 
             // ── ? → Template (SugarCube template invocation in prose) ───
             Some('?') => {
-                // Extract the partial name after `?` (if any).
-                let after_q = &before_cursor[before_cursor.rfind('?').unwrap() + 1..];
-                let name = if after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                    after_q.to_string()
-                } else {
-                    String::new()
-                };
+                let q_pos = before_cursor.rfind('?').unwrap();
+                // Suppress if `?` is preceded by a word char (JS optional
+                // chaining `obj?.prop` or identifier-then-ternary).
+                if q_pos > 0 {
+                    let prev_byte = before_cursor.as_bytes()[q_pos - 1];
+                    if prev_byte.is_ascii_alphanumeric() || prev_byte == b'_' {
+                        return CompletionContext::Other;
+                    }
+                }
+                let after_q = &before_cursor[q_pos + 1..];
+                // Suppress if `?` is followed by a non-identifier char (JS
+                // ternary `cond ? "x" : "y"`). Empty is OK (just typed `?`).
+                if !after_q.is_empty()
+                    && !after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    return CompletionContext::Other;
+                }
+                let name = after_q.to_string();
                 return CompletionContext::Template { name };
             }
 
@@ -1368,15 +1379,34 @@ impl FormatPlugin for SugarCubePlugin {
         // SugarCube templates are invoked with `?name` in prose. When the
         // user types `?`, offer all known template names. When they type
         // `?par`, filter to templates starting with "par".
+        //
+        // SUPPRESSION: `?` is also a JS operator (ternary `cond ? a : b`
+        // and optional chaining `obj?.prop`). To avoid bleeding template
+        // completions into JS expression contexts, we replicate the
+        // SugarCube grammar's `(?<!\w)\?[A-Za-z_]` rule:
+        //   - If `?` is preceded by a word char (`[A-Za-z0-9_]`), suppress
+        //     (likely JS optional chaining or identifier-then-ternary).
+        //   - If `?` is followed by a non-identifier char (and not end of
+        //     input), suppress (likely JS ternary like `cond ? "x" : "y"`).
         if trigger == Some('?') {
-            let partial = {
-                let after_q = &before_cursor[before_cursor.rfind('?').unwrap() + 1..];
-                if after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                    after_q.to_string()
-                } else {
-                    String::new()
+            let q_pos = before_cursor.rfind('?').unwrap();
+            // Check the char before `?` (must NOT be a word char).
+            if q_pos > 0 {
+                let prev_byte = before_cursor.as_bytes()[q_pos - 1];
+                if prev_byte.is_ascii_alphanumeric() || prev_byte == b'_' {
+                    return Vec::new();
                 }
-            };
+            }
+            let after_q = &before_cursor[q_pos + 1..];
+            // If there's text after `?`, it must look like an identifier
+            // (alphanumeric/underscore/hyphen). Empty (just typed `?`) is
+            // also valid — the user is about to type a template name.
+            if !after_q.is_empty()
+                && !after_q.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
+                return Vec::new();
+            }
+            let partial = after_q.to_string();
             return self.build_template_completions(line, character, &partial);
         }
 
@@ -4121,6 +4151,130 @@ mod completion_debug_tests {
         // It should NOT appear as a suggestion.
         assert!(!labels.contains(&"name"),
             "Dot trigger after $item.work. should NOT show 'name' (sibling under $item, not child of work), got: {:?}", labels);
+    }
+
+    // ── `?` trigger template completion tests ────────────────────────────
+    //
+    // These tests cover the `?` trigger handling in `provide_completions`,
+    // including the suppression rules that prevent template completions from
+    // bleeding into JS expression contexts (ternary, optional chaining).
+
+    /// Helper: register a single template named `name` in the plugin's
+    /// template registry, so `build_template_completions` has something to
+    /// return.
+    fn register_template(plugin: &mut SugarCubePlugin, name: &str) {
+        use crate::sugarcube::registries::template_registry::TemplateKind;
+        plugin.registry_mut().templates_mut().register_template(
+            name,
+            TemplateKind::Function,
+            "StoryInit",
+            "file:///test.twee",
+            0,
+        );
+    }
+
+    /// `?` trigger in prose (cursor right after `?`) should fire template
+    /// completions.
+    #[test]
+    fn template_completions_fire_on_q_trigger_in_prose() {
+        let mut plugin = SugarCubePlugin::new();
+        register_template(&mut plugin, "greeting");
+        let text = ":: Start\nHello ?";
+        let line = 1u32;
+        let character = 7u32; // cursor right after `?`
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('?'), &[],
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"?greeting"),
+            "`?` trigger in prose should show ?greeting, got: {:?}", labels);
+    }
+
+    /// `?` trigger with a partial name (`?gre`) should filter templates.
+    #[test]
+    fn template_completions_filter_by_partial() {
+        let mut plugin = SugarCubePlugin::new();
+        register_template(&mut plugin, "greeting");
+        register_template(&mut plugin, "farewell");
+        let text = ":: Start\nHello ?gre";
+        let line = 1u32;
+        let character = 10u32; // cursor after `?gre`
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('?'), &[],
+        );
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"?greeting"),
+            "`?gre` should match ?greeting, got: {:?}", labels);
+        assert!(!labels.contains(&"?farewell"),
+            "`?gre` should NOT match ?farewell, got: {:?}", labels);
+    }
+
+    /// `?` trigger preceded by a word char (e.g., `obj?`) should NOT fire
+    /// template completions — this is JS optional chaining context.
+    #[test]
+    fn template_completions_suppressed_when_q_after_word_char() {
+        let mut plugin = SugarCubePlugin::new();
+        register_template(&mut plugin, "greeting");
+        // `obj?` — the `?` is preceded by `j` (a word char). Even though
+        // the `?` trigger fires, the suppression rule should return empty.
+        let text = ":: Start\nHello obj?";
+        let line = 1u32;
+        let character = 11u32; // cursor right after `?` (which is after `obj`)
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('?'), &[],
+        );
+        assert!(items.is_empty(),
+            "`?` trigger after word char `obj?` should suppress template completions (JS optional chaining), got {} items: {:?}",
+            items.len(), items.iter().map(|i| &i.label).collect::<Vec<_>>());
+    }
+
+    /// `?` trigger followed by a space (e.g., `cond ? value`) should NOT
+    /// fire template completions — this is JS ternary context.
+    #[test]
+    fn template_completions_suppressed_when_q_followed_by_space() {
+        let mut plugin = SugarCubePlugin::new();
+        register_template(&mut plugin, "greeting");
+        // `cond ? ` — the `?` is followed by a space. JS ternary context.
+        // Note: the trigger fires when `?` is typed, so before_cursor is
+        // `cond ? ` (with the trailing space). Actually, the trigger fires
+        // immediately when `?` is typed, so before_cursor is `cond ?` and
+        // the space hasn't been typed yet. To simulate the ternary case,
+        // we use before_cursor = `cond ?` followed by `"yes"` — but the
+        // trigger only sees up to the `?`. The actual test: when the user
+        // types a space after `?`, the trigger fires again (no, `?` is
+        // the trigger, space isn't). So we need to test the case where
+        // `?` is followed by a non-identifier char in before_cursor.
+        //
+        // The realistic scenario: the user types `?` after `cond ` and
+        // then types a `"`. The `"` doesn't trigger anything, but if the
+        // user then backspaces and retypes `?`, the trigger fires with
+        // before_cursor = `cond ?` (just `?`, no following char). So the
+        // suppression based on "char after `?`" only fires when there IS
+        // a char after `?` in before_cursor.
+        //
+        // To test this, we simulate: user typed `?"` (quote after `?`),
+        // and the `?` trigger fired (with before_cursor = `?"`).
+        let text = ":: Start\nHello ?\"";
+        let line = 1u32;
+        let character = 8u32; // cursor right after `?"`
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = Workspace::new(uri.clone());
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, Some('?'), &[],
+        );
+        assert!(items.is_empty(),
+            "`?` trigger followed by non-identifier char `?\"` should suppress template completions (likely JS ternary), got {} items: {:?}",
+            items.len(), items.iter().map(|i| &i.label).collect::<Vec<_>>());
     }
 }
 

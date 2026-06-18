@@ -6,6 +6,16 @@
             "include": "source.twee"
         },
         {
+            "comment": "Harlowe story variable: $varName. Harlowe uses $-prefixed variables like SugarCube, but property access uses 's-notation ($var's prop) rather than dot-notation, so the pattern matches the bare variable name without dots. This pattern is in the Harlowe grammar (not the base twee grammar) because $-prefixed variables are format-specific — see the comment in twee.tmLanguage.json.",
+            "name": "variable.other.story.harlowe",
+            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+            "comment": "Harlowe temp variable: _varName. Harlowe supports temp variables with the _ sigil (same as SugarCube).",
+            "name": "variable.other.temp.harlowe",
+            "match": "(?<!\\w)_[A-Za-z_][A-Za-z0-9_]*(?!\\w)"
+        },
+        {
             "comment": "Harlowe macro/command: (name:args) — parenthetical command syntax",
             "comment": "Matches the opening (name: and delegates to finding the closing )",
             "contentName": "meta.harlowe.macro",

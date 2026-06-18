@@ -225,9 +225,11 @@
             }
         },
         {
-            "comment": "Story variable: $varName. This pattern is intentionally NOT in the base grammar because $-prefixed variables are format-specific (SugarCube, Harlowe). Chapbook uses state.varName and Snowman uses s.varName. The format-specific TextMate grammars (sugarcube.tmLanguage.json, harlowe.tmLanguage.json) each define their own variable patterns.",
-            "name": "variable.other.story.twee",
-            "match": "(?<!\\w)\\$[A-Za-z_][A-Za-z0-9_]*"
+            "comment": "=====================================================================",
+            "name": "comment.section.format-specific-variables.twee"
+        },
+        {
+            "comment": "Story variables ($varName) are NOT defined here. $-prefixed variables are format-specific: SugarCube uses $varName.prop1.prop2 (dot-notation property paths), while Harlowe uses $varName's prop1's prop2 ('s-notation property access). Each format-specific TextMate grammar (sugarcube.tmLanguage.json, harlowe.tmLanguage.json) defines its own variable patterns. Chapbook uses state.varName and Snowman uses s.varName — neither uses $ at all."
         }
     ]
 }
