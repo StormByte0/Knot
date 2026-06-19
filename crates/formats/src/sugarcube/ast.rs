@@ -51,6 +51,12 @@ pub struct JsAnalysis {
     /// Global object/namespace references found by oxc (e.g., `Engine`,
     /// `Story`, `Config`, `Save`, `UI`, etc.).
     pub namespace_spans: Vec<NamespaceSpan>,
+    /// Comments (`/* ... */` block comments and `// ...` line comments)
+    /// found inside the JS expression. These are NOT collected by oxc's
+    /// AST walker (comments aren't AST nodes), so the walker scans the
+    /// raw JS source separately to find them. The token builder emits
+    /// `Comment` tokens for these spans so themes can color them.
+    pub comment_spans: Vec<CommentSpan>,
 }
 
 /// A variable operation extracted by the oxc AST walker.
@@ -181,6 +187,20 @@ pub struct PropertySpan {
     /// The property name (e.g., "play", "has", "debug").
     pub name: String,
     /// Byte range of the property name in the passage body.
+    pub span: Range<usize>,
+}
+
+/// A comment (`/* ... */` or `// ...`) found inside a JS expression.
+///
+/// Produced by the JS walker scanning the raw (preprocessed) JS source
+/// for comments, since oxc's AST doesn't include comments as nodes. The
+/// spans are mapped back to the ORIGINAL SugarCube source positions via
+/// the preprocessor's substitution table (same as `OperatorSpan`).
+#[derive(Debug, Clone)]
+pub struct CommentSpan {
+    /// The kind of comment.
+    pub kind: CommentKind,
+    /// Byte range in the passage body (passage-body-relative).
     pub span: Range<usize>,
 }
 

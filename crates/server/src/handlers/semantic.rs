@@ -39,6 +39,15 @@ fn convert_semantic_tokens(
     let text_len = text.len();
     let line_count = if text.is_empty() { 0u32 } else { text.lines().count() as u32 };
 
+    // Pre-compute line start byte offsets for efficient line lookup.
+    // line_starts[i] = byte offset of the start of line i.
+    let mut line_starts: Vec<usize> = vec![0];
+    for (offset, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(offset + 1);
+        }
+    }
+
     for group in token_groups {
         for pt in &group.tokens {
             // Resolve passage-relative offset to document-absolute
@@ -47,46 +56,99 @@ fn convert_semantic_tokens(
             // Clamp byte offsets to document length to prevent out-of-bounds access
             let safe_start = doc_absolute_start.min(text_len);
             let safe_end = (doc_absolute_start + pt.length).min(text_len);
-            
+
             // Skip zero-length tokens (can happen from incorrect position math)
             if safe_start >= safe_end {
-                continue;
-            }
-
-            let pos = helpers::byte_offset_to_position(text, safe_start);
-            
-            // Skip tokens whose line exceeds the document
-            if pos.line >= line_count {
                 continue;
             }
 
             let token_type = map_token_type(&pt.token_type);
             let modifiers = map_token_modifier(&pt.modifier);
 
-            // Convert byte length to UTF-16 code unit length for the LSP wire format.
-            let token_text = &text[safe_start..safe_end];
-            let utf16_length: u32 = token_text.chars()
-                .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
-                .sum();
+            // ── Split multi-line tokens into per-line tokens ──────────
+            //
+            // LSP semantic tokens are single-line: each token has a (line,
+            // start_char, length) where length is on that SAME line. A
+            // token that spans multiple lines (e.g., a multi-line /* */
+            // comment) must be split into one token per line, each with
+            // the same type and modifiers.
+            //
+            // Without this split, VS Code only colors the first line and
+            // silently drops the rest — the token's length gets clamped to
+            // the end of line 1.
 
-            // Clamp start_char to the line length to prevent "end character > model.getLineLength"
-            let line_text = text.lines().nth(pos.line as usize).unwrap_or("");
-            let line_utf16_len = helpers::utf16_len(line_text);
-            let clamped_char = pos.character.min(line_utf16_len);
-            let clamped_length = utf16_length.min(line_utf16_len.saturating_sub(clamped_char));
-            
-            // Skip if the token would have zero or negative length after clamping
-            if clamped_length == 0 {
+            let start_pos = helpers::byte_offset_to_position(text, safe_start);
+            let end_pos = helpers::byte_offset_to_position(text, safe_end);
+
+            // Skip if the start line exceeds the document
+            if start_pos.line >= line_count {
                 continue;
             }
 
-            tokens.push(SemTok {
-                line: pos.line,
-                start_char: clamped_char,
-                length: clamped_length,
-                token_type,
-                token_modifiers: modifiers,
-            });
+            // Iterate over each line the token spans
+            let mut current_line = start_pos.line;
+            loop {
+                if current_line >= line_count {
+                    break;
+                }
+
+                // Get the byte range of this line
+                let line_start_byte = line_starts.get(current_line as usize)
+                    .copied()
+                    .unwrap_or(text_len);
+                let line_end_byte = if (current_line + 1) as usize >= line_starts.len() {
+                    // Last line — check if text ends with newline
+                    if line_start_byte < text_len && text.as_bytes()[line_start_byte] == b'\n' {
+                        line_start_byte + 1 // empty line (just newline)
+                    } else {
+                        text_len
+                    }
+                } else {
+                    line_starts[(current_line + 1) as usize]
+                };
+
+                // The token's portion on this line:
+                //   - Start: max(safe_start, line_start_byte)
+                //   - End: min(safe_end, line_end_byte_excluding_newline)
+                let line_content_end = if line_end_byte > 0 && text.as_bytes().get(line_end_byte - 1) == Some(&b'\n') {
+                    line_end_byte - 1 // exclude the newline
+                } else {
+                    line_end_byte
+                };
+
+                let segment_start = safe_start.max(line_start_byte);
+                let segment_end = safe_end.min(line_content_end);
+
+                if segment_start < segment_end {
+                    // Calculate the UTF-16 start character on this line
+                    let line_text = &text[line_start_byte..line_content_end.min(text_len)];
+                    let char_offset_in_line = segment_start.saturating_sub(line_start_byte);
+                    let line_prefix = &line_text[..char_offset_in_line.min(line_text.len())];
+                    let start_char_utf16 = helpers::utf16_len(line_prefix) as u32;
+
+                    // Calculate the UTF-16 length of this segment
+                    let segment_text = &text[segment_start..segment_end];
+                    let segment_utf16_len: u32 = segment_text.chars()
+                        .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
+                        .sum();
+
+                    if segment_utf16_len > 0 {
+                        tokens.push(SemTok {
+                            line: current_line,
+                            start_char: start_char_utf16,
+                            length: segment_utf16_len,
+                            token_type,
+                            token_modifiers: modifiers,
+                        });
+                    }
+                }
+
+                // Move to the next line
+                current_line += 1;
+                if current_line > end_pos.line {
+                    break;
+                }
+            }
         }
     }
 

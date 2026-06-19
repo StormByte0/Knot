@@ -26,7 +26,7 @@ use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 
 use crate::sugarcube::ast::{
-    AnalyzedVarOp, FunctionCallInfo, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
+    AnalyzedVarOp, CommentKind, CommentSpan, FunctionCallInfo, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
     NamespaceSpan, OperatorKind, OperatorSpan, PropertySpan, TemplateAddInfo,
 };
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
@@ -57,6 +57,10 @@ pub fn walk_script_passage(
 
     // Extract literal and operator spans from the substitution table and oxc AST.
     extract_substitution_operators(preprocessed, &mut analysis);
+
+    // Scan for comments (/* */ and //) in the raw preprocessed source.
+    // oxc strips comments from the AST, so we find them by source scanning.
+    extract_comments(preprocessed, &mut analysis);
 
     analysis
 }
@@ -92,6 +96,10 @@ pub fn walk_inline_js(
 
     // Extract literal and operator spans from the substitution table and oxc AST.
     extract_substitution_operators(preprocessed, &mut analysis);
+
+    // Scan for comments (/* */ and //) in the raw preprocessed source.
+    // oxc strips comments from the AST, so we find them by source scanning.
+    extract_comments(preprocessed, &mut analysis);
 
     analysis
 }
@@ -1200,6 +1208,103 @@ fn extract_substitution_operators(
                 ..(sub.original_range.end + preprocessed.origin_offset);
             analysis.operator_spans.push(OperatorSpan { kind, span });
         }
+    }
+}
+
+/// Scan the preprocessed JS source for comments (`/* ... */` and `// ...`).
+///
+/// oxc's AST doesn't include comments as nodes (they're stripped during
+/// parsing), so we find them by scanning the raw preprocessed source text.
+/// We carefully skip over string literals to avoid false positives (e.g.,
+/// `"http://"` should NOT be treated as a comment).
+///
+/// Found comment spans are mapped back to the ORIGINAL SugarCube source
+/// positions via the preprocessor's substitution table (same mechanism as
+/// `extract_substitution_operators`), then stored in `analysis.comment_spans`
+/// for the token builder to emit as `Comment` semantic tokens.
+fn extract_comments(
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    let src = preprocessed.source.as_bytes();
+    let len = src.len();
+    let mut i = 0usize;
+
+    while i < len {
+        let b = src[i];
+
+        // ── Skip string literals ──────────────────────────────────────
+        // Single-quoted, double-quoted, and template (backtick) strings.
+        // All three use `\` as the escape character.
+        if b == b'"' || b == b'\'' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < len {
+                if src[i] == b'\\' {
+                    i += 2; // skip escape + next char
+                    continue;
+                }
+                if src[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // ── Block comment: /* ... */ ─────────────────────────────────
+        if b == b'/' && i + 1 < len && src[i + 1] == b'*' {
+            let start = i;
+            i += 2;
+            while i + 1 < len {
+                if src[i] == b'*' && src[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+            // If we didn't find a closing */, i is at len — the comment is
+            // unterminated. We still emit a span for what we have.
+            let end = i.min(len);
+            // map_to_original expects oxc AST positions, which include
+            // wrapping_offset. Our positions are from preprocessed.source
+            // (no wrapping), so add wrapping_offset before mapping.
+            let orig_start = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
+            let orig_end = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
+            if orig_end > orig_start {
+                analysis.comment_spans.push(CommentSpan {
+                    kind: CommentKind::CStyle,
+                    span: orig_start..orig_end,
+                });
+            }
+            continue;
+        }
+
+        // ── Line comment: // ... (to end of line) ────────────────────
+        if b == b'/' && i + 1 < len && src[i + 1] == b'/' {
+            let start = i;
+            i += 2;
+            while i < len && src[i] != b'\n' {
+                i += 1;
+            }
+            // Don't consume the newline — let the outer loop handle it.
+            let end = i;
+            // map_to_original expects oxc AST positions, which include
+            // wrapping_offset. Our positions are from preprocessed.source
+            // (no wrapping), so add wrapping_offset before mapping.
+            let orig_start = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
+            let orig_end = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
+            if orig_end > orig_start {
+                analysis.comment_spans.push(CommentSpan {
+                    kind: CommentKind::JsLine,
+                    span: orig_start..orig_end,
+                });
+            }
+            continue;
+        }
+
+        i += 1;
     }
 }
 

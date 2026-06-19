@@ -97,12 +97,21 @@ pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
                         span: offset + start..offset + i,
                     })
                 } else {
-                    // Not italic — apply the existing comment heuristic
-                    let is_comment_context = if i + 2 < len {
+                    // Not italic — check if this // is a line comment.
+                    //
+                    // In SugarCube prose, // is ALWAYS a comment (unless it's
+                    // italic formatting, which we already checked above). The
+                    // only exception is // inside a URL like http://example.com
+                    // — but there // is preceded by ':', not whitespace.
+                    //
+                    // So the rule is simple: if // is at line start OR preceded
+                    // by whitespace (space/tab), it's a comment. We do NOT
+                    // require a space AFTER // — `//comment` (no space) is just
+                    // as valid a comment as `// comment`.
+                    let is_comment_context = if i + 2 <= len {
                         let at_line_start = i == 0 || bytes[i - 1] == b'\n';
-                        let preceded_by_space = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
-                        let followed_by_space = bytes[i + 2] == b' ' || bytes[i + 2] == b'\t';
-                        at_line_start || (preceded_by_space && followed_by_space)
+                        let preceded_by_whitespace = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
+                        at_line_start || preceded_by_whitespace
                     } else {
                         true
                     };
@@ -391,7 +400,90 @@ fn find_class_and_body_start(
 
 #[cfg(test)]
 mod tests {
-    use crate::sugarcube::ast::{AstNode, ParseMode, LinkSource, TextFormatKind};
+    use crate::sugarcube::ast::{AstNode, CommentKind, ParseMode, LinkSource, TextFormatKind};
+
+    #[test]
+    fn line_comment_no_space_after_slashes_is_recognized() {
+        // //comment (no space after //) should be recognized as a comment,
+        // not treated as prose text. This was the user's bug report:
+        // `<<link "x" "y">>  //content1` was getting a Prose token instead
+        // of a Comment token because the old heuristic required a space
+        // AFTER // (followed_by_space).
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "//content1", 0, ParseMode::Normal,
+        );
+        assert_eq!(ast.nodes.len(), 1);
+        assert!(matches!(&ast.nodes[0], AstNode::Comment { kind: CommentKind::JsLine, .. }),
+            "//content1 should be a Comment node, got {:?}", ast.nodes[0]);
+    }
+
+    #[test]
+    fn line_comment_after_macro_no_space_is_recognized() {
+        // <<link "x" "y">>  //content1 — the //content1 has no space after //
+        // but IS preceded by spaces (after >>). Should be a Comment.
+        // Note: <<link>> is a Required-body macro, so it goes on the stack
+        // and the comment becomes its child (not a top-level node).
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<link \"x\" \"y\">>  //content1", 0, ParseMode::Normal,
+        );
+
+        fn has_comment_recursive(nodes: &[AstNode]) -> bool {
+            for n in nodes {
+                if matches!(n, AstNode::Comment { kind: CommentKind::JsLine, .. }) {
+                    return true;
+                }
+                if let AstNode::Macro { children: Some(ch), .. } = n {
+                    if has_comment_recursive(ch) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        assert!(has_comment_recursive(&ast.nodes),
+            "should have a Comment node for //content1 somewhere in the tree");
+    }
+
+    #[test]
+    fn line_comment_inside_block_no_space_is_recognized() {
+        // The user's exact scenario: //content2 and //content3 inside
+        // a <<link>> block, with no space after //.
+        let input = "<<link \"Chat\" \"Coworker\">>  //content1\n  <<if true>>  //content2\n    <<adjustStat \"stress\" -3>>  //content3\n    <<addTime 10>>\n  <</if>>\n<</link>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+
+        // Collect all Comment nodes by walking the tree
+        fn count_comments(nodes: &[AstNode]) -> usize {
+            let mut count = 0;
+            for n in nodes {
+                if matches!(n, AstNode::Comment { .. }) {
+                    count += 1;
+                }
+                if let AstNode::Macro { children: Some(ch), .. } = n {
+                    count += count_comments(ch);
+                }
+            }
+            count
+        }
+        let comment_count = count_comments(&ast.nodes);
+        assert_eq!(comment_count, 3,
+            "should have 3 Comment nodes (//content1, //content2, //content3), got {}", comment_count);
+    }
+
+    #[test]
+    fn trailing_text_after_inline_macro_not_swallowed() {
+        // Regression: inline macros like <<set>> were pushed onto the tree
+        // builder's stack, swallowing trailing text/comments into
+        // pending_children and dropping them when finalized as inline.
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "<<set $x to 1>> some narrative text", 0, ParseMode::Normal,
+        );
+        assert_eq!(ast.nodes.len(), 2, "should have Macro + Text nodes");
+        assert!(matches!(&ast.nodes[0], AstNode::Macro { name, .. } if name == "set"));
+        match &ast.nodes[1] {
+            AstNode::Text { content, .. } => assert!(content.contains("narrative text")),
+            other => panic!("expected Text node, got {:?}", other),
+        }
+    }
 
     #[test]
     fn parse_simple_text() {
@@ -1337,5 +1429,79 @@ mod tests {
 Some narrative text with — em dashes — and $gs.inventory references."#;
         let _ast = crate::sugarcube::parser::parse_passage_body(content, 0, ParseMode::Normal);
         // If we get here without panicking, the fix works.
+    }
+
+    #[test]
+    fn block_comment_inside_set_args_emits_comment_token() {
+        // Comments inside <<set>> JS expressions (e.g. inside object literals)
+        // should be recognized as Comment tokens via the JS annotation pass.
+        // oxc strips comments from the AST, so we scan the raw preprocessed
+        // source separately in js_walk::extract_comments().
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<set $x = { /* inner comment */ a: 1 }>>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let comment_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
+            .collect();
+        assert!(!comment_tokens.is_empty(),
+            "should have at least one Comment token for /* inner comment */ inside <<set>> args");
+    }
+
+    #[test]
+    fn line_comment_inside_set_args_emits_comment_token() {
+        // // line comments inside <<set>> JS expressions should also be
+        // recognized as Comment tokens.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<set $x = { a: 1, // inner line comment\n b: 2 }>>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let comment_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
+            .collect();
+        assert!(!comment_tokens.is_empty(),
+            "should have at least one Comment token for // inner line comment inside <<set>> args, got {} comment tokens",
+            comment_tokens.len());
+    }
+
+    #[test]
+    fn multiline_block_comment_inside_set_args_emits_comment_token() {
+        // Multi-line /* */ block comments inside <<set>> JS expressions
+        // should be recognized as a single Comment token spanning ALL lines
+        // including the closing */.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<set $x = {\n  /* this is\n     a multi-line\n     comment */\n  a: 1\n}>>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let comment_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
+            .collect();
+        assert!(!comment_tokens.is_empty(),
+            "should have at least one Comment token for multi-line /* */ inside <<set>> args, got {} comment tokens",
+            comment_tokens.len());
+
+        // The comment token should span the FULL multi-line comment including
+        // the closing */ and all content lines.
+        let full_comment_text: String = comment_tokens.iter()
+            .map(|t| text[t.start.min(text.len())..(t.start + t.length).min(text.len())].to_string())
+            .collect();
+        assert!(full_comment_text.contains("*/"),
+            "comment token should include the closing */, got: {:?}", full_comment_text);
+        assert!(full_comment_text.contains("multi-line"),
+            "comment token should include 'multi-line' from line 2, got: {:?}", full_comment_text);
+        assert!(full_comment_text.contains("this is"),
+            "comment token should include 'this is' from line 1, got: {:?}", full_comment_text);
     }
 }

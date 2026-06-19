@@ -54,7 +54,9 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
                         .flat_map(|e| e.into_nodes())
                         .collect();
 
-                    let entry = &mut stack[idx];
+                    // Pop the matched entry itself — it's now closed and should
+                    // become a child of its parent (the new top of stack).
+                    let mut entry = stack.pop().unwrap();
 
                     // Collect children: the nodes that were between open and close
                     // (both the entry's pending children and the popped stack entries)
@@ -70,6 +72,16 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
                         let new_end = entry.close_span.as_ref().unwrap().end;
                         // The full_span should cover from open to close
                         entry.full_span_end = Some(new_end.max(full_span.end));
+                    }
+
+                    // Finalize the closed macro and add it to the parent's
+                    // pending_children (or roots if no parent on stack).
+                    let closed_node = entry.into_node_with_catalog();
+                    let current = stack.last_mut();
+                    if let Some(parent) = current {
+                        parent.pending_children.push(closed_node);
+                    } else {
+                        roots.push(closed_node);
                     }
                 } else {
                     // Orphan close tag — no matching open macro.
@@ -95,8 +107,32 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
                         roots.push(node);
                     }
                 } else {
-                    // Push onto stack as a potential block parent
-                    stack.push(StackEntry::from_macro(node));
+                    // Check the catalog: is this macro capable of having a body?
+                    // Inline macros (BodyRequirement::Never, e.g. <<set>>, <<print>>,
+                    // <<adjustStat>>) can NEVER have children — pushing them onto
+                    // the stack would swallow any trailing text/comments into
+                    // pending_children and then drop them when the macro is
+                    // finalized as inline. So we emit inline macros directly to
+                    // the current context.
+                    let macro_name = match &node {
+                        AstNode::Macro { name, .. } => name.clone(),
+                        _ => String::new(),
+                    };
+                    let body_req = lookup_body_requirement(&macro_name);
+
+                    if body_req == BodyRequirement::Never {
+                        // Inline macro — emit directly, don't push to stack.
+                        let current = stack.last_mut();
+                        if let Some(entry) = current {
+                            entry.pending_children.push(node);
+                        } else {
+                            roots.push(node);
+                        }
+                    } else {
+                        // Block-capable macro (Optional or Required body) —
+                        // push onto stack as a potential block parent.
+                        stack.push(StackEntry::from_macro(node));
+                    }
                 }
             }
 
