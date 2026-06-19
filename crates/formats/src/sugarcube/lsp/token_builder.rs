@@ -69,7 +69,7 @@ fn build_semantic_tokens_at_depth(
 ) {
     for node in nodes {
         match node {
-            ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, close_name_span, .. } => {
+            ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, close_name_span, open_span, close_span, .. } => {
                 // Determine if this is a block macro (has children → open/close pair)
                 let is_block = children.is_some();
 
@@ -80,39 +80,105 @@ fn build_semantic_tokens_at_depth(
                     SemanticTokenType::Macro
                 };
 
-                // Build the modifier: block macros get a depth modifier so
-                // themes can color matching open/close pairs by nesting level.
-                // Inline macros get no depth modifier (default color).
+                // ── Modifier split: name vs delimiter ──────────────────
+                //
+                // The macro NAME (e.g. `link`, `set`, `if`) always renders
+                // with the base `macro` / `function` color. Depth coloring
+                // is ONLY applied to delimiters (`<<`, `>>`, `<</`). This
+                // keeps the name visually stable — you can always spot the
+                // macro identifier regardless of how deep it's nested —
+                // while the delimiters around it shift color to show the
+                // nesting level.
+                //
+                // Name modifier:
+                //   - `Deprecated` if the macro is in the deprecated catalog
+                //     (so themes can show strikethrough on the name)
+                //   - Otherwise `None` → base `macro` color from the theme
+                //
+                // Delimiter modifier (depth semantics):
+                //   - depth=0 (any macro, block OR inline) → None (base color)
+                //   - depth=N (any macro, inside N nested blocks) → BlockDepthN
+                //
+                // This is consistent: a top-level `<<set>>` and a top-level
+                // `<<link>>` have the SAME delimiter color (both depth 0 =
+                // base). Only when you go INSIDE a block does the depth
+                // modifier kick in. The depth number directly maps to "how
+                // many blocks am I nested inside".
+                //
+                //   <<link>>              → depth 0 → None (base delimiter)
+                //     <<set>>             → depth 1 → BlockDepth1
+                //     <<if>>              → depth 1 → BlockDepth1
+                //       <<adjustStat>>    → depth 2 → BlockDepth2
+                //     <</if>>
+                //   <</link>>
+                //
+                // Theme compatibility: the depth modifier bits are sent on
+                // the wire regardless of theme. Any theme can opt into depth
+                // coloring by adding `macroDelimiter.blockDepth1..6` rules to
+                // its `semanticTokenColors`, or by relying on the
+                // `semanticTokenScopes` fallback mappings (which map each
+                // depth to a standard TextMate scope that most themes color
+                // distinctly). Themes that don't define those rules fall back
+                // to the base `macroDelimiter` color (all delimiters same
+                // color) — still correct, just no depth variation.
                 //
                 // Note: our SemanticToken.modifier is Option<Modifier>, not a
-                // bitset, so we can't combine Deprecated + BlockDepth. For block
-                // macros, depth takes priority (more visually useful). The
-                // deprecated flag still works via hover/completion/catalog.
-                let modifier = if is_block {
-                    SemanticTokenModifier::from_block_depth(depth + 1)
-                } else if deprecated_macros().contains_key(name.as_str()) {
+                // bitset, so we can't combine Deprecated + BlockDepth on a
+                // single token. The name gets Deprecated (if applicable);
+                // the delimiters get depth. Both signals are still visible.
+                let name_modifier = if deprecated_macros().contains_key(name.as_str()) {
                     Some(SemanticTokenModifier::Deprecated)
                 } else {
                     None
                 };
+                let delim_modifier = SemanticTokenModifier::from_block_depth(depth);
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + name_span.start,
                     length: name_span.end - name_span.start,
                     token_type,
-                    modifier,
+                    modifier: name_modifier,
                 });
 
+                // ── Delimiter tokens ───────────────────────────────────
+                // Emit `MacroDelimiter` tokens for `<<`, `>>`, and (for block
+                // macros) `<</` and the trailing `>>`. These are intentionally
+                // a separate token type from the macro name so themes can give
+                // them a distinct color (similar to how `function()` colors
+                // the keyword, the parens, and the args differently).
+                //
+                // Delimiters carry the depth modifier (NOT the name's
+                // deprecated modifier) — depth coloring belongs on the
+                // delimiters, not on the name.
+                //
+                // The close tag's `<</` is a 3-byte delimiter (the name lives
+                // in `close_name_span`, between `<</` and `>>`).
+                push_delimiter(tokens, body_offset_in_passage, open_span.start, 2, delim_modifier);
+                if open_span.end >= 2 {
+                    push_delimiter(tokens, body_offset_in_passage, open_span.end - 2, 2, delim_modifier);
+                }
+                if is_block {
+                    if let Some(cs) = close_span {
+                        // `<</` — 3 bytes at the start of the close tag
+                        push_delimiter(tokens, body_offset_in_passage, cs.start, 3, delim_modifier);
+                        // `>>` — 2 bytes at the end of the close tag
+                        if cs.end >= 2 {
+                            push_delimiter(tokens, body_offset_in_passage, cs.end - 2, 2, delim_modifier);
+                        }
+                    }
+                }
+
                 // For block macros: emit a token for the close tag name
-                // (e.g., `if` in `<</if>>`) with the SAME depth modifier.
-                // This makes the open and close tags visually linked — they
-                // share a color because they share a depth level.
+                // (e.g., `if` in `<</if>>`). The close name uses the SAME
+                // modifier as the open name (`name_modifier`) — NOT the
+                // depth modifier. This keeps the name visually stable on
+                // both open and close tags; only the delimiters show depth.
                 if is_block {
                     if let Some(cn_span) = close_name_span {
                         tokens.push(SemanticToken {
                             start: body_offset_in_passage + cn_span.start,
                             length: cn_span.end - cn_span.start,
                             token_type,
-                            modifier: SemanticTokenModifier::from_block_depth(depth + 1),
+                            modifier: name_modifier,
                         });
                     }
                 }
@@ -223,6 +289,16 @@ fn build_semantic_tokens_at_depth(
                     token_type: SemanticTokenType::Macro,
                     modifier,
                 });
+
+                // ── Delimiter tokens ───────────────────────────────────
+                // `<<` and `>>` around the sigil. Expressions are always
+                // inline (no children), so no depth modifier — just inherit
+                // the sigil's modifier (ControlFlow for `<<->>`, None for
+                // `<<=>>`).
+                push_delimiter(tokens, body_offset_in_passage, span.start, 2, modifier);
+                if span.end >= 2 {
+                    push_delimiter(tokens, body_offset_in_passage, span.end - 2, 2, modifier);
+                }
                 // Variable references: prefer js_analysis, fallback to var_refs
                 if let Some(analysis) = js_analysis {
                     for op in &analysis.var_ops {
@@ -363,6 +439,29 @@ pub fn build_script_passage_tokens(
     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
     emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
+}
+
+/// Push a `MacroDelimiter` token for `<<`, `>>`, or `<</`.
+///
+/// `start` is the body-relative byte offset of the delimiter, `len` is its
+/// length in bytes (2 for `<<`/`>>`, 3 for `<</`). `modifier` is whatever
+/// modifier the corresponding macro name token received — this lets depth
+/// coloring and the deprecated flag propagate to delimiters automatically.
+///
+/// See `build_semantic_tokens_at_depth` for the full rationale.
+fn push_delimiter(
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+    start: usize,
+    len: usize,
+    modifier: Option<SemanticTokenModifier>,
+) {
+    tokens.push(SemanticToken {
+        start: body_offset_in_passage + start,
+        length: len,
+        token_type: SemanticTokenType::MacroDelimiter,
+        modifier,
+    });
 }
 
 /// Emit semantic tokens for a single `AnalyzedVarOp`.

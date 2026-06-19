@@ -1960,14 +1960,16 @@ fn rebuild_graph_full(
 
 #[test]
 fn sugarcube_deprecated_macro_token_modifier() {
-    // <<click>> is deprecated AND a block macro. Block macros get a BlockDepth
-    // modifier (for nesting-depth colorization) which takes priority over the
-    // Deprecated modifier (our SemanticToken.modifier is Option<Modifier>, not
-    // a bitset, so we can't combine them). The deprecation info is still
-    // available via hover and the deprecation diagnostic.
+    // <<click>> is deprecated AND a block macro. Under the current design:
+    //   - The macro NAME gets the `Deprecated` modifier (for strikethrough)
+    //   - The DELIMITERS get the `BlockDepth1` modifier (for nesting color)
+    // These are separate tokens with separate modifiers — no priority
+    // conflict, because depth coloring is on delimiters only, not the name.
     //
-    // For a non-block deprecated macro (e.g., <<display>>), the Deprecated
-    // modifier IS used since there's no depth modifier to compete with.
+    // This is a deliberate design choice: the macro identifier stays
+    // visually stable (always the base `macro` color + strikethrough if
+    // deprecated), while the delimiters around it shift color to show
+    // nesting depth. Both signals are visible simultaneously.
     use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
@@ -1975,16 +1977,30 @@ fn sugarcube_deprecated_macro_token_modifier() {
     let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    // Find the macro name token for "click"
-    let click_tok = flatten_token_groups(&result).into_iter().find(|t| {
+    let all_tokens = flatten_token_groups(&result);
+
+    // Find the macro NAME token for "click" — should have Deprecated modifier
+    let click_name_tok = all_tokens.iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "click"
     });
-    assert!(click_tok.is_some(), "Should have a Macro token for 'click'");
-    let tok = click_tok.unwrap();
-    // <<click>> is a block macro at depth 1 → BlockDepth1 modifier
-    assert_eq!(tok.modifier, Some(SemanticTokenModifier::BlockDepth1),
-        "Deprecated block macro 'click' should have BlockDepth1 modifier (depth takes priority over deprecated)");
+    assert!(click_name_tok.is_some(), "Should have a Macro name token for 'click'");
+    let name_tok = click_name_tok.unwrap();
+    assert_eq!(name_tok.modifier, Some(SemanticTokenModifier::Deprecated),
+        "Deprecated block macro 'click' NAME should have Deprecated modifier (for strikethrough), got {:?}",
+        name_tok.modifier);
+
+    // Find a delimiter token for <<click>> — top-level block macro at depth 0
+    // → delimiter gets None (base color). The `<<` delimiter is 2 bytes before
+    // the "click" name.
+    let click_open_delim = all_tokens.iter().find(|t| {
+        t.token_type == SemanticTokenType::MacroDelimiter && t.start + 2 == name_tok.start
+    });
+    assert!(click_open_delim.is_some(), "Should find `<<` delimiter immediately before 'click' name");
+    let delim_tok = click_open_delim.unwrap();
+    assert!(delim_tok.modifier.is_none(),
+        "Deprecated block macro 'click' DELIMITER at top level (depth 0) should have NO modifier (base color), got {:?}",
+        delim_tok.modifier);
 }
 
 #[test]

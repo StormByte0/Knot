@@ -180,6 +180,20 @@ pub enum SemanticTokenType {
     /// A property access on an object (e.g., `.variables` on `State`,
     /// `.passage` on `Story`).
     Property,
+
+    // ── Punctuation ────────────────────────────────────────────────
+    /// A macro delimiter: `<<`, `>>`, or the `<</` of a closing tag.
+    ///
+    /// Emitted as a distinct token type from `Macro` so themes can color
+    /// delimiters differently from the macro name (and from the args
+    /// inside). Block-macro delimiters also receive a `BlockDepthN`
+    /// modifier matching the macro name's depth, so nested `<<` `>>`
+    /// pairs visually track nesting level — just like the names do.
+    ///
+    /// SugarCube emits these for every `AstNode::Macro` and
+    /// `AstNode::Expression`; other formats may follow suit if they
+    /// want the same kind of delimiter/name separation.
+    MacroDelimiter,
 }
 
 /// Modifiers for semantic tokens.
@@ -270,6 +284,8 @@ impl SemanticTokenType {
             Self::Prose,               // 18
             Self::InlineStyle,         // 19
             Self::TextFormat,          // 20
+            // ── Punctuation ────────────────────────────────────────
+            Self::MacroDelimiter,      // 21
         ]
     }
 
@@ -300,6 +316,7 @@ impl SemanticTokenType {
             Self::Prose               => "prose",
             Self::InlineStyle         => "inlineStyle",
             Self::TextFormat          => "textFormat",
+            Self::MacroDelimiter      => "macroDelimiter",
         }
     }
 

@@ -729,6 +729,306 @@ mod tests {
     }
 
     #[test]
+    fn inline_macro_emits_open_close_delimiter_tokens() {
+        // <<set $hp to 10>> should emit two MacroDelimiter tokens:
+        //   - `<<` at offset 0, length 2
+        //   - `>>` at offset 14, length 2
+        // Both with no modifier (inline macro, not deprecated).
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<set $hp to 10>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let delims: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
+            .collect();
+        assert_eq!(delims.len(), 2, "inline macro should emit exactly 2 delimiter tokens (<< and >>)");
+
+        // Sort by start offset to make assertions order-independent
+        let mut delims_sorted = delims.clone();
+        delims_sorted.sort_by_key(|t| t.start);
+
+        // First delimiter: `<<`
+        assert_eq!(delims_sorted[0].start, 0, "`<<` should start at offset 0");
+        assert_eq!(delims_sorted[0].length, 2, "`<<` should be length 2");
+        assert!(delims_sorted[0].modifier.is_none(),
+            "inline non-deprecated macro delimiters should have no modifier");
+
+        // Second delimiter: `>>` — at the end of the input minus 2
+        let expected_close_start = input.len() - 2;
+        assert_eq!(delims_sorted[1].start, expected_close_start,
+            "`>>` should start at offset {}", expected_close_start);
+        assert_eq!(delims_sorted[1].length, 2, "`>>` should be length 2");
+        assert!(delims_sorted[1].modifier.is_none(),
+            "inline non-deprecated macro delimiters should have no modifier");
+    }
+
+    #[test]
+    fn block_macro_emits_four_delimiter_tokens_with_depth() {
+        // <<if $hp gte 10>>Alive<</if>> should emit four MacroDelimiter tokens:
+        //   - `<<` at offset 0 (open)
+        //   - `>>` at offset 16 (open end)
+        //   - `<</` at offset 22 (close start)
+        //   - `>>` at offset 28 (close end)
+        // Top-level block macro is at depth 0 → all four delimiters get None
+        // (base delimiter color). Depth modifiers only kick in when nested.
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<if $hp gte 10>>Alive<</if>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let delims: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
+            .collect();
+        assert_eq!(delims.len(), 4,
+            "block macro should emit 4 delimiter tokens (<<, >>, <</, >>), got {:?}", delims);
+
+        // All four should have None (top-level, depth 0 = base color)
+        for (i, d) in delims.iter().enumerate() {
+            assert!(d.modifier.is_none(),
+                "delimiter {} should have NO modifier (depth 0 = base color), got {:?}", i, d.modifier);
+        }
+
+        // Verify the `<</` is 3 bytes
+        let slash_open = delims.iter()
+            .find(|t| t.length == 3)
+            .expect("should have one 3-byte delimiter (`<</`)");
+        assert!(slash_open.start >= 17,
+            "`<</` should start after the open tag's `>>`");
+    }
+
+    #[test]
+    fn nested_block_macros_delimiters_track_depth() {
+        // Outer <<if>> at depth 0 (top-level), inner <<if>> at depth 1.
+        // Outer delimiters → None (base, depth 0)
+        // Inner delimiters → BlockDepth1 (depth 1, inside one block)
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<if $a>><<if $b>>nested<</if>><</if>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let depth0_delims = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)
+                && t.modifier.is_none())
+            .count();
+        let depth1_delims = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)
+                && t.modifier == Some(SemanticTokenModifier::BlockDepth1))
+            .count();
+
+        // Outer block macro: 4 delimiters at depth 0 (None) — <<, >>, <</, >>
+        // Inner block macro: 4 delimiters at depth 1 (BlockDepth1) — <<, >>, <</, >>
+        assert_eq!(depth0_delims, 4, "outer macro should contribute 4 base-color delimiters (None modifier)");
+        assert_eq!(depth1_delims, 4, "inner macro should contribute 4 BlockDepth1 delimiters");
+    }
+
+    #[test]
+    fn inline_macro_inside_block_one_deeper_than_block() {
+        // Depth semantics: DELIMITERS track nesting depth, but the macro
+        // NAME does NOT — the name always uses the base `macro` color so
+        // the identifier stays visually stable regardless of nesting.
+        //
+        // So `<<set>>` inside `<<link>>`:
+        //   - `link` name → None (base macro color)
+        //   - `set` name  → None (base macro color)
+        //   - `<<link>>` delimiters → None (depth 0 = base delimiter color)
+        //   - `<<set>>` delimiters  → BlockDepth1 (depth 1, inside one block)
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<link \"Go\" \"Forest\">><<set $x to 1>><</link>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        // <<link>> name at offset 2, length 4 — should be None (base color, no depth)
+        let link_name = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.start == 2 && t.length == 4)
+            .expect("should find link name token");
+        assert!(link_name.modifier.is_none(),
+            "<<link>> name should have NO depth modifier (base macro color), got {:?}",
+            link_name.modifier);
+
+        // <<set>> name at offset 24, length 3 — should be None (base color, no depth)
+        let set_name = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.start == 24 && t.length == 3)
+            .expect("should find set name token");
+        assert!(set_name.modifier.is_none(),
+            "<<set>> name should have NO depth modifier (base macro color), got {:?}",
+            set_name.modifier);
+
+        // <<link>> delimiters (offset 0) → None (depth 0 = base color)
+        let link_open_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 0)
+            .expect("should find `<<` delimiter for <<link>>");
+        assert!(link_open_delim.modifier.is_none(),
+            "<<link>> `<<` delimiter should have NO modifier (depth 0 = base), got {:?}",
+            link_open_delim.modifier);
+
+        // <<set>> delimiters (offset 22, 35) → BlockDepth1 (depth 1, inside link)
+        let set_open_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 22)
+            .expect("should find `<<` delimiter for inner <<set>>");
+        assert_eq!(set_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+            "inner `<<` delimiter should be BlockDepth1 (inside one block), got {:?}",
+            set_open_delim.modifier);
+
+        let set_close_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 35)
+            .expect("should find `>>` delimiter for inner <<set>>");
+        assert_eq!(set_close_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+            "inner `>>` delimiter should be BlockDepth1 (inside one block), got {:?}",
+            set_close_delim.modifier);
+    }
+
+    #[test]
+    fn deeply_nested_inline_macro_inside_two_blocks() {
+        // The user's exact scenario from chat:
+        //
+        //   <<link>>                  // delimiters: None (depth 0 = base)
+        //     <<if true>>             // delimiters: BlockDepth1 (depth 1)
+        //       <<adjustStat ...>>    // delimiters: BlockDepth2 (depth 2) ← key assertion
+        //     <</if>>
+        //   <</link>>
+        //
+        // The macro NAMES (link, if, adjustStat) all use the base `macro`
+        // color — NO depth modifier on names. Only the delimiters track depth.
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<link \"Chat\" \"Coworker\">><<if true>><<adjustStat \"stress\" -3>><</if>><</link>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let macro_tokens: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
+            .collect();
+
+        // All macro NAMES should have NO depth modifier — base macro color only.
+        // (link at offset 2 len 4, if at offset 28 len 2, adjustStat at offset 39 len 10)
+        for t in &macro_tokens {
+            assert!(t.modifier.is_none(),
+                "macro name at offset {} should have NO depth modifier (base color only), got {:?}",
+                t.start, t.modifier);
+        }
+
+        // Delimiters track depth — verify the `<<` before each name.
+        // <<link>> `<<` at offset 0 → None (depth 0 = base color)
+        let link_open_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 0)
+            .expect("should find `<<` delimiter for <<link>>");
+        assert!(link_open_delim.modifier.is_none(),
+            "<<link>> `<<` delimiter should have NO modifier (depth 0 = base), got {:?}",
+            link_open_delim.modifier);
+
+        // <<if>> `<<` at offset 26 (28 - 2) → BlockDepth1 (depth 1, inside link)
+        let if_open_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 26)
+            .expect("should find `<<` delimiter for <<if>>");
+        assert_eq!(if_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+            "<<if>> `<<` delimiter should be BlockDepth1 (inside one block), got {:?}",
+            if_open_delim.modifier);
+
+        // <<adjustStat>> `<<` at offset 37 (39 - 2) → BlockDepth2 (depth 2, inside link+if)
+        let adjust_open_delim = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 37)
+            .expect("should find `<<` delimiter at offset 37 (immediately before adjustStat)");
+        assert_eq!(adjust_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth2),
+            "<<adjustStat>>'s `<<` delimiter should be BlockDepth2 (inside two blocks), got {:?}",
+            adjust_open_delim.modifier);
+    }
+
+    #[test]
+    fn top_level_inline_macro_has_no_depth_modifier() {
+        // Sanity: a bare `<<set>>` at the top level (not inside any block)
+        // should still get `None` for its modifier — no enclosing block to
+        // inherit depth from. This guards against the fix above over-applying
+        // depth modifiers to top-level inline macros.
+        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<set $x to 1>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let set_name = tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.length == 3)
+            .expect("should find `set` name token");
+        assert!(set_name.modifier.is_none(),
+            "top-level `<<set>>` should have no depth modifier, got {:?}",
+            set_name.modifier);
+
+        // All delimiter tokens at top level should also have no modifier
+        for t in tokens.iter().filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)) {
+            assert!(t.modifier.is_none(),
+                "top-level delimiter at offset {} should have no modifier, got {:?}",
+                t.start, t.modifier);
+        }
+    }
+
+    #[test]
+    fn expression_macro_emits_delimiter_tokens() {
+        // <<= $hp>> should emit two MacroDelimiter tokens for `<<` and `>>`.
+        // The sigil (`=`) stays as a Macro token — delimiters are separate.
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let input = "<<= $hp>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let delims: Vec<_> = tokens.iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
+            .collect();
+        assert_eq!(delims.len(), 2,
+            "expression macro should emit 2 delimiter tokens (<< and >>)");
+
+        let mut sorted = delims.clone();
+        sorted.sort_by_key(|t| t.start);
+        assert_eq!(sorted[0].start, 0, "`<<` at offset 0");
+        assert_eq!(sorted[0].length, 2, "`<<` length 2");
+        assert_eq!(sorted[1].start, input.len() - 2, "`>>` at end-2");
+        assert_eq!(sorted[1].length, 2, "`>>` length 2");
+    }
+
+    #[test]
+    fn delimiter_tokens_are_distinct_type_from_name() {
+        // Sanity: the macro NAME token must be `Macro`, not `MacroDelimiter`,
+        // and vice versa. This guards against accidental collapse.
+        use crate::plugin::SemanticTokenType;
+        use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+        use std::collections::HashSet;
+
+        let ast = crate::sugarcube::parser::parse_passage_body("<<set $x to 1>>", 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+
+        let has_macro_name = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::Macro));
+        let has_delimiter = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter));
+        assert!(has_macro_name, "should have a Macro token for the name `set`");
+        assert!(has_delimiter, "should have MacroDelimiter tokens for << >>");
+    }
+
+    #[test]
     fn print_and_expression_emit_equivalent_variable_tokens() {
         // <<print $hp>> and <<= $hp>> should emit the same Variable tokens
         use crate::plugin::SemanticTokenType;

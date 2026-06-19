@@ -115,15 +115,11 @@
             "begin": "(<<)(script)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "end": "(<</)(script)(>>)",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
                 "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "3": { "name": "variable.parameter.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "patterns": [{ "include": "source.js" }]
         },
@@ -133,15 +129,11 @@
             "begin": "(<<)(style)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "end": "(<</)(style)(>>)",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
                 "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "3": { "name": "variable.parameter.macro.sugarcube" }
             },
             "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "2": { "name": "keyword.control.macro.sugarcube" }
             },
             "patterns": [{ "include": "source.css" }]
         },
@@ -166,11 +158,7 @@
             "begin": "(<<)(set|if|elseif|run|print|for|capture|switch|case|=|-)(?:\\s+)",
             "end": "(>>)",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
                 "2": { "name": "keyword.control.macro.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [{ "include": "source.js" }]
         },
@@ -186,11 +174,7 @@
             "begin": "(<<)(include|goto)\\s+",
             "end": "(>>)",
             "beginCaptures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
                 "2": { "name": "keyword.control.macro.sugarcube" }
-            },
-            "endCaptures": {
-                "1": { "name": "punctuation.definition.macro.end.sugarcube" }
             },
             "patterns": [
                 { "include": "#sugarcube-passage-name-string" },
@@ -208,19 +192,15 @@
         {
             "match": "(<</)([A-Za-z_][A-Za-z0-9_]*)(>>)",
             "captures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
-                "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "2": { "name": "keyword.control.macro.sugarcube" }
             }
         },
         {
             "comment": "SugarCube open macro tag: <<name args>> — generic fallback",
             "match": "(<<)([A-Za-z_][A-Za-z0-9_]*)(?:\\s+((?:[^>]|>[^>])*?))?(>>)",
             "captures": {
-                "1": { "name": "punctuation.definition.macro.begin.sugarcube" },
                 "2": { "name": "keyword.control.macro.sugarcube" },
-                "3": { "name": "variable.parameter.macro.sugarcube" },
-                "4": { "name": "punctuation.definition.macro.end.sugarcube" }
+                "3": { "name": "variable.parameter.macro.sugarcube" }
             }
         }
     ],

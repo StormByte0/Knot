@@ -410,6 +410,28 @@
         }
       }
     },
+    "themes": [
+      {
+        "label": "Knot Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/knot-dark.json"
+      },
+      {
+        "label": "Knot Dark — Tokens Only",
+        "uiTheme": "vs-dark",
+        "path": "./themes/knot-dark-tokens.json"
+      },
+      {
+        "label": "Knot Light",
+        "uiTheme": "vs",
+        "path": "./themes/knot-light.json"
+      },
+      {
+        "label": "Knot Light — Tokens Only",
+        "uiTheme": "vs",
+        "path": "./themes/knot-light-tokens.json"
+      }
+    ],
     "taskDefinitions": [
       {
         "type": "knot",
@@ -500,6 +522,28 @@
           "textFormat": [
             "markup.bold.twee",
             "markup.italic.twee"
+          ],
+          "macroDelimiter": [
+            "punctuation.definition.tag",
+            "meta.brace.angle"
+          ],
+          "macroDelimiter.blockDepth1": [
+            "keyword.operator"
+          ],
+          "macroDelimiter.blockDepth2": [
+            "entity.name.function"
+          ],
+          "macroDelimiter.blockDepth3": [
+            "string"
+          ],
+          "macroDelimiter.blockDepth4": [
+            "entity.name.type"
+          ],
+          "macroDelimiter.blockDepth5": [
+            "variable.other"
+          ],
+          "macroDelimiter.blockDepth6": [
+            "constant.numeric"
           ]
         }
       },
@@ -573,6 +617,28 @@
           "textFormat": [
             "markup.bold.twee",
             "markup.italic.twee"
+          ],
+          "macroDelimiter": [
+            "punctuation.definition.tag",
+            "meta.brace.angle"
+          ],
+          "macroDelimiter.blockDepth1": [
+            "keyword.operator"
+          ],
+          "macroDelimiter.blockDepth2": [
+            "entity.name.function"
+          ],
+          "macroDelimiter.blockDepth3": [
+            "string"
+          ],
+          "macroDelimiter.blockDepth4": [
+            "entity.name.type"
+          ],
+          "macroDelimiter.blockDepth5": [
+            "variable.other"
+          ],
+          "macroDelimiter.blockDepth6": [
+            "constant.numeric"
           ]
         }
       },
@@ -646,6 +712,28 @@
           "textFormat": [
             "markup.bold.twee",
             "markup.italic.twee"
+          ],
+          "macroDelimiter": [
+            "punctuation.definition.tag",
+            "meta.brace.angle"
+          ],
+          "macroDelimiter.blockDepth1": [
+            "keyword.operator"
+          ],
+          "macroDelimiter.blockDepth2": [
+            "entity.name.function"
+          ],
+          "macroDelimiter.blockDepth3": [
+            "string"
+          ],
+          "macroDelimiter.blockDepth4": [
+            "entity.name.type"
+          ],
+          "macroDelimiter.blockDepth5": [
+            "variable.other"
+          ],
+          "macroDelimiter.blockDepth6": [
+            "constant.numeric"
           ]
         }
       },
@@ -719,6 +807,28 @@
           "textFormat": [
             "markup.bold.twee",
             "markup.italic.twee"
+          ],
+          "macroDelimiter": [
+            "punctuation.definition.tag",
+            "meta.brace.angle"
+          ],
+          "macroDelimiter.blockDepth1": [
+            "keyword.operator"
+          ],
+          "macroDelimiter.blockDepth2": [
+            "entity.name.function"
+          ],
+          "macroDelimiter.blockDepth3": [
+            "string"
+          ],
+          "macroDelimiter.blockDepth4": [
+            "entity.name.type"
+          ],
+          "macroDelimiter.blockDepth5": [
+            "variable.other"
+          ],
+          "macroDelimiter.blockDepth6": [
+            "constant.numeric"
           ]
         }
       },
@@ -792,6 +902,28 @@
           "textFormat": [
             "markup.bold.twee",
             "markup.italic.twee"
+          ],
+          "macroDelimiter": [
+            "punctuation.definition.tag",
+            "meta.brace.angle"
+          ],
+          "macroDelimiter.blockDepth1": [
+            "keyword.operator"
+          ],
+          "macroDelimiter.blockDepth2": [
+            "entity.name.function"
+          ],
+          "macroDelimiter.blockDepth3": [
+            "string"
+          ],
+          "macroDelimiter.blockDepth4": [
+            "entity.name.type"
+          ],
+          "macroDelimiter.blockDepth5": [
+            "variable.other"
+          ],
+          "macroDelimiter.blockDepth6": [
+            "constant.numeric"
           ]
         }
       }
