@@ -130,13 +130,12 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             passage_tokens.extend(json_tokens);
         } else if matches!(mode, ParseMode::Stylesheet) {
             // Stylesheet passages are pure CSS. CSS parsing is currently
-            // unserved (see `knot_core::css`). The `analyze_css` call
-            // returns an empty analysis; we keep it in place so that
-            // re-enabling CSS later requires no changes here.
-            let _ = super::css::analyze_css(&cp.body_text);
+            // unserved (see `knot_core::css`) — no tokens emitted.
+            // No diagnostic is raised: this is an internal limitation,
+            // not a user-visible problem.
         } else if matches!(mode, ParseMode::Interface) {
-            // StoryInterface body is HTML — HTML parsing is currently
-            // unserved. No tokens emitted.
+            // StoryInterface body is HTML. HTML parsing is currently
+            // unserved — no tokens emitted, no diagnostic raised.
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
@@ -168,25 +167,6 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // document-absolute ranges — same pattern as semantic tokens.
         let mut passage_diagnostics = Vec::new();
         super::token_builder::build_diagnostics(&passage_ast.nodes, &mut passage_diagnostics, body_offset_in_passage);
-
-        // CSS and HTML passages are explicitly unserved — emit a single
-        // Info-level diagnostic so the absence is visible, not silent.
-        // Remove these branches once the relevant parser is integrated.
-        if matches!(mode, ParseMode::Stylesheet) {
-            passage_diagnostics.push(crate::plugin::FormatDiagnostic {
-                range: body_offset_in_passage..body_offset_in_passage + cp.body_text.len(),
-                message: "CSS analysis is not yet available for stylesheet passages.".to_string(),
-                severity: crate::plugin::FormatDiagnosticSeverity::Info,
-                code: "css-unserved".to_string(),
-            });
-        } else if matches!(mode, ParseMode::Interface) {
-            passage_diagnostics.push(crate::plugin::FormatDiagnostic {
-                range: body_offset_in_passage..body_offset_in_passage + cp.body_text.len(),
-                message: "HTML analysis is not yet available for StoryInterface passages.".to_string(),
-                severity: crate::plugin::FormatDiagnosticSeverity::Info,
-                code: "html-unserved".to_string(),
-            });
-        }
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
