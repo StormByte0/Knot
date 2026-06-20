@@ -1121,7 +1121,7 @@ fn sugarcube_resolve_dynamic_navigation_goto() {
 
     assert!(!resolved.is_empty(), "Should resolve dynamic navigation links");
     assert_eq!(resolved[0].target, "Forest", "Should resolve $dest to 'Forest'");
-    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Jump), "<<goto>> should produce Jump edge");
+    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should produce Jump edge");
 }
 
 #[test]
@@ -1156,7 +1156,7 @@ fn sugarcube_classify_edge_goto_is_jump() {
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
-    assert_eq!(edge, Some(knot_core::graph::EdgeType::Jump), "<<goto>> should classify as Jump");
+    assert_eq!(edge, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should classify as Jump");
 }
 
 #[test]

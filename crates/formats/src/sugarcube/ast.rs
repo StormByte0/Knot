@@ -420,14 +420,14 @@ impl LinkSource {
     pub fn to_edge_type(self) -> knot_core::graph::EdgeType {
         match self {
             LinkSource::PassageLink => knot_core::graph::EdgeType::Navigation,
-            LinkSource::Goto => knot_core::graph::EdgeType::Jump,
+            LinkSource::Goto => knot_core::graph::EdgeType::Navigation,
             LinkSource::Include => knot_core::graph::EdgeType::Include,
             LinkSource::NavigationMacro => knot_core::graph::EdgeType::Navigation,
             LinkSource::Actions => knot_core::graph::EdgeType::Navigation,
             LinkSource::Return => knot_core::graph::EdgeType::Navigation,
             LinkSource::Back => knot_core::graph::EdgeType::Navigation,
-            LinkSource::DataPassage => knot_core::graph::EdgeType::Navigation,
-            LinkSource::WidgetCall => knot_core::graph::EdgeType::Call,
+            LinkSource::DataPassage => knot_core::graph::EdgeType::Include,
+            LinkSource::WidgetCall => knot_core::graph::EdgeType::Navigation,
         }
     }
 }

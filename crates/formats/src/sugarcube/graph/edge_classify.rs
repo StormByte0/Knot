@@ -54,7 +54,7 @@ pub fn classify_edge_impl(
 
             match name.as_str() {
                 "goto" if args_match => {
-                    return Some(knot_core::graph::EdgeType::Jump);
+                    return Some(knot_core::graph::EdgeType::Navigation);
                 }
                 "include" if args_match => {
                     return Some(knot_core::graph::EdgeType::Include);

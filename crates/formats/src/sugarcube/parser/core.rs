@@ -544,7 +544,7 @@ mod tests {
         );
         let connections = ast.graph_connections();
         assert!(connections.iter().any(|c| c.target == "Forest" && c.edge_type == knot_core::graph::EdgeType::Navigation));
-        assert!(connections.iter().any(|c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Jump));
+        assert!(connections.iter().any(|c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Navigation));
         assert!(connections.iter().any(|c| c.target == "Shop" && c.edge_type == knot_core::graph::EdgeType::Include));
     }
 

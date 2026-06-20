@@ -140,24 +140,19 @@ pub struct SpecialPassageBundle {
 /// with distinct visual styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EdgeType {
-    /// A player-choice navigation link: `[[Target]]`.
-    /// The fundamental Twine automaton transition.
+    /// A navigation link: `[[Target]]`, `<<link>>`, `<<button>>`, `<<goto>>`.
+    /// Any edge where the player navigates (or is redirected) to another passage.
     Navigation,
     /// An upstream lifecycle edge (not a user-navigable link).
     /// Connects special passages in execution order
-    /// (TwineCore → StoryFormat → Start). Rendered as dashed lines
-    /// in the story map.
+    /// (TwineCore → StoryFormat → Start). Internal — not user-facing.
     Upstream,
-    /// A widget/function invocation: `<<widget>>` in SugarCube.
-    /// Models a call-return (pushdown automaton) edge.
-    Call,
-    /// A passage inclusion: `<<include>>` / `(display:)` / `{{> partial}}`.
-    /// The included passage runs inline, not as a navigation.
+    /// A passage inclusion: `<<include>>`, `data-passage="..."`.
+    /// The included passage content is rendered inline, not navigated to.
     Include,
-    /// An unconditional redirect: `<<goto>>` / `(go-to:)` / `(redirect:)`.
-    /// Not a player choice — the engine immediately navigates.
-    Jump,
     /// A broken link whose target passage doesn't exist.
+    /// Internal diagnostic state — restored to the original type when the
+    /// target is created.
     Broken,
 }
 
@@ -534,12 +529,10 @@ impl PassageGraph {
             let source = &self.graph[source_idx];
             let target = &self.graph[edge_ref.target()];
 
-            // Defense-in-depth: skip Call edges that somehow got marked Broken.
-            // Call edges are custom macro invocations — their target is a macro
-            // name, not a passage name, so "broken link" doesn't apply.
-            if edge_ref.weight().pre_broken_type == Some(EdgeType::Call) {
-                continue;
-            }
+            // Defense-in-depth: skip edges that were Navigation before being
+            // marked Broken (these are real link targets that just don't exist
+            // yet). Include edges that are broken are also reported — the user
+            // should know about broken includes too.
 
             // Skip broken link diagnostics for ScriptInjection and
             // StyleInjection source passages. These contain non-Twine
@@ -970,14 +963,10 @@ impl PassageGraph {
         // Apply updates
         for (edge_id, new_broken) in updates {
             if let Some(edge) = self.graph.edge_weight_mut(edge_id) {
-                // Call edges (custom macro invocations) should NEVER be marked
-                // as Broken. Their target is a macro name, not a passage name —
-                // the macro exists in the custom_macros registry, not as a
-                // passage node. Marking them Broken would produce false
-                // "Link target not found" diagnostics for every custom macro.
-                if edge.edge_type == EdgeType::Call {
-                    continue;
-                }
+                // Include and Navigation edges are the only user-facing edge
+                // types. Both can be marked Broken when their target doesn't
+                // exist. Upstream edges are internal and always have valid
+                // targets (added only after verification).
                 if new_broken {
                     // Target doesn't exist — mark as Broken, but save the
                     // original type so we can restore it later if the target

@@ -285,10 +285,31 @@ fn build_passage_target_hover_text(
     workspace: &knot_core::Workspace,
 ) -> String {
     let incoming = helpers::count_incoming_links(workspace, target);
+
+    // Show workspace-relative path instead of full file:// URI.
+    // Authors don't want to see "file:///D:/codeWS/twine/..." — just
+    // "src/passages/newtest.twee" or similar.
+    let display_path = workspace.root_uri
+        .to_file_path()
+        .ok()
+        .and_then(|root| {
+            // target_doc.uri is a file:// URL — convert to path
+            target_doc.uri.to_file_path().ok().and_then(|doc_path| {
+                doc_path.strip_prefix(&root).ok().map(|p| p.display().to_string())
+            })
+        })
+        .unwrap_or_else(|| {
+            // Fallback: show just the filename
+            target_doc.uri.path_segments()
+                .and_then(|s| s.last())
+                .unwrap_or("unknown")
+                .to_string()
+        });
+
     let mut hover_text = format!(
-        "**{}**\n\nFile: {}\nLinks out: {} | Incoming: {} | Tags: {}",
+        "**{}**\n\n{}\nLinks out: {} | Incoming: {} | Tags: {}",
         target,
-        target_doc.uri.as_str(),
+        display_path,
         target_passage.links.len(),
         incoming,
         if target_passage.tags.is_empty() {

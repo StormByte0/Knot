@@ -115,7 +115,7 @@ pub fn resolve_dynamic_navigation_links_impl(
                 if let Some(values) = var_string_map.get(var_name) {
                     // Determine edge type from macro name
                     let edge_hint = match name.as_str() {
-                        "goto" => Some(knot_core::graph::EdgeType::Jump),
+                        "goto" => Some(knot_core::graph::EdgeType::Navigation),
                         "include" => Some(knot_core::graph::EdgeType::Include),
                         "link" | "button" => Some(knot_core::graph::EdgeType::Navigation),
                         _ => None,
