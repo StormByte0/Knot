@@ -199,30 +199,11 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         passages.push(passage);
     }
 
-    // 6. Post-pass: inject Call edges for widget invocations.
-    {
-        let custom_macros = &plugin.registry().custom_macros();
-        for passage in &mut passages {
-            for block in &passage.body {
-                if let knot_core::passage::Block::Macro { name, .. } = block {
-                    if custom_macros.contains(name) {
-                        let edge_type_hint = Some(knot_core::graph::EdgeType::Call);
-                        let already_has = passage.links.iter().any(|l| {
-                            l.target == *name && l.edge_type_hint == edge_type_hint
-                        });
-                        if !already_has {
-                            passage.links.push(knot_core::passage::Link {
-                                display_text: Some(format!("<<{}>>", name)),
-                                target: name.clone(),
-                                span: 0..0,
-                                edge_type_hint,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Note: Custom macro (widget) invocations are NOT added as passage links.
+    // They are function calls, not passage navigation — "go to definition"
+    // works through the custom_macros registry, not through graph edges.
+    // Adding them as links would cause false "BrokenLink" diagnostics since
+    // the macro name is not a passage name.
 
     pipeline_log::parse_full_summary(
         uri.as_ref(),

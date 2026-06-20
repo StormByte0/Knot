@@ -534,6 +534,13 @@ impl PassageGraph {
             let source = &self.graph[source_idx];
             let target = &self.graph[edge_ref.target()];
 
+            // Defense-in-depth: skip Call edges that somehow got marked Broken.
+            // Call edges are custom macro invocations — their target is a macro
+            // name, not a passage name, so "broken link" doesn't apply.
+            if edge_ref.weight().pre_broken_type == Some(EdgeType::Call) {
+                continue;
+            }
+
             // Skip broken link diagnostics for ScriptInjection and
             // StyleInjection source passages. These contain non-Twine
             // content (JavaScript / CSS) where link extraction is
@@ -963,6 +970,14 @@ impl PassageGraph {
         // Apply updates
         for (edge_id, new_broken) in updates {
             if let Some(edge) = self.graph.edge_weight_mut(edge_id) {
+                // Call edges (custom macro invocations) should NEVER be marked
+                // as Broken. Their target is a macro name, not a passage name —
+                // the macro exists in the custom_macros registry, not as a
+                // passage node. Marking them Broken would produce false
+                // "Link target not found" diagnostics for every custom macro.
+                if edge.edge_type == EdgeType::Call {
+                    continue;
+                }
                 if new_broken {
                     // Target doesn't exist — mark as Broken, but save the
                     // original type so we can restore it later if the target
