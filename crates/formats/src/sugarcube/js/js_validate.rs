@@ -1,13 +1,20 @@
 //! Inline JavaScript validation via oxc for SugarCube passages.
 //!
-//! This module validates JS snippets extracted from SugarCube AST nodes
-//! (<<set>>, <<run>>, <<script>>, <<=>>, <<->>) by:
+//! This module validates JS in two contexts:
 //!
-//! 1. Collecting JS snippets from the passage AST via `collect_js_snippets()`
-//! 2. Preprocessing each snippet with `js_preprocess::preprocess_for_oxc()`
-//! 3. Parsing with `knot_core::oxc::parse_js()`
-//! 4. On `JsParseOutcome::Error`, converting JS diagnostics to `FormatDiagnostic`
-//!    with byte-offset mapping through the preprocessor's substitution table
+//! 1. **Inline JS snippets** (`validate_inline_js`): walks the passage AST
+//!    for `<<set>>`, `<<run>>`, `<<script>>`, `<<=>>`, `<<->>` macros and
+//!    validates each JS snippet with oxc.
+//!
+//! 2. **Script passages** (`validate_script_passage`): validates the entire
+//!    body of `[script]`-tagged passages (or `StoryJavaScript`) as a JS
+//!    module. This is separate from `validate_inline_js` because `[script]`
+//!    passages have no `<<script>>` macro wrapper — their body IS the JS.
+//!
+//! oxc has error recovery: it produces multiple diagnostics per snippet (not
+//! just the first one), each with a precise byte range. We map each one back
+//! to the original SugarCube source so VSCode can squiggle exactly the
+//! broken span.
 //!
 //! ## Position Mapping
 //!
@@ -63,6 +70,45 @@ pub fn validate_inline_js(
     }
 
     diagnostics
+}
+
+/// Validate a script passage's entire body as JS.
+///
+/// Script passages (`[script]` tagged or `StoryJavaScript`) contain pure JS —
+/// their entire body is a JS module, not SugarCube syntax. `validate_inline_js`
+/// only walks AST nodes for `<<script>>` block macros, which doesn't cover
+/// `[script]` passages (they have no `<<script>>` macro, just raw JS body).
+///
+/// This function parses the entire body text as a JS module and converts
+/// all oxc diagnostics to `FormatDiagnostic`s with precise position mapping.
+/// `body_offset_in_passage` is the offset of the body start relative to the
+/// passage head (`::` prefix).
+pub fn validate_script_passage(
+    body_text: &str,
+    body_offset_in_passage: usize,
+) -> Vec<FormatDiagnostic> {
+    if body_text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    // Preprocess $var references for oxc
+    let preprocessed = super::js_preprocess::preprocess_for_oxc(body_text);
+
+    let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
+
+    // Convert each diagnostic to a FormatDiagnostic.
+    // For [script] passages, the snippet starts at body_offset_in_passage
+    // (the body IS the snippet — no macro wrapper to account for).
+    outcome.diagnostics
+        .iter()
+        .filter_map(|js_diag| {
+            convert_script_passage_diagnostic(
+                js_diag,
+                &preprocessed,
+                body_offset_in_passage,
+            )
+        })
+        .collect()
 }
 
 /// Validate a single JS snippet.
@@ -149,6 +195,41 @@ fn convert_js_diagnostic(
     Some(FormatDiagnostic {
         range: passage_start..passage_end,
         message,
+        severity,
+        code: "sc-js".to_string(),
+    })
+}
+
+/// Convert a JS diagnostic from a `[script]` passage to a FormatDiagnostic.
+///
+/// Simpler than `convert_js_diagnostic` because:
+/// - No wrapping offset (Module mode, not Expression)
+/// - No snippet body_offset (the body IS the snippet)
+/// - No macro name prefix (it's a passage, not a macro)
+fn convert_script_passage_diagnostic(
+    js_diag: &knot_core::oxc::JsDiagnostic,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    body_offset_in_passage: usize,
+) -> Option<FormatDiagnostic> {
+    // Map from oxc position (in preprocessed source) back to original source.
+    let original_start = preprocessed.map_to_original(js_diag.range.start);
+    let original_end = preprocessed.map_to_original(js_diag.range.end);
+
+    // Shift by body_offset_in_passage to get passage-relative positions.
+    let passage_start = body_offset_in_passage + original_start;
+    let passage_end = body_offset_in_passage + original_end;
+
+    // Clamp to prevent empty or inverted ranges
+    let passage_end = passage_end.max(passage_start + 1);
+
+    let severity = match js_diag.severity {
+        knot_core::oxc::JsDiagnosticSeverity::Error => FormatDiagnosticSeverity::Error,
+        knot_core::oxc::JsDiagnosticSeverity::Warning => FormatDiagnosticSeverity::Warning,
+    };
+
+    Some(FormatDiagnostic {
+        range: passage_start..passage_end,
+        message: js_diag.message.clone(),
         severity,
         code: "sc-js".to_string(),
     })

@@ -170,11 +170,24 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
-            let js_diagnostics = super::js_validate::validate_inline_js(
-                &passage_ast.nodes,
-                body_offset_in_passage,
-            );
-            passage_diagnostics.extend(js_diagnostics);
+            if matches!(mode, ParseMode::Script) {
+                // [script] passages: validate the entire body as a JS module.
+                // validate_inline_js only walks AST nodes for <<script>> block
+                // macros, which doesn't cover [script] passages (their entire
+                // body is JS, no macro wrapper).
+                let js_diagnostics = super::js_validate::validate_script_passage(
+                    &cp.body_text,
+                    body_offset_in_passage,
+                );
+                passage_diagnostics.extend(js_diagnostics);
+            } else {
+                // Normal passages: validate inline <<script>>/<<set>>/<<run>> snippets
+                let js_diagnostics = super::js_validate::validate_inline_js(
+                    &passage_ast.nodes,
+                    body_offset_in_passage,
+                );
+                passage_diagnostics.extend(js_diagnostics);
+            }
         }
 
         all_diagnostic_groups.push(PassageDiagnosticGroup {
