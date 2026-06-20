@@ -63,6 +63,12 @@ fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str) {
     // is usually still available (partial). We walk whatever AST we can get
     // so the user gets token highlighting for the valid parts while the
     // broken parts get precise error diagnostics via js_validate.
+    //
+    // If oxc panics (unrecoverable error), we leave script_js_analysis as
+    // None — no tokens are emitted for the JS body. This is intentional:
+    // a blank JS block is a clearer signal that "something is broken" than
+    // a sea of approximate tokens from a fallback scanner. The diagnostic
+    // from js_validate still shows the error location.
     let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
     if let Some(analysis) = outcome.with_program(|program| {
         js_walk::walk_script_passage(program, &preprocessed)
@@ -328,6 +334,9 @@ fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAna
     // oxc has error recovery — walk whatever AST we can get, even if there
     // are syntax errors. The valid parts get token highlighting; the broken
     // parts get precise diagnostics via js_validate.
+    //
+    // If oxc panics (unrecoverable error), return empty analysis — no tokens.
+    // The diagnostic from js_validate still shows the error location.
     outcome.with_program(|program| {
         if is_block {
             js_walk::walk_script_passage(program, &shifted)
