@@ -375,65 +375,6 @@ pub(crate) async fn send_format_detected(
         .await;
 }
 
-/// Send a semantic token refresh for documents that may have stale tokens
-/// due to cross-file effects.
-///
-/// Called when a change in one document affects the semantic highlighting
-/// of other documents (e.g., broken link status changes, format detection
-/// updates, passage name resolution changes). The changed document is
-/// excluded from the custom notification because it already gets refreshed
-/// via the normal did_change flow.
-///
-/// This function uses **two mechanisms** to ensure the client refreshes
-/// tokens:
-///
-/// 1. **Standard LSP**: Sends `workspace/semanticTokens/refresh` — the
-///    official server-to-client request that tells VS Code to re-request
-///    `textDocument/semanticTokens/full` for all visible documents. This
-///    is handled automatically by `vscode-languageclient` and does not
-///    require any custom client-side code.
-///
-/// 2. **Custom notification**: Sends `knot/refreshSemanticTokens` with
-///    the list of affected document URIs and a reason string. The client
-///    can use this for targeted UI updates (e.g., refreshing decorations)
-///    beyond what the standard refresh provides.
-pub(crate) async fn send_semantic_token_refresh(
-    client: &tower_lsp::Client,
-    changed_uri: &Url,
-    all_uris: &[Url],
-    reason: &str,
-) {
-    // Primary mechanism: standard LSP workspace/semanticTokens/refresh.
-    // This tells VS Code to re-request semantic tokens for ALL visible
-    // documents — exactly what we need for cross-file effects like
-    // broken link resolution changes.
-    send_workspace_semantic_token_refresh(client).await;
-
-    // Secondary mechanism: custom notification with affected URIs.
-    // The client can use this for additional UI updates (decorations,
-    // link highlights, etc.) beyond the standard semantic token refresh.
-    let affected: Vec<String> = all_uris
-        .iter()
-        .filter(|u| *u != changed_uri)
-        .map(|u| u.to_string())
-        .collect();
-
-    if !affected.is_empty() {
-        tracing::debug!(
-            "Sending semantic token refresh for {} documents (reason: {})",
-            affected.len(),
-            reason
-        );
-        client
-            .send_notification::<crate::lsp_ext::KnotRefreshSemanticTokensNotification>(
-                crate::lsp_ext::KnotRefreshSemanticTokensParams {
-                    document_uris: affected,
-                    reason: Some(reason.to_string()),
-                },
-            )
-            .await;
-    }
-}
 
 /// Send the standard LSP `workspace/semanticTokens/refresh` request.
 ///

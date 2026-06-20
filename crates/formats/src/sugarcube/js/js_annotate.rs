@@ -88,37 +88,6 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
                 js_analysis,
                 ..
             } => {
-                // <<style>>/<<css>> blocks: body is CSS — parse with cssparser.
-                if name == "style" || name == "css" {
-                    if let Some(ch) = children {
-                        let mut css_source = String::new();
-                        let mut body_start = open_span.end;
-                        for child in ch.iter() {
-                            if let AstNode::Text { content, span, .. } = child {
-                                if css_source.is_empty() {
-                                    body_start = span.start;
-                                }
-                                css_source.push_str(content);
-                            }
-                        }
-                        if !css_source.trim().is_empty() {
-                            let css_analysis = crate::sugarcube::css::analyze_css(css_source.trim());
-                            // Store CSS tokens directly on the macro node via js_analysis
-                            // (reuse the existing field — CSS tokens are just SemanticTokens)
-                            // Actually, we can't store CSS tokens in JsAnalysis.
-                            // For now, emit them directly in the token builder by
-                            // checking if the macro name is style/css and has children.
-                            // The parse_pipeline already handles Stylesheet mode.
-                            // For <<style>> blocks, we handle them in the token builder.
-                            // Skip for now — will add css_analysis field to AstNode::Macro later.
-                        }
-                    }
-                    if let Some(ch) = children {
-                        annotate_inline_js(ch, _body_text);
-                    }
-                    continue;
-                }
-
                 // <<script>> blocks: the body comes from child Text nodes.
                 if name == "script" {
                     if let Some(ch) = children {

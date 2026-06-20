@@ -1466,7 +1466,7 @@ impl FormatPlugin for SugarCubePlugin {
             // Pipe-link context: [[display|PassageName — after the pipe
             if let Some(pipe_pos) = before_cursor.rfind('|') {
                 // Check if there's a [[ before the pipe
-                if let Some(bracket_pos) = before_cursor[..pipe_pos].rfind("[[") {
+                if before_cursor[..pipe_pos].rfind("[[").is_some() {
                     let after_pipe = &before_cursor[pipe_pos + 1..];
                     if after_pipe.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '_' || c == '-') {
                         return self.build_passage_name_completions(workspace, after_pipe, PassageCompletionKind::Link);
@@ -4397,6 +4397,7 @@ mod completion_debug_tests {
 }
 
 /// Helper: create a workspace with named passages for completion testing.
+#[cfg(test)]
 fn make_workspace_with_passages(uri: &Url, names: &[&str]) -> knot_core::Workspace {
     use knot_core::{Document, Passage};
     use knot_core::passage::StoryFormat;

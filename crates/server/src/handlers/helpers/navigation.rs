@@ -8,21 +8,6 @@ use lsp_types::*;
 
 use super::position::byte_range_to_lsp_range;
 
-/// Find passages that link TO a given passage name.
-pub(crate) fn find_passages_linking_to(workspace: &Workspace, passage_name: &str) -> Vec<String> {
-    let mut result = Vec::new();
-    for doc in workspace.documents() {
-        for passage in &doc.passages {
-            if passage.links.iter().any(|l| l.target == passage_name) {
-                result.push(passage.name.clone());
-            }
-        }
-    }
-    result.sort();
-    result.dedup();
-    result
-}
-
 /// Find all [[target]] link ranges for a specific target in the text.
 ///
 /// Uses workspace passage data to locate links by `link.target` match,
