@@ -417,7 +417,7 @@
         "path": "./themes/knot-dark.json"
       },
       {
-        "label": "Knot Dark — Tokens Only",
+        "label": "Knot Dark \u2014 Tokens Only",
         "uiTheme": "vs-dark",
         "path": "./themes/knot-dark-tokens.json"
       },
@@ -427,7 +427,7 @@
         "path": "./themes/knot-light.json"
       },
       {
-        "label": "Knot Light — Tokens Only",
+        "label": "Knot Light \u2014 Tokens Only",
         "uiTheme": "vs",
         "path": "./themes/knot-light-tokens.json"
       }
@@ -475,27 +475,35 @@
             "support.function.macro.twee"
           ],
           "function": [
+            "entity.name.function",
             "entity.name.function.widget.twee"
           ],
           "variable": [
+            "variable.other.readwrite",
             "variable.other.readwrite.twee"
           ],
           "string": [
+            "string",
             "string.unquoted.twee"
           ],
           "number": [
+            "constant.numeric",
             "constant.numeric.twee"
           ],
           "comment": [
+            "comment",
             "comment.block.twee"
           ],
           "operator": [
+            "keyword.operator",
             "keyword.operator.assignment.twee"
           ],
           "namespace": [
+            "support.class",
             "support.constant.global-object.twee"
           ],
           "property": [
+            "variable.other.property",
             "variable.other.property.twee"
           ],
           "tag": [
@@ -503,9 +511,11 @@
             "entity.other.attribute-name.twee"
           ],
           "keyword": [
+            "keyword.control",
             "keyword.control.twee"
           ],
           "boolean": [
+            "constant.language.boolean",
             "constant.language.boolean.twee"
           ],
           "passageRef": [
@@ -570,27 +580,35 @@
             "support.function.macro.twee"
           ],
           "function": [
+            "entity.name.function",
             "entity.name.function.widget.twee"
           ],
           "variable": [
+            "variable.other.readwrite",
             "variable.other.readwrite.twee"
           ],
           "string": [
+            "string",
             "string.unquoted.twee"
           ],
           "number": [
+            "constant.numeric",
             "constant.numeric.twee"
           ],
           "comment": [
+            "comment",
             "comment.block.twee"
           ],
           "operator": [
+            "keyword.operator",
             "keyword.operator.assignment.twee"
           ],
           "namespace": [
+            "support.class",
             "support.constant.global-object.twee"
           ],
           "property": [
+            "variable.other.property",
             "variable.other.property.twee"
           ],
           "tag": [
@@ -598,9 +616,11 @@
             "entity.other.attribute-name.twee"
           ],
           "keyword": [
+            "keyword.control",
             "keyword.control.twee"
           ],
           "boolean": [
+            "constant.language.boolean",
             "constant.language.boolean.twee"
           ],
           "passageRef": [
@@ -665,27 +685,35 @@
             "support.function.macro.twee"
           ],
           "function": [
+            "entity.name.function",
             "entity.name.function.widget.twee"
           ],
           "variable": [
+            "variable.other.readwrite",
             "variable.other.readwrite.twee"
           ],
           "string": [
+            "string",
             "string.unquoted.twee"
           ],
           "number": [
+            "constant.numeric",
             "constant.numeric.twee"
           ],
           "comment": [
+            "comment",
             "comment.block.twee"
           ],
           "operator": [
+            "keyword.operator",
             "keyword.operator.assignment.twee"
           ],
           "namespace": [
+            "support.class",
             "support.constant.global-object.twee"
           ],
           "property": [
+            "variable.other.property",
             "variable.other.property.twee"
           ],
           "tag": [
@@ -693,9 +721,11 @@
             "entity.other.attribute-name.twee"
           ],
           "keyword": [
+            "keyword.control",
             "keyword.control.twee"
           ],
           "boolean": [
+            "constant.language.boolean",
             "constant.language.boolean.twee"
           ],
           "passageRef": [
@@ -760,27 +790,35 @@
             "support.function.macro.twee"
           ],
           "function": [
+            "entity.name.function",
             "entity.name.function.widget.twee"
           ],
           "variable": [
+            "variable.other.readwrite",
             "variable.other.readwrite.twee"
           ],
           "string": [
+            "string",
             "string.unquoted.twee"
           ],
           "number": [
+            "constant.numeric",
             "constant.numeric.twee"
           ],
           "comment": [
+            "comment",
             "comment.block.twee"
           ],
           "operator": [
+            "keyword.operator",
             "keyword.operator.assignment.twee"
           ],
           "namespace": [
+            "support.class",
             "support.constant.global-object.twee"
           ],
           "property": [
+            "variable.other.property",
             "variable.other.property.twee"
           ],
           "tag": [
@@ -788,9 +826,11 @@
             "entity.other.attribute-name.twee"
           ],
           "keyword": [
+            "keyword.control",
             "keyword.control.twee"
           ],
           "boolean": [
+            "constant.language.boolean",
             "constant.language.boolean.twee"
           ],
           "passageRef": [
@@ -855,27 +895,35 @@
             "support.function.macro.twee"
           ],
           "function": [
+            "entity.name.function",
             "entity.name.function.widget.twee"
           ],
           "variable": [
+            "variable.other.readwrite",
             "variable.other.readwrite.twee"
           ],
           "string": [
+            "string",
             "string.unquoted.twee"
           ],
           "number": [
+            "constant.numeric",
             "constant.numeric.twee"
           ],
           "comment": [
+            "comment",
             "comment.block.twee"
           ],
           "operator": [
+            "keyword.operator",
             "keyword.operator.assignment.twee"
           ],
           "namespace": [
+            "support.class",
             "support.constant.global-object.twee"
           ],
           "property": [
+            "variable.other.property",
             "variable.other.property.twee"
           ],
           "tag": [
@@ -883,9 +931,11 @@
             "entity.other.attribute-name.twee"
           ],
           "keyword": [
+            "keyword.control",
             "keyword.control.twee"
           ],
           "boolean": [
+            "constant.language.boolean",
             "constant.language.boolean.twee"
           ],
           "passageRef": [

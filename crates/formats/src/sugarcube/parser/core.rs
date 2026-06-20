@@ -1504,4 +1504,102 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         assert!(full_comment_text.contains("this is"),
             "comment token should include 'this is' from line 1, got: {:?}", full_comment_text);
     }
+
+    #[test]
+    fn set_array_of_objects_emits_literal_tokens() {
+        // <<set $arr = [{a:1}, {b:2}]>> — array of objects.
+        // The array handler must recurse into nested ObjectExpression
+        // elements so property values get literal tokens.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<set $arr = [{a:1}, {b:2}]>>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let number_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Number))
+            .collect();
+        assert_eq!(number_tokens.len(), 2,
+            "should have 2 Number tokens for 1 and 2 inside objects in array, got {}", number_tokens.len());
+    }
+
+    #[test]
+    fn set_nested_array_emits_literal_tokens() {
+        // <<set $arr = [[1,2], [3,4]]>> — array of arrays.
+        // The array handler must recurse into nested ArrayExpression
+        // elements so inner literals get tokens.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<set $arr = [[1,2], [3,4]]>>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let number_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Number))
+            .collect();
+        assert_eq!(number_tokens.len(), 4,
+            "should have 4 Number tokens for 1,2,3,4 inside nested arrays, got {}", number_tokens.len());
+    }
+
+    #[test]
+    fn prose_token_does_not_overlap_variable_tokens() {
+        // Naked $variables in prose should get Variable tokens that are
+        // NOT overlapped by the Prose token. The Prose token is split
+        // around variable positions so each position has exactly one
+        // semantic token type.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\nYou have $gold coins.\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let all_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .collect();
+
+        let var_token = all_tokens.iter()
+            .find(|t| matches!(t.token_type, SemanticTokenType::Variable))
+            .expect("should have a Variable token for $gold");
+
+        for t in &all_tokens {
+            if matches!(t.token_type, SemanticTokenType::Prose) {
+                let var_start = var_token.start;
+                let var_end = var_token.start + var_token.length;
+                let prose_start = t.start;
+                let prose_end = t.start + t.length;
+                let overlaps = var_start < prose_end && prose_start < var_end;
+                assert!(!overlaps,
+                    "Prose token [{},{}) should not overlap Variable token [{},{})",
+                    prose_start, prose_end, var_start, var_end);
+            }
+        }
+    }
+
+    #[test]
+    fn template_invocation_includes_question_mark() {
+        // ?playerName in prose should get a Function token that INCLUDES
+        // the ? sigil, so the whole ?playerName is visually distinct.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\nWelcome ?playerName to the game.\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let func_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
+            .collect();
+        assert!(!func_tokens.is_empty(), "should have a Function token for ?playerName");
+
+        let tok = &func_tokens[0];
+        let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
+        assert!(token_text.starts_with('?'),
+            "template token should include the ? sigil, got: {:?}", token_text);
+    }
 }

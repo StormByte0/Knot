@@ -338,19 +338,67 @@ fn build_semantic_tokens_at_depth(
                 });
             }
             ast::AstNode::Text { content, var_refs, span, is_prose, .. } => {
-                // Emit a Prose token for the entire text span if it's narrative content.
-                // This enables themes to style story prose distinctly from code/comments.
-                // Non-prose text (inside <<silently>>, <<script>>, <<style>>) does not
-                // get a prose token — it's just unhighlighted text.
-                if *is_prose {
-                    tokens.push(SemanticToken {
-                        start: body_offset_in_passage + span.start,
-                        length: span.end - span.start,
-                        token_type: SemanticTokenType::Prose,
-                        modifier: None,
-                    });
+                // ── Collect all "special" spans (variables + templates) ────
+                // These are the positions where we DON'T want to emit a Prose
+                // token, because a more specific token (Variable or Function)
+                // will be emitted there instead. By splitting the Prose token
+                // around these positions, we avoid overlapping tokens — VS Code
+                // renders each position with exactly one semantic token type.
+                let mut gaps: Vec<std::ops::Range<usize>> = Vec::new();
+
+                // Variable references
+                for vr in var_refs {
+                    gaps.push(vr.span.clone());
                 }
-                // Variable references inside text still get Variable tokens
+
+                // Template invocations (?name) — scan content for ?ident.
+                // The token covers the full `?name` (including the `?` sigil).
+                let content_bytes = content.as_bytes();
+                let content_len = content_bytes.len();
+                let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                let mut i = 0usize;
+                while i < content_len {
+                    if content_bytes[i] == b'?' && i + 1 < content_len && is_ident(content_bytes[i + 1]) {
+                        let token_start = i;
+                        let mut name_end = i + 1;
+                        while name_end < content_len && is_ident(content_bytes[name_end]) {
+                            name_end += 1;
+                        }
+                        gaps.push(span.start + token_start..span.start + name_end);
+                        i = name_end;
+                    } else {
+                        i += 1;
+                    }
+                }
+
+                // Sort gaps by start position
+                gaps.sort_by_key(|g| g.start);
+
+                // ── Emit Prose tokens for the gaps BETWEEN special spans ──
+                if *is_prose {
+                    let mut prose_start = span.start;
+                    for gap in &gaps {
+                        if gap.start > prose_start {
+                            tokens.push(SemanticToken {
+                                start: body_offset_in_passage + prose_start,
+                                length: gap.start - prose_start,
+                                token_type: SemanticTokenType::Prose,
+                                modifier: None,
+                            });
+                        }
+                        prose_start = gap.end.max(prose_start);
+                    }
+                    if prose_start < span.end {
+                        tokens.push(SemanticToken {
+                            start: body_offset_in_passage + prose_start,
+                            length: span.end - prose_start,
+                            token_type: SemanticTokenType::Prose,
+                            modifier: None,
+                        });
+                    }
+                }
+
+                // ── Emit Variable tokens ──────────────────────────────────
                 for vr in var_refs {
                     tokens.push(SemanticToken {
                         start: body_offset_in_passage + vr.span.start,
@@ -359,33 +407,21 @@ fn build_semantic_tokens_at_depth(
                         modifier: None,
                     });
                 }
-                // Template invocations (`?name`) inside text get Function tokens.
-                // The parser's `scan_inline_vars` doesn't scan for `?name` (it
-                // only handles `$var` and `_var`), so we scan the text content
-                // here. `content` is the raw text of this Text node; `span.start`
-                // is its body-relative offset. We scan `content` for `?ident`
-                // patterns and emit tokens at `span.start + offset_within_content`.
-                //
-                // We use `SemanticTokenType::Function` because templates are
-                // function-like (defined via `Template.add("name", function() {})`
-                // and invoked with `?name`). This gives them the same highlighting
-                // as widgets and JS functions — visually consistent.
+
+                // ── Emit Function tokens for ?templates ───────────────────
+                // Re-scan content for ?ident and emit tokens for the full ?name.
                 {
-                    let content_bytes = content.as_bytes();
-                    let content_len = content_bytes.len();
-                    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
                     let mut i = 0usize;
                     while i < content_len {
                         if content_bytes[i] == b'?' && i + 1 < content_len && is_ident(content_bytes[i + 1]) {
-                            let name_start = i + 1;
-                            let mut name_end = name_start;
+                            let token_start = i;
+                            let mut name_end = i + 1;
                             while name_end < content_len && is_ident(content_bytes[name_end]) {
                                 name_end += 1;
                             }
-                            // Emit a Function token for the name (not the `?`).
                             tokens.push(SemanticToken {
-                                start: body_offset_in_passage + span.start + name_start,
-                                length: name_end - name_start,
+                                start: body_offset_in_passage + span.start + token_start,
+                                length: name_end - token_start,
                                 token_type: SemanticTokenType::Function,
                                 modifier: None,
                             });

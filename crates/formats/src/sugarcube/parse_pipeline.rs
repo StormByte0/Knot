@@ -128,6 +128,17 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         if matches!(mode, ParseMode::Minimal) {
             let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
             passage_tokens.extend(json_tokens);
+        } else if matches!(mode, ParseMode::Interface) {
+            // StoryInterface body is HTML — let the TextMate grammar handle
+            // coloring (text.html.basic). Emitting semantic tokens (Prose)
+            // here would override the TextMate HTML scopes, making the HTML
+            // appear as plain prose. We still emit header tokens (added
+            // above) but skip body tokens entirely.
+        } else if matches!(mode, ParseMode::Stylesheet) {
+            // Stylesheet passages are pure CSS — let the TextMate grammar
+            // handle coloring (source.css). The parser returns an empty AST
+            // for Stylesheet mode, so no body tokens would be produced
+            // anyway, but we make it explicit here for clarity.
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
