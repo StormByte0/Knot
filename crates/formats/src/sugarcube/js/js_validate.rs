@@ -35,7 +35,7 @@
 //! before mapping.
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity};
-use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
+use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
 
 use crate::sugarcube::ast::{self, JsSnippet};
 
@@ -66,6 +66,11 @@ pub fn validate_inline_js(
 }
 
 /// Validate a single JS snippet.
+///
+/// oxc has error recovery, so even when there are syntax errors, it produces
+/// multiple diagnostics (not just the first one). Each diagnostic has a
+/// precise byte range — we map each one back to the original SugarCube source
+/// so VSCode can squiggle exactly the broken span.
 fn validate_snippet(snippet: &JsSnippet, body_offset_in_passage: usize) -> Vec<FormatDiagnostic> {
     // Preprocess $var references for oxc
     let preprocessed = super::js_preprocess::preprocess_for_oxc(&snippet.source);
@@ -77,21 +82,15 @@ fn validate_snippet(snippet: &JsSnippet, body_offset_in_passage: usize) -> Vec<F
         JsParseMode::Expression
     };
 
-    match parse_js(&preprocessed.source, js_mode) {
-        JsParseOutcome::Success(_) => {
-            // JS is valid — no diagnostics
-            Vec::new()
-        }
-        JsParseOutcome::Error(js_diagnostics) => {
-            // Convert JS diagnostics to format diagnostics with position mapping
-            js_diagnostics
-                .into_iter()
-                .filter_map(|js_diag| {
-                    convert_js_diagnostic(&js_diag, &preprocessed, snippet, body_offset_in_passage, js_mode)
-                })
-                .collect()
-        }
-    }
+    let outcome = parse_js(&preprocessed.source, js_mode);
+    // Convert ALL diagnostics (oxc may produce multiple per snippet via
+    // error recovery) to FormatDiagnostic with precise position mapping.
+    outcome.diagnostics
+        .iter()
+        .filter_map(|js_diag| {
+            convert_js_diagnostic(js_diag, &preprocessed, snippet, body_offset_in_passage, js_mode)
+        })
+        .collect()
 }
 
 /// Convert a JS diagnostic to a FormatDiagnostic with position mapping.

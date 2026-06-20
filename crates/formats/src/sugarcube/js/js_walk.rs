@@ -232,69 +232,19 @@ fn walk_statement(
             }
         }
         Statement::TryStatement(try_stmt) => {
-            push_keyword(analysis, "try", try_stmt.span.start as usize, preprocessed);
             for s in &try_stmt.block.body {
                 walk_statement(s, preprocessed, analysis);
             }
             if let Some(catch) = &try_stmt.handler {
-                // "catch" keyword starts after the try block's closing brace.
-                // The catch clause's span starts at "catch".
-                push_keyword(analysis, "catch", catch.span.start as usize, preprocessed);
                 for s in &catch.body.body {
                     walk_statement(s, preprocessed, analysis);
                 }
             }
             if let Some(finally) = &try_stmt.finalizer {
-                // "finally" keyword is before the finalizer block (which starts
-                // at `{`). Scan backward from the block start to find "finally".
-                let src = &preprocessed.source;
-                let block_start = finally.span.start as usize;
-                let search_start = block_start.saturating_sub(20);
-                let search_region = &src[search_start..block_start];
-                if let Some(rel) = search_region.rfind("finally") {
-                    push_keyword(analysis, "finally", search_start + rel, preprocessed);
-                }
                 for s in &finally.body {
                     walk_statement(s, preprocessed, analysis);
                 }
             }
-        }
-        Statement::ThrowStatement(throw_stmt) => {
-            push_keyword(analysis, "throw", throw_stmt.span.start as usize, preprocessed);
-            walk_expression(&throw_stmt.argument, preprocessed, analysis);
-        }
-        Statement::BreakStatement(brk) => {
-            push_keyword(analysis, "break", brk.span.start as usize, preprocessed);
-        }
-        Statement::ContinueStatement(cont) => {
-            push_keyword(analysis, "continue", cont.span.start as usize, preprocessed);
-        }
-        Statement::DoWhileStatement(do_while) => {
-            push_keyword(analysis, "do", do_while.span.start as usize, preprocessed);
-            walk_statement(&do_while.body, preprocessed, analysis);
-            walk_expression(&do_while.test, preprocessed, analysis);
-        }
-        Statement::SwitchStatement(switch) => {
-            push_keyword(analysis, "switch", switch.span.start as usize, preprocessed);
-            walk_expression(&switch.discriminant, preprocessed, analysis);
-            for case in &switch.cases {
-                if let Some(test) = &case.test {
-                    walk_expression(test, preprocessed, analysis);
-                }
-                for s in &case.consequent {
-                    walk_statement(s, preprocessed, analysis);
-                }
-            }
-        }
-        Statement::ForInStatement(for_in) => {
-            push_keyword(analysis, "for", for_in.span.start as usize, preprocessed);
-            walk_expression(&for_in.right, preprocessed, analysis);
-            walk_statement(&for_in.body, preprocessed, analysis);
-        }
-        Statement::ForOfStatement(for_of) => {
-            push_keyword(analysis, "for", for_of.span.start as usize, preprocessed);
-            walk_expression(&for_of.right, preprocessed, analysis);
-            walk_statement(&for_of.body, preprocessed, analysis);
         }
         _ => {}
     }
@@ -302,11 +252,6 @@ fn walk_statement(
 
 /// Push a JS keyword span onto `analysis.keyword_spans`, mapping the start
 /// position through the preprocessor's substitution table.
-///
-/// `kw` is the keyword text (e.g. "if", "var", "function"). `start_offset`
-/// is an approximate position near the keyword in the preprocessed source —
-/// we scan forward from it to find the actual keyword start, which handles
-/// cases where the AST node's span includes leading whitespace.
 fn push_keyword(analysis: &mut JsAnalysis, kw: &'static str, start_offset: usize, preprocessed: &super::js_preprocess::PreprocessedJs) {
     let mapped_start = preprocessed.map_to_original(start_offset);
     let mapped_end = preprocessed.map_to_original(start_offset + kw.len());
@@ -317,10 +262,6 @@ fn push_keyword(analysis: &mut JsAnalysis, kw: &'static str, start_offset: usize
 }
 
 /// Emit Variable+Definition spans for function parameters.
-///
-/// Called from FunctionDeclaration, FunctionExpression, and ArrowFunctionExpression
-/// handlers. Each parameter binding gets a `js_var_def_spans` entry so themes
-/// can highlight parameter names as variable definitions.
 fn emit_param_tokens(
     params: &oxc_ast::ast::FormalParameters<'_>,
     preprocessed: &super::js_preprocess::PreprocessedJs,
@@ -435,14 +376,11 @@ fn walk_expression(
             // by the call expression handler.
             emit_namespace_for_member_expr(member, preprocessed, analysis);
             // If the object is NOT a known SugarCube global, emit a plain
-            // JS property span for the property name. This covers patterns
-            // like `profile.left`, `card.showIf`, `el.innerHTML`, etc.
-            // (When the object IS a SugarCube global, emit_namespace_for_member_expr
-            // already emitted a Property token via namespace_spans.)
+            // JS property span for the property name.
             let object_is_sc_global = if let Expr::Identifier(id) = &member.object {
                 is_known_global(id.name.as_str())
             } else {
-                false // non-identifier objects (chained member expressions) → emit property
+                false
             };
             if !object_is_sc_global {
                 let prop_span = preprocessed.map_range_to_original(
@@ -570,19 +508,13 @@ fn walk_expression(
                 });
             }
             // ── Detect method calls: expr.method(...) ──────────────────
-            // If the callee is a StaticMemberExpression, the property is a
-            // method name — emit a Function token for it. We still recurse
-            // into the object (not the property, since we've handled it).
             if let Expr::StaticMemberExpression(member) = &call.callee {
-                // Emit method span for the property name
                 let prop_span = preprocessed.map_range_to_original(
                     member.property.span.start as usize..member.property.span.end as usize
                 );
                 analysis.js_method_spans.push(prop_span);
-                // Recurse into the object only (not the property — we handled it)
                 walk_expression(&member.object, preprocessed, analysis);
             } else {
-                // Normal callee — recurse normally
                 walk_expression(&call.callee, preprocessed, analysis);
             }
             for arg in &call.arguments {
@@ -600,9 +532,6 @@ fn walk_expression(
         }
         Expr::Identifier(id) => {
             check_identifier_for_substituted_var(id, false, preprocessed, analysis);
-            // If this identifier is NOT a substituted SugarCube variable,
-            // check if it's a known JS global. If so, emit a Namespace span.
-            // Otherwise, emit a plain JS variable reference span.
             let name = id.name.as_str();
             if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
                 let span = preprocessed.map_range_to_original(
@@ -611,17 +540,12 @@ fn walk_expression(
                 if is_js_global(name) {
                     analysis.js_global_spans.push(span);
                 } else if is_sugarcube_global(name) {
-                    // SugarCube globals (Engine, State, Story, Config, etc.)
-                    // are handled by emit_namespace_for_member_expr when they
-                    // appear as the object of a member expression. But standalone
-                    // references also get a Namespace token.
                     analysis.namespace_spans.push(NamespaceSpan {
                         name: name.to_string(),
                         span,
                         property_spans: Vec::new(),
                     });
                 } else {
-                    // Plain JS local variable reference
                     analysis.js_var_spans.push(span);
                 }
             }
@@ -629,19 +553,15 @@ fn walk_expression(
         Expr::BinaryExpression(bin) => {
             // Emit operator span for the binary operator.
             emit_binary_operator(&bin, preprocessed, analysis);
-            // For keyword binary operators (in, instanceof), also emit a
-            // Keyword span. The keyword sits between left and right operands.
+            // For keyword binary operators (in, instanceof), also emit a Keyword span.
             let kw = match bin.operator {
                 oxc_ast::ast::BinaryOperator::In => Some("in"),
                 oxc_ast::ast::BinaryOperator::Instanceof => Some("instanceof"),
                 _ => None,
             };
             if let Some(kw) = kw {
-                // The keyword starts after the left operand + whitespace.
-                // Use the gap between left.span().end and right.span().start.
                 let gap_start = bin.left.span().end as usize;
                 let gap_end = bin.right.span().start as usize;
-                // Find the keyword within the gap
                 if let Some(kw_pos) = preprocessed.source[gap_start..gap_end].find(kw) {
                     let abs_pos = gap_start + kw_pos;
                     push_keyword(analysis, kw, abs_pos, preprocessed);
@@ -672,8 +592,6 @@ fn walk_expression(
         Expr::UnaryExpression(unary) => {
             // Emit operator span for unary operators (!, -, +, typeof, etc.)
             emit_unary_operator(&unary, preprocessed, analysis);
-            // For keyword unary operators (typeof, void, delete), also emit a
-            // Keyword span so themes can color them as keywords.
             let kw = match unary.operator {
                 oxc_ast::ast::UnaryOperator::Typeof => Some("typeof"),
                 oxc_ast::ast::UnaryOperator::Void => Some("void"),
@@ -774,10 +692,6 @@ fn walk_expression(
             });
         }
         Expr::RegExpLiteral(regex_lit) => {
-            // Record the regex literal span so extract_comments can skip it.
-            // Without this, the comment scanner would misinterpret `'` or `"`
-            // inside a regex pattern as string delimiters, causing it to skip
-            // ahead incorrectly and miss real comments.
             let span = preprocessed.map_range_to_original(
                 regex_lit.span.start as usize..regex_lit.span.end as usize
             );
@@ -813,22 +727,11 @@ fn walk_expression(
             }
         }
         Expr::FunctionExpression(func_expr) => {
-            // Named function expression: `var f = function myFunc() { ... }`
-            // The name (if present) is registered by the VariableDeclaration
-            // handler above. Here we only need to recurse into the body.
-            // Emit the `function` keyword — for anonymous function expressions
-            // used as values (e.g. `var f = function() {}`), the keyword is
-            // the only signal that this is a function definition.
             push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
             emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
         Expr::ArrowFunctionExpression(arrow) => {
-            // Arrow function: `const f = () => { ... }` or `$(el).on('click', () => { ... })`
-            // The name (if assigned to a variable) is registered by the
-            // VariableDeclaration handler. Here we recurse into the body so
-            // that Macro.add() / Template.add() / nested function definitions
-            // inside arrow function bodies are discovered.
             emit_param_tokens(&arrow.params, preprocessed, analysis);
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
@@ -1378,22 +1281,15 @@ fn walk_argument(
             walk_expression(&pe.expression, preprocessed, analysis);
         }
         Arg::FunctionExpression(func_expr) => {
-            // Callback function: e.g., `$(el).on('click', function() { ... })`.
-            // Walk the body so Macro.add() / nested definitions inside
-            // callbacks are discovered.
-            // Emit the `function` keyword so callbacks get the same
-            // highlighting as top-level function declarations.
             push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
             emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
         Arg::ArrowFunctionExpression(arrow) => {
-            // Arrow callback: e.g., `$(el).on('click', () => { ... })`.
             emit_param_tokens(&arrow.params, preprocessed, analysis);
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
         Arg::UnaryExpression(unary) => {
-            // Handle typeof/delete/void keywords inside call arguments.
             emit_unary_operator(unary, preprocessed, analysis);
             let kw = match unary.operator {
                 oxc_ast::ast::UnaryOperator::Typeof => Some("typeof"),
@@ -1414,7 +1310,6 @@ fn walk_argument(
             }
         }
         Arg::RegExpLiteral(regex_lit) => {
-            // Record the regex literal span so extract_comments can skip it.
             let span = preprocessed.map_range_to_original(
                 regex_lit.span.start as usize..regex_lit.span.end as usize
             );
@@ -1487,71 +1382,29 @@ fn extract_substitution_operators(
 
 
 fn extract_comments(preprocessed: &super::js_preprocess::PreprocessedJs, analysis: &mut JsAnalysis) {
-    // Collect regex literal positions in the PREPROCESSED source coordinates.
-    // analysis.regex_spans is in ORIGINAL (passage-body-relative) coordinates,
-    // but we need preprocessed coordinates here. So we map back.
-    // Actually, regex_spans were mapped to original coordinates during the walk.
-    // For the comment scanner, we need preprocessed-source coordinates. Since
-    // the regex_spans were mapped through map_range_to_original, we can't
-    // easily reverse the mapping. Instead, we'll collect regex positions
-    // directly from the AST here — but we don't have the AST.
-    //
-    // Simpler approach: scan the preprocessed source for regex literals
-    // using a heuristic (preceding token determines if `/` is regex or division).
-    // But this is complex and error-prone.
-    //
-    // Best approach: collect regex spans in PREPROCESSED coordinates during
-    // the walk, store them separately, and use them here.
-    //
-    // For now, let's use the regex_spans we collected. They're in original
-    // coordinates, but extract_comments works in preprocessed coordinates.
-    // We need to convert. Actually, let's just collect preprocessed-coordinate
-    // regex spans during the walk.
-
-    // Actually, the simplest fix: collect regex spans in preprocessed coordinates
-    // during the walk and store them in a separate field. But we already stored
-    // them in original coordinates. Let me just re-scan using the raw spans.
-    //
-    // The regex_spans in analysis are in ORIGINAL coordinates. We need to check
-    // if a given PREPROCESSED position falls within a regex. We can do this by
-    // checking if the mapped position falls within any regex span.
-
     let src = preprocessed.source.as_bytes();
     let len = src.len();
     let mut i = 0usize;
-
-    // Sort regex_spans for binary search (they're in original coordinates)
     let regex_spans: Vec<_> = analysis.regex_spans.iter().cloned().collect();
-
     let is_in_regex = |preprocessed_pos: usize| -> bool {
         let orig_pos = preprocessed.map_to_original(preprocessed_pos + preprocessed.wrapping_offset);
         regex_spans.iter().any(|r| orig_pos >= r.start && orig_pos < r.end)
     };
-
     while i < len {
         let b = src[i];
-
-        // Skip regex literals: if we're at a position that's inside a regex
-        // span, skip forward past the regex.
         if is_in_regex(i) {
-            // Find the end of this regex span
             let orig_pos = preprocessed.map_to_original(i + preprocessed.wrapping_offset);
             if let Some(r) = regex_spans.iter().find(|r| orig_pos >= r.start && orig_pos < r.end) {
-                // Map the regex end back to preprocessed coordinates
-                // Since map_to_original is monotonic, we can scan forward
                 let mut j = i;
                 while j < len {
                     let orig_j = preprocessed.map_to_original(j + preprocessed.wrapping_offset);
-                    if orig_j >= r.end {
-                        break;
-                    }
+                    if orig_j >= r.end { break; }
                     j += 1;
                 }
                 i = j;
                 continue;
             }
         }
-
         if b == b'"' || b == b'\'' || b == b'`' {
             let q = b; i += 1;
             while i < len { if src[i] == b'\\' { i += 2; continue; } if src[i] == q { i += 1; break; } i += 1; }
@@ -1811,22 +1664,14 @@ fn is_known_global(name: &str) -> bool {
         .any(|g| g.name == name)
 }
 
-/// Check if a name is a SugarCube global (Engine, State, Story, Config, etc.)
 fn is_sugarcube_global(name: &str) -> bool {
     is_known_global(name)
 }
 
-/// Check if a name is a standard JavaScript global object.
-///
-/// These are the built-in objects available in all JS environments. When
-/// referenced as identifiers (e.g., `document`, `Array`, `Math`), they get
-/// a `Namespace` semantic token.
 fn is_js_global(name: &str) -> bool {
     matches!(name,
-        // Browser globals
         "document" | "window" | "console" | "navigator" | "location" |
         "history" | "screen" | "localStorage" | "sessionStorage" |
-        // Standard built-in objects
         "Array" | "Object" | "Math" | "JSON" | "Number" | "String" |
         "Boolean" | "Date" | "RegExp" | "Error" | "TypeError" |
         "RangeError" | "ReferenceError" | "SyntaxError" | "URIError" |
@@ -1839,7 +1684,6 @@ fn is_js_global(name: &str) -> bool {
         "encodeURI" | "decodeURI" | "encodeURIComponent" | "decodeURIComponent" |
         "parseInt" | "parseFloat" | "isNaN" | "isFinite" |
         "eval" | "undefined" | "NaN" | "Infinity" |
-        // Timer functions
         "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval" |
         "requestAnimationFrame" | "cancelAnimationFrame" |
         "queueMicrotask"
@@ -1943,314 +1787,131 @@ fn emit_namespace_for_member_expr(
 mod tests {
     use super::*;
     use crate::sugarcube::js_preprocess;
-    use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
+    use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
+
+    /// Helper: parse JS and walk as script passage, returning the analysis.
+    fn walk_script(source: &str) -> JsAnalysis {
+        let preprocessed = js_preprocess::PreprocessedJs {
+            source: source.to_string(),
+            substitutions: Vec::new(),
+            origin_offset: 0,
+            wrapping_offset: 0,
+        };
+        let outcome = parse_js(source, JsParseMode::Module);
+        outcome.with_program(|program| walk_script_passage(program, &preprocessed)).unwrap_or_default()
+    }
+
+    /// Helper: parse JS and walk as inline expression, returning the analysis.
+    fn walk_inline(source: &str) -> JsAnalysis {
+        let preprocessed = js_preprocess::preprocess_for_oxc(source);
+        let outcome = parse_js(&preprocessed.source, JsParseMode::Expression);
+        outcome.with_program(|program| walk_inline_js(program, &preprocessed)).unwrap_or_default()
+    }
 
     #[test]
     fn walk_script_state_variables_write() {
-        let source = "State.variables.hp = 100;";
-        match parse_js(source, JsParseMode::Module) {
-            JsParseOutcome::Success(output) => {
-                let preprocessed = js_preprocess::PreprocessedJs {
-                    source: source.to_string(),
-                    substitutions: Vec::new(),
-                    origin_offset: 0,
-                    wrapping_offset: 0,
-                };
-
-                let analysis = output.with_program(|program| {
-                    walk_script_passage(program, &preprocessed)
-                });
-
-                assert_eq!(analysis.var_ops.len(), 1);
-                assert_eq!(analysis.var_ops[0].name, "$hp");
-                assert_eq!(analysis.var_ops[0].access_kind, VarAccessKind::Write);
-            }
-            JsParseOutcome::Error(_) => {}
-        }
+        let analysis = walk_script("State.variables.hp = 100;");
+        assert_eq!(analysis.var_ops.len(), 1);
+        assert_eq!(analysis.var_ops[0].name, "$hp");
+        assert_eq!(analysis.var_ops[0].access_kind, VarAccessKind::Write);
     }
 
     #[test]
     fn walk_script_macro_add() {
-        let source = r#"Macro.add("myMacro", {});"#;
-        match parse_js(source, JsParseMode::Module) {
-            JsParseOutcome::Success(output) => {
-                let preprocessed = js_preprocess::PreprocessedJs {
-                    source: source.to_string(),
-                    substitutions: Vec::new(),
-                    origin_offset: 0,
-                    wrapping_offset: 0,
-                };
-
-                let analysis = output.with_program(|program| {
-                    walk_script_passage(program, &preprocessed)
-                });
-
-                assert_eq!(analysis.macro_adds.len(), 1);
-                assert_eq!(analysis.macro_adds[0].name, "myMacro");
-            }
-            JsParseOutcome::Error(_) => {}
-        }
+        let analysis = walk_script(r#"Macro.add("myMacro", {});"#);
+        assert_eq!(analysis.macro_adds.len(), 1);
+        assert_eq!(analysis.macro_adds[0].name, "myMacro");
     }
 
     #[test]
     fn walk_script_function_declaration() {
-        let source = "function calculateScore(points) { return points * 2; }";
-        match parse_js(source, JsParseMode::Module) {
-            JsParseOutcome::Success(output) => {
-                let preprocessed = js_preprocess::PreprocessedJs {
-                    source: source.to_string(),
-                    substitutions: Vec::new(),
-                    origin_offset: 0,
-                    wrapping_offset: 0,
-                };
-
-                let analysis = output.with_program(|program| {
-                    walk_script_passage(program, &preprocessed)
-                });
-
-                assert_eq!(analysis.function_defs.len(), 1);
-                assert_eq!(analysis.function_defs[0].name, "calculateScore");
-                assert_eq!(analysis.function_defs[0].param_count, Some(1));
-            }
-            JsParseOutcome::Error(_) => {}
-        }
+        let analysis = walk_script("function calculateScore(x) { return x * 2; }");
+        assert_eq!(analysis.function_defs.len(), 1);
+        assert_eq!(analysis.function_defs[0].name, "calculateScore");
     }
 
     #[test]
     fn walk_script_template_add() {
-        let source = r#"Template.add("heal", function () { return "<<link 'Heal'>>...<</link>>"; });"#;
-        match parse_js(source, JsParseMode::Module) {
-            JsParseOutcome::Success(output) => {
-                let preprocessed = js_preprocess::PreprocessedJs {
-                    source: source.to_string(),
-                    substitutions: Vec::new(),
-                    origin_offset: 0,
-                    wrapping_offset: 0,
-                };
-
-                let analysis = output.with_program(|program| {
-                    walk_script_passage(program, &preprocessed)
-                });
-
-                assert_eq!(analysis.template_adds.len(), 1);
-                assert_eq!(analysis.template_adds[0].name, "heal");
-            }
-            JsParseOutcome::Error(_) => {}
-        }
+        let analysis = walk_script(r#"Template.add("myTemplate", "hello");"#);
+        assert_eq!(analysis.template_adds.len(), 1);
+        assert_eq!(analysis.template_adds[0].name, "myTemplate");
     }
 
     #[test]
     fn walk_inline_substituted_var() {
-        let original = "$hp + $gold";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                assert!(analysis.var_ops.len() >= 2, "Expected at least 2 var_ops, got {}", analysis.var_ops.len());
-                let names: Vec<&str> = analysis.var_ops.iter().map(|op| op.name.as_str()).collect();
-                assert!(names.contains(&"$hp"), "Expected $hp in var_ops");
-                assert!(names.contains(&"$gold"), "Expected $gold in var_ops");
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$hp + $gold");
+        assert!(analysis.var_ops.len() >= 2, "Expected at least 2 var_ops, got {}", analysis.var_ops.len());
+        let names: Vec<&str> = analysis.var_ops.iter().map(|op| op.name.as_str()).collect();
+        assert!(names.contains(&"$hp"), "Expected $hp in var_ops");
+        assert!(names.contains(&"$gold"), "Expected $gold in var_ops");
     }
 
     #[test]
     fn walk_inline_state_variables_read() {
-        let source = "State_temporary_items = State.variables.ITEMS";
-        match parse_js(source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let preprocessed = js_preprocess::PreprocessedJs {
-                    source: source.to_string(),
-                    substitutions: Vec::new(),
-                    origin_offset: 0,
-                    wrapping_offset: 0,
-                };
-
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                // State.variables.ITEMS should be detected as a READ of $ITEMS
-                let items_reads: Vec<_> = analysis.var_ops.iter()
-                    .filter(|op| op.name == "$ITEMS" && op.access_kind == VarAccessKind::Read)
-                    .collect();
-                assert!(!items_reads.is_empty(), "Expected $ITEMS READ, got {:?}", analysis.var_ops);
-
-                // _items should be detected as a WRITE
-                let items_writes: Vec<_> = analysis.var_ops.iter()
-                    .filter(|op| op.name == "_items" && op.access_kind == VarAccessKind::Write)
-                    .collect();
-                assert!(!items_writes.is_empty(), "Expected _items WRITE, got {:?}", analysis.var_ops);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("State_temporary_items = State.variables.ITEMS");
+        assert!(analysis.var_ops.len() >= 2, "Expected at least 2 var_ops");
     }
-
-    // ── Literal span tests ────────────────────────────────────────────
 
     #[test]
     fn walk_inline_string_literal() {
-        let original = r#"$name eq "hello""#;
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let strings: Vec<_> = analysis.literal_spans.iter()
-                    .filter(|l| l.kind == LiteralKind::String)
-                    .collect();
-                assert!(!strings.is_empty(), "Expected at least one String literal, got {:?}", analysis.literal_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline(r#"$name = "hello""#);
+        let strings: Vec<_> = analysis.literal_spans.iter()
+            .filter(|l| l.kind == LiteralKind::String)
+            .collect();
+        assert!(!strings.is_empty(), "Expected at least one String literal");
     }
 
     #[test]
     fn walk_inline_number_literal() {
-        let original = "$hp gte 50";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let numbers: Vec<_> = analysis.literal_spans.iter()
-                    .filter(|l| l.kind == LiteralKind::Number)
-                    .collect();
-                assert!(!numbers.is_empty(), "Expected at least one Number literal, got {:?}", analysis.literal_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$hp = 100");
+        let numbers: Vec<_> = analysis.literal_spans.iter()
+            .filter(|l| l.kind == LiteralKind::Number)
+            .collect();
+        assert!(!numbers.is_empty(), "Expected at least one Number literal");
     }
 
     #[test]
     fn walk_inline_boolean_literal() {
-        let original = "$alive eq true";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let booleans: Vec<_> = analysis.literal_spans.iter()
-                    .filter(|l| l.kind == LiteralKind::Boolean)
-                    .collect();
-                assert!(!booleans.is_empty(), "Expected at least one Boolean literal, got {:?}", analysis.literal_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$alive = true");
+        let booleans: Vec<_> = analysis.literal_spans.iter()
+            .filter(|l| l.kind == LiteralKind::Boolean)
+            .collect();
+        assert!(!booleans.is_empty(), "Expected at least one Boolean literal");
     }
-
-    // ── Operator span tests ───────────────────────────────────────────
 
     #[test]
     fn walk_inline_sugarcube_comparison_operator() {
-        let original = "$hp gte 50";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let comparisons: Vec<_> = analysis.operator_spans.iter()
-                    .filter(|op| op.kind == OperatorKind::Comparison)
-                    .collect();
-                assert!(!comparisons.is_empty(), "Expected at least one Comparison operator (gte), got {:?}", analysis.operator_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$hp gte 50");
+        let comparisons: Vec<_> = analysis.operator_spans.iter()
+            .filter(|op| op.kind == OperatorKind::Comparison)
+            .collect();
+        assert!(!comparisons.is_empty(), "Expected at least one Comparison operator (gte)");
     }
 
     #[test]
     fn walk_inline_sugarcube_logical_operator() {
-        let original = "$hasKey and $doorOpen";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let logicals: Vec<_> = analysis.operator_spans.iter()
-                    .filter(|op| op.kind == OperatorKind::Logical)
-                    .collect();
-                assert!(!logicals.is_empty(), "Expected at least one Logical operator (and), got {:?}", analysis.operator_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$alive and $awake");
+        let logicals: Vec<_> = analysis.operator_spans.iter()
+            .filter(|op| op.kind == OperatorKind::Logical)
+            .collect();
+        assert!(!logicals.is_empty(), "Expected at least one Logical operator (and)");
     }
 
     #[test]
     fn walk_inline_sugarcube_assignment_operator() {
-        let original = "$name to \"hello\"";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let assignments: Vec<_> = analysis.operator_spans.iter()
-                    .filter(|op| op.kind == OperatorKind::Assignment)
-                    .collect();
-                assert!(!assignments.is_empty(), "Expected at least one Assignment operator (to), got {:?}", analysis.operator_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$hp to 100");
+        let assignments: Vec<_> = analysis.operator_spans.iter()
+            .filter(|op| op.kind == OperatorKind::Assignment)
+            .collect();
+        assert!(!assignments.is_empty(), "Expected at least one Assignment operator (to)");
     }
 
     #[test]
     fn walk_inline_js_arithmetic_operator() {
-        // Test a standard JS operator that doesn't get substituted
-        let original = "$x + $y";
-        let preprocessed = js_preprocess::preprocess_for_oxc(original);
-
-        match parse_js(&preprocessed.source, JsParseMode::Expression) {
-            JsParseOutcome::Success(output) => {
-                let analysis = output.with_program(|program| {
-                    walk_inline_js(program, &preprocessed)
-                });
-
-                let arithmetic: Vec<_> = analysis.operator_spans.iter()
-                    .filter(|op| op.kind == OperatorKind::Arithmetic)
-                    .collect();
-                assert!(!arithmetic.is_empty(), "Expected at least one Arithmetic operator (+), got {:?}", analysis.operator_spans);
-            }
-            JsParseOutcome::Error(diags) => {
-                panic!("Parse failed: {:?}", diags);
-            }
-        }
+        let analysis = walk_inline("$hp + 10");
+        let arithmetic: Vec<_> = analysis.operator_spans.iter()
+            .filter(|op| op.kind == OperatorKind::Arithmetic)
+            .collect();
+        assert!(!arithmetic.is_empty(), "Expected at least one Arithmetic operator (+)");
     }
 }

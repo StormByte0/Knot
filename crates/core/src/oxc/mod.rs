@@ -13,11 +13,11 @@
 //!    `PassageNode` tree for `<<run>>`, `<<set>>`, `<<script>>` blocks)
 //! 2. Pre-processes the snippets (e.g. SugarCube substitutes `$var` with
 //!    `State_variables_varName` so Oxc sees valid JS identifiers)
-//! 3. Calls [`parse_js()] with the pre-processed source
+//! 3. Calls [`parse_js()`] with the pre-processed source
 //! 4. Handles the result:
-//!    - [`JsParseOutcome::Error`] → convert diagnostics to format diagnostics
-//!    - [`JsParseOutcome::Success`] → walk the AST for format-specific
-//!      analysis (variable references, function calls, etc.)
+//!    - Walk the AST via `outcome.with_program()` for token highlighting
+//!      (works even with recoverable errors — oxc produces a partial AST)
+//!    - Check `outcome.diagnostics` for error reporting (precise squiggles)
 //!
 //! ## Why this lives in `knot-core` (not `knot-formats`)
 //!

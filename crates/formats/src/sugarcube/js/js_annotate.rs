@@ -25,7 +25,7 @@ use crate::sugarcube::ast::{AnalyzedVarOp, AstNode, JsAnalysis, PassageAst};
 use crate::sugarcube::js::js_preprocess;
 use crate::sugarcube::js::js_walk;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
-use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
+use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
 use oxc_span::GetSpan;
 
 /// Annotate AST nodes with JS analysis results (Phase 2).
@@ -58,17 +58,16 @@ fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str) {
     // Preprocess $var references for oxc
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
 
-    // Parse with oxc as a JS module
-    match parse_js(&preprocessed.source, JsParseMode::Module) {
-        JsParseOutcome::Success(output) => {
-            let analysis = output.with_program(|program| {
-                js_walk::walk_script_passage(program, &preprocessed)
-            });
-            passage_ast.script_js_analysis = Some(analysis);
-        }
-        JsParseOutcome::Error(_diagnostics) => {
-            // JS syntax errors — skip analysis for broken JS
-        }
+    // Parse with oxc as a JS module.
+    // oxc has error recovery — even when there are syntax errors, the AST
+    // is usually still available (partial). We walk whatever AST we can get
+    // so the user gets token highlighting for the valid parts while the
+    // broken parts get precise error diagnostics via js_validate.
+    let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
+    if let Some(analysis) = outcome.with_program(|program| {
+        js_walk::walk_script_passage(program, &preprocessed)
+    }) {
+        passage_ast.script_js_analysis = Some(analysis);
     }
 }
 
@@ -325,20 +324,17 @@ fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAna
         wrapping_offset,
     };
 
-    match parse_js(&shifted.source, js_mode) {
-        JsParseOutcome::Success(output) => {
-            output.with_program(|program| {
-                if is_block {
-                    js_walk::walk_script_passage(program, &shifted)
-                } else {
-                    js_walk::walk_inline_js(program, &shifted)
-                }
-            })
+    let outcome = parse_js(&shifted.source, js_mode);
+    // oxc has error recovery — walk whatever AST we can get, even if there
+    // are syntax errors. The valid parts get token highlighting; the broken
+    // parts get precise diagnostics via js_validate.
+    outcome.with_program(|program| {
+        if is_block {
+            js_walk::walk_script_passage(program, &shifted)
+        } else {
+            js_walk::walk_inline_js(program, &shifted)
         }
-        JsParseOutcome::Error(_diagnostics) => {
-            JsAnalysis::default()
-        }
-    }
+    }).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -351,22 +347,18 @@ fn extract_object_property_paths_detailed(source: &str, body_offset: usize) -> V
     preprocessed.wrapping_offset = 1;
     preprocessed.origin_offset = body_offset;
 
-    match parse_js(&preprocessed.source, JsParseMode::Expression) {
-        JsParseOutcome::Success(output) => {
-            output.with_program(|program| {
-                let mut results = Vec::new();
-                for stmt in &program.body {
-                    if let oxc_ast::ast::Statement::ExpressionStatement(expr_stmt) = stmt {
-                        collect_object_paths_detailed_from_oxc_expr(
-                            &expr_stmt.expression, &mut results, String::new(), &preprocessed,
-                        );
-                    }
-                }
-                results
-            })
+    let outcome = parse_js(&preprocessed.source, JsParseMode::Expression);
+    outcome.with_program(|program| {
+        let mut results = Vec::new();
+        for stmt in &program.body {
+            if let oxc_ast::ast::Statement::ExpressionStatement(expr_stmt) = stmt {
+                collect_object_paths_detailed_from_oxc_expr(
+                    &expr_stmt.expression, &mut results, String::new(), &preprocessed,
+                );
+            }
         }
-        JsParseOutcome::Error(_) => Vec::new(),
-    }
+        results
+    }).unwrap_or_default()
 }
 
 /// Compute the passage-body-relative span of the object literal portion `{...}`

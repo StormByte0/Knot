@@ -673,35 +673,36 @@ pub fn walk_script_js(
     cp: &ClassifiedPassage,
     file_uri: &str,
 ) {
-    use knot_core::oxc::{parse_js, JsParseOutcome, ParseMode as JsParseMode};
+    use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
     use crate::sugarcube::js::js_preprocess;
     use crate::sugarcube::js::js_walk;
 
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
 
-    match parse_js(&preprocessed.source, JsParseMode::Module) {
-        JsParseOutcome::Success(output) => {
-            output.with_program(|program| {
-                let analysis = js_walk::walk_script_passage(program, &preprocessed);
+    // oxc has error recovery — walk whatever AST we can get, even if there
+    // are syntax errors. The valid parts still contribute to the registries.
+    let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
+    if let Some(()) = outcome.with_program(|program| {
+        let analysis = js_walk::walk_script_passage(program, &preprocessed);
 
-                // Record variable operations
-                let vtree = registry.variables_mut();
-                for op in &analysis.var_ops {
-                    vtree.record_var(
-                        &op.name,
-                        op.is_temporary,
-                        op.access_kind,
-                        &cp.header.name,
-                        file_uri,
-                        op.span.clone(),
-                        &op.property_path,
-                        body_text,
-                        &op.segment_spans,
-                        op.construct_span.clone(),
-                    );
-                }
+        // Record variable operations
+        let vtree = registry.variables_mut();
+        for op in &analysis.var_ops {
+            vtree.record_var(
+                &op.name,
+                op.is_temporary,
+                op.access_kind,
+                &cp.header.name,
+                file_uri,
+                op.span.clone(),
+                &op.property_path,
+                body_text,
+                &op.segment_spans,
+                op.construct_span.clone(),
+            );
+        }
 
-                // Record definitions
+        // Record definitions
                 let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
                 for macro_add in &analysis.macro_adds {
                     macro_reg.register_macro_add(
@@ -736,9 +737,10 @@ pub fn walk_script_js(
                         func_def.param_count,
                     );
                 }
-            });
-        }
-        JsParseOutcome::Error(_diagnostics) => {}
+        // Return () from the closure
+        ()
+    }) {
+        // AST was available and walked — registries populated
     }
 }
 

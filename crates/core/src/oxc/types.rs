@@ -73,24 +73,97 @@ pub struct JsDiagnostic {
 
 /// The outcome of parsing JavaScript with Oxc.
 ///
-/// - [`JsParseOutcome::Success`]: The source parsed without syntax errors.
-///   The AST (`Program`) is available for the format to walk and extract
-///   format-specific information (variable references, function calls, etc.)
+/// Oxc has built-in error recovery: when it encounters a recoverable syntax
+/// error, it records the error and continues parsing, producing a partial AST.
+/// This means we can almost always walk the AST for token highlighting even
+/// when the source has syntax errors — only the broken parts are missing.
 ///
-/// - [`JsParseOutcome::Error`]: Syntax errors were found. The format should
-///   convert these diagnostics to `FormatDiagnostic` instances.
+/// ## Design
+///
+/// This is a **struct** (not an enum) because both the AST and the diagnostics
+/// are always present (though the AST may be empty if the parser panicked on
+/// an unrecoverable error). Callers should:
+///
+/// 1. Call [`with_program()`] to walk the AST for token highlighting — this
+///    works even when `diagnostics` is non-empty, producing partial highlighting.
+/// 2. Check `diagnostics` separately for error reporting — each diagnostic
+///    has a precise byte range so VSCode can squiggle exactly the broken span.
 ///
 /// ## Lifetime
 ///
-/// The `Program` in the `Success` variant borrows from the `Allocator`.
-/// Both are bundled in a `JsParseOutput` struct that owns the allocator
-/// and provides a `with_program()` method for safe AST access.
-pub enum JsParseOutcome {
-    /// Parsing succeeded. The AST is available for analysis.
-    Success(JsParseOutput),
+/// The `Program` borrows from the `Allocator`. Both are bundled in a
+/// `JsParseOutput` struct that owns the allocator and provides a
+/// `with_program()` method for safe AST access.
+///
+/// [`with_program()`]: JsParseOutcome::with_program
+pub struct JsParseOutcome {
+    /// The parsed AST (may be partial if there were recoverable errors).
+    /// Will be empty only if the parser panicked on an unrecoverable error.
+    output: Option<JsParseOutput>,
+    /// Syntax diagnostics. Empty if parsing succeeded. Non-empty if there
+    /// were recoverable errors (AST is still available via `output`) or
+    /// unrecoverable errors (AST is empty, `output` is `None`).
+    pub diagnostics: Vec<JsDiagnostic>,
+    /// Whether the parser panicked (could not recover). When `true`, the
+    /// AST is empty and only early diagnostics are available.
+    pub panicked: bool,
+}
 
-    /// Parsing failed. Syntax diagnostics describe the errors.
-    Error(Vec<JsDiagnostic>),
+impl JsParseOutcome {
+    /// Create a successful outcome (no errors, AST available).
+    pub(crate) fn success(output: JsParseOutput) -> Self {
+        Self {
+            output: Some(output),
+            diagnostics: Vec::new(),
+            panicked: false,
+        }
+    }
+
+    /// Create a partial outcome (errors present, but AST is still available
+    /// for walking). This is the common case — oxc recovered from errors.
+    pub(crate) fn partial(output: JsParseOutput, diagnostics: Vec<JsDiagnostic>) -> Self {
+        Self {
+            output: Some(output),
+            diagnostics,
+            panicked: false,
+        }
+    }
+
+    /// Create a failed outcome (parser panicked, no AST available).
+    pub(crate) fn failed(diagnostics: Vec<JsDiagnostic>) -> Self {
+        Self {
+            output: None,
+            diagnostics,
+            panicked: true,
+        }
+    }
+
+    /// Returns `true` if the AST is available for walking (even if there
+    /// were recoverable errors).
+    pub fn has_ast(&self) -> bool {
+        self.output.is_some()
+    }
+
+    /// Returns `true` if parsing had no errors at all.
+    pub fn is_clean(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    /// Access the parsed AST within a closure.
+    ///
+    /// The closure receives a reference to the `Program` AST, which borrows
+    /// from the internal allocator. If the parser panicked and no AST is
+    /// available, the closure is NOT called and this returns `None`.
+    ///
+    /// This works even when `diagnostics` is non-empty — oxc's error recovery
+    /// produces a partial AST that can be walked for token highlighting.
+    pub fn with_program<F, R>(&self, visitor: F) -> Option<R>
+    where
+        F: FnOnce(&Program<'_>) -> R,
+    {
+        let output = self.output.as_ref()?;
+        Some(output.with_program(visitor))
+    }
 }
 
 /// Owns the Oxc allocator and the parsed program.
@@ -127,17 +200,6 @@ impl JsParseOutput {
     /// from the internal allocator. The closure can walk the AST, extract
     /// information, and return an owned result. The `Program` reference
     /// must NOT escape the closure.
-    ///
-    /// ## Example
-    ///
-    /// ```ignore
-    /// let output: JsParseOutput = /* ... */;
-    /// let var_names: Vec<String> = output.with_program(|program| {
-    ///     // Walk the AST and collect identifier names
-    ///     // ...
-    ///     vec!["x".to_string()]
-    /// });
-    /// ```
     pub fn with_program<F, R>(&self, visitor: F) -> R
     where
         F: FnOnce(&Program<'_>) -> R,
