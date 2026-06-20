@@ -57,6 +57,17 @@ pub struct JsAnalysis {
     /// raw JS source separately to find them. The token builder emits
     /// `Comment` tokens for these spans so themes can color them.
     pub comment_spans: Vec<CommentSpan>,
+    /// JS keyword tokens found by oxc (`if`, `for`, `while`, `return`,
+    /// `var`, `let`, `const`, `function`, `try`, `catch`, `finally`,
+    /// `new`, `typeof`, `instanceof`, `delete`, `void`, `in`, `of`,
+    /// `this`, `throw`). The token builder emits these as `Keyword`
+    /// semantic tokens.
+    pub keyword_spans: Vec<KeywordSpan>,
+    /// Regular expression literal spans found by oxc. Used internally by
+    /// `extract_comments` to skip over regex patterns (which may contain
+    /// `/*` or `//` sequences that would be misidentified as comments).
+    /// Not emitted as semantic tokens.
+    pub regex_spans: Vec<std::ops::Range<usize>>,
 }
 
 /// A variable operation extracted by the oxc AST walker.
@@ -200,6 +211,24 @@ pub struct PropertySpan {
 pub struct CommentSpan {
     /// The kind of comment.
     pub kind: CommentKind,
+    /// Byte range in the passage body (passage-body-relative).
+    pub span: Range<usize>,
+}
+
+/// A JS keyword token found by oxc within a JS snippet.
+///
+/// Produced by Phase 2 (JS annotation pass) alongside `OperatorSpan` entries.
+/// Covers statement-level keywords (`if`, `for`, `while`, `return`, `try`,
+/// `catch`, `finally`, `function`) and declaration keywords (`var`, `let`,
+/// `const`), plus expression-level keywords (`new`, `typeof`, `instanceof`,
+/// `delete`, `void`, `in`, `of`, `this`, `throw`).
+///
+/// The token builder emits these as `Keyword` semantic tokens so themes can
+/// color JS keywords distinctly from SugarCube macro names.
+#[derive(Debug, Clone)]
+pub struct KeywordSpan {
+    /// The keyword text (e.g. "if", "var", "function").
+    pub text: &'static str,
     /// Byte range in the passage body (passage-body-relative).
     pub span: Range<usize>,
 }

@@ -103,9 +103,14 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
                             }
                         }
                         if !js_source.trim().is_empty() {
+                            // Adjust body_start to account for leading whitespace
+                            // stripped by trim(). The preprocessed source starts
+                            // at the first non-whitespace char, so origin_offset
+                            // must point there too.
+                            let leading_ws = js_source.len() - js_source.trim_start().len();
                             let analysis = analyze_js_snippet(
                                 js_source.trim(),
-                                body_start,
+                                body_start + leading_ws,
                                 true, // is_block = true for <<script>>
                             );
                             *js_analysis = Some(analysis);

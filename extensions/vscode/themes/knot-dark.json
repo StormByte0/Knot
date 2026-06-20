@@ -45,7 +45,7 @@
         "entity.name.passage.special.sugarcube"
       ],
       "settings": {
-        "foreground": "#bb9af7",
+        "foreground": "#ff9e64",
         "fontStyle": "bold"
       }
     },
@@ -64,7 +64,7 @@
         "meta.tag.twee"
       ],
       "settings": {
-        "foreground": "#6272a4"
+        "foreground": "#6e7faa"
       }
     },
     {
@@ -74,7 +74,7 @@
         "markup.underline.link.passageref.twee"
       ],
       "settings": {
-        "foreground": "#7dcfff",
+        "foreground": "#73daca",
         "fontStyle": "underline"
       }
     },
@@ -92,7 +92,7 @@
         "punctuation.separator.link.pipe.twee"
       ],
       "settings": {
-        "foreground": "#6272a4"
+        "foreground": "#6e7faa"
       }
     },
     {
@@ -110,7 +110,7 @@
         "variable.parameter.macro.sugarcube"
       ],
       "settings": {
-        "foreground": "#c98a96"
+        "foreground": "#f7768e"
       }
     },
     {
@@ -120,7 +120,7 @@
         "comment.block.html"
       ],
       "settings": {
-        "foreground": "#6272a4",
+        "foreground": "#7a88cf",
         "fontStyle": "italic"
       }
     },
@@ -131,7 +131,7 @@
         "punctuation.definition.comment.html"
       ],
       "settings": {
-        "foreground": "#6272a4"
+        "foreground": "#7a88cf"
       }
     },
     {
@@ -143,7 +143,7 @@
     {
       "scope": "punctuation.separator.key-value.html.twee",
       "settings": {
-        "foreground": "#6272a4"
+        "foreground": "#6e7faa"
       }
     },
     {
@@ -162,11 +162,11 @@
       "foreground": "#e0af68"
     },
     "specialPassageHeader": {
-      "foreground": "#bb9af7",
+      "foreground": "#ff9e64",
       "fontStyle": "bold"
     },
     "specialPassage": {
-      "foreground": "#bb9af7",
+      "foreground": "#ff9e64",
       "fontStyle": "bold"
     },
     "tag": {
@@ -188,7 +188,8 @@
       "fontStyle": "italic"
     },
     "textFormat": {
-      "foreground": "#9ece6a"
+      "foreground": "#9ece6a",
+      "fontStyle": "italic"
     },
     "variable": {
       "foreground": "#f7768e",
@@ -203,11 +204,11 @@
       "fontStyle": "italic"
     },
     "link": {
-      "foreground": "#7dcfff",
+      "foreground": "#73daca",
       "fontStyle": "underline"
     },
     "passageRef": {
-      "foreground": "#7dcfff"
+      "foreground": "#73daca"
     },
     "macro": {
       "foreground": "#7aa2f7"
@@ -221,64 +222,65 @@
       "fontStyle": "strikethrough"
     },
     "macroDelimiter": {
-      "foreground": "#6272a4"
+      "foreground": "#6e7faa"
     },
     "macroDelimiter.controlFlow": {
-      "foreground": "#6272a4",
+      "foreground": "#6e7faa",
       "fontStyle": "italic"
     },
     "macroDelimiter.deprecated": {
-      "foreground": "#6272a4",
+      "foreground": "#6e7faa",
       "fontStyle": "strikethrough"
     },
     "macroDelimiter.blockDepth1": {
-      "foreground": "#6e93c4"
+      "foreground": "#7aa2f7"
     },
     "macroDelimiter.blockDepth2": {
-      "foreground": "#6272a4"
+      "foreground": "#73daca"
     },
     "macroDelimiter.blockDepth3": {
-      "foreground": "#6e93c4"
+      "foreground": "#9ece6a"
     },
     "macroDelimiter.blockDepth4": {
-      "foreground": "#6272a4"
+      "foreground": "#e0af68"
     },
     "macroDelimiter.blockDepth5": {
-      "foreground": "#6e93c4"
+      "foreground": "#f7768e"
     },
     "macroDelimiter.blockDepth6": {
-      "foreground": "#6272a4"
+      "foreground": "#a371f7"
     },
     "function": {
-      "foreground": "#bb9af7"
+      "foreground": "#a371f7"
     },
     "function.definition": {
-      "foreground": "#bb9af7",
+      "foreground": "#a371f7",
       "fontStyle": "bold"
     },
     "function.deprecated": {
-      "foreground": "#bb9af7",
+      "foreground": "#a371f7",
       "fontStyle": "strikethrough"
     },
     "keyword": {
-      "foreground": "#bb9af7"
+      "foreground": "#e0af68",
+      "fontStyle": "italic"
     },
     "namespace": {
-      "foreground": "#89ddff",
+      "foreground": "#2ac3de",
       "fontStyle": "bold"
     },
     "property": {
-      "foreground": "#73daca"
+      "foreground": "#3fbfa3"
     },
     "property.definition": {
-      "foreground": "#73daca",
+      "foreground": "#3fbfa3",
       "fontStyle": "bold"
     },
     "operator": {
-      "foreground": "#89ddff"
+      "foreground": "#7dcfff"
     },
     "operator.controlFlow": {
-      "foreground": "#bb9af7"
+      "foreground": "#a371f7"
     },
     "string": {
       "foreground": "#9ece6a"
@@ -290,7 +292,7 @@
       "foreground": "#ff9e64"
     },
     "comment": {
-      "foreground": "#6272a4",
+      "foreground": "#7a88cf",
       "fontStyle": "italic"
     }
   }

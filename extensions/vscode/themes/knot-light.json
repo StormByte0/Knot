@@ -45,7 +45,7 @@
         "entity.name.passage.special.sugarcube"
       ],
       "settings": {
-        "foreground": "#6b3fa0",
+        "foreground": "#b85c00",
         "fontStyle": "bold"
       }
     },
@@ -55,7 +55,7 @@
         "entity.other.attribute-name.tag.twee"
       ],
       "settings": {
-        "foreground": "#0e7490"
+        "foreground": "#1c6b8c"
       }
     },
     {
@@ -110,7 +110,7 @@
         "variable.parameter.macro.sugarcube"
       ],
       "settings": {
-        "foreground": "#a8717c"
+        "foreground": "#8c4351"
       }
     },
     {
@@ -137,7 +137,7 @@
     {
       "scope": "entity.other.attribute-name.html.twee",
       "settings": {
-        "foreground": "#0e7490"
+        "foreground": "#1c6b8c"
       }
     },
     {
@@ -162,33 +162,34 @@
       "foreground": "#8c5a00"
     },
     "specialPassageHeader": {
-      "foreground": "#6b3fa0",
+      "foreground": "#b85c00",
       "fontStyle": "bold"
     },
     "specialPassage": {
-      "foreground": "#6b3fa0",
+      "foreground": "#b85c00",
       "fontStyle": "bold"
     },
     "tag": {
-      "foreground": "#0e7490"
+      "foreground": "#1c6b8c"
     },
     "tag.twineCore": {
-      "foreground": "#0e7490",
+      "foreground": "#1c6b8c",
       "fontStyle": "bold"
     },
     "tag.storyFormat": {
-      "foreground": "#0e7490",
+      "foreground": "#1c6b8c",
       "fontStyle": "italic"
     },
     "prose": {
       "foreground": "#343b58"
     },
     "inlineStyle": {
-      "foreground": "#0e7490",
+      "foreground": "#1c6b8c",
       "fontStyle": "italic"
     },
     "textFormat": {
-      "foreground": "#336f3c"
+      "foreground": "#336f3c",
+      "fontStyle": "italic"
     },
     "variable": {
       "foreground": "#8c4351",
@@ -232,22 +233,22 @@
       "fontStyle": "strikethrough"
     },
     "macroDelimiter.blockDepth1": {
-      "foreground": "#5878a0"
+      "foreground": "#34548a"
     },
     "macroDelimiter.blockDepth2": {
-      "foreground": "#5c6a7e"
+      "foreground": "#0e7490"
     },
     "macroDelimiter.blockDepth3": {
-      "foreground": "#5878a0"
+      "foreground": "#336f3c"
     },
     "macroDelimiter.blockDepth4": {
-      "foreground": "#5c6a7e"
+      "foreground": "#8c5a00"
     },
     "macroDelimiter.blockDepth5": {
-      "foreground": "#5878a0"
+      "foreground": "#8c4351"
     },
     "macroDelimiter.blockDepth6": {
-      "foreground": "#5c6a7e"
+      "foreground": "#6b3fa0"
     },
     "function": {
       "foreground": "#6b3fa0"
@@ -261,17 +262,18 @@
       "fontStyle": "strikethrough"
     },
     "keyword": {
-      "foreground": "#6b3fa0"
+      "foreground": "#8c5a00",
+      "fontStyle": "italic"
     },
     "namespace": {
-      "foreground": "#0369a1",
+      "foreground": "#0e7490",
       "fontStyle": "bold"
     },
     "property": {
-      "foreground": "#0e7490"
+      "foreground": "#0d9488"
     },
     "property.definition": {
-      "foreground": "#0e7490",
+      "foreground": "#0d9488",
       "fontStyle": "bold"
     },
     "operator": {

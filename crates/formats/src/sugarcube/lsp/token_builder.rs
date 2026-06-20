@@ -236,6 +236,8 @@ fn build_semantic_tokens_at_depth(
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
+                    // Emit JS keyword tokens (if, for, var, function, etc.)
+                    emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
                     // Emit function call site tokens from oxc analysis
@@ -346,6 +348,8 @@ fn build_semantic_tokens_at_depth(
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
+                    // Emit JS keyword tokens (if, for, var, function, etc.)
+                    emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
                     // Emit function call site tokens from oxc analysis
@@ -509,8 +513,8 @@ pub fn build_script_passage_tokens(
     emit_literal_tokens(&analysis.literal_spans, tokens, body_offset_in_passage);
     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
-                    emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
+    emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
     emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
 }
@@ -670,6 +674,24 @@ fn emit_function_def_tokens(function_defs: &[ast::FunctionDefInfo], tokens: &mut
 
 fn emit_comment_tokens(comments: &[ast::CommentSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
     for c in comments { tokens.push(SemanticToken { start: body_offset_in_passage + c.span.start, length: c.span.end - c.span.start, token_type: SemanticTokenType::Comment, modifier: None }); }
+}
+
+/// Emit semantic tokens for JS keywords found by oxc.
+///
+/// Covers statement-level keywords (`if`, `for`, `while`, `return`, `try`,
+/// `catch`, `finally`, `function`), declaration keywords (`var`, `let`,
+/// `const`), and expression-level keywords (`new`, `typeof`, `instanceof`,
+/// `delete`, `void`, `in`). Each gets a `Keyword` token so themes can
+/// color JS keywords distinctly from SugarCube macro names.
+fn emit_keyword_tokens(keywords: &[ast::KeywordSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for kw in keywords {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + kw.span.start,
+            length: kw.span.end - kw.span.start,
+            token_type: SemanticTokenType::Keyword,
+            modifier: None,
+        });
+    }
 }
 
 /// Emit semantic tokens for function call sites found by oxc.

@@ -26,7 +26,7 @@ use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 
 use crate::sugarcube::ast::{
-    AnalyzedVarOp, CommentKind, CommentSpan, FunctionCallInfo, FunctionDefInfo, JsAnalysis, LiteralKind, LiteralSpan, MacroAddInfo,
+    AnalyzedVarOp, CommentKind, CommentSpan, FunctionCallInfo, FunctionDefInfo, JsAnalysis, KeywordSpan, LiteralKind, LiteralSpan, MacroAddInfo,
     NamespaceSpan, OperatorKind, OperatorSpan, PropertySpan, TemplateAddInfo,
 };
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
@@ -117,6 +117,7 @@ fn walk_statement(
 
     match stmt {
         Statement::FunctionDeclaration(func) => {
+            push_keyword(analysis, "function", func.span.start as usize, preprocessed);
             if let Some(id) = &func.id {
                 let (name, name_offset) = demangle_function_name(
                     id.name.as_str(),
@@ -141,6 +142,14 @@ fn walk_statement(
             walk_expression(&expr_stmt.expression, preprocessed, analysis);
         }
         Statement::VariableDeclaration(var_decl) => {
+            let kw = match var_decl.kind {
+                oxc_ast::ast::VariableDeclarationKind::Var => "var",
+                oxc_ast::ast::VariableDeclarationKind::Let => "let",
+                oxc_ast::ast::VariableDeclarationKind::Const => "const",
+                oxc_ast::ast::VariableDeclarationKind::Using => "using",
+                oxc_ast::ast::VariableDeclarationKind::AwaitUsing => "using",
+            };
+            push_keyword(analysis, kw, var_decl.span.start as usize, preprocessed);
             for decl in &var_decl.declarations {
                 // Track named function expressions and arrow functions
                 if let Some(init) = &decl.init {
@@ -187,6 +196,7 @@ fn walk_statement(
             }
         }
         Statement::IfStatement(if_stmt) => {
+            push_keyword(analysis, "if", if_stmt.span.start as usize, preprocessed);
             walk_expression(&if_stmt.test, preprocessed, analysis);
             walk_statement(&if_stmt.consequent, preprocessed, analysis);
             if let Some(alt) = &if_stmt.alternate {
@@ -194,33 +204,102 @@ fn walk_statement(
             }
         }
         Statement::ForStatement(for_stmt) => {
+            push_keyword(analysis, "for", for_stmt.span.start as usize, preprocessed);
             walk_statement(&for_stmt.body, preprocessed, analysis);
         }
         Statement::WhileStatement(while_stmt) => {
+            push_keyword(analysis, "while", while_stmt.span.start as usize, preprocessed);
             walk_statement(&while_stmt.body, preprocessed, analysis);
         }
         Statement::ReturnStatement(ret) => {
+            push_keyword(analysis, "return", ret.span.start as usize, preprocessed);
             if let Some(arg) = &ret.argument {
                 walk_expression(arg, preprocessed, analysis);
             }
         }
         Statement::TryStatement(try_stmt) => {
+            push_keyword(analysis, "try", try_stmt.span.start as usize, preprocessed);
             for s in &try_stmt.block.body {
                 walk_statement(s, preprocessed, analysis);
             }
             if let Some(catch) = &try_stmt.handler {
+                // "catch" keyword starts after the try block's closing brace.
+                // The catch clause's span starts at "catch".
+                push_keyword(analysis, "catch", catch.span.start as usize, preprocessed);
                 for s in &catch.body.body {
                     walk_statement(s, preprocessed, analysis);
                 }
             }
             if let Some(finally) = &try_stmt.finalizer {
+                // "finally" keyword is before the finalizer block (which starts
+                // at `{`). Scan backward from the block start to find "finally".
+                let src = &preprocessed.source;
+                let block_start = finally.span.start as usize;
+                let search_start = block_start.saturating_sub(20);
+                let search_region = &src[search_start..block_start];
+                if let Some(rel) = search_region.rfind("finally") {
+                    push_keyword(analysis, "finally", search_start + rel, preprocessed);
+                }
                 for s in &finally.body {
                     walk_statement(s, preprocessed, analysis);
                 }
             }
         }
+        Statement::ThrowStatement(throw_stmt) => {
+            push_keyword(analysis, "throw", throw_stmt.span.start as usize, preprocessed);
+            walk_expression(&throw_stmt.argument, preprocessed, analysis);
+        }
+        Statement::BreakStatement(brk) => {
+            push_keyword(analysis, "break", brk.span.start as usize, preprocessed);
+        }
+        Statement::ContinueStatement(cont) => {
+            push_keyword(analysis, "continue", cont.span.start as usize, preprocessed);
+        }
+        Statement::DoWhileStatement(do_while) => {
+            push_keyword(analysis, "do", do_while.span.start as usize, preprocessed);
+            walk_statement(&do_while.body, preprocessed, analysis);
+            walk_expression(&do_while.test, preprocessed, analysis);
+        }
+        Statement::SwitchStatement(switch) => {
+            push_keyword(analysis, "switch", switch.span.start as usize, preprocessed);
+            walk_expression(&switch.discriminant, preprocessed, analysis);
+            for case in &switch.cases {
+                if let Some(test) = &case.test {
+                    walk_expression(test, preprocessed, analysis);
+                }
+                for s in &case.consequent {
+                    walk_statement(s, preprocessed, analysis);
+                }
+            }
+        }
+        Statement::ForInStatement(for_in) => {
+            push_keyword(analysis, "for", for_in.span.start as usize, preprocessed);
+            walk_expression(&for_in.right, preprocessed, analysis);
+            walk_statement(&for_in.body, preprocessed, analysis);
+        }
+        Statement::ForOfStatement(for_of) => {
+            push_keyword(analysis, "for", for_of.span.start as usize, preprocessed);
+            walk_expression(&for_of.right, preprocessed, analysis);
+            walk_statement(&for_of.body, preprocessed, analysis);
+        }
         _ => {}
     }
+}
+
+/// Push a JS keyword span onto `analysis.keyword_spans`, mapping the start
+/// position through the preprocessor's substitution table.
+///
+/// `kw` is the keyword text (e.g. "if", "var", "function"). `start_offset`
+/// is an approximate position near the keyword in the preprocessed source —
+/// we scan forward from it to find the actual keyword start, which handles
+/// cases where the AST node's span includes leading whitespace.
+fn push_keyword(analysis: &mut JsAnalysis, kw: &'static str, start_offset: usize, preprocessed: &super::js_preprocess::PreprocessedJs) {
+    let mapped_start = preprocessed.map_to_original(start_offset);
+    let mapped_end = preprocessed.map_to_original(start_offset + kw.len());
+    analysis.keyword_spans.push(KeywordSpan {
+        text: kw,
+        span: mapped_start..mapped_end,
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +544,24 @@ fn walk_expression(
         Expr::BinaryExpression(bin) => {
             // Emit operator span for the binary operator.
             emit_binary_operator(&bin, preprocessed, analysis);
+            // For keyword binary operators (in, instanceof), also emit a
+            // Keyword span. The keyword sits between left and right operands.
+            let kw = match bin.operator {
+                oxc_ast::ast::BinaryOperator::In => Some("in"),
+                oxc_ast::ast::BinaryOperator::Instanceof => Some("instanceof"),
+                _ => None,
+            };
+            if let Some(kw) = kw {
+                // The keyword starts after the left operand + whitespace.
+                // Use the gap between left.span().end and right.span().start.
+                let gap_start = bin.left.span().end as usize;
+                let gap_end = bin.right.span().start as usize;
+                // Find the keyword within the gap
+                if let Some(kw_pos) = preprocessed.source[gap_start..gap_end].find(kw) {
+                    let abs_pos = gap_start + kw_pos;
+                    push_keyword(analysis, kw, abs_pos, preprocessed);
+                }
+            }
             walk_expression(&bin.left, preprocessed, analysis);
             walk_expression(&bin.right, preprocessed, analysis);
         }
@@ -490,6 +587,17 @@ fn walk_expression(
         Expr::UnaryExpression(unary) => {
             // Emit operator span for unary operators (!, -, +, typeof, etc.)
             emit_unary_operator(&unary, preprocessed, analysis);
+            // For keyword unary operators (typeof, void, delete), also emit a
+            // Keyword span so themes can color them as keywords.
+            let kw = match unary.operator {
+                oxc_ast::ast::UnaryOperator::Typeof => Some("typeof"),
+                oxc_ast::ast::UnaryOperator::Void => Some("void"),
+                oxc_ast::ast::UnaryOperator::Delete => Some("delete"),
+                _ => None,
+            };
+            if let Some(kw) = kw {
+                push_keyword(analysis, kw, unary.span.start as usize, preprocessed);
+            }
             walk_expression(&unary.argument, preprocessed, analysis);
         }
         Expr::UpdateExpression(update) => {
@@ -537,6 +645,7 @@ fn walk_expression(
             }
         }
         Expr::NewExpression(new_expr) => {
+            push_keyword(analysis, "new", new_expr.span.start as usize, preprocessed);
             walk_expression(&new_expr.callee, preprocessed, analysis);
             for arg in &new_expr.arguments {
                 walk_argument(arg, preprocessed, analysis);
@@ -578,6 +687,16 @@ fn walk_expression(
                 kind: LiteralKind::Null,
                 span,
             });
+        }
+        Expr::RegExpLiteral(regex_lit) => {
+            // Record the regex literal span so extract_comments can skip it.
+            // Without this, the comment scanner would misinterpret `'` or `"`
+            // inside a regex pattern as string delimiters, causing it to skip
+            // ahead incorrectly and miss real comments.
+            let span = preprocessed.map_range_to_original(
+                regex_lit.span.start as usize..regex_lit.span.end as usize
+            );
+            analysis.regex_spans.push(span);
         }
         Expr::TemplateLiteral(tmpl) => {
             // Template literals with no expressions are effectively strings
@@ -1177,6 +1296,34 @@ fn walk_argument(
             // Arrow callback: e.g., `$(el).on('click', () => { ... })`.
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
+        Arg::UnaryExpression(unary) => {
+            // Handle typeof/delete/void keywords inside call arguments.
+            emit_unary_operator(unary, preprocessed, analysis);
+            let kw = match unary.operator {
+                oxc_ast::ast::UnaryOperator::Typeof => Some("typeof"),
+                oxc_ast::ast::UnaryOperator::Void => Some("void"),
+                oxc_ast::ast::UnaryOperator::Delete => Some("delete"),
+                _ => None,
+            };
+            if let Some(kw) = kw {
+                push_keyword(analysis, kw, unary.span.start as usize, preprocessed);
+            }
+            walk_expression(&unary.argument, preprocessed, analysis);
+        }
+        Arg::NewExpression(new_expr) => {
+            push_keyword(analysis, "new", new_expr.span.start as usize, preprocessed);
+            walk_expression(&new_expr.callee, preprocessed, analysis);
+            for arg in &new_expr.arguments {
+                walk_argument(arg, preprocessed, analysis);
+            }
+        }
+        Arg::RegExpLiteral(regex_lit) => {
+            // Record the regex literal span so extract_comments can skip it.
+            let span = preprocessed.map_range_to_original(
+                regex_lit.span.start as usize..regex_lit.span.end as usize
+            );
+            analysis.regex_spans.push(span);
+        }
         _ => {}
     }
 }
@@ -1244,11 +1391,71 @@ fn extract_substitution_operators(
 
 
 fn extract_comments(preprocessed: &super::js_preprocess::PreprocessedJs, analysis: &mut JsAnalysis) {
+    // Collect regex literal positions in the PREPROCESSED source coordinates.
+    // analysis.regex_spans is in ORIGINAL (passage-body-relative) coordinates,
+    // but we need preprocessed coordinates here. So we map back.
+    // Actually, regex_spans were mapped to original coordinates during the walk.
+    // For the comment scanner, we need preprocessed-source coordinates. Since
+    // the regex_spans were mapped through map_range_to_original, we can't
+    // easily reverse the mapping. Instead, we'll collect regex positions
+    // directly from the AST here — but we don't have the AST.
+    //
+    // Simpler approach: scan the preprocessed source for regex literals
+    // using a heuristic (preceding token determines if `/` is regex or division).
+    // But this is complex and error-prone.
+    //
+    // Best approach: collect regex spans in PREPROCESSED coordinates during
+    // the walk, store them separately, and use them here.
+    //
+    // For now, let's use the regex_spans we collected. They're in original
+    // coordinates, but extract_comments works in preprocessed coordinates.
+    // We need to convert. Actually, let's just collect preprocessed-coordinate
+    // regex spans during the walk.
+
+    // Actually, the simplest fix: collect regex spans in preprocessed coordinates
+    // during the walk and store them in a separate field. But we already stored
+    // them in original coordinates. Let me just re-scan using the raw spans.
+    //
+    // The regex_spans in analysis are in ORIGINAL coordinates. We need to check
+    // if a given PREPROCESSED position falls within a regex. We can do this by
+    // checking if the mapped position falls within any regex span.
+
     let src = preprocessed.source.as_bytes();
     let len = src.len();
     let mut i = 0usize;
+
+    // Sort regex_spans for binary search (they're in original coordinates)
+    let regex_spans: Vec<_> = analysis.regex_spans.iter().cloned().collect();
+
+    let is_in_regex = |preprocessed_pos: usize| -> bool {
+        let orig_pos = preprocessed.map_to_original(preprocessed_pos + preprocessed.wrapping_offset);
+        regex_spans.iter().any(|r| orig_pos >= r.start && orig_pos < r.end)
+    };
+
     while i < len {
         let b = src[i];
+
+        // Skip regex literals: if we're at a position that's inside a regex
+        // span, skip forward past the regex.
+        if is_in_regex(i) {
+            // Find the end of this regex span
+            let orig_pos = preprocessed.map_to_original(i + preprocessed.wrapping_offset);
+            if let Some(r) = regex_spans.iter().find(|r| orig_pos >= r.start && orig_pos < r.end) {
+                // Map the regex end back to preprocessed coordinates
+                // Since map_to_original is monotonic, we can scan forward
+                let mut j = i;
+                while j < len {
+                    let orig_j = preprocessed.map_to_original(j + preprocessed.wrapping_offset);
+                    if orig_j >= r.end {
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+        }
+
         if b == b'"' || b == b'\'' || b == b'`' {
             let q = b; i += 1;
             while i < len { if src[i] == b'\\' { i += 2; continue; } if src[i] == q { i += 1; break; } i += 1; }
