@@ -1153,10 +1153,13 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                         is_block: false,
                     });
                 }
-            } else if args.contains('$') || args.contains('_') {
+            } else if name != "for" && (args.contains('$') || args.contains('_')) {
                 // Fallback: any macro whose args contain $var or _var references
                 // likely contains a JS expression. This catches macros not in
                 // the inline_js_macro_names set (e.g., <<goto $target>>).
+                //
+                // NOTE: `for` is excluded because its args use SugarCube's own
+                // syntax (C-style, range, simple iteration, for-in) — not JS.
                 let trimmed = args.trim();
                 if !trimmed.is_empty() {
                     let leading_ws = args.len() - args.trim_start().len();

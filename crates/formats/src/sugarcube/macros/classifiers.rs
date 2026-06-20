@@ -137,8 +137,14 @@ pub fn inline_js_macro_names() -> HashSet<&'static str> {
 
     // Add control-flow macros whose args are undeclared but always JS expressions.
     // The catalog has `args: None` for these, but SugarCube always treats their
-    // args as JS (conditions for if/elseif, loop spec for for, switch value, etc.)
-    for name in ["if", "elseif", "else", "for", "switch"] {
+    // args as JS (conditions for if/elseif, switch value, etc.)
+    //
+    // NOTE: `for` is NOT included here. SugarCube's <<for>> has its own syntax
+    // (C-style `<<for _i to 0; _i lt 3; _i++>>`, range `<<for _i to 1 to 5>>`,
+    // simple `<<for _i, $array>>`, for-in `<<for _k, _v in $obj>>`) that is NOT
+    // valid JS. The SugarCube parser handles <<for>> args structurally via
+    // `for_loop_vars`, so sending them to oxc produces false positive errors.
+    for name in ["if", "elseif", "else", "switch"] {
         set.insert(name);
     }
 

@@ -643,8 +643,20 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
     while vi < len && bytes[vi] == b'.' {
         vi += 1; // Skip the dot
         let prop_start = vi;
-        while vi < len && is_var_ident_char(bytes[vi]) {
-            vi += 1;
+        // Property names can contain hyphens (e.g. $obj.my-prop-name).
+        // A hyphen is part of the property name if it's immediately followed
+        // by an identifier char (no space). This distinguishes:
+        //   $obj.my-prop   → property "my-prop"
+        //   $obj.my - prop → property "my", then " - prop" is an expression
+        //   $obj.my--      → property "my", then "--" is a decrement operator
+        while vi < len {
+            if is_var_ident_char(bytes[vi]) {
+                vi += 1;
+            } else if bytes[vi] == b'-' && vi + 1 < len && is_var_ident_char(bytes[vi + 1]) {
+                vi += 1; // Include the hyphen as part of the property name
+            } else {
+                break;
+            }
         }
         if vi > prop_start {
             if !property_path.is_empty() {

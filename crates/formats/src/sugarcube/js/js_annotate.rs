@@ -260,6 +260,10 @@ fn collect_macro_js_snippet(
 
     if name == "script" {
         None
+    } else if name == "for" {
+        // <<for>> has SugarCube-specific syntax (not JS): C-style, range,
+        // simple iteration, and for-in forms. Don't send to oxc.
+        None
     } else if name == "set" {
         if let Some(sa) = set_assignment {
             if let Some(expr) = &sa.expression {

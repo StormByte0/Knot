@@ -314,8 +314,13 @@ pub fn preprocess_for_oxc(source: &str) -> PreprocessedJs {
             }
 
             let original_text = source[start..i].to_string();
+            // Replace both `.` and `-` in the property path with `_` so the
+            // result is a valid JS identifier. SugarCube allows hyphens in
+            // property names (e.g. $obj.my-prop), but JS identifiers can't
+            // contain hyphens — so we normalize them for oxc.
+            let normalized_path = property_path.replace('.', "_").replace('-', "_");
             let replacement =
-                format!("State_variables_{}{}", name, property_path.replace('.', "_"));
+                format!("State_variables_{}{}", name, normalized_path);
 
             let original_range = start..i;
             let processed_start = result_offset;

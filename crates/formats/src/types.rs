@@ -111,6 +111,13 @@ pub enum BodyRequirement {
     /// Unclosed blocks produce a diagnostic.
     /// Examples: `<<if>>`, `<<for>>`, `<<switch>>`, `<<widget>>`, `<<link>>`
     Required,
+
+    /// Body is optional — close tag is allowed but not required.
+    /// If a close tag is present, content between open/close becomes children.
+    /// If no close tag, content until the next sibling macro becomes children.
+    /// No "unclosed" diagnostic is produced.
+    /// Examples: `<<case>>`, `<<default>>` (can use `<</case>>` or not)
+    Optional,
 }
 
 /// The structural kind of a macro — determines its role in the macro tree.

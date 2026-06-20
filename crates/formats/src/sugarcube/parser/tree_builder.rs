@@ -128,6 +128,12 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
                         } else {
                             roots.push(node);
                         }
+                    } else if body_req == BodyRequirement::Optional {
+                        // Optional body (e.g. <<case>>, <<default>>) — push to
+                        // stack so a matching close tag CAN pair with it, but
+                        // don't produce "unclosed" errors if no close tag found.
+                        // The finalization logic below handles the no-close case.
+                        stack.push(StackEntry::from_macro(node));
                     } else {
                         // Block-capable macro (Optional or Required body) —
                         // push onto stack as a potential block parent.
@@ -239,6 +245,34 @@ impl StackEntry {
                             var_refs,
                             js_analysis,
                             children: None,
+                            name_span,
+                            open_span,
+                            close_span: None,
+                            full_span,
+                            set_assignment,
+                            definition_name_span,
+                            close_name_span: None,
+                            capture_target,
+                            for_loop_vars,
+                            structured_args,
+                        }
+                    }
+
+                    // No close tag, Optional body — block without close tag
+                    // (e.g. <<case "x">>content without <</case>>).
+                    // Pending children become the body, but NO "unclosed" diagnostic.
+                    (false, BodyRequirement::Optional) => {
+                        let children = if self.pending_children.is_empty() {
+                            None
+                        } else {
+                            Some(self.pending_children)
+                        };
+                        AstNode::Macro {
+                            name,
+                            args,
+                            var_refs,
+                            js_analysis,
+                            children,
                             name_span,
                             open_span,
                             close_span: None,

@@ -52,8 +52,9 @@ mod tests {
         // Structural modifiers should NOT be in body_macro_names
         assert!(!blocks.contains("else"));
         assert!(!blocks.contains("elseif"));
-        assert!(!blocks.contains("case"));
-        assert!(!blocks.contains("default"));
+        // case and default have Optional bodies (can use <</case>> or not)
+        assert!(blocks.contains("case"));
+        assert!(blocks.contains("default"));
         // Previously missing from the old hardcoded list
         assert!(blocks.contains("timed"));
         assert!(blocks.contains("repeat"));
@@ -202,7 +203,8 @@ mod tests {
         assert!(!blocks.contains("goto"));
         // Structural modifiers are NOT body macros
         assert!(!blocks.contains("else"));
-        assert!(!blocks.contains("case"));
+        // case/default ARE body macros (Optional body — can use <</case>>)
+        assert!(blocks.contains("case"));
     }
 
     #[test]
@@ -258,7 +260,8 @@ mod tests {
         // Control-flow macros with undeclared but always-JS args
         assert!(js_macros.contains("if"));
         assert!(js_macros.contains("elseif"));
-        assert!(js_macros.contains("for"));
+        // `for` is NOT in inline_js_macro_names — its args use SugarCube syntax
+        assert!(!js_macros.contains("for"));
         assert!(js_macros.contains("switch"));
         // Macros with Expression args in the catalog
         assert!(js_macros.contains("run"));
@@ -592,14 +595,15 @@ mod tests {
     }
 
     #[test]
-    fn test_sub_macros_have_never_body() {
-        // Every SubMacro should have body: Never (they don't have their own body)
+    fn test_sub_macros_have_valid_body() {
+        // SubMacros should have body: Never or Optional (not Required).
+        // case/default have Optional because they CAN use <</case>> close tags.
         for m in builtin_macros() {
             if m.kind == crate::types::MacroKind::SubMacro {
-                assert_eq!(
+                assert_ne!(
                     m.body,
-                    BodyRequirement::Never,
-                    "SubMacro '{}' should have body: Never",
+                    BodyRequirement::Required,
+                    "SubMacro '{}' should not have body: Required",
                     m.name
                 );
             }

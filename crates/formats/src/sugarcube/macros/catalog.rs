@@ -112,7 +112,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         MacroDef {
             name: "case",
             description: "A case arm within a `<<switch>>` block. Its value list is compared against the result of the parent `<<switch>>`'s expression; upon a successful match, this case's contents are executed. At most one case will execute.",
-            body: Never,
+            body: Optional,
             kind: SubMacro,
             args: None,
             deprecated: false,
@@ -124,7 +124,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
         MacroDef {
             name: "default",
             description: "The default arm within a `<<switch>>` block. Executes its contents when no `<<case>>` matched the parent `<<switch>>`'s expression. Must be the final case.",
-            body: Never,
+            body: Optional,
             kind: SubMacro,
             args: None,
             deprecated: false,
