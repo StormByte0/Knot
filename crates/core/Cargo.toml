@@ -19,5 +19,7 @@ oxc_ast = "0.134"
 oxc_allocator = "0.134"
 oxc_diagnostics = "0.134"
 
-# CSS parsing via cssparser (Mozilla)
-cssparser = "0.34"
+# CSS parsing — currently unserved. The `css` module exposes stable types
+# (`CssToken`, `CssTokenKind`, `CssDiagnostic`, `CssParseOutcome`) and a
+# `parse_css()` entry point that returns an empty outcome. A future CSS
+# crate will plug in here without changing downstream callers.

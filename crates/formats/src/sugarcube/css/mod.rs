@@ -1,5 +1,11 @@
-//! SugarCube CSS analysis — walks cssparser tokens and produces
-//! semantic tokens + diagnostics for stylesheet passages and <<style>> blocks.
+//! SugarCube CSS analysis — converts `CssParseOutcome` (from `knot_core::css`)
+//! into `SemanticToken`s + `FormatDiagnostic`s for stylesheet passages and
+//! `<<style>>` blocks.
+//!
+//! Currently a thin pass-through: `knot_core::css::parse_css` returns an empty
+//! outcome (CSS parsing is unserved), so `analyze_css` returns an empty
+//! `CssAnalysis`. The mapping table below is preserved so a future CSS crate
+//! can be plugged in at the `knot-core` level with no changes here.
 
 use knot_core::css::{self, CssTokenKind, CssParseOutcome};
 use crate::plugin::{SemanticToken, SemanticTokenType, FormatDiagnostic, FormatDiagnosticSeverity};

@@ -1,98 +1,44 @@
-//! CSS parser wrapper using cssparser.
+//! CSS parser entry point — currently a placeholder.
+//!
+//! `parse_css()` returns an empty [`CssParseOutcome`] (no tokens, no
+//! diagnostics). This keeps the type signature stable so a future CSS
+//! crate can be plugged in here without touching any downstream caller
+//! (`sugarcube::css::analyze_css`, `token_builder`, `parse_pipeline`).
+//!
+//! ## Why empty
+//!
+//! The previous implementation used `cssparser` (Mozilla's tokenizer) with
+//! a hand-rolled state machine. It produced tokens but no diagnostics, and
+//! the state machine was fragile around `@media` nesting and custom
+//! properties. Rather than ship a half-working parser, we are explicitly
+//! marking CSS as unserved until a proper CSS crate is integrated.
+//!
+//! ## What this means for users
+//!
+//! - Stylesheet passages (`[stylesheet]` tag) produce no semantic tokens.
+//! - Inline `<<style>>` / `<<css>>` blocks produce no semantic tokens.
+//! - The parse pipeline emits an `Info`-level diagnostic on each
+//!   stylesheet passage so the absence is visible, not silent.
+//!
+//! ## Re-introducing CSS
+//!
+//! A future implementation should:
+//! 1. Add the chosen CSS crate to `Cargo.toml`.
+//! 2. Re-implement `parse_css()` to populate `tokens` and `diagnostics`.
+//! 3. Leave `CssTokenKind` / `CssToken` / `CssDiagnostic` / `CssParseOutcome`
+//!    unchanged unless a coordinated change is made across
+//!    `knot-formats/src/sugarcube/css/mod.rs` (which maps these to
+//!    `SemanticToken` / `FormatDiagnostic`).
 
-use super::types::{CssToken, CssTokenKind, CssParseOutcome};
-use cssparser::{Parser, ParserInput, Token};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Context {
-    SelectorOrRule,
-    PropertyName,
-    PropertyValue,
-}
+use super::types::CssParseOutcome;
 
 /// Parse CSS source text and return classified tokens + diagnostics.
-pub fn parse_css(source: &str) -> CssParseOutcome {
-    let mut tokens = Vec::new();
-    let diagnostics = Vec::new();
-
-    let mut input = ParserInput::new(source);
-    let mut parser = Parser::new(&mut input);
-
-    let mut context = Context::SelectorOrRule;
-    let mut brace_depth: i32 = 0;
-
-    loop {
-        let start_byte = parser.position().byte_index();
-
-        let token_result = parser.next_including_whitespace_and_comments();
-
-        match token_result {
-            Ok(token) => {
-                let (kind, new_context) = classify_token(token, context, &mut brace_depth);
-                let end_byte = parser.position().byte_index();
-                context = new_context;
-
-                if kind != CssTokenKind::Whitespace {
-                    tokens.push(CssToken { kind, span: start_byte..end_byte });
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    CssParseOutcome { tokens, diagnostics }
-}
-
-fn classify_token(
-    token: &Token,
-    context: Context,
-    brace_depth: &mut i32,
-) -> (CssTokenKind, Context) {
-    match token {
-        Token::Comment(_) => (CssTokenKind::Comment, context),
-        Token::WhiteSpace(_) => (CssTokenKind::Whitespace, context),
-        Token::AtKeyword(_) => (CssTokenKind::AtRule, Context::SelectorOrRule),
-        Token::Ident(ident) => {
-            if ident.starts_with("--") {
-                return (CssTokenKind::Variable, context);
-            }
-            match context {
-                Context::PropertyName => (CssTokenKind::Property, Context::PropertyName),
-                Context::PropertyValue => (CssTokenKind::Keyword, Context::PropertyName),
-                Context::SelectorOrRule => (CssTokenKind::Selector, Context::SelectorOrRule),
-            }
-        }
-        Token::Function(_) => (CssTokenKind::Function, context),
-        Token::Number { .. } | Token::Percentage { .. } | Token::Dimension { .. } => {
-            (CssTokenKind::Number, Context::PropertyName)
-        }
-        Token::Hash(_) | Token::IDHash(_) => {
-            match context {
-                Context::PropertyValue => (CssTokenKind::Number, Context::PropertyName),
-                _ => (CssTokenKind::Selector, context),
-            }
-        }
-        Token::QuotedString(_) => (CssTokenKind::String, Context::PropertyName),
-        Token::Colon => (CssTokenKind::Punctuation, Context::PropertyValue),
-        Token::Semicolon => (CssTokenKind::Punctuation, Context::PropertyName),
-        Token::CurlyBracketBlock => {
-            *brace_depth += 1;
-            (CssTokenKind::Punctuation, Context::PropertyName)
-        }
-        Token::CloseCurlyBracket => {
-            *brace_depth -= 1;
-            let next = if *brace_depth <= 0 { Context::SelectorOrRule } else { Context::PropertyName };
-            (CssTokenKind::Punctuation, next)
-        }
-        Token::Comma => (CssTokenKind::Punctuation, context),
-        Token::ParenthesisBlock | Token::CloseParenthesis => (CssTokenKind::Punctuation, context),
-        Token::SquareBracketBlock | Token::CloseSquareBracket => (CssTokenKind::Punctuation, context),
-        Token::Delim(_) => {
-            match context {
-                Context::SelectorOrRule => (CssTokenKind::Selector, context),
-                _ => (CssTokenKind::Punctuation, context),
-            }
-        }
-        _ => (CssTokenKind::Punctuation, context),
+///
+/// **Currently a no-op**: always returns an empty outcome. See the module
+/// docs for the rationale and re-integration plan.
+pub fn parse_css(_source: &str) -> CssParseOutcome {
+    CssParseOutcome {
+        tokens: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }

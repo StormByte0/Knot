@@ -119,7 +119,6 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // positions from the passage-relative token offsets.
         let mut passage_tokens = Vec::new();
         let is_special = cp.special_def.is_some();
-        let mut css_diag_storage: Option<Vec<crate::plugin::FormatDiagnostic>> = None;
 
         // Header tokens (already passage-relative from build_header_tokens)
         let header_tokens = super::token_builder::build_header_tokens(&cp.header, is_special);
@@ -130,22 +129,14 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
             passage_tokens.extend(json_tokens);
         } else if matches!(mode, ParseMode::Stylesheet) {
-            // Stylesheet passages are pure CSS — parse with cssparser and
-            // emit semantic tokens directly (server-side coloring).
-            let css_analysis = super::css::analyze_css(&cp.body_text);
-            for token in &css_analysis.tokens {
-                passage_tokens.push(crate::plugin::SemanticToken {
-                    start: body_offset_in_passage + token.start,
-                    length: token.length,
-                    token_type: token.token_type,
-                    modifier: token.modifier,
-                });
-            }
-            if !css_analysis.diagnostics.is_empty() {
-                css_diag_storage = Some(css_analysis.diagnostics);
-            }
+            // Stylesheet passages are pure CSS. CSS parsing is currently
+            // unserved (see `knot_core::css`). The `analyze_css` call
+            // returns an empty analysis; we keep it in place so that
+            // re-enabling CSS later requires no changes here.
+            let _ = super::css::analyze_css(&cp.body_text);
         } else if matches!(mode, ParseMode::Interface) {
-            // StoryInterface body is HTML — skip for now.
+            // StoryInterface body is HTML — HTML parsing is currently
+            // unserved. No tokens emitted.
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
@@ -178,16 +169,23 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         let mut passage_diagnostics = Vec::new();
         super::token_builder::build_diagnostics(&passage_ast.nodes, &mut passage_diagnostics, body_offset_in_passage);
 
-        // Add CSS diagnostics from stylesheet passages
-        if let Some(css_diags) = css_diag_storage {
-            for diag in css_diags {
-                passage_diagnostics.push(crate::plugin::FormatDiagnostic {
-                    range: body_offset_in_passage + diag.range.start..body_offset_in_passage + diag.range.end,
-                    message: diag.message,
-                    severity: diag.severity,
-                    code: diag.code,
-                });
-            }
+        // CSS and HTML passages are explicitly unserved — emit a single
+        // Info-level diagnostic so the absence is visible, not silent.
+        // Remove these branches once the relevant parser is integrated.
+        if matches!(mode, ParseMode::Stylesheet) {
+            passage_diagnostics.push(crate::plugin::FormatDiagnostic {
+                range: body_offset_in_passage..body_offset_in_passage + cp.body_text.len(),
+                message: "CSS analysis is not yet available for stylesheet passages.".to_string(),
+                severity: crate::plugin::FormatDiagnosticSeverity::Info,
+                code: "css-unserved".to_string(),
+            });
+        } else if matches!(mode, ParseMode::Interface) {
+            passage_diagnostics.push(crate::plugin::FormatDiagnostic {
+                range: body_offset_in_passage..body_offset_in_passage + cp.body_text.len(),
+                message: "HTML analysis is not yet available for StoryInterface passages.".to_string(),
+                severity: crate::plugin::FormatDiagnosticSeverity::Info,
+                code: "html-unserved".to_string(),
+            });
         }
 
         // Validate inline JS snippets via oxc (for diagnostics only)
