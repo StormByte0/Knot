@@ -45,7 +45,7 @@
         "entity.name.passage.special.sugarcube"
       ],
       "settings": {
-        "foreground": "#ff9e64",
+        "foreground": "#bb9af7",
         "fontStyle": "bold"
       }
     },
@@ -74,7 +74,7 @@
         "markup.underline.link.passageref.twee"
       ],
       "settings": {
-        "foreground": "#73daca",
+        "foreground": "#7dcfff",
         "fontStyle": "underline"
       }
     },
@@ -110,7 +110,7 @@
         "variable.parameter.macro.sugarcube"
       ],
       "settings": {
-        "foreground": "#f7768e"
+        "foreground": "#c98a96"
       }
     },
     {
@@ -162,11 +162,11 @@
       "foreground": "#e0af68"
     },
     "specialPassageHeader": {
-      "foreground": "#ff9e64",
+      "foreground": "#bb9af7",
       "fontStyle": "bold"
     },
     "specialPassage": {
-      "foreground": "#ff9e64",
+      "foreground": "#bb9af7",
       "fontStyle": "bold"
     },
     "tag": {
@@ -203,11 +203,11 @@
       "fontStyle": "italic"
     },
     "link": {
-      "foreground": "#73daca",
+      "foreground": "#7dcfff",
       "fontStyle": "underline"
     },
     "passageRef": {
-      "foreground": "#73daca"
+      "foreground": "#7dcfff"
     },
     "macro": {
       "foreground": "#7aa2f7"
@@ -232,22 +232,22 @@
       "fontStyle": "strikethrough"
     },
     "macroDelimiter.blockDepth1": {
-      "foreground": "#7aa2f7"
+      "foreground": "#6e93c4"
     },
     "macroDelimiter.blockDepth2": {
-      "foreground": "#73daca"
+      "foreground": "#6272a4"
     },
     "macroDelimiter.blockDepth3": {
-      "foreground": "#9ece6a"
+      "foreground": "#6e93c4"
     },
     "macroDelimiter.blockDepth4": {
-      "foreground": "#e0af68"
+      "foreground": "#6272a4"
     },
     "macroDelimiter.blockDepth5": {
-      "foreground": "#f7768e"
+      "foreground": "#6e93c4"
     },
     "macroDelimiter.blockDepth6": {
-      "foreground": "#bb9af7"
+      "foreground": "#6272a4"
     },
     "function": {
       "foreground": "#bb9af7"
