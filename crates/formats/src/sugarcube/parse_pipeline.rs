@@ -119,6 +119,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // positions from the passage-relative token offsets.
         let mut passage_tokens = Vec::new();
         let is_special = cp.special_def.is_some();
+        let mut css_diag_storage: Option<Vec<crate::plugin::FormatDiagnostic>> = None;
 
         // Header tokens (already passage-relative from build_header_tokens)
         let header_tokens = super::token_builder::build_header_tokens(&cp.header, is_special);
@@ -128,17 +129,23 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         if matches!(mode, ParseMode::Minimal) {
             let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
             passage_tokens.extend(json_tokens);
-        } else if matches!(mode, ParseMode::Interface) {
-            // StoryInterface body is HTML — let the TextMate grammar handle
-            // coloring (text.html.basic). Emitting semantic tokens (Prose)
-            // here would override the TextMate HTML scopes, making the HTML
-            // appear as plain prose. We still emit header tokens (added
-            // above) but skip body tokens entirely.
         } else if matches!(mode, ParseMode::Stylesheet) {
-            // Stylesheet passages are pure CSS — let the TextMate grammar
-            // handle coloring (source.css). The parser returns an empty AST
-            // for Stylesheet mode, so no body tokens would be produced
-            // anyway, but we make it explicit here for clarity.
+            // Stylesheet passages are pure CSS — parse with cssparser and
+            // emit semantic tokens directly (server-side coloring).
+            let css_analysis = super::css::analyze_css(&cp.body_text);
+            for token in &css_analysis.tokens {
+                passage_tokens.push(crate::plugin::SemanticToken {
+                    start: body_offset_in_passage + token.start,
+                    length: token.length,
+                    token_type: token.token_type,
+                    modifier: token.modifier,
+                });
+            }
+            if !css_analysis.diagnostics.is_empty() {
+                css_diag_storage = Some(css_analysis.diagnostics);
+            }
+        } else if matches!(mode, ParseMode::Interface) {
+            // StoryInterface body is HTML — skip for now.
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
@@ -170,6 +177,18 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // document-absolute ranges — same pattern as semantic tokens.
         let mut passage_diagnostics = Vec::new();
         super::token_builder::build_diagnostics(&passage_ast.nodes, &mut passage_diagnostics, body_offset_in_passage);
+
+        // Add CSS diagnostics from stylesheet passages
+        if let Some(css_diags) = css_diag_storage {
+            for diag in css_diags {
+                passage_diagnostics.push(crate::plugin::FormatDiagnostic {
+                    range: body_offset_in_passage + diag.range.start..body_offset_in_passage + diag.range.end,
+                    message: diag.message,
+                    severity: diag.severity,
+                    code: diag.code,
+                });
+            }
+        }
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {

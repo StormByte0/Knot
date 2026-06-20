@@ -10,6 +10,7 @@ pub mod graph;
 pub mod workspace;
 pub mod analysis;
 pub mod editing;
+pub mod css;
 pub mod oxc;
 
 pub use document::{Document, DocumentSnapshot};

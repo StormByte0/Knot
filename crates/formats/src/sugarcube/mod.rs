@@ -50,6 +50,7 @@
 //! 5. Stylesheets/StoryData → skip or minimal processing
 
 // Subdirectory modules (new organization)
+pub mod css;
 pub mod graph;
 pub mod js;
 pub mod lsp;

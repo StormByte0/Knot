@@ -507,6 +507,36 @@ fn walk_expression(
             }
         }
         Expr::ArrayExpression(arr) => {
+            use oxc_ast::ast::ArrayExpressionElement;
+            for elem in &arr.elements {
+                match elem {
+                    ArrayExpressionElement::SpreadElement(spread) => { walk_expression(&spread.argument, preprocessed, analysis); }
+                    ArrayExpressionElement::Elision(_) => {}
+                    ArrayExpressionElement::NumericLiteral(n) => { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Number, span: s }); }
+                    ArrayExpressionElement::StringLiteral(s) => { let sp = preprocessed.map_range_to_original(s.span.start as usize..s.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::String, span: sp }); }
+                    ArrayExpressionElement::BooleanLiteral(b) => { let s = preprocessed.map_range_to_original(b.span.start as usize..b.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Boolean, span: s }); }
+                    ArrayExpressionElement::NullLiteral(n) => { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Null, span: s }); }
+                    ArrayExpressionElement::Identifier(id) => { check_identifier_for_substituted_var(id, false, preprocessed, analysis); }
+                    ArrayExpressionElement::ObjectExpression(obj) => { for prop in &obj.properties { if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop { walk_expression(&p.value, preprocessed, analysis); } } }
+                    ArrayExpressionElement::ArrayExpression(inner) => {
+                        for e in &inner.elements {
+                            if let ArrayExpressionElement::NumericLiteral(n) = e { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Number, span: s }); }
+                            else if let ArrayExpressionElement::StringLiteral(s) = e { let sp = preprocessed.map_range_to_original(s.span.start as usize..s.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::String, span: sp }); }
+                            else if let ArrayExpressionElement::BooleanLiteral(b) = e { let s = preprocessed.map_range_to_original(b.span.start as usize..b.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Boolean, span: s }); }
+                            else if let ArrayExpressionElement::NullLiteral(n) = e { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Null, span: s }); }
+                            else if let ArrayExpressionElement::Identifier(id) = e { check_identifier_for_substituted_var(id, false, preprocessed, analysis); }
+                            else if let ArrayExpressionElement::ObjectExpression(obj) = e { for prop in &obj.properties { if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop { walk_expression(&p.value, preprocessed, analysis); } } }
+                        }
+                    }
+                    ArrayExpressionElement::BinaryExpression(bin) => { walk_expression(&bin.left, preprocessed, analysis); walk_expression(&bin.right, preprocessed, analysis); }
+                    ArrayExpressionElement::LogicalExpression(l) => { walk_expression(&l.left, preprocessed, analysis); walk_expression(&l.right, preprocessed, analysis); }
+                    ArrayExpressionElement::CallExpression(c) => { walk_expression(&c.callee, preprocessed, analysis); for a in &c.arguments { walk_argument(a, preprocessed, analysis); } }
+                    ArrayExpressionElement::ParenthesizedExpression(pe) => { walk_expression(&pe.expression, preprocessed, analysis); }
+                    _ => {}
+                }
+            }
+        }
+        Expr::ArrayExpression(arr) => {
             // Array literal: `[1, 2, 3]`, `[{a:1}, {b:2}]`, `[$x, ...$rest]`
             // Recurse into each element so literals, variables, nested
             // objects/arrays, and other expressions get visited.
@@ -1368,99 +1398,37 @@ fn extract_substitution_operators(
     }
 }
 
-/// Scan the preprocessed JS source for comments (`/* ... */` and `// ...`).
-///
-/// oxc's AST doesn't include comments as nodes (they're stripped during
-/// parsing), so we find them by scanning the raw preprocessed source text.
-/// We carefully skip over string literals to avoid false positives (e.g.,
-/// `"http://"` should NOT be treated as a comment).
-///
-/// Found comment spans are mapped back to the ORIGINAL SugarCube source
-/// positions via the preprocessor's substitution table (same mechanism as
-/// `extract_substitution_operators`), then stored in `analysis.comment_spans`
-/// for the token builder to emit as `Comment` semantic tokens.
-fn extract_comments(
-    preprocessed: &super::js_preprocess::PreprocessedJs,
-    analysis: &mut JsAnalysis,
-) {
+
+
+fn extract_comments(preprocessed: &super::js_preprocess::PreprocessedJs, analysis: &mut JsAnalysis) {
     let src = preprocessed.source.as_bytes();
     let len = src.len();
     let mut i = 0usize;
-
     while i < len {
         let b = src[i];
-
-        // ── Skip string literals ──────────────────────────────────────
-        // Single-quoted, double-quoted, and template (backtick) strings.
-        // All three use `\` as the escape character.
         if b == b'"' || b == b'\'' || b == b'`' {
-            let quote = b;
-            i += 1;
-            while i < len {
-                if src[i] == b'\\' {
-                    i += 2; // skip escape + next char
-                    continue;
-                }
-                if src[i] == quote {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
+            let q = b; i += 1;
+            while i < len { if src[i] == b'\\' { i += 2; continue; } if src[i] == q { i += 1; break; } i += 1; }
             continue;
         }
-
-        // ── Block comment: /* ... */ ─────────────────────────────────
         if b == b'/' && i + 1 < len && src[i + 1] == b'*' {
-            let start = i;
-            i += 2;
-            while i + 1 < len {
-                if src[i] == b'*' && src[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                i += 1;
-            }
-            // If we didn't find a closing */, i is at len — the comment is
-            // unterminated. We still emit a span for what we have.
+            let start = i; i += 2;
+            while i + 1 < len { if src[i] == b'*' && src[i + 1] == b'/' { i += 2; break; } i += 1; }
             let end = i.min(len);
-            // map_to_original expects oxc AST positions, which include
-            // wrapping_offset. Our positions are from preprocessed.source
-            // (no wrapping), so add wrapping_offset before mapping.
-            let orig_start = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
-            let orig_end = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
-            if orig_end > orig_start {
-                analysis.comment_spans.push(CommentSpan {
-                    kind: CommentKind::CStyle,
-                    span: orig_start..orig_end,
-                });
-            }
+            let os = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
+            let oe = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
+            if oe > os { analysis.comment_spans.push(CommentSpan { kind: CommentKind::CStyle, span: os..oe }); }
             continue;
         }
-
-        // ── Line comment: // ... (to end of line) ────────────────────
         if b == b'/' && i + 1 < len && src[i + 1] == b'/' {
-            let start = i;
-            i += 2;
-            while i < len && src[i] != b'\n' {
-                i += 1;
-            }
-            // Don't consume the newline — let the outer loop handle it.
+            let start = i; i += 2;
+            while i < len && src[i] != b'\n' { i += 1; }
             let end = i;
-            // map_to_original expects oxc AST positions, which include
-            // wrapping_offset. Our positions are from preprocessed.source
-            // (no wrapping), so add wrapping_offset before mapping.
-            let orig_start = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
-            let orig_end = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
-            if orig_end > orig_start {
-                analysis.comment_spans.push(CommentSpan {
-                    kind: CommentKind::JsLine,
-                    span: orig_start..orig_end,
-                });
-            }
+            let os = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
+            let oe = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
+            if oe > os { analysis.comment_spans.push(CommentSpan { kind: CommentKind::JsLine, span: os..oe }); }
             continue;
         }
-
         i += 1;
     }
 }

@@ -233,6 +233,7 @@ fn build_semantic_tokens_at_depth(
                     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
                     // Emit namespace tokens (SugarCube global objects)
                     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
+                    emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
@@ -259,6 +260,36 @@ fn build_semantic_tokens_at_depth(
                 if let Some(sargs) = structured_args {
                     emit_structured_arg_tokens(sargs, tokens, body_offset_in_passage);
                 }
+                // For <<style>>/<<css>> blocks: emit CSS tokens from body text.
+                // This is the direct equivalent of how <<script>> gets JS
+                // tokens via js_analysis — but CSS doesn't need an annotation
+                // pass, so we emit directly here.
+                if name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("css") {
+                    if let Some(ch) = children {
+                        let mut css_source = String::new();
+                        let mut body_start = 0usize;
+                        for child in ch.iter() {
+                            if let ast::AstNode::Text { content, span, .. } = child {
+                                if css_source.is_empty() {
+                                    body_start = span.start;
+                                }
+                                css_source.push_str(content);
+                            }
+                        }
+                        if !css_source.trim().is_empty() {
+                            let css_analysis = crate::sugarcube::css::analyze_css(css_source.trim());
+                            for css_tok in &css_analysis.tokens {
+                                tokens.push(SemanticToken {
+                                    start: body_offset_in_passage + body_start + css_tok.start,
+                                    length: css_tok.length,
+                                    token_type: css_tok.token_type,
+                                    modifier: css_tok.modifier,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Recurse into block macro children with incremented depth.
                 // Inline macros (children: None) don't recurse.
                 if let Some(ch) = children {
@@ -312,6 +343,7 @@ fn build_semantic_tokens_at_depth(
                     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
                     // Emit namespace tokens (SugarCube global objects)
                     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
+                    emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
@@ -477,6 +509,7 @@ pub fn build_script_passage_tokens(
     emit_literal_tokens(&analysis.literal_spans, tokens, body_offset_in_passage);
     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
+                    emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
     emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
@@ -634,22 +667,9 @@ fn emit_function_def_tokens(function_defs: &[ast::FunctionDefInfo], tokens: &mut
     }
 }
 
-/// Emit semantic tokens for comments found inside JS expressions.
-///
-/// Both `/* ... */` block comments and `// ...` line comments found inside
-/// `<<set>>`, `<<run>>`, `<<if>>`, etc. macro args get `Comment` tokens.
-/// The spans come from `JsAnalysis::comment_spans`, which is populated by
-/// `js_walk::extract_comments()` scanning the raw preprocessed JS source
-/// (oxc strips comments from the AST, so they have to be found separately).
+
 fn emit_comment_tokens(comments: &[ast::CommentSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
-    for comment in comments {
-        tokens.push(SemanticToken {
-            start: body_offset_in_passage + comment.span.start,
-            length: comment.span.end - comment.span.start,
-            token_type: SemanticTokenType::Comment,
-            modifier: None,
-        });
-    }
+    for c in comments { tokens.push(SemanticToken { start: body_offset_in_passage + c.span.start, length: c.span.end - c.span.start, token_type: SemanticTokenType::Comment, modifier: None }); }
 }
 
 /// Emit semantic tokens for function call sites found by oxc.
