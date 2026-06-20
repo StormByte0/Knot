@@ -131,6 +131,8 @@ fn walk_statement(
                     param_count,
                 });
             }
+            // Emit Variable+Definition tokens for function parameters
+            emit_param_tokens(&func.params, preprocessed, analysis);
             // Recurse into the function body — Macro.add() / Template.add() /
             // nested function declarations inside a function body must be
             // discovered. Without this, macros registered inside a wrapper
@@ -151,6 +153,18 @@ fn walk_statement(
             };
             push_keyword(analysis, kw, var_decl.span.start as usize, preprocessed);
             for decl in &var_decl.declarations {
+                // Emit a Variable+Definition span for the binding name (unless
+                // it's a substituted SugarCube variable — those are handled by
+                // the $var / _var mechanism).
+                if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
+                    let name = binding_name.name.as_str();
+                    if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
+                        let span = preprocessed.map_range_to_original(
+                            binding_name.span.start as usize..binding_name.span.end as usize
+                        );
+                        analysis.js_var_def_spans.push(span);
+                    }
+                }
                 // Track named function expressions and arrow functions
                 if let Some(init) = &decl.init {
                     match init {
@@ -302,6 +316,29 @@ fn push_keyword(analysis: &mut JsAnalysis, kw: &'static str, start_offset: usize
     });
 }
 
+/// Emit Variable+Definition spans for function parameters.
+///
+/// Called from FunctionDeclaration, FunctionExpression, and ArrowFunctionExpression
+/// handlers. Each parameter binding gets a `js_var_def_spans` entry so themes
+/// can highlight parameter names as variable definitions.
+fn emit_param_tokens(
+    params: &oxc_ast::ast::FormalParameters<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    for item in &params.items {
+        if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &item.pattern {
+            let name = binding_name.name.as_str();
+            if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
+                let span = preprocessed.map_range_to_original(
+                    binding_name.span.start as usize..binding_name.span.end as usize
+                );
+                analysis.js_var_def_spans.push(span);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal: expression-level walk
 // ---------------------------------------------------------------------------
@@ -397,6 +434,22 @@ fn walk_expression(
             // We also skip `Macro.add` and `Template.add` since those are handled
             // by the call expression handler.
             emit_namespace_for_member_expr(member, preprocessed, analysis);
+            // If the object is NOT a known SugarCube global, emit a plain
+            // JS property span for the property name. This covers patterns
+            // like `profile.left`, `card.showIf`, `el.innerHTML`, etc.
+            // (When the object IS a SugarCube global, emit_namespace_for_member_expr
+            // already emitted a Property token via namespace_spans.)
+            let object_is_sc_global = if let Expr::Identifier(id) = &member.object {
+                is_known_global(id.name.as_str())
+            } else {
+                false // non-identifier objects (chained member expressions) → emit property
+            };
+            if !object_is_sc_global {
+                let prop_span = preprocessed.map_range_to_original(
+                    member.property.span.start as usize..member.property.span.end as usize
+                );
+                analysis.js_property_spans.push(prop_span);
+            }
             // Recurse into object
             walk_expression(&member.object, preprocessed, analysis);
         }
@@ -516,8 +569,22 @@ fn walk_expression(
                     is_string,
                 });
             }
-            // Recurse into callee and arguments
-            walk_expression(&call.callee, preprocessed, analysis);
+            // ── Detect method calls: expr.method(...) ──────────────────
+            // If the callee is a StaticMemberExpression, the property is a
+            // method name — emit a Function token for it. We still recurse
+            // into the object (not the property, since we've handled it).
+            if let Expr::StaticMemberExpression(member) = &call.callee {
+                // Emit method span for the property name
+                let prop_span = preprocessed.map_range_to_original(
+                    member.property.span.start as usize..member.property.span.end as usize
+                );
+                analysis.js_method_spans.push(prop_span);
+                // Recurse into the object only (not the property — we handled it)
+                walk_expression(&member.object, preprocessed, analysis);
+            } else {
+                // Normal callee — recurse normally
+                walk_expression(&call.callee, preprocessed, analysis);
+            }
             for arg in &call.arguments {
                 walk_argument(arg, preprocessed, analysis);
             }
@@ -533,13 +600,31 @@ fn walk_expression(
         }
         Expr::Identifier(id) => {
             check_identifier_for_substituted_var(id, false, preprocessed, analysis);
-            // Note: We do NOT emit standalone NamespaceSpan for global identifiers
-            // here because member expressions like `Engine.play()` are already
-            // handled by `emit_namespace_for_member_expr`, which emits both
-            // the Namespace and Property tokens. When we recurse into the
-            // object of a member expression, we'd double-emit the Namespace.
-            // Standalone global references (e.g., just `State` without `.x`)
-            // are rare and not critical for highlighting.
+            // If this identifier is NOT a substituted SugarCube variable,
+            // check if it's a known JS global. If so, emit a Namespace span.
+            // Otherwise, emit a plain JS variable reference span.
+            let name = id.name.as_str();
+            if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
+                let span = preprocessed.map_range_to_original(
+                    id.span.start as usize..id.span.end as usize
+                );
+                if is_js_global(name) {
+                    analysis.js_global_spans.push(span);
+                } else if is_sugarcube_global(name) {
+                    // SugarCube globals (Engine, State, Story, Config, etc.)
+                    // are handled by emit_namespace_for_member_expr when they
+                    // appear as the object of a member expression. But standalone
+                    // references also get a Namespace token.
+                    analysis.namespace_spans.push(NamespaceSpan {
+                        name: name.to_string(),
+                        span,
+                        property_spans: Vec::new(),
+                    });
+                } else {
+                    // Plain JS local variable reference
+                    analysis.js_var_spans.push(span);
+                }
+            }
         }
         Expr::BinaryExpression(bin) => {
             // Emit operator span for the binary operator.
@@ -731,6 +816,11 @@ fn walk_expression(
             // Named function expression: `var f = function myFunc() { ... }`
             // The name (if present) is registered by the VariableDeclaration
             // handler above. Here we only need to recurse into the body.
+            // Emit the `function` keyword — for anonymous function expressions
+            // used as values (e.g. `var f = function() {}`), the keyword is
+            // the only signal that this is a function definition.
+            push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
+            emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
         Expr::ArrowFunctionExpression(arrow) => {
@@ -739,6 +829,7 @@ fn walk_expression(
             // VariableDeclaration handler. Here we recurse into the body so
             // that Macro.add() / Template.add() / nested function definitions
             // inside arrow function bodies are discovered.
+            emit_param_tokens(&arrow.params, preprocessed, analysis);
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
         _ => {}
@@ -1290,10 +1381,15 @@ fn walk_argument(
             // Callback function: e.g., `$(el).on('click', function() { ... })`.
             // Walk the body so Macro.add() / nested definitions inside
             // callbacks are discovered.
+            // Emit the `function` keyword so callbacks get the same
+            // highlighting as top-level function declarations.
+            push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
+            emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
         Arg::ArrowFunctionExpression(arrow) => {
             // Arrow callback: e.g., `$(el).on('click', () => { ... })`.
+            emit_param_tokens(&arrow.params, preprocessed, analysis);
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
         Arg::UnaryExpression(unary) => {
@@ -1713,6 +1809,41 @@ fn is_known_global(name: &str) -> bool {
     crate::sugarcube::macros::builtin_globals()
         .iter()
         .any(|g| g.name == name)
+}
+
+/// Check if a name is a SugarCube global (Engine, State, Story, Config, etc.)
+fn is_sugarcube_global(name: &str) -> bool {
+    is_known_global(name)
+}
+
+/// Check if a name is a standard JavaScript global object.
+///
+/// These are the built-in objects available in all JS environments. When
+/// referenced as identifiers (e.g., `document`, `Array`, `Math`), they get
+/// a `Namespace` semantic token.
+fn is_js_global(name: &str) -> bool {
+    matches!(name,
+        // Browser globals
+        "document" | "window" | "console" | "navigator" | "location" |
+        "history" | "screen" | "localStorage" | "sessionStorage" |
+        // Standard built-in objects
+        "Array" | "Object" | "Math" | "JSON" | "Number" | "String" |
+        "Boolean" | "Date" | "RegExp" | "Error" | "TypeError" |
+        "RangeError" | "ReferenceError" | "SyntaxError" | "URIError" |
+        "Promise" | "Set" | "Map" | "WeakMap" | "WeakSet" | "Symbol" |
+        "Proxy" | "Reflect" | "Intl" | "BigInt" | "BigInt64Array" |
+        "BigUint64Array" | "Float32Array" | "Float64Array" |
+        "Int8Array" | "Int16Array" | "Int32Array" |
+        "Uint8Array" | "Uint8ClampedArray" | "Uint16Array" | "Uint32Array" |
+        "ArrayBuffer" | "SharedArrayBuffer" | "DataView" |
+        "encodeURI" | "decodeURI" | "encodeURIComponent" | "decodeURIComponent" |
+        "parseInt" | "parseFloat" | "isNaN" | "isFinite" |
+        "eval" | "undefined" | "NaN" | "Infinity" |
+        // Timer functions
+        "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval" |
+        "requestAnimationFrame" | "cancelAnimationFrame" |
+        "queueMicrotask"
+    )
 }
 
 /// Emit a `NamespaceSpan` for a `StaticMemberExpression` whose object is

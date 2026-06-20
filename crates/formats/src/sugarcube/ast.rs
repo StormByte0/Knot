@@ -68,6 +68,30 @@ pub struct JsAnalysis {
     /// `/*` or `//` sequences that would be misidentified as comments).
     /// Not emitted as semantic tokens.
     pub regex_spans: Vec<std::ops::Range<usize>>,
+    /// JS local variable references — identifiers that are NOT SugarCube
+    /// variables (`$var`/`_var`), NOT properties, and NOT function calls.
+    /// Covers plain JS locals like `el`, `g`, `profile`, `vm`, `html`.
+    /// The token builder emits these as `Variable` semantic tokens.
+    pub js_var_spans: Vec<std::ops::Range<usize>>,
+    /// JS local variable declarations — the binding name in
+    /// `var x = ...`, `let x = ...`, `const x = ...`, and function
+    /// parameters. The token builder emits these as `Variable` tokens
+    /// with the `Definition` modifier.
+    pub js_var_def_spans: Vec<std::ops::Range<usize>>,
+    /// JS method call names — the property name in `expr.method(...)`.
+    /// e.g. `.forEach`, `.getElementById`, `.isArray`, `.filter`.
+    /// The token builder emits these as `Function` semantic tokens.
+    pub js_method_spans: Vec<std::ops::Range<usize>>,
+    /// JS property access names — the property name in `expr.prop` (not
+    /// followed by `(`). e.g. `.left`, `.length`, `.innerHTML`, `.showIf`.
+    /// The token builder emits these as `Property` semantic tokens.
+    pub js_property_spans: Vec<std::ops::Range<usize>>,
+    /// JS global object references — identifiers that match known JS
+    /// globals (`document`, `window`, `console`, `Array`, `Object`,
+    /// `Math`, `JSON`, `Number`, `String`, `Boolean`, `Date`, `RegExp`,
+    /// `Error`, `Promise`, `Set`, `Map`, `Symbol`, `WeakMap`, `WeakSet`).
+    /// The token builder emits these as `Namespace` semantic tokens.
+    pub js_global_spans: Vec<std::ops::Range<usize>>,
 }
 
 /// A variable operation extracted by the oxc AST walker.

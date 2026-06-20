@@ -238,6 +238,15 @@ fn build_semantic_tokens_at_depth(
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit JS keyword tokens (if, for, var, function, etc.)
                     emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
+                    // Emit JS local variable references and definitions
+                    emit_js_var_tokens(&analysis.js_var_spans, tokens, body_offset_in_passage);
+                    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, body_offset_in_passage);
+                    // Emit JS method calls (.forEach, .getElementById, etc.)
+                    emit_js_method_tokens(&analysis.js_method_spans, tokens, body_offset_in_passage);
+                    // Emit JS property accesses (.left, .length, .innerHTML, etc.)
+                    emit_js_property_tokens(&analysis.js_property_spans, tokens, body_offset_in_passage);
+                    // Emit JS global object references (document, Array, Math, etc.)
+                    emit_js_global_tokens(&analysis.js_global_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
                     // Emit function call site tokens from oxc analysis
@@ -350,6 +359,15 @@ fn build_semantic_tokens_at_depth(
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit JS keyword tokens (if, for, var, function, etc.)
                     emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
+                    // Emit JS local variable references and definitions
+                    emit_js_var_tokens(&analysis.js_var_spans, tokens, body_offset_in_passage);
+                    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, body_offset_in_passage);
+                    // Emit JS method calls (.forEach, .getElementById, etc.)
+                    emit_js_method_tokens(&analysis.js_method_spans, tokens, body_offset_in_passage);
+                    // Emit JS property accesses (.left, .length, .innerHTML, etc.)
+                    emit_js_property_tokens(&analysis.js_property_spans, tokens, body_offset_in_passage);
+                    // Emit JS global object references (document, Array, Math, etc.)
+                    emit_js_global_tokens(&analysis.js_global_spans, tokens, body_offset_in_passage);
                     // Emit function definition tokens from oxc analysis
                     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
                     // Emit function call site tokens from oxc analysis
@@ -515,6 +533,12 @@ pub fn build_script_passage_tokens(
     emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
     emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
+    // JS local variables, methods, properties, and globals
+    emit_js_var_tokens(&analysis.js_var_spans, tokens, body_offset_in_passage);
+    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, body_offset_in_passage);
+    emit_js_method_tokens(&analysis.js_method_spans, tokens, body_offset_in_passage);
+    emit_js_property_tokens(&analysis.js_property_spans, tokens, body_offset_in_passage);
+    emit_js_global_tokens(&analysis.js_global_spans, tokens, body_offset_in_passage);
     emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
     emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
 }
@@ -706,6 +730,85 @@ fn emit_function_call_tokens(function_calls: &[ast::FunctionCallInfo], tokens: &
             start: body_offset_in_passage + call.span.start,
             length: call.span.end - call.span.start,
             token_type: SemanticTokenType::Function,
+            modifier: None,
+        });
+    }
+}
+
+/// Emit semantic tokens for plain JS local variable references.
+///
+/// These are identifiers that are NOT SugarCube variables (`$var`/`_var`),
+/// NOT properties, and NOT function calls — just plain JS locals like
+/// `el`, `g`, `profile`, `vm`, `html`. Emitted as `Variable` tokens.
+fn emit_js_var_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for span in spans {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + span.start,
+            length: span.end - span.start,
+            token_type: SemanticTokenType::Variable,
+            modifier: None,
+        });
+    }
+}
+
+/// Emit semantic tokens for JS local variable declarations.
+///
+/// These are the binding names in `var x = ...`, `let x = ...`, `const x = ...`,
+/// and function parameters. Emitted as `Variable` tokens with the `Definition`
+/// modifier so themes can bold them.
+fn emit_js_var_def_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for span in spans {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + span.start,
+            length: span.end - span.start,
+            token_type: SemanticTokenType::Variable,
+            modifier: Some(SemanticTokenModifier::Definition),
+        });
+    }
+}
+
+/// Emit semantic tokens for JS method call names.
+///
+/// These are the property names in `expr.method(...)` patterns, e.g.
+/// `.forEach`, `.getElementById`, `.isArray`, `.filter`. Emitted as
+/// `Function` tokens so they're visually distinct from property accesses.
+fn emit_js_method_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for span in spans {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + span.start,
+            length: span.end - span.start,
+            token_type: SemanticTokenType::Function,
+            modifier: None,
+        });
+    }
+}
+
+/// Emit semantic tokens for JS property access names.
+///
+/// These are the property names in `expr.prop` patterns (not followed by `(`),
+/// e.g. `.left`, `.length`, `.innerHTML`, `.showIf`. Emitted as `Property`
+/// tokens so themes can color them distinctly from variables.
+fn emit_js_property_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for span in spans {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + span.start,
+            length: span.end - span.start,
+            token_type: SemanticTokenType::Property,
+            modifier: None,
+        });
+    }
+}
+
+/// Emit semantic tokens for JS global object references.
+///
+/// These are identifiers matching known JS globals (`document`, `Array`,
+/// `Math`, `JSON`, `console`, etc.). Emitted as `Namespace` tokens.
+fn emit_js_global_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+    for span in spans {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + span.start,
+            length: span.end - span.start,
+            token_type: SemanticTokenType::Namespace,
             modifier: None,
         });
     }
