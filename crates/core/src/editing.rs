@@ -102,7 +102,16 @@ pub fn graph_surgery(
                     edge_type,
                     pre_broken_type,
                 };
-                graph.add_edge(&passage.name, &link.target, edge);
+                // For Include edges, swap direction: included → includer
+                // (data flow direction). See rebuild_graph in helpers/graph.rs.
+                let is_include = edge_type == crate::graph::EdgeType::Include
+                    || (edge_type == crate::graph::EdgeType::Broken
+                        && pre_broken_type == Some(crate::graph::EdgeType::Include));
+                if is_include {
+                    graph.add_edge(&link.target, &passage.name, edge);
+                } else {
+                    graph.add_edge(&passage.name, &link.target, edge);
+                }
             }
 
             // Re-add extra edges (dynamic navigation links) for this passage
@@ -120,7 +129,15 @@ pub fn graph_surgery(
                         edge_type,
                         pre_broken_type,
                     };
-                    graph.add_edge(source, target, edge);
+                    // For Include edges, swap direction: included → includer
+                    let is_include = edge_type == EdgeType::Include
+                        || (edge_type == EdgeType::Broken
+                            && pre_broken_type == Some(EdgeType::Include));
+                    if is_include {
+                        graph.add_edge(target, source, edge);
+                    } else {
+                        graph.add_edge(source, target, edge);
+                    }
                 }
             }
         }

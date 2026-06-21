@@ -143,26 +143,10 @@ pub(crate) fn rebuild_graph(
                 pre_broken_type,
             };
 
-            // For Include edges (<<include>>, data-passage), the data flow
-            // direction is FROM the included passage TO the including passage.
-            // So we store the edge as: target → source (included → includer).
-            // Reachability BFS follows Include edges in the incoming direction
-            // (from includer → included) to determine which passages are "used".
-            //
-            // For Navigation edges, the direction is source → target (player
-            // navigates from source to target).
-            //
-            // For Broken edges, we preserve the original type's direction.
-            let (edge_from, edge_to) = if edge_type == knot_core::graph::EdgeType::Include
-                || (edge_type == knot_core::graph::EdgeType::Broken
-                    && pre_broken_type == Some(knot_core::graph::EdgeType::Include))
-            {
-                (target, source) // included → includer
-            } else {
-                (source, target) // source → destination
-            };
-
-            graph.add_edge(edge_from, edge_to, edge);
+            // All edges go source → target (the passage containing the reference
+            // → the referenced passage). Both Navigation and Include edges follow
+            // this direction. The edge TYPE distinguishes them, not the direction.
+            graph.add_edge(source, target, edge);
         }
     }
 

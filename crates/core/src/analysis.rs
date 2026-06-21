@@ -269,26 +269,39 @@ impl AnalysisEngine {
     /// Detect dead-end passages — passages with no outgoing links that are
     /// not special or metadata passages. These may be unintentional endings.
     ///
-    /// Passages that are ONLY referenced via Include edges (data-passage,
+    /// Passages that are referenced via Include edges (data-passage,
     /// <<include>>) are excluded — they're content fragments rendered by
     /// other passages, not narrative destinations that need outgoing links.
     fn detect_dead_end_passages(workspace: &Workspace) -> Vec<GraphDiagnostic> {
+        use petgraph::visit::EdgeRef;
+        use crate::graph::EdgeType;
         let mut diagnostics = Vec::new();
+
+        // Collect passages that are targets of Include edges — these are
+        // content fragments (like UIOutfitLabel included by StoryInterface)
+        // and should not be flagged as dead-end.
+        let mut include_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for edge_ref in workspace.graph.edge_references() {
+            let edge = edge_ref.weight();
+            let is_include = edge.edge_type == EdgeType::Include
+                || (edge.edge_type == EdgeType::Broken
+                    && edge.pre_broken_type == Some(EdgeType::Include));
+            if is_include {
+                if let Some(target_name) = workspace.graph.node_name(edge_ref.target()) {
+                    include_targets.insert(target_name.to_string());
+                }
+            }
+        }
 
         for doc in workspace.documents() {
             for passage in &doc.passages {
                 if passage.is_metadata() || passage.is_special {
                     continue;
                 }
-                // A passage is a "dead end" if it has no outgoing links
-                // (no Navigation edges to other passages) and no Include
-                // edges (it doesn't include content from other passages).
-                //
-                // Include edges are stored as included → includer, so an
-                // included passage has an OUTGOING Include edge (to the
-                // passage that includes it). This means content fragments
-                // like UIOutfitLabel (included by StoryInterface) will have
-                // an outgoing edge and won't be flagged as dead-end.
+                // Skip content fragments — passages included by other passages.
+                if include_targets.contains(&passage.name) {
+                    continue;
+                }
                 let has_outgoing = !passage.links.is_empty();
                 let has_graph_edges = !workspace.graph.outgoing_neighbors(&passage.name).is_empty();
 

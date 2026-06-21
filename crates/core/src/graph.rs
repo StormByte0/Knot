@@ -527,27 +527,12 @@ impl PassageGraph {
 
             let source_idx = edge_ref.source();
             let target_idx = edge_ref.target();
-
-            // For Include edges, the direction is included → includer.
-            // When broken, the "source" (included passage) is the missing one.
-            // The diagnostic should reference the includer as the passage
-            // that has the broken link, and the included passage as the target.
-            let is_include = edge_ref.weight().pre_broken_type == Some(EdgeType::Include);
-            let (diag_source, diag_target) = if is_include {
-                // Include: edge is included → includer.
-                // Source (included) is the missing target.
-                // Target (includer) is the passage with the broken include.
-                (&self.graph[target_idx], &self.graph[source_idx])
-            } else {
-                // Navigation: edge is source → destination.
-                // Source is the passage with the broken link.
-                // Target is the missing destination.
-                (&self.graph[source_idx], &self.graph[target_idx])
-            };
+            let source = &self.graph[source_idx];
+            let target = &self.graph[target_idx];
 
             // Skip broken link diagnostics for ScriptInjection and
             // StyleInjection source passages.
-            if let Some(ref behavior) = diag_source.behavior {
+            if let Some(ref behavior) = source.behavior {
                 if matches!(
                     behavior,
                     SpecialPassageBehavior::ScriptInjection
@@ -558,17 +543,17 @@ impl PassageGraph {
             }
 
             // Skip targets containing "::".
-            if diag_target.name.contains("::") {
+            if target.name.contains("::") {
                 continue;
             }
 
             diagnostics.push(GraphDiagnostic {
-                passage_name: diag_source.name.clone(),
-                file_uri: diag_source.file_uri.clone(),
+                passage_name: source.name.clone(),
+                file_uri: source.file_uri.clone(),
                 kind: DiagnosticKind::BrokenLink,
                 message: format!(
                     "Link target '{}' not found in workspace",
-                    diag_target.name
+                    target.name
                 ),
             });
         }
@@ -606,15 +591,15 @@ impl PassageGraph {
         // the engine, so any passage they reference is reachable.
         //
         // This handles:
-        // - StoryInterface with data-passage="SidebarStats"
-        // - Story JavaScript with Engine.play("Forest")
-        // - StoryInit with <<goto "Somewhere">>
-        // - PassageHeader/PassageFooter with data-passage refs
+        // - StoryInterface with data-passage="SidebarStats" (Include edge: outgoing)
+        // - Story JavaScript with Engine.play("Forest") (Navigation edge: outgoing)
+        // - StoryInit with <<goto "Somewhere">> (Navigation edge: outgoing)
+        // - PassageHeader/PassageFooter with data-passage refs (Include edge: outgoing)
         for idx in self.graph.node_indices() {
             let node = &self.graph[idx];
             if node.is_special && !node.is_metadata && !node.is_placeholder {
                 // Check if this special passage has any outgoing edges
-                // to non-special passages
+                // to non-special passages (both Navigation and Include)
                 let has_user_refs = self
                     .graph
                     .neighbors_directed(idx, petgraph::Direction::Outgoing)
@@ -627,48 +612,18 @@ impl PassageGraph {
             }
         }
 
+        // BFS: follow ALL outgoing edges (both Navigation and Include).
+        // All edges are stored as source → target (the passage containing
+        // the reference → the referenced passage). For reachability, this
+        // means: if passage A references passage B (via [[link]], <<goto>>,
+        // <<include>>, or data-passage), then B is reachable from A.
         while let Some(current) = queue.pop_front() {
-            // Follow Navigation edges in the outgoing direction (source → dest).
-            // Follow Include edges in the incoming direction (includer → included).
-            // Include edges are stored as included → includer, so "incoming"
-            // for the includer means "who do I include?".
-            //
-            // Upstream edges are followed outgoing (they connect lifecycle passages).
-            for edge_ref in self.graph.edges_directed(current, petgraph::Direction::Outgoing) {
-                let edge = edge_ref.weight();
-                let follow = match edge.edge_type {
-                    EdgeType::Navigation | EdgeType::Upstream => true,
-                    EdgeType::Include => false, // Include outgoing = included → includer, don't follow
-                    EdgeType::Broken => {
-                        // Follow broken edges that were Navigation (player would
-                        // navigate there if the target existed). Don't follow
-                        // broken Include edges (they were content injections).
-                        edge.pre_broken_type.unwrap_or(EdgeType::Navigation) == EdgeType::Navigation
-                    }
-                };
-                if follow {
-                    let neighbor = edge_ref.target();
-                    if reachable.insert(neighbor) {
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-            // Follow Include edges in the incoming direction.
-            // Include edges stored as included → includer, so for the includer
-            // (current), the incoming Include edges point FROM the included
-            // passages. We want to reach those included passages.
-            for edge_ref in self.graph.edges_directed(current, petgraph::Direction::Incoming) {
-                let edge = edge_ref.weight();
-                let follow = match edge.edge_type {
-                    EdgeType::Include => true, // incoming Include = "current includes this passage"
-                    EdgeType::Broken if edge.pre_broken_type == Some(EdgeType::Include) => true,
-                    _ => false,
-                };
-                if follow {
-                    let neighbor = edge_ref.source();
-                    if reachable.insert(neighbor) {
-                        queue.push_back(neighbor);
-                    }
+            for neighbor in self
+                .graph
+                .neighbors_directed(current, petgraph::Direction::Outgoing)
+            {
+                if reachable.insert(neighbor) {
+                    queue.push_back(neighbor);
                 }
             }
         }
