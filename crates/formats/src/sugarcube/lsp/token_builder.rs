@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenModifier, SemanticTokenType};
 use crate::sugarcube::ast;
-use crate::sugarcube::macros::deprecated_macros;
+use crate::sugarcube::macros::{deprecated_macros, folding_modifier_names};
 use crate::sugarcube::special_passages;
 
 /// Build semantic tokens from AST nodes.
@@ -70,6 +70,16 @@ fn build_semantic_tokens_at_depth(
     for node in nodes {
         match node {
             ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, close_name_span, open_span, close_span, .. } => {
+                // Modifier macros (else, elseif, case, default) are structurally
+                // siblings of their parent, not children. They're in the parent's
+                // children array, but they should render at the parent's depth,
+                // not one level deeper. Adjust depth for these.
+                let effective_depth = if is_folding_modifier(name) && depth > 0 {
+                    depth - 1
+                } else {
+                    depth
+                };
+
                 // Determine if this is a block macro (has children → open/close pair)
                 let is_block = children.is_some();
 
@@ -131,7 +141,7 @@ fn build_semantic_tokens_at_depth(
                 } else {
                     None
                 };
-                let delim_modifier = SemanticTokenModifier::from_block_depth(depth);
+                let delim_modifier = SemanticTokenModifier::from_block_depth(effective_depth);
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + name_span.start,
                     length: name_span.end - name_span.start,
@@ -1221,4 +1231,11 @@ pub fn build_json_body_tokens(body: &str, body_offset_in_passage: usize) -> Vec<
     }
 
     tokens
+}
+
+/// Check if a macro name is a folding modifier (else, elseif, case, default).
+/// These are structural siblings of their parent, not nested children —
+/// they should render at the parent's depth level.
+fn is_folding_modifier(name: &str) -> bool {
+    folding_modifier_names().contains(name)
 }

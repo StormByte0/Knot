@@ -30,7 +30,17 @@ pub fn body_macro_names() -> HashSet<&'static str> {
 /// These are part of a parent block and are folded together with it.
 /// They should NOT be pushed onto the folding-range stack.
 pub fn folding_modifier_names() -> HashSet<&'static str> {
-    ["else", "elseif", "case", "default"].into_iter().collect()
+    // All SubMacros — they're structural siblings of their parent block,
+    // not nested children. They should render at the parent's depth level.
+    [
+        "else", "elseif",           // inside <<if>>
+        "case", "default",          // inside <<switch>>
+        "break", "continue",        // inside <<for>>
+        "next",                     // inside <<for>> (SugarCube 2.x)
+        "option", "optionsfrom",    // inside <<listbox>>/<<dropdown>>
+        "stop",                     // inside <<timed>>/<<repeat>>
+        "track",                    // inside <<playlist>>
+    ].into_iter().collect()
 }
 
 /// Macros whose arguments include a passage-name reference.

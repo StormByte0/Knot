@@ -212,13 +212,11 @@ pub fn scan_line_for_macro_events_impl(
                     is_open: false,
                 });
             } else if folding_modifiers.contains(name) {
-                // Modifier: <<else>>, <<elseif>>, <<case>>, <<default>> — treat as
-                // a subdivision point so the folding handler splits the block
-                events.push(MacroBlockEvent {
-                    name: name.to_string(),
-                    line: line_idx,
-                    is_open: true, // modifiers subdivide the current block
-                });
+                // Modifier: <<else>>, <<elseif>>, <<case>>, <<default>>
+                // These are subdivision points within a block, NOT nested blocks.
+                // They should NOT push onto the folding stack — doing so would
+                // make <<else>> appear deeper than <<if>>, which is wrong.
+                // Skip them entirely for folding purposes.
             } else {
                 // Open tag: <<name>>
                 // Only report as open if this is a known block macro

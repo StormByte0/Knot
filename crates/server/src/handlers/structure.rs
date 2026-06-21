@@ -19,34 +19,32 @@ pub(crate) async fn folding_range(
 
     let mut ranges = Vec::new();
 
-    // ── Passage body folding (span-based) ──────────────────────────
+    // ── Passage folding (span-based) ───────────────────────────────
     if let Some(doc) = inner.workspace.get_document(&uri) {
         let passages = &doc.passages;
         for (i, passage) in passages.iter().enumerate() {
             let span_start = passage.abs_offset(passage.span.start).min(text.len());
-            let header_end = text[span_start..]
-                .find('\n')
-                .map(|n| span_start + n)
-                .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
 
-            // End of passage body: start of next passage or end of document
-            let body_end_offset = if i + 1 < passages.len() {
+            // End of passage: start of next passage or end of document
+            let passage_end_offset = if i + 1 < passages.len() {
                 passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
             } else {
                 text.len()
             };
 
-            let body_start_pos = helpers::byte_offset_to_position(text, (header_end + 1).min(text.len()));
-            let body_end_pos = helpers::byte_offset_to_position(text, body_end_offset);
+            // Fold starts from the passage header line (::) — includes
+            // both the header and the body in the fold.
+            let start_pos = helpers::byte_offset_to_position(text, span_start);
+            let end_pos = helpers::byte_offset_to_position(text, passage_end_offset);
 
-            if body_end_pos.line > body_start_pos.line {
+            if end_pos.line > start_pos.line {
                 ranges.push(FoldingRange {
-                    start_line: body_start_pos.line,
+                    start_line: start_pos.line,
                     start_character: None,
-                    end_line: body_end_pos.line.saturating_sub(1),
+                    end_line: end_pos.line.saturating_sub(1),
                     end_character: None,
                     kind: Some(FoldingRangeKind::Region),
-                    collapsed_text: None,
+                    collapsed_text: Some(passage.name.clone()),
                 });
             }
         }

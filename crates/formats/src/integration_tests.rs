@@ -1051,11 +1051,9 @@ fn sugarcube_scan_line_for_macro_events_else_modifier() {
     let line = "<<else>>";
 
     let events = plugin.scan_line_for_macro_events(line, 5);
-    assert!(!events.is_empty(), "Should detect <<else>> as modifier event");
-
-    let else_event = events.iter().find(|e| e.name == "else");
-    assert!(else_event.is_some(), "Should find 'else' event");
-    assert!(else_event.unwrap().is_open, "<<else>> should be is_open=true for subdivision");
+    // Modifiers (else, elseif, case, default) are NOT folding events —
+    // they're subdivision points within a block, not nested blocks.
+    assert!(events.is_empty(), "<<else>> should NOT produce a folding event");
 }
 
 #[test]

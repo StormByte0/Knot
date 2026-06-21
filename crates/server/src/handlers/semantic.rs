@@ -554,49 +554,13 @@ pub(crate) async fn inlay_hint(
                 });
             }
 
-            // ── "may be uninitialized" hint ────────────────────────────
-            //
-            // Shows variables that are read but may not have been initialized
-            // at this point in the flow. This is the more actionable hint —
-            // it warns about potential bugs. Truncated to 5 names.
-            let mut local_init = state.entry.clone();
-            let mut uninit_vars = Vec::new();
-            for var in passage.vars_sorted_by_span() {
-                if var.is_temporary { continue; }
-                match var.kind {
-                    knot_core::passage::VarKind::Read => {
-                        if !local_init.contains(&var.name)
-                            && !uninit_vars.contains(&var.name) {
-                                uninit_vars.push(var.name.clone());
-                            }
-                    }
-                    knot_core::passage::VarKind::Init => {
-                        local_init.insert(var.name.clone());
-                    }
-                }
-            }
-
-            if !uninit_vars.is_empty() {
-                let display_count = uninit_vars.len().min(5);
-                let names = &uninit_vars[..display_count];
-                let suffix = if uninit_vars.len() > 5 {
-                    format!(", … +{}", uninit_vars.len() - 5)
-                } else {
-                    String::new()
-                };
-                let label = format!("// uninit: {}{}", names.join(", "), suffix);
-                let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
-                hints.push(InlayHint {
-                    position,
-                    label: InlayHintLabel::String(label),
-                    kind: Some(InlayHintKind::PARAMETER),
-                    text_edits: None,
-                    tooltip: None,
-                    padding_left: Some(true),
-                    padding_right: Some(true),
-                    data: None,
-                });
-            }
+            // Note: "uninitialized variable" inlay hints were removed.
+            // SugarCube variables are persistent (stored in State.variables
+            // for the entire session). The simplistic per-passage flow
+            // analysis produced false positives for any variable set in
+            // StoryInit or an earlier passage. The format plugin's own
+            // `compute_variable_diagnostics()` handles this correctly via
+            // the state variable registry + graph BFS — no ghost text needed.
         }
     }
 
