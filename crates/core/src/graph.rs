@@ -526,21 +526,28 @@ impl PassageGraph {
             }
 
             let source_idx = edge_ref.source();
-            let source = &self.graph[source_idx];
-            let target = &self.graph[edge_ref.target()];
+            let target_idx = edge_ref.target();
 
-            // Defense-in-depth: skip edges that were Navigation before being
-            // marked Broken (these are real link targets that just don't exist
-            // yet). Include edges that are broken are also reported — the user
-            // should know about broken includes too.
+            // For Include edges, the direction is included → includer.
+            // When broken, the "source" (included passage) is the missing one.
+            // The diagnostic should reference the includer as the passage
+            // that has the broken link, and the included passage as the target.
+            let is_include = edge_ref.weight().pre_broken_type == Some(EdgeType::Include);
+            let (diag_source, diag_target) = if is_include {
+                // Include: edge is included → includer.
+                // Source (included) is the missing target.
+                // Target (includer) is the passage with the broken include.
+                (&self.graph[target_idx], &self.graph[source_idx])
+            } else {
+                // Navigation: edge is source → destination.
+                // Source is the passage with the broken link.
+                // Target is the missing destination.
+                (&self.graph[source_idx], &self.graph[target_idx])
+            };
 
             // Skip broken link diagnostics for ScriptInjection and
-            // StyleInjection source passages. These contain non-Twine
-            // content (JavaScript / CSS) where link extraction is
-            // best-effort and false positives are expected. For example,
-            // JavaScript code like `var name = 'Use::' + key;` may be
-            // misidentified as a passage reference to "Use::".
-            if let Some(ref behavior) = source.behavior {
+            // StyleInjection source passages.
+            if let Some(ref behavior) = diag_source.behavior {
                 if matches!(
                     behavior,
                     SpecialPassageBehavior::ScriptInjection
@@ -550,22 +557,18 @@ impl PassageGraph {
                 }
             }
 
-            // Defense-in-depth: skip targets containing "::". The `::`
-            // sequence is the Twee passage header prefix and never appears
-            // in real passage link targets. Any target with `::` is a
-            // JavaScript namespace accessor (e.g., `Use::Operation`) or
-            // string concatenation artifact (e.g., `'Use::' + key`).
-            if target.name.contains("::") {
+            // Skip targets containing "::".
+            if diag_target.name.contains("::") {
                 continue;
             }
 
             diagnostics.push(GraphDiagnostic {
-                passage_name: source.name.clone(),
-                file_uri: source.file_uri.clone(),
+                passage_name: diag_source.name.clone(),
+                file_uri: diag_source.file_uri.clone(),
                 kind: DiagnosticKind::BrokenLink,
                 message: format!(
                     "Link target '{}' not found in workspace",
-                    target.name
+                    diag_target.name
                 ),
             });
         }
@@ -625,12 +628,47 @@ impl PassageGraph {
         }
 
         while let Some(current) = queue.pop_front() {
-            for neighbor in self
-                .graph
-                .neighbors_directed(current, petgraph::Direction::Outgoing)
-            {
-                if reachable.insert(neighbor) {
-                    queue.push_back(neighbor);
+            // Follow Navigation edges in the outgoing direction (source → dest).
+            // Follow Include edges in the incoming direction (includer → included).
+            // Include edges are stored as included → includer, so "incoming"
+            // for the includer means "who do I include?".
+            //
+            // Upstream edges are followed outgoing (they connect lifecycle passages).
+            for edge_ref in self.graph.edges_directed(current, petgraph::Direction::Outgoing) {
+                let edge = edge_ref.weight();
+                let follow = match edge.edge_type {
+                    EdgeType::Navigation | EdgeType::Upstream => true,
+                    EdgeType::Include => false, // Include outgoing = included → includer, don't follow
+                    EdgeType::Broken => {
+                        // Follow broken edges that were Navigation (player would
+                        // navigate there if the target existed). Don't follow
+                        // broken Include edges (they were content injections).
+                        edge.pre_broken_type.unwrap_or(EdgeType::Navigation) == EdgeType::Navigation
+                    }
+                };
+                if follow {
+                    let neighbor = edge_ref.target();
+                    if reachable.insert(neighbor) {
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+            // Follow Include edges in the incoming direction.
+            // Include edges stored as included → includer, so for the includer
+            // (current), the incoming Include edges point FROM the included
+            // passages. We want to reach those included passages.
+            for edge_ref in self.graph.edges_directed(current, petgraph::Direction::Incoming) {
+                let edge = edge_ref.weight();
+                let follow = match edge.edge_type {
+                    EdgeType::Include => true, // incoming Include = "current includes this passage"
+                    EdgeType::Broken if edge.pre_broken_type == Some(EdgeType::Include) => true,
+                    _ => false,
+                };
+                if follow {
+                    let neighbor = edge_ref.source();
+                    if reachable.insert(neighbor) {
+                        queue.push_back(neighbor);
+                    }
                 }
             }
         }
@@ -898,6 +936,11 @@ impl PassageGraph {
     /// Return an iterator over all edge references in the graph.
     pub fn edge_references(&self) -> impl Iterator<Item = petgraph::graph::EdgeReference<'_, PassageEdge>> {
         self.graph.edge_references()
+    }
+
+    /// Get the name of the passage at a given node index.
+    pub fn node_name(&self, idx: petgraph::graph::NodeIndex) -> Option<&str> {
+        self.graph.node_weight(idx).map(|n| n.name.as_str())
     }
 
     /// Get the passage node data for a given name.

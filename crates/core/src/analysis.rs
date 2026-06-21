@@ -268,6 +268,10 @@ impl AnalysisEngine {
 
     /// Detect dead-end passages — passages with no outgoing links that are
     /// not special or metadata passages. These may be unintentional endings.
+    ///
+    /// Passages that are ONLY referenced via Include edges (data-passage,
+    /// <<include>>) are excluded — they're content fragments rendered by
+    /// other passages, not narrative destinations that need outgoing links.
     fn detect_dead_end_passages(workspace: &Workspace) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
 
@@ -276,7 +280,15 @@ impl AnalysisEngine {
                 if passage.is_metadata() || passage.is_special {
                     continue;
                 }
-                // Check if the passage has any outgoing links
+                // A passage is a "dead end" if it has no outgoing links
+                // (no Navigation edges to other passages) and no Include
+                // edges (it doesn't include content from other passages).
+                //
+                // Include edges are stored as included → includer, so an
+                // included passage has an OUTGOING Include edge (to the
+                // passage that includes it). This means content fragments
+                // like UIOutfitLabel (included by StoryInterface) will have
+                // an outgoing edge and won't be flagged as dead-end.
                 let has_outgoing = !passage.links.is_empty();
                 let has_graph_edges = !workspace.graph.outgoing_neighbors(&passage.name).is_empty();
 
