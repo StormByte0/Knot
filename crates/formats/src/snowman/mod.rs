@@ -1293,7 +1293,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let mut plugin = SnowmanPlugin::new();
+        let plugin = SnowmanPlugin::new();
         assert!(plugin.is_special_passage("Script"));
         assert!(plugin.is_special_passage("Style"));
         assert!(plugin.is_special_passage("PassageHeader"));

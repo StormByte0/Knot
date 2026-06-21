@@ -1450,7 +1450,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let mut plugin = HarlowePlugin::new();
+        let plugin = HarlowePlugin::new();
         // Name-matched passages: detected by passage name alone (no tags needed)
         assert!(plugin.is_special_passage("PassageHeader"));
         assert!(plugin.is_special_passage("PassageFooter"));
@@ -1923,7 +1923,7 @@ mod tests {
 
     #[test]
     fn classify_passage_tag_takes_priority_over_name() {
-        let mut plugin = HarlowePlugin::new();
+        let plugin = HarlowePlugin::new();
         // A passage named "PassageHeader" but tagged [startup] should
         // be classified by its TAG (startup) first per the Twee 3 spec,
         // not by its name (PassageHeader).

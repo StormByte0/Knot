@@ -11,7 +11,7 @@ use knot_core::graph::{DiagnosticKind, PassageEdge, PassageNode, PassageGraph};
 use knot_core::passage::StoryFormat;
 use knot_core::workspace::{StoryMetadata, Workspace};
 use knot_core::AnalysisEngine;
-use crate::plugin::{FormatRegistry, FormatPluginMut, SemanticToken, SemanticTokenType, SemanticTokenModifier};
+use crate::plugin::{FormatRegistry, FormatPluginMut, SemanticToken};
 use url::Url;
 
 /// Flatten `ParseResult::token_groups` into a single `Vec<SemanticToken>` with
@@ -134,7 +134,7 @@ fn workspace_with_metadata(format: StoryFormat, start: &str) -> Workspace {
 
 #[test]
 fn registry_contains_all_formats() {
-    let mut registry = FormatRegistry::with_defaults();
+    let registry = FormatRegistry::with_defaults();
     let formats = registry.formats();
     assert_eq!(formats.len(), 5, "Should have 5 format plugins (Core + 4 story formats)");
     assert!(formats.contains(&StoryFormat::Core));
@@ -146,7 +146,7 @@ fn registry_contains_all_formats() {
 
 #[test]
 fn registry_default_includes_core() {
-    let mut registry = FormatRegistry::default();
+    let registry = FormatRegistry::default();
     assert!(registry.get(&StoryFormat::Core).is_some(), "Core plugin should be registered");
     assert!(registry.get(&StoryFormat::SugarCube).is_some());
 }
@@ -730,7 +730,7 @@ fn sugarcube_body_token_positions() {
 
 #[test]
 fn test_semantic_token_positions_header() {
-    use crate::plugin::{FormatPlugin, SemanticTokenType};
+    use crate::plugin::SemanticTokenType;
     use crate::sugarcube::SugarCubePlugin;
     
     let mut plugin = SugarCubePlugin::new();
@@ -785,7 +785,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
     // Regression test: Headers without space after :: (e.g., ::Start instead
     // of :: Start) should have correct token positions. The name should start
     // at byte 2 (right after ::), not byte 3.
-    use crate::plugin::{FormatPlugin, SemanticTokenType};
+    use crate::plugin::SemanticTokenType;
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -848,7 +848,7 @@ fn sugarcube_no_space_after_colons_token_positions() {
 fn sugarcube_script_tag_token_positions() {
     // Regression test: Passages tagged [script] should have Tag tokens
     // with the TwineCore modifier.
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -886,7 +886,7 @@ fn sugarcube_script_tag_token_positions() {
 #[test]
 fn sugarcube_stylesheet_tag_token_positions() {
     // Regression test: Passages tagged [stylesheet] should have Tag tokens.
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -982,7 +982,7 @@ fn sugarcube_js_validation_stylesheet_no_js_diagnostics() {
 
 #[test]
 fn sugarcube_find_macro_at_position_on_name() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<<set $gold to 10>>";
 
     let result = plugin.find_macro_at_position(line, 3);
@@ -994,7 +994,7 @@ fn sugarcube_find_macro_at_position_on_name() {
 
 #[test]
 fn sugarcube_find_macro_at_position_on_args() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<<set $gold to 10>>";
 
     let result = plugin.find_macro_at_position(line, 8);
@@ -1004,7 +1004,7 @@ fn sugarcube_find_macro_at_position_on_args() {
 
 #[test]
 fn sugarcube_find_macro_at_position_close_tag() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<</if>>";
 
     let result = plugin.find_macro_at_position(line, 3);
@@ -1014,7 +1014,7 @@ fn sugarcube_find_macro_at_position_close_tag() {
 
 #[test]
 fn sugarcube_find_macro_at_position_unclosed() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     // A line with << that never closes — missing second >>
     let line = "<<if $x>";
 
@@ -1025,7 +1025,7 @@ fn sugarcube_find_macro_at_position_unclosed() {
 
 #[test]
 fn sugarcube_find_macro_at_position_no_macro() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "Just some text without macros.";
 
     let result = plugin.find_macro_at_position(line, 5);
@@ -1034,7 +1034,7 @@ fn sugarcube_find_macro_at_position_no_macro() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_if_block() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<<if $x>>content<</if>>";
 
     let events = plugin.scan_line_for_macro_events(line, 0);
@@ -1047,7 +1047,7 @@ fn sugarcube_scan_line_for_macro_events_if_block() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_else_modifier() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<<else>>";
 
     let events = plugin.scan_line_for_macro_events(line, 5);
@@ -1060,7 +1060,7 @@ fn sugarcube_scan_line_for_macro_events_else_modifier() {
 
 #[test]
 fn sugarcube_scan_line_for_macro_events_inline_not_folded() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
     let line = "<<set $x to 5>>";
 
     let events = plugin.scan_line_for_macro_events(line, 0);
@@ -1121,7 +1121,7 @@ fn sugarcube_resolve_dynamic_navigation_goto() {
 
     assert!(!resolved.is_empty(), "Should resolve dynamic navigation links");
     assert_eq!(resolved[0].target, "Forest", "Should resolve $dest to 'Forest'");
-    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should produce Jump edge");
+    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should produce Navigation edge");
 }
 
 #[test]
@@ -1215,7 +1215,7 @@ fn sugarcube_variable_tree_populated_after_parse() {
 #[test]
 fn sugarcube_variable_tree_property_tracking() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let props = plugin.variable_properties("$player");
     assert!(props.contains("name"), "Should track $player.name property");
@@ -1225,7 +1225,7 @@ fn sugarcube_variable_tree_property_tracking() {
 #[test]
 fn sugarcube_custom_macros_widget_registration() {
     let src = ":: MyWidgets [widget]\n<<widget myWidget>>Hello<</widget>>\n:: Start\n<<myWidget>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("myWidget"), "Widget should be registered as custom macro");
     let names = plugin.custom_macro_names();
@@ -1235,7 +1235,7 @@ fn sugarcube_custom_macros_widget_registration() {
 #[test]
 fn sugarcube_build_variable_tree_returns_nodes() {
     let src = ":: Start\n<<set $gold to 10>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let tree = plugin.build_variable_tree(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1253,7 +1253,7 @@ fn sugarcube_build_variable_tree_returns_nodes() {
 #[test]
 fn sugarcube_extract_passage_variable_refs() {
     let src = ":: Start\n<<set $gold to 10>>You have $gold.\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let refs = plugin.extract_passage_variable_refs(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1269,7 +1269,7 @@ fn sugarcube_extract_passage_variable_refs() {
 #[test]
 fn sugarcube_build_shape_aware_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let map = plugin.build_shape_aware_property_map(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1287,7 +1287,7 @@ fn sugarcube_build_shape_aware_property_map() {
 #[test]
 fn sugarcube_build_state_variable_registry() {
     let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let reg = plugin.build_state_variable_registry(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1348,7 +1348,7 @@ fn sugarcube_two_pass_script_before_normal() {
 #[test]
 fn sugarcube_script_passage_macro_add() {
     let src = ":: Scripts [script]\nMacro.add(\"customGreet\", {});\n:: Start\nHello.\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("customGreet"), "Macro.add in [script] should register custom macro");
 }
@@ -1371,7 +1371,7 @@ function registerMacros() {
 :: Start
 Hello.
 "#;
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("addTime"),
         "Macro.add('addTime') inside registerMacros() should be registered");
@@ -1396,7 +1396,7 @@ fn sugarcube_macro_add_inside_iife_is_discovered() {
 :: Start
 Hello.
 "#;
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("iifeMacro"),
         "Macro.add('iifeMacro') inside IIFE body should be registered");
@@ -1464,7 +1464,7 @@ fn sugarcube_empty_passage_body() {
 #[test]
 fn sugarcube_widget_tag_registration() {
     let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n<<widget farewell>>Bye!<</widget>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     assert!(plugin.is_custom_macro("greet"), "Widget 'greet' should be registered");
     assert!(plugin.is_custom_macro("farewell"), "Widget 'farewell' should be registered");
@@ -1473,7 +1473,7 @@ fn sugarcube_widget_tag_registration() {
 #[test]
 fn sugarcube_find_custom_macro_definition() {
     let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let def = plugin.find_custom_macro("greet");
     assert!(def.is_some(), "Should find 'greet' custom macro definition");
@@ -1484,7 +1484,7 @@ fn sugarcube_find_custom_macro_definition() {
 #[test]
 fn sugarcube_build_object_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.level to 5>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let map = plugin.build_object_property_map(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1499,7 +1499,7 @@ fn sugarcube_build_object_property_map() {
 #[test]
 fn sugarcube_special_passage_seeding() {
     let src = ":: StoryInit\n<<set $gold to 100>><<set $hp to 50>>\n:: Start\nYou have $gold.\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let reg = plugin.build_state_variable_registry(
         &Workspace::new(Url::parse("file:///project/").unwrap()),
@@ -1512,7 +1512,7 @@ fn sugarcube_special_passage_seeding() {
 #[test]
 fn sugarcube_temporary_variable_tracking() {
     let src = ":: Start\n<<for _i to 0; _i lt 5; _i++>><</for>>\n";
-    let (mut plugin, _) = sc_parse(src);
+    let (plugin, _) = sc_parse(src);
 
     let names = plugin.workspace_variable_names();
     assert!(names.contains("_i"), "Temporary variable _i should be tracked");
@@ -1586,7 +1586,7 @@ fn sugarcube_expression_macros() {
 
 #[test]
 fn sugarcube_detect_close_tag_context() {
-    let mut plugin = SugarCubePlugin::new();
+    let plugin = SugarCubePlugin::new();
 
     let ctx = plugin.detect_close_tag_context("some text <</");
     assert!(ctx.is_some(), "Should detect close tag context after <</");
@@ -1625,7 +1625,7 @@ fn did_open_storydata_with_sugarcube_format() {
     assert_eq!(format, StoryFormat::SugarCube);
 
     // Step 2: parse with format plugin (did_open line 58-59)
-    let (doc, parse_result) = parse_with_format_plugin_sim(&mut registry, &uri, src, format);
+    let (doc, _parse_result) = parse_with_format_plugin_sim(&mut registry, &uri, src, format);
 
     // Step 3: insert document (did_open line 77)
     workspace.insert_document(doc);
@@ -1970,7 +1970,7 @@ fn sugarcube_deprecated_macro_token_modifier() {
     // visually stable (always the base `macro` color + strikethrough if
     // deprecated), while the delimiters around it shift color to show
     // nesting depth. Both signals are visible simultaneously.
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2012,7 +2012,7 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
     //
     // Note: if <<link>> is used as a block macro (<<link "x">>...<</link>>),
     // it WOULD get a BlockDepth1 modifier — that's expected and correct.
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2032,7 +2032,7 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
 #[test]
 fn sugarcube_deprecated_macro_diagnostic() {
     // Deprecated macros should emit a Hint diagnostic with the deprecation message
-    use crate::plugin::{FormatPlugin, FormatDiagnosticSeverity};
+    use crate::plugin::FormatDiagnosticSeverity;
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2049,7 +2049,7 @@ fn sugarcube_deprecated_macro_diagnostic() {
 #[test]
 fn sugarcube_display_deprecated_diagnostic() {
     // <<display>> is deprecated — should get both Deprecated modifier and diagnostic
-    use crate::plugin::{FormatPlugin, FormatDiagnosticSeverity, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2073,7 +2073,7 @@ fn sugarcube_display_deprecated_diagnostic() {
 #[test]
 fn sugarcube_set_not_deprecated() {
     // <<set>> is NOT deprecated — no Deprecated modifier, no deprecation diagnostic
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2100,7 +2100,7 @@ fn sugarcube_set_not_deprecated() {
 fn sugarcube_capture_target_variable_definition_token() {
     // <<capture $target>> should emit a Variable token with Definition modifier
     // on the capture target variable ($target)
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2123,7 +2123,7 @@ fn sugarcube_for_loop_vars_tokens() {
     // <<for _i, $items>> should emit:
     //   - Variable+Definition for _i (the loop index, a write target)
     //   - Variable (no modifier) for $items (the iterated collection, a read)
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2155,7 +2155,7 @@ fn sugarcube_for_loop_vars_tokens() {
 fn sugarcube_for_c_style_no_phase5_tokens() {
     // C-style <<for _i to 0; _i lt 10; _i++>> should NOT emit Phase 5
     // for_loop_vars tokens (it falls through to JS annotation pass).
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2179,7 +2179,7 @@ fn sugarcube_for_c_style_no_phase5_tokens() {
 #[test]
 fn sugarcube_widget_definition_name_token() {
     // <<widget myHelper>> should emit a Function+Definition token for "myHelper"
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2200,7 +2200,7 @@ fn sugarcube_widget_definition_name_token() {
 #[test]
 fn sugarcube_capture_temp_variable_token() {
     // <<capture _temp>> should emit a Variable+Definition token for _temp
-    use crate::plugin::{FormatPlugin, SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2226,7 +2226,7 @@ fn sugarcube_link_requires_close_tag() {
     // <<link "Go" "Room">> without close tag SHOULD produce an error.
     // Since <<link>> is a Container macro, it always requires <</link>>.
     use crate::sugarcube::SugarCubePlugin;
-    use crate::plugin::FormatPlugin;
+    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<link \"Go\" \"Room\">>After\n:: Room\nHello\n";
@@ -2245,7 +2245,7 @@ fn sugarcube_link_requires_close_tag() {
 fn sugarcube_link_block_with_close_tag() {
     // <<link "Go">>Clicked!<</link>> — block form with close tag
     use crate::sugarcube::SugarCubePlugin;
-    use crate::plugin::FormatPlugin;
+    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<link \"Go\">>Clicked!<</link>>\n";
@@ -2264,7 +2264,7 @@ fn sugarcube_button_requires_close_tag() {
     // <<button "Go" "Room">> without close tag SHOULD produce an error.
     // Since <<button>> is a Container macro, it always requires <</button>>.
     use crate::sugarcube::SugarCubePlugin;
-    use crate::plugin::FormatPlugin;
+    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<button \"Go\" \"Room\">>After\n:: Room\nHello\n";

@@ -14,9 +14,8 @@ use crate::sugarcube::parser;
 /// is `None` (which should be rare after the rewrite).
 ///
 /// SugarCube-specific edge classification rules:
-/// - `<<widget_name>>` → `Call` (widget invocation — checks CustomMacroRegistry)
 /// - `<<include>>` → `Include` (passage inclusion)
-/// - `<<goto>>` → `Jump` (unconditional navigation)
+/// - `<<goto>>` → `Navigation` (unconditional navigation)
 /// - `<<link>>` / `<<button>>` → `Navigation` (player choice)
 /// - `[[link]]` → `Navigation` (default — player choice)
 pub fn classify_edge_impl(
@@ -24,15 +23,6 @@ pub fn classify_edge_impl(
     _display_text: Option<&str>,
     target: &str,
 ) -> Option<knot_core::graph::EdgeType> {
-    // Check if the target is a known custom widget (→ Call edge)
-    // This handles the case where a widget invocation like <<myWidget>>
-    // doesn't produce a LinkInfo at parse time but the graph needs a
-    // Call edge classification.
-    // NOTE: The custom_macros registry is not accessible here (static function),
-    // so we check the passage body for widget-like macro invocations.
-    // The primary mechanism for widget Call edges should be added to
-    // the parse pipeline via the custom macro registry.
-
     // Check if the target is referenced by a navigation macro
     for block in &source_passage.body {
         if let Block::Macro { name, args, .. } = block {

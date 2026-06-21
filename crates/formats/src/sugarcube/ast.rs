@@ -392,7 +392,7 @@ pub enum LinkKind {
 pub enum LinkSource {
     /// Standard `[[ ]]` passage link — Navigation edge type.
     PassageLink,
-    /// `<<goto>>` macro — Jump edge type (unconditional redirect).
+    /// `<<goto>>` macro — Navigation edge type (unconditional redirect).
     Goto,
     /// `<<include>>` macro — Include edge type (passage inclusion).
     Include,
@@ -406,7 +406,7 @@ pub enum LinkSource {
     Back,
     /// `data-passage` HTML attribute — Navigation edge type.
     DataPassage,
-    /// Widget invocation (`<<myWidget>>`) — Call edge type.
+    /// Widget invocation (`<<myWidget>>`) — Navigation edge type.
     /// Detected post-parse by checking the custom macro registry.
     WidgetCall,
 }

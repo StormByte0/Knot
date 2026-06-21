@@ -5,11 +5,49 @@
 //! Depends on the catalog and classifiers modules.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 use crate::types::{MacroDef, MacroSignature};
 
 use super::catalog::builtin_macros;
 use super::classifiers::{label_then_passage_macros, passage_arg_macro_names};
+
+// ── Static caches for hot-path lookups ─────────────────────────────────────
+// These are built once and reused across all calls. Without LazyLock, every
+// call to deprecated_macros(), find_macro(), etc. would rebuild a fresh
+// HashMap or scan the full catalog — called per-token in the token builder
+// and per-macro in the tree builder.
+
+static MACRO_INDEX: LazyLock<HashMap<&'static str, &'static MacroDef>> = LazyLock::new(|| {
+    builtin_macros().iter().map(|m| (m.name, m)).collect()
+});
+
+static DEPRECATED_MACROS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    builtin_macros()
+        .iter()
+        .filter(|m| m.deprecated)
+        .map(|m| {
+            let msg = m.deprecation_message.unwrap_or(m.description);
+            (m.name, msg)
+        })
+        .collect()
+});
+
+static KNOWN_MACRO_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    builtin_macros().iter().map(|m| m.name).collect()
+});
+
+static STRUCTURAL_CONSTRAINTS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> = LazyLock::new(|| {
+    let mut map: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    map.insert("elseif", ["if", "elseif"].into_iter().collect());
+    map.insert("else", ["if"].into_iter().collect());
+    map.insert("break", ["for"].into_iter().collect());
+    map.insert("continue", ["for"].into_iter().collect());
+    map.insert("case", ["switch"].into_iter().collect());
+    map.insert("default", ["switch"].into_iter().collect());
+    map.insert("stop", ["timed", "repeat"].into_iter().collect());
+    map
+});
 
 /// Built-in SugarCube macro signatures (legacy compat layer).
 ///
@@ -43,8 +81,9 @@ pub fn sugarcube_macro_signatures() -> Vec<MacroSignature> {
 /// Find a macro definition by name.
 ///
 /// Returns `None` if no builtin macro with the given name exists.
+/// Uses a static HashMap index — O(1) lookup instead of linear scan.
 pub fn find_macro(name: &str) -> Option<&'static MacroDef> {
-    builtin_macros().iter().find(|m| m.name == name)
+    MACRO_INDEX.get(name).copied()
 }
 
 /// Get the passage argument index for a given macro and arg count.
@@ -73,16 +112,8 @@ pub fn get_passage_arg_index(macro_name: &str, arg_count: usize) -> i32 {
 /// - `break`/`continue` must be inside `for`
 /// - `case`/`default` must be inside `switch`
 /// - `stop` must be inside `timed` or `repeat`
-pub fn structural_constraints() -> HashMap<&'static str, HashSet<&'static str>> {
-    let mut map: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
-    map.insert("elseif", ["if", "elseif"].into_iter().collect());
-    map.insert("else", ["if"].into_iter().collect());
-    map.insert("break", ["for"].into_iter().collect());
-    map.insert("continue", ["for"].into_iter().collect());
-    map.insert("case", ["switch"].into_iter().collect());
-    map.insert("default", ["switch"].into_iter().collect());
-    map.insert("stop", ["timed", "repeat"].into_iter().collect());
-    map
+pub fn structural_constraints() -> &'static HashMap<&'static str, HashSet<&'static str>> {
+    &STRUCTURAL_CONSTRAINTS
 }
 
 /// Deprecated macro names and their deprecation messages.
@@ -91,24 +122,14 @@ pub fn structural_constraints() -> HashMap<&'static str, HashSet<&'static str>> 
 /// fields — the catalog is the single source of truth. If a macro is marked
 /// deprecated in the catalog but lacks a `deprecation_message`, its
 /// description is used as a fallback.
-pub fn deprecated_macros() -> HashMap<&'static str, &'static str> {
-    builtin_macros()
-        .iter()
-        .filter(|m| m.deprecated)
-        .map(|m| {
-            let msg = m.deprecation_message.unwrap_or(m.description);
-            (m.name, msg)
-        })
-        .collect()
+pub fn deprecated_macros() -> &'static HashMap<&'static str, &'static str> {
+    &DEPRECATED_MACROS
 }
 
 /// Known macro names (all builtins). Used for unknown-macro detection.
 ///
 /// Derived from the macro catalog — the catalog is the single source of truth.
 /// If a macro is added to the catalog, it automatically appears here.
-pub fn known_macro_names() -> HashSet<&'static str> {
-    builtin_macros()
-        .iter()
-        .map(|m| m.name)
-        .collect()
+pub fn known_macro_names() -> &'static HashSet<&'static str> {
+    &KNOWN_MACRO_NAMES
 }

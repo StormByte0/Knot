@@ -917,6 +917,26 @@ impl PassageGraph {
         }
     }
 
+    /// Check if a passage has any outgoing edges. Faster than
+    /// `outgoing_neighbors().is_empty()` — no allocation.
+    pub fn has_outgoing(&self, name: &str) -> bool {
+        self.name_to_idx.get(name).is_some_and(|&idx| {
+            self.graph
+                .neighbors_directed(idx, petgraph::Direction::Outgoing)
+                .next()
+                .is_some()
+        })
+    }
+
+    /// Count outgoing edges. Faster than `outgoing_neighbors().len()` — no allocation.
+    pub fn outgoing_count(&self, name: &str) -> usize {
+        self.name_to_idx.get(name).map_or(0, |&idx| {
+            self.graph
+                .neighbors_directed(idx, petgraph::Direction::Outgoing)
+                .count()
+        })
+    }
+
     /// Get the names of all passages that link to this passage (incoming neighbors).
     pub fn incoming_neighbors(&self, name: &str) -> Vec<String> {
         if let Some(&idx) = self.name_to_idx.get(name) {
@@ -927,6 +947,17 @@ impl PassageGraph {
         } else {
             Vec::new()
         }
+    }
+
+    /// Check if a passage has any incoming edges. Faster than
+    /// `incoming_neighbors().is_empty()` — no allocation.
+    pub fn has_incoming(&self, name: &str) -> bool {
+        self.name_to_idx.get(name).is_some_and(|&idx| {
+            self.graph
+                .neighbors_directed(idx, petgraph::Direction::Incoming)
+                .next()
+                .is_some()
+        })
     }
 
     /// Get all passage names in the graph.

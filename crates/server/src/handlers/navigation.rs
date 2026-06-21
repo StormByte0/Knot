@@ -1909,7 +1909,7 @@ mod goto_definition_tests {
         let call_idx = src[a_idx..].find("myFunc").unwrap() + a_idx;
         let position = helpers::byte_offset_to_position(src, call_idx);
 
-        let (range, placeholder) = rename_range_at_cursor(&inner, &uri, position)
+        let (_range, placeholder) = rename_range_at_cursor(&inner, &uri, position)
             .expect("prepare_rename should succeed for a function");
         assert_eq!(placeholder, "myFunc");
 
@@ -1943,7 +1943,7 @@ mod goto_definition_tests {
         let inv_idx = src[start_idx..].find("?pirate").unwrap() + start_idx + 1; // +1 to skip `?`
         let position = helpers::byte_offset_to_position(src, inv_idx);
 
-        let (range, placeholder) = rename_range_at_cursor(&inner, &uri, position)
+        let (_range, placeholder) = rename_range_at_cursor(&inner, &uri, position)
             .expect("prepare_rename should succeed for a template");
         assert_eq!(placeholder, "pirate");
 

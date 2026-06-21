@@ -71,9 +71,11 @@ pub fn graph_surgery(
         graph.remove_edges_from(name);
     }
 
-    // Add new passages and re-add edges for modified passages
+    // Add new passages and re-add edges for modified passages.
+    // Every passage in new_passages is either added (not in old) or modified
+    // (in both), so we process all of them. The added/modified Vecs are used
+    // for the UpdateResult return value, not for filtering here.
     for passage in new_passages {
-        if added.contains(&passage.name) || modified.contains(&passage.name) {
             // Add/update the node with the correct file URI
             let node = PassageNode {
                 name: passage.name.clone(),
@@ -91,7 +93,6 @@ pub fn graph_surgery(
             for link in &passage.links {
                 let target_exists = graph.contains_passage(&link.target);
                 let (edge_type, pre_broken_type) = if !target_exists {
-                    // Save the hint so recheck_broken_links can restore it later
                     let would_be = link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation);
                     (crate::graph::EdgeType::Broken, Some(would_be))
                 } else {
@@ -102,16 +103,8 @@ pub fn graph_surgery(
                     edge_type,
                     pre_broken_type,
                 };
-                // For Include edges, swap direction: included → includer
-                // (data flow direction). See rebuild_graph in helpers/graph.rs.
-                let is_include = edge_type == crate::graph::EdgeType::Include
-                    || (edge_type == crate::graph::EdgeType::Broken
-                        && pre_broken_type == Some(crate::graph::EdgeType::Include));
-                if is_include {
-                    graph.add_edge(&link.target, &passage.name, edge);
-                } else {
-                    graph.add_edge(&passage.name, &link.target, edge);
-                }
+                // All edges go source → target (including Include).
+                graph.add_edge(&passage.name, &link.target, edge);
             }
 
             // Re-add extra edges (dynamic navigation links) for this passage
@@ -129,18 +122,9 @@ pub fn graph_surgery(
                         edge_type,
                         pre_broken_type,
                     };
-                    // For Include edges, swap direction: included → includer
-                    let is_include = edge_type == EdgeType::Include
-                        || (edge_type == EdgeType::Broken
-                            && pre_broken_type == Some(EdgeType::Include));
-                    if is_include {
-                        graph.add_edge(target, source, edge);
-                    } else {
-                        graph.add_edge(source, target, edge);
-                    }
+                    graph.add_edge(source, target, edge);
                 }
             }
-        }
     }
 
     UpdateResult {

@@ -826,7 +826,7 @@ mod tests {
         //   - `<<` at offset 0, length 2
         //   - `>>` at offset 14, length 2
         // Both with no modifier (inline macro, not deprecated).
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::SemanticTokenType;
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
@@ -1051,7 +1051,7 @@ mod tests {
         // should still get `None` for its modifier — no enclosing block to
         // inherit depth from. This guards against the fix above over-applying
         // depth modifiers to top-level inline macros.
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::SemanticTokenType;
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 

@@ -2008,7 +2008,7 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
 mod expr_macro_hover_tests {
     use super::*;
     use knot_formats::sugarcube::SugarCubePlugin;
-    use knot_formats::plugin::FormatPlugin;
+    
     use knot_formats::FormatPluginMut;
     use url::Url;
 
@@ -2172,7 +2172,7 @@ mod expr_macro_hover_tests {
 mod prose_hover_tests {
     use super::*;
     use knot_formats::sugarcube::SugarCubePlugin;
-    use knot_formats::plugin::FormatPlugin;
+    
     use knot_formats::FormatPluginMut;
     use url::Url;
 
@@ -2330,7 +2330,7 @@ mod prose_hover_tests {
         // `Template.add("greeting", ...)`. Then test hover on `?greeting`
         // in a separate passage.
         let src = ":: StoryInit\n<<run Template.add(\"greeting\", function() { return \"Hello\"; })>>\n:: Start\nYou see ?greeting friend.";
-        let (doc, plugin) = parse(src);
+        let (_doc, plugin) = parse(src);
         // Cursor on `g` of `?greeting` in the Start passage.
         let cursor_offset = src.find("?greeting").unwrap() + 1;
         let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();
@@ -2355,7 +2355,7 @@ mod prose_hover_tests {
     #[test]
     fn hover_fires_on_template_question_mark_prefix() {
         let src = ":: StoryInit\n<<run Template.add(\"greeting\", function() { return \"Hello\"; })>>\n:: Start\nYou see ?greeting friend.";
-        let (doc, plugin) = parse(src);
+        let (_doc, plugin) = parse(src);
         // Cursor ON the `?` of `?greeting`.
         let cursor_offset = src.find("?greeting").unwrap();
         let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();

@@ -303,7 +303,7 @@ impl AnalysisEngine {
                     continue;
                 }
                 let has_outgoing = !passage.links.is_empty();
-                let has_graph_edges = !workspace.graph.outgoing_neighbors(&passage.name).is_empty();
+                let has_graph_edges = workspace.graph.has_outgoing(&passage.name);
 
                 if !has_outgoing && !has_graph_edges {
                     diagnostics.push(GraphDiagnostic {
@@ -402,7 +402,7 @@ impl AnalysisEngine {
                 }
 
                 let outgoing_count = passage.links.len();
-                let graph_outgoing = workspace.graph.outgoing_neighbors(&passage.name).len();
+                let graph_outgoing = workspace.graph.outgoing_count(&passage.name);
                 let total_outgoing = outgoing_count.max(graph_outgoing);
 
                 if total_outgoing > complexity_threshold {
@@ -499,7 +499,7 @@ impl AnalysisEngine {
         }
 
         let has_outgoing = !start_p.links.is_empty()
-            || !workspace.graph.outgoing_neighbors(start_passage).is_empty();
+            || workspace.graph.has_outgoing(start_passage);
 
         if !has_outgoing {
             diagnostics.push(GraphDiagnostic {

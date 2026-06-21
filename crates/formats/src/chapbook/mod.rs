@@ -1148,7 +1148,7 @@ mod tests {
 
     #[test]
     fn detect_special_passages() {
-        let mut plugin = ChapbookPlugin::new();
+        let plugin = ChapbookPlugin::new();
         assert!(plugin.is_special_passage("look"));
         assert!(plugin.is_special_passage("PassageHeader"));
         assert!(plugin.is_special_passage("PassageFooter"));
