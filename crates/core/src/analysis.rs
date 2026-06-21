@@ -322,7 +322,13 @@ impl AnalysisEngine {
         diagnostics
     }
 
-    /// Detect passages with invalid names (containing problematic characters).
+    /// Detect passages with invalid names (containing characters that break
+    /// Twine link syntax).
+    ///
+    /// Twine passage names are permissive — spaces, unicode, hyphens,
+    /// underscores, and most punctuation are allowed. Only characters that
+    /// directly conflict with link syntax (`[[ ]]`, `|`, `->`, `<-`) are
+    /// flagged.
     fn detect_invalid_passage_names(workspace: &Workspace) -> Vec<GraphDiagnostic> {
         let mut diagnostics = Vec::new();
 
@@ -333,7 +339,8 @@ impl AnalysisEngine {
                 }
                 let name = &passage.name;
 
-                // Check for leading/trailing whitespace
+                // Leading/trailing whitespace — causes subtle issues with
+                // name matching and is almost always unintentional.
                 if name != name.trim() {
                     diagnostics.push(GraphDiagnostic {
                         passage_name: name.clone(),
@@ -344,37 +351,36 @@ impl AnalysisEngine {
                             name
                         ),
                     });
-                    continue;
                 }
 
-                // Check for multiple consecutive spaces
-                if name.contains("  ") {
+                // Characters that break link syntax:
+                // - `[` and `]` — conflict with [[ ]] link delimiters
+                // - `|` — conflict with [[label|target]] pipe syntax
+                // - `->` — conflict with [[label->target]] arrow syntax
+                // - `<-` — conflict with [[target<-label]] reverse arrow
+                let has_brackets = name.contains('[') || name.contains(']');
+                let has_pipe = name.contains('|');
+                let has_arrow = name.contains("->") || name.contains("<-");
+
+                if has_brackets || has_pipe || has_arrow {
+                    let issues: Vec<&str> = [
+                        ("brackets", has_brackets),
+                        ("pipe (|)", has_pipe),
+                        ("arrow (-> or <-)", has_arrow),
+                    ]
+                    .iter()
+                    .filter(|(_, f)| *f)
+                    .map(|(s, _)| *s)
+                    .collect();
+
                     diagnostics.push(GraphDiagnostic {
                         passage_name: name.clone(),
                         file_uri: doc.uri.to_string(),
                         kind: DiagnosticKind::InvalidPassageName,
                         message: format!(
-                            "Passage name '{}' contains consecutive spaces",
-                            name
-                        ),
-                    });
-                    continue;
-                }
-
-                // Check for special characters that may cause issues
-                // (but allow standard characters including unicode, hyphens, underscores, etc.)
-                let has_problematic_chars = name.chars().any(|c| {
-                    matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '#' | '@' | ';')
-                });
-
-                if has_problematic_chars {
-                    diagnostics.push(GraphDiagnostic {
-                        passage_name: name.clone(),
-                        file_uri: doc.uri.to_string(),
-                        kind: DiagnosticKind::InvalidPassageName,
-                        message: format!(
-                            "Passage name '{}' contains characters that may cause linking issues (: / \\ * ? \" < > | # @ ;)",
-                            name
+                            "Passage name '{}' contains {} that may cause linking issues",
+                            name,
+                            issues.join(", ")
                         ),
                     });
                 }
