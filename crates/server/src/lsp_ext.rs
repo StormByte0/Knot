@@ -77,6 +77,14 @@ pub struct KnotGraphNode {
     /// Node color from passage header metadata (hex or named).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Node width from passage header metadata (Twine size convention).
+    /// When present, the webview uses this instead of the default node width.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_w: Option<f64>,
+    /// Node height from passage header metadata (Twine size convention).
+    /// When present, the webview uses this instead of the default node height.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_h: Option<f64>,
 }
 
 /// A directed edge (link) between two passages.

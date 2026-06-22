@@ -27,6 +27,8 @@ export interface KnotGraphNode {
   position_y?: number;
   group?: string;
   color?: string;
+  size_w?: number;
+  size_h?: number;
   var_writes: string[];
   var_reads: string[];
 }
@@ -108,10 +110,13 @@ export interface PassageNodeData extends Record<string, unknown> {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
-  /** Computed rendering color (display only — never written back to metadata). */
+  is_dead_end: boolean;
   color: string;
-  /** Color from passage metadata (may be undefined). Only this is written back. */
   metadata_color?: string;
+  /** Node width from passage metadata (Twine size convention). */
+  size_w?: number;
+  /** Node height from passage metadata (Twine size convention). */
+  size_h?: number;
   var_writes: string[];
   var_reads: string[];
   group?: string;

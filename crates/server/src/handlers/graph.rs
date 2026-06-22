@@ -86,6 +86,8 @@ impl ServerState {
             std::collections::HashMap::new();
         let mut passage_colors: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        let mut passage_sizes: std::collections::HashMap<String, (f64, f64)> =
+            std::collections::HashMap::new();
 
         for doc in inner.workspace.documents() {
             for passage in &doc.passages {
@@ -98,7 +100,7 @@ impl ServerState {
                         let name = helpers::parse_passage_name_from_header(&line[2..]);
                         passage_lines.insert(name.clone(), line_num as u32);
                         // Try to extract metadata from the header line's JSON block
-                        // Twee 3 format: :: Passage Name [tags] {"position":"x,y","group":"G","color":"#ff6600"}
+                        // Twee 3 format: :: Passage Name [tags] {"position":"x,y","group":"G","color":"#ff6600","size":"w,h"}
                         if let Some(meta) = helpers::parse_passage_metadata_from_header(line) {
                             if let Some(pos) = meta.position {
                                 passage_positions.insert(name.clone(), pos);
@@ -108,6 +110,9 @@ impl ServerState {
                             }
                             if let Some(color) = meta.color {
                                 passage_colors.insert(name.clone(), color);
+                            }
+                            if let Some(size) = meta.size {
+                                passage_sizes.insert(name.clone(), size);
                             }
                         }
                     }
@@ -174,24 +179,29 @@ impl ServerState {
         let nodes: Vec<KnotGraphNode> = export
             .nodes
             .into_iter()
-            .map(|n| KnotGraphNode {
-                id: n.id,
-                label: n.label.clone(),
-                file: n.file.clone(),
-                line: passage_lines.get(&n.label).copied().unwrap_or(0),
-                tags: n.tags,
-                out_degree: n.out_degree,
-                in_degree: n.in_degree,
-                is_special: n.is_special,
-                is_metadata: n.is_metadata,
-                is_unreachable: n.is_unreachable,
-                is_start: n.label == start_passage,
-                position_x: n.position.map(|(x, _)| x),
-                position_y: n.position.map(|(_, y)| y),
-                group: n.group,
-                color: n.color,
-                var_writes: n.var_writes,
-                var_reads: n.var_reads,
+            .map(|n| {
+                let size = passage_sizes.get(&n.label);
+                KnotGraphNode {
+                    id: n.id,
+                    label: n.label.clone(),
+                    file: n.file.clone(),
+                    line: passage_lines.get(&n.label).copied().unwrap_or(0),
+                    tags: n.tags,
+                    out_degree: n.out_degree,
+                    in_degree: n.in_degree,
+                    is_special: n.is_special,
+                    is_metadata: n.is_metadata,
+                    is_unreachable: n.is_unreachable,
+                    is_start: n.label == start_passage,
+                    position_x: n.position.map(|(x, _)| x),
+                    position_y: n.position.map(|(_, y)| y),
+                    group: n.group,
+                    color: n.color,
+                    size_w: size.map(|(w, _)| *w),
+                    size_h: size.map(|(_, h)| *h),
+                    var_writes: n.var_writes,
+                    var_reads: n.var_reads,
+                }
             })
             .collect();
 

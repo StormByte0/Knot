@@ -241,6 +241,7 @@ pub(crate) struct PassageMetadata {
     pub position: Option<(f64, f64)>,
     pub group: Option<String>,
     pub color: Option<String>,
+    pub size: Option<(f64, f64)>,
 }
 
 /// Parse all known metadata properties from a passage header line's JSON block.
@@ -294,10 +295,41 @@ pub(crate) fn parse_passage_metadata_from_header(line: &str) -> Option<PassageMe
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Extract size (Twine convention: "size":"w,h" string, or {"width":w,"height":h} object)
+    let size = {
+        // Try "size" as a string "w,h"
+        if let Some(size_str) = json_val.get("size").and_then(|v| v.as_str()) {
+            let parts: Vec<&str> = size_str.split(',').collect();
+            if parts.len() == 2 {
+                let w = parts[0].trim().parse::<f64>().ok()?;
+                let h = parts[1].trim().parse::<f64>().ok()?;
+                Some((w, h))
+            } else {
+                None
+            }
+        }
+        // Try "size" as a JSON object {"width":...,"height":...}
+        else if let Some(size_obj) = json_val.get("size").and_then(|v| v.as_object()) {
+            let w = size_obj.get("width").and_then(|v| v.as_f64())?;
+            let h = size_obj.get("height").and_then(|v| v.as_f64())?;
+            Some((w, h))
+        }
+        // Also try separate "width"/"height" fields (some Twee editors use these)
+        else if let (Some(w), Some(h)) = (
+            json_val.get("width").and_then(|v| v.as_f64()),
+            json_val.get("height").and_then(|v| v.as_f64()),
+        ) {
+            Some((w, h))
+        } else {
+            None
+        }
+    };
+
     Some(PassageMetadata {
         position,
         group,
         color,
+        size,
     })
 }
 

@@ -145,15 +145,33 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
     d.is_special     && 'pn--special',
     d.is_metadata    && 'pn--metadata',
     d.is_unreachable && 'pn--unreachable',
+    d.is_dead_end    && 'pn--dead-end',
     d.highlighted    && 'pn--highlighted',
     d.dimmed         && 'pn--dimmed',
     d.focused        && 'pn--focused',
   ].filter(Boolean).join(' ');
 
+  // Apply custom size from passage metadata (Twine size convention).
+  // Fall back to the CSS defaults (--node-w / --node-h) when not set.
+  const style: React.CSSProperties = { '--node-color': color } as React.CSSProperties;
+  if (d.size_w != null) {
+    style.width = `${d.size_w}px`;
+    style.minWidth = `${d.size_w}px`;
+  }
+  if (d.size_h != null) {
+    style.height = `${d.size_h}px`;
+    style.minHeight = `${d.size_h}px`;
+  }
+
+  // Adjust label max-width based on node width
+  const labelStyle: React.CSSProperties | undefined = (d.size_w != null)
+    ? { maxWidth: `${d.size_w - 30}px` }
+    : undefined;
+
   return (
-    <div className={cls} style={{ '--node-color': color } as React.CSSProperties}>
+    <div className={cls} style={style}>
       <Handle type="target" position={Position.Top}    className="pn__handle" />
-      <span className="pn__label" title={d.label}>{d.label}</span>
+      <span className="pn__label" title={d.label} style={labelStyle}>{d.label}</span>
       {d.tags?.length > 0 && (
         <span className="pn__tag-count" title={d.tags.join(', ')}>
           {d.tags.length}
@@ -204,6 +222,7 @@ function makeNodeGeometrySelector(
 interface StraightEdgeData {
   edgeKind: 'navigation' | 'upstream' | 'broken' | 'jump' | 'call' | 'include';
   offsetPx: number;
+  displayText?: string;
 }
 
 const ARROW_PULLBACK = 5;
@@ -216,7 +235,8 @@ function StraightEdge({
   data,
   markerEnd,
 }: EdgeProps) {
-  const { edgeKind = 'navigation', offsetPx = 0 } = (data ?? {}) as unknown as StraightEdgeData;
+  const { edgeKind = 'navigation', offsetPx = 0, displayText } = (data ?? {}) as unknown as StraightEdgeData;
+  const [hovered, setHovered] = useState(false);
 
   const sourceSelector = useCallback(
     (s: ReactFlowState) => makeNodeGeometrySelector(source, s),
@@ -292,17 +312,56 @@ function StraightEdge({
     opacity = 0.60;
   }
 
+  // Boost opacity on hover
+  if (hovered) opacity = Math.min(opacity + 0.25, 1.0);
+
+  // Compute midpoint for label
+  const midX = (sx + tx) / 2;
+  const midY = (sy + ty) / 2;
+
   return (
-    <path
-      id={id}
-      d={path}
-      fill="none"
-      stroke={stroke}
-      strokeWidth={1.5}
-      strokeDasharray={strokeDash || undefined}
-      opacity={opacity}
-      markerEnd={markerEnd}
-    />
+    <>
+      <path
+        id={id}
+        d={path}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={hovered ? 2.5 : 1.5}
+        strokeDasharray={strokeDash || undefined}
+        opacity={opacity}
+        markerEnd={markerEnd}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+      />
+      {/* Invisible wider hit area for easier hovering */}
+      <path
+        d={path}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={12}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{ pointerEvents: 'stroke' }}
+      />
+      {/* Label on hover */}
+      {hovered && displayText && (
+        <text
+          x={midX}
+          y={midY - 6}
+          textAnchor="middle"
+          className="edge-label"
+          style={{
+            fill: 'var(--fg, #c8ccd4)',
+            fontSize: '10px',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        >
+          {displayText.length > 30 ? displayText.slice(0, 28) + '…' : displayText}
+        </text>
+      )}
+    </>
   );
 }
 
@@ -399,13 +458,12 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
   function makePassageNode(n: KnotGraphNode, x: number, y: number): Node<PassageNodeData> {
     const groupId = childToGroup.get(n.id);
+    const isDeadEnd =
+      (n.out_degree || 0) === 0 &&
+      !n.is_start && !n.is_special && !n.is_metadata && !n.is_unreachable;
     return {
       id: n.id,
       type: 'passage',
-      // FIX: when a node has a parentId, React Flow treats its position as
-      // relative to the parent. We do NOT set parentId here to keep all
-      // passage coordinates in the global canvas frame, which is also what
-      // the Rust server stores and what saveAllPositions writes back.
       position: { x: snap(x), y: snap(y) },
       data: {
         label: n.label,
@@ -418,8 +476,11 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         is_metadata: !!n.is_metadata,
         is_unreachable: !!n.is_unreachable,
         is_start: !!n.is_start,
+        is_dead_end: isDeadEnd,
         color: nodeColor(n),
         metadata_color: n.color,
+        size_w: n.size_w,
+        size_h: n.size_h,
         var_writes: n.var_writes || [],
         var_reads: n.var_reads || [],
         group: groupId,
@@ -427,7 +488,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         highlighted: false,
         focused: false,
       },
-      // NOTE: parentId intentionally omitted — see comment above.
     };
   }
 
@@ -631,12 +691,21 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       edgeKind === 'call'     ? COLORS.edgeCall    :
       edgeKind === 'include'  ? COLORS.edgeInclude : COLORS.edgeNav;
 
+    // Include edges represent content flowing FROM the included passage INTO
+    // the including passage. In Twine's convention, the arrow points backward
+    // (from the included passage to the includer) to show "content is pulled
+    // in here." We achieve this by swapping source/target so the arrow
+    // naturally points from the included passage back to the includer.
+    const isInclude = edgeKind === 'include';
+    const edgeSource = isInclude ? e.target : e.source;
+    const edgeTarget = isInclude ? e.source : e.target;
+
     rfEdges.push({
       id: eid,
-      source: e.source,
-      target: e.target,
+      source: edgeSource,
+      target: edgeTarget,
       type: 'straight',
-      data: { edgeKind, offsetPx } as unknown as Record<string, unknown>,
+      data: { edgeKind, offsetPx, displayText: e.display_text } as unknown as Record<string, unknown>,
       markerEnd: {
         type: MarkerType.Arrow,
         color: markerColor,
@@ -661,12 +730,22 @@ interface TooltipState {
 function NodeTooltip({ tip }: { tip: TooltipState | null }) {
   if (!tip) return null;
   const d = tip.data;
+
+  // Build a simple type label for the tooltip
+  const typeLabel = d.is_start ? 'Start passage' :
+    d.is_metadata ? 'Metadata' :
+    d.is_special ? 'Special' :
+    d.is_unreachable ? 'Unreachable' :
+    d.is_dead_end ? 'Dead end' :
+    'Passage';
+
   return (
     <div
       className="node-tooltip"
       style={{ left: tip.x + 14, top: tip.y - 8 }}
     >
       <div className="node-tooltip__name">{d.label}</div>
+      <div className="node-tooltip__type">{typeLabel}</div>
       {d.tags?.length > 0 && (
         <div className="node-tooltip__row">
           <span className="node-tooltip__key">tags</span>
@@ -705,6 +784,7 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
 interface StoryMapInnerProps {
   graphData: KnotGraphResponse | null;
   searchQuery: string;
+  selectedTags: Set<string>;
   fitRequested: number;
   saveRequested: number;
   focusRequested: number;
@@ -715,6 +795,7 @@ interface StoryMapInnerProps {
 function StoryMapInner({
   graphData,
   searchQuery,
+  selectedTags,
   fitRequested,
   saveRequested,
   focusRequested,
@@ -789,20 +870,32 @@ function StoryMapInner({
     }
   }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport]);
 
-  // ── Search filter ──────────────────────────────────────────────────────
+  // ── Search + tag filter ─────────────────────────────────────────────
 
   useEffect(() => {
     const q = searchQuery.toLowerCase().trim();
+    const hasTags = selectedTags.size > 0;
+    const hasFilter = q !== '' || hasTags;
 
     const matchIds = new Set<string>();
-    if (q !== '') {
+    if (hasFilter) {
       for (const n of nodesRef.current) {
         if (n.type !== 'passage') continue;
         const d = n.data as PassageNodeData;
-        if (
+
+        // Search query: match label or tags
+        const matchesSearch = q === '' ||
           (d.label || '').toLowerCase().includes(q) ||
-          (d.tags || []).some(t => t.toLowerCase().includes(q))
-        ) {
+          (d.tags || []).some(t => t.toLowerCase().includes(q));
+
+        // Tag filter: if tags are selected, node must have ALL selected tags
+        // (AND logic — narrows the filter as you select more tags)
+        const matchesTags = !hasTags ||
+          (d.tags || []).some(t => selectedTags.has(t));
+          // NOTE: using .some() = OR logic (any selected tag matches).
+          // Use .every() for AND logic (must have ALL selected tags).
+
+        if (matchesSearch && matchesTags) {
           matchIds.add(n.id);
         }
       }
@@ -811,17 +904,17 @@ function StoryMapInner({
     setNodes(nds => nds.map(n => {
       if (n.type !== 'passage') return n;
       const d = n.data as PassageNodeData;
-      if (q === '') return { ...n, data: { ...d, dimmed: false, highlighted: false } };
+      if (!hasFilter) return { ...n, data: { ...d, dimmed: false, highlighted: false } };
       const matches = matchIds.has(n.id);
       return { ...n, data: { ...d, dimmed: !matches, highlighted: matches } };
     }));
 
     setEdges(eds => eds.map(e => {
-      if (q === '') return { ...e, style: undefined };
+      if (!hasFilter) return { ...e, style: undefined };
       const connected = matchIds.has(e.source) || matchIds.has(e.target);
       return { ...e, style: { ...e.style, opacity: connected ? undefined : 0.06 } };
     }));
-  }, [searchQuery, setNodes, setEdges]);
+  }, [searchQuery, selectedTags, setNodes, setEdges]);
 
   // ── Fit view ───────────────────────────────────────────────────────────
 
@@ -1081,6 +1174,7 @@ function StoryMapInner({
 interface StoryMapProps {
   graphData: KnotGraphResponse | null;
   searchQuery: string;
+  selectedTags: Set<string>;
   fitRequested: number;
   saveRequested: number;
   focusRequested: number;

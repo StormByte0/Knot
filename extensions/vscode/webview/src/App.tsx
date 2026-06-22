@@ -117,7 +117,36 @@ class StoryMapErrorBoundary extends Component<{ children: ReactNode }, ErrorBoun
 export default function App() {
   const [graphData, setGraphData] = useState<KnotGraphResponse | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [stats, setStats] = useState({ nodes: 0, edges: 0, broken: 0 });
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+
+  // Collect all unique tags from graph data
+  const allTags: string[] = [];
+  if (graphData?.nodes) {
+    const tagSet = new Set<string>();
+    for (const n of graphData.nodes) {
+      for (const t of n.tags || []) {
+        tagSet.add(t);
+      }
+    }
+    for (const t of tagSet) allTags.push(t);
+    allTags.sort();
+  }
+
+  const handleTagToggle = useCallback((tag: string) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev);
+      if (next.has(tag)) {
+        next.delete(tag);
+      } else {
+        next.add(tag);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleTagClear = useCallback(() => {
+    setSelectedTags(new Set());
+  }, []);
 
   // FIX: restoreViewport is sent by the extension after panel creation to
   // re-apply the workspace-persisted viewport. We store it and forward it
@@ -143,10 +172,6 @@ export default function App() {
               'edges',
             );
             setGraphData(data);
-            const nodes = data?.nodes?.length ?? 0;
-            const edges = data?.edges?.length ?? 0;
-            const broken = data?.edges?.filter(e => e.edge_type === 'broken').length ?? 0;
-            setStats({ nodes, edges, broken });
             break;
           }
           case 'focusNode': {
@@ -205,10 +230,15 @@ export default function App() {
           onFit={handleFit}
           onRefresh={handleRefresh}
           onSavePositions={handleSavePositions}
+          allTags={allTags}
+          selectedTags={selectedTags}
+          onTagToggle={handleTagToggle}
+          onTagClear={handleTagClear}
         />
         <StoryMap
           graphData={graphData}
           searchQuery={searchQuery}
+          selectedTags={selectedTags}
           fitRequested={fitRequested}
           saveRequested={saveRequested}
           focusRequested={focusRequested}
@@ -216,11 +246,6 @@ export default function App() {
           restoreViewport={restoreViewport}
         />
         <Legend />
-        <div id="statusBar">
-          <span id="statNodes">{stats.nodes} passages</span>
-          <span id="statEdges">{stats.edges} links</span>
-          <span id="statBroken">{stats.broken} broken</span>
-        </div>
       </div>
     </StoryMapErrorBoundary>
   );
