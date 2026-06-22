@@ -226,7 +226,7 @@
         {
           "type": "webview",
           "id": "knot.profileView",
-          "name": "Workspace Profile",
+          "name": "Project Info",
           "icon": "$(dashboard)",
           "visibility": "visible"
         }

@@ -1,14 +1,14 @@
-//! Profile View provider for the Knot extension.
+//! Project Info view provider for the Knot extension.
 //!
-//! This module implements a VS Code sidebar webview panel that displays
-//! workspace profiling statistics including passage counts, link density,
-//! variable metrics, and graph analysis results.
+//! Displays a clean, focused summary of the Twine project: story identity,
+//! scale (passages, words, play time), writing health, and actionable issues.
+//! Avoids graph-theory clutter — the Story Map handles structural visualization.
 
 import * as vscode from 'vscode';
 import { KnotLanguageClient, KnotProfileResponse } from './types';
 
 // ---------------------------------------------------------------------------
-// Profile View webview provider
+// Project Info webview provider
 // ---------------------------------------------------------------------------
 
 export class ProfileViewProvider implements vscode.WebviewViewProvider {
@@ -82,7 +82,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             }
             return true;
         } catch (e) {
-            console.error('[Knot] Failed to fetch profile:', e);
+            console.error('[Knot] Failed to fetch project info:', e);
             return false;
         }
     }
@@ -114,8 +114,12 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
         if (this._client) {
             this._startInitialPolling();
         }
-        // If client isn't ready yet, the setClient handler will start
-        // polling when the client is eventually set.
+
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this.refresh();
+            }
+        });
     }
 
     /** Schedule a debounced refresh. */
@@ -160,7 +164,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https:; img-src 'self' data:; connect-src 'self';">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knot Profile</title>
+    <title>Knot Project Info</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -205,115 +209,186 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             color: white;
         }
 
-        .section {
-            margin-bottom: 10px;
-        }
-
-        .section-title {
-            font-weight: 600;
-            font-size: 11px;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 6px;
-            padding-bottom: 3px;
+        /* ── Story header ─────────────────────────────────────────── */
+        .story-header {
+            margin-bottom: 12px;
+            padding-bottom: 10px;
             border-bottom: 1px solid var(--border);
         }
 
-        .stat-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 4px;
-        }
-
-        .stat-card {
-            background: var(--card);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 6px 8px;
-        }
-
-        .stat-value {
-            font-size: 18px;
+        .story-name {
+            font-size: 15px;
             font-weight: 700;
-            line-height: 1.2;
+            line-height: 1.3;
+            margin-bottom: 4px;
         }
 
-        .stat-label {
-            font-size: 10px;
-            color: var(--muted);
+        .story-meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
         }
-
-        .stat-card.error .stat-value { color: var(--error); }
-        .stat-card.warning .stat-value { color: var(--warning); }
-        .stat-card.success .stat-value { color: var(--success); }
 
         .format-badge {
-            display: inline-block;
             background: var(--accent);
             color: white;
-            padding: 3px 10px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
         }
 
         .format-version {
             color: var(--muted);
+            font-size: 10px;
+        }
+
+        .ifid {
+            color: var(--muted);
+            font-size: 9px;
+            font-family: var(--vscode-editor-font-family, monospace);
+            margin-top: 4px;
+            word-break: break-all;
+        }
+
+        .no-story-data {
+            color: var(--warning);
             font-size: 11px;
-            margin-left: 6px;
+            margin-top: 4px;
         }
 
-        .bar-chart {
+        /* ── Stat rows ────────────────────────────────────────────── */
+        .section {
+            margin-bottom: 12px;
+        }
+
+        .section-title {
+            font-weight: 600;
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        .stat-row {
             display: flex;
-            flex-direction: column;
-            gap: 4px;
+            justify-content: space-between;
+            align-items: center;
+            padding: 3px 0;
         }
 
-        .bar-row {
+        .stat-label {
+            color: var(--fg);
+            font-size: 11px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .stat-value.muted { color: var(--muted); font-weight: 400; }
+        .stat-value.error { color: var(--error); }
+        .stat-value.warning { color: var(--warning); }
+        .stat-value.success { color: var(--success); }
+
+        /* ── Big stat cards ───────────────────────────────────────── */
+        .big-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .big-stat {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            text-align: center;
+        }
+
+        .big-stat-value {
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .big-stat-label {
+            font-size: 9px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-top: 2px;
+        }
+
+        /* ── Issues list ──────────────────────────────────────────── */
+        .issue-item {
             display: flex;
             align-items: center;
             gap: 6px;
+            padding: 3px 0;
         }
 
-        .bar-label {
-            width: 70px;
-            font-size: 10px;
-            color: var(--muted);
-            text-align: right;
+        .issue-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
         }
 
-        .bar-track {
+        .issue-dot.error { background: var(--error); }
+        .issue-dot.warning { background: var(--warning); }
+        .issue-dot.ok { background: var(--success); }
+
+        .issue-text {
             flex: 1;
-            height: 12px;
+            font-size: 11px;
+        }
+
+        .issue-count {
+            font-weight: 600;
+            font-size: 11px;
+        }
+
+        /* ── Tag list ─────────────────────────────────────────────── */
+        .tag-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 0;
+        }
+
+        .tag-name {
+            font-size: 11px;
+            color: var(--fg);
+            min-width: 60px;
+        }
+
+        .tag-bar-track {
+            flex: 1;
+            height: 10px;
             background: var(--card);
             border-radius: 3px;
             overflow: hidden;
         }
 
-        .bar-fill {
+        .tag-bar-fill {
             height: 100%;
             border-radius: 3px;
-            transition: width 0.3s ease;
+            min-width: 2px;
         }
 
-        .bar-count {
+        .tag-count {
             font-size: 10px;
             color: var(--muted);
-            min-width: 24px;
+            min-width: 20px;
+            text-align: right;
         }
 
-        .issue-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 2px 0;
-        }
-
-        .issue-label { color: var(--fg); }
-        .issue-count { font-weight: 600; }
-        .issue-count.error { color: var(--error); }
-        .issue-count.warning { color: var(--warning); }
-
+        /* ── Empty state ──────────────────────────────────────────── */
         .empty-state {
             text-align: center;
             color: var(--muted);
@@ -323,7 +398,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
     <div id="content">
-        <div class="empty-state">Loading workspace profile...</div>
+        <div class="empty-state">Loading project info...</div>
     </div>
 
     <script>
@@ -342,7 +417,7 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
         function esc(str) {
             const div = document.createElement('div');
-            div.textContent = str;
+            div.textContent = String(str);
             return div.innerHTML;
         }
 
@@ -350,10 +425,10 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
             const content = document.getElementById('content');
             let html = '';
             html += '<div class="toolbar">';
-            html += '<button onclick="vscode.postMessage({command: \'refresh\'})">Retry</button>';
+            html += '<button onclick="vscode.postMessage({command: \\'refresh\\'})">Retry</button>';
             html += '</div>';
             html += '<div class="empty-state">';
-            html += '<div style="color:var(--warning);margin-bottom:8px;">Unable to load workspace profile</div>';
+            html += '<div style="color:var(--warning);margin-bottom:8px;">Unable to load project info</div>';
             html += '<div style="font-size:10px;color:var(--muted);">' + esc(errMsg) + '</div>';
             html += '</div>';
             content.innerHTML = html;
@@ -365,134 +440,124 @@ export class ProfileViewProvider implements vscode.WebviewViewProvider {
 
             // Toolbar
             html += '<div class="toolbar">';
-            html += '<button onclick="vscode.postMessage({command: \'refresh\'})">Refresh</button>';
+            html += '<button onclick="vscode.postMessage({command: \\'refresh\\'})" title="Refresh">&#x21BB;</button>';
             html += '</div>';
 
-            // Story name (prominent header)
+            // ── Story header ─────────────────────────────────────────
+            html += '<div class="story-header">';
             if (d.story_name) {
+                html += '<div class="story-name">' + esc(d.story_name) + '</div>';
+            } else {
+                html += '<div class="story-name" style="color:var(--muted);font-style:italic;">Untitled Story</div>';
+            }
+            html += '<div class="story-meta">';
+            html += '<span class="format-badge">' + esc(d.format) + '</span>';
+            if (d.format_version) {
+                html += '<span class="format-version">v' + esc(d.format_version) + '</span>';
+            }
+            html += '</div>';
+            if (d.ifid) {
+                html += '<div class="ifid">IFID: ' + esc(d.ifid) + '</div>';
+            }
+            if (!d.has_story_data) {
+                html += '<div class="no-story-data">No StoryData passage found</div>';
+            }
+            html += '</div>';
+
+            // ── Big stats: passages, words ───────────────────────────
+            html += '<div class="big-stats">';
+            html += '<div class="big-stat"><div class="big-stat-value">' + d.passage_count + '</div><div class="big-stat-label">Passages</div></div>';
+            html += '<div class="big-stat"><div class="big-stat-value">' + formatWords(d.total_word_count) + '</div><div class="big-stat-label">Words</div></div>';
+            html += '</div>';
+
+            // ── Scale ────────────────────────────────────────────────
+            html += '<div class="section">';
+            html += '<div class="section-title">Scale</div>';
+            html += statRow('Documents', d.document_count);
+            html += statRow('Links', d.total_links);
+            html += statRow('Special passages', d.special_passage_count);
+            html += statRow('Metadata passages', d.metadata_passage_count);
+            html += statRow('Estimated play time', estPlayTime(d.total_word_count));
+            html += '</div>';
+
+            // ── Writing health ───────────────────────────────────────
+            if (d.complexity_metrics) {
                 html += '<div class="section">';
-                html += '<div style="font-size:16px;font-weight:700;line-height:1.3;margin-bottom:4px;">' + esc(d.story_name) + '</div>';
-                if (d.ifid) {
-                    html += '<div style="font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all;">IFID: ' + esc(d.ifid) + '</div>';
+                html += '<div class="section-title">Writing</div>';
+                html += statRow('Avg words / passage', Math.round(d.complexity_metrics.avg_word_count));
+                html += statRow('Median words / passage', Math.round(d.complexity_metrics.median_word_count));
+                html += statRow('Longest passage', d.complexity_metrics.max_word_count + ' words');
+                if (d.complexity_metrics.min_word_count > 0) {
+                    html += statRow('Shortest passage', d.complexity_metrics.min_word_count + ' words');
                 }
                 html += '</div>';
             }
 
-            // Format info
+            // ── Issues ───────────────────────────────────────────────
             html += '<div class="section">';
-            html += '<div class="section-title">Format</div>';
-            html += '<span class="format-badge">' + esc(d.format) + '</span>';
-            if (d.format_version) html += '<span class="format-version">v' + esc(d.format_version) + '</span>';
-            if (!d.has_story_data) html += ' <span style="color:var(--warning);font-size:11px;">(No StoryData)</span>';
+            html += '<div class="section-title">Issues</div>';
+            html += issueRow('Broken links', d.broken_link_count, 'error');
+            html += issueRow('Unreachable passages', d.unreachable_passage_count, 'warning');
+            html += issueRow('Dead-end passages', d.dead_end_count, 'warning');
+            html += issueRow('Unused variables', d.variable_issue_count, 'warning');
             html += '</div>';
 
-            // Overview stats
-            html += '<div class="section">';
-            html += '<div class="section-title">Overview</div>';
-            html += '<div class="stat-grid">';
-            html += makeCard(d.passage_count, 'Passages');
-            html += makeCard(d.document_count, 'Documents');
-            html += makeCard(d.total_links, 'Links');
-            html += makeCard(d.total_word_count, 'Words');
-            html += makeCard(d.special_passage_count, 'Special');
-            html += makeCard(d.metadata_passage_count, 'Metadata');
-            html += '</div></div>';
-
-            // Graph health
-            html += '<div class="section">';
-            html += '<div class="section-title">Graph Health</div>';
-            html += '<div class="stat-grid">';
-            html += makeCard(d.unreachable_passage_count, 'Unreachable', d.unreachable_passage_count > 0 ? 'warning' : 'success');
-            html += makeCard(d.broken_link_count, 'Broken Links', d.broken_link_count > 0 ? 'error' : 'success');
-            html += makeCard(d.game_loop_count, 'Loops', d.game_loop_count > 0 ? 'warning' : 'success');
-            html += makeCard(d.dead_end_count, 'Dead Ends', d.dead_end_count > 0 ? 'warning' : 'success');
-            html += '</div>';
-
-            // Graph metrics
-            html += '<div class="issue-row"><span class="issue-label">Avg outgoing links</span><span class="issue-count">' + d.avg_out_degree.toFixed(1) + '</span></div>';
-            html += '<div class="issue-row"><span class="issue-label">Avg incoming links</span><span class="issue-count">' + d.avg_in_degree.toFixed(1) + '</span></div>';
-            html += '<div class="issue-row"><span class="issue-label">Max depth from start</span><span class="issue-count">' + d.max_depth + '</span></div>';
-            html += '</div>';
-
-            // Variable stats
+            // ── Variables ────────────────────────────────────────────
             html += '<div class="section">';
             html += '<div class="section-title">Variables</div>';
-            html += '<div class="stat-grid">';
-            html += makeCard(d.variable_count, 'Variables');
-            html += makeCard(d.variable_issue_count, 'Issues', d.variable_issue_count > 0 ? 'warning' : 'success');
-            html += '</div></div>';
+            html += statRow('Tracked variables', d.variable_count);
+            html += '</div>';
 
-            // Link distribution
-            html += '<div class="section">';
-            html += '<div class="section-title">Link Distribution</div>';
-            html += '<div class="bar-chart">';
-            const maxBar = Math.max(d.link_distribution.zero_links, d.link_distribution.few_links, d.link_distribution.moderate_links, d.link_distribution.many_links, 1);
-            html += makeBar('0 links', d.link_distribution.zero_links, maxBar, '#666');
-            html += makeBar('1-2 links', d.link_distribution.few_links, maxBar, '#4fc3f7');
-            html += makeBar('3-5 links', d.link_distribution.moderate_links, maxBar, '#ffb74d');
-            html += makeBar('6+ links', d.link_distribution.many_links, maxBar, '#ce93d8');
-            html += '</div></div>';
-
-            // Complexity metrics
-            if (d.complexity_metrics) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Passage Complexity</div>';
-                html += '<div class="issue-row"><span class="issue-label">Avg words/passage</span><span class="issue-count">' + d.complexity_metrics.avg_word_count.toFixed(0) + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Median words/passage</span><span class="issue-count">' + d.complexity_metrics.median_word_count.toFixed(0) + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Max words (single passage)</span><span class="issue-count">' + d.complexity_metrics.max_word_count + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Min words (non-empty)</span><span class="issue-count">' + d.complexity_metrics.min_word_count + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Avg outgoing links</span><span class="issue-count">' + d.complexity_metrics.avg_out_links.toFixed(1) + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Link count std dev</span><span class="issue-count">' + d.complexity_metrics.out_links_stddev.toFixed(2) + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Complex passages (6+ links)</span><span class="issue-count ' + (d.complexity_metrics.complex_passage_count > 0 ? 'warning' : '') + '">' + d.complexity_metrics.complex_passage_count + '</span></div>';
-                html += '</div>';
-            }
-
-            // Structural balance
-            if (d.structural_balance) {
-                html += '<div class="section">';
-                html += '<div class="section-title">Structural Balance</div>';
-                const connColor = d.structural_balance.is_well_connected ? 'success' : 'warning';
-                html += '<div class="stat-grid">';
-                html += makeCard((d.structural_balance.dead_end_ratio * 100).toFixed(0) + '%', 'Dead-end ratio', d.structural_balance.dead_end_ratio > 0.3 ? 'warning' : 'success');
-                html += makeCard((d.structural_balance.unreachable_ratio * 100).toFixed(0) + '%', 'Unreachable ratio', d.structural_balance.unreachable_ratio > 0.3 ? 'warning' : 'success');
-                html += makeCard(d.structural_balance.connected_components, 'Components', d.structural_balance.connected_components > 1 ? 'warning' : connColor);
-                html += makeCard(d.structural_balance.diameter, 'Diameter');
-                html += '</div>';
-                html += '<div class="issue-row"><span class="issue-label">Avg clustering coeff</span><span class="issue-count">' + d.structural_balance.avg_clustering.toFixed(3) + '</span></div>';
-                html += '<div class="issue-row"><span class="issue-label">Well connected</span><span class="issue-count ' + connColor + '">' + (d.structural_balance.is_well_connected ? 'Yes' : 'No') + '</span></div>';
-                html += '</div>';
-            }
-
-            // Tag statistics
+            // ── Tags ─────────────────────────────────────────────────
             if (d.tag_stats && d.tag_stats.length > 0) {
                 html += '<div class="section">';
                 html += '<div class="section-title">Tags</div>';
-                html += '<div class="bar-chart">';
-                const maxTagCount = Math.max(...d.tag_stats.map(t => t.passage_count), 1);
+                const maxTag = Math.max(...d.tag_stats.map(t => t.passage_count), 1);
                 const tagColors = ['#4fc3f7', '#81c784', '#ffb74d', '#ce93d8', '#ef9a9a', '#80cbc4', '#ffab91', '#a5d6a7'];
                 for (let i = 0; i < d.tag_stats.length; i++) {
                     const t = d.tag_stats[i];
+                    const pct = (t.passage_count / maxTag * 100);
                     const color = tagColors[i % tagColors.length];
-                    html += makeBar(t.tag, t.passage_count, maxTagCount, color);
-                    html += '<div style="margin-left:76px;font-size:9px;color:var(--muted);margin-top:-2px;">' + t.avg_word_count.toFixed(0) + ' avg words, ' + t.avg_out_links.toFixed(1) + ' avg links</div>';
+                    html += '<div class="tag-row">';
+                    html += '<span class="tag-name">' + esc(t.tag) + '</span>';
+                    html += '<div class="tag-bar-track"><div class="tag-bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>';
+                    html += '<span class="tag-count">' + t.passage_count + '</span>';
+                    html += '</div>';
                 }
-                html += '</div></div>';
+                html += '</div>';
             }
 
             content.innerHTML = html;
         }
 
-        function makeCard(value, label, colorClass) {
-            const cls = colorClass ? 'stat-card ' + colorClass : 'stat-card';
-            return '<div class="' + cls + '"><div class="stat-value">' + value + '</div><div class="stat-label">' + label + '</div></div>';
+        function statRow(label, value, cls) {
+            const c = cls ? ' ' + cls : '';
+            return '<div class="stat-row"><span class="stat-label">' + label + '</span><span class="stat-value' + c + '">' + value + '</span></div>';
         }
 
-        function makeBar(label, count, max, color) {
-            const pct = max > 0 ? (count / max * 100) : 0;
-            return '<div class="bar-row">' +
-                '<span class="bar-label">' + label + '</span>' +
-                '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
-                '<span class="bar-count">' + count + '</span></div>';
+        function issueRow(label, count, severity) {
+            const dotClass = count > 0 ? severity : 'ok';
+            const valClass = count > 0 ? severity : 'success';
+            return '<div class="issue-item">' +
+                '<span class="issue-dot ' + dotClass + '"></span>' +
+                '<span class="issue-text">' + label + '</span>' +
+                '<span class="issue-count ' + valClass + '">' + (count > 0 ? count : 'None') + '</span>' +
+                '</div>';
+        }
+
+        function formatWords(n) {
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+            return n.toString();
+        }
+
+        function estPlayTime(words) {
+            // Average reading speed: ~200 words/minute for interactive fiction
+            const minutes = words / 200;
+            if (minutes < 1) return '< 1 min';
+            if (minutes < 60) return Math.round(minutes) + ' min';
+            const hours = Math.floor(minutes / 60);
+            const mins = Math.round(minutes % 60);
+            return hours + 'h ' + mins + 'm';
         }
     </script>
 </body>

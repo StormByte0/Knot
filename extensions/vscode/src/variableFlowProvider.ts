@@ -346,6 +346,14 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
         if (this._client) {
             this._startInitialPolling();
         }
+
+        // Re-fetch data when the view becomes visible again (e.g. after
+        // the sidebar was collapsed and re-expanded).
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this.refresh();
+            }
+        });
     }
 
     /** Refresh variable flow data from the language server (debounced). */

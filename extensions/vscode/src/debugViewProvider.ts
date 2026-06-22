@@ -73,6 +73,15 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                 }
             }
         });
+
+        // Re-fetch data when the view becomes visible again (e.g. after
+        // the sidebar was collapsed and re-expanded). Without this, the
+        // webview shows stale or empty content because the DOM was reset.
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this.refresh();
+            }
+        });
     }
 
     /** Update the diagnostics view for the passage under the cursor. */
