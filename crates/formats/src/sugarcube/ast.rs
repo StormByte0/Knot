@@ -126,6 +126,22 @@ pub struct AnalyzedVarOp {
     /// `span` covers just the property key (e.g., `bar`), but `construct_span`
     /// covers the entire `{...}` expression.
     pub construct_span: Option<Range<usize>>,
+    /// Per-segment construct spans — the source range that groups each node
+    /// and its written descendants at that depth.
+    ///
+    /// `segment_construct_spans[i]` is the construct span for the node at
+    /// depth `i` in the path. For `$a.n1.name`:
+    /// - `[0]` = `$a = {...}` (root assignment span)
+    /// - `[1]` = `n1:{...}` (the n1 property with its full value)
+    /// - `[2]` = `name:"apple"` (the leaf key-value pair)
+    ///
+    /// Used by `record_var` propagation: when a leaf write propagates up to
+    /// an ancestor at depth `d`, the propagated write's span = the immediate
+    /// child's construct span = `segment_construct_spans[d+1]`.
+    ///
+    /// For non-block writes (e.g., `<<set $foo.bar to 1>>`), all entries
+    /// are the full assignment expression span — nothing to aggregate.
+    pub segment_construct_spans: Vec<Range<usize>>,
 }
 
 /// A literal token found by oxc within a JS snippet.

@@ -630,6 +630,40 @@ pub struct PassageVarRef {
     pub file_uri: String,
     /// The passage name where this reference occurs.
     pub passage_name: String,
+    /// The document-absolute byte span [start, end) of this reference.
+    /// Enables precise highlighting and range-based navigation.
+    /// `None` when span data is not available.
+    pub span: Option<std::ops::Range<usize>>,
+}
+
+/// A summary of a passage-scoped temporary variable (`_var` in SugarCube).
+///
+/// This is the format-agnostic representation produced by
+/// `FormatPlugin::extract_passage_temp_variables()`. It groups all reads
+/// and writes of one temporary variable inside a single passage so the
+/// passage-diagnostics panel can render a compact infographics block
+/// without having to do its own grouping.
+///
+/// Unlike persistent (`$`) variables, temporary variables are scoped to
+/// the passage where they appear: the same `_foo` name can be reused
+/// across different passages without collision. The format plugin is
+/// therefore expected to return only the temps that live in the
+/// requested passage.
+#[derive(Debug, Clone)]
+pub struct PassageTempVarSummary {
+    /// The temporary variable name in format-specific notation (e.g.,
+    /// `_counter` in SugarCube). The server passes this through without
+    /// interpretation.
+    pub name: String,
+    /// Number of write accesses inside this passage.
+    pub write_count: u32,
+    /// Number of read accesses inside this passage.
+    pub read_count: u32,
+    /// Line-level references (writes and reads, in source order) so the
+    /// client can offer "go to line" navigation. The line numbers are
+    /// already document-absolute (the format plugin performs the
+    /// passage-relative → absolute conversion).
+    pub refs: Vec<PassageVarRef>,
 }
 
 // ---------------------------------------------------------------------------

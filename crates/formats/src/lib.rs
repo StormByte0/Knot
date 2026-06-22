@@ -44,7 +44,7 @@ pub use types::{
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
     ResolvedNavLink,
     PropertyKind, PropertyMapEntry,
-    PassageVarRef,
+    PassageVarRef, PassageTempVarSummary,
     CompletionContext,
 };
 // Workspace re-exports temporarily removed during ver_3 rewrite.

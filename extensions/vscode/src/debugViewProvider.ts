@@ -58,6 +58,15 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 }
+                case 'openPassageAtLine': {
+                    // Used by the Temporary Variables section to jump to a
+                    // specific read/write line within the passage.
+                    const { name, line, spanStart, spanEnd } = message;
+                    if (name && typeof line === 'number') {
+                        await vscode.commands.executeCommand('knot.openPassageByName', name, line, spanStart, spanEnd);
+                    }
+                    break;
+                }
                 case 'refresh': {
                     await this.refresh();
                     break;
@@ -325,6 +334,104 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
             color: var(--muted);
             font-size: 10px;
         }
+
+        /* ── Temporary variables (passage-scoped _var infographics) ── */
+        .temp-list { list-style: none; }
+
+        .temp-item {
+            padding: 4px 6px;
+            border-radius: 3px;
+            margin-bottom: 3px;
+            background: rgba(55, 148, 255, 0.05);
+            border-left: 2px solid var(--info);
+        }
+
+        .temp-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+        }
+
+        .temp-name {
+            font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+            font-size: 11px;
+            color: var(--fg);
+            font-weight: 600;
+        }
+
+        .temp-counts {
+            display: flex;
+            gap: 3px;
+            flex-shrink: 0;
+        }
+
+        .temp-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+            padding: 0 5px;
+            border-radius: 8px;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 14px;
+        }
+
+        .temp-count-w { background: rgba(204, 167, 0, 0.25); color: var(--warning); }
+        .temp-count-r { background: rgba(55, 148, 255, 0.25); color: var(--info); }
+
+        /* Mini bar showing write vs read proportion */
+        .temp-bar {
+            display: flex;
+            height: 3px;
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+            background: var(--border);
+        }
+
+        .temp-bar-w { background: var(--warning); }
+        .temp-bar-r { background: var(--info); }
+
+        .temp-refs {
+            list-style: none;
+            margin-top: 3px;
+            padding-left: 8px;
+        }
+
+        .temp-refs li {
+            font-size: 10px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 1px 0;
+        }
+
+        .temp-ref-link {
+            color: var(--accent);
+            cursor: pointer;
+            font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+        }
+
+        .temp-ref-link:hover { text-decoration: underline; }
+
+        .temp-ref-kind {
+            font-size: 9px;
+            padding: 0 4px;
+            border-radius: 3px;
+            font-weight: 600;
+        }
+
+        .temp-ref-kind-w { background: rgba(204, 167, 0, 0.2); color: var(--warning); }
+        .temp-ref-kind-r { background: rgba(55, 148, 255, 0.2); color: var(--info); }
+
+        .temp-empty {
+            font-size: 11px;
+            color: var(--muted);
+            font-style: italic;
+            padding: 4px 0;
+        }
     </style>
 </head>
 <body>
@@ -470,7 +577,92 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
                 html += '</div>';
             }
 
+            // ── Temporary variables (passage-scoped _var infographics) ──
+            html += renderTempVariables(data);
+
             content.innerHTML = html;
+        }
+
+        function renderTempVariables(data) {
+            const temps = data.temporary_variables || [];
+            if (temps.length === 0) {
+                // Hide the section entirely when there are no temps — this
+                // also covers formats without passage-scoped temp vars
+                // (Harlowe, Snowman, Chapbook) which return an empty list.
+                return '';
+            }
+
+            let html = '<div class="section">';
+            html += '<div class="section-title">Temporary Variables';
+            html += ' <span class="count">' + temps.length + '</span>';
+            html += '</div>';
+
+            html += '<ul class="temp-list">';
+            for (const t of temps) {
+                const total = t.write_count + t.read_count;
+                const wPct = total > 0 ? (t.write_count / total) * 100 : 0;
+                const rPct = total > 0 ? (t.read_count / total) * 100 : 0;
+
+                html += '<li class="temp-item">';
+                html += '<div class="temp-head">';
+                html += '<span class="temp-name">' + esc(t.name) + '</span>';
+                html += '<span class="temp-counts">';
+                html += '<span class="temp-count temp-count-w" title="writes">W ' + t.write_count + '</span>';
+                html += '<span class="temp-count temp-count-r" title="reads">R ' + t.read_count + '</span>';
+                html += '</span>';
+                html += '</div>';
+
+                // Mini proportion bar (writes vs reads). Hidden when no
+                // accesses at all (defensive — shouldn't happen since we
+                // only emit a summary when refs is non-empty).
+                if (total > 0) {
+                    html += '<div class="temp-bar">';
+                    html += '<div class="temp-bar-w" style="width:' + wPct + '%;"></div>';
+                    html += '<div class="temp-bar-r" style="width:' + rPct + '%;"></div>';
+                    html += '</div>';
+                }
+
+                // Line-level refs (clickable). Show up to 8 to keep the
+                // panel compact; the rest are still accessible by scrolling
+                // the passage once the user clicks any ref.
+                const refs = t.references || [];
+                if (refs.length > 0) {
+                    html += '<ul class="temp-refs">';
+                    const shown = refs.slice(0, 8);
+                    for (const r of shown) {
+                        const lineLabel = 'L' + (r.line + 1); // 0-based → 1-based
+                        const kindCls = r.is_write ? 'temp-ref-kind-w' : 'temp-ref-kind-r';
+                        const kindLabel = r.is_write ? 'W' : 'R';
+                        const fullName = r.variable_name || t.name;
+                        // Passages, line numbers, and span data travel via
+                        // the message handler. The span enables precise
+                        // range-based selection in the editor.
+                        var spanArg = '';
+                        if (typeof r.span_start === 'number' && typeof r.span_end === 'number') {
+                            spanArg = ', spanStart: ' + r.span_start + ', spanEnd: ' + r.span_end;
+                        }
+                        const onClick = "vscode.postMessage({command: 'openPassageAtLine', name: '" +
+                            esc(r.passage_name || data.passage_name).replace(/'/g, "\\'") +
+                            "', line: " + r.line + spanArg + "})";
+                        html += '<li>';
+                        html += '<span class="temp-ref-kind ' + kindCls + '">' + kindLabel + '</span>';
+                        html += '<span class="temp-ref-link" onclick="' + onClick + '" title="Open ' + esc(fullName) + ' at line ' + (r.line + 1) + '">';
+                        html += esc(lineLabel) + ' ' + esc(fullName);
+                        html += '</span>';
+                        html += '</li>';
+                    }
+                    if (refs.length > shown.length) {
+                        html += '<li style="color:var(--muted);font-size:9px;font-style:italic;">+' + (refs.length - shown.length) + ' more…</li>';
+                    }
+                    html += '</ul>';
+                }
+
+                html += '</li>';
+            }
+            html += '</ul>';
+            html += '</div>';
+
+            return html;
         }
     </script>
 </body>

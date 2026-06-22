@@ -47,6 +47,7 @@ impl ServerState {
                         message: format!("Passage '{}' not found in workspace", name),
                     }],
                     variable_references: Vec::new(),
+                    temporary_variables: Vec::new(),
                 });
             }
         };
@@ -111,6 +112,20 @@ impl ServerState {
             &params.passage_name,
         );
 
+        // ── Temporary variables (passage-scoped, `_var` in SugarCube) ──
+        // These don't belong in the workspace-wide variable tracker
+        // (which only sees persistent `$` vars) — they live and die with
+        // the passage. We surface them here as a small infographics
+        // section: per-name read/write counts plus clickable line refs.
+        // Formats without passage-scoped temps return an empty Vec and
+        // the client simply hides the section.
+        let temporary_variables = super::variables::build_passage_temporary_variables(
+            workspace,
+            &inner.format_registry,
+            &inner.open_documents,
+            &params.passage_name,
+        );
+
         Ok(KnotPassageDiagnosticsResponse {
             passage_name: params.passage_name,
             file_uri,
@@ -121,6 +136,7 @@ impl ServerState {
             incoming_links,
             diagnostics,
             variable_references,
+            temporary_variables,
         })
     }
 }

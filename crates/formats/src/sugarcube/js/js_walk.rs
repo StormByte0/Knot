@@ -314,6 +314,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
+                            segment_construct_spans: Vec::new(),
                 });
             }
             // Check for SugarCube.State.variables.x READ pattern
@@ -339,6 +340,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
+                            segment_construct_spans: Vec::new(),
                 });
             }
             // Check for State.variables pattern (intermediate — just recurse)
@@ -413,6 +415,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
+                            segment_construct_spans: Vec::new(),
                 });
             }
             walk_expression(&member.object, preprocessed, analysis);
@@ -524,10 +527,11 @@ fn walk_expression(
         Expr::AssignmentExpression(assign) => {
             // Emit operator span for the assignment operator.
             emit_assignment_operator(&assign, preprocessed, analysis);
-            // Check for State.variables.x = value
-            check_assignment_for_state_var(&assign.left, preprocessed, analysis);
-            // Check for object literal assignments to extract property paths
-            check_object_literal_assignment(&assign.left, &assign.right, preprocessed, analysis);
+            // Check for variable writes on the assignment target.
+            // `check_assignment_for_var_writes` handles both block-literal
+            // RHS (decomposes into leaf writes) and scalar RHS (single
+            // direct write on the target).
+            check_assignment_for_var_writes(&assign.left, &assign.right, preprocessed, analysis);
             walk_expression(&assign.right, preprocessed, analysis);
         }
         Expr::Identifier(id) => {
@@ -822,6 +826,7 @@ fn walk_assignment_target_like(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
+                            segment_construct_spans: Vec::new(),
                 });
             }
         }
@@ -830,129 +835,309 @@ fn walk_assignment_target_like(
 }
 
 // ---------------------------------------------------------------------------
-// Internal: assignment target checker
+// Internal: assignment target checker (unified)
 // ---------------------------------------------------------------------------
 
-fn check_assignment_for_state_var(
-    target: &oxc_ast::ast::AssignmentTarget<'_>,
-    preprocessed: &super::js_preprocess::PreprocessedJs,
-    analysis: &mut JsAnalysis,
-) {
-    use oxc_ast::ast::AssignmentTarget;
-
-    match target {
-        AssignmentTarget::StaticMemberExpression(member) => {
-            // Check for State.variables.x = value
-            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object
-                && inner.property.name == "variables"
-                && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
-                && id.name == "State"
-            {
-                let prop_name = member.property.name.as_str();
-                let var_name = format!("${}", prop_name);
-                let original_start = preprocessed.map_to_original(member.span.start as usize);
-                let original_end = preprocessed.map_to_original(member.span.end as usize);
-                let span = original_start..original_end;
-
-                analysis.var_ops.push(AnalyzedVarOp {
-                    name: var_name,
-                    is_temporary: false,
-                    access_kind: VarAccessKind::Write,
-                    span: span.clone(),
-                    property_path: String::new(),
-                    segment_spans: vec![span],
-                    construct_span: None,
-                });
-            }
-            // Check for SugarCube.State.variables.x = value
-            if let oxc_ast::ast::Expression::StaticMemberExpression(state_access) = &member.object
-                && state_access.property.name == "variables"
-                && let oxc_ast::ast::Expression::StaticMemberExpression(sc_state) = &state_access.object
-                && sc_state.property.name == "State"
-                && let oxc_ast::ast::Expression::Identifier(id) = &sc_state.object
-                && id.name == "SugarCube"
-            {
-                let prop_name = member.property.name.as_str();
-                let var_name = format!("${}", prop_name);
-                let original_start = preprocessed.map_to_original(member.span.start as usize);
-                let original_end = preprocessed.map_to_original(member.span.end as usize);
-                let span = original_start..original_end;
-
-                analysis.var_ops.push(AnalyzedVarOp {
-                    name: var_name,
-                    is_temporary: false,
-                    access_kind: VarAccessKind::Write,
-                    span: span.clone(),
-                    property_path: String::new(),
-                    segment_spans: vec![span],
-                    construct_span: None,
-                });
-            }
-        }
-        AssignmentTarget::ComputedMemberExpression(member) => {
-            if let oxc_ast::ast::Expression::StaticMemberExpression(inner) = &member.object
-                && inner.property.name == "variables"
-                && let oxc_ast::ast::Expression::Identifier(id) = &inner.object
-                && id.name == "State"
-                && let oxc_ast::ast::Expression::StringLiteral(str_lit) = &member.expression
-            {
-                let prop_name = str_lit.value.as_str();
-                let var_name = format!("${}", prop_name);
-                let original_start = preprocessed.map_to_original(member.span.start as usize);
-                let original_end = preprocessed.map_to_original(member.span.end as usize);
-                let span = original_start..original_end;
-
-                analysis.var_ops.push(AnalyzedVarOp {
-                    name: var_name,
-                    is_temporary: false,
-                    access_kind: VarAccessKind::Write,
-                    span: span.clone(),
-                    property_path: String::new(),
-                    segment_spans: vec![span],
-                    construct_span: None,
-                });
-            }
-        }
-        AssignmentTarget::AssignmentTargetIdentifier(id) => {
-            check_identifier_for_substituted_var(id, true, preprocessed, analysis);
-        }
-        _ => {}
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Internal: object literal assignment checker
-// ---------------------------------------------------------------------------
-
-/// Check if an assignment target is a `State.variables.x` pattern and
-/// extract property paths from the RHS if it's an `ObjectExpression`.
-fn check_object_literal_assignment(
+/// Check an assignment for variable writes. This is the single entry point
+/// for assignment-target var_ops — handles both block-literal RHS and
+/// scalar/non-block RHS in one pass.
+///
+/// Behavior:
+/// - Extract var info (name, is_temporary, target_span) from the LHS.
+/// - If RHS is ObjectExpression or ArrayExpression: decompose into leaf
+///   writes (no direct write on the target — leaves propagate up).
+/// - If RHS is anything else (scalar, expression): emit a single direct
+///   write on the target with construct_span = full assignment span and
+///   segment_construct_spans populated for propagation.
+fn check_assignment_for_var_writes(
     left: &oxc_ast::ast::AssignmentTarget<'_>,
     right: &oxc_ast::ast::Expression<'_>,
     preprocessed: &super::js_preprocess::PreprocessedJs,
     analysis: &mut JsAnalysis,
 ) {
     let var_info = extract_var_info_from_assignment_target(left, preprocessed);
+    let Some((var_name, is_temporary, target_span)) = var_info else {
+        return;
+    };
 
-    if let Some((var_name, is_temporary, target_span)) = var_info {
-        if let oxc_ast::ast::Expression::ObjectExpression(obj) = right {
-            // Emit a root-level write with the full object literal span
-            let obj_span = obj.span();
-            let obj_start = preprocessed.map_to_original(obj_span.start as usize);
-            let obj_end = preprocessed.map_to_original(obj_span.end as usize);
+    // Full assignment construct span (LHS + `=` + RHS).
+    let assign_span = {
+        let left_span = left.span();
+        let right_span = right.span();
+        let start = preprocessed.map_to_original(left_span.start as usize);
+        let end = preprocessed.map_to_original(right_span.end as usize);
+        start..end
+    };
+
+    match right {
+        oxc_ast::ast::Expression::ObjectExpression(obj) => {
+            // Block literal — decompose into leaf writes. No direct write
+            // on the target (leaves propagate up).
+            let root_construct_spans = vec![assign_span];
+            decompose_object_write(
+                obj,
+                &var_name,
+                is_temporary,
+                &target_span,
+                String::new(),
+                vec![target_span.clone()],
+                root_construct_spans,
+                preprocessed,
+                analysis,
+            );
+        }
+        oxc_ast::ast::Expression::ArrayExpression(arr) => {
+            let root_construct_spans = vec![assign_span];
+            decompose_array_write(
+                arr,
+                &var_name,
+                is_temporary,
+                &target_span,
+                String::new(),
+                vec![target_span.clone()],
+                root_construct_spans,
+                preprocessed,
+                analysis,
+            );
+        }
+        _ => {
+            // Scalar / non-block expression — emit a single direct write
+            // on the target (leaf scalar). The construct_span is the full
+            // assignment span, and segment_construct_spans is populated
+            // so propagation uses the same span at every depth.
+            let segment_spans = vec![target_span.clone()];
+            let segment_construct_spans = vec![assign_span.clone()];
             analysis.var_ops.push(AnalyzedVarOp {
-                name: var_name.clone(),
+                name: var_name,
                 is_temporary,
                 access_kind: VarAccessKind::Write,
-                span: obj_start..obj_end,
+                span: target_span,
                 property_path: String::new(),
-                segment_spans: vec![target_span.clone()],
-                construct_span: None,
+                segment_spans,
+                construct_span: Some(assign_span),
+                segment_construct_spans,
             });
+        }
+    }
+}
 
-            extract_object_property_paths_recursive(
-                obj, &var_name, is_temporary, target_span.clone(), String::new(), vec![target_span.clone()], preprocessed, analysis,
-            );
+// ---------------------------------------------------------------------------
+// Internal: block literal decomposition helpers (objects + arrays)
+// ---------------------------------------------------------------------------
+
+/// Decompose an object literal into leaf writes.
+///
+/// For each property:
+/// - If the value is a leaf scalar (literal or non-block expression), emit
+///   a direct write on this property.
+/// - If the value is a nested ObjectExpression or ArrayExpression, recurse
+///   (no direct write on this property — it gets writes from leaf propagation).
+///
+/// `prefix` is the dot-path prefix up to this point (e.g., "n1" for `$a.n1`).
+/// `parent_segments` is the per-segment token spans (for nav).
+/// `parent_construct_spans` is the per-segment construct spans (for propagation).
+fn decompose_object_write(
+    obj: &oxc_ast::ast::ObjectExpression<'_>,
+    var_name: &str,
+    is_temporary: bool,
+    _target_span: &std::ops::Range<usize>,
+    prefix: String,
+    parent_segments: Vec<std::ops::Range<usize>>,
+    parent_construct_spans: Vec<std::ops::Range<usize>>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    for prop in &obj.properties {
+        if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+            let key_str = match &p.key {
+                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
+                    Some(id.name.to_string())
+                }
+                oxc_ast::ast::PropertyKey::StringLiteral(s) => {
+                    Some(s.value.to_string())
+                }
+                oxc_ast::ast::PropertyKey::NumericLiteral(n) => {
+                    Some(n.value.to_string())
+                }
+                _ => None,
+            };
+
+            let Some(key) = key_str else { continue };
+
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{}.{}", prefix, key)
+            };
+
+            // Key token span (for nav pointing)
+            let key_span = p.key.span();
+            let key_start = preprocessed.map_to_original(key_span.start as usize);
+            let key_end = preprocessed.map_to_original(key_span.end as usize);
+            let key_range = key_start..key_end;
+
+            // Property construct span = `key: value` (from key start to value end).
+            let value_span = p.value.span();
+            let value_end = preprocessed.map_to_original(value_span.end as usize);
+            let prop_construct_span = key_start..value_end;
+
+            let mut segment_spans = parent_segments.clone();
+            segment_spans.push(key_range.clone());
+
+            let mut segment_construct_spans = parent_construct_spans.clone();
+            segment_construct_spans.push(prop_construct_span.clone());
+
+            // Check if the value is a leaf scalar or a nested block.
+            match &p.value {
+                oxc_ast::ast::Expression::ObjectExpression(inner_obj) => {
+                    // Nested object — recurse, no direct write on this property.
+                    decompose_object_write(
+                        inner_obj,
+                        var_name,
+                        is_temporary,
+                        _target_span,
+                        path,
+                        segment_spans,
+                        segment_construct_spans,
+                        preprocessed,
+                        analysis,
+                    );
+                }
+                oxc_ast::ast::Expression::ArrayExpression(inner_arr) => {
+                    // Nested array — recurse.
+                    decompose_array_write(
+                        inner_arr,
+                        var_name,
+                        is_temporary,
+                        _target_span,
+                        path,
+                        segment_spans,
+                        segment_construct_spans,
+                        preprocessed,
+                        analysis,
+                    );
+                }
+                _ => {
+                    // Leaf scalar (literal, identifier, expression) — emit direct write.
+                    analysis.var_ops.push(AnalyzedVarOp {
+                        name: var_name.to_string(),
+                        is_temporary,
+                        access_kind: VarAccessKind::Write,
+                        span: prop_construct_span.clone(),
+                        property_path: path,
+                        segment_spans,
+                        construct_span: Some(prop_construct_span),
+                        segment_construct_spans,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Decompose an array literal into leaf writes.
+///
+/// Array elements are identified by their numeric index (0, 1, 2, ...).
+/// Each element's construct span = the element's value expression span.
+fn decompose_array_write(
+    arr: &oxc_ast::ast::ArrayExpression<'_>,
+    var_name: &str,
+    is_temporary: bool,
+    _target_span: &std::ops::Range<usize>,
+    prefix: String,
+    parent_segments: Vec<std::ops::Range<usize>>,
+    parent_construct_spans: Vec<std::ops::Range<usize>>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
+    use oxc_ast::ast::ArrayExpressionElement;
+
+    for (idx, elem) in arr.elements.iter().enumerate() {
+        // Match on the element type. ObjectExpression and ArrayExpression
+        // are nested blocks (recurse). Everything else (literals,
+        // identifiers, expressions) is a leaf scalar.
+        match elem {
+            ArrayExpressionElement::ObjectExpression(obj) => {
+                let key = idx.to_string();
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                let obj_span = obj.span();
+                let elem_start = preprocessed.map_to_original(obj_span.start as usize);
+                let elem_end = preprocessed.map_to_original(obj_span.end as usize);
+                let elem_range = elem_start..elem_end;
+
+                let mut segment_spans = parent_segments.clone();
+                segment_spans.push(elem_range.clone());
+                let mut segment_construct_spans = parent_construct_spans.clone();
+                segment_construct_spans.push(elem_range.clone());
+
+                decompose_object_write(
+                    obj, var_name, is_temporary, _target_span,
+                    path, segment_spans, segment_construct_spans,
+                    preprocessed, analysis,
+                );
+            }
+            ArrayExpressionElement::ArrayExpression(inner_arr) => {
+                let key = idx.to_string();
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                let arr_span = inner_arr.span();
+                let elem_start = preprocessed.map_to_original(arr_span.start as usize);
+                let elem_end = preprocessed.map_to_original(arr_span.end as usize);
+                let elem_range = elem_start..elem_end;
+
+                let mut segment_spans = parent_segments.clone();
+                segment_spans.push(elem_range.clone());
+                let mut segment_construct_spans = parent_construct_spans.clone();
+                segment_construct_spans.push(elem_range.clone());
+
+                decompose_array_write(
+                    inner_arr, var_name, is_temporary, _target_span,
+                    path, segment_spans, segment_construct_spans,
+                    preprocessed, analysis,
+                );
+            }
+            ArrayExpressionElement::SpreadElement(_)
+            | ArrayExpressionElement::Elision(_) => {
+                // Skip — spread elements and elisions don't produce writes.
+                continue;
+            }
+            // All literal/identifier variants are leaf scalars.
+            _ => {
+                let elem_span = elem.span();
+                let elem_start = preprocessed.map_to_original(elem_span.start as usize);
+                let elem_end = preprocessed.map_to_original(elem_span.end as usize);
+                let elem_range = elem_start..elem_end;
+
+                let key = idx.to_string();
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+
+                let mut segment_spans = parent_segments.clone();
+                segment_spans.push(elem_range.clone());
+                let mut segment_construct_spans = parent_construct_spans.clone();
+                segment_construct_spans.push(elem_range.clone());
+
+                analysis.var_ops.push(AnalyzedVarOp {
+                    name: var_name.to_string(),
+                    is_temporary,
+                    access_kind: VarAccessKind::Write,
+                    span: elem_range.clone(),
+                    property_path: path,
+                    segment_spans,
+                    construct_span: Some(elem_range),
+                    segment_construct_spans,
+                });
+            }
         }
     }
 }
@@ -1023,70 +1208,6 @@ fn extract_var_info_from_assignment_target(
     }
 }
 
-/// Recursively extract property paths from an oxc `ObjectExpression`.
-fn extract_object_property_paths_recursive(
-    obj: &oxc_ast::ast::ObjectExpression<'_>,
-    var_name: &str,
-    is_temporary: bool,
-    _target_span: std::ops::Range<usize>,
-    prefix: String,
-    parent_segments: Vec<std::ops::Range<usize>>,
-    preprocessed: &super::js_preprocess::PreprocessedJs,
-    analysis: &mut JsAnalysis,
-) {
-    for prop in &obj.properties {
-        if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
-            let key_str = match &p.key {
-                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
-                    Some(id.name.to_string())
-                }
-                oxc_ast::ast::PropertyKey::StringLiteral(s) => {
-                    Some(s.value.to_string())
-                }
-                oxc_ast::ast::PropertyKey::NumericLiteral(n) => {
-                    Some(n.value.to_string())
-                }
-                _ => None,
-            };
-
-            if let Some(key) = key_str {
-                let path = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}.{}", prefix, key)
-                };
-
-                let key_span = p.key.span();
-                let original_start = preprocessed.map_to_original(key_span.start as usize);
-                let original_end = preprocessed.map_to_original(key_span.end as usize);
-                let key_range = original_start..original_end;
-
-                let mut segment_spans = parent_segments.clone();
-                segment_spans.push(key_range.clone());
-
-                analysis.var_ops.push(AnalyzedVarOp {
-                    name: var_name.to_string(),
-                    is_temporary,
-                    access_kind: VarAccessKind::Write,
-                    span: key_range.clone(),
-                    property_path: path.clone(),
-                    segment_spans,
-                    construct_span: None,
-                });
-
-                if let oxc_ast::ast::Expression::ObjectExpression(inner_obj) = &p.value {
-                    let mut child_segments = parent_segments.clone();
-                    child_segments.push(key_range);
-                    extract_object_property_paths_recursive(
-                        inner_obj, var_name, is_temporary, _target_span.clone(),
-                        path, child_segments, preprocessed, analysis,
-                    );
-                }
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Internal: substituted variable checker
 // ---------------------------------------------------------------------------
@@ -1115,6 +1236,7 @@ fn check_identifier_for_substituted_var(
             property_path: property_path.to_string(),
             segment_spans,
             construct_span: None,
+                            segment_construct_spans: Vec::new(),
         });
     }
 
@@ -1133,6 +1255,7 @@ fn check_identifier_for_substituted_var(
             property_path: String::new(),
             segment_spans,
             construct_span: None,
+                            segment_construct_spans: Vec::new(),
         });
     }
 }
@@ -1253,7 +1376,7 @@ fn walk_argument(
             }
         }
         Arg::AssignmentExpression(assign) => {
-            check_assignment_for_state_var(&assign.left, preprocessed, analysis);
+            check_assignment_for_var_writes(&assign.left, &assign.right, preprocessed, analysis);
             walk_expression(&assign.right, preprocessed, analysis);
         }
         Arg::Identifier(id) => {

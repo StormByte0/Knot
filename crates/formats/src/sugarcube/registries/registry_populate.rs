@@ -113,6 +113,7 @@ pub fn populate_registries_from_unified_ast(
                 &cp.body_text,
                 &op.segment_spans,
                 op.construct_span.clone(),
+                &op.segment_construct_spans,
             );
         }
 
@@ -216,6 +217,7 @@ fn collect_var_ops_from_nodes(
                             property_path: vr.property_path.clone(),
                             segment_spans,
                             construct_span: None,
+                            segment_construct_spans: Vec::new(),
                         },
                         None,
                     ));
@@ -243,9 +245,25 @@ fn collect_var_ops_from_nodes(
                         }
                     }
                 } else {
-                    // Fall back to var_refs from SugarCube parser's scan_inline_vars
+                    // Fall back to var_refs from SugarCube parser's scan_inline_vars.
+                    // Skip the set_assignment TARGET if present — Path B handles it
+                    // with better construct_span info. Other var_refs (e.g., `$bar`
+                    // in `<<set $foo to $bar + 1>>`) are still emitted here.
+                    //
+                    // Note: scan_inline_vars may classify the target as a read
+                    // (is_write=false) even though it's the assignment target,
+                    // because the scanner doesn't understand assignment context.
+                    // We skip it regardless of is_write — Path B always emits
+                    // the target with the correct write kind.
                     let is_assignment = is_assignment_macro(name);
+                    let sa_target_name = set_assignment.as_ref().map(|sa| sa.target.name.as_str());
                     for vr in var_refs {
+                        // Skip the set_assignment target — Path B emits it.
+                        if let Some(target) = sa_target_name {
+                            if vr.name == target {
+                                continue;
+                            }
+                        }
                         let segment_spans = compute_target_segment_spans(
                             &vr.name,
                             &vr.property_path,
@@ -265,6 +283,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: vr.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
+                            segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -272,17 +291,32 @@ fn collect_var_ops_from_nodes(
                 }
 
                 // For <<set>> macros with set_assignment: emit the target variable
-                // UNLESS a block write from js_analysis already covers it.
+                // ONLY IF js_analysis didn't already cover it. js_analysis covers
+                // the target in two cases:
+                //   1. Block literal RHS (object/array) — js_walk decomposes it
+                //      into leaf writes. The target itself gets no direct write
+                //      (per the propagation model — it gets writes from leaf
+                //      propagation instead).
+                //   2. Scalar RHS — `check_assignment_for_state_var` emits the
+                //      target as a direct write.
+                // In both cases, Path B is redundant and would cause a
+                // duplicate write on the target node.
                 if let Some(sa) = set_assignment {
-                    let block_write_covers_target = js_analysis.as_ref().is_some_and(|analysis| {
+                    // Check if js_analysis already produced writes for this
+                    // variable. For scalar RHS, js_analysis emits a direct
+                    // write on the target (property_path = ""). For block
+                    // literal RHS, js_analysis emits leaf writes
+                    // (property_path = "child.grandchild"). In both cases,
+                    // Path B is redundant — either the direct write already
+                    // exists, or leaf writes will propagate up to the root.
+                    let js_analysis_covers_target = js_analysis.as_ref().is_some_and(|analysis| {
                         analysis.var_ops.iter().any(|op| {
                             op.name == sa.target.name
-                                && op.property_path == sa.target.property_path
-                                && op.construct_span.is_some()
+                                && op.access_kind.is_write()
                         })
                     });
 
-                    if !block_write_covers_target {
+                    if !js_analysis_covers_target {
                         let kind = set_operator_to_access_kind(&sa.operator);
 
                         let segment_spans = compute_target_segment_spans(
@@ -291,6 +325,10 @@ fn collect_var_ops_from_nodes(
                             &sa.target.span,
                         );
 
+                        // For non-block assignments, the construct span is the
+                        // full `<<set>>` macro span. This is used by propagation
+                        // as the construct span at every depth (since there are
+                        // no intermediate block literals to aggregate).
                         result.push((
                             AnalyzedVarOp {
                                 name: sa.target.name.clone(),
@@ -298,8 +336,18 @@ fn collect_var_ops_from_nodes(
                                 access_kind: kind,
                                 span: sa.target.span.clone(),
                                 property_path: sa.target.property_path.clone(),
-                                segment_spans,
+                                segment_spans: segment_spans.clone(),
                                 construct_span: Some(full_span.clone()),
+                                segment_construct_spans: {
+                                    // For non-block assignments, all segments
+                                    // share the full assignment span. The leaf
+                                    // itself + every ancestor gets the same span.
+                                    let mut scs = Vec::new();
+                                    for _ in 0..segment_spans.len() {
+                                        scs.push(full_span.clone());
+                                    }
+                                    scs
+                                },
                             },
                             None,
                         ));
@@ -333,6 +381,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: ct.property_path.clone(),
                                 segment_spans,
                                 construct_span: Some(full_span.clone()),
+                            segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -366,6 +415,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: fl.index_var.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
+                            segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -394,6 +444,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: fl.iterated_var.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
+                            segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -430,6 +481,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: vr.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
+                            segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -699,6 +751,7 @@ pub fn walk_script_js(
                 body_text,
                 &op.segment_spans,
                 op.construct_span.clone(),
+                &op.segment_construct_spans,
             );
         }
 

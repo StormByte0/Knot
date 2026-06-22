@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use knot_core::Workspace;
 use crate::plugin::SourceTextProvider;
-use crate::types::{PassageVarRef, PropertyKind, PropertyMapEntry, StateVariable, VarAccessKind as TypesVarAccessKind};
+use crate::types::{PassageVarRef, PassageTempVarSummary, PropertyKind, PropertyMapEntry, StateVariable, VarAccessKind as TypesVarAccessKind};
 use super::variable_tree::{VariableTree, PassagePositionMap, NodeId, VarArena, NO_NODE};
 
 /// Extract variable references for a specific passage from the variable tree.
@@ -39,6 +39,73 @@ pub fn extract_passage_variable_refs_impl(
     refs
 }
 
+/// Extract passage-scoped temporary variable summaries for a specific passage.
+///
+/// Like [`extract_passage_variable_refs_impl`], but walks only the
+/// per-passage temp root instead of the persistent root. This is the
+/// SugarCube-specific entry point that backs
+/// [`FormatPlugin::extract_passage_temp_variables`](crate::plugin::FormatPlugin::extract_passage_temp_variables).
+///
+/// Returns one [`PassageTempVarSummary`] per distinct temporary variable
+/// name (`_foo`, `_bar`, ...) declared in the passage, with all of that
+/// variable's reads and writes (including property accesses like
+/// `_obj.prop`) grouped together. The `refs` vector inside each summary
+/// is sorted by line number for stable display.
+///
+/// Line numbers are converted from passage-relative to document-absolute
+/// using the `passage_positions` map at the output boundary, identical
+/// to the persistent-variable path.
+pub fn extract_passage_temp_variables_impl(
+    var_tree: &VariableTree,
+    _workspace: &Workspace,
+    _source_text: &dyn SourceTextProvider,
+    passage_name: &str,
+    passage_positions: &PassagePositionMap,
+) -> Vec<PassageTempVarSummary> {
+    let mut summaries: Vec<PassageTempVarSummary> = Vec::new();
+
+    for (var_name, var_id) in var_tree.iter_temp_for_passage(passage_name) {
+        let mut refs: Vec<PassageVarRef> = Vec::new();
+        collect_refs_from_arena_node(
+            var_tree.arena(),
+            var_id,
+            &var_name,
+            passage_name,
+            passage_positions,
+            &mut refs,
+        );
+
+        if refs.is_empty() {
+            // No direct accesses in this passage for this temp var — skip.
+            // This shouldn't happen in practice (a temp root only exists
+            // when at least one `_var` was recorded), but guard anyway.
+            continue;
+        }
+
+        let write_count = refs.iter().filter(|r| r.is_write).count() as u32;
+        let read_count = refs.iter().filter(|r| !r.is_write).count() as u32;
+
+        // Sort refs by line for display, then by variable name so property
+        // accesses on the same line stay in a deterministic order.
+        refs.sort_by(|a, b| {
+            a.line.cmp(&b.line)
+                .then_with(|| a.variable_name.cmp(&b.variable_name))
+        });
+
+        summaries.push(PassageTempVarSummary {
+            name: var_name,
+            write_count,
+            read_count,
+            refs,
+        });
+    }
+
+    // Stable alphabetic order by temp var name.
+    summaries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    summaries
+}
+
 /// Recursively collect passage variable refs from an arena node and its children.
 ///
 /// Uses `try_get` for child/sibling traversal to gracefully handle freed
@@ -59,10 +126,12 @@ fn collect_refs_from_arena_node(
         if access.passage_name != passage_name {
             continue;
         }
-        // Only include direct accesses at this node, not propagated ones.
-        if access.propagated {
-            continue;
-        }
+        // Include both direct and propagated accesses.
+        // Per the propagation model (see docs/variable-write-propagation-model.md),
+        // propagated writes represent the focus-level aggregate view:
+        // `$a = {name:"x", weight:1}` shows 2 writes on `$a` (one per
+        // immediate child), each carrying the child's construct span.
+        // Direct writes are the leaf scalar writes themselves.
 
         // Convert passage-relative line → document-absolute line
         let abs_line = passage_positions
@@ -70,12 +139,18 @@ fn collect_refs_from_arena_node(
             .map(|pos| pos.body_start_line + access.line)
             .unwrap_or(access.line);
 
+        // Convert passage-relative span → document-absolute span
+        let abs_span = passage_positions
+            .get(&(access.file_uri.clone(), access.passage_name.clone()))
+            .map(|pos| access.span.start + pos.body_start_offset..access.span.end + pos.body_start_offset);
+
         refs.push(PassageVarRef {
             variable_name: full_name.to_string(),
             is_write: access.is_write(),
             line: abs_line,
             file_uri: access.file_uri.clone(),
             passage_name: access.passage_name.clone(),
+            span: abs_span,
         });
     }
 

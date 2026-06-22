@@ -281,12 +281,12 @@ export function registerCommands(deps: CommandDeps): void {
 
     // Open Passage by Name (used by debug view, diagnostics, etc.)
     context.subscriptions.push(
-        vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string, targetLine?: number) => {
+        vscode.commands.registerCommand('knot.openPassageByName', async (passageName: string, targetLine?: number, spanStart?: number, spanEnd?: number) => {
             const client = deps.getClient();
             if (!client || !client.isRunning()) {
                 return;
             }
-            await navigation.navigateToPassage(passageName, targetLine);
+            await navigation.navigateToPassage(passageName, targetLine, spanStart, spanEnd);
         })
     );
 

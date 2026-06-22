@@ -157,6 +157,9 @@ export interface KnotPassageDiagnosticsResponse {
     /** Variable references (reads and writes) in this passage,
      *  resolved from passage analysis with exact line numbers. */
     variable_references: KnotVariableReference[];
+    /** Passage-scoped temporary variables (`_var` in SugarCube) declared
+     *  in this passage. Empty for formats without passage-scoped temps. */
+    temporary_variables: KnotTemporaryVariable[];
 }
 
 export interface KnotPassageLink {
@@ -182,6 +185,24 @@ export interface KnotVariableReference {
     file_uri: string;
     /** The passage name where this reference occurs. */
     passage_name: string;
+    /** The document-absolute byte offset of the start of this reference.
+     *  `null` when span data is not available. */
+    span_start: number | null;
+    /** The document-absolute byte offset of the end of this reference.
+     *  `null` when span data is not available. */
+    span_end: number | null;
+}
+
+/** A passage-scoped temporary variable summary (`_var` in SugarCube). */
+export interface KnotTemporaryVariable {
+    /** The temporary variable name with sigil (e.g., "_counter"). */
+    name: string;
+    /** Number of write accesses inside this passage. */
+    write_count: number;
+    /** Number of read accesses inside this passage. */
+    read_count: number;
+    /** Line-level references (writes and reads, in source order). */
+    references: KnotVariableReference[];
 }
 
 // ---------------------------------------------------------------------------
@@ -236,6 +257,10 @@ export interface KnotVariableLocation {
      *  Enables "goto" navigation to a specific line within a passage.
      *  Defaults to 0 when not yet computed. */
     line: number;
+    /** The document-absolute byte span [start, end) of this usage.
+     *  Enables precise highlighting and range-based navigation.
+     *  `null` when span data is not available. */
+    span: [number, number] | null;
 }
 
 // ---------------------------------------------------------------------------

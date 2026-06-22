@@ -153,9 +153,20 @@ export function registerViewColumnGuard(context: vscode.Disposable[]): void {
  * @param passageName  The passage to navigate to.
  * @param targetLine   Optional line number within the passage to select.
  *                      If omitted, the passage header line is selected.
+ * @param spanStart    Optional document-absolute byte offset for the
+ *                      start of the selection. When provided alongside
+ *                      spanEnd, the editor selects the exact byte range
+ *                      (e.g., `name: "Monday"`) instead of the full line.
+ * @param spanEnd      Optional document-absolute byte offset for the
+ *                      end of the selection.
  * @returns `true` if the passage was found and opened; `false` otherwise.
  */
-export async function navigateToPassage(passageName: string, targetLine?: number): Promise<boolean> {
+export async function navigateToPassage(
+    passageName: string,
+    targetLine?: number,
+    spanStart?: number,
+    spanEnd?: number,
+): Promise<boolean> {
     // ── 1. Cross-view synchronization ────────────────────────────
 
     // Focus the StoryMap node
@@ -175,6 +186,34 @@ export async function navigateToPassage(passageName: string, targetLine?: number
 
     // ── 3. Open the document ─────────────────────────────────────
 
+    // Helper: build the selection range. If span offsets are provided,
+    // convert byte offsets to VS Code positions for precise highlighting.
+    // Otherwise, select the full target line.
+    //
+    // IMPORTANT: The server produces UTF-8 byte offsets, but VS Code's
+    // positionAt() expects UTF-16 code unit offsets. For non-ASCII
+    // characters (e.g., em-dashes in comments), these diverge. We must
+    // convert UTF-8 byte offset → UTF-16 code unit offset before calling
+    // positionAt().
+    const buildSelection = (doc: vscode.TextDocument, headerLine: number) => {
+        if (spanStart !== undefined && spanEnd !== undefined) {
+            const text = doc.getText();
+            // Convert UTF-8 byte offsets to UTF-16 code unit offsets.
+            // Slice the UTF-8 bytes, decode back to string, and use its
+            // length (which equals UTF-16 code unit count for BMP chars).
+            const utf8Bytes = Buffer.from(text, 'utf-8');
+            const startStr = utf8Bytes.subarray(0, spanStart).toString('utf-8');
+            const endStr = utf8Bytes.subarray(0, spanEnd).toString('utf-8');
+            const startPos = doc.positionAt(startStr.length);
+            const endPos = doc.positionAt(endStr.length);
+            return new vscode.Range(startPos, endPos);
+        }
+        const selectionLine = (targetLine !== undefined && targetLine > 0)
+            ? targetLine
+            : headerLine;
+        return new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length);
+    };
+
     // First, search open documents
     for (const doc of vscode.workspace.textDocuments) {
         if (!isTweeLanguage(doc.languageId)) { continue; }
@@ -183,13 +222,10 @@ export async function navigateToPassage(passageName: string, targetLine?: number
             if (line.startsWith('::')) {
                 const name = extractPassageName(line);
                 if (name === passageName) {
-                    const selectionLine = (targetLine !== undefined && targetLine > 0)
-                        ? targetLine
-                        : i;
                     await vscode.window.showTextDocument(doc, {
                         preview: true,
                         viewColumn,
-                        selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
+                        selection: buildSelection(doc, i),
                     });
                     return true;
                 }
@@ -207,13 +243,10 @@ export async function navigateToPassage(passageName: string, targetLine?: number
                 if (line.startsWith('::')) {
                     const name = extractPassageName(line);
                     if (name === passageName) {
-                        const selectionLine = (targetLine !== undefined && targetLine > 0)
-                            ? targetLine
-                            : i;
                         await vscode.window.showTextDocument(doc, {
                             preview: true,
                             viewColumn,
-                            selection: new vscode.Range(selectionLine, 0, selectionLine, doc.lineAt(selectionLine).text.length),
+                            selection: buildSelection(doc, i),
                         });
                         return true;
                     }

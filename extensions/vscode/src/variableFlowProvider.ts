@@ -60,6 +60,7 @@ function transformVariable(v: KnotVariableInfo): Record<string, unknown> {
             ...p.writes.map(w => ({
                 is_write: true,
                 line: w.line,
+                span: w.span,
                 is_struct_def: false,
                 is_reassign: false,
                 type_conflict: false,
@@ -67,6 +68,7 @@ function transformVariable(v: KnotVariableInfo): Record<string, unknown> {
             ...p.reads.map(r => ({
                 is_write: false,
                 line: r.line,
+                span: r.span,
                 is_struct_def: false,
                 is_reassign: false,
                 type_conflict: false,
@@ -157,6 +159,7 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
             ...p.writes.map(w => ({
                 is_write: true,
                 line: w.line,
+                span: w.span,
                 is_struct_def: false,
                 is_reassign: false,
                 type_conflict: false,
@@ -164,6 +167,7 @@ function transformProperty(p: KnotVariableProperty): Record<string, unknown> {
             ...p.reads.map(r => ({
                 is_write: false,
                 line: r.line,
+                span: r.span,
                 is_struct_def: false,
                 is_reassign: false,
                 type_conflict: false,
@@ -330,9 +334,9 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     break;
                 }
                 case 'openPassage': {
-                    const { name, line } = message;
+                    const { name, line, spanStart, spanEnd } = message;
                     if (name) {
-                        await vscode.commands.executeCommand('knot.openPassageByName', name, line ?? 0);
+                        await vscode.commands.executeCommand('knot.openPassageByName', name, line ?? 0, spanStart, spanEnd);
                     }
                     break;
                 }
@@ -831,7 +835,13 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
             }
             var lineEl = e.target.closest('[data-passage][data-line]');
             if (lineEl) {
-                vscode.postMessage({ command: 'openPassage', name: lineEl.dataset.passage, line: parseInt(lineEl.dataset.line || '0', 10) });
+                var msg = { command: 'openPassage', name: lineEl.dataset.passage, line: parseInt(lineEl.dataset.line || '0', 10) };
+                // Include span data for precise range-based navigation.
+                if (lineEl.dataset.spanStart !== undefined && lineEl.dataset.spanEnd !== undefined) {
+                    msg.spanStart = parseInt(lineEl.dataset.spanStart, 10);
+                    msg.spanEnd = parseInt(lineEl.dataset.spanEnd, 10);
+                }
+                vscode.postMessage(msg);
             }
         });
 
@@ -1317,7 +1327,13 @@ export class VariableFlowProvider implements vscode.WebviewViewProvider {
                     var ref = selectedPassage.references[li];
                     html += '<div class="ref-row">';
                     html += '<span class="ref-type ' + (ref.is_write ? 'write' : 'read') + '">' + (ref.is_write ? 'W' : 'R') + '</span>';
-                    html += '<span class="ref-line" data-passage="' + esc(selectedPassage.passage_name) + '" data-line="' + ref.line + '">line ' + ref.line + '</span>';
+                    // Include span data for precise range-based navigation.
+                    // The span is a [start, end] byte offset pair (document-absolute).
+                    var spanAttrs = '';
+                    if (ref.span) {
+                        spanAttrs = ' data-span-start="' + ref.span[0] + '" data-span-end="' + ref.span[1] + '"';
+                    }
+                    html += '<span class="ref-line" data-passage="' + esc(selectedPassage.passage_name) + '" data-line="' + ref.line + '"' + spanAttrs + '>line ' + ref.line + '</span>';
                     if (ref.is_struct_def) html += '<span class="ref-flag struct-def">struct def</span>';
                     if (ref.is_reassign) html += '<span class="ref-flag reassign">reassign</span>';
                     if (ref.type_conflict) html += '<span class="ref-flag type-conflict">type conflict</span>';

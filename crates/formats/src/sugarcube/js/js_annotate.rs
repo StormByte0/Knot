@@ -24,7 +24,6 @@
 use crate::sugarcube::ast::{AnalyzedVarOp, AstNode, JsAnalysis, PassageAst};
 use crate::sugarcube::js::js_preprocess;
 use crate::sugarcube::js::js_walk;
-use crate::sugarcube::registries::variable_tree::VarAccessKind;
 use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
 use oxc_span::GetSpan;
 
@@ -138,66 +137,57 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
                     *js_analysis = Some(analysis);
                 }
 
-                // For <<set>> with object literal RHS: extract property paths
+                // For <<set>> with block literal RHS (object or array):
+                // decompose into leaf writes per the propagation model
+                // (see docs/variable-write-propagation-model.md).
+                //
+                // Block-assigned roots do NOT get a direct write — only
+                // leaf scalar properties get direct writes, which then
+                // propagate up. Each leaf write carries segment_construct_spans
+                // for propagation.
                 if name.eq_ignore_ascii_case("set") {
                     if let Some(sa) = set_assignment {
                         if let Some(expr) = &sa.expression {
                             let trimmed = expr.trim();
-                            if trimmed.starts_with('{') {
-                                let expr_span = sa.expression_span.as_ref().cloned().unwrap_or_else(|| sa.target.span.clone());
-                                let obj_literal_span = compute_object_literal_span(trimmed, &expr_span, expr);
-
-                                let construct_span = obj_literal_span.clone()
-                                    .or_else(|| sa.expression_span.clone());
+                            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                                let expr_span = sa.expression_span.as_ref().cloned()
+                                    .unwrap_or_else(|| sa.target.span.clone());
 
                                 let leading_ws = expr.len() - expr.trim_start().len();
                                 let expr_body_offset = sa.expression_span.as_ref()
                                     .map(|s| s.start + leading_ws)
                                     .unwrap_or(sa.target.span.start);
 
-                                let property_paths = extract_object_property_paths_detailed(trimmed, expr_body_offset);
-                                if !property_paths.is_empty() {
+                                // Compute the full assignment construct span
+                                // (target + `to` + RHS). Used as the root
+                                // construct span for propagation.
+                                let assign_span = {
+                                    let start = sa.target.span.start;
+                                    let end = expr_span.end;
+                                    start..end
+                                };
+
+                                let target_seg_spans = compute_target_segment_spans(
+                                    &sa.target.name,
+                                    &sa.target.property_path,
+                                    &sa.target.span,
+                                );
+
+                                // Decompose the block literal into leaf writes.
+                                let leaf_writes = decompose_block_literal_for_set(
+                                    trimmed,
+                                    expr_body_offset,
+                                    &sa.target.name,
+                                    sa.target.is_temporary,
+                                    &sa.target.property_path,
+                                    &target_seg_spans,
+                                    assign_span,
+                                );
+
+                                if !leaf_writes.is_empty() {
                                     let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
-
-                                    let target_seg_spans = compute_target_segment_spans(
-                                        &sa.target.name,
-                                        &sa.target.property_path,
-                                        &sa.target.span,
-                                    );
-
-                                    if let Some(full_span) = construct_span.clone() {
-                                        analysis.var_ops.push(AnalyzedVarOp {
-                                            name: sa.target.name.clone(),
-                                            is_temporary: sa.target.is_temporary,
-                                            access_kind: VarAccessKind::Write,
-                                            span: full_span.clone(),
-                                            property_path: sa.target.property_path.clone(),
-                                            segment_spans: target_seg_spans,
-                                            construct_span: Some(full_span),
-                                        });
-                                    }
-
-                                    for (path, mut segment_spans) in property_paths {
-                                        let target_seg_spans = compute_target_segment_spans(
-                                            &sa.target.name,
-                                            &sa.target.property_path,
-                                            &sa.target.span,
-                                        );
-                                        segment_spans.splice(0..0, target_seg_spans);
-
-                                        analysis.var_ops.push(AnalyzedVarOp {
-                                            name: sa.target.name.clone(),
-                                            is_temporary: sa.target.is_temporary,
-                                            access_kind: VarAccessKind::Write,
-                                            span: segment_spans.last().cloned().unwrap_or_else(|| sa.target.span.clone()),
-                                            property_path: if sa.target.property_path.is_empty() {
-                                                path
-                                            } else {
-                                                format!("{}.{}", sa.target.property_path, path)
-                                            },
-                                            segment_spans,
-                                            construct_span: construct_span.clone(),
-                                        });
+                                    for op in leaf_writes {
+                                        analysis.var_ops.push(op);
                                     }
                                 }
                             }
@@ -350,104 +340,281 @@ fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAna
     }).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
-// Object literal property path extraction
-// ---------------------------------------------------------------------------
+/// Decompose a block literal (object or array) into leaf writes for a
+/// `<<set>>` macro.
+///
+/// This is the `<<set>>`-specific entry point that mirrors what
+/// `check_assignment_for_var_writes` does in js_walk for `<<run>>` and
+/// script passages. It parses the block literal expression string with oxc,
+/// then walks the AST to emit leaf writes with per-segment construct spans.
+///
+/// Block-assigned roots do NOT get a direct write — only leaf scalar
+/// properties get direct writes, which then propagate up.
+fn decompose_block_literal_for_set(
+    expr_src: &str,
+    expr_body_offset: usize,
+    var_name: &str,
+    is_temporary: bool,
+    target_property_path: &str,
+    target_seg_spans: &[std::ops::Range<usize>],
+    assign_span: std::ops::Range<usize>,
+) -> Vec<AnalyzedVarOp> {
+    let preprocessed = js_preprocess::preprocess_for_oxc(expr_src);
+    let shifted = js_preprocess::PreprocessedJs {
+        source: preprocessed.source,
+        substitutions: preprocessed.substitutions,
+        origin_offset: expr_body_offset,
+        wrapping_offset: 1, // Expression mode
+    };
 
-/// Extract property paths with per-segment spans from an object literal expression.
-fn extract_object_property_paths_detailed(source: &str, body_offset: usize) -> Vec<(String, Vec<std::ops::Range<usize>>)> {
-    let mut preprocessed = js_preprocess::preprocess_for_oxc(source);
-    preprocessed.wrapping_offset = 1;
-    preprocessed.origin_offset = body_offset;
+    let outcome = parse_js(&shifted.source, JsParseMode::Expression);
+    let mut result = Vec::new();
 
-    let outcome = parse_js(&preprocessed.source, JsParseMode::Expression);
     outcome.with_program(|program| {
-        let mut results = Vec::new();
         for stmt in &program.body {
             if let oxc_ast::ast::Statement::ExpressionStatement(expr_stmt) = stmt {
-                collect_object_paths_detailed_from_oxc_expr(
-                    &expr_stmt.expression, &mut results, String::new(), &preprocessed,
+                let expr = &expr_stmt.expression;
+                // root_construct_spans has ONE entry per path depth.
+                // Depth 0 = the root variable ($ITEMS). Its construct span
+                // is the full assignment span (target + `=` + RHS).
+                // This must stay aligned with segment_spans (which also
+                // has one entry per depth, starting with the root token).
+                let root_construct_spans = vec![assign_span.clone()];
+                decompose_expr_for_set(
+                    expr,
+                    var_name,
+                    is_temporary,
+                    target_property_path,
+                    target_seg_spans.to_vec(),
+                    root_construct_spans,
+                    &shifted,
+                    &mut result,
+                );
+                break;
+            }
+        }
+    });
+
+    result
+}
+
+/// Recursively decompose an oxc ObjectExpression into leaf writes.
+fn decompose_object_expr_for_set(
+    obj: &oxc_ast::ast::ObjectExpression<'_>,
+    var_name: &str,
+    is_temporary: bool,
+    prefix: &str,
+    parent_segments: Vec<std::ops::Range<usize>>,
+    parent_construct_spans: Vec<std::ops::Range<usize>>,
+    preprocessed: &js_preprocess::PreprocessedJs,
+    result: &mut Vec<AnalyzedVarOp>,
+) {
+    use crate::sugarcube::registries::variable_tree::VarAccessKind;
+    use oxc_ast::ast::Expression;
+
+    for prop in &obj.properties {
+        if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+            let key_str = match &p.key {
+                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+                oxc_ast::ast::PropertyKey::StringLiteral(s) => Some(s.value.to_string()),
+                oxc_ast::ast::PropertyKey::NumericLiteral(n) => Some(n.value.to_string()),
+                _ => None,
+            };
+            let Some(key) = key_str else { continue };
+
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{}.{}", prefix, key)
+            };
+
+            let key_span = p.key.span();
+            let key_start = preprocessed.map_to_original(key_span.start as usize);
+            let key_end = preprocessed.map_to_original(key_span.end as usize);
+            let key_range = key_start..key_end;
+
+            let value_span = p.value.span();
+            let value_end = preprocessed.map_to_original(value_span.end as usize);
+            let prop_construct_span = key_start..value_end;
+
+            let mut segment_spans = parent_segments.clone();
+            segment_spans.push(key_range.clone());
+            let mut segment_construct_spans = parent_construct_spans.clone();
+            segment_construct_spans.push(prop_construct_span.clone());
+
+            match &p.value {
+                Expression::ObjectExpression(inner) => {
+                    decompose_object_expr_for_set(
+                        inner, var_name, is_temporary, &path,
+                        segment_spans, segment_construct_spans,
+                        preprocessed, result,
+                    );
+                }
+                Expression::ArrayExpression(inner) => {
+                    decompose_array_expr_for_set(
+                        inner, var_name, is_temporary, &path,
+                        segment_spans, segment_construct_spans,
+                        preprocessed, result,
+                    );
+                }
+                _ => {
+                    result.push(AnalyzedVarOp {
+                        name: var_name.to_string(),
+                        is_temporary,
+                        access_kind: VarAccessKind::Write,
+                        span: prop_construct_span.clone(),
+                        property_path: path,
+                        segment_spans,
+                        construct_span: Some(prop_construct_span),
+                        segment_construct_spans,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Recursively decompose an oxc ArrayExpression into leaf writes.
+fn decompose_array_expr_for_set(
+    arr: &oxc_ast::ast::ArrayExpression<'_>,
+    var_name: &str,
+    is_temporary: bool,
+    prefix: &str,
+    parent_segments: Vec<std::ops::Range<usize>>,
+    parent_construct_spans: Vec<std::ops::Range<usize>>,
+    preprocessed: &js_preprocess::PreprocessedJs,
+    result: &mut Vec<AnalyzedVarOp>,
+) {
+    use crate::sugarcube::registries::variable_tree::VarAccessKind;
+    use oxc_ast::ast::ArrayExpressionElement;
+
+    for (idx, elem) in arr.elements.iter().enumerate() {
+        let key = idx.to_string();
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+
+        match elem {
+            ArrayExpressionElement::ObjectExpression(obj) => {
+                let obj = obj.as_ref();
+                let obj_span = obj.span();
+                let s = preprocessed.map_to_original(obj_span.start as usize);
+                let e = preprocessed.map_to_original(obj_span.end as usize);
+                let elem_range = s..e;
+                let mut ss = parent_segments.clone();
+                ss.push(elem_range.clone());
+                let mut scs = parent_construct_spans.clone();
+                scs.push(elem_range.clone());
+                decompose_object_expr_for_set(
+                    obj, var_name, is_temporary, &path,
+                    ss, scs, preprocessed, result,
                 );
             }
-        }
-        results
-    }).unwrap_or_default()
-}
-
-/// Compute the passage-body-relative span of the object literal portion `{...}`
-fn compute_object_literal_span(
-    trimmed: &str,
-    expr_span: &std::ops::Range<usize>,
-    original_expr: &str,
-) -> Option<std::ops::Range<usize>> {
-    let obj_start_in_trimmed = trimmed.find('{')?;
-    let mut depth = 0i32;
-    let mut obj_end_in_trimmed = obj_start_in_trimmed;
-    let bytes = trimmed.as_bytes();
-    let len = bytes.len();
-    let mut i = obj_start_in_trimmed;
-    while i < len {
-        let b = bytes[i];
-        match b {
-            b'{' => {
-                depth += 1;
-                i += 1;
+            ArrayExpressionElement::ArrayExpression(inner) => {
+                let inner = inner.as_ref();
+                let arr_span = inner.span();
+                let s = preprocessed.map_to_original(arr_span.start as usize);
+                let e = preprocessed.map_to_original(arr_span.end as usize);
+                let elem_range = s..e;
+                let mut ss = parent_segments.clone();
+                ss.push(elem_range.clone());
+                let mut scs = parent_construct_spans.clone();
+                scs.push(elem_range.clone());
+                decompose_array_expr_for_set(
+                    inner, var_name, is_temporary, &path,
+                    ss, scs, preprocessed, result,
+                );
             }
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    obj_end_in_trimmed = i + 1;
-                    break;
-                }
-                i += 1;
-            }
-            b'"' | b'\'' => {
-                let quote = b;
-                i += 1;
-                while i < len {
-                    if bytes[i] == b'\\' && i + 1 < len {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == quote {
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
-                i += 2;
-                while i + 1 < len {
-                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                i += 2;
-                while i < len && bytes[i] != b'\n' {
-                    i += 1;
-                }
+            ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => {
+                continue;
             }
             _ => {
-                i += 1;
+                let elem_span = elem.span();
+                let s = preprocessed.map_to_original(elem_span.start as usize);
+                let e = preprocessed.map_to_original(elem_span.end as usize);
+                let elem_range = s..e;
+                let mut ss = parent_segments.clone();
+                ss.push(elem_range.clone());
+                let mut scs = parent_construct_spans.clone();
+                scs.push(elem_range.clone());
+                result.push(AnalyzedVarOp {
+                    name: var_name.to_string(),
+                    is_temporary,
+                    access_kind: VarAccessKind::Write,
+                    span: elem_range.clone(),
+                    property_path: path,
+                    segment_spans: ss,
+                    construct_span: Some(elem_range),
+                    segment_construct_spans: scs,
+                });
             }
         }
     }
-    if depth != 0 {
-        return None;
-    }
-
-    let leading_ws = original_expr.len() - original_expr.trim_start().len();
-    let obj_start_in_original = leading_ws + obj_start_in_trimmed;
-    let obj_end_in_original = leading_ws + obj_end_in_trimmed;
-
-    let offset = expr_span.start;
-    Some((offset + obj_start_in_original)..(offset + obj_end_in_original))
 }
+
+/// Recursively decompose an oxc expression into leaf writes.
+/// Delegates to `decompose_object_expr_for_set` or `decompose_array_expr_for_set`
+/// based on the expression type.
+fn decompose_expr_for_set(
+    expr: &oxc_ast::ast::Expression<'_>,
+    var_name: &str,
+    is_temporary: bool,
+    prefix: &str,
+    parent_segments: Vec<std::ops::Range<usize>>,
+    parent_construct_spans: Vec<std::ops::Range<usize>>,
+    preprocessed: &js_preprocess::PreprocessedJs,
+    result: &mut Vec<AnalyzedVarOp>,
+) {
+    use crate::sugarcube::registries::variable_tree::VarAccessKind;
+    use oxc_ast::ast::Expression;
+
+    match expr {
+        Expression::ParenthesizedExpression(pe) => {
+            // Unwrap parens — the inner expression is what matters.
+            decompose_expr_for_set(
+                &pe.expression, var_name, is_temporary, prefix,
+                parent_segments, parent_construct_spans,
+                preprocessed, result,
+            );
+        }
+        Expression::ObjectExpression(obj) => {
+            decompose_object_expr_for_set(
+                obj, var_name, is_temporary, prefix,
+                parent_segments, parent_construct_spans,
+                preprocessed, result,
+            );
+        }
+        Expression::ArrayExpression(arr) => {
+            decompose_array_expr_for_set(
+                arr, var_name, is_temporary, prefix,
+                parent_segments, parent_construct_spans,
+                preprocessed, result,
+            );
+        }
+        _ => {
+            // Non-block expression at top level — defensive fallback.
+            let expr_span = expr.span();
+            let s = preprocessed.map_to_original(expr_span.start as usize);
+            let e = preprocessed.map_to_original(expr_span.end as usize);
+            let span = s..e;
+            let mut scs = parent_construct_spans;
+            scs.push(span.clone());
+            result.push(AnalyzedVarOp {
+                name: var_name.to_string(),
+                is_temporary,
+                access_kind: VarAccessKind::Write,
+                span: span.clone(),
+                property_path: prefix.to_string(),
+                segment_spans: parent_segments,
+                construct_span: Some(span),
+                segment_construct_spans: scs,
+            });
+        }
+    }
+}
+
 
 /// Compute segment spans from a target's name, property_path, and overall span.
 pub fn compute_target_segment_spans(
@@ -474,93 +641,4 @@ pub fn compute_target_segment_spans(
     }
 
     spans
-}
-
-/// Recursively collect property paths with per-segment spans from an oxc expression.
-fn collect_object_paths_detailed_from_oxc_expr(
-    expr: &oxc_ast::ast::Expression<'_>,
-    results: &mut Vec<(String, Vec<std::ops::Range<usize>>)>,
-    prefix: String,
-    preprocessed: &js_preprocess::PreprocessedJs,
-) {
-    use oxc_ast::ast::Expression;
-
-    match expr {
-        Expression::ParenthesizedExpression(pe) => {
-            collect_object_paths_detailed_from_oxc_expr(
-                &pe.expression, results, prefix, preprocessed,
-            );
-        }
-        Expression::ObjectExpression(obj) => {
-            for prop in &obj.properties {
-                if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
-                    let key_str = match &p.key {
-                        oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
-                            Some(id.name.to_string())
-                        }
-                        oxc_ast::ast::PropertyKey::StringLiteral(s) => {
-                            Some(s.value.to_string())
-                        }
-                        oxc_ast::ast::PropertyKey::NumericLiteral(n) => {
-                            Some(n.value.to_string())
-                        }
-                        _ => None,
-                    };
-
-                    if let Some(key) = key_str {
-                        let path = if prefix.is_empty() {
-                            key.clone()
-                        } else {
-                            format!("{}.{}", prefix, key)
-                        };
-
-                        let key_span = p.key.span();
-                        let start = preprocessed.map_to_original(key_span.start as usize);
-                        let end = preprocessed.map_to_original(key_span.end as usize);
-                        let key_range = start..end;
-
-                        let segment_spans = build_segment_spans_for_path(
-                            &path, results, &key_range,
-                        );
-
-                        results.push((path.clone(), segment_spans));
-
-                        collect_object_paths_detailed_from_oxc_expr(
-                            &p.value, results, path, preprocessed,
-                        );
-                    }
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Build the segment_spans vector for a property path by looking up
-/// the spans of each ancestor segment from previously collected results.
-fn build_segment_spans_for_path(
-    path: &str,
-    previous_results: &[(String, Vec<std::ops::Range<usize>>)],
-    leaf_span: &std::ops::Range<usize>,
-) -> Vec<std::ops::Range<usize>> {
-    let segments: Vec<&str> = path.split('.').collect();
-    if segments.is_empty() {
-        return vec![leaf_span.clone()];
-    }
-
-    let mut segment_spans = Vec::with_capacity(segments.len());
-
-    for (i, _seg) in segments.iter().enumerate() {
-        if i < segments.len() - 1 {
-            let prefix: String = segments[..=i].join(".");
-            if let Some((_, spans)) = previous_results.iter().find(|(p, _)| p == &prefix) {
-                if let Some(last) = spans.last() {
-                    segment_spans.push(last.clone());
-                }
-            }
-        }
-    }
-
-    segment_spans.push(leaf_span.clone());
-    segment_spans
 }

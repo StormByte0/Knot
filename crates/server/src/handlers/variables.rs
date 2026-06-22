@@ -31,12 +31,14 @@ fn convert_property_node(p: knot_formats::types::VariablePropertyNode) -> KnotVa
             file_uri: l.file_uri,
             is_write: l.is_write,
             line: l.line,
+            span: l.span.map(|s| (s.start as u32, s.end as u32)),
         }).collect(),
         read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
             passage_name: l.passage_name,
             file_uri: l.file_uri,
             is_write: l.is_write,
             line: l.line,
+            span: l.span.map(|s| (s.start as u32, s.end as u32)),
         }).collect(),
         properties: convert_properties(p.properties),
         kind: kind_str.to_string(),
@@ -97,6 +99,8 @@ pub(crate) fn build_passage_variable_references(
             line: r.line,
             file_uri: r.file_uri,
             passage_name: r.passage_name,
+            span_start: r.span.as_ref().map(|s| s.start as u32),
+            span_end: r.span.as_ref().map(|s| s.end as u32),
         })
         .collect();
 
@@ -107,6 +111,54 @@ pub(crate) fn build_passage_variable_references(
     });
 
     references
+}
+
+/// Build temporary-variable summaries for a specific passage using the
+/// format plugin's temp-variable extraction.
+///
+/// Mirrors [`build_passage_variable_references`] but walks the format
+/// plugin's per-passage temp root instead of the persistent root.
+/// Returns one [`KnotTemporaryVariable`] per distinct `_var` declared
+/// in the passage, with aggregated read/write counts and line-level
+/// references for navigation.
+///
+/// Formats without passage-scoped temporary variables (Harlowe,
+/// Snowman, Chapbook) inherit the default empty implementation from
+/// `FormatPlugin::extract_passage_temp_variables` and this returns
+/// an empty Vec — the diagnostics panel will simply hide the section.
+pub(crate) fn build_passage_temporary_variables(
+    workspace: &Workspace,
+    format_registry: &fmt_plugin::FormatRegistry,
+    open_documents: &HashMap<Url, String>,
+    passage_name: &str,
+) -> Vec<KnotTemporaryVariable> {
+    let format = workspace.resolve_format();
+    let Some(plugin) = format_registry.get(&format) else {
+        return Vec::new();
+    };
+
+    let source_text = DocumentCache(open_documents);
+    let summaries = plugin.extract_passage_temp_variables(workspace, &source_text, passage_name);
+
+    // Pure mechanical translation: format-agnostic PassageTempVarSummary
+    // → LSP wire type. No format-specific logic lives here.
+    summaries
+        .into_iter()
+        .map(|s| KnotTemporaryVariable {
+            name: s.name,
+            write_count: s.write_count,
+            read_count: s.read_count,
+            references: s.refs.into_iter().map(|r| KnotVariableReference {
+                variable_name: r.variable_name,
+                is_write: r.is_write,
+                line: r.line,
+                file_uri: r.file_uri,
+                passage_name: r.passage_name,
+                span_start: r.span.as_ref().map(|s| s.start as u32),
+                span_end: r.span.as_ref().map(|s| s.end as u32),
+            }).collect(),
+        })
+        .collect()
 }
 
 impl ServerState {
@@ -178,12 +230,14 @@ impl ServerState {
                         file_uri: l.file_uri,
                         is_write: l.is_write,
                         line: l.line,
+                        span: l.span.map(|s| (s.start as u32, s.end as u32)),
                     }).collect(),
                     read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
                         passage_name: l.passage_name,
                         file_uri: l.file_uri,
                         is_write: l.is_write,
                         line: l.line,
+                        span: l.span.map(|s| (s.start as u32, s.end as u32)),
                     }).collect(),
                     initialized_at_start: node.initialized_at_start,
                     is_unused: node.is_unused,

@@ -956,6 +956,25 @@ impl FormatPlugin for SugarCubePlugin {
         )
     }
 
+    fn extract_passage_temp_variables(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn crate::plugin::SourceTextProvider,
+        passage_name: &str,
+    ) -> Vec<crate::types::PassageTempVarSummary> {
+        // Compute passage positions for relative→absolute line conversion.
+        // Reuses the same map as the persistent-variable path so line
+        // numbers are consistent between the two sections.
+        let passage_positions = self.registry.compute_passage_positions(source_text);
+        var_extract::extract_passage_temp_variables_impl(
+            &self.registry.variables(),
+            workspace,
+            source_text,
+            passage_name,
+            &passage_positions,
+        )
+    }
+
     fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
         self.registry.variables().property_map()
     }
@@ -3842,9 +3861,7 @@ mod completion_debug_tests {
             VarAccessKind::Write,
             "Init", "file:///test.twee",
             10..40, "work.pen.color", "",
-            &[],
-            None,
-        );
+            &[], None, &[]);
 
         // Line text: "<<set $item.work.>>"
         // Positions:  0123456789012345678
@@ -3884,9 +3901,7 @@ mod completion_debug_tests {
             VarAccessKind::Write,
             "Init", "file:///test.twee",
             10..40, "work.pen.color", "",
-            &[],
-            None,
-        );
+            &[], None, &[]);
 
         // Level 1: dot completions for $item → should show "work"
         let items_level1 = plugin.build_variable_dot_completions("$item", 0, 7, "", None);
@@ -3924,9 +3939,7 @@ mod completion_debug_tests {
             VarAccessKind::Write,
             "Init", "file:///test.twee",
             10..40, "work.pen.color", "",
-            &[],
-            None,
-        );
+            &[], None, &[]);
 
         // Test: $item. (dot trigger) → should show "work"
         // Line: "<<set $item.>>" — cursor after dot = character 12
@@ -3972,9 +3985,7 @@ mod completion_debug_tests {
             VarAccessKind::Write,
             "Init", "file:///test.twee",
             10..40, "work.pen.color", "",
-            &[],
-            None,
-        );
+            &[], None, &[]);
 
         // Test: $item.work. with NO trigger → should show "pen"
         // Line: "<<set $item.work.>>" — cursor after second dot = character 17
@@ -4006,9 +4017,7 @@ mod completion_debug_tests {
             VarAccessKind::Write,
             "Init", "file:///test.twee",
             10..40, "work.pen.color", "",
-            &[],
-            None,
-        );
+            &[], None, &[]);
 
         // Add a document with a VarOp for $item.work
         // This simulates the parser having seen $item.work in the passage
@@ -4083,9 +4092,7 @@ mod completion_debug_tests {
                 12..17, // segment 1: ".work"
                 17..21, // segment 2: ".pen"
                 21..27, // segment 3: ".color"
-            ],
-            None,
-        );
+            ], None, &[]);
 
         // Test: path_at_offset should resolve correctly at each depth.
         // When cursor is within segment 1 (work), should return "$item.work"
@@ -4134,9 +4141,7 @@ mod completion_debug_tests {
                 12..17, // .work
                 17..21, // .pen
                 21..27, // .color
-            ],
-            None,
-        );
+            ], None, &[]);
         plugin.registry_mut().variables_mut().record_var(
             "$item", false,
             VarAccessKind::Write,
@@ -4146,9 +4151,7 @@ mod completion_debug_tests {
             &[
                 35..40, // $item
                 40..44, // .name
-            ],
-            None,
-        );
+            ], None, &[]);
 
         // Test: $item.work. (dot trigger) → should show "pen", NOT "work" or "name"
         let text = ":: Init\n<<set $item.work.>>";
@@ -4656,8 +4659,7 @@ mod temp_var_scope_tests {
             VarAccessKind::Write,
             "Start", "file:///test.twee",
             10..20, "", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         // Temp vars in Start.
         tree.record_var(
@@ -4665,8 +4667,7 @@ mod temp_var_scope_tests {
             VarAccessKind::Write,
             "Start", "file:///test.twee",
             10..30, "", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         // Temp vars in Inventory — must NOT leak into Start's completions.
         tree.record_var(
@@ -4674,8 +4675,7 @@ mod temp_var_scope_tests {
             VarAccessKind::Write,
             "Inventory", "file:///test.twee",
             10..30, "", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         let start_names = tree.completion_names_for_passage(Some("Start"));
         assert!(start_names.contains("$gold"),
@@ -4699,13 +4699,11 @@ mod temp_var_scope_tests {
         tree.record_var(
             "$gold", false, VarAccessKind::Write,
             "Start", "file:///test.twee",
-            10..20, "", "", &[], None,
-        );
+            10..20, "", "", &[], None, &[]);
         tree.record_var(
             "_temp", true, VarAccessKind::Write,
             "Start", "file:///test.twee",
-            10..20, "", "", &[], None,
-        );
+            10..20, "", "", &[], None, &[]);
 
         let names = tree.completion_names_for_passage(None);
         assert!(names.contains("$gold"),
@@ -4724,18 +4722,15 @@ mod temp_var_scope_tests {
             tree.record_var(
                 "$shared", false, VarAccessKind::Write,
                 "Start", "file:///test.twee",
-                10..20, "", "", &[], None,
-            );
+                10..20, "", "", &[], None, &[]);
             tree.record_var(
                 "_a_start", true, VarAccessKind::Write,
                 "Start", "file:///test.twee",
-                10..20, "", "", &[], None,
-            );
+                10..20, "", "", &[], None, &[]);
             tree.record_var(
                 "_b_other", true, VarAccessKind::Write,
                 "Other", "file:///test.twee",
-                10..20, "", "", &[], None,
-            );
+                10..20, "", "", &[], None, &[]);
         }
 
         let names = plugin.registry().variable_names_for_passage(Some("Start"));
@@ -4759,18 +4754,15 @@ mod temp_var_scope_tests {
             tree.record_var(
                 "$shared", false, VarAccessKind::Write,
                 "Start", "file:///test.twee",
-                10..20, "", "", &[], None,
-            );
+                10..20, "", "", &[], None, &[]);
             tree.record_var(
                 "_start_only", true, VarAccessKind::Write,
                 "Start", "file:///test.twee",
-                10..30, "", "", &[], None,
-            );
+                10..30, "", "", &[], None, &[]);
             tree.record_var(
                 "_inv_only", true, VarAccessKind::Write,
                 "Inventory", "file:///test.twee",
-                10..30, "", "", &[], None,
-            );
+                10..30, "", "", &[], None, &[]);
         }
 
         let uri = Url::parse("file:///test.twee").unwrap();
@@ -4809,13 +4801,11 @@ mod temp_var_scope_tests {
             tree.record_var(
                 "_start_only", true, VarAccessKind::Write,
                 "Start", "file:///test.twee",
-                10..30, "", "", &[], None,
-            );
+                10..30, "", "", &[], None, &[]);
             tree.record_var(
                 "_inv_only", true, VarAccessKind::Write,
                 "Inventory", "file:///test.twee",
-                10..30, "", "", &[], None,
-            );
+                10..30, "", "", &[], None, &[]);
         }
 
         let uri = Url::parse("file:///test.twee").unwrap();
@@ -4855,16 +4845,14 @@ mod temp_var_scope_tests {
             "_x", true, VarAccessKind::Write,
             "Start", "file:///test.twee",
             10..30, "hp", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         // Inventory's _x: Object with `gold` property (different shape).
         tree.record_var(
             "_x", true, VarAccessKind::Write,
             "Inventory", "file:///test.twee",
             10..30, "gold", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         // From Start's scope: kind resolves, children are `hp`.
         let kind_start = tree.kind_at_path_for_passage("_x", Some("Start"));
@@ -4899,14 +4887,12 @@ mod temp_var_scope_tests {
             "_x", true, VarAccessKind::Write,
             "Start", "file:///test.twee",
             10..30, "hp", "",
-            &[], None,
-        );
+            &[], None, &[]);
         tree.record_var(
             "$player", false, VarAccessKind::Write,
             "Start", "file:///test.twee",
             10..30, "hp", "",
-            &[], None,
-        );
+            &[], None, &[]);
 
         // Temp without passage scope → None (safe).
         assert!(tree.get_node_by_path("_x").is_none(),

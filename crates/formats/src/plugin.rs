@@ -1520,6 +1520,36 @@ pub trait FormatPlugin: Send + Sync {
         Vec::new()
     }
 
+    /// Extract passage-scoped temporary variables for a specific passage.
+    ///
+    /// This is the format-agnostic entry point used by passage diagnostics
+    /// to render a small "Temporary Variables" infographics block.
+    ///
+    /// Unlike persistent variables (which are workspace-global and shown in
+    /// the variable tracker / `variable_references`), temporary variables
+    /// are scoped to a single passage. The same `_foo` name can be reused
+    /// across different passages without collision, so the format plugin
+    /// must return only the temps that live in the requested `passage_name`.
+    ///
+    /// The default implementation returns an empty Vec — formats that have
+    /// no concept of passage-scoped temporary variables (e.g., Harlowe,
+    /// Snowman, Chapbook) inherit this and the diagnostics panel simply
+    /// shows nothing for that section.
+    ///
+    /// Returns one [`PassageTempVarSummary`] per distinct temporary
+    /// variable name in the passage, with `write_count` / `read_count`
+    /// aggregated from all of its accesses, plus the line-level `refs`
+    /// for "go to line" navigation.
+    fn extract_passage_temp_variables(
+        &self,
+        workspace: &knot_core::Workspace,
+        source_text: &dyn SourceTextProvider,
+        passage_name: &str,
+    ) -> Vec<crate::types::PassageTempVarSummary> {
+        let _ = (workspace, source_text, passage_name);
+        Vec::new()
+    }
+
     // -----------------------------------------------------------------------
     // Registry accessors (Phase C — format-owned side tables)
     // -----------------------------------------------------------------------

@@ -217,6 +217,11 @@ pub struct KnotVariableLocation {
     /// Enables "goto" navigation to a specific line within a passage,
     /// not just the passage header. Defaults to 0 when not yet computed.
     pub line: u32,
+    /// The document-absolute byte span of this usage within the source file.
+    /// Enables precise highlighting and range-based navigation (e.g.,
+    /// selecting the exact `key: value` token rather than just jumping
+    /// to the line). `None` when span data is not available.
+    pub span: Option<(u32, u32)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +406,12 @@ pub struct KnotPassageDiagnosticsResponse {
     /// Enables the client to show where each variable is read/written
     /// and navigate to the specific source line.
     pub variable_references: Vec<KnotVariableReference>,
+    /// Passage-scoped temporary variables (`_var` in SugarCube) declared
+    /// in this passage, with their read/write counts and line-level
+    /// references. Unlike persistent (`$`) variables, these are scoped
+    /// to the passage and are therefore surfaced here rather than in
+    /// the workspace-wide variable tracker.
+    pub temporary_variables: Vec<KnotTemporaryVariable>,
 }
 
 /// Link info for passage diagnostics response.
@@ -440,6 +451,32 @@ pub struct KnotVariableReference {
     pub file_uri: String,
     /// The passage name where this reference occurs.
     pub passage_name: String,
+    /// The document-absolute byte span [start, end) of this reference.
+    /// Enables precise highlighting and range-based navigation.
+    /// `None` when span data is not available.
+    pub span_start: Option<u32>,
+    pub span_end: Option<u32>,
+}
+
+/// A passage-scoped temporary variable (`_var` in SugarCube) summary
+/// for the passage diagnostics panel.
+///
+/// Each entry groups all reads and writes of one temporary variable
+/// inside a single passage so the client can render a compact
+/// infographics block (name + read/write counts + clickable line
+/// refs) without having to do its own grouping.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotTemporaryVariable {
+    /// The temporary variable name with sigil (e.g., "_counter").
+    pub name: String,
+    /// Number of write accesses inside this passage.
+    pub write_count: u32,
+    /// Number of read accesses inside this passage.
+    pub read_count: u32,
+    /// Line-level references (writes and reads, in source order) so
+    /// the client can offer "go to line" navigation. Reuses the same
+    /// shape as persistent-variable references for client-side parity.
+    pub references: Vec<KnotVariableReference>,
 }
 
 
