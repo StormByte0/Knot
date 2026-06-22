@@ -72,35 +72,27 @@ export function registerNotifications(
             if (deps.statusBarItem) {
                 if (params.parsed_files < params.total_files) {
                     deps.statusBarItem.text = `$(sync~spin) Knot: Indexing ${params.parsed_files}/${params.total_files}`;
+                    deps.statusBarItem.show();
                 } else {
-                    deps.statusBarItem.text = '$(check) Knot: Ready';
-                    deps.statusBarItem.command = 'knot.openStoryMap';
-                    deps.statusBarItem.tooltip = 'Knot: Click to open Story Map';
+                    // Indexing complete — hide the indexing status bar item.
+                    // The permanent status bar items (Story Map, Build, Settings)
+                    // created by statusBarItems.ts are already visible.
+                    deps.statusBarItem.hide();
                     deps.storyMapPanel?.refreshGraph();
                     deps.variableFlowProvider?.refresh();
                     deps.profileViewProvider?.refresh();
 
-                    // Fetch profile data for status bar enrichment
+                    // Fetch profile data (used for language status item enrichment)
                     (async () => {
                         try {
                             const wsFolders = vscode.workspace.workspaceFolders;
                             if (wsFolders && wsFolders.length > 0) {
-                                const profile = await client.sendRequest<KnotProfileResponse>('knot/profile', {
+                                await client.sendRequest<KnotProfileResponse>('knot/profile', {
                                     workspace_uri: wsFolders[0].uri.toString(),
                                 });
-                                if (deps.statusBarItem && profile) {
-                                    const name = profile.story_name || 'Untitled';
-                                    const fmt = profile.format || 'Unknown';
-                                    const passages = profile.passage_count || 0;
-                                    deps.statusBarItem.text = `$(graph) ${name} | ${passages} passages`;
-                                    deps.statusBarItem.tooltip = `Knot IDE — ${name} | ${fmt}${profile.format_version ? ' v' + profile.format_version : ''} | ${passages} passages, ${profile.total_word_count || 0} words`;
-                                }
                             }
                         } catch {
-                            // If profile fetch fails, use default status
-                            if (deps.statusBarItem) {
-                                deps.statusBarItem.text = '$(graph) Knot';
-                            }
+                            // Profile fetch is best-effort
                         }
                     })();
                 }
@@ -129,6 +121,7 @@ export function registerNotifications(
                 deps.statusBarItem.text = '$(plus) Knot: No project found';
                 deps.statusBarItem.tooltip = 'Knot: No .tw/.twee files found. Click to initialize a project.';
                 deps.statusBarItem.command = 'knot.initProject';
+                deps.statusBarItem.show();
             }
             // Prompt the user to initialize a project
             vscode.window.showInformationMessage(

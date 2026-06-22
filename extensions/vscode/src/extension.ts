@@ -27,6 +27,7 @@ import { registerLanguageStatus } from './languageStatus';
 import { registerDecorations, refreshDecorationsForOpenEditors } from './decorations';
 import { registerTaskProvider } from './taskProvider';
 import { handleServerFailure, resetCrashCount } from './crashRecovery';
+import { createStatusBarItems } from './statusBarItems';
 
 // The LanguageClient class is only available at runtime from the node entry.
 // We use require() to access it since the typings don't export it.
@@ -77,6 +78,11 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBarItem.text = '$(sync~spin) Knot: Starting...';
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
+
+    // Create the permanent left-side status bar items (Story Map, Build, Settings)
+    // These appear after indexing completes; during indexing, the statusBarItem
+    // above shows progress instead.
+    createStatusBarItems(context);
 
     // ── Language client setup ──────────────────────────────────────────
 

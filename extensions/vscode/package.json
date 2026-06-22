@@ -143,6 +143,11 @@
         "category": "Knot"
       },
       {
+        "command": "knot.openSettings",
+        "title": "Knot: Open Extension Settings",
+        "category": "Knot"
+      },
+      {
         "command": "knot.reindexWorkspace",
         "title": "Knot: Re-index Workspace",
         "category": "Knot"
