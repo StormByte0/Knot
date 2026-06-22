@@ -110,14 +110,19 @@ export class StoryMapPanelManager {
     }
 
     /** Open or reveal the Story Map panel. Single-instance: opening a new
-     *  one closes the old one. */
+     *  one closes the old one. The panel stays in its assigned view column
+     *  and does not create new tabs or splits on subsequent opens. */
     public async show() {
-        // If a panel already exists, just reveal it
+        // If a panel already exists, reveal it in its CURRENT column
+        // (not ViewColumn.Beside, which would move it to a new split).
         if (this._panel) {
-            this._panel.reveal(vscode.ViewColumn.Beside);
+            this._panel.reveal(this._panel.viewColumn ?? vscode.ViewColumn.Beside, true);
             return;
         }
 
+        // First creation: open beside the active editor.
+        // retainContextWhenHidden keeps the webview alive when the tab
+        // is not visible, so the graph state persists across tab switches.
         const panel = vscode.window.createWebviewPanel(
             'knot.storyMapPanel',
             'Knot Story Map',

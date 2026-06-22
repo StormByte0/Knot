@@ -129,16 +129,24 @@ html, body {
 #tagDropdown {
   position: absolute;
   top: 100%;
-  left: 0;
+  right: 0;
   margin-top: 4px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   min-width: 180px;
-  max-width: 280px;
+  max-width: 260px;
   z-index: 20;
   overflow: hidden;
+  /* Constrain to viewport — if the dropdown would overflow the bottom,
+     it flips up instead. The JS checks viewport bounds and adds .flip-up. */
+}
+#tagDropdown.flip-up {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 4px;
 }
 
 .tag-dropdown-header {
@@ -184,18 +192,28 @@ html, body {
 .tag-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
+  gap: 8px;
+  padding: 4px 10px;
   cursor: pointer;
   font-size: 11px;
   color: var(--fg);
   transition: background 0.1s;
+  white-space: nowrap;
 }
 .tag-item:hover {
   background: rgba(255,255,255,0.05);
 }
 .tag-item input[type="checkbox"] {
   accent-color: var(--accent);
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+}
+.tag-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Story Map wrapper ─────────────────────────────────────────────────── */
@@ -491,12 +509,14 @@ html, body {
 }
 
 /* ── Legend ─────────────────────────────────────────────────────────────── */
-/* FIX: legend must be positioned relative to .storymap-container, not the
-   full viewport. .storymap-container is position:relative, so bottom/left
-   here are relative to the canvas area, above the status bar. */
+/* Legend is positioned at bottom-left, ABOVE the React Flow Controls
+   (which are at bottom: 15px, left: 15px and ~90px tall).
+   Bottom offset = 15 (controls bottom) + 90 (controls height) + 8 (gap) = 113px.
+   This keeps the legend away from the MiniMap (bottom-right) and the
+   toolbar (top), with zero overlap. */
 #legend {
   position: absolute;
-  bottom: 8px;
+  bottom: 113px;
   left: 10px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -504,13 +524,13 @@ html, body {
   padding: 7px 10px;
   font-size: 10px;
   opacity: 0.82;
-  /* FIX: must be above React Flow background (1) and below Controls/MiniMap.
-     React Flow Controls are at z-index ~5; we sit just below them. */
   z-index: 4;
   transition: opacity 0.15s;
-  pointer-events: none;
+  pointer-events: auto;
+  max-height: calc(100vh - 200px);
+  overflow-y: auto;
 }
-#legend:hover { opacity: 1; pointer-events: auto; }
+#legend:hover { opacity: 1; }
 
 /* Collapsed state — just a small button */
 #legend.legend-collapsed {

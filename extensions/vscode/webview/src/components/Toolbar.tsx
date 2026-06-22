@@ -24,7 +24,9 @@ export default function Toolbar({
   onTagClear,
 }: ToolbarProps) {
   const [tagDropdownOpen, setTagDropdownOpen] = useState(false);
+  const [flipUp, setFlipUp] = useState(false);
   const tagDropdownRef = useRef<HTMLDivElement>(null);
+  const tagBtnRef = useRef<HTMLButtonElement>(null);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -36,6 +38,15 @@ export default function Toolbar({
     };
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
+  }, [tagDropdownOpen]);
+
+  // Check if the dropdown would overflow the viewport bottom — if so, flip up
+  useEffect(() => {
+    if (!tagDropdownOpen || !tagBtnRef.current) return;
+    const btnRect = tagBtnRef.current.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+    const dropdownMaxHeight = 300; // approximate max height of dropdown
+    setFlipUp(btnRect.bottom + dropdownMaxHeight > viewportHeight);
   }, [tagDropdownOpen]);
 
   const handleSearchInput = useCallback(
@@ -58,6 +69,7 @@ export default function Toolbar({
       <div className="tag-filter-wrapper" ref={tagDropdownRef}>
         <button
           id="tagFilterBtn"
+          ref={tagBtnRef}
           title="Filter by tags"
           className={selectedTags.size > 0 ? 'active' : ''}
           onClick={() => setTagDropdownOpen(o => !o)}
@@ -68,7 +80,7 @@ export default function Toolbar({
           )}
         </button>
         {tagDropdownOpen && (
-          <div id="tagDropdown">
+          <div id="tagDropdown" className={flipUp ? 'flip-up' : ''}>
             <div className="tag-dropdown-header">
               <span>Filter by tags</span>
               {selectedTags.size > 0 && (

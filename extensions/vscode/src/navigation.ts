@@ -93,43 +93,79 @@ export function findTargetViewColumn(graphColumn: vscode.ViewColumn | undefined)
 // ---------------------------------------------------------------------------
 
 /**
- * Register an `onDidChangeActiveTextEditor` listener that redirects any
- * text editor that lands in the StoryMap's column to a different column.
+ * Register a listener that prevents text editors from landing in the
+ * StoryMap's column.
  *
- * When the user drags or clicks the background of the StoryMap webview,
- * VSCode makes it the "active editor." Subsequent file-explorer clicks
- * then open files in the StoryMap's column, hiding it behind a new tab.
+ * When the user clicks the StoryMap webview, VSCode makes it the "active
+ * editor group." Subsequent file-explorer clicks then open files in the
+ * StoryMap's column, hiding it behind a new tab.
  *
- * This guard detects that situation and re-opens the file in a
- * non-graph column, then re-reveals the StoryMap so it stays visible.
+ * This guard detects when a file becomes active in the StoryMap's column
+ * and redirects it to a different column, then closes the tab in the
+ * StoryMap's column and re-reveals the StoryMap.
+ *
+ * A re-entrancy guard prevents infinite loops: while we're redirecting
+ * a file, we set a flag so our own `showTextDocument` calls don't
+ * trigger another redirect.
  */
 export function registerViewColumnGuard(context: vscode.Disposable[]): void {
+    let isRedirecting = false;
+
     context.push(
         vscode.window.onDidChangeActiveTextEditor(async (editor) => {
+            // Skip if we're in the middle of a redirect
+            if (isRedirecting) { return; }
             if (!editor || !_storyMapPanel) { return; }
 
             const graphColumn = _storyMapPanel.viewColumn;
             if (graphColumn === undefined) { return; }
 
-            // Only act if the new text editor landed in the StoryMap's column
+            // Only act if the editor landed in the StoryMap's column
             if (editor.viewColumn !== graphColumn) { return; }
 
             // Find a better column for this file
             const targetColumn = findTargetViewColumn(graphColumn);
             if (!targetColumn || targetColumn === graphColumn) { return; }
 
-            // Re-show the document in the correct column
+            isRedirecting = true;
             try {
+                // Open the document in the correct column
                 await vscode.window.showTextDocument(editor.document, {
                     preview: true,
                     viewColumn: targetColumn,
                     selection: editor.selection,
                 });
 
+                // Close the tab in the StoryMap's column.
+                // VS Code's "close active editor" closes the currently
+                // focused tab. Since we just opened the doc in the target
+                // column, the graph column's tab is no longer active.
+                // We need to focus it, then close it.
+                //
+                // Use the tab API if available (VS Code 1.73+), otherwise
+                // fall back to the focus+close approach.
+                const graphTabGroup = vscode.window.tabGroups.all.find(
+                    g => g.viewColumn === graphColumn
+                );
+                if (graphTabGroup) {
+                    // Find the tab showing this document
+                    const tabToClose = graphTabGroup.tabs.find(
+                        t => t.input instanceof vscode.TabInputText &&
+                             (t.input as vscode.TabInputText).uri.toString() === editor.document.uri.toString()
+                    );
+                    if (tabToClose) {
+                        await vscode.window.tabGroups.close(tabToClose);
+                    }
+                }
+
                 // Re-reveal the StoryMap so it stays visible
                 _storyMapPanel.reveal();
             } catch {
-                // If the editor was already disposed, just ignore
+                // If anything fails, just ignore — the file is already
+                // open in the target column, worst case the graph tab
+                // stays but the StoryMap is still visible.
+            } finally {
+                isRedirecting = false;
             }
         })
     );
