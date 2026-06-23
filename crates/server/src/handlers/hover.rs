@@ -885,6 +885,10 @@ fn describe_macro_arg_kind(kind: &MacroArgKind, is_passage_ref: bool) -> String 
         MacroArgKind::String => "a quoted string literal",
         MacroArgKind::Selector => "a CSS selector",
         MacroArgKind::Variable => "a variable reference ($var or _var)",
+        MacroArgKind::Keyword => "a bareword keyword (e.g., autofocus, selected, keep)",
+        MacroArgKind::Link => "a link markup ([[...]])",
+        MacroArgKind::Image => "an image markup ([img[...]])",
+        MacroArgKind::Number => "a numeric literal (e.g., 100, 0.5)",
     };
     if is_passage_ref {
         format!("{} (passage name)", base)

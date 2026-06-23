@@ -75,6 +75,21 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) 
             // MacroClose nodes are consumed by the tree builder and should not
             // appear in the final AST. If one slips through, skip it.
             ast::AstNode::MacroClose { .. } => {}
+            // ── Block-level markup ───────────────────────────────────────
+            // CodeBlock/InlineCode are emitted by the parser (Phase 2a) but
+            // don't produce `Block` entries — they're raw display content,
+            // not navigation targets. The remaining variants (Heading, HR,
+            // ListItem, Blockquote, BlockquoteBlock, Table) are not yet
+            // emitted; when they are (Phases 3-6), this match may be updated
+            // to produce `Block` entries for some of them.
+            ast::AstNode::Heading { .. }
+            | ast::AstNode::HorizontalRule { .. }
+            | ast::AstNode::ListItem { .. }
+            | ast::AstNode::Blockquote { .. }
+            | ast::AstNode::BlockquoteBlock { .. }
+            | ast::AstNode::Table { .. }
+            | ast::AstNode::CodeBlock { .. }
+            | ast::AstNode::InlineCode { .. } => {}
         }
     }
     blocks

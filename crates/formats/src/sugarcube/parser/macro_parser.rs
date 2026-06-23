@@ -143,15 +143,22 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
     // Only macros with declared args in the catalog get structured extraction.
     let structured_args = parse_structured_args(&name, &args, offset + args_start);
 
-    // ── Raw-body macros: <<script>> and <<style>> ────────────────────
+    // ── Raw-body macros (catalog-driven) ─────────────────────────────
     //
-    // These macros contain opaque body content (JS or CSS) that must NOT
-    // be parsed for SugarCube syntax. The parser scans for the close tag,
-    // captures the raw body as a Text child, and emits the Macro with
-    // children already populated. This is the one case where the flat
-    // parse pre-nests content — the body is opaque and the tree builder
-    // should not attempt to pair it.
-    if name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("css") {
+    // Macros with `body_is_raw: true` in the catalog contain opaque body
+    // content (JS, CSS, etc.) that must NOT be parsed for SugarCube syntax.
+    // The parser scans for the close tag, captures the raw body as a Text
+    // child, and emits the Macro with children already populated. This is
+    // the one case where the flat parse pre-nests content — the body is
+    // opaque and the tree builder should not attempt to pair it.
+    //
+    // Previously this was hardcoded to `script`/`style`/`css`. Now it's
+    // catalog-driven (plan.md §7a). `<<style>>` and `<<css>>` have been
+    // removed from the catalog because they don't exist in SugarCube.
+    let is_raw_body = crate::sugarcube::macros::find_macro(&name)
+        .map(|def| def.body_is_raw)
+        .unwrap_or(false);
+    if is_raw_body {
         let body_text = &text[open_end..];
         let (children, close_offset) = parse_raw_body(body_text, &name, offset + open_end);
 
@@ -170,7 +177,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             *i = open_end + ci;
             Some(offset + open_end + co..offset + open_end + ci)
         } else {
-            // Unclosed script/style — rest of text is body
+            // Unclosed raw-body macro — rest of text is body
             *i = len;
             None
         };
@@ -1019,14 +1026,20 @@ pub(super) fn skip_to_first_macro_close(text: &str, i: &mut usize) -> usize {
 /// or None if the block is unclosed.
 fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>, Option<usize>) {
     // Find the matching <</name>> — no nesting tracking needed since
-    // script/style bodies are opaque (we don't parse them for SugarCube)
+    // raw-body macros are opaque (we don't parse them for SugarCube syntax).
     let close_tag = format!("<</{}>>", macro_name);
     let close_tag_alt = format!("<</ {}>>", macro_name); // with space after /
+
+    // Determine whether the raw body is prose (displayed to player) or code.
+    // <<script>> body is code (is_prose: false).
+    // <<code>> body is prose (is_prose: true) — displayed as literal text.
+    // Default: false (safe for any future raw-body macros that are code-like).
+    let is_prose = macro_name.eq_ignore_ascii_case("code");
 
     let len = text.len();
 
     // Scan for close tag at char boundaries only (no depth tracking —
-    // script/style can't nest). Iterating by char ensures we never
+    // raw-body macros can't nest). Iterating by char ensures we never
     // slice at a byte position that falls inside a multi-byte UTF-8
     // character, which would cause a panic.
     let mut search_from = 0usize;
@@ -1046,7 +1059,7 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
                         content: body_content.to_string(),
                         var_refs: Vec::new(),
                         span: offset..offset + search_from,
-                        is_prose: false, // script/style bodies are code, not narrative
+                        is_prose,
                     });
                 }
                 return (children, Some(search_from));
@@ -1063,7 +1076,7 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
             content: text.to_string(),
             var_refs: Vec::new(),
             span: offset..offset + len,
-            is_prose: false, // script/style bodies are code, not narrative
+            is_prose,
         });
     }
     (children, None)
@@ -1131,7 +1144,12 @@ pub(super) fn parse_structured_args(
                 ParsedArgKind::PassageRef
             } else if def.is_selector {
                 ParsedArgKind::Selector
-            } else if def.is_variable && token.is_variable_ref() {
+            } else if def.is_variable && (token.is_variable_ref() || token.is_quoted_variable_name()) {
+                // SugarCube form macros (checkbox, radiobutton, textbox, etc.)
+                // take the receiver variable as a QUOTED name string (e.g.,
+                // "$color"). Recognize both unquoted `$var` and quoted `"$var"`
+                // forms as VariableRef so variable-write tracking works.
+                // See plan.md §4.5.1, §4.5.2.
                 ParsedArgKind::VariableRef
             } else if def.is_passage_ref && token.is_variable_ref() {
                 // Variable used where a passage ref is expected — dynamic navigation
@@ -1165,8 +1183,43 @@ pub(super) fn parse_structured_args(
                     }
                     MacroArgKind::Selector => ParsedArgKind::Selector,
                     MacroArgKind::Variable => {
-                        if token.is_variable_ref() {
+                        if token.is_variable_ref() || token.is_quoted_variable_name() {
                             ParsedArgKind::VariableRef
+                        } else {
+                            ParsedArgKind::Expression
+                        }
+                    }
+                    MacroArgKind::Keyword => {
+                        // Bareword keyword flag (autofocus, selected, keep, etc.)
+                        if token.is_keyword_token() {
+                            ParsedArgKind::Keyword
+                        } else {
+                            ParsedArgKind::Expression
+                        }
+                    }
+                    MacroArgKind::Link => {
+                        // Link markup ([[...]]). Currently the scanner skips
+                        // bracketed content, so link markup falls through to
+                        // Expression. When the scanner is updated to recognize
+                        // [[...]] as a token, this will return LinkMarkup.
+                        if token.is_link_markup() {
+                            ParsedArgKind::LinkMarkup
+                        } else {
+                            ParsedArgKind::Expression
+                        }
+                    }
+                    MacroArgKind::Image => {
+                        // Image markup ([img[...]]). Same caveat as Link.
+                        if token.is_image_markup() {
+                            ParsedArgKind::ImageMarkup
+                        } else {
+                            ParsedArgKind::Expression
+                        }
+                    }
+                    MacroArgKind::Number => {
+                        // Numeric literal (100, 0.5, etc.)
+                        if token.is_number_literal() {
+                            ParsedArgKind::Number
                         } else {
                             ParsedArgKind::Expression
                         }
@@ -1225,6 +1278,108 @@ impl ArgToken {
 
     fn is_variable_ref(&self) -> bool {
         matches!(self.kind, ArgTokenKind::VariableRef)
+    }
+
+    /// Returns true if this token is a quoted string whose content looks like
+    /// a SugarCube variable name — i.e., it starts with `$` or `_` followed by
+    /// an identifier-start character, optionally with dot-notation property
+    /// access (e.g., `"$color"`, `"_counter"`, `"$foo.bar"`, `"$foo[0]"`).
+    ///
+    /// SugarCube form macros (`<<checkbox>>`, `<<radiobutton>>`, `<<textbox>>`,
+    /// `<<numberbox>>`, `<<textarea>>`, `<<cycle>>`, `<<listbox>>`) take the
+    /// receiver variable as a **quoted** name string (e.g., `"$color"`). The
+    /// quotes are required because SugarCube auto-substitutes unquoted `$var`
+    /// with its value. By quoting the name, the macro receives the literal
+    /// string `"$color"` and uses it to identify which variable to modify.
+    ///
+    /// This helper lets the structured-args classifier recognize these quoted
+    /// variable names as `VariableRef` rather than `String`/`Expression`,
+    /// which is critical for correct variable-write tracking, hover, and
+    /// completion (see plan.md §4.5.1, §4.5.2).
+    fn is_quoted_variable_name(&self) -> bool {
+        if self.kind != ArgTokenKind::QuotedString {
+            return false;
+        }
+        let bytes = self.value.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        // Must start with $ or _ followed by an identifier-start character.
+        let first = bytes[0];
+        if first != b'$' && first != b'_' {
+            return false;
+        }
+        if bytes.len() < 2 {
+            return false;
+        }
+        // The second character must be a valid identifier-start (letter or underscore).
+        // (Digits are not valid as the first char of an identifier.)
+        let second = bytes[1];
+        second.is_ascii_alphabetic() || second == b'_'
+    }
+
+    /// Returns true if this token is a numeric literal (integer or float).
+    ///
+    /// e.g., `100`, `0.5`, `42`, `3.14`. Does NOT accept leading/trailing
+    /// whitespace or signs (`-5`, `+3`) — those are expressions.
+    fn is_number_literal(&self) -> bool {
+        if self.kind != ArgTokenKind::BareName {
+            return false;
+        }
+        let bytes = self.value.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        let mut has_digit = false;
+        let mut has_dot = false;
+        for &b in bytes {
+            if b.is_ascii_digit() {
+                has_digit = true;
+            } else if b == b'.' && !has_dot {
+                has_dot = true;
+            } else {
+                return false; // non-digit, non-dot (or second dot)
+            }
+        }
+        has_digit // must have at least one digit
+    }
+
+    /// Returns true if this token looks like a bareword keyword.
+    ///
+    /// Keywords are bare names (unquoted identifiers) that appear as
+    /// positional args. The classifier checks this when `def.kind == Keyword`.
+    /// e.g., `autofocus`, `selected`, `keep`, `container`, `autocheck`,
+    /// `checked`, `once`, `autoselect`, `play`, `pause`, `stop`, etc.
+    fn is_keyword_token(&self) -> bool {
+        matches!(self.kind, ArgTokenKind::BareName)
+    }
+
+    /// Returns true if this token is a link markup (`[[...]]`).
+    ///
+    /// The token value starts with `[[` (the scanner captures the full
+    /// `[[...]]` construct as a single BareName token because `[` is a
+    /// bracket-start char that gets skipped — BUT we need to check the
+    /// scanner behavior. Actually, `[` triggers the bracket-skip path,
+    /// so `[[...]]` would be skipped entirely. This means link markup
+    /// args are NOT tokenized by `scan_arg_tokens` and fall through to
+    /// the expression path.
+    ///
+    /// For now, this returns false — link markup detection requires
+    /// teaching `scan_arg_tokens` to recognize `[[` as a link-start
+    /// rather than a bracket-skip. That's a future enhancement; for
+    /// now, link/image args are classified as Expression (which is
+    /// safe — they just won't get special LinkMarkup/ImageMarkup
+    /// classification until the scanner is updated).
+    fn is_link_markup(&self) -> bool {
+        false // TODO: teach scan_arg_tokens to recognize [[...]] as a token
+    }
+
+    /// Returns true if this token is an image markup (`[img[...]]`).
+    ///
+    /// Same caveat as `is_link_markup` — the scanner currently skips
+    /// bracketed content, so image markup is not tokenized.
+    fn is_image_markup(&self) -> bool {
+        false // TODO: teach scan_arg_tokens to recognize [img[...]] as a token
     }
 }
 
@@ -1357,10 +1512,28 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
         }
 
         // Bare name: identifier-like token (potential passage name, keyword, etc.)
-        if is_ident_start(b) {
+        // Also scan numeric literals (100, 0.5, 42) as BareName tokens so the
+        // classifier can recognize them as Number args.
+        if is_ident_start(b) || b.is_ascii_digit() {
             let token_start = i;
-            while i < len && is_bare_name_char(bytes[i]) {
-                i += 1;
+            if b.is_ascii_digit() {
+                // Numeric literal: scan digits and at most one decimal point.
+                let mut has_dot = false;
+                while i < len {
+                    if bytes[i].is_ascii_digit() {
+                        i += 1;
+                    } else if bytes[i] == b'.' && !has_dot {
+                        has_dot = true;
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                // Identifier-like token.
+                while i < len && is_bare_name_char(bytes[i]) {
+                    i += 1;
+                }
             }
             let value = args[token_start..i].to_string();
             // Only include bare names that look like passage names
@@ -1409,9 +1582,11 @@ fn is_bare_passage_name_candidate(s: &str) -> bool {
         | "extends" | "import" | "export" | "from" | "as" | "this"
         | "void" | "with" | "yield" | "async" | "await" => false,
         _ => {
-            // Must start with a letter (not a digit, not a sigil)
+            // Must start with a letter (for passage names/keywords) OR a
+            // digit (for numeric literals like 100, 0.5). Sigils ($, _) are
+            // handled by the VariableRef scanner, not here.
             let first = s.as_bytes()[0];
-            first.is_ascii_alphabetic()
+            first.is_ascii_alphabetic() || first.is_ascii_digit()
         }
     }
 }

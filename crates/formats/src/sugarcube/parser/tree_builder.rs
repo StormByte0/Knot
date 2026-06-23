@@ -339,9 +339,13 @@ fn lookup_body_requirement(name: &str) -> BodyRequirement {
     if let Some(mdef) = macros::find_macro(name) {
         mdef.body
     } else {
-        // Unknown macro — assume inline. If a close tag is found,
-        // the tree builder will pair it regardless.
-        BodyRequirement::Never
+        // Unknown macro — assume Optional body. This allows unknown macros
+        // to pair with close tags (e.g. user-defined widgets or macros like
+        // <<quote>>...<</quote>>). If no close tag is found, they're
+        // finalized as inline without error (Optional → no unclosed diagnostic).
+        // Previously this was `Never`, which caused <</unknown>> close tags
+        // to produce "Unexpected close tag" errors.
+        BodyRequirement::Optional
     }
 }
 
@@ -402,10 +406,14 @@ fn mark_non_prose(nodes: &mut [AstNode]) {
 /// suppressed.
 ///
 /// The default is `true` — most block macros render their content. Only
-/// `<<silently>>`, `<<done>>`, `<<script>>`, and `<<style>>`/`<<css>>` are
+/// `<<silently>>`, `<<silent>>`, `<<done>>`, and `<<script>>` are
 /// non-rendering. `<<done>>` executes code after rendering, so its body is
-/// imperative code rather than narrative prose.
+/// imperative code rather than narrative prose. `<<style>>`/`<<css>>` were
+/// removed (they don't exist in SugarCube — plan.md §7a).
 fn is_prose_rendering_macro(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    !matches!(lower.as_str(), "silently" | "done" | "script" | "style" | "css")
+    // `<<silently>>`, `<<silent>>`, `<<done>>`, and `<<script>>` do NOT
+    // render their body content as prose to the player. `<<style>>` and
+    // `<<css>>` were removed (they don't exist in SugarCube — plan.md §7a).
+    !matches!(lower.as_str(), "silently" | "silent" | "done" | "script")
 }

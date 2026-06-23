@@ -40,10 +40,27 @@ use std::ops::Range;
 /// The kind of a macro argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroArgKind {
+    /// A JS/TwineScript expression (e.g., `$hp gte 50`, `$x + 1`).
     Expression,
+    /// A quoted string literal (e.g., `"hello"`, `"#hp-bar"`).
     String,
+    /// A CSS selector (e.g., `"#hp-bar"`, `".joe"`).
     Selector,
+    /// A variable name (e.g., `$var`, `_var`, or quoted `"$var"`).
     Variable,
+    /// A bareword keyword flag (e.g., `autofocus`, `selected`, `keep`,
+    /// `container`, `autocheck`, `checked`, `once`, `autoselect`).
+    /// These are positional keywords, not strings — they appear without quotes.
+    Keyword,
+    /// A link markup argument (`[[...]]` syntax).
+    /// e.g., `[[Forest]]`, `[[Go West|Forest]]`, `[[Go West->Forest]]`.
+    Link,
+    /// An image markup argument (`[img[...]]` syntax).
+    /// e.g., `[img[forest.png]]`, `[img[forest.png][Forest]]`.
+    Image,
+    /// A numeric literal (e.g., `100`, `0.5`, `42`).
+    /// Used by `<<numberbox>>` default, `<<audio>>` volume, etc.
+    Number,
 }
 
 /// Describes a single argument in a macro's signature.
@@ -182,6 +199,18 @@ pub struct MacroDef {
     pub container: Option<&'static str>,
     /// If this macro must be inside one of several parent macros.
     pub container_any_of: Option<&'static [&'static str]>,
+    /// Whether this macro's body is raw (not parsed for SugarCube syntax).
+    ///
+    /// When `true`, the parser captures the body as a single `Text` child
+    /// with `is_prose: false`, and does NOT recursively parse it for macros,
+    /// links, variables, or other SugarCube constructs.
+    ///
+    /// Currently only `<<script>>` has `body_is_raw: true` (its body is
+    /// opaque JavaScript/TwineScript). The old hardcoded check for
+    /// `script`/`style`/`css` has been replaced by this catalog-driven field
+    /// (plan.md §7a). `<<style>>` and `<<css>>` do NOT exist in SugarCube
+    /// and have been removed from the catalog.
+    pub body_is_raw: bool,
 }
 
 /// A property or method of a builtin global object.

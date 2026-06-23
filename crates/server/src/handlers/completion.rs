@@ -310,6 +310,10 @@ pub(crate) async fn completion_resolve(
                                         knot_formats::types::MacroArgKind::String => "string",
                                         knot_formats::types::MacroArgKind::Selector => "selector",
                                         knot_formats::types::MacroArgKind::Variable => "variable",
+                                        knot_formats::types::MacroArgKind::Keyword => "keyword",
+                                        knot_formats::types::MacroArgKind::Link => "link",
+                                        knot_formats::types::MacroArgKind::Image => "image",
+                                        knot_formats::types::MacroArgKind::Number => "number",
                                     };
                                     let flags = if arg.is_passage_ref { " passage" } else { "" };
                                     doc_markdown.push_str(&format!(

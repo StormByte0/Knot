@@ -1,23 +1,27 @@
 //! Editor decorations for Twee files.
 //!
-//! Provides three decoration types:
+//! Provides two decoration types:
 //! - **Gutter badge**: Colored circle on passage headers
-//! - **Unreachable fade**: Dimmed text for unreachable passages
-//! - **Broken link underline**: Wavy red underline on broken links
+//! - **Broken links underline**: Wavy red underline on broken links
+//!
+//! Note: Unreachable passage dimming was removed because the linter is
+//! static — it can't detect dynamic links (`<<goto $var>>`, variable-based
+//! `[[links]]`, etc.). Dimming entire passage bodies based on incomplete
+//! reachability analysis harms the author experience. The warning
+//! diagnostic on the passage name (squiggly underline) remains.
 //!
 //! Also handles debounced refresh on document changes and
 //! cross-file semantic token invalidation.
 
 import * as vscode from 'vscode';
 import { KnotLanguageClient } from './types';
-import { isTweeLanguage, extractPassageName } from './utils';
+import { isTweeLanguage } from './utils';
 
 // ---------------------------------------------------------------------------
 // Decoration types (owned by this module)
 // ---------------------------------------------------------------------------
 
 let passageDecorationType: vscode.TextEditorDecorationType | null = null;
-let unreachableDecorationType: vscode.TextEditorDecorationType | null = null;
 let linkDecorationType: vscode.TextEditorDecorationType | null = null;
 let decorationDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -38,14 +42,6 @@ export function registerDecorations(
         overviewRulerColor: 'rgba(79, 195, 247, 0.5)', // Light blue
     });
     context.subscriptions.push(passageDecorationType);
-
-    // Faded text for unreachable passages — amber tint to signal warning
-    unreachableDecorationType = vscode.window.createTextEditorDecorationType({
-        opacity: '0.5',
-        overviewRulerLane: vscode.OverviewRulerLane.Left,
-        overviewRulerColor: 'rgba(230, 81, 0, 0.5)', // Amber/warning
-    });
-    context.subscriptions.push(unreachableDecorationType);
 
     // Underline for broken links
     linkDecorationType = vscode.window.createTextEditorDecorationType({
@@ -108,9 +104,8 @@ async function updateDecorations(editor: vscode.TextEditor, client: KnotLanguage
     const text = editor.document.getText();
     const lines = text.split('\n');
 
-    // Collect passage header ranges and link ranges
+    // Collect passage header ranges and broken link ranges
     const passageHeaders: vscode.Range[] = [];
-    const unreachableRanges: vscode.Range[] = [];
     const brokenLinkRanges: vscode.Range[] = [];
 
     // Find all passage headers
@@ -129,52 +124,9 @@ async function updateDecorations(editor: vscode.TextEditor, client: KnotLanguage
         }
     }
 
-    try {
-        const wsFolders = vscode.workspace.workspaceFolders;
-        if (wsFolders && wsFolders.length > 0) {
-            // Fetch graph data to find unreachable passages
-            const graph = await client.sendRequest<import('./types').KnotGraphResponse>('knot/graph', {
-                workspace_uri: wsFolders[0].uri.toString(),
-            });
-
-            // Find unreachable passages in this document
-            if (graph && graph.nodes) {
-                const unreachableNames = new Set<string>();
-                for (const node of graph.nodes) {
-                    if (node.is_unreachable) {
-                        unreachableNames.add(node.label);
-                    }
-                }
-
-                // Find ranges of unreachable passages in this document
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    if (line.startsWith('::')) {
-                        const name = extractPassageName(line);
-                        if (unreachableNames.has(name)) {
-                            // Find end of this passage (next :: or end of file)
-                            let endLine = i + 1;
-                            while (endLine < lines.length && !lines[endLine].startsWith('::')) {
-                                endLine++;
-                            }
-                            unreachableRanges.push(new vscode.Range(
-                                i, 0, endLine - 1, lines[endLine - 1]?.length || 0
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    } catch {
-        // Silently ignore — decorations will be empty
-    }
-
     // Apply decorations
     if (passageDecorationType) {
         editor.setDecorations(passageDecorationType, passageHeaders);
-    }
-    if (unreachableDecorationType) {
-        editor.setDecorations(unreachableDecorationType, unreachableRanges);
     }
     if (linkDecorationType) {
         editor.setDecorations(linkDecorationType, brokenLinkRanges);

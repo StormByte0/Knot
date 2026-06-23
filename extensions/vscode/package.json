@@ -559,6 +559,30 @@
           ],
           "macroDelimiter.blockDepth6": [
             "constant.numeric"
+          ],
+          "heading": [
+            "markup.heading.twee"
+          ],
+          "horizontalRule": [
+            "punctuation.separator.hr.twee"
+          ],
+          "listMarker": [
+            "punctuation.definition.list.twee"
+          ],
+          "blockquote": [
+            "punctuation.definition.quote.twee"
+          ],
+          "blockquoteBlock": [
+            "punctuation.definition.quote.twee"
+          ],
+          "table": [
+            "punctuation.definition.table.twee"
+          ],
+          "codeBlock": [
+            "markup.raw.code.twee"
+          ],
+          "inlineCode": [
+            "markup.raw.inline.twee"
           ]
         }
       },
@@ -664,6 +688,30 @@
           ],
           "macroDelimiter.blockDepth6": [
             "constant.numeric"
+          ],
+          "heading": [
+            "markup.heading.twee"
+          ],
+          "horizontalRule": [
+            "punctuation.separator.hr.twee"
+          ],
+          "listMarker": [
+            "punctuation.definition.list.twee"
+          ],
+          "blockquote": [
+            "punctuation.definition.quote.twee"
+          ],
+          "blockquoteBlock": [
+            "punctuation.definition.quote.twee"
+          ],
+          "table": [
+            "punctuation.definition.table.twee"
+          ],
+          "codeBlock": [
+            "markup.raw.code.twee"
+          ],
+          "inlineCode": [
+            "markup.raw.inline.twee"
           ]
         }
       },
@@ -769,6 +817,30 @@
           ],
           "macroDelimiter.blockDepth6": [
             "constant.numeric"
+          ],
+          "heading": [
+            "markup.heading.twee"
+          ],
+          "horizontalRule": [
+            "punctuation.separator.hr.twee"
+          ],
+          "listMarker": [
+            "punctuation.definition.list.twee"
+          ],
+          "blockquote": [
+            "punctuation.definition.quote.twee"
+          ],
+          "blockquoteBlock": [
+            "punctuation.definition.quote.twee"
+          ],
+          "table": [
+            "punctuation.definition.table.twee"
+          ],
+          "codeBlock": [
+            "markup.raw.code.twee"
+          ],
+          "inlineCode": [
+            "markup.raw.inline.twee"
           ]
         }
       },
@@ -874,6 +946,30 @@
           ],
           "macroDelimiter.blockDepth6": [
             "constant.numeric"
+          ],
+          "heading": [
+            "markup.heading.twee"
+          ],
+          "horizontalRule": [
+            "punctuation.separator.hr.twee"
+          ],
+          "listMarker": [
+            "punctuation.definition.list.twee"
+          ],
+          "blockquote": [
+            "punctuation.definition.quote.twee"
+          ],
+          "blockquoteBlock": [
+            "punctuation.definition.quote.twee"
+          ],
+          "table": [
+            "punctuation.definition.table.twee"
+          ],
+          "codeBlock": [
+            "markup.raw.code.twee"
+          ],
+          "inlineCode": [
+            "markup.raw.inline.twee"
           ]
         }
       },
@@ -979,6 +1075,30 @@
           ],
           "macroDelimiter.blockDepth6": [
             "constant.numeric"
+          ],
+          "heading": [
+            "markup.heading.twee"
+          ],
+          "horizontalRule": [
+            "punctuation.separator.hr.twee"
+          ],
+          "listMarker": [
+            "punctuation.definition.list.twee"
+          ],
+          "blockquote": [
+            "punctuation.definition.quote.twee"
+          ],
+          "blockquoteBlock": [
+            "punctuation.definition.quote.twee"
+          ],
+          "table": [
+            "punctuation.definition.table.twee"
+          ],
+          "codeBlock": [
+            "markup.raw.code.twee"
+          ],
+          "inlineCode": [
+            "markup.raw.inline.twee"
           ]
         }
       }

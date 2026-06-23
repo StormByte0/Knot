@@ -194,6 +194,41 @@ pub enum SemanticTokenType {
     /// `AstNode::Expression`; other formats may follow suit if they
     /// want the same kind of delimiter/name separation.
     MacroDelimiter,
+
+    // ── Block-level markup (Phase 1+ of the block-markup overhaul) ─
+    //
+    // These token types support the new `AstNode` variants introduced in
+    // Phase 1 (see plan.md §AD-4). They are appended AFTER `MacroDelimiter`
+    // to preserve existing legend indices 0..=21.
+    //
+    // Token-emission strategy per plan.md §AD-5:
+    //   - Heading: marker token on `!` run, then recurse into children
+    //   - HorizontalRule: single token over `----` span
+    //   - ListMarker: token on `*`/`#`/`**`/`##` run, then recurse
+    //   - Blockquote / BlockquoteBlock: token on `>` / `<<<`, then recurse
+    //   - Table: token on `|` delimiters + row-type suffix, then recurse
+    //   - CodeBlock / InlineCode: single token over full span (raw content)
+    /// A heading marker (`!`, `!!`, …, `!!!!!!`). Emitted on the `!` run
+    /// only; heading content gets normal prose/macro tokens via recursion.
+    Heading,
+    /// A horizontal rule (`----`). Single token over the dash run.
+    HorizontalRule,
+    /// A list-item marker (`*`, `**`, `#`, `##`, …). Emitted on the marker
+    /// run only; item content gets normal prose/macro tokens via recursion.
+    ListMarker,
+    /// A line-style blockquote marker (`>`, `>>`, …). Emitted on the `>`
+    /// run only; line content recurses.
+    Blockquote,
+    /// A block-style blockquote delimiter (`<<<` opening or closing line).
+    BlockquoteBlock,
+    /// A table delimiter (`|`) or row-type suffix letter (`h`/`f`/`c`/`k`).
+    /// Cell content recurses.
+    Table,
+    /// A block code section (`{{{\n...\n}}}`). Single token over the full
+    /// span — content is raw, no internal highlighting (per plan.md §AD-5).
+    CodeBlock,
+    /// Inline code (`{{{...}}}` mid-line). Single token over the full span.
+    InlineCode,
 }
 
 /// Modifiers for semantic tokens.
@@ -286,6 +321,16 @@ impl SemanticTokenType {
             Self::TextFormat,          // 20
             // ── Punctuation ────────────────────────────────────────
             Self::MacroDelimiter,      // 21
+            // ── Block-level markup (Phase 1+, plan.md §AD-4) ────────
+            // Appended at end to preserve existing indices 0..=21.
+            Self::Heading,             // 22
+            Self::HorizontalRule,      // 23
+            Self::ListMarker,          // 24
+            Self::Blockquote,          // 25
+            Self::BlockquoteBlock,     // 26
+            Self::Table,               // 27
+            Self::CodeBlock,           // 28
+            Self::InlineCode,          // 29
         ]
     }
 
@@ -317,6 +362,15 @@ impl SemanticTokenType {
             Self::InlineStyle         => "inlineStyle",
             Self::TextFormat          => "textFormat",
             Self::MacroDelimiter      => "macroDelimiter",
+            // ── Block-level markup (Phase 1+, plan.md §AD-4) ────────
+            Self::Heading             => "heading",
+            Self::HorizontalRule      => "horizontalRule",
+            Self::ListMarker          => "listMarker",
+            Self::Blockquote          => "blockquote",
+            Self::BlockquoteBlock     => "blockquoteBlock",
+            Self::Table               => "table",
+            Self::CodeBlock           => "codeBlock",
+            Self::InlineCode          => "inlineCode",
         }
     }
 

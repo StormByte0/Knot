@@ -318,6 +318,10 @@ pub struct KnotBuildParams {
     pub workspace_uri: String,
     /// Optional passage name to use as start for compilation.
     pub start_passage: Option<String>,
+    /// Optional compiler path override from the extension (VS Code setting
+    /// `knot.tweegoPath`). When provided, this takes priority over the
+    /// server's config and PATH lookup.
+    pub compiler_path: Option<String>,
 }
 
 /// Response: `knot/build`
@@ -342,6 +346,8 @@ pub struct KnotPlayParams {
     pub workspace_uri: String,
     /// Optional passage name to start play from (instead of the default start).
     pub start_passage: Option<String>,
+    /// Optional compiler path override from the extension.
+    pub compiler_path: Option<String>,
 }
 
 /// Response: `knot/play`

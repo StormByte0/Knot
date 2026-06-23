@@ -9,7 +9,10 @@
 //! - Toggle Auto-Rebuild
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { execSync, execFileSync } from 'child_process';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotReindexResponse, KnotGenerateIfidResponse } from './types';
 import { PlayModeProvider } from './playModeProvider';
 import { StoryMapPanelManager } from './storyMapProvider';
@@ -77,6 +80,7 @@ export function registerCommands(deps: CommandDeps): void {
             try {
                 const result = await client.sendRequest<KnotBuildResponse>('knot/build', {
                     workspace_uri: workspaceFolders[0].uri.toString(),
+                    compiler_path: tweegoPath,
                 });
                 if (result.success) {
                     vscode.window.showInformationMessage('Knot: Build succeeded!');
@@ -468,31 +472,55 @@ export function registerCommands(deps: CommandDeps): void {
 // Tweego compiler availability
 // ---------------------------------------------------------------------------
 
-/** Check if Tweego is available; prompt to download if not. */
+/** Check if Tweego is available; prompt to download if not.
+ *
+ *  Resolution order:
+ *  1. VS Code setting `knot.tweegoPath` (persisted user preference)
+ *  2. Language server detection (PATH lookup via `which`/`where`)
+ *  3. Global storage path (previously downloaded by the extension)
+ *  4. Prompt user: Download | Set Path Manually | Cancel
+ *
+ *  When a path is found via download or manual selection, it is
+ *  persisted to the `knot.tweegoPath` setting so subsequent builds
+ *  don't re-prompt.
+ */
 async function ensureTweegoAvailable(
     context: vscode.ExtensionContext,
     client: KnotLanguageClient | null,
 ): Promise<string | undefined> {
-    // 1. Check if tweego is on PATH via the language server
+    // 1. Check VS Code setting
+    const config = vscode.workspace.getConfiguration('knot');
+    const settingPath = config.get<string>('tweegoPath');
+    if (settingPath && settingPath.trim()) {
+        try {
+            fs.accessSync(settingPath, fs.constants.X_OK);
+            return settingPath;
+        } catch {
+            // Setting exists but file is gone/invalid — fall through
+        }
+    }
+
+    // 2. Check via the language server (PATH lookup)
     try {
         const result = await client?.sendRequest<KnotCompilerDetectResponse>('knot/compilerDetect', { workspace_uri: '' });
-        if (result && result.compiler_found) {
+        if (result && result.compiler_found && result.compiler_path) {
+            // Persist to setting so we don't re-detect every time
+            await config.update('tweegoPath', result.compiler_path, vscode.ConfigurationTarget.Global);
             return result.compiler_path;
         }
     } catch { /* ignore */ }
 
-    // 2. Check if tweego is in .knot/bin/ in the workspace
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders) {
-        const localBin = vscode.Uri.joinPath(workspaceFolders[0].uri, '.knot', 'bin');
-        const tweegoPath = vscode.Uri.joinPath(localBin, process.platform === 'win32' ? 'tweego.exe' : 'tweego');
-        try {
-            await vscode.workspace.fs.stat(tweegoPath);
-            return tweegoPath.fsPath;
-        } catch { /* not found */ }
-    }
+    // 3. Check global storage (previously downloaded)
+    const globalBinDir = path.join(context.globalStorageUri.fsPath, 'tweego');
+    const binaryName = process.platform === 'win32' ? 'tweego.exe' : 'tweego';
+    const globalBinPath = path.join(globalBinDir, binaryName);
+    try {
+        fs.accessSync(globalBinPath, fs.constants.X_OK);
+        await config.update('tweegoPath', globalBinPath, vscode.ConfigurationTarget.Global);
+        return globalBinPath;
+    } catch { /* not found */ }
 
-    // 3. Prompt user to download
+    // 4. Prompt user
     const choice = await vscode.window.showWarningMessage(
         'Tweego compiler not found. Knot needs Tweego to build and preview Twine stories.',
         'Download Tweego',
@@ -501,27 +529,52 @@ async function ensureTweegoAvailable(
     );
 
     if (choice === 'Download Tweego') {
-        return await downloadTweego(context);
+        const downloaded = await downloadTweego(context);
+        if (downloaded) {
+            // Persist the downloaded path
+            await config.update('tweegoPath', downloaded, vscode.ConfigurationTarget.Global);
+            return downloaded;
+        }
     } else if (choice === 'Set Path Manually') {
         const fileUri = await vscode.window.showOpenDialog({
             canSelectFiles: true,
             canSelectFolders: false,
             canSelectMany: false,
             title: 'Select Tweego binary',
-            filters: { 'Executable': ['exe', 'sh', ''] }
+            filters: process.platform === 'win32'
+                ? { 'Executable': ['exe'] }
+                : { 'All Files': ['*'] }
         });
         if (fileUri && fileUri[0]) {
-            return fileUri[0].fsPath;
+            const selectedPath = fileUri[0].fsPath;
+            // Make executable on Unix
+            if (process.platform !== 'win32') {
+                try {
+                    fs.chmodSync(selectedPath, 0o755);
+                } catch { /* ignore */ }
+            }
+            // Trust the user's selection — don't validate by running --version.
+            // Tweego exits non-zero on --version when it can't find .storyformats,
+            // which makes validation unreliable. If the path is wrong, the build
+            // will fail with a clear error from the server.
+            await config.update('tweegoPath', selectedPath, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage('Tweego path saved.');
+            return selectedPath;
         }
     }
     return undefined;
 }
 
-/** Download Tweego from GitHub releases. */
+/** Download Tweego from GitHub releases and extract it.
+ *
+ *  Cross-platform: uses Node.js built-in modules to download and extract
+ *  the zip file without relying on system `unzip`.
+ */
 async function downloadTweego(context: vscode.ExtensionContext): Promise<string | undefined> {
     const platform = process.platform;
+    const arch = process.arch;
 
-    // Determine download URL based on platform
+    // Determine download URL and binary name based on platform
     let downloadUrl: string;
     let binaryName: string;
 
@@ -529,9 +582,11 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
         downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-windows-x64.zip';
         binaryName = 'tweego.exe';
     } else if (platform === 'darwin') {
+        // macOS: use x64 build (works on Apple Silicon via Rosetta)
         downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-macos-x64.zip';
         binaryName = 'tweego';
     } else {
+        // Linux
         downloadUrl = 'https://github.com/tmedwards/tweego/releases/download/v2.1.1/tweego-2.1.1-linux-x64.zip';
         binaryName = 'tweego';
     }
@@ -544,33 +599,75 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
         try {
             progress.report({ message: 'Downloading...' });
 
-            const binDir = vscode.Uri.joinPath(context.globalStorageUri, 'tweego');
-            await vscode.workspace.fs.createDirectory(binDir);
-            const zipPath = vscode.Uri.joinPath(binDir, 'tweego.zip');
+            const binDir = path.join(context.globalStorageUri.fsPath, 'tweego');
+            fs.mkdirSync(binDir, { recursive: true });
+            const zipPath = path.join(binDir, 'tweego.zip');
 
-            // Download
+            // Download using fetch (available in Node 18+ / VS Code 1.85+)
             const response = await fetch(downloadUrl);
             if (!response.ok) throw new Error(`Download failed: ${response.statusText}`);
             const buffer = Buffer.from(await response.arrayBuffer());
-            await vscode.workspace.fs.writeFile(zipPath, new Uint8Array(buffer));
+            fs.writeFileSync(zipPath, buffer);
 
-            // Extract (use system unzip)
-            const { execSync } = require('child_process');
-            execSync(`unzip -o "${zipPath.fsPath}" -d "${binDir.fsPath}"`, { stdio: 'pipe' });
+            progress.report({ message: 'Extracting...' });
 
-            // Find the binary
-            const binaryPath = vscode.Uri.joinPath(binDir, binaryName);
+            // Extract using the system's built-in extraction.
+            // On Windows, use PowerShell's Expand-Archive.
+            // On Unix, use Python (always available on macOS, usually on Linux)
+            // or fall back to `unzip` if available.
+            if (platform === 'win32') {
+                execSync(
+                    `powershell -NoProfile -Command "Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${binDir}'"`,
+                    { stdio: 'pipe' }
+                );
+            } else {
+                // Try Python first (cross-platform, no external deps needed)
+                try {
+                    execSync(
+                        `python3 -c "import zipfile; zipfile.ZipFile('${zipPath}').extractall('${binDir}')"`,
+                        { stdio: 'pipe' }
+                    );
+                } catch {
+                    // Fall back to unzip
+                    execSync(`unzip -o "${zipPath}" -d "${binDir}"`, { stdio: 'pipe' });
+                }
+            }
+
+            // The zip may contain the binary at the root or in a subdirectory.
+            // Find it by walking the extracted directory.
+            let binaryPath = path.join(binDir, binaryName);
+            if (!fs.existsSync(binaryPath)) {
+                // Search subdirectories
+                const findBinary = (dir: string): string | null => {
+                    const entries = fs.readdirSync(dir, { withFileTypes: true });
+                    for (const entry of entries) {
+                        const fullPath = path.join(dir, entry.name);
+                        if (entry.isDirectory()) {
+                            const found = findBinary(fullPath);
+                            if (found) return found;
+                        } else if (entry.name === binaryName) {
+                            return fullPath;
+                        }
+                    }
+                    return null;
+                };
+                binaryPath = findBinary(binDir) || binaryPath;
+            }
+
+            if (!fs.existsSync(binaryPath)) {
+                throw new Error(`Binary "${binaryName}" not found in downloaded archive.`);
+            }
 
             // Make executable on Unix
             if (platform !== 'win32') {
-                execSync(`chmod +x "${binaryPath.fsPath}"`, { stdio: 'pipe' });
+                fs.chmodSync(binaryPath, 0o755);
             }
 
             // Clean up zip
-            await vscode.workspace.fs.delete(zipPath);
+            fs.unlinkSync(zipPath);
 
             vscode.window.showInformationMessage('Tweego downloaded successfully!');
-            return binaryPath.fsPath;
+            return binaryPath;
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to download Tweego: ${e}`);
             return undefined;

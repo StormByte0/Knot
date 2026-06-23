@@ -313,8 +313,24 @@ fn build_semantic_tokens_at_depth(
 
                 // Recurse into block macro children with incremented depth.
                 // Inline macros (children: None) don't recurse.
+                //
+                // IMPORTANT: We use `effective_depth + 1`, NOT `depth + 1`.
+                // For folding modifiers (else, elseif, case, default, etc.),
+                // `effective_depth` is `depth - 1` (they render at their
+                // parent's level). Their children should therefore be at
+                // `effective_depth + 1 = depth`, NOT `depth + 1`.
+                //
+                // Without this, macros nested inside `<<elseif>>` or
+                // `<<case>>` would get an extra depth level they don't
+                // deserve — these are segmenters, not nesting levels.
+                // Example:
+                //   <<if $a>>           depth=0, eff=0 → BlockDepth1
+                //   <<elseif $b>>       depth=1, eff=0 → BlockDepth1 (segmenter)
+                //     <<if $c>>         depth=1, eff=1 → BlockDepth2 (correct!)
+                //     <</if>>
+                //   <</if>>
                 if let Some(ch) = children {
-                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, depth + 1);
+                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, effective_depth + 1);
                 }
             }
             ast::AstNode::Link { target, span, .. } => {
@@ -520,6 +536,184 @@ fn build_semantic_tokens_at_depth(
             // MacroClose nodes are consumed by the tree builder and should not
             // appear in the final AST. If one slips through, skip it.
             ast::AstNode::MacroClose { .. } => {}
+            // ── Block-level markup ──────────────────────────────────────────
+            //
+            // Phase 2: CodeBlock and InlineCode emit a single token over the
+            // full span (plan.md §AD-5). Content is raw — no internal
+            // highlighting, no recursion.
+            ast::AstNode::CodeBlock { span, .. } => {
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: span.end - span.start,
+                    token_type: SemanticTokenType::CodeBlock,
+                    modifier: None,
+                });
+            }
+            ast::AstNode::InlineCode { span, .. } => {
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: span.end - span.start,
+                    token_type: SemanticTokenType::InlineCode,
+                    modifier: None,
+                });
+            }
+            // Phase 3: Heading — emit a `Heading` token for the `!` run (the
+            // marker), then recurse into children for prose/macro/variable
+            // tokens. Content is recursively parsed (macros execute inside
+            // headings per plan.md §3.5), so we must walk the children to
+            // emit their tokens.
+            //
+            // The `!` run length = `level` (1..=6). The marker token covers
+            // exactly the `!` characters, NOT the heading content — content
+            // tokens are emitted by the recursive `build_semantic_tokens_at_depth`
+            // call below.
+            //
+            // We recurse with `_at_depth` (preserving the surrounding depth)
+            // so that macros inside headings get the correct `BlockDepthN`
+            // modifier. This is the pattern recommended in plan.md §4.3.4
+            // (avoiding the `InlineStyle` depth-reset behavior).
+            ast::AstNode::Heading { level, children, span, .. } => {
+                // Marker token: the `!` run at the start of the span.
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: *level as usize,
+                    token_type: SemanticTokenType::Heading,
+                    modifier: None,
+                });
+                // Recurse into children for content tokens (prose, macros,
+                // variables, links, formatting, etc.).
+                build_semantic_tokens_at_depth(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    depth,
+                );
+            }
+            // Phase 4: HorizontalRule — single token over the `----` span.
+            // No content, no recursion (HR is a void element).
+            ast::AstNode::HorizontalRule { span } => {
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: span.end - span.start,
+                    token_type: SemanticTokenType::HorizontalRule,
+                    modifier: None,
+                });
+            }
+            // Phase 4: Blockquote (line-style `>`/`>>`/etc.) — emit a
+            // `Blockquote` token for the `>` run (the marker), then recurse
+            // into children for prose/macro/variable tokens. Content is
+            // recursively parsed (macros execute per §3.8.1).
+            ast::AstNode::Blockquote { depth, children, span, .. } => {
+                // Marker token: the `>` run at the start of the span.
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: *depth as usize,
+                    token_type: SemanticTokenType::Blockquote,
+                    modifier: None,
+                });
+                // Recurse into children for content tokens.
+                build_semantic_tokens_at_depth(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    *depth as usize,
+                );
+            }
+            // Phase 4: BlockquoteBlock (`<<<...<<<`) — emit `BlockquoteBlock`
+            // tokens for the opening and closing `<<<` delimiters, then
+            // recurse into children for content tokens. Content is recursively
+            // parsed (macros execute per §3.8.2).
+            ast::AstNode::BlockquoteBlock { children, open_span, close_span, .. } => {
+                // Opening `<<<` delimiter token.
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + open_span.start,
+                    length: open_span.end - open_span.start,
+                    token_type: SemanticTokenType::BlockquoteBlock,
+                    modifier: None,
+                });
+                // Recurse into children for content tokens.
+                build_semantic_tokens_at_depth(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    depth,
+                );
+                // Closing `<<<` delimiter token (if present).
+                if let Some(cs) = close_span {
+                    tokens.push(SemanticToken {
+                        start: body_offset_in_passage + cs.start,
+                        length: cs.end - cs.start,
+                        token_type: SemanticTokenType::BlockquoteBlock,
+                        modifier: None,
+                    });
+                }
+            }
+            // Phase 5: ListItem (`*`/`**`/`#`/`##` etc.) — emit a `ListMarker`
+            // token for the marker run, then recurse into children for
+            // prose/macro/variable tokens. Content is recursively parsed
+            // (macros execute per §3.7).
+            //
+            // The marker run length = `marker.len()` (e.g. 1 for `*`, 2 for `**`).
+            // The marker token covers exactly the marker characters, NOT the
+            // item content — content tokens are emitted by the recursive call.
+            ast::AstNode::ListItem { marker, children, span, .. } => {
+                // Marker token: the `*`/`#` run at the start of the span.
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + span.start,
+                    length: marker.len(),
+                    token_type: SemanticTokenType::ListMarker,
+                    modifier: None,
+                });
+                // Recurse into children for content tokens (prose, macros,
+                // variables, links, formatting, etc.).
+                build_semantic_tokens_at_depth(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    depth,
+                );
+            }
+            // Phase 6: Table — emit `Table` tokens for the opening `|` of each
+            // row, then recurse into each cell's children for content tokens.
+            //
+            // We walk `rows` (which contains ALL rows in document order,
+            // including header/footer types). For each row:
+            //   1. Emit a `Table` token at `row.span.start` (the opening `|`),
+            //      length 1.
+            //   2. Recurse into each cell's `children` for prose/macro tokens.
+            //
+            // The internal `|` delimiters and closing `|` + suffix are NOT
+            // tokenized — they fall in the gaps between cell content and
+            // render as plain text. This is a simplification; a future pass
+            // could emit `Table` tokens for every `|` delimiter.
+            //
+            // We use `build_semantic_tokens_at_depth` (preserving surrounding
+            // depth) for cell content recursion, per §4.3.4.
+            ast::AstNode::Table { rows, .. } => {
+                for row in rows {
+                    // Opening `|` of this row.
+                    tokens.push(SemanticToken {
+                        start: body_offset_in_passage + row.span.start,
+                        length: 1,
+                        token_type: SemanticTokenType::Table,
+                        modifier: None,
+                    });
+                    // Recurse into each cell's children.
+                    for cell in &row.cells {
+                        build_semantic_tokens_at_depth(
+                            &cell.children,
+                            tokens,
+                            body_offset_in_passage,
+                            custom_macro_names,
+                            depth,
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -851,6 +1045,10 @@ fn emit_structured_arg_tokens(sargs: &[ast::StructuredMacroArg], tokens: &mut Ve
             ast::ParsedArgKind::String => SemanticTokenType::String,
             ast::ParsedArgKind::VariableRef => SemanticTokenType::Variable,
             ast::ParsedArgKind::Expression => continue, // Handled by oxc
+            ast::ParsedArgKind::Keyword => SemanticTokenType::Keyword,
+            ast::ParsedArgKind::LinkMarkup => SemanticTokenType::Link,
+            ast::ParsedArgKind::ImageMarkup => SemanticTokenType::Link,
+            ast::ParsedArgKind::Number => SemanticTokenType::Number,
         };
         tokens.push(SemanticToken {
             start: body_offset_in_passage + sarg.span.start,
@@ -884,14 +1082,26 @@ pub fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDia
             });
         }
         if let ast::AstNode::Macro { children, name, name_span, close_span, .. } = node {
-            // Unclosed block macro diagnostic
+            // Unclosed block macro diagnostic.
+            //
+            // Only emit for macros with BodyRequirement::Required that have
+            // children but no close tag. Macros with BodyRequirement::Optional
+            // (e.g. <<case>>, <<default>>) are allowed to omit the close tag —
+            // the tree builder handles this without error.
             if children.is_some() && close_span.is_none() {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
-                    message: format!("Unclosed block macro: <<{}>>", name),
-                    severity: FormatDiagnosticSeverity::Error,
-                    code: "sc-unclosed".to_string(),
-                });
+                // Check if this macro has Optional body — if so, skip the
+                // "unclosed" diagnostic.
+                let body_req = crate::sugarcube::macros::find_macro(name)
+                    .map(|def| def.body)
+                    .unwrap_or(crate::types::BodyRequirement::Required);
+                if body_req == crate::types::BodyRequirement::Required {
+                    diagnostics.push(FormatDiagnostic {
+                        range: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                        message: format!("Unclosed block macro: <<{}>>", name),
+                        severity: FormatDiagnosticSeverity::Error,
+                        code: "sc-unclosed".to_string(),
+                    });
+                }
             }
             // Deprecated macro usage diagnostic
             if let Some(msg) = dep_macros.get(name.as_str()) {

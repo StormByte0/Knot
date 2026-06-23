@@ -427,9 +427,11 @@ static INCLUDE_FORMS: &[MacroCompletionForm] = &[
 
 static CHECKBOX_FORMS: &[MacroCompletionForm] = &[
     MacroCompletionForm {
-        label: r#"<<checkbox "$var" "checked" "unchecked">>"#,
-        detail: "Checkbox bound to variable (checked/unchecked values)",
-        snippet: r#"checkbox "${1:\$var}" "${2:checked}" "${3:unchecked}">>"#,
+        // SugarCube signature: <<checkbox receiverName uncheckedValue checkedValue>>
+        // (plan.md §3.12). Previously the values were swapped (checked/unchecked).
+        label: r#"<<checkbox "$var" "unchecked" "checked">>"#,
+        detail: "Checkbox bound to variable (unchecked/checked values)",
+        snippet: r#"checkbox "${1:\$var}" "${2:unchecked}" "${3:checked}">>"#,
         sort_priority: 0,
     },
     MacroCompletionForm {

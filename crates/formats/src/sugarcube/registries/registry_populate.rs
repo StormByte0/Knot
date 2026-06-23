@@ -878,6 +878,24 @@ fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
             | ast::AstNode::TextFormat { .. }
             | ast::AstNode::MacroClose { .. }
             | ast::AstNode::Error { .. } => {}
+            // ── Block-level markup (Phase 1 scaffolding) ──
+            // Not yet emitted by the parser. When Phase 3+ adds Heading,
+            // ListItem, Blockquote, BlockquoteBlock, TableCell content,
+            // those arms will need to recurse into their `children` to
+            // scan for `_args[N]` references inside widget bodies. For
+            // now these arms never fire.
+            //
+            // NOTE: CodeBlock and InlineCode content is raw (no macro
+            // processing), so even when emitted they should NOT be
+            // recursed into here — `_args` inside `{{{...}}}` is literal.
+            ast::AstNode::Heading { .. }
+            | ast::AstNode::HorizontalRule { .. }
+            | ast::AstNode::ListItem { .. }
+            | ast::AstNode::Blockquote { .. }
+            | ast::AstNode::BlockquoteBlock { .. }
+            | ast::AstNode::Table { .. }
+            | ast::AstNode::CodeBlock { .. }
+            | ast::AstNode::InlineCode { .. } => {}
         }
     }
 

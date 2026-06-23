@@ -38,8 +38,13 @@ impl ServerState {
             }
         };
 
-        // Resolve compiler path: config override > PATH lookup
-        let compiler_path = if let Some(ref path) = config.compiler_path {
+        // Resolve compiler path:
+        // 1. Extension-provided override (from VS Code setting `knot.tweegoPath`)
+        // 2. Config override from `.vscode/knot.json`
+        // 3. PATH lookup
+        let compiler_path = if let Some(ref ext_path) = params.compiler_path {
+            Some(std::path::PathBuf::from(ext_path))
+        } else if let Some(ref path) = config.compiler_path {
             Some(path.clone())
         } else {
             helpers::which_compiler()
@@ -64,7 +69,7 @@ impl ServerState {
         // Build the command arguments
         let mut args: Vec<String> = Vec::new();
 
-        // If a start passage is specified, add --start flag before the output argument
+        // If a start passage is specified, add --start flag
         if let Some(ref start_passage) = params.start_passage {
             args.push("--start".to_string());
             args.push(start_passage.clone());
@@ -73,11 +78,16 @@ impl ServerState {
         args.push("-o".to_string());
         args.push(output_file.to_string_lossy().to_string());
         args.extend(config.build.flags.iter().cloned());
+        // Source directory must be the LAST argument
         args.push(root_path.to_string_lossy().to_string());
 
         tracing::info!("Build command: {} {}", compiler_path.display(), args.join(" "));
 
-        // Run the compiler
+        // Run the compiler with cwd set to the workspace root.
+        // Tweego automatically searches for `.storyformats` in: cwd,
+        // the binary's directory, and system paths. Since `.storyformats`
+        // typically lives at the project root, setting cwd to the workspace
+        // root is sufficient — no explicit flag needed.
         let output = tokio::process::Command::new(&compiler_path)
             .args(&args)
             .current_dir(&root_path)
@@ -148,6 +158,7 @@ impl ServerState {
         let build_result = self.knot_build(KnotBuildParams {
             workspace_uri: params.workspace_uri.clone(),
             start_passage: params.start_passage.clone(),
+            compiler_path: params.compiler_path.clone(),
         }).await?;
 
         if build_result.success {

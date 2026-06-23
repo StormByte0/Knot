@@ -132,14 +132,25 @@ pub fn dynamic_navigation_macros() -> HashSet<&'static str> {
 /// - Control-flow macros with undeclared but always-JS args (`if`, `elseif`, etc.)
 /// - Output macros whose args are expressions (`print`, `run`, etc.)
 pub fn inline_js_macro_names() -> HashSet<&'static str> {
-    // Start with macros that have Expression/VariableRef args in the catalog
+    // Start with macros whose args are JS expressions.
+    //
+    // A macro is included if ALL its declared args are `Expression` or
+    // `Variable` kind. This covers:
+    //   - `<<set $x to 1>>` (Expression)
+    //   - `<<capture $target>>` (Variable)
+    //   - `<<unset $var>>` (Variable)
+    //
+    // Macros with mixed arg kinds (Variable + String + Keyword + Number) are
+    // discrete-argument macros (textbox, checkbox, radiobutton, etc.) — their
+    // args are NOT valid JS and should NOT be sent to oxc.
     let mut set: HashSet<&'static str> = builtin_macros()
         .iter()
         .filter(|m| {
             m.args.as_ref().is_some_and(|args| {
-                args.iter().any(|a| {
-                    matches!(a.kind, MacroArgKind::Expression | MacroArgKind::Variable)
-                })
+                !args.is_empty()
+                    && args.iter().all(|a| {
+                        matches!(a.kind, MacroArgKind::Expression | MacroArgKind::Variable)
+                    })
             })
         })
         .map(|m| m.name)

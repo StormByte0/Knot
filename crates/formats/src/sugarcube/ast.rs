@@ -470,6 +470,67 @@ pub enum TextFormatKind {
 }
 
 // ---------------------------------------------------------------------------
+// TableRow / TableCell / TableRowType — TiddlyWiki table support
+// ---------------------------------------------------------------------------
+//
+// These types support the `AstNode::Table` variant (see plan.md §3.9, §AD-3).
+// They are NOT variants of `AstNode` themselves — a `Table` node owns its
+// rows and cells directly, and the token builder recurses into them inside
+// the `Table` match arm.
+
+/// Row type for a TiddlyWiki table row, determined by the one-letter suffix
+/// after the closing `|` (see plan.md §3.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableRowType {
+    /// No suffix — body row (`<tbody>`).
+    Body,
+    /// `h` suffix — header row (`<thead>`).
+    Header,
+    /// `f` suffix — footer row (`<tfoot>`).
+    Footer,
+    /// `c` suffix — caption (`<caption>`). The row's cell content is the
+    /// caption text (usually a single cell).
+    Caption,
+    /// `k` suffix — CSS class assignment. The row's cell content is the
+    /// class name applied to the `<table>` element.
+    Class,
+}
+
+/// A single row in a TiddlyWiki table.
+///
+/// A row is a line of the form `|cell|cell|...|[fhck]?` at column 0.
+/// The `row_type` is determined by the optional one-letter suffix after
+/// the closing `|`.
+#[derive(Debug, Clone)]
+pub struct TableRow {
+    /// The cells in this row, in left-to-right order.
+    pub cells: Vec<TableCell>,
+    /// The row type (body / header / footer / caption / class).
+    pub row_type: TableRowType,
+    /// Byte range of the entire row line, body-relative.
+    pub span: Range<usize>,
+}
+
+/// A single cell in a TiddlyWiki table row.
+///
+/// Cells are separated by `|`. A cell whose content begins with `!` is a
+/// header cell (`<th>`). A cell containing only `>` triggers colspan; only
+/// `~` triggers rowspan (see plan.md §3.9).
+#[derive(Debug, Clone)]
+pub struct TableCell {
+    /// Recursively-parsed cell content (macros execute inside cells).
+    pub children: Vec<AstNode>,
+    /// `true` if the cell content begins with `!` (renders as `<th>`).
+    pub is_header: bool,
+    /// `true` if the cell content is just `>` (triggers colspan merge).
+    pub colspan: bool,
+    /// `true` if the cell content is just `~` (triggers rowspan extension).
+    pub rowspan: bool,
+    /// Byte range of the cell content (between `|` delimiters), body-relative.
+    pub span: Range<usize>,
+}
+
+// ---------------------------------------------------------------------------
 // Expression kind
 // ---------------------------------------------------------------------------
 
@@ -574,6 +635,19 @@ pub enum ParsedArgKind {
     /// A JS expression argument (the common case for most macros).
     /// e.g., `$hp gte 50` in `<<if $hp gte 50>>`
     Expression,
+    /// A bareword keyword flag (e.g., `autofocus`, `selected`, `keep`,
+    /// `container`, `autocheck`, `checked`, `once`, `autoselect`).
+    /// These appear without quotes as positional args.
+    Keyword,
+    /// A link markup argument (`[[...]]` syntax).
+    /// e.g., `[[Forest]]` in `<<goto [[Forest]]>>`
+    LinkMarkup,
+    /// An image markup argument (`[img[...]]` syntax).
+    /// e.g., `[img[forest.png][Forest]]` in `<<link [img[forest.png][Forest]]>>`
+    ImageMarkup,
+    /// A numeric literal (e.g., `100`, `0.5`).
+    /// e.g., `100` in `<<numberbox "$x" 100>>`
+    Number,
 }
 
 /// A structured macro argument extracted from the raw args string.
@@ -838,6 +912,158 @@ pub enum AstNode {
         /// Human-readable description of the error.
         message: String,
         /// Byte range of the problematic construct.
+        span: Range<usize>,
+    },
+
+    // ── Block-level markup (Phase 1+ of the block-markup overhaul) ───────
+    //
+    // These variants are introduced in Phase 1 as scaffolding. The parser
+    // does not yet emit them; subsequent phases fill in the arms that
+    // produce each variant. See `plan.md` §6 for the phase roadmap.
+    //
+    // Spans are body-relative (byte 0 = first character after the passage
+    // header newline), matching the convention used by all other variants.
+
+    /// A heading: `!` through `!!!!!!` (1-6 levels).
+    ///
+    /// SugarCube's `heading` parser calls `subWikify`, so macros, variables,
+    /// and links INSIDE heading text are processed (not raw). The `children`
+    /// field holds the recursively-parsed content (see plan.md §3.5).
+    ///
+    /// The `level` is `1..=6` (number of `!` characters). A 7th `!` becomes
+    /// the first character of heading text.
+    ///
+    /// `span` covers the `!` run through end of line (exclusive of the `\n`).
+    Heading {
+        /// Heading level: 1 (`!`) through 6 (`!!!!!!`).
+        level: u8,
+        /// Recursively-parsed heading content (macros execute).
+        children: Vec<AstNode>,
+        /// Byte range of the heading, body-relative.
+        span: Range<usize>,
+    },
+
+    /// A horizontal rule: `----` (4+ dashes alone on a line).
+    ///
+    /// SugarCube requires `^----+\s*$` — 4 or more dashes at column 0 with
+    /// only trailing whitespace allowed (see plan.md §3.6). `---` (3 dashes)
+    /// is NOT a horizontal rule.
+    HorizontalRule {
+        /// Byte range of the `----` run, body-relative.
+        span: Range<usize>,
+    },
+
+    /// A list item: `*`/`**`/`#`/`##` etc. at column 0.
+    ///
+    /// SugarCube's list syntax is `*` (unordered) or `#` (ordered), with
+    /// nesting determined by marker character count (NOT indentation). Mixed
+    /// markers like `*#` are NOT supported — the regex matches all-`*` or
+    /// all-`#` only (see plan.md §3.7).
+    ///
+    /// Flat model: there is no `List` wrapper variant. Consumers reconstruct
+    /// nesting from `depth` (marker char count), the same way block macros
+    /// are flat-emitted and paired later by the tree builder.
+    ListItem {
+        /// Nesting depth = marker character count (1 = top level, 2 = nested, …).
+        depth: u8,
+        /// `true` for `#` (ordered), `false` for `*` (unordered).
+        ordered: bool,
+        /// The raw marker string (e.g. `"*"`, `"**"`, `"#"`, `"###"`).
+        marker: String,
+        /// Recursively-parsed item content (macros execute).
+        children: Vec<AstNode>,
+        /// Byte range of the item, body-relative (marker through end of line).
+        span: Range<usize>,
+    },
+
+    /// A line-style blockquote: `>`/`>>`/etc. at column 0.
+    ///
+    /// SugarCube's `quoteByLine` parser builds nested `<blockquote>` elements
+    /// based on the number of `>`. Each line of a multi-line blockquote must
+    /// begin with `>` (no lazy continuation — see plan.md §3.8.1).
+    ///
+    /// `depth` is the `>` count. `children` holds the recursively-parsed line
+    /// content (macros execute).
+    Blockquote {
+        /// Nesting depth = `>` count (1 = `>`, 2 = `>>`, …).
+        depth: u8,
+        /// Recursively-parsed blockquote line content.
+        children: Vec<AstNode>,
+        /// Byte range of the blockquote line, body-relative.
+        span: Range<usize>,
+    },
+
+    /// A block-style blockquote: `<<<\n...\n<<<`.
+    ///
+    /// This is the TiddlyWiki-derived "quoteByBlock" form. It is present in
+    /// SugarCube's source but UNDOCUMENTED in the official v2 markup docs
+    /// (see plan.md §3.8.2). A line of exactly `<<<` opens the blockquote;
+    /// another `<<<` line closes it. Everything between is wrapped in a
+    /// single `<blockquote>`.
+    BlockquoteBlock {
+        /// Recursively-parsed block content (macros execute).
+        children: Vec<AstNode>,
+        /// Byte range of the opening `<<<` line, body-relative.
+        open_span: Range<usize>,
+        /// Byte range of the closing `<<<` line, body-relative. `None` if
+        /// the block was never closed (the parser emits a diagnostic).
+        close_span: Option<Range<usize>>,
+        /// Byte range of the entire blockquote block (open + body + close).
+        span: Range<usize>,
+    },
+
+    /// A TiddlyWiki-style table.
+    ///
+    /// SugarCube's `table` parser is undocumented in the official v2 markup
+    /// docs but fully implemented in the source (see plan.md §3.9). Rows are
+    /// `|`-delimited lines with an optional one-letter row-type suffix
+    /// (`h`/`f`/`c`/`k`). Cells beginning with `!` are header cells. Cells
+    /// containing only `>` trigger colspan; only `~` triggers rowspan.
+    Table {
+        /// Header rows (row-type suffix `h`). Stored as a single `TableRow`
+        /// because SugarCube emits one `<thead>` containing all `h` rows.
+        /// `None` if there are no header rows.
+        header: Option<TableRow>,
+        /// Body rows (no row-type suffix).
+        rows: Vec<TableRow>,
+        /// Footer rows (row-type suffix `f`). `None` if there are no footer rows.
+        footer: Option<TableRow>,
+        /// Caption text from a `c`-suffix row, if any.
+        caption: Option<String>,
+        /// Byte range of the caption row, body-relative.
+        caption_span: Option<Range<usize>>,
+        /// CSS class name from a `k`-suffix row, if any.
+        class: Option<String>,
+        /// Byte range of the class row, body-relative.
+        class_span: Option<Range<usize>>,
+        /// Byte range of the entire table, body-relative.
+        span: Range<usize>,
+    },
+
+    /// Block code: `{{{\n...\n}}}` (raw content, no macro processing).
+    ///
+    /// SugarCube's `monospacedByBlock` parser requires `{{{` immediately
+    /// followed by a newline at column 0, and `}}}` alone on its own line
+    /// (see plan.md §3.10.1). The content is HTML-escaped and rendered as
+    /// `<pre><code>…</code></pre>`. Macros do NOT execute inside.
+    CodeBlock {
+        /// Raw content between `{{{\n` and `\n}}}`. Not recursively parsed.
+        content: String,
+        /// Byte range of the entire code block (`{{{` through `}}}`).
+        span: Range<usize>,
+    },
+
+    /// Inline code: `{{{...}}}` appearing mid-line (raw content).
+    ///
+    /// Disambiguated from `CodeBlock` by position: `{{{` NOT at column 0 or
+    /// NOT immediately followed by `\n` is inline code (see plan.md §3.10.2).
+    /// The content is HTML-escaped and rendered as `<code>…</code>`. Macros
+    /// do NOT execute inside. The closing `}}}` is the first one found
+    /// (non-greedy).
+    InlineCode {
+        /// Raw content between `{{{` and `}}}`. Not recursively parsed.
+        content: String,
+        /// Byte range of the entire inline code (`{{{` through `}}}`).
         span: Range<usize>,
     },
 }

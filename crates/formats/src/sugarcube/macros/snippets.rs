@@ -81,7 +81,7 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
 
         // ── Navigation ────────────────────────────────────────────────────
         "goto"    => Some(r#"goto "${1:passage}">>"#),
-        "include" => Some(r#"include "${1:passage}">>"#),
+        "include" => Some(r#"include "${1:passage}" "${2:element}">>"#),
         "back"    => Some(r#"back>>"#),
         "return"  => Some(r#"return>>"#),
 
@@ -97,8 +97,9 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
         "css"         => Some(r#"css>>\n$1\n<</css>>"#),
 
         // ── Widgets / scripting ───────────────────────────────────────────
-        "widget" => Some(r#"widget "${1:name}">>\n$2\n<</widget>>"#),
-        "script" => Some(r#"script>>\n$1\n<</script>>"#),
+        "widget" => Some(r#"widget "${1:name}" ${2:container}>>\n$3\n<</widget>>"#),
+        "script" => Some(r#"script ${1:language}>>\n$2\n<</script>>"#),
+        "code"   => Some(r#"code>>\n$1\n<</code>>"#),
         "done"   => Some(r#"done>>\n$1\n<</done>>"#),
 
         // ── Deprecated (still need snippets for completeness) ────────────
@@ -106,6 +107,10 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
         "display" => Some(r#"display "${1:passage}">>"#),
         "remember"=> Some(r#"remember "${1:passage}">>"#),
         "forget"  => Some(r#"forget "${1:passage}">>"#),
+        "click"   => Some(r#"click "${1:label}" "${2:passage}">>\n$3\n<</click>>"#),
+        "choice"  => Some(r#"choice "${1:passage}" "${2:linkText}">>"#),
+        "setplaylist" => Some(r#"setplaylist "${1:list_id}">>"#),
+        "stopallaudio" => Some(r#"stopallaudio>>"#),
 
         // ── Timing ────────────────────────────────────────────────────────
         "timed"  => Some(r#"timed ${1:2s}>>\n$2\n<</timed>>"#),
@@ -113,14 +118,19 @@ pub fn macro_snippet(name: &str) -> Option<&'static str> {
         "next"   => Some(r#"next ${1:2s}>>"#),
 
         // ── Forms ─────────────────────────────────────────────────────────
-        "checkbox"    => Some(r#"checkbox "${1:\$var}" "${2:checked}" "${3:unchecked}">>"#),
+        // SugarCube signatures (per plan.md §3.12):
+        //   <<checkbox receiverName uncheckedValue checkedValue [autocheck|checked]>>
+        //   <<radiobutton receiverName checkedValue [autocheck|checked]>>
+        // NOTE: checkbox values were previously swapped (checked/unchecked).
+        //       Correct order is unchecked THEN checked.
+        "checkbox"    => Some(r#"checkbox "${1:\$var}" "${2:unchecked}" "${3:checked}">>"#),
         "radiobutton" => Some(r#"radiobutton "${1:\$var}" "${2:value}">>"#),
-        "textbox"     => Some(r#"textbox "${1:\$var}" "${2:default}">>"#),
-        "textarea"    => Some(r#"textarea "${1:\$var}" "${2:default}">>"#),
-        "numberbox"   => Some(r#"numberbox "${1:\$var}" ${2:0}>>"#),
-        "listbox"     => Some(r#"listbox "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</listbox>>"#),
-        "cycle"       => Some(r#"cycle "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</cycle>>"#),
-        "option"      => Some(r#"option "${1:display}" "${2:value}">>"#),
+        "textbox"     => Some(r#"textbox "${1:\$var}" "${2:default}" "${3:passage}" ${4:autofocus}>>"#),
+        "textarea"    => Some(r#"textarea "${1:\$var}" "${2:default}" ${3:autofocus}>>"#),
+        "numberbox"   => Some(r#"numberbox "${1:\$var}" ${2:0} "${3:passage}" ${4:autofocus}>>"#),
+        "listbox"     => Some(r#"listbox "${1:\$var}">>\n<<option "${2:label}" "${3:value}" ${4:selected}>\n<</listbox>>"#),
+        "cycle"       => Some(r#"cycle "${1:\$var}">>\n<<option "${2:label}" "${3:value}" ${4:selected}>\n<</cycle>>"#),
+        "option"      => Some(r#"option "${1:label}" "${2:value}" ${3:selected}>>"#),
         "optionsfrom" => Some(r#"optionsfrom ${1:\$collection}>>"#),
 
         // ── Audio ─────────────────────────────────────────────────────────

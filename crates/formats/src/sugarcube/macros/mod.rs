@@ -58,8 +58,10 @@ mod tests {
         // Previously missing from the old hardcoded list
         assert!(blocks.contains("timed"));
         assert!(blocks.contains("repeat"));
-        assert!(blocks.contains("css"));
         assert!(blocks.contains("createplaylist"));
+        // `css` was removed from the catalog (doesn't exist in SugarCube — plan.md §7a)
+        assert!(!blocks.contains("css"));
+        assert!(!blocks.contains("style"));
     }
 
     #[test]
