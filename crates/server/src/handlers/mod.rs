@@ -13,6 +13,7 @@ pub mod call_hierarchy;
 pub mod code_actions;
 pub mod completion;
 pub mod editing;
+pub mod formats;
 pub mod graph;
 pub mod helpers;
 pub mod hover;

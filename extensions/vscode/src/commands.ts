@@ -4,6 +4,7 @@
 //! logic. Commands include:
 //! - Story Map, Build, Play, Play from Passage
 //! - Restart Server, Re-index Workspace, Detect Compiler
+//! - Configure Story Formats (browse for folder, view installed formats)
 //! - Open Passage by Name
 //! - Initialize Project
 //! - Toggle Auto-Rebuild
@@ -13,14 +14,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync, execFileSync } from 'child_process';
-import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotReindexResponse, KnotGenerateIfidResponse } from './types';
+import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotFormatsListResponse, KnotFormatsRefreshResponse } from './types';
 import { PlayModeProvider } from './playModeProvider';
 import { StoryMapPanelManager } from './storyMapProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
-import { extractPassageName } from './utils';
+import { extractPassageName, getBuildRequestParams, getFormatsRefreshParams, getManagedTweegoPath, getManagedStoryformatsPath } from './utils';
 
 // ---------------------------------------------------------------------------
 // Dependencies injected from extension.ts
@@ -78,13 +79,70 @@ export function registerCommands(deps: CommandDeps): void {
             }
 
             try {
-                const result = await client.sendRequest<KnotBuildResponse>('knot/build', {
-                    workspace_uri: workspaceFolders[0].uri.toString(),
-                    compiler_path: tweegoPath,
-                });
+                // getBuildRequestParams reads knot.tweegoPath, knot.build.sourceDir,
+                // knot.build.outputDir, and knot.storyformats.path from VS Code
+                // Settings. The tweegoPath from ensureTweegoAvailable() is used
+                // as a fallback if the setting isn't set.
+                const buildParams = getBuildRequestParams(workspaceFolders[0].uri.toString());
+                if (!buildParams.compiler_path && tweegoPath) {
+                    buildParams.compiler_path = tweegoPath;
+                }
+                const result = await client.sendRequest<KnotBuildResponse>('knot/build', buildParams);
                 if (result.success) {
                     vscode.window.showInformationMessage('Knot: Build succeeded!');
                 } else {
+                    // Check if the failure was due to a missing story format.
+                    // If so, offer a one-click download button directly in the
+                    // error message — no need to open the Configure Story Formats
+                    // command separately.
+                    const errorText = result.errors?.join(' ') || '';
+                    const looksLikeFormatError = errorText.toLowerCase().includes('story format')
+                        || errorText.toLowerCase().includes('format not found');
+
+                    if (looksLikeFormatError) {
+                        // Query the server for the project's format info (from StoryData)
+                        try {
+                            const fmtResult = await client.sendRequest<KnotFormatsListResponse>(
+                                'knot/formats/list',
+                                { workspace_uri: workspaceFolders[0].uri.toString() }
+                            );
+                            if (fmtResult.project_format
+                                && fmtResult.project_format_version
+                                && fmtResult.project_format_cached === false
+                                && fmtResult.project_format === 'SugarCube') {
+                                // Offer one-click download
+                                const fmt = fmtResult.project_format;
+                                const ver = fmtResult.project_format_version;
+                                const choice = await vscode.window.showErrorMessage(
+                                    `Knot: Build failed — ${fmt} v${ver} is not installed. Download it now?`,
+                                    'Download',
+                                    'Close'
+                                );
+                                if (choice === 'Download') {
+                                    const cacheDir = await downloadStoryFormat(context, fmt, ver);
+                                    if (cacheDir) {
+                                        await client.sendRequest<KnotFormatsRefreshResponse>(
+                                            'knot/formats/refresh',
+                                            getFormatsRefreshParams(workspaceFolders[0].uri.toString())
+                                        );
+                                        // Retry the build automatically
+                                        const retryResult = await client.sendRequest<KnotBuildResponse>('knot/build', buildParams);
+                                        if (retryResult.success) {
+                                            vscode.window.showInformationMessage('Knot: Build succeeded after format download!');
+                                        } else {
+                                            vscode.window.showErrorMessage(
+                                                `Knot: Build still failing: ${retryResult.errors?.join(', ') || 'unknown error'}`
+                                            );
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                        } catch {
+                            // Fall through to generic error
+                        }
+                    }
+
                     vscode.window.showErrorMessage(
                         `Knot: Build failed: ${result.errors?.join(', ') || 'unknown error'}`
                     );
@@ -280,6 +338,366 @@ export function registerCommands(deps: CommandDeps): void {
             } catch (e) {
                 vscode.window.showErrorMessage(`Knot: Compiler detection failed: ${e}`);
             }
+        })
+    );
+
+    // Configure Story Formats — interactive UI for managing the storyformats
+    // directory and the installed formats catalog. Lets the user:
+    //   - See the currently resolved directory and the formats installed there
+    //   - Browse for a different folder (preview before saving)
+    //   - Clear the configured path (revert to auto-discovery)
+    //   - Open the Settings UI at the knot.storyformats.path field
+    //   - Refresh the catalog after manually adding/removing format dirs
+    context.subscriptions.push(
+        vscode.commands.registerCommand('knot.configureStoryFormats', async () => {
+            const client = deps.getClient();
+            if (!client || !client.isRunning()) {
+                vscode.window.showWarningMessage('Knot: Language server is not running.');
+                return;
+            }
+
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            const workspaceUri = workspaceFolders && workspaceFolders.length > 0
+                ? workspaceFolders[0].uri.toString()
+                : '';
+
+            try {
+                // First, refresh the server's catalog so we have fresh data.
+                await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
+                    getFormatsRefreshParams(workspaceUri)
+                );
+
+                // Then fetch the current state.
+                const result = await client.sendRequest<KnotFormatsListResponse>('knot/formats/list', {
+                    workspace_uri: workspaceUri,
+                });
+
+                const configuredPath = result.configured_path;
+                const resolvedDir = result.resolved_dir;
+                const formats = result.formats;
+
+                // Build QuickPick items.
+                const items: (vscode.QuickPickItem & { action?: string; format?: typeof formats[number] })[] = [];
+
+                // Header: show current state.
+                items.push({
+                    label: 'Current State',
+                    kind: vscode.QuickPickItemKind.Separator,
+                });
+
+                // Show managed storage path so users know where things live.
+                const managedRoot = context.globalStorageUri.fsPath;
+                items.push({
+                    label: '$(folder) Managed storage:',
+                    description: managedRoot,
+                    detail: 'Extension-managed tweego binary + versioned storyformat cache',
+                    action: 'openManagedStorage',
+                });
+
+                if (configuredPath) {
+                    items.push({
+                        label: `$(settings) Configured path: ${configuredPath}`,
+                        description: 'From knot.storyformats.path setting',
+                        action: 'openSettings',
+                    });
+                } else {
+                    items.push({
+                        label: '$(info) No path configured — using auto-discovery',
+                        description: resolvedDir
+                            ? `Resolved to: ${resolvedDir}`
+                            : 'No storyformats directory found',
+                        action: 'openSettings',
+                    });
+                }
+
+                if (formats.length > 0) {
+                    items.push({
+                        label: `Installed Formats (${formats.length})`,
+                        kind: vscode.QuickPickItemKind.Separator,
+                    });
+                    for (const f of formats) {
+                        items.push({
+                            label: `$(package) ${f.name} v${f.version}`,
+                            description: f.dir_name,
+                            detail: [f.author, f.license, f.source].filter(Boolean).join(' • '),
+                            format: f,
+                        });
+                    }
+                } else if (resolvedDir) {
+                    items.push({
+                        label: '$(warning) No formats found in the resolved directory',
+                        description: resolvedDir,
+                    });
+                } else {
+                    items.push({
+                        label: '$(warning) No storyformats directory resolved',
+                        description: 'Builds will likely fail with "story format not found"',
+                    });
+                }
+
+                // Actions section.
+                items.push({
+                    label: 'Actions',
+                    kind: vscode.QuickPickItemKind.Separator,
+                });
+
+                // Dynamic download action based on what StoryData says the
+                // project needs. If we know the format + version, offer a
+                // one-click download — no manual version entry required.
+                if (result.project_format && result.project_format_version) {
+                    const fmt = result.project_format;
+                    const ver = result.project_format_version;
+                    if (result.project_format_cached) {
+                        // Already cached — show a disabled-style info item
+                        items.push({
+                            label: `$(check) ${fmt} v${ver} (from StoryData) — already cached`,
+                            description: 'No download needed',
+                        });
+                    } else if (fmt === 'SugarCube') {
+                        items.push({
+                            label: `$(cloud-download) Download ${fmt} v${ver}`,
+                            description: 'Detected from StoryData — one click to install',
+                            action: 'downloadProjectFormat',
+                        });
+                    } else {
+                        items.push({
+                            label: `$(warning) ${fmt} v${ver} needed (from StoryData) — manual install required`,
+                            description: `Auto-download not available for ${fmt}. Use 'Browse for folder' instead.`,
+                        });
+                    }
+                } else {
+                    // No StoryData detected — offer manual download as fallback
+                    items.push({
+                        label: '$(cloud-download) Download SugarCube format...',
+                        description: 'No StoryData detected — enter version manually',
+                        action: 'downloadManual',
+                    });
+                }
+
+                items.push({
+                    label: '$(folder) Browse for story formats folder...',
+                    description: 'Pick a directory containing format subdirectories',
+                    action: 'browse',
+                });
+                items.push({
+                    label: '$(refresh) Refresh catalog',
+                    description: 'Re-scan the resolved directory after adding/removing formats',
+                    action: 'refresh',
+                });
+                if (configuredPath) {
+                    items.push({
+                        label: '$(close) Clear configured path',
+                        description: 'Revert to auto-discovery (project-local storyformats, tweego sibling)',
+                        action: 'clear',
+                    });
+                }
+                items.push({
+                    label: '$(gear) Open Settings',
+                    description: 'Edit knot.storyformats.path directly in the Settings UI',
+                    action: 'openSettings',
+                });
+
+                const selection = await vscode.window.showQuickPick(items, {
+                    placeHolder: 'Configure story formats for Knot builds',
+                    canPickMany: false,
+                });
+
+                if (!selection) {
+                    return;
+                }
+
+                if (selection.action === 'openSettings') {
+                    await vscode.commands.executeCommand(
+                        'workbench.action.openSettings',
+                        'knot.storyformats.path'
+                    );
+                    return;
+                }
+
+                if (selection.action === 'openManagedStorage') {
+                    vscode.commands.executeCommand('revealFileInOS', context.globalStorageUri);
+                    return;
+                }
+
+                if (selection.action === 'browse') {
+                    const folderUri = await vscode.window.showOpenDialog({
+                        canSelectFiles: false,
+                        canSelectFolders: true,
+                        canSelectMany: false,
+                        openLabel: 'Use this story formats folder',
+                        title: 'Select a directory containing story format subdirectories (e.g. sugarcube-2/, harlowe-3/)',
+                    });
+                    if (!folderUri || folderUri.length === 0) {
+                        return;
+                    }
+                    const selectedPath = folderUri[0].fsPath;
+
+                    // Preview what's in that directory before saving.
+                    const preview = await client.sendRequest<KnotFormatsListResponse>('knot/formats/list', {
+                        workspace_uri: workspaceUri,
+                        path_override: selectedPath,
+                    });
+
+                    if (preview.formats.length === 0) {
+                        const proceed = await vscode.window.showWarningMessage(
+                            `No format.js files found in subdirectories of:\n${selectedPath}\n\nSave this path anyway?`,
+                            { modal: false },
+                            'Save anyway',
+                            'Cancel'
+                        );
+                        if (proceed !== 'Save anyway') {
+                            return;
+                        }
+                    } else {
+                        const formatList = preview.formats
+                            .map(f => `  • ${f.name} v${f.version}`)
+                            .join('\n');
+                        const proceed = await vscode.window.showInformationMessage(
+                            `Found ${preview.formats.length} format(s) in:\n${selectedPath}\n\n${formatList}\n\nSave this as the story formats path?`,
+                            { modal: false },
+                            'Save',
+                            'Cancel'
+                        );
+                        if (proceed !== 'Save') {
+                            return;
+                        }
+                    }
+
+                    // Save to the knot.storyformats.path setting.
+                    const config = vscode.workspace.getConfiguration('knot');
+                    await config.update('storyformats.path', selectedPath, vscode.ConfigurationTarget.Global);
+
+                    // Trigger a refresh so the server picks up the new path.
+                    await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
+                        getFormatsRefreshParams(workspaceUri)
+                    );
+
+                    vscode.window.showInformationMessage(
+                        `Knot: Story formats path saved. ${preview.formats.length} format(s) discovered.`
+                    );
+                    return;
+                }
+
+                if (selection.action === 'refresh') {
+                    const refreshResult = await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
+                        getFormatsRefreshParams(workspaceUri)
+                    );
+                    if (refreshResult.success) {
+                        vscode.window.showInformationMessage(
+                            `Knot: Refreshed — ${refreshResult.format_count} format(s) from ${refreshResult.resolved_dir || '(none)'}`
+                        );
+                    } else {
+                        vscode.window.showErrorMessage(
+                            `Knot: Refresh failed — ${refreshResult.error || 'unknown error'}`
+                        );
+                    }
+                    return;
+                }
+
+                if (selection.action === 'clear') {
+                    const config = vscode.workspace.getConfiguration('knot');
+                    await config.update('storyformats.path', '', vscode.ConfigurationTarget.Global);
+                    await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
+                        getFormatsRefreshParams(workspaceUri)
+                    );
+                    vscode.window.showInformationMessage(
+                        'Knot: Cleared story formats path — using auto-discovery.'
+                    );
+                    return;
+                }
+
+                // One-click download of the format the project needs (from StoryData).
+                // No manual version entry — we already know what to fetch.
+                if (selection.action === 'downloadProjectFormat') {
+                    const fmt = result.project_format!;
+                    const ver = result.project_format_version!;
+                    const cacheDir = await downloadStoryFormat(context, fmt, ver);
+                    if (cacheDir) {
+                        await client.sendRequest<KnotFormatsRefreshResponse>(
+                            'knot/formats/refresh',
+                            getFormatsRefreshParams(workspaceUri)
+                        );
+                    }
+                    return;
+                }
+
+                // Fallback: manual download when no StoryData is available.
+                if (selection.action === 'downloadManual') {
+                    const formatName = await vscode.window.showQuickPick(
+                        ['SugarCube', 'Harlowe', 'Chapbook', 'Snowman'],
+                        { placeHolder: 'Select a story format to download' }
+                    );
+                    if (!formatName) { return; }
+
+                    if (formatName !== 'SugarCube') {
+                        vscode.window.showInformationMessage(
+                            `Knot: Auto-download is currently only available for SugarCube. ` +
+                            `For ${formatName}, please download it manually and use 'Browse for folder' to install.`
+                        );
+                        return;
+                    }
+
+                    const version = await vscode.window.showInputBox({
+                        prompt: 'Enter the SugarCube version to download',
+                        placeHolder: 'e.g. 2.37.0',
+                        validateInput: (v) => {
+                            if (!v.trim()) { return 'Version is required'; }
+                            if (!/^\d+\.\d+\.\d+$/.test(v.trim())) {
+                                return 'Version must be in the format X.Y.Z (e.g. 2.37.0)';
+                            }
+                            return null;
+                        },
+                    });
+                    if (!version) { return; }
+
+                    const cacheDir = await downloadStoryFormat(context, formatName, version.trim());
+                    if (cacheDir) {
+                        await client.sendRequest<KnotFormatsRefreshResponse>(
+                            'knot/formats/refresh',
+                            getFormatsRefreshParams(workspaceUri)
+                        );
+                    }
+                    return;
+                }
+            } catch (e) {
+                vscode.window.showErrorMessage(`Knot: Failed to configure story formats: ${e}`);
+            }
+        })
+    );
+
+    // Open Tweego Folder — opens the Knot-managed toolchain directory in
+    // the OS file explorer. Lets users see (and manually update) the
+    // downloaded tweego binary and storyformats without needing to dig
+    // through VS Code's globalStorage path.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('knot.openTweegoFolder', async () => {
+            const managedTweego = getManagedTweegoPath();
+            const managedSf = getManagedStoryformatsPath();
+
+            if (!managedTweego && !managedSf) {
+                const choice = await vscode.window.showInformationMessage(
+                    'Knot: Tweego has not been downloaded yet. Download it now?',
+                    'Download',
+                    'Cancel'
+                );
+                if (choice === 'Download') {
+                    await downloadTweego(context);
+                }
+                return;
+            }
+
+            // Open the globalStorage root (contains both tweego/ and storyformats/)
+            const storageRoot = context.globalStorageUri.fsPath;
+            vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(storageRoot));
+        })
+    );
+
+    // Open Managed Storage Folder — opens the extension's globalStorage
+    // directory in the OS file explorer. This is where the managed tweego
+    // binary and versioned storyformat cache live.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('knot.openManagedStorage', async () => {
+            vscode.commands.executeCommand('revealFileInOS', context.globalStorageUri);
         })
     );
 
@@ -488,7 +906,7 @@ async function ensureTweegoAvailable(
     context: vscode.ExtensionContext,
     client: KnotLanguageClient | null,
 ): Promise<string | undefined> {
-    // 1. Check VS Code setting
+    // 1. Check VS Code setting (power user override)
     const config = vscode.workspace.getConfiguration('knot');
     const settingPath = config.get<string>('tweegoPath');
     if (settingPath && settingPath.trim()) {
@@ -500,41 +918,43 @@ async function ensureTweegoAvailable(
         }
     }
 
-    // 2. Check via the language server (PATH lookup)
+    // 2. Check the Knot-managed binary (downloaded to globalStorage).
+    // This is the preferred path — Knot owns the toolchain.
+    const managedTweego = getManagedTweegoPath();
+    if (managedTweego) {
+        return managedTweego;
+    }
+
+    // 3. Check via the language server (PATH lookup)
     try {
         const result = await client?.sendRequest<KnotCompilerDetectResponse>('knot/compilerDetect', { workspace_uri: '' });
         if (result && result.compiler_found && result.compiler_path) {
-            // Persist to setting so we don't re-detect every time
-            await config.update('tweegoPath', result.compiler_path, vscode.ConfigurationTarget.Global);
             return result.compiler_path;
         }
     } catch { /* ignore */ }
 
-    // 3. Check global storage (previously downloaded)
-    const globalBinDir = path.join(context.globalStorageUri.fsPath, 'tweego');
-    const binaryName = process.platform === 'win32' ? 'tweego.exe' : 'tweego';
-    const globalBinPath = path.join(globalBinDir, binaryName);
-    try {
-        fs.accessSync(globalBinPath, fs.constants.X_OK);
-        await config.update('tweegoPath', globalBinPath, vscode.ConfigurationTarget.Global);
-        return globalBinPath;
-    } catch { /* not found */ }
-
-    // 4. Prompt user
+    // 4. Prompt user: Download (managed) | Set Path Manually | Open Storage | Cancel
     const choice = await vscode.window.showWarningMessage(
         'Tweego compiler not found. Knot needs Tweego to build and preview Twine stories.',
         'Download Tweego',
         'Set Path Manually',
+        'Open Storage Folder',
         'Cancel'
     );
 
     if (choice === 'Download Tweego') {
         const downloaded = await downloadTweego(context);
         if (downloaded) {
-            // Persist the downloaded path
-            await config.update('tweegoPath', downloaded, vscode.ConfigurationTarget.Global);
+            // Don't persist to knot.tweegoPath — getBuildRequestParams()
+            // checks the managed path automatically. This way, if the user
+            // later sets knot.tweegoPath explicitly, their override works.
             return downloaded;
         }
+    } else if (choice === 'Open Storage Folder') {
+        // Open the managed storage folder so the user can see where tweego
+        // and storyformats will be / are installed.
+        vscode.commands.executeCommand('revealFileInOS', context.globalStorageUri);
+        return undefined;
     } else if (choice === 'Set Path Manually') {
         const fileUri = await vscode.window.showOpenDialog({
             canSelectFiles: true,
@@ -663,6 +1083,39 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
                 fs.chmodSync(binaryPath, 0o755);
             }
 
+            // Move storyformats OUT of the tweego binary directory to a
+            // separate managed location. This is critical: tweego's first
+            // storyformat search path is <binary_dir>/storyformats/. If we
+            // leave them there, project-local <workspace>/storyformats/
+            // overrides (which tweego searches 3rd) can never take priority.
+            //
+            // By moving them to <globalStorage>/storyformats/, tweego's
+            // binary-sibling search finds nothing, and the managed formats
+            // are only found via TWEEGO_PATH (searched last). This gives
+            // projects the ability to pin specific format versions by
+            // shipping their own storyformats/ folder.
+            const extractedSfDir = path.join(binDir, 'storyformats');
+            if (fs.existsSync(extractedSfDir)) {
+                const managedSfDir = path.join(context.globalStorageUri.fsPath, 'storyformats');
+                fs.mkdirSync(managedSfDir, { recursive: true });
+
+                // Move each format subdirectory (sugarcube-2, harlowe-3, etc.)
+                const formatDirs = fs.readdirSync(extractedSfDir, { withFileTypes: true });
+                for (const entry of formatDirs) {
+                    if (entry.isDirectory()) {
+                        const src = path.join(extractedSfDir, entry.name);
+                        const dst = path.join(managedSfDir, entry.name);
+                        // Remove existing destination if present (update case)
+                        if (fs.existsSync(dst)) {
+                            fs.rmSync(dst, { recursive: true, force: true });
+                        }
+                        fs.renameSync(src, dst);
+                    }
+                }
+                // Remove the now-empty storyformats directory from binDir
+                fs.rmSync(extractedSfDir, { recursive: true, force: true });
+            }
+
             // Clean up zip
             fs.unlinkSync(zipPath);
 
@@ -670,6 +1123,194 @@ async function downloadTweego(context: vscode.ExtensionContext): Promise<string 
             return binaryPath;
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to download Tweego: ${e}`);
+            return undefined;
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Story format download — uses fetch + platform-native extraction
+// ---------------------------------------------------------------------------
+
+/** Map a format name to the tweego format ID (directory name). */
+function formatNameToId(formatName: string): string | null {
+    switch (formatName) {
+        case 'SugarCube': return 'sugarcube-2';
+        case 'Harlowe': return 'harlowe-3';
+        case 'Chapbook': return 'chapbook-1';
+        case 'Snowman': return 'snowman-2';
+        default: return null;
+    }
+}
+
+/** Construct a download URL for a story format version.
+ *  Currently only SugarCube has clean per-version release URLs on GitHub.
+ *
+ *  SugarCube release asset naming (verified from GitHub API):
+ *    sugarcube-{VERSION}-for-twine-2.1-local.zip   ← Twine 2 story-format bundle (what tweego needs)
+ *    sugarcube-{VERSION}-for-twine-1.4.zip         ← Twine 1.4 format
+ */
+function formatDownloadUrl(formatName: string, version: string): string | null {
+    if (formatName === 'SugarCube') {
+        return `https://github.com/tmedwards/sugarcube-2/releases/download/v${version}/sugarcube-${version}-for-twine-2.1-local.zip`;
+    }
+    return null;
+}
+
+/**
+ * Download a story format version into the extension-managed versioned cache.
+ *
+ * Downloads the format zip from the format's official release URL, extracts
+ * it to `<globalStorage>/storyformats/<format-id>@<version>/<format-id>/`,
+ * and makes it available for builds via TWEEGO_PATH.
+ *
+ * Reuses the same fetch + platform-native extraction pattern as
+ * `downloadTweego()` — no npm zip dependencies needed.
+ *
+ * @returns The versioned cache directory path on success, undefined on failure.
+ */
+async function downloadStoryFormat(
+    context: vscode.ExtensionContext,
+    formatName: string,
+    version: string,
+): Promise<string | undefined> {
+    const formatId = formatNameToId(formatName);
+    if (!formatId) {
+        vscode.window.showErrorMessage(
+            `Knot: Unknown format "${formatName}". Supported: SugarCube, Harlowe, Chapbook, Snowman`
+        );
+        return undefined;
+    }
+
+    const url = formatDownloadUrl(formatName, version);
+    if (!url) {
+        vscode.window.showInformationMessage(
+            `Knot: Auto-download is not available for ${formatName} v${version}. ` +
+            `Please download it manually and use "Browse for folder" to install.`
+        );
+        return undefined;
+    }
+
+    // Versioned cache directory:
+    //   <globalStorage>/storyformats/sugarcube-2@2.37.0/
+    // The format itself goes inside:
+    //   <globalStorage>/storyformats/sugarcube-2@2.37.0/sugarcube-2/format.js
+    const versionedDir = path.join(
+        context.globalStorageUri.fsPath,
+        'storyformats',
+        `${formatId}@${version}`,
+    );
+    const formatDest = path.join(versionedDir, formatId);
+
+    // Already cached?
+    if (fs.existsSync(path.join(formatDest, 'format.js'))) {
+        vscode.window.showInformationMessage(
+            `Knot: ${formatName} v${version} is already cached at ${versionedDir}`
+        );
+        return versionedDir;
+    }
+
+    return vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Knot: Downloading ${formatName} v${version}...`,
+        cancellable: true,
+    }, async (progress, _token) => {
+        try {
+            progress.report({ message: 'Downloading...' });
+
+            fs.mkdirSync(versionedDir, { recursive: true });
+            const zipPath = path.join(versionedDir, `${formatId}.zip`);
+
+            // Download using fetch (Node 18+ / VS Code 1.85+)
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status} ${response.statusText} — check that version ${version} exists at ${url}`);
+            }
+            const buffer = Buffer.from(await response.arrayBuffer());
+            fs.writeFileSync(zipPath, buffer);
+
+            progress.report({ message: 'Extracting...' });
+
+            // Extract to a temp dir first, then move the format-id subdirectory
+            // into place. The SugarCube zip contains a top-level `sugarcube-2/`
+            // directory — we want that to end up at `formatDest`.
+            const extractDir = path.join(versionedDir, '_extract_tmp');
+            fs.mkdirSync(extractDir, { recursive: true });
+
+            const platform = process.platform;
+            if (platform === 'win32') {
+                execSync(
+                    `powershell -NoProfile -Command "Expand-Archive -Force -Path '${zipPath}' -DestinationPath '${extractDir}'"`,
+                    { stdio: 'pipe' },
+                );
+            } else {
+                // Try Python first (cross-platform, no external deps needed)
+                try {
+                    execSync(
+                        `python3 -c "import zipfile; zipfile.ZipFile('${zipPath}').extractall('${extractDir}')"`,
+                        { stdio: 'pipe' },
+                    );
+                } catch {
+                    // Fall back to unzip
+                    execSync(`unzip -o "${zipPath}" -d "${extractDir}"`, { stdio: 'pipe' });
+                }
+            }
+
+            // Find the format-id directory in the extracted contents.
+            // It may be at the root (e.g. `extractDir/sugarcube-2/format.js`)
+            // or nested one level deeper.
+            let sourceFormatDir: string | null = null;
+            if (fs.existsSync(path.join(extractDir, formatId, 'format.js'))) {
+                sourceFormatDir = path.join(extractDir, formatId);
+            } else {
+                // Search one level deep
+                const entries = fs.readdirSync(extractDir, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.isDirectory()) {
+                        const candidate = path.join(extractDir, entry.name, formatId);
+                        if (fs.existsSync(path.join(candidate, 'format.js'))) {
+                            sourceFormatDir = candidate;
+                            break;
+                        }
+                        // Maybe the format-id IS the top-level dir
+                        if (entry.name === formatId && fs.existsSync(path.join(extractDir, entry.name, 'format.js'))) {
+                            sourceFormatDir = path.join(extractDir, entry.name);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!sourceFormatDir) {
+                // Fall back: just move the whole extract dir contents
+                fs.mkdirSync(formatDest, { recursive: true });
+                const entries = fs.readdirSync(extractDir, { withFileTypes: true });
+                for (const entry of entries) {
+                    fs.renameSync(path.join(extractDir, entry.name), path.join(formatDest, entry.name));
+                }
+            } else {
+                // Move the format-id dir into place
+                if (fs.existsSync(formatDest)) {
+                    fs.rmSync(formatDest, { recursive: true, force: true });
+                }
+                fs.renameSync(sourceFormatDir, formatDest);
+            }
+
+            // Clean up temp + zip
+            fs.rmSync(extractDir, { recursive: true, force: true });
+            fs.unlinkSync(zipPath);
+
+            // Verify
+            if (!fs.existsSync(path.join(formatDest, 'format.js'))) {
+                throw new Error(`format.js not found after extraction at ${formatDest}`);
+            }
+
+            vscode.window.showInformationMessage(
+                `Knot: ${formatName} v${version} downloaded successfully. Cached at: ${versionedDir}`
+            );
+            return versionedDir;
+        } catch (e) {
+            vscode.window.showErrorMessage(`Knot: Failed to download ${formatName} v${version}: ${e}`);
             return undefined;
         }
     });

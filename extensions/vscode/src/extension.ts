@@ -12,13 +12,14 @@
 //! - `crashRecovery`     — Automatic restart and failure handling
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { StoryMapPanelManager } from './storyMapProvider';
 import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
-import { isTweeLanguage, extractPassageName } from './utils';
+import { isTweeLanguage, extractPassageName, setGlobalStoragePath } from './utils';
 import { KnotLanguageClient } from './types';
 import { getServerPath } from './binaryResolution';
 import { registerNotifications, NotificationDeps } from './notifications';
@@ -79,6 +80,22 @@ export async function activate(context: vscode.ExtensionContext) {
     statusBarItem.show();
     context.subscriptions.push(statusBarItem);
 
+    // Set the global storage path early — this is used by utils.ts to locate
+    // the managed tweego binary and storyformats cache. Without this call,
+    // getManagedTweegoPath() always returns undefined, causing the extension
+    // to re-prompt for tweego download even after it's already been downloaded.
+    setGlobalStoragePath(context.globalStorageUri.fsPath);
+
+    // Populate the read-only managed path settings so users can see where
+    // the extension stores things, visible in the Settings UI (cog icon).
+    // These are updated on every activation to stay current.
+    const storageRoot = context.globalStorageUri.fsPath;
+    const config = vscode.workspace.getConfiguration('knot');
+    const tweegoBinaryName = process.platform === 'win32' ? 'tweego.exe' : 'tweego';
+    await config.update('managed.storagePath', storageRoot, vscode.ConfigurationTarget.Global);
+    await config.update('managed.tweegoPath', path.join(storageRoot, 'tweego', tweegoBinaryName), vscode.ConfigurationTarget.Global);
+    await config.update('managed.storyformatsPath', path.join(storageRoot, 'storyformats'), vscode.ConfigurationTarget.Global);
+
     // Create the permanent left-side status bar items (Story Map, Build, Settings)
     // These appear after indexing completes; during indexing, the statusBarItem
     // above shows progress instead.
@@ -103,6 +120,14 @@ export async function activate(context: vscode.ExtensionContext) {
             fileEvents: vscode.workspace.createFileSystemWatcher(
                 '**/*.{tw,twee}'
             ),
+        },
+        initializationOptions: {
+            // Pass the extension's global storage path so the server can
+            // locate the extension-managed toolchain (tweego binary + versioned
+            // storyformat cache). This is the root of the "never worry about
+            // storyformats" architecture: the extension downloads tweego and
+            // formats into globalStorage, and the server uses them at build time.
+            globalStoragePath: context.globalStorageUri.fsPath,
         },
     };
 

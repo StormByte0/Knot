@@ -294,6 +294,75 @@ export interface KnotCompilerDetectResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Story formats catalog types (matches Rust-side KnotFormatsListResponse)
+// ---------------------------------------------------------------------------
+
+/** A single installed story format entry, parsed from a format.js file. */
+export interface KnotFormatEntry {
+    /** Format name (e.g. "SugarCube", "Harlowe"). */
+    name: string;
+    /** Format version (e.g. "2.37.0"). */
+    version: string;
+    /** Short description. */
+    description?: string;
+    /** Author name(s). */
+    author?: string;
+    /** License identifier (e.g. "BSD-3-Clause"). */
+    license?: string;
+    /** Source code URL. */
+    source?: string;
+    /** Homepage URL. */
+    url?: string;
+    /** Absolute path to the format directory (contains format.js, etc.). */
+    dir: string;
+    /** Name of the format directory (e.g. "sugarcube-2"). */
+    dir_name: string;
+}
+
+export interface KnotFormatsListParams {
+    workspace_uri?: string;
+    /** Optional override for the storyformats directory. Used by the
+     *  "Browse for folder..." flow to preview what's in a directory
+     *  before saving it. */
+    path_override?: string;
+}
+
+export interface KnotFormatsListResponse {
+    /** The storyformats directory the server scanned. Null if no
+     *  directory could be resolved. */
+    resolved_dir: string | null;
+    /** The list of installed formats found. */
+    formats: KnotFormatEntry[];
+    /** The configured storyformats path (from knot.storyformats.path
+     *  setting or .vscode/knot.json). Null when unset. */
+    configured_path: string | null;
+    /** The format name detected from the project's StoryData passage
+     *  (e.g. "SugarCube"). Null if no StoryData was found. */
+    project_format?: string | null;
+    /** The format version detected from the project's StoryData passage
+     *  (e.g. "2.37.0"). Null if no StoryData or no format-version field. */
+    project_format_version?: string | null;
+    /** Whether the project's needed format is already in the managed cache.
+     *  Null if we can't determine (no StoryData or no global storage path). */
+    project_format_cached?: boolean | null;
+}
+
+export interface KnotFormatsRefreshParams {
+    workspace_uri?: string;
+    /** Optional storyformats directory override from the VS Code
+     *  `knot.storyformats.path` setting. When provided, takes priority
+     *  over `.vscode/knot.json`. */
+    storyformats_path?: string;
+}
+
+export interface KnotFormatsRefreshResponse {
+    success: boolean;
+    resolved_dir: string | null;
+    format_count: number;
+    error?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Reindex types (matches Rust-side KnotReindexResponse)
 // ---------------------------------------------------------------------------
 

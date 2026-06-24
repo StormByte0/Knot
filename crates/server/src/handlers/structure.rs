@@ -455,6 +455,8 @@ mod signature_help_tests {
                 m.insert(uri.clone(), parse_result.token_groups);
                 m
             },
+            installed_formats: Vec::new(),
+            global_storage_path: None,
         };
         (inner, uri)
     }

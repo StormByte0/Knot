@@ -22,6 +22,19 @@ pub(crate) async fn initialize(
         inner.workspace = knot_core::Workspace::new(root_uri);
     }
 
+    // Read the global storage path from initialization options (sent by
+    // the VS Code extension). This is the root for the extension-managed
+    // toolchain: `<global_storage>/tweego/` for the binary,
+    // `<global_storage>/storyformats/<id>@<ver>/` for versioned format cache.
+    if let Some(opts) = params.initialization_options {
+        if let Some(path_str) = opts.get("globalStoragePath").and_then(|v| v.as_str()) {
+            let path = std::path::PathBuf::from(path_str);
+            let mut inner = state.inner.write().await;
+            inner.global_storage_path = Some(path);
+            tracing::info!("Extension global storage path: {:?}", inner.global_storage_path);
+        }
+    }
+
     // Load workspace configuration from .vscode/knot.json
     {
         let inner = state.inner.read().await;

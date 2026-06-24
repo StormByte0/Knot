@@ -35,6 +35,8 @@ impl KnotServer {
             .custom_method("knot/updatePositions", ServerState::knot_update_positions)
             .custom_method("knot/clientReady", ServerState::knot_client_ready)
             .custom_method("knot/formatSwitchComplete", ServerState::knot_format_switch_complete)
+            .custom_method("knot/formats/list", ServerState::knot_formats_list)
+            .custom_method("knot/formats/refresh", ServerState::knot_formats_refresh)
             .finish();
 
         let stdin = tokio::io::stdin();

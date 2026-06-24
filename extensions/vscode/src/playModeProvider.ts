@@ -14,6 +14,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { KnotLanguageClient, KnotPlayResponse } from './types';
+import { getBuildRequestParams } from './utils';
 
 // ---------------------------------------------------------------------------
 // Play session state
@@ -379,12 +380,13 @@ export class PlayModeProvider {
         this._notifyBuildStatus('building');
 
         try {
-            const requestParams: Record<string, string> = {
-                workspace_uri: workspaceFolders[0].uri.toString(),
-            };
-            if (this._startPassage) {
-                requestParams.start_passage = this._startPassage;
-            }
+            // getBuildRequestParams reads knot.tweegoPath, knot.build.sourceDir,
+            // knot.build.outputDir, and knot.storyformats.path from VS Code
+            // Settings so play mode respects the same settings as build.
+            const requestParams = getBuildRequestParams(
+                workspaceFolders[0].uri.toString(),
+                this._startPassage,
+            );
 
             const result: KnotPlayResponse = await this._client.sendRequest('knot/play', requestParams);
 

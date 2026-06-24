@@ -37,8 +37,10 @@ pub mod sugarcube;
 pub mod harlowe;
 pub mod chapbook;
 pub mod snowman;
+pub mod format_meta;
 
 pub use plugin::{FormatPlugin, FormatPluginMut, ParseResult, SemanticToken, FormatDiagnostic, SourceTextProvider, NoSourceText, MacroAtPosition, MacroBlockEvent};
+pub use format_meta::{FormatMeta, InstalledFormat, parse_format_js, scan_storyformats_dir};
 pub use types::{
     MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
     ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,

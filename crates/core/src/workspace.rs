@@ -66,6 +66,18 @@ pub struct KnotConfig {
     /// Path to the Tweego compiler binary.
     #[serde(default)]
     pub compiler_path: Option<PathBuf>,
+    /// Path to the directory containing installed story formats.
+    ///
+    /// When set, this takes priority over all other storyformat discovery
+    /// mechanisms (tweego binary's sibling dir, project-local `.storyformats`,
+    /// knot-managed globalStorage). When unset, the server uses the layered
+    /// discovery chain in `build.rs::resolve_storyformats_dir()`.
+    ///
+    /// This is mirrored by the VS Code setting `knot.storyformats.path`,
+    /// which is the recommended way for users to configure this — the
+    /// setting is visible in the Settings UI as a folder picker.
+    #[serde(default)]
+    pub storyformats_path: Option<PathBuf>,
     /// Build configuration.
     #[serde(default)]
     pub build: BuildConfig,
@@ -106,6 +118,24 @@ pub struct BuildConfig {
     /// Output directory for compiled HTML.
     #[serde(default = "default_output_dir")]
     pub output_dir: String,
+    /// Source directory for twee files, relative to the workspace root.
+    ///
+    /// When set, this is used instead of the workspace root as the source
+    /// argument to tweego. This is essential for projects that bundle the
+    /// tweego toolchain (or any other non-source files) in a subdirectory —
+    /// without this setting, tweego recursively scans the entire workspace
+    /// and picks up files like `tweego/storyformats/*/format.js` as source
+    /// passages, causing "Replacing existing passage \"format.js\"" warnings
+    /// and build failures.
+    ///
+    /// Example `.vscode/knot.json`:
+    /// ```json
+    /// { "build": { "source_dir": "src" } }
+    /// ```
+    ///
+    /// When unset or empty, the workspace root is used (backward compat).
+    #[serde(default)]
+    pub source_dir: Option<String>,
     /// Additional compiler flags.
     #[serde(default)]
     pub flags: Vec<String>,
@@ -119,6 +149,7 @@ impl Default for BuildConfig {
     fn default() -> Self {
         Self {
             output_dir: default_output_dir(),
+            source_dir: None,
             flags: Vec::new(),
         }
     }

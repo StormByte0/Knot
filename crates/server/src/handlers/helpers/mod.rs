@@ -16,7 +16,7 @@ mod position;
 mod uri;
 
 pub(crate) use code_actions::*;
-pub(crate) use compiler::*;
+pub(crate) use compiler::{which_compiler, detect_compiler_version, resolve_storyformats_dir};
 pub(crate) use diagnostics::*;
 pub(crate) use formatting::*;
 pub(crate) use graph::*;

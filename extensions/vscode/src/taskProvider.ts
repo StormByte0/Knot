@@ -7,6 +7,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { KnotLanguageClient, KnotBuildResponse } from './types';
+import { getBuildRequestParams } from './utils';
 
 // ---------------------------------------------------------------------------
 // Task Provider
@@ -108,9 +109,9 @@ class KnotBuildTerminal implements vscode.Pseudoterminal {
         }
 
         try {
-            const result = await this.client.sendRequest<KnotBuildResponse>('knot/build', {
-                workspace_uri: workspaceFolders[0].uri.toString(),
-            });
+            const result = await this.client.sendRequest<KnotBuildResponse>('knot/build',
+                getBuildRequestParams(workspaceFolders[0].uri.toString())
+            );
 
             if (result.success) {
                 this.writeEmitter.fire('Build succeeded!\r\n');
@@ -165,9 +166,9 @@ class KnotWatchTerminal implements vscode.Pseudoterminal {
             if (!workspaceFolders || workspaceFolders.length === 0) { return; }
 
             try {
-                const result = await this.client.sendRequest<KnotBuildResponse>('knot/build', {
-                    workspace_uri: workspaceFolders[0].uri.toString(),
-                });
+                const result = await this.client.sendRequest<KnotBuildResponse>('knot/build',
+                    getBuildRequestParams(workspaceFolders[0].uri.toString())
+                );
                 if (result.success) {
                     this.writeEmitter.fire('  Build succeeded.\r\n');
                 } else {

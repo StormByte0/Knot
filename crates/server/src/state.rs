@@ -6,6 +6,7 @@
 use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
 use knot_formats::plugin::{FormatRegistry, PassageDiagnosticGroup, PassageTokenGroup, SourceTextProvider};
+use knot_formats::format_meta::InstalledFormat;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -93,6 +94,25 @@ pub struct ServerStateInner {
     /// better than no tokens because VS Code will re-request after a refresh.
     pub semantic_tokens: HashMap<Url, Vec<PassageTokenGroup>>,
 
+    /// Catalog of installed story formats, indexed from the resolved
+    /// storyformats directory (see `build::resolve_storyformats_dir`).
+    ///
+    /// This is rebuilt whenever the user changes `knot.storyformats.path`
+    /// or invokes `knot/formats/refresh`. The catalog is the source of
+    /// truth for "is the format referenced by StoryData actually installed?"
+    /// diagnostics and for the `Knot: Configure Story Formats` UI.
+    pub installed_formats: Vec<InstalledFormat>,
+
+    /// Path to the VS Code extension's global storage directory.
+    ///
+    /// Passed from the extension via `initialize` initialization options.
+    /// Used as the root for the extension-managed toolchain:
+    ///   `<global_storage>/tweego/tweego[.exe]` — managed tweego binary
+    ///   `<global_storage>/storyformats/<id>@<ver>/<id>/` — versioned format cache
+    ///
+    /// When `None`, the server falls back to legacy discovery (config paths,
+    /// PATH lookup, project-local storyformats).
+    pub global_storage_path: Option<std::path::PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +180,8 @@ impl ServerState {
                 format_diagnostics: HashMap::new(),
                 doc_versions: HashMap::new(),
                 semantic_tokens: HashMap::new(),
-
+                installed_formats: Vec::new(),
+                global_storage_path: None,
             })),
             shutting_down: AtomicBool::new(false),
             client_ready: Arc::new(Notify::new()),

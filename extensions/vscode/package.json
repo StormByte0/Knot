@@ -158,6 +158,21 @@
         "category": "Knot"
       },
       {
+        "command": "knot.configureStoryFormats",
+        "title": "Knot: Configure Story Formats",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.openManagedStorage",
+        "title": "Knot: Open Managed Storage Folder",
+        "category": "Knot"
+      },
+      {
+        "command": "knot.openTweegoFolder",
+        "title": "Knot: Open Tweego Folder",
+        "category": "Knot"
+      },
+      {
         "command": "knot.openPassageByName",
         "title": "Knot: Open Passage by Name",
         "category": "Knot"
@@ -265,6 +280,51 @@
           "type": "string",
           "default": "",
           "description": "Override path to the knot-server binary. Leave empty to use the bundled binary."
+        },
+        "knot.tweegoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the Tweego compiler binary. Leave empty to auto-detect from PATH, or use the 'Knot: Configure Build Toolchain' command to download or browse for it.",
+          "scope": "machine-overridable"
+        },
+        "knot.storyformats.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the directory containing installed story formats (each subdirectory should contain a format.js file). Leave empty to auto-detect: Knot checks (1) this path, (2) the project's storyformats/ directory, (3) the directory next to the Tweego binary. Use the 'Knot: Configure Story Formats' command to browse for a folder.",
+          "scope": "machine-overridable"
+        },
+        "knot.build.sourceDir": {
+          "type": "string",
+          "default": "",
+          "description": "Subdirectory (relative to the workspace root) containing your .twee source files. Set this if your project has non-source files at the root — for example, a bundled tweego/ folder. Without this, Tweego scans the entire workspace and may pick up stray .js files as passages. Leave empty to use the workspace root as the source directory.",
+          "scope": "machine-overridable"
+        },
+        "knot.build.outputDir": {
+          "type": "string",
+          "default": "build",
+          "description": "Directory (relative to the workspace root) where the compiled index.html will be written.",
+          "scope": "machine-overridable"
+        },
+        "knot.managed.storagePath": {
+          "type": "string",
+          "default": "",
+          "description": "Read-only. The extension's managed storage directory where the Tweego binary and story format cache are downloaded. Do not edit — this is updated automatically by the extension on startup.",
+          "scope": "application",
+          "readOnly": true
+        },
+        "knot.managed.tweegoPath": {
+          "type": "string",
+          "default": "",
+          "description": "Read-only. Path to the extension-managed Tweego binary (downloaded automatically). Do not edit — updated by the extension. To use your own Tweego binary, set 'knot.tweegoPath' instead.",
+          "scope": "application",
+          "readOnly": true
+        },
+        "knot.managed.storyformatsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Read-only. Path to the extension-managed story formats cache (versioned per format). Do not edit — updated by the extension. To use your own story formats folder, set 'knot.storyformats.path' instead.",
+          "scope": "application",
+          "readOnly": true
         },
         "knot.trace.server": {
           "type": "string",

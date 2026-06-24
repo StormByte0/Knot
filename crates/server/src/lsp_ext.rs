@@ -322,6 +322,34 @@ pub struct KnotBuildParams {
     /// `knot.tweegoPath`). When provided, this takes priority over the
     /// server's config and PATH lookup.
     pub compiler_path: Option<String>,
+    /// Optional source directory override from the extension (VS Code setting
+    /// `knot.build.sourceDir`). When provided, this takes priority over the
+    /// server's config (`build.source_dir` in `.vscode/knot.json`).
+    ///
+    /// This is a subdirectory name relative to the workspace root (e.g. "src").
+    /// When unset or empty, the workspace root is used as the source directory.
+    #[serde(default)]
+    pub source_dir: Option<String>,
+    /// Optional output directory override from the extension (VS Code setting
+    /// `knot.build.outputDir`). When provided, this takes priority over the
+    /// server's config.
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Optional storyformats directory override from the extension (VS Code
+    /// setting `knot.storyformats.path`). When provided, this takes priority
+    /// over the server's config.
+    #[serde(default)]
+    pub storyformats_path: Option<String>,
+    /// Path to the Knot-managed storyformats directory (in VS Code's
+    /// globalStorage). The extension sets this to
+    /// `<globalStorage>/storyformats/` when it has downloaded storyformats
+    /// there.
+    ///
+    /// At build time, the server sets `TWEEGO_PATH` to this path so tweego
+    /// finds the managed formats. This is searched AFTER `<cwd>/storyformats/`,
+    /// so project-local format overrides take priority.
+    #[serde(default)]
+    pub managed_storyformats_path: Option<String>,
 }
 
 /// Response: `knot/build`
@@ -348,6 +376,19 @@ pub struct KnotPlayParams {
     pub start_passage: Option<String>,
     /// Optional compiler path override from the extension.
     pub compiler_path: Option<String>,
+    /// Optional source directory override (VS Code setting `knot.build.sourceDir`).
+    #[serde(default)]
+    pub source_dir: Option<String>,
+    /// Optional output directory override (VS Code setting `knot.build.outputDir`).
+    #[serde(default)]
+    pub output_dir: Option<String>,
+    /// Optional storyformats directory override (VS Code setting `knot.storyformats.path`).
+    #[serde(default)]
+    pub storyformats_path: Option<String>,
+    /// Path to the Knot-managed storyformats directory (in VS Code's
+    /// globalStorage). See `KnotBuildParams.managed_storyformats_path`.
+    #[serde(default)]
+    pub managed_storyformats_path: Option<String>,
 }
 
 /// Response: `knot/play`
@@ -877,4 +918,127 @@ pub struct KnotFormatSwitchCompleteParams {
 pub struct KnotFormatSwitchCompleteResponse {
     /// Whether the server acknowledged the format switch completion.
     pub acknowledged: bool,
+}
+
+// ---------------------------------------------------------------------------
+// knot/formats/list — list installed story formats
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/formats/list` — return the catalog of installed story
+/// formats discovered by the server.
+///
+/// The server resolves the storyformats directory (see
+/// `helpers::compiler::resolve_storyformats_dir`), scans it for
+/// subdirectories containing `format.js`, parses each, and returns the
+/// resulting list. The catalog is cached on `ServerStateInner` and only
+/// re-scanned when the user changes `knot.storyformats.path` or invokes
+/// `knot/formats/refresh`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatsListParams {
+    /// The URI of the workspace root. Used to resolve project-local
+    /// `.storyformats/` directories. May be empty to use the server's
+    /// current workspace root.
+    #[serde(default)]
+    pub workspace_uri: String,
+    /// Optional override for the storyformats directory. When set, the
+    /// server scans this directory instead of the configured path. Used
+    /// by the `Knot: Configure Story Formats` command's "browse for
+    /// folder" flow to preview what's in a directory before saving it.
+    #[serde(default)]
+    pub path_override: Option<String>,
+}
+
+/// Response: `knot/formats/list`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatsListResponse {
+    /// The storyformats directory the server scanned. Empty if no
+    /// directory could be resolved.
+    pub resolved_dir: Option<String>,
+    /// The list of installed formats found in that directory. Empty if
+    /// `resolved_dir` is None or contains no `format.js` files.
+    pub formats: Vec<KnotFormatEntry>,
+    /// The configured storyformats path (from `knot.storyformats.path`
+    /// setting or `.vscode/knot.json`). Empty when unset.
+    pub configured_path: Option<String>,
+    /// The format name detected from the project's StoryData passage
+    /// (e.g. "SugarCube"). `None` if no StoryData was found or the format
+    /// field is missing. Used by the extension to offer one-click download
+    /// of the exact format version the project needs.
+    #[serde(default)]
+    pub project_format: Option<String>,
+    /// The format version detected from the project's StoryData passage
+    /// (e.g. "2.37.0"). `None` if no StoryData or no format-version field.
+    #[serde(default)]
+    pub project_format_version: Option<String>,
+    /// Whether the project's needed format is already available in the
+    /// managed cache. `None` if we can't determine (no StoryData or no
+    /// global storage path). `Some(true)` means the build will find it;
+    /// `Some(false)` means the user should download it.
+    #[serde(default)]
+    pub project_format_cached: Option<bool>,
+}
+
+/// A single installed story format entry.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatEntry {
+    /// Format name (e.g. "SugarCube", "Harlowe").
+    pub name: String,
+    /// Format version (e.g. "2.37.0").
+    pub version: String,
+    /// Short description.
+    #[serde(default)]
+    pub description: String,
+    /// Author name(s).
+    #[serde(default)]
+    pub author: String,
+    /// License identifier (e.g. "BSD-3-Clause").
+    #[serde(default)]
+    pub license: String,
+    /// Source code URL.
+    #[serde(default)]
+    pub source: String,
+    /// Homepage URL.
+    #[serde(default)]
+    pub url: String,
+    /// Absolute path to the format directory (contains format.js, etc.).
+    pub dir: String,
+    /// Name of the format directory (e.g. "sugarcube-2").
+    pub dir_name: String,
+}
+
+// ---------------------------------------------------------------------------
+// knot/formats/refresh — re-scan the storyformats directory
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/formats/refresh` — force the server to re-scan the
+/// storyformats directory and refresh the in-memory catalog.
+///
+/// Called by the extension when:
+/// - The user changes `knot.storyformats.path` in Settings.
+/// - The user adds/removes a format directory on disk.
+/// - The `Knot: Configure Story Formats` command runs after a path change.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatsRefreshParams {
+    /// The URI of the workspace root.
+    #[serde(default)]
+    pub workspace_uri: String,
+    /// Optional storyformats directory override from the extension (VS Code
+    /// setting `knot.storyformats.path`). When provided, this takes priority
+    /// over the server's config (`.vscode/knot.json`).
+    #[serde(default)]
+    pub storyformats_path: Option<String>,
+}
+
+/// Response: `knot/formats/refresh`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotFormatsRefreshResponse {
+    /// Whether the refresh succeeded.
+    pub success: bool,
+    /// The storyformats directory that was scanned. Empty if resolution failed.
+    pub resolved_dir: Option<String>,
+    /// Number of formats discovered.
+    pub format_count: usize,
+    /// Error message if the refresh failed.
+    #[serde(default)]
+    pub error: Option<String>,
 }
