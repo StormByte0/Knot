@@ -39,12 +39,31 @@ pub struct CustomMacro {
     pub arg_count: Option<usize>,
     /// Whether this was defined via `<<widget>>` (vs `Macro.add()`).
     pub is_widget: bool,
-    /// Whether this is a container widget (`<<widget "name" container>>`)
-    /// that requires a closing tag and has access to `_contents`.
-    /// Non-container widgets are inline (self-closing).
-    pub is_container: bool,
+    /// Whether this macro has a body (container) or is inline.
+    ///
+    /// For `Macro.add()` macros: derived from the `tags` field of the config
+    /// object — `Required` if `tags` is present (whether `null` or an array),
+    /// `Never` if absent.
+    ///
+    /// For `<<widget>>` macros: `Required` if defined with the `container`
+    /// keyword (`<<widget name container>>`), `Never` otherwise.
+    ///
+    /// This field drives both the tree builder (whether to push onto the
+    /// stack waiting for a close tag) and the diagnostic builder (whether
+    /// to emit "Unclosed block macro" when no close tag is found).
+    pub body: crate::types::BodyRequirement,
     /// Description/documentation (from comments above the definition).
     pub description: Option<String>,
+}
+
+impl CustomMacro {
+    /// Backward-compat: returns `true` if this macro is a container (has a
+    /// body requirement of `Required` or `Optional`).
+    ///
+    /// Prefer using `body` directly in new code.
+    pub fn is_container(&self) -> bool {
+        matches!(self.body, crate::types::BodyRequirement::Required | crate::types::BodyRequirement::Optional)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -69,9 +88,10 @@ impl CustomMacroRegistry {
 
     /// Register a widget definition from a `[widget]` passage.
     ///
-    /// `is_container` should be `true` if the widget was defined with the
-    /// `container` keyword (e.g., `<<widget "name" container>>`), meaning
-    /// it requires a closing tag and has access to `_contents`.
+    /// `body` should be `BodyRequirement::Required` if the widget was defined
+    /// with the `container` keyword (e.g., `<<widget "name" container>>`),
+    /// meaning it requires a closing tag and has access to `_contents`.
+    /// Otherwise `BodyRequirement::Never` (inline, self-closing).
     pub fn register_widget(
         &mut self,
         name: &str,
@@ -79,7 +99,7 @@ impl CustomMacroRegistry {
         file_uri: &str,
         defined_at_offset: usize,
         arg_count: Option<usize>,
-        is_container: bool,
+        body: crate::types::BodyRequirement,
     ) {
         self.macros.insert(
             name.to_string(),
@@ -91,13 +111,18 @@ impl CustomMacroRegistry {
                 defined_at_line: 0,
                 arg_count,
                 is_widget: true,
-                is_container,
+                body,
                 description: None,
             },
         );
     }
 
     /// Register a macro from a `Macro.add()` call in a script passage.
+    ///
+    /// `body` is derived from the `tags` field of the `Macro.add()` config
+    /// object — `Required` if `tags` is present (whether `null` or an array),
+    /// `Never` if absent. See `extract_body_requirement_from_macro_add_config`
+    /// in `js_walk.rs`.
     pub fn register_macro_add(
         &mut self,
         name: &str,
@@ -105,6 +130,7 @@ impl CustomMacroRegistry {
         file_uri: &str,
         defined_at_offset: usize,
         arg_count: Option<usize>,
+        body: crate::types::BodyRequirement,
     ) {
         self.macros.insert(
             name.to_string(),
@@ -116,7 +142,7 @@ impl CustomMacroRegistry {
                 defined_at_line: 0,
                 arg_count,
                 is_widget: false,
-                is_container: false,
+                body,
                 description: None,
             },
         );
@@ -192,29 +218,29 @@ mod tests {
     #[test]
     fn register_widget() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "Widgets", "file:///test.tw", 100, None, false);
+        registry.register_widget("myWidget", "Widgets", "file:///test.tw", 100, None, crate::types::BodyRequirement::Never);
 
         let m = registry.get("myWidget").unwrap();
         assert_eq!(m.name, "myWidget");
         assert!(m.is_widget);
-        assert!(!m.is_container);
+        assert!(!m.is_container());
         assert_eq!(m.defined_in, "Widgets");
     }
 
     #[test]
     fn register_container_widget() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("wrapWidget", "Widgets", "file:///test.tw", 200, None, true);
+        registry.register_widget("wrapWidget", "Widgets", "file:///test.tw", 200, None, crate::types::BodyRequirement::Required);
 
         let m = registry.get("wrapWidget").unwrap();
         assert!(m.is_widget);
-        assert!(m.is_container);
+        assert!(m.is_container());
     }
 
     #[test]
     fn register_macro_add() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_macro_add("showStats", "Scripts", "file:///test.tw", 200, Some(2));
+        registry.register_macro_add("showStats", "Scripts", "file:///test.tw", 200, Some(2), crate::types::BodyRequirement::Never);
 
         let m = registry.get("showStats").unwrap();
         assert_eq!(m.name, "showStats");
@@ -225,9 +251,9 @@ mod tests {
     #[test]
     fn completion_names() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "W", "f", 0, None, false);
-        registry.register_widget("myMacro", "W", "f", 0, None, false);
-        registry.register_widget("otherThing", "W", "f", 0, None, false);
+        registry.register_widget("myWidget", "W", "f", 0, None, crate::types::BodyRequirement::Never);
+        registry.register_widget("myMacro", "W", "f", 0, None, crate::types::BodyRequirement::Never);
+        registry.register_widget("otherThing", "W", "f", 0, None, crate::types::BodyRequirement::Never);
 
         let names = registry.completion_names("my");
         assert_eq!(names.len(), 2);
@@ -236,8 +262,8 @@ mod tests {
     #[test]
     fn remove_file() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("a", "W", "file:///a.tw", 0, None, false);
-        registry.register_widget("b", "W", "file:///b.tw", 0, None, false);
+        registry.register_widget("a", "W", "file:///a.tw", 0, None, crate::types::BodyRequirement::Never);
+        registry.register_widget("b", "W", "file:///b.tw", 0, None, crate::types::BodyRequirement::Never);
 
         registry.remove_file("file:///a.tw");
         assert!(!registry.contains("a"));

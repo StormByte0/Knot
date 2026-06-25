@@ -61,10 +61,10 @@ pub mod registry_populate;
 
 use std::collections::HashSet;
 
-use custom_macros::CustomMacroRegistry;
 use variable_tree::VariableTree;
 use crate::types::{FormatRegistry, VariableTreeNode};
 
+pub use custom_macros::{CustomMacro, CustomMacroRegistry};
 pub use function_registry::{FunctionEntry, FunctionKind, FunctionRegistry};
 pub use template_registry::{TemplateEntry, TemplateKind, TemplateRegistry};
 

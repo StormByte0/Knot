@@ -929,7 +929,7 @@ impl FormatPlugin for SugarCubePlugin {
                 defined_in: m.defined_in.clone(),
                 file_uri: m.file_uri.clone(),
                 is_widget: m.is_widget,
-                is_container: m.is_container,
+                is_container: m.is_container(),
                 arg_count: m.arg_count,
                 description: m.description.clone(),
             }
@@ -2382,7 +2382,7 @@ impl SugarCubePlugin {
 
             let custom = self.registry.custom_macros().get(name);
             let is_widget = custom.map(|m| m.is_widget).unwrap_or(false);
-            let is_container = custom.map(|m| m.is_container).unwrap_or(false);
+            let is_container = custom.map(|m| m.is_container()).unwrap_or(false);
             let arg_count = custom.and_then(|m| m.arg_count);
             let description = custom.and_then(|m| m.description.as_deref());
 
@@ -4190,8 +4190,13 @@ mod completion_debug_tests {
 
     /// Helper: register a widget in the plugin's registry.
     fn register_test_widget(plugin: &mut SugarCubePlugin, name: &str, arg_count: Option<usize>, is_container: bool) {
+        let body = if is_container {
+            crate::types::BodyRequirement::Required
+        } else {
+            crate::types::BodyRequirement::Never
+        };
         plugin.registry_mut().custom_macros_mut().register_widget(
-            name, "Widgets", "file:///test.twee", 0, arg_count, is_container,
+            name, "Widgets", "file:///test.twee", 0, arg_count, body,
         );
     }
 
@@ -4199,6 +4204,7 @@ mod completion_debug_tests {
     fn register_test_macro_add(plugin: &mut SugarCubePlugin, name: &str, arg_count: Option<usize>) {
         plugin.registry_mut().custom_macros_mut().register_macro_add(
             name, "Scripts", "file:///test.twee", 0, arg_count,
+            crate::types::BodyRequirement::Never,
         );
     }
 

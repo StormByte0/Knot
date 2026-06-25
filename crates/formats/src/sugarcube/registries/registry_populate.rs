@@ -150,6 +150,7 @@ pub fn populate_registries_from_unified_ast(
                     file_uri,
                     macro_add.name_offset + body_offset_in_passage,
                     None,
+                    macro_add.body,
                 );
             }
             for template_add in &analysis.template_adds {
@@ -579,6 +580,14 @@ fn register_definitions_from_nodes(
                         // The word "container" must appear after the name token,
                         // outside of any quoted string.
                         let is_container = detect_widget_container_keyword(&args);
+                        // Map the boolean to BodyRequirement: container widgets
+                        // require a close tag (Required), non-container widgets
+                        // are inline (Never).
+                        let body = if is_container {
+                            crate::types::BodyRequirement::Required
+                        } else {
+                            crate::types::BodyRequirement::Never
+                        };
                         // Extract arg_count from _args[N] / $args[N] references in the widget body
                         let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
                         // definition_name_span and open_span are body-relative
@@ -594,7 +603,7 @@ fn register_definitions_from_nodes(
                             file_uri,
                             name_offset,
                             arg_count,
-                            is_container,
+                            body,
                         );
                     }
                 }
@@ -610,6 +619,7 @@ fn register_definitions_from_nodes(
                             file_uri,
                             macro_add.name_offset + body_offset_in_passage,
                             None,
+                            macro_add.body,
                         );
                     }
                     for template_add in &analysis.template_adds {
@@ -659,6 +669,7 @@ fn register_definitions_from_nodes(
                             file_uri,
                             macro_add.name_offset + body_offset_in_passage,
                             None,
+                            macro_add.body,
                         );
                     }
                     for template_add in &analysis.template_adds {
@@ -764,6 +775,7 @@ pub fn walk_script_js(
                         file_uri,
                         macro_add.name_offset,
                         None,
+                        macro_add.body,
                     );
                 }
                 for template_add in &analysis.template_adds {

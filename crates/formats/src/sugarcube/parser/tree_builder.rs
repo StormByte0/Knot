@@ -331,20 +331,32 @@ impl StackEntry {
     }
 }
 
-/// Look up a macro's BodyRequirement from the catalog.
+/// Look up a macro's BodyRequirement from the builtin catalog.
 ///
-/// Returns `BodyRequirement::Never` for unknown macros (treat as inline
-/// unless we find a close tag for them).
+/// For unknown macros (custom macros defined via `Macro.add()` or
+/// `<<widget>>`), returns `BodyRequirement::Optional`. This is correct for
+/// the tree builder because:
+///
+/// - **Inline custom macros** (`Macro.add("emojify", { handler() {...} })`)
+///   → `Optional` → pushed onto stack, finalized as inline without error
+///   if no close tag is found. Correct: `<<emojify "x">>` shouldn't error.
+///
+/// - **Container custom macros** (`Macro.add("banner", { tags: null, ... })`)
+///   → `Optional` → pushed onto stack, pairs with `<</banner>>` when
+///   present. Correct: `<<banner>>...<</banner>>` works.
+///
+/// The tree builder doesn't have access to the custom macro registry
+/// (it runs during `parse_passage_body()` which is a pure function). The
+/// **diagnostic builder** (`token_builder::build_diagnostics`) is where
+/// the actual `Required` vs `Never` distinction matters — it consults
+/// the registry and only emits "Unclosed block macro" for macros with
+/// `BodyRequirement::Required`. So a container widget used without its
+/// close tag still produces an error, just at the diagnostic phase rather
+/// than the tree-building phase.
 fn lookup_body_requirement(name: &str) -> BodyRequirement {
     if let Some(mdef) = macros::find_macro(name) {
         mdef.body
     } else {
-        // Unknown macro — assume Optional body. This allows unknown macros
-        // to pair with close tags (e.g. user-defined widgets or macros like
-        // <<quote>>...<</quote>>). If no close tag is found, they're
-        // finalized as inline without error (Optional → no unclosed diagnostic).
-        // Previously this was `Never`, which caused <</unknown>> close tags
-        // to produce "Unexpected close tag" errors.
         BodyRequirement::Optional
     }
 }

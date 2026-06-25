@@ -1183,7 +1183,19 @@ fn emit_structured_arg_tokens(sargs: &[ast::StructuredMacroArg], tokens: &mut Ve
 /// AST body spans (which are relative to body start) to passage-relative
 /// offsets. The LSP boundary adds `passage_offset` to produce
 /// document-absolute ranges.
-pub fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDiagnostic>, body_offset_in_passage: usize) {
+///
+/// `custom_macros` is the workspace's custom macro registry. It's consulted
+/// when a macro isn't found in the builtin catalog — if a custom macro has
+/// `BodyRequirement::Never` (inline), no "unclosed" diagnostic is emitted
+/// even if the tree builder gave it children. Without this, every inline
+/// custom macro (e.g., `Macro.add("emojify", { handler() {...} })` used as
+/// `<<emojify "x">>`) would produce a false "Unclosed block macro" error.
+pub fn build_diagnostics(
+    nodes: &[ast::AstNode],
+    diagnostics: &mut Vec<FormatDiagnostic>,
+    body_offset_in_passage: usize,
+    custom_macros: &crate::sugarcube::registries::CustomMacroRegistry,
+) {
     let dep_macros = deprecated_macros();
     for node in nodes {
         if let ast::AstNode::Error { message, span } = node {
@@ -1201,12 +1213,15 @@ pub fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDia
             // children but no close tag. Macros with BodyRequirement::Optional
             // (e.g. <<case>>, <<default>>) are allowed to omit the close tag —
             // the tree builder handles this without error.
+            //
+            // Custom macros (defined via Macro.add() or <<widget>>) are looked
+            // up in the custom_macros registry. Their BodyRequirement is
+            // derived from the `tags` field of the Macro.add() config (or the
+            // `container` keyword for widgets). Previously, all custom macros
+            // fell back to `Required`, causing false "Unclosed block macro"
+            // errors for every inline custom macro.
             if children.is_some() && close_span.is_none() {
-                // Check if this macro has Optional body — if so, skip the
-                // "unclosed" diagnostic.
-                let body_req = crate::sugarcube::macros::find_macro(name)
-                    .map(|def| def.body)
-                    .unwrap_or(crate::types::BodyRequirement::Required);
+                let body_req = lookup_body_requirement(name, custom_macros);
                 if body_req == crate::types::BodyRequirement::Required {
                     diagnostics.push(FormatDiagnostic {
                         range: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
@@ -1226,10 +1241,37 @@ pub fn build_diagnostics(nodes: &[ast::AstNode], diagnostics: &mut Vec<FormatDia
                 });
             }
             if let Some(ch) = children {
-                build_diagnostics(ch, diagnostics, body_offset_in_passage);
+                build_diagnostics(ch, diagnostics, body_offset_in_passage, custom_macros);
             }
         }
     }
+}
+
+/// Look up a macro's `BodyRequirement` from the builtin catalog, falling
+/// back to the custom macro registry.
+///
+/// For builtin macros: uses `macros::find_macro(name)` → `MacroDef.body`.
+/// For custom macros: uses `custom_macros.get(name)` → `CustomMacro.body`.
+/// For completely unknown macros: returns `BodyRequirement::Optional` —
+/// matching the tree builder's behavior for unknown macros. This means
+/// macros that Knot has never seen (not builtin, not custom) won't produce
+/// false "unclosed" errors.
+fn lookup_body_requirement(
+    name: &str,
+    custom_macros: &crate::sugarcube::registries::CustomMacroRegistry,
+) -> crate::types::BodyRequirement {
+    // Check builtin catalog first.
+    if let Some(def) = crate::sugarcube::macros::find_macro(name) {
+        return def.body;
+    }
+    // Check custom macro registry.
+    if let Some(custom) = custom_macros.get(name) {
+        return custom.body;
+    }
+    // Unknown macro — match the tree builder's default of `Optional`.
+    // This avoids false "unclosed" errors for macros that Knot doesn't
+    // know about yet (e.g., from a format plugin that hasn't loaded).
+    crate::types::BodyRequirement::Optional
 }
 
 /// Find a tag name's byte offset within `[...]` bracket blocks.

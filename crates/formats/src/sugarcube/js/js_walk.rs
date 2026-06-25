@@ -447,9 +447,16 @@ fn walk_expression(
                 && let Some(name) = extract_string_from_arg(arg)
             {
                 let name_offset = preprocessed.map_to_original(arg.span().start as usize);
+                // Inspect the config object (second argument) for the `tags`
+                // field. SugarCube uses `tags` to signal body requirement:
+                //   - `tags` omitted → inline (Never)
+                //   - `tags: null` → container (Required)
+                //   - `tags: ["a","b"]` → container with sub-tags (Required)
+                let body = extract_body_requirement_from_macro_add_config(&call.arguments);
                 analysis.macro_adds.push(MacroAddInfo {
                     name,
                     name_offset,
+                    body,
                 });
             }
             // Also handle SugarCube.Macro.add
@@ -463,9 +470,11 @@ fn walk_expression(
                 && let Some(name) = extract_string_from_arg(arg)
             {
                 let name_offset = preprocessed.map_to_original(arg.span().start as usize);
+                let body = extract_body_requirement_from_macro_add_config(&call.arguments);
                 analysis.macro_adds.push(MacroAddInfo {
                     name,
                     name_offset,
+                    body,
                 });
             }
             // Check for Template.add("name", ...) pattern
@@ -1348,6 +1357,80 @@ fn extract_string_from_arg(arg: &oxc_ast::ast::Argument<'_>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Extract the `BodyRequirement` from a `Macro.add("name", config)` call.
+///
+/// SugarCube's `Macro.add()` accepts a config object as the second argument.
+/// The presence of the `tags` field on that object signals body requirement:
+///
+/// - `tags` omitted → inline macro (`Never`) — no body, no close tag.
+///   Example: `Macro.add("emojify", { handler() {...} })` → `<<emojify "x">>`
+///
+/// - `tags: null` → container macro (`Required`) — body required, close tag
+///   expected, no named sub-tags.
+///   Example: `Macro.add("banner", { tags: null, handler() {...} })`
+///   → `<<banner>>...<</banner>>`
+///
+/// - `tags: ["a", "b"]` → container macro (`Required`) with named sub-tags
+///   (like `<<if>>`/`<<elseif>>`/`<<else>>`).
+///   Example: `Macro.add("switch", { tags: ["case", "default"], ... })`
+///
+/// If the config object is missing or malformed, defaults to `Never` (the
+/// most common case for inline macros — false positives on `Required` are
+/// worse than false negatives on `Never` because unclosed-block diagnostics
+/// are noisy).
+fn extract_body_requirement_from_macro_add_config(
+    args: &oxc_allocator::Vec<'_, oxc_ast::ast::Argument<'_>>,
+) -> crate::types::BodyRequirement {
+    use crate::types::BodyRequirement;
+    use oxc_ast::ast::Argument as Arg;
+
+    // The config object is the second argument (index 1).
+    let Some(config_arg) = args.get(1) else {
+        return BodyRequirement::Never;
+    };
+
+    let Arg::ObjectExpression(obj) = config_arg else {
+        return BodyRequirement::Never;
+    };
+
+    // Scan properties for `tags`.
+    for prop in &obj.properties {
+        if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+            // Property name must be `tags`. In oxc, identifier property keys
+            // are `PropertyKey::StaticIdentifier(IdentifierName)` — NOT
+            // `Identifier` (which is a different type for variable references).
+            let is_tags = match &p.key {
+                oxc_ast::ast::PropertyKey::StaticIdentifier(ident) => ident.name == "tags",
+                oxc_ast::ast::PropertyKey::StringLiteral(str_lit) => str_lit.value == "tags",
+                _ => false,
+            };
+            if !is_tags {
+                continue;
+            }
+            // Found `tags` — its value determines container vs sub-tagged
+            // container, but both map to `Required` for our purposes.
+            // We only need to distinguish "has body" from "no body".
+            //
+            // Note: `p.value` is an `oxc_ast::ast::Expression`, not an
+            // `Argument`. Object property values are always expressions.
+            use oxc_ast::ast::Expression as Expr;
+            return match &p.value {
+                // `tags: null` → container
+                Expr::NullLiteral(_) => BodyRequirement::Required,
+                // `tags: ["a", "b"]` → container with sub-tags
+                Expr::ArrayExpression(_) => BodyRequirement::Required,
+                // `tags: undefined` or `tags: someVar` — can't statically
+                // determine. Default to `Never` (inline) since explicit
+                // `null`/array is the documented way to opt into container.
+                _ => BodyRequirement::Never,
+            };
+        }
+    }
+
+    // No `tags` property found → inline macro.
+    BodyRequirement::Never
 }
 
 /// Walk a call argument, recursing into nested expressions.

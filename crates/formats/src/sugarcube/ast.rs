@@ -280,6 +280,17 @@ pub struct MacroAddInfo {
     pub name: String,
     /// Byte offset of the name argument in the passage body.
     pub name_offset: usize,
+    /// Whether this macro has a body (container) or is inline.
+    ///
+    /// Derived from the `tags` field of the `Macro.add()` config object:
+    /// - `tags` omitted → `BodyRequirement::Never` (inline, no close tag)
+    /// - `tags: null` → `BodyRequirement::Required` (container, close tag
+    ///   required, no named sub-tags)
+    /// - `tags: ["a", "b"]` → `BodyRequirement::Required` (container with
+    ///   named sub-tags)
+    ///
+    /// This is the **same semantics** as SugarCube's own runtime check.
+    pub body: crate::types::BodyRequirement,
 }
 
 /// Information about a `Template.add()` call found in JS.

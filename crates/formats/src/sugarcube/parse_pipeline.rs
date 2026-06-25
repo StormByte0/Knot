@@ -172,7 +172,12 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // The passage_offset is applied at the LSP boundary to produce
         // document-absolute ranges — same pattern as semantic tokens.
         let mut passage_diagnostics = Vec::new();
-        super::token_builder::build_diagnostics(&passage_ast.nodes, &mut passage_diagnostics, body_offset_in_passage);
+        super::token_builder::build_diagnostics(
+            &passage_ast.nodes,
+            &mut passage_diagnostics,
+            body_offset_in_passage,
+            registry.custom_macros(),
+        );
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
