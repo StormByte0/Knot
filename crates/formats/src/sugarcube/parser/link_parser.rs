@@ -51,8 +51,19 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
         *i = len;
     }
 
-    // Parse the link content
-    let (display, target, kind, setter_var, image_url) = parse_link_content(content);
+    // Parse the link content. Sub-spans returned by `parse_link_content`
+    // are relative to the start of `content` (= `content_start` in `text`).
+    // We add `offset + link_start + 2` to convert them to body-relative
+    // offsets (the same coordinate space as `span`):
+    //   - `offset + link_start` = body-relative position of `[[`
+    //   - `+ 2` skips past `[[` to the start of `content`
+    let content_offset = offset + link_start + 2;
+    let (display, target, kind, setter_var, image_url, display_span, target_span, setter_span) =
+        parse_link_content(content);
+
+    let shift = |r: std::ops::Range<usize>| -> std::ops::Range<usize> {
+        (content_offset + r.start)..(content_offset + r.end)
+    };
 
     AstNode::Link {
         display,
@@ -61,12 +72,38 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
         setter_var,
         image_url,
         span: offset + link_start..offset + *i,
+        display_span: display_span.map(&shift),
+        target_span: shift(target_span),
+        setter_span: setter_span.map(&shift),
     }
 }
 
-/// Parse the content between `[[` and `]]` into display/target.
-pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, LinkKind, Option<String>, Option<String>) {
-    let trimmed = content.trim();
+/// Parsed link content with sub-spans.
+///
+/// All spans are relative to the start of `content` (the text between `[[`
+/// and `]]`, with no brackets). The caller is responsible for shifting them
+/// to body-relative offsets.
+type ParsedLink = (
+    Option<String>,            // display
+    String,                    // target
+    LinkKind,                  // kind
+    Option<String>,            // setter_var
+    Option<String>,            // image_url
+    Option<std::ops::Range<usize>>, // display_span (relative to content)
+    std::ops::Range<usize>,    // target_span (relative to content)
+    Option<std::ops::Range<usize>>, // setter_span (relative to content)
+);
+
+/// Parse the content between `[[` and `]]` into display/target + sub-spans.
+///
+/// All returned spans are relative to the start of `content`. The caller
+/// shifts them by `link_start + 2` (the body-relative offset of `content[0]`)
+/// to produce body-relative spans.
+pub(super) fn parse_link_content(content: &str) -> ParsedLink {
+    // Compute the byte offset of `trimmed` within `content` — needed so the
+    // returned spans are relative to `content`, not `trimmed`.
+    let leading_ws = content.len() - content.trim_start().len();
+    let trimmed = &content[leading_ws..];
 
     // Check for image link syntax: [[img[URL][Passage]] or [[img[URL][Display|Passage]]
     // This must be checked BEFORE the setter ][ detection, because image links
@@ -78,11 +115,31 @@ pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, Link
             // After the URL's ], skip any ] and [ to reach the passage target.
             // The content structure is: img[url][passage  (outer [[ ]] stripped)
             // So after url_end we have: ][passage
-            let remaining = &rest[url_end..];
-            let remaining = remaining.trim_start_matches(']').trim_start_matches('[');
+            let after_url = &rest[url_end..];
+            // `remaining_offset` is the byte offset (within `content`) where
+            // `remaining` (the post-image part) starts.
+            let remaining_offset = leading_ws + "img[".len() + url_end;
+            // Skip leading ] and [ characters
+            let skip = after_url.bytes().take_while(|&b| b == b']' || b == b'[').count();
+            let remaining = &after_url[skip..];
             if !remaining.is_empty() {
-                let (display, target, _kind) = parse_link_display_target(remaining);
-                return (display, target, LinkKind::Image, None, Some(image_url));
+                let (display, target, _kind, display_sub, target_sub) =
+                    parse_link_display_target_with_spans(remaining);
+                let abs_target_span = (remaining_offset + skip + target_sub.start)
+                    ..(remaining_offset + skip + target_sub.end);
+                let abs_display_span = display_sub.map(|d| {
+                    (remaining_offset + skip + d.start)..(remaining_offset + skip + d.end)
+                });
+                return (
+                    display,
+                    target,
+                    LinkKind::Image,
+                    None,
+                    Some(image_url),
+                    abs_display_span,
+                    abs_target_span,
+                    None,
+                );
             }
         }
     }
@@ -92,65 +149,213 @@ pub(super) fn parse_link_content(content: &str) -> (Option<String>, String, Link
         let before_bracket = &trimmed[..bracket_pos];
         let after_bracket = &trimmed[bracket_pos + 2..];
         // Strip trailing ] from before_bracket and leading [ from after_bracket
-        let inner_before = before_bracket.trim_end_matches(']');
-        let inner_after = after_bracket.trim_start_matches('[');
+        let trailing_strip = before_bracket.len()
+            - before_bracket.trim_end_matches(']').len();
+        let leading_strip = after_bracket.len()
+            - after_bracket.trim_start_matches('[').len();
+        let inner_before = &before_bracket[..before_bracket.len() - trailing_strip];
+        let inner_after = &after_bracket[leading_strip..];
 
-        let (display, target, kind) = parse_link_display_target(inner_before);
+        let (display, target, kind, display_sub, target_sub) =
+            parse_link_display_target_with_spans(inner_before);
+        // Shift display/target sub-spans by `leading_ws` (offset of `trimmed`
+        // within `content`).
+        let abs_target_span = (leading_ws + target_sub.start)..(leading_ws + target_sub.end);
+        let abs_display_span = display_sub
+            .map(|d| (leading_ws + d.start)..(leading_ws + d.end));
+        // Setter span: from the start of `inner_after` to the end of `content`
+        // (within `trimmed`). `inner_after` starts at offset `bracket_pos + 2 +
+        // leading_strip` within `trimmed`, so within `content` it's `leading_ws
+        // + bracket_pos + 2 + leading_strip`.
+        let setter_start_in_content = leading_ws + bracket_pos + 2 + leading_strip;
+        // `inner_after` may have trailing whitespace before `]]` — keep the
+        // setter span tight to the actual expression by trimming the end.
+        let setter_end_in_content = leading_ws + bracket_pos + 2 + leading_strip
+            + inner_after.trim_end().len();
+        let setter_span = if setter_end_in_content > setter_start_in_content {
+            Some(setter_start_in_content..setter_end_in_content)
+        } else {
+            None
+        };
         let setter_var = if inner_after.starts_with('$') || inner_after.starts_with('_') {
             Some(inner_after.split_whitespace().next().unwrap_or(inner_after).to_string())
         } else {
             None
         };
-        return (display, target, kind, setter_var, None);
+        return (
+            display,
+            target,
+            kind,
+            setter_var,
+            None,
+            abs_display_span,
+            abs_target_span,
+            setter_span,
+        );
     }
 
     // Check for pipe syntax: [[display|target]]
     if let Some(pipe_pos) = trimmed.rfind('|') {
-        let display = trimmed[..pipe_pos].to_string();
-        let target = trimmed[pipe_pos + 1..].trim().to_string();
-        return (Some(display), target, LinkKind::Pipe, None, None);
+        let display_str = trimmed[..pipe_pos].to_string();
+        let target_str = trimmed[pipe_pos + 1..].trim().to_string();
+        let display_start = leading_ws;
+        let display_end = leading_ws + pipe_pos;
+        // Target starts after `|`, then skip leading whitespace.
+        let target_pre_trim = pipe_pos + 1;
+        let target_ws = trimmed[target_pre_trim..].len()
+            - trimmed[target_pre_trim..].trim_start().len();
+        let target_start = leading_ws + target_pre_trim + target_ws;
+        let target_end = target_start + target_str.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::Pipe,
+            None,
+            None,
+            Some(display_start..display_end),
+            target_start..target_end,
+            None,
+        );
     }
 
     // Check for right arrow syntax: [[display->target]]
     if let Some(arrow_pos) = trimmed.rfind("->") {
-        let display = trimmed[..arrow_pos].to_string();
-        let target = trimmed[arrow_pos + 2..].trim().to_string();
-        return (Some(display), target, LinkKind::ArrowRight, None, None);
+        let display_str = trimmed[..arrow_pos].to_string();
+        let target_str = trimmed[arrow_pos + 2..].trim().to_string();
+        let display_start = leading_ws;
+        let display_end = leading_ws + arrow_pos;
+        let target_pre_trim = arrow_pos + 2;
+        let target_ws = trimmed[target_pre_trim..].len()
+            - trimmed[target_pre_trim..].trim_start().len();
+        let target_start = leading_ws + target_pre_trim + target_ws;
+        let target_end = target_start + target_str.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::ArrowRight,
+            None,
+            None,
+            Some(display_start..display_end),
+            target_start..target_end,
+            None,
+        );
     }
 
     // Check for left arrow syntax: [[target<-display]]
     if let Some(arrow_pos) = trimmed.rfind("<-") {
-        let target = trimmed[..arrow_pos].trim().to_string();
-        let display = trimmed[arrow_pos + 2..].to_string();
-        return (Some(display), target, LinkKind::ArrowLeft, None, None);
+        let target_str = trimmed[..arrow_pos].trim().to_string();
+        let display_str = trimmed[arrow_pos + 2..].to_string();
+        // Target = trimmed[..arrow_pos], trimmed on the right.
+        let target_pre_trim = 0;
+        let target_ws_right = trimmed[..arrow_pos].len()
+            - trimmed[..arrow_pos].trim_end().len();
+        let target_start = leading_ws + target_pre_trim;
+        let target_end = leading_ws + arrow_pos - target_ws_right;
+        let display_start = leading_ws + arrow_pos + 2;
+        let display_end = leading_ws + trimmed.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::ArrowLeft,
+            None,
+            None,
+            Some(display_start..display_end),
+            target_start..target_end,
+            None,
+        );
     }
 
     // Simple link: [[target]]
-    (None, trimmed.to_string(), LinkKind::Simple, None, None)
+    let target_str = trimmed.to_string();
+    let target_start = leading_ws;
+    let target_end = leading_ws + target_str.len();
+    (
+        None,
+        target_str,
+        LinkKind::Simple,
+        None,
+        None,
+        None,
+        target_start..target_end,
+        None,
+    )
 }
 
-pub(super) fn parse_link_display_target(content: &str) -> (Option<String>, String, LinkKind) {
-    let trimmed = content.trim();
+/// Parse display/target from a content slice, returning sub-spans relative
+/// to the start of `content`.
+fn parse_link_display_target_with_spans(
+    content: &str,
+) -> (Option<String>, String, LinkKind, Option<std::ops::Range<usize>>, std::ops::Range<usize>) {
+    let leading_ws = content.len() - content.trim_start().len();
+    let trimmed = &content[leading_ws..];
 
     if let Some(pipe_pos) = trimmed.rfind('|') {
-        let display = trimmed[..pipe_pos].to_string();
-        let target = trimmed[pipe_pos + 1..].trim().to_string();
-        return (Some(display), target, LinkKind::Pipe);
+        let display_str = trimmed[..pipe_pos].to_string();
+        let target_str = trimmed[pipe_pos + 1..].trim().to_string();
+        let display_start = leading_ws;
+        let display_end = leading_ws + pipe_pos;
+        let target_pre_trim = pipe_pos + 1;
+        let target_ws = trimmed[target_pre_trim..].len()
+            - trimmed[target_pre_trim..].trim_start().len();
+        let target_start = leading_ws + target_pre_trim + target_ws;
+        let target_end = target_start + target_str.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::Pipe,
+            Some(display_start..display_end),
+            target_start..target_end,
+        );
     }
 
     if let Some(arrow_pos) = trimmed.rfind("->") {
-        let display = trimmed[..arrow_pos].to_string();
-        let target = trimmed[arrow_pos + 2..].trim().to_string();
-        return (Some(display), target, LinkKind::ArrowRight);
+        let display_str = trimmed[..arrow_pos].to_string();
+        let target_str = trimmed[arrow_pos + 2..].trim().to_string();
+        let display_start = leading_ws;
+        let display_end = leading_ws + arrow_pos;
+        let target_pre_trim = arrow_pos + 2;
+        let target_ws = trimmed[target_pre_trim..].len()
+            - trimmed[target_pre_trim..].trim_start().len();
+        let target_start = leading_ws + target_pre_trim + target_ws;
+        let target_end = target_start + target_str.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::ArrowRight,
+            Some(display_start..display_end),
+            target_start..target_end,
+        );
     }
 
     if let Some(arrow_pos) = trimmed.rfind("<-") {
-        let target = trimmed[..arrow_pos].trim().to_string();
-        let display = trimmed[arrow_pos + 2..].to_string();
-        return (Some(display), target, LinkKind::ArrowLeft);
+        let target_str = trimmed[..arrow_pos].trim().to_string();
+        let display_str = trimmed[arrow_pos + 2..].to_string();
+        let target_ws_right = trimmed[..arrow_pos].len()
+            - trimmed[..arrow_pos].trim_end().len();
+        let target_start = leading_ws;
+        let target_end = leading_ws + arrow_pos - target_ws_right;
+        let display_start = leading_ws + arrow_pos + 2;
+        let display_end = leading_ws + trimmed.len();
+        return (
+            Some(display_str),
+            target_str,
+            LinkKind::ArrowLeft,
+            Some(display_start..display_end),
+            target_start..target_end,
+        );
     }
 
-    (None, trimmed.to_string(), LinkKind::Simple)
+    // Simple target (no display)
+    let target_str = trimmed.to_string();
+    let target_start = leading_ws;
+    let target_end = leading_ws + target_str.len();
+    (
+        None,
+        target_str,
+        LinkKind::Simple,
+        None,
+        target_start..target_end,
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -851,6 +851,41 @@ pub enum AstNode {
         image_url: Option<String>,
         /// Byte range of the entire link construct.
         span: Range<usize>,
+        /// Byte range of the display text within the link (body-relative).
+        ///
+        /// For `[[Display|Target]]` this covers "Display".
+        /// For `[[Target]]` (simple), this is `None` — there is no separate
+        /// display text; the target IS the display.
+        /// For `[[Target<-Display]]` (left arrow), this covers "Display".
+        ///
+        /// When present, the token builder emits a `String` token over this
+        /// region so the editor can visually differentiate display vs
+        /// target. The `Link` token is emitted over `target_span` instead
+        /// (so completion/hover trigger on the target, not the display).
+        ///
+        /// All offsets are body-relative (same coordinate space as `span`).
+        display_span: Option<Range<usize>>,
+        /// Byte range of the target passage name within the link
+        /// (body-relative).
+        ///
+        /// For all link forms, this covers just the target passage name
+        /// (excluding `[[`, `]]`, separators, and setter). The token
+        /// builder emits a `Link` token over this region.
+        ///
+        /// Offset is body-relative (same coordinate space as `span`).
+        target_span: Range<usize>,
+        /// Byte range of the setter expression within the link
+        /// (body-relative), if any.
+        ///
+        /// For `[[Target][$var += 5]]` this covers `$var += 5` (the content
+        /// between `][$` and the closing `]]`). The token builder does NOT
+        /// emit a token over this region — the inline variable scanner
+        /// already tokenizes `$var` as a Variable, and the rest is JS
+        /// expression content. The span is exposed for future tooling
+        /// (e.g., dedicated setter diagnostics, code actions).
+        ///
+        /// Offset is body-relative (same coordinate space as `span`).
+        setter_span: Option<Range<usize>>,
     },
 
     /// A comment block.

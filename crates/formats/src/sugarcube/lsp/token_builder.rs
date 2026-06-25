@@ -48,8 +48,9 @@ pub fn build_semantic_tokens(
     tokens: &mut Vec<SemanticToken>,
     body_offset_in_passage: usize,
     custom_macro_names: &HashSet<String>,
+    body_text: &str,
 ) {
-    build_semantic_tokens_at_depth(nodes, tokens, body_offset_in_passage, custom_macro_names, 0);
+    build_semantic_tokens_at_depth(nodes, tokens, body_offset_in_passage, custom_macro_names, 0, body_text);
 }
 
 /// Recursive token builder that tracks block-macro nesting depth.
@@ -60,12 +61,17 @@ pub fn build_semantic_tokens(
 /// tokens, so themes can color matching open/close pairs by nesting depth.
 /// Inline macros (no children) don't get a depth modifier — they use the
 /// default macro color, making them visually distinct from block macros.
+///
+/// `body_text` is the passage body source (the text the AST was parsed
+/// from). Used to extract sub-slices for context-sensitive tokenization
+/// (e.g., running the inline variable scanner over link setter expressions).
 fn build_semantic_tokens_at_depth(
     nodes: &[ast::AstNode],
     tokens: &mut Vec<SemanticToken>,
     body_offset_in_passage: usize,
     custom_macro_names: &HashSet<String>,
     depth: usize,
+    body_text: &str,
 ) {
     for node in nodes {
         match node {
@@ -330,17 +336,119 @@ fn build_semantic_tokens_at_depth(
                 //     <</if>>
                 //   <</if>>
                 if let Some(ch) = children {
-                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, effective_depth + 1);
+                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, effective_depth + 1, body_text);
                 }
             }
-            ast::AstNode::Link { target, span, .. } => {
-                // Link target token
-                tokens.push(SemanticToken {
-                    start: body_offset_in_passage + span.start + 2, // past [[
-                    length: target.len(),
-                    token_type: SemanticTokenType::Link,
-                    modifier: None,
-                });
+            ast::AstNode::Link {
+                display_span,
+                target_span,
+                setter_span,
+                span: _,
+                ..
+            } => {
+                // Emit per-region semantic tokens for `[[...]]` links:
+                //
+                //   - `Link` token on the **target** passage name
+                //     (so completion, hover, go-to-definition all trigger
+                //     on the passage name, NOT on the display text)
+                //   - `String` token on the **display** text (when present
+                //     and distinct from the target) for visual
+                //     differentiation — the editor typically renders String
+                //     tokens in a different color than Link tokens
+                //   - `Variable` tokens on `$var` / `_var` references
+                //     inside the setter expression — the inline var
+                //     scanner (`scan_inline_vars`) doesn't run inside link
+                //     constructs (see its module doc), so we run it here
+                //     on the setter slice to ensure variables in
+                //     `[[...][$playerGold += 5]]` are highlighted.
+                //
+                // Previous bug: a single Link token covered the ENTIRE
+                // content between `[[` and `]]` (including separators and
+                // setter). This was wrong because:
+                //   1. It swallowed the display text, preventing the
+                //      TextMate grammar's `string.other.link.display.twee`
+                //      scope from being visible.
+                //   2. It swallowed the setter expression, hiding
+                //      Variable tokens for `$var` inside `[[...][$var += 5]]`.
+                //   3. It overlapped the separator `|` / `->` / `<-`,
+                //      making token-based hover/completion trigger on
+                //      separator characters.
+                //
+                // Per-region tokens fix all three issues and match the
+                // TextMate grammar's scope decomposition.
+
+                // Target: always present. Emit a Link token.
+                let target_start = body_offset_in_passage + target_span.start;
+                let target_end = body_offset_in_passage + target_span.end;
+                if target_end > target_start {
+                    tokens.push(SemanticToken {
+                        start: target_start,
+                        length: target_end - target_start,
+                        token_type: SemanticTokenType::Link,
+                        modifier: None,
+                    });
+                }
+
+                // Display: optional. Emit a String token (different color
+                // from Link, signals "this is the display text, not the
+                // passage name").
+                if let Some(d_span) = display_span {
+                    let d_start = body_offset_in_passage + d_span.start;
+                    let d_end = body_offset_in_passage + d_span.end;
+                    if d_end > d_start {
+                        tokens.push(SemanticToken {
+                            start: d_start,
+                            length: d_end - d_start,
+                            token_type: SemanticTokenType::String,
+                            modifier: None,
+                        });
+                    }
+                }
+
+                // Setter: emit Variable tokens for `$var` / `_var` refs
+                // inside the setter expression. The inline var scanner
+                // (`scan_inline_vars`) intentionally skips content inside
+                // link constructs, so without this the variables in
+                // `[[...][$playerGold += 5]]` would not be highlighted.
+                //
+                // We run the scanner on the setter slice text (extracted
+                // from `body_text` using the absolute setter span), then
+                // use the returned spans directly (they're already
+                // passage-relative because we pass `s_start` as the offset).
+                if let Some(s_span) = setter_span {
+                    let s_start = body_offset_in_passage + s_span.start;
+                    let s_end = body_offset_in_passage + s_span.end;
+                    if s_end > s_start {
+                        // SAFETY: `s_start` and `s_end` are passage-relative
+                        // offsets that fall within the link's `span`, which
+                        // was constructed from valid char-boundary offsets
+                        // by `parse_link`. The slice is therefore safe.
+                        // We use `get()` defensively in case of any
+                        // upstream inconsistency.
+                        //
+                        // Note: `body_text` is body-relative (offset 0 =
+                        // body start), but `s_start`/`s_end` are
+                        // passage-relative (offset 0 = passage head `::`).
+                        // We subtract `body_offset_in_passage` to convert
+                        // back to body-relative for slicing `body_text`.
+                        let body_s_start = s_start.saturating_sub(body_offset_in_passage);
+                        let body_s_end = s_end.saturating_sub(body_offset_in_passage);
+                        if let Some(setter_text) = body_text.get(body_s_start..body_s_end) {
+                            let setter_var_refs = super::super::parser::variable_scan::scan_inline_vars(
+                                setter_text,
+                                s_start,
+                            );
+                            for vr in setter_var_refs {
+                                tokens.push(SemanticToken {
+                                    start: vr.span.start,
+                                    length: vr.span.end - vr.span.start,
+                                    token_type: SemanticTokenType::Variable,
+                                    modifier: None,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             ast::AstNode::Expression { kind, js_analysis, var_refs, span, .. } => {
                 // Emit a Macro token for the expression sigil (= or -) so
@@ -522,7 +630,7 @@ fn build_semantic_tokens_at_depth(
                     token_type: SemanticTokenType::InlineStyle,
                     modifier: None,
                 });
-                build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names);
+                build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names, body_text);
             }
             // Text formatting markup: emit TextFormat token for the construct
             ast::AstNode::TextFormat { span, .. } => {
@@ -588,6 +696,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     depth,
+                    body_text,
                 );
             }
             // Phase 4: HorizontalRule — single token over the `----` span.
@@ -619,6 +728,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     *depth as usize,
+                    body_text,
                 );
             }
             // Phase 4: BlockquoteBlock (`<<<...<<<`) — emit `BlockquoteBlock`
@@ -640,6 +750,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     depth,
+                    body_text,
                 );
                 // Closing `<<<` delimiter token (if present).
                 if let Some(cs) = close_span {
@@ -675,6 +786,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     depth,
+                    body_text,
                 );
             }
             // Phase 6: Table — emit `Table` tokens for the opening `|` of each
@@ -710,6 +822,7 @@ fn build_semantic_tokens_at_depth(
                             body_offset_in_passage,
                             custom_macro_names,
                             depth,
+                            body_text,
                         );
                     }
                 }
@@ -1448,4 +1561,131 @@ pub fn build_json_body_tokens(body: &str, body_offset_in_passage: usize) -> Vec<
 /// they should render at the parent's depth level.
 fn is_folding_modifier(name: &str) -> bool {
     folding_modifier_names().contains(name)
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sugarcube::ast::ParseMode;
+    use crate::sugarcube::parser::parse_passage_body;
+    use crate::plugin::SemanticTokenType;
+
+    /// Build semantic tokens for a body string and return all tokens
+    /// as `(type_name, text)` pairs.
+    fn all_token_texts(body: &str) -> Vec<(&'static str, String)> {
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let mut tokens = Vec::new();
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &std::collections::HashSet::new(), body);
+
+        tokens.iter()
+            .map(|t| {
+                let type_name = match t.token_type {
+                    SemanticTokenType::Link => "Link",
+                    SemanticTokenType::String => "String",
+                    SemanticTokenType::Variable => "Variable",
+                    SemanticTokenType::Macro => "Macro",
+                    SemanticTokenType::PassageName => "PassageName",
+                    SemanticTokenType::PassageHeader => "PassageHeader",
+                    SemanticTokenType::Prose => "Prose",
+                    _ => "Other",
+                };
+                let text = body[t.start.min(body.len())..(t.start + t.length).min(body.len())].to_string();
+                (type_name, text)
+            })
+            .filter(|(tn, _)| matches!(*tn, "Link" | "String" | "Variable"))
+            .collect()
+    }
+
+    /// Regression test: `[[Target]]` simple link should produce ONE Link
+    /// token covering just the target passage name.
+    #[test]
+    fn link_token_simple_link_covers_target_only() {
+        let tokens = all_token_texts("Go [[Forest]] now");
+        assert_eq!(tokens, vec![("Link", "Forest".to_string())]);
+    }
+
+    /// Regression test: `[[Display|Target]]` pipe link should produce TWO
+    /// tokens — a `String` on the display, a `Link` on the target.
+    ///
+    /// Previous bug #1: a single Link token covered "Retur" (first 5 bytes
+    /// of "Return to start") because the span used `target.len()` from
+    /// `span.start + 2`.
+    /// Previous bug #2: a single Link token covered the ENTIRE content
+    /// "Return to start|Start", swallowing the display and separator.
+    #[test]
+    fn link_token_pipe_link_decomposes_into_display_and_target() {
+        let tokens = all_token_texts("[[Return to start|Start]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Start".to_string()),
+            ("String", "Return to start".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn link_token_arrow_right_decomposes() {
+        let tokens = all_token_texts("[[Display->Target]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Target".to_string()),
+            ("String", "Display".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn link_token_arrow_left_decomposes() {
+        let tokens = all_token_texts("[[Target<-Display]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Target".to_string()),
+            ("String", "Display".to_string()),
+        ]);
+    }
+
+    /// Regression test: setter links `[[Display|Target][$var += 5]]` should
+    /// produce THREE tokens — `String` on display, `Link` on target,
+    /// `Variable` on the setter variable `$var`. The setter expression
+    /// content (operators, numbers) does NOT get a token — those bytes
+    /// are not highlighted by any semantic token type.
+    #[test]
+    fn link_token_setter_link_emits_variable_for_setter_var() {
+        let tokens = all_token_texts("[[Link with setter|Time][$playerGold += 5]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Time".to_string()),
+            ("String", "Link with setter".to_string()),
+            ("Variable", "$playerGold".to_string()),
+        ]);
+    }
+
+    /// Regression test: image links `[[img[url][Target]]` should produce
+    /// ONE Link token on the target. The image URL is not currently
+    /// tokenized (no dedicated ImageUrl token type).
+    #[test]
+    fn link_token_image_link_covers_target_only() {
+        let tokens = all_token_texts("[[img[http://example.com/pic.jpg][Forest]]");
+        assert_eq!(tokens, vec![("Link", "Forest".to_string())]);
+    }
+
+    /// Image link with display: `[[img[url][Display|Target]]` should
+    /// produce `String` on the display, `Link` on the target.
+    #[test]
+    fn link_token_image_link_with_display_decomposes() {
+        let tokens = all_token_texts("[[img[http://example.com/pic.jpg][Dark Forest|Forest]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Forest".to_string()),
+            ("String", "Dark Forest".to_string()),
+        ]);
+    }
+
+    /// Regression test: links with multi-byte UTF-8 characters should not
+    /// panic and should produce correct per-region tokens.
+    #[test]
+    fn link_token_multibyte_utf8_decomposes_correctly() {
+        let tokens = all_token_texts("[[Café—naïve|Target]]");
+        assert_eq!(tokens, vec![
+            ("Link", "Target".to_string()),
+            ("String", "Café—naïve".to_string()),
+        ]);
+    }
 }

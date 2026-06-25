@@ -1943,7 +1943,7 @@ mod tests {
 
         let ast = crate::sugarcube::parser::parse_passage_body("<<= $hp>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<= $hp>>");
 
         // Should have at least a Macro token for the = sigil and a Variable token for $hp
         let macro_tokens: Vec<_> = tokens.iter()
@@ -1966,7 +1966,7 @@ mod tests {
 
         let ast = crate::sugarcube::parser::parse_passage_body("<<- $hp>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<- $hp>>");
 
         let sigil_tokens: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
@@ -1992,7 +1992,7 @@ mod tests {
         let input = "<<set $hp to 10>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let delims: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
@@ -2034,7 +2034,7 @@ mod tests {
         let input = "<<if $hp gte 10>>Alive<</if>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let delims: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
@@ -2068,7 +2068,7 @@ mod tests {
         let input = "<<if $a>><<if $b>>nested<</if>><</if>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let depth0_delims = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)
@@ -2103,7 +2103,7 @@ mod tests {
         let input = "<<link \"Go\" \"Forest\">><<set $x to 1>><</link>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         // <<link>> name at offset 2, length 4 — should be None (base color, no depth)
         let link_name = tokens.iter()
@@ -2164,7 +2164,7 @@ mod tests {
         let input = "<<link \"Chat\" \"Coworker\">><<if true>><<adjustStat \"stress\" -3>><</if>><</link>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let macro_tokens: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
@@ -2217,7 +2217,7 @@ mod tests {
         let input = "<<set $x to 1>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let set_name = tokens.iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.length == 3)
@@ -2245,7 +2245,7 @@ mod tests {
         let input = "<<= $hp>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         let delims: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
@@ -2271,7 +2271,7 @@ mod tests {
 
         let ast = crate::sugarcube::parser::parse_passage_body("<<set $x to 1>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<set $x to 1>>");
 
         let has_macro_name = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::Macro));
         let has_delimiter = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter));
@@ -2295,8 +2295,8 @@ mod tests {
 
         let mut tokens_print = Vec::new();
         let mut tokens_expr = Vec::new();
-        build_semantic_tokens(&ast_print.nodes, &mut tokens_print, 0, &HashSet::new());
-        build_semantic_tokens(&ast_expr.nodes, &mut tokens_expr, 0, &HashSet::new());
+        build_semantic_tokens(&ast_print.nodes, &mut tokens_print, 0, &HashSet::new(), "");
+        build_semantic_tokens(&ast_expr.nodes, &mut tokens_expr, 0, &HashSet::new(), "");
 
         let var_tokens_print: Vec<_> = tokens_print.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
@@ -2390,7 +2390,7 @@ mod tests {
             ParseMode::Normal,
         );
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
 
         let style_tokens: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::InlineStyle))
@@ -2446,7 +2446,7 @@ mod tests {
             "Some ''bold'' text", 0, ParseMode::Normal,
         );
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new());
+        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
 
         let format_tokens: Vec<_> = tokens.iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::TextFormat))

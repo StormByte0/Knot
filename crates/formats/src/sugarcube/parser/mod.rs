@@ -38,7 +38,11 @@ mod core;
 mod macro_parser;
 mod link_parser;
 mod comment;
-mod variable_scan;
+// `variable_scan` is accessed by `lsp::token_builder` to scan `$var`/`_var`
+// references inside link setter expressions (`[[...][$var += 5]]`). The
+// inline scanner doesn't run inside link constructs (see its module doc),
+// so the token builder runs it directly on the setter slice.
+pub(in crate::sugarcube) mod variable_scan;
 mod extraction;
 mod tree_builder;
 pub(crate) mod predicates;

@@ -145,6 +145,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 &mut passage_tokens,
                 body_offset_in_passage,
                 &custom_names,
+                &cp.body_text,
             );
             // For script passages, also emit tokens from script_js_analysis
             if let Some(ref analysis) = passage_ast.script_js_analysis {

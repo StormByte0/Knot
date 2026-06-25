@@ -65,7 +65,10 @@ pub(super) fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (Va
 ///
 /// Skips content inside `/* ... */` block comments and `// ...` line
 /// comments, since variable references in comments are not real references.
-pub(super) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
+///
+/// `offset` is added to each returned `VarRef.span` so callers can produce
+/// spans in any coordinate space (body-relative, passage-relative, etc.).
+pub(in crate::sugarcube) fn scan_inline_vars(text: &str, offset: usize) -> Vec<VarRef> {
     let mut refs = Vec::new();
     let bytes = text.as_bytes();
     let len = bytes.len();
