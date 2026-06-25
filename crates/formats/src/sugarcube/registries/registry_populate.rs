@@ -729,7 +729,7 @@ pub fn walk_script_js(
     use crate::sugarcube::js::js_preprocess;
     use crate::sugarcube::js::js_walk;
 
-    let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
+    let preprocessed = js_preprocess::preprocess_for_oxc(body_text, true);
 
     // oxc has error recovery — walk whatever AST we can get, even if there
     // are syntax errors. The valid parts still contribute to the registries.
@@ -950,8 +950,8 @@ mod tests {
         let body = "<<run _items = State.variables.ITEMS>>";
         let mut ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
 
-        // Phase 2: JS annotation
-        js_annotate::annotate_js(&mut ast, body, false);
+        // Phase 2: JS annotation (sugarcube_syntax = true for Twee passages)
+        js_annotate::annotate_js(&mut ast, body, false, true);
 
         let mut registry = SugarCubeRegistry::new();
 

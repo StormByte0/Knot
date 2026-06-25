@@ -50,14 +50,18 @@ pub(crate) async fn index_workspace(
         inner.workspace.config.ignore.clone()
     };
 
-    // Collect all .tw/.twee files using walkdir, filtering against ignore patterns
+    // Collect all .tw/.twee/.js files using walkdir, filtering against ignore patterns.
+    //
+    // .js files are included because Tweego bundles them from the source
+    // directory as <script> tags in the compiled HTML. Knot parses them as
+    // synthetic script passages — see `parse_script_file` in parse_pipeline.rs.
     let twee_files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&root_path)
         .into_iter()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_file())
         .filter(|entry| {
             let ext = entry.path().extension().and_then(|e| e.to_str());
-            ext == Some("tw") || ext == Some("twee")
+            ext == Some("tw") || ext == Some("twee") || ext == Some("js")
         })
         .filter(|entry| {
             // Apply knot.json ignore patterns

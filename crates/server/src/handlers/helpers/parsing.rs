@@ -15,6 +15,15 @@ use url::Url;
 /// available. The Core plugin provides base Twine engine behavior (passage
 /// headers, links, core special passages) with no format-specific features.
 ///
+/// ## `.js` files
+///
+/// When the URI ends with `.js`, the document is parsed as a standalone
+/// script file via `SugarCubePlugin::parse_script_file()` (only when
+/// `format == StoryFormat::SugarCube`). This matches Tweego's behavior of
+/// bundling `.js` files from the source directory as `<script>` tags. For
+/// non-SugarCube formats, `.js` files are not parsed by Knot (VS Code's
+/// built-in JS language features handle them).
+///
 /// ## Panic safety
 ///
 /// The format plugin's `parse_mut()` method is wrapped in `std::panic::catch_unwind`
@@ -28,6 +37,17 @@ pub(crate) fn parse_with_format_plugin(
     format: StoryFormat,
     version: i32,
 ) -> (Document, fmt_plugin::ParseResult) {
+    // ── .js file dispatch ────────────────────────────────────────────
+    //
+    // Standalone .js files are parsed as synthetic script passages by
+    // the active format plugin. The plugin's `parse_script_file_mut`
+    // method handles the JS analysis (annotate, validate, registry
+    // populate). If the active format doesn't support standalone script
+    // files (returns None), the file is stored as an empty document.
+    if is_javascript_file(uri) {
+        return parse_js_file(registry, uri, text, format, version);
+    }
+
     let plugin = match registry.get_mut(&format) {
         Some(p) => Some(p),
         None => {
@@ -194,4 +214,117 @@ pub(crate) fn parse_story_data_json(body: &str) -> Option<StoryMetadata> {
         start_passage,
         ifid,
     })
+}
+
+// ---------------------------------------------------------------------------
+// .js file support
+// ---------------------------------------------------------------------------
+
+/// Check if a URI refers to a `.js` file.
+fn is_javascript_file(uri: &Url) -> bool {
+    uri.path()
+        .rsplit('.')
+        .next()
+        .map(|ext| ext.eq_ignore_ascii_case("js"))
+        .unwrap_or(false)
+}
+
+/// Parse a `.js` file as a synthetic script passage via the active format plugin.
+///
+/// Calls `FormatPluginMut::parse_script_file_mut` on the active format's
+/// plugin. The plugin analyzes the file identically to a `[script]`-tagged
+/// passage — the only difference is that the entire file text is passed to
+/// oxc instead of just the passage body. This means:
+///
+/// - The SugarCube preprocessor runs (`$var` → `State.variables.var`,
+///   keyword operators `to`/`is`/`eq` → JS equivalents)
+/// - `Macro.add()`, `Template.add()`, `function` declarations, and
+///   `State.variables` writes are registered in the workspace registries
+/// - JS tokens are emitted for syntax highlighting
+/// - JS diagnostics are produced from oxc
+///
+/// If the active format doesn't support standalone script files (returns
+/// `None` from `parse_script_file_mut`), the file is stored as an empty
+/// document — VS Code's built-in JS language features handle it.
+///
+/// Wrapped in `catch_unwind` for panic safety — same as `parse_mut`.
+fn parse_js_file(
+    registry: &mut fmt_plugin::FormatRegistry,
+    uri: &Url,
+    text: &str,
+    format: StoryFormat,
+    version: i32,
+) -> (Document, fmt_plugin::ParseResult) {
+    // Use the active format's plugin, falling back to the default format
+    // if the requested format isn't registered — same pattern as parse_mut.
+    let plugin = match registry.get_mut(&format) {
+        Some(p) => p,
+        None => {
+            let default = StoryFormat::default_format();
+            match registry.get_mut(&default) {
+                Some(p) => p,
+                None => {
+                    tracing::warn!("No format plugin available to parse .js file {}", uri);
+                    return empty_document(uri, text, format, version);
+                }
+            }
+        }
+    };
+
+    // Wrap in catch_unwind — same panic safety as parse_mut.
+    let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plugin.parse_script_file_mut(uri, text)
+    }));
+
+    match parse_result {
+        Ok(Some(result)) => {
+            let mut doc = Document::new(uri.clone(), format);
+            doc.version = version;
+            doc.passages = result.passages.clone();
+            doc.set_snapshot_from_text(text);
+            (doc, result)
+        }
+        Ok(None) => {
+            // Plugin doesn't support standalone script files — return empty.
+            empty_document(uri, text, format, version)
+        }
+        Err(panic_payload) => {
+            let panic_msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!(
+                "Format plugin {:?} panicked while parsing .js file {}: {}",
+                format,
+                uri,
+                panic_msg
+            );
+            empty_document(uri, text, format, version)
+        }
+    }
+}
+
+/// Create an empty document with the given text snapshot.
+///
+/// Used when a `.js` file is in a non-SugarCube workspace, or when the
+/// SugarCube plugin is not available.
+fn empty_document(
+    uri: &Url,
+    text: &str,
+    format: StoryFormat,
+    version: i32,
+) -> (Document, fmt_plugin::ParseResult) {
+    let mut doc = Document::new(uri.clone(), format);
+    doc.version = version;
+    doc.set_snapshot_from_text(text);
+    let result = fmt_plugin::ParseResult {
+        passages: Vec::new(),
+        token_groups: Vec::new(),
+        diagnostic_groups: Vec::new(),
+        is_complete: false,
+    };
+    (doc, result)
 }

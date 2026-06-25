@@ -1926,7 +1926,7 @@ mod tests {
 
     /// Helper: parse JS and walk as inline expression, returning the analysis.
     fn walk_inline(source: &str) -> JsAnalysis {
-        let preprocessed = js_preprocess::preprocess_for_oxc(source);
+        let preprocessed = js_preprocess::preprocess_for_oxc(source, true);
         let outcome = parse_js(&preprocessed.source, JsParseMode::Expression);
         outcome.with_program(|program| walk_inline_js(program, &preprocessed)).unwrap_or_default()
     }

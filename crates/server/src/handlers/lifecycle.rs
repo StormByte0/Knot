@@ -239,8 +239,12 @@ pub(crate) async fn shutdown(
     Ok(())
 }
 
-/// Register file watchers for .tw and .twee files using the
+/// Register file watchers for .tw, .twee, and .js files using the
 /// `client/registerCapability` LSP request.
+///
+/// `.js` files are watched because Tweego bundles them from the source
+/// directory as `<script>` tags — Knot indexes and analyzes them the
+/// same way as `[script]`-tagged passages.
 async fn register_file_watchers(client: &tower_lsp::Client) {
     let watchers = vec![
         FileSystemWatcher {
@@ -249,6 +253,10 @@ async fn register_file_watchers(client: &tower_lsp::Client) {
         },
         FileSystemWatcher {
             glob_pattern: GlobPattern::String("**/*.twee".to_string()),
+            kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+        },
+        FileSystemWatcher {
+            glob_pattern: GlobPattern::String("**/*.js".to_string()),
             kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
         },
     ];
@@ -267,7 +275,7 @@ async fn register_file_watchers(client: &tower_lsp::Client) {
     if let Err(e) = client.register_capability(registrations).await {
         tracing::warn!("Failed to register file watchers: {}", e);
     } else {
-        tracing::info!("Registered file watchers for .tw/.twee files");
+        tracing::info!("Registered file watchers for .tw/.twee/.js files");
     }
 }
 

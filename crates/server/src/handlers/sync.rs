@@ -455,12 +455,15 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 .ok_or(())
         });
 
-        let is_twee = match file_type.as_deref() {
-            Ok("tw") | Ok("twee") => true,
+        // Accept .tw, .twee, and .js files. .js files are indexed and
+        // analyzed the same way as [script]-tagged passages — see
+        // parse_script_file in the SugarCube parse pipeline.
+        let is_supported = match file_type.as_deref() {
+            Ok("tw") | Ok("twee") | Ok("js") => true,
             _ => false,
         };
 
-        if !is_twee {
+        if !is_supported {
             continue;
         }
 

@@ -1937,6 +1937,21 @@ pub trait FormatPluginMut: FormatPlugin {
     /// The plugin MUST call `registry.remove_file(uri)` before populating.
     fn parse_mut(&mut self, uri: &Url, text: &str) -> ParseResult;
 
+    /// Parse a standalone script file (e.g., `.js`) as a synthetic passage.
+    ///
+    /// Returns `None` by default — format plugins that don't support
+    /// standalone script files (Harlowe, Chapbook, Snowman, Core) leave
+    /// this as a no-op. The SugarCube plugin overrides this to analyze
+    /// `.js` files as script passages (matching Tweego's build behavior
+    /// of bundling `.js` files from the source directory as `<script>`
+    /// tags).
+    ///
+    /// When `None` is returned, the caller should create an empty document
+    /// and let VS Code's built-in language features handle the file.
+    fn parse_script_file_mut(&mut self, _uri: &Url, _text: &str) -> Option<ParseResult> {
+        None
+    }
+
     /// Re-parse a single passage incrementally.
     /// The plugin MUST call `registry.remove_passage(name, uri)` before populating.
     fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage>;

@@ -577,6 +577,10 @@ impl FormatPluginMut for SugarCubePlugin {
         parse_pipeline::parse_full(self, uri, text)
     }
 
+    fn parse_script_file_mut(&mut self, uri: &Url, text: &str) -> Option<ParseResult> {
+        Some(parse_pipeline::parse_script_file(self, uri, text))
+    }
+
     fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage> {
         parse_pipeline::parse_single(self, passage_name, passage_tags, passage_text, file_uri)
     }

@@ -83,16 +83,21 @@ pub fn validate_inline_js(
 /// all oxc diagnostics to `FormatDiagnostic`s with precise position mapping.
 /// `body_offset_in_passage` is the offset of the body start relative to the
 /// passage head (`::` prefix).
+///
+/// `sugarcube_syntax` controls whether the SugarCube preprocessor runs
+/// (`$var` → `State.variables.var`, keyword operators). Pass `true` for
+/// `[script]`-tagged Twee passages, `false` for standalone `.js` files.
 pub fn validate_script_passage(
     body_text: &str,
     body_offset_in_passage: usize,
+    sugarcube_syntax: bool,
 ) -> Vec<FormatDiagnostic> {
     if body_text.trim().is_empty() {
         return Vec::new();
     }
 
-    // Preprocess $var references for oxc
-    let preprocessed = super::js_preprocess::preprocess_for_oxc(body_text);
+    // Preprocess $var references for oxc (only when sugarcube_syntax is true)
+    let preprocessed = super::js_preprocess::preprocess_for_oxc(body_text, sugarcube_syntax);
 
     let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
 
@@ -119,7 +124,7 @@ pub fn validate_script_passage(
 /// so VSCode can squiggle exactly the broken span.
 fn validate_snippet(snippet: &JsSnippet, body_offset_in_passage: usize) -> Vec<FormatDiagnostic> {
     // Preprocess $var references for oxc
-    let preprocessed = super::js_preprocess::preprocess_for_oxc(&snippet.source);
+    let preprocessed = super::js_preprocess::preprocess_for_oxc(&snippet.source, true);
 
     // Determine parse mode: block scripts get Module, inline expressions get Expression
     let js_mode = if snippet.is_block {

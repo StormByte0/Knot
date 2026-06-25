@@ -36,10 +36,24 @@ use oxc_span::GetSpan;
 /// For script passages, pass `is_script_passage = true` and the entire body
 /// text is analyzed as a single JS module. The result is stored on
 /// `PassageAst::script_js_analysis` (not on a synthetic node).
-pub fn annotate_js(passage_ast: &mut PassageAst, body_text: &str, is_script_passage: bool) {
+///
+/// `sugarcube_syntax` controls whether the SugarCube preprocessor runs
+/// (`$var` → `State.variables.var`, keyword operators `to`/`is`/`eq` → JS).
+/// Pass `true` for `[script]`-tagged Twee passages (SugarCube syntax is
+/// allowed). Pass `false` for standalone `.js` files (pure JS, `$` is a
+/// valid identifier char, no SugarCube keyword operators).
+pub fn annotate_js(
+    passage_ast: &mut PassageAst,
+    body_text: &str,
+    is_script_passage: bool,
+    sugarcube_syntax: bool,
+) {
     if is_script_passage {
-        annotate_script_passage(passage_ast, body_text);
+        annotate_script_passage(passage_ast, body_text, sugarcube_syntax);
     } else {
+        // Inline JS inside Twee passages always uses SugarCube syntax
+        // ($var, keyword operators). The `sugarcube_syntax` flag is
+        // irrelevant for inline JS.
         annotate_inline_js(&mut passage_ast.nodes, body_text);
     }
 }
@@ -49,13 +63,20 @@ pub fn annotate_js(passage_ast: &mut PassageAst, body_text: &str, is_script_pass
 /// Script passages contain pure JS (no SugarCube syntax). The entire body
 /// text is preprocessed and parsed as a JS module. The resulting `JsAnalysis`
 /// is stored on `PassageAst::script_js_analysis` — NOT on a synthetic node.
-fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str) {
+///
+/// `sugarcube_syntax` controls whether the SugarCube preprocessor runs.
+/// See [`annotate_js`] for details.
+fn annotate_script_passage(
+    passage_ast: &mut PassageAst,
+    body_text: &str,
+    sugarcube_syntax: bool,
+) {
     if body_text.trim().is_empty() {
         return;
     }
 
-    // Preprocess $var references for oxc
-    let preprocessed = js_preprocess::preprocess_for_oxc(body_text);
+    // Preprocess $var references for oxc (only when sugarcube_syntax is true)
+    let preprocessed = js_preprocess::preprocess_for_oxc(body_text, sugarcube_syntax);
 
     // Parse with oxc as a JS module.
     // oxc has error recovery — even when there are syntax errors, the AST
@@ -305,7 +326,7 @@ fn collect_macro_js_snippet(
 
 /// Analyze a single JS snippet and return a JsAnalysis.
 fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAnalysis {
-    let preprocessed = js_preprocess::preprocess_for_oxc(source);
+    let preprocessed = js_preprocess::preprocess_for_oxc(source, true);
 
     let js_mode = if is_block {
         JsParseMode::Module
@@ -359,7 +380,7 @@ fn decompose_block_literal_for_set(
     target_seg_spans: &[std::ops::Range<usize>],
     assign_span: std::ops::Range<usize>,
 ) -> Vec<AnalyzedVarOp> {
-    let preprocessed = js_preprocess::preprocess_for_oxc(expr_src);
+    let preprocessed = js_preprocess::preprocess_for_oxc(expr_src, true);
     let shifted = js_preprocess::PreprocessedJs {
         source: preprocessed.source,
         substitutions: preprocessed.substitutions,

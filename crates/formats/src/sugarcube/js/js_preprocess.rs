@@ -176,7 +176,31 @@ impl PreprocessedJs {
 ///
 /// Returns a `PreprocessedJs` with the transformed source and substitution
 /// map for position mapping.
-pub fn preprocess_for_oxc(source: &str) -> PreprocessedJs {
+///
+/// When `sugarcube_syntax` is `false`, the source is returned unchanged
+/// with an empty substitution map. This is used for standalone `.js` files
+/// where `$` is a valid JS identifier character (jQuery, etc.) and
+/// SugarCube keyword operators (`to`, `is`, `eq`) would incorrectly
+/// mangle valid JS identifiers.
+pub fn preprocess_for_oxc(source: &str, sugarcube_syntax: bool) -> PreprocessedJs {
+    if !sugarcube_syntax {
+        // Pure JS mode — no SugarCube-specific preprocessing. Return the
+        // source unchanged with an empty substitution map. The position
+        // mapping in `PreprocessedJs` handles the no-substitution case
+        // correctly (offsets are identity).
+        return PreprocessedJs {
+            source: source.to_string(),
+            substitutions: Vec::new(),
+            origin_offset: 0,
+            wrapping_offset: 0,
+        };
+    }
+    preprocess_for_oxc_sugarcube(source)
+}
+
+/// SugarCube-specific preprocessor — the original implementation, now
+/// called only when `sugarcube_syntax: true`.
+fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
     let mut result = String::with_capacity(source.len() + 64);
     let mut substitutions = Vec::new();
     let bytes = source.as_bytes();
@@ -559,34 +583,34 @@ mod tests {
 
     #[test]
     fn simple_variable_substitution() {
-        let result = preprocess_for_oxc("$hp + $gold");
+        let result = preprocess_for_oxc("$hp + $gold", true);
         assert!(result.source.contains("State_variables_hp"));
         assert!(result.source.contains("State_variables_gold"));
     }
 
     #[test]
     fn property_path_substitution() {
-        let result = preprocess_for_oxc("$player.name");
+        let result = preprocess_for_oxc("$player.name", true);
         assert!(result.source.contains("State_variables_player_name"));
     }
 
     #[test]
     fn temporary_variable_substitution() {
-        let result = preprocess_for_oxc("_i + _count");
+        let result = preprocess_for_oxc("_i + _count", true);
         assert!(result.source.contains("State_temporary_i"));
         assert!(result.source.contains("State_temporary_count"));
     }
 
     #[test]
     fn escaped_dollar_not_substituted() {
-        let result = preprocess_for_oxc("$$notavar");
+        let result = preprocess_for_oxc("$$notavar", true);
         assert!(result.source.contains("$$notavar"));
         assert!(!result.source.contains("State_variables_"));
     }
 
     #[test]
     fn mixed_content() {
-        let result = preprocess_for_oxc("$x + 1 + $y.name");
+        let result = preprocess_for_oxc("$x + 1 + $y.name", true);
         assert!(result.source.contains("State_variables_x"));
         assert!(result.source.contains("State_variables_y_name"));
     }
@@ -595,7 +619,7 @@ mod tests {
 
     #[test]
     fn to_replacement() {
-        let result = preprocess_for_oxc("$hp to 100");
+        let result = preprocess_for_oxc("$hp to 100", true);
         assert!(
             result.source.contains("State_variables_hp = 100"),
             "expected 'State_variables_hp = 100', got '{}'",
@@ -605,7 +629,7 @@ mod tests {
 
     #[test]
     fn gt_lt_replacement() {
-        let result = preprocess_for_oxc("$x gt 5 and $y lt 10");
+        let result = preprocess_for_oxc("$x gt 5 and $y lt 10", true);
         assert!(
             result.source.contains("State_variables_x > 5"),
             "expected '> 5', got '{}'",
@@ -625,7 +649,7 @@ mod tests {
 
     #[test]
     fn gte_lte_replacement() {
-        let result = preprocess_for_oxc("$hp gte 1 and $mp lte 100");
+        let result = preprocess_for_oxc("$hp gte 1 and $mp lte 100", true);
         assert!(
             result.source.contains("State_variables_hp >= 1"),
             "expected '>= 1', got '{}'",
@@ -640,7 +664,7 @@ mod tests {
 
     #[test]
     fn eq_neq_replacement() {
-        let result = preprocess_for_oxc("$x eq 5 or $y neq 0");
+        let result = preprocess_for_oxc("$x eq 5 or $y neq 0", true);
         assert!(
             result.source.contains("State_variables_x === 5"),
             "expected '=== 5', got '{}'",
@@ -655,7 +679,7 @@ mod tests {
 
     #[test]
     fn is_isnot_replacement() {
-        let result = preprocess_for_oxc("$name is \"Alice\" or $name isnot \"Bob\"");
+        let result = preprocess_for_oxc("$name is \"Alice\" or $name isnot \"Bob\"", true);
         assert!(
             result.source.contains("State_variables_name === \"Alice\""),
             "expected '=== \"Alice\"', got '{}'",
@@ -670,7 +694,7 @@ mod tests {
 
     #[test]
     fn and_or_not_replacement() {
-        let result = preprocess_for_oxc("$alive and not $poisoned or $cured");
+        let result = preprocess_for_oxc("$alive and not $poisoned or $cured", true);
         assert!(
             result.source.contains("State_variables_alive &&"),
             "expected '&&', got '{}'",
@@ -690,7 +714,7 @@ mod tests {
 
     #[test]
     fn not_replacement_prefix() {
-        let result = preprocess_for_oxc("not $alive");
+        let result = preprocess_for_oxc("not $alive", true);
         assert!(
             result.source.contains("! State_variables_alive"),
             "expected '! State_variables_alive', got '{}'",
@@ -701,7 +725,7 @@ mod tests {
     #[test]
     fn complex_if_condition() {
         // Realistic <<if>> condition: <<if $hp gt 0 and $name is "hero">>
-        let result = preprocess_for_oxc("$hp gt 0 and $name is \"hero\"");
+        let result = preprocess_for_oxc("$hp gt 0 and $name is \"hero\"", true);
         assert!(
             result.source.contains("State_variables_hp > 0 && State_variables_name === \"hero\""),
             "expected proper normalization, got '{}'",
@@ -715,7 +739,7 @@ mod tests {
     fn operators_not_replaced_in_identifiers() {
         // "gt" inside "$target" should NOT be replaced — it's part of the
         // variable name, which gets substituted before we check operators.
-        let result = preprocess_for_oxc("$target gt 5");
+        let result = preprocess_for_oxc("$target gt 5", true);
         assert!(
             result.source.contains("State_variables_target > 5"),
             "expected 'State_variables_target > 5', got '{}'",
@@ -732,7 +756,7 @@ mod tests {
     #[test]
     fn operators_not_replaced_in_strings() {
         // "gt" inside a string literal should NOT be replaced
-        let result = preprocess_for_oxc("$msg is \"greater than five\"");
+        let result = preprocess_for_oxc("$msg is \"greater than five\"", true);
         assert!(
             result.source.contains("State_variables_msg === \"greater than five\""),
             "expected string preserved, got '{}'",
@@ -748,7 +772,7 @@ mod tests {
 
     #[test]
     fn or_not_replaced_in_string() {
-        let result = preprocess_for_oxc("$label is \"door\"");
+        let result = preprocess_for_oxc("$label is \"door\"", true);
         assert!(
             result.source.contains("State_variables_label === \"door\""),
             "expected 'door' preserved in string, got '{}'",
@@ -765,7 +789,7 @@ mod tests {
     #[test]
     fn is_not_replaced_mid_word() {
         // "is" inside "this" should NOT be replaced
-        let result = preprocess_for_oxc("this gt 5");
+        let result = preprocess_for_oxc("this gt 5", true);
         assert!(
             result.source.contains("this > 5"),
             "expected 'this > 5', got '{}'",
@@ -782,7 +806,7 @@ mod tests {
 
     #[test]
     fn position_mapping() {
-        let result = preprocess_for_oxc("$hp to 5");
+        let result = preprocess_for_oxc("$hp to 5", true);
         // $hp is replaced with State_variables_hp (longer)
         // "to" is replaced with "=" (shorter)
         // The substitution map should let us map back
@@ -791,7 +815,7 @@ mod tests {
 
     #[test]
     fn substitution_map_consistency() {
-        let result = preprocess_for_oxc("$x gt 5 and $y lt 10");
+        let result = preprocess_for_oxc("$x gt 5 and $y lt 10", true);
         // Verify all substitutions have valid ranges
         for sub in &result.substitutions {
             assert!(
@@ -815,7 +839,7 @@ mod tests {
         // em-dash '—' is 3 bytes in UTF-8 (0xE2 0x80 0x94).
         // Byte-by-byte iteration would land on byte 2 of the char,
         // which is not a char boundary, causing &source[i..] to panic.
-        let result = preprocess_for_oxc("$x — $y");
+        let result = preprocess_for_oxc("$x — $y", true);
         assert!(
             result.source.contains("State_variables_x"),
             "expected variable substitution, got '{}'",
@@ -837,7 +861,7 @@ mod tests {
     fn cjk_characters_in_expression() {
         // CJK characters are 3 bytes each in UTF-8.
         // Common in game dialogue: $player名前 (variable + CJK property)
-        let result = preprocess_for_oxc("$x + 日本語");
+        let result = preprocess_for_oxc("$x + 日本語", true);
         assert!(
             result.source.contains("State_variables_x + 日本語"),
             "expected CJK preserved, got '{}'",
@@ -848,7 +872,7 @@ mod tests {
     #[test]
     fn emoji_in_expression() {
         // Emoji are 4 bytes in UTF-8.
-        let result = preprocess_for_oxc("$x + 🎮");
+        let result = preprocess_for_oxc("$x + 🎮", true);
         assert!(
             result.source.contains("State_variables_x + 🎮"),
             "expected emoji preserved, got '{}'",
@@ -859,7 +883,7 @@ mod tests {
     #[test]
     fn multibyte_in_string_literal() {
         // Multi-byte chars inside string literals should be preserved
-        let result = preprocess_for_oxc("$msg is \"hello — world\"");
+        let result = preprocess_for_oxc("$msg is \"hello — world\"", true);
         assert!(
             result.source.contains("State_variables_msg === \"hello — world\""),
             "expected string with em-dash preserved, got '{}'",
@@ -870,7 +894,7 @@ mod tests {
     #[test]
     fn mixed_multibyte_with_operators() {
         // Full realistic case: variables + operators + multi-byte text
-        let result = preprocess_for_oxc("$name is \"Alice—\" and $hp gt 0");
+        let result = preprocess_for_oxc("$name is \"Alice—\" and $hp gt 0", true);
         assert!(
             result.source.contains("State_variables_name === \"Alice—\" && State_variables_hp > 0"),
             "expected mixed content preserved, got '{}'",
@@ -894,7 +918,7 @@ mod tests {
         ];
         for case in cases {
             // Must not panic
-            let result = preprocess_for_oxc(case);
+            let result = preprocess_for_oxc(case, true);
             assert!(
                 !result.source.is_empty(),
                 "preprocess should produce output for: {}",

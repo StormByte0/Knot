@@ -83,6 +83,11 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 &mut passage_ast,
                 &cp.body_text,
                 is_script_passage(cp),
+                // For Twee passages, SugarCube syntax ($var, keyword operators)
+                // is always allowed — even in [script] passages, authors can
+                // use $var references. The preprocessor handles the
+                // $var → State.variables.var substitution.
+                true,
             );
             let total_var_ops = count_total_var_ops(&passage_ast);
             pipeline_log::parse_phase2_exit(&cp.header.name, total_var_ops);
@@ -179,6 +184,8 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 let js_diagnostics = super::js_validate::validate_script_passage(
                     &cp.body_text,
                     body_offset_in_passage,
+                    // Twee [script] passages use SugarCube syntax
+                    true,
                 );
                 passage_diagnostics.extend(js_diagnostics);
             } else {
@@ -327,6 +334,9 @@ pub(super) fn parse_single(
             &mut passage_ast,
             passage_text,
             mode == ParseMode::Script,
+            // Incremental re-parse of a single Twee passage — SugarCube syntax
+            // is always allowed.
+            true,
         );
     }
 
@@ -396,4 +406,164 @@ pub(super) fn parse_single(
     }
 
     Some(passage)
+}
+
+/// Parse a standalone `.js` file as a synthetic script passage.
+///
+/// Tweego bundles `.js` files from the source directory into the compiled
+/// HTML as `<script>` tags — they run at startup, before any passage. This
+/// function gives Knot the same view of those files: it builds a synthetic
+/// `ClassifiedPassage` with the `[script]` special-def, runs the full
+/// JS analysis pipeline (annotate + validate + registry populate), and
+/// returns a `ParseResult` with a single `Passage`.
+///
+/// ## Identical to `[script]` passages
+///
+/// The JS analysis behavior is **identical** to `[script]`-tagged passages.
+/// The only difference is where the text comes from:
+///
+/// - `[script]` passage: the passage body (after the `:: Name [script]\n`
+///   header line) is passed to oxc
+/// - `.js` file: the entire file contents are passed to oxc
+///
+/// This means:
+/// - The SugarCube preprocessor runs (`$var` → `State.variables.var`,
+///   keyword operators `to`/`is`/`eq` → JS equivalents) — same as
+///   `[script]` passages
+/// - `Macro.add()`, `Template.add()`, `function` declarations, and
+///   `State.variables` writes are registered in the workspace registries
+/// - JS tokens are emitted for syntax highlighting
+/// - JS diagnostics are produced from oxc
+///
+/// ## Differences from `parse_full` (structural only)
+///
+/// - No `lexer::split_passages()` (no `::` headers in a `.js` file)
+/// - No `classifier::classify_all()` (we hard-code the script category)
+/// - `body_offset_in_passage = 0` and `passage_offset = 0` (the entire
+///   file IS the passage body — no `::` header)
+/// - `header_name_span = None` (no header to select)
+///
+/// ## Passage name
+///
+/// The passage name is the file stem (e.g., `story` for `story.js`). This
+/// matches how Tweego names the injected script tag. It's only used for
+/// display in the outline and for registry origin tracking — it's not a
+/// link target.
+pub(super) fn parse_script_file(
+    plugin: &mut SugarCubePlugin,
+    uri: &Url,
+    text: &str,
+) -> ParseResult {
+    let registry = plugin.registry_mut();
+
+    // Derive a passage name from the file stem.
+    let passage_name = uri
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .map(|filename| {
+            filename
+                .rsplit_once('.')
+                .map(|(stem, _)| stem)
+                .unwrap_or(filename)
+        })
+        .unwrap_or("script")
+        .to_string();
+
+    // Build the script SpecialPassageDef — same one used for [script]-tagged
+    // passages. We look it up from the core specials so we stay in sync with
+    // any future changes to the def.
+    let special_def = knot_core::passage::twine_core_special_passages()
+        .into_iter()
+        .find(|d| d.name == "script" && d.match_strategy == knot_core::passage::MatchStrategy::Tag)
+        .expect("core specials must contain a [script] tag def");
+
+    // Build a synthetic ClassifiedPassage. The header fields are minimal
+    // (no `::` prefix, no tags block, no metadata) — just enough for the
+    // downstream pipeline to work.
+    let cp = ClassifiedPassage {
+        header: crate::header::TweeHeader {
+            name: passage_name.clone(),
+            tags: vec!["script".to_string()],
+            header_start: 0,
+            name_start: 0,
+            metadata_json: None,
+            name_text_raw: passage_name.clone(),
+            tags_raw: String::new(),
+        },
+        body_text: text.to_string(),
+        file_uri: uri.to_string(),
+        special_def: Some(special_def),
+        category: classifier::PassageCategory::CoreTagged,
+        processing_priority: classifier::PROCESSING_SCRIPT,
+    };
+
+    // Clear registries for this file before re-populating
+    registry.remove_file(uri.as_ref());
+
+    // Phase 1: empty AST (Script mode doesn't parse SugarCube syntax)
+    let mut passage_ast = super::ast::PassageAst::empty(ParseMode::Script);
+
+    // Phase 2: JS annotation — sugarcube_syntax = true (identical to [script]
+    // passages). The SugarCube preprocessor runs ($var → State.variables.var,
+    // keyword operators → JS equivalents) so that .js files have the same JS
+    // analysis behavior as [script]-tagged passages.
+    super::js::js_annotate::annotate_js(&mut passage_ast, text, true, true);
+
+    // Phase 3: Registry population
+    registry_populate::populate_registries_from_unified_ast(
+        registry,
+        &passage_ast,
+        &cp,
+        uri.as_ref(),
+        0, // body_offset_in_passage = 0 (no header)
+    );
+
+    // Build the Passage struct
+    let mut passage = passage_build::build_passage(&cp, &passage_ast, 0, 0);
+    passage.span = 0..text.len();
+    passage.passage_offset = 0;
+    // header_name_span = None (no `::` header in a .js file)
+    passage.header_name_span = None;
+
+    // Build tokens from script_js_analysis
+    let mut passage_tokens = Vec::new();
+    if let Some(ref analysis) = passage_ast.script_js_analysis {
+        super::token_builder::build_script_passage_tokens(analysis, &mut passage_tokens, 0);
+    }
+
+    let token_group = PassageTokenGroup {
+        passage_name: passage_name.clone(),
+        passage_offset: 0,
+        tokens: passage_tokens,
+    };
+
+    // Build diagnostics — validate the entire file as a JS module.
+    // sugarcube_syntax = true (identical to [script] passages).
+    let mut passage_diagnostics = Vec::new();
+    let js_diagnostics = super::js_validate::validate_script_passage(text, 0, true);
+    passage_diagnostics.extend(js_diagnostics);
+
+    let diagnostic_group = PassageDiagnosticGroup {
+        passage_name: passage_name.clone(),
+        passage_offset: 0,
+        diagnostics: passage_diagnostics,
+    };
+
+    pipeline_log::parse_full_summary(
+        uri.as_ref(),
+        1,
+        token_group.tokens.len(),
+        diagnostic_group.diagnostics.len(),
+    );
+
+    // Sort passages by passage_offset (source order) — consistent with parse_full
+    let mut passages = vec![passage];
+    passages.sort_by_key(|p| p.passage_offset);
+
+    ParseResult {
+        passages,
+        token_groups: vec![token_group],
+        diagnostic_groups: vec![diagnostic_group],
+        is_complete: true,
+    }
 }
