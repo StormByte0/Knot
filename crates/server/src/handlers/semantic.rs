@@ -217,17 +217,31 @@ pub(crate) async fn document_symbol(
 ) -> Result<Option<DocumentSymbolResponse>, tower_lsp::jsonrpc::Error> {
     let uri = helpers::normalize_file_uri(&params.text_document.uri);
     let inner = state.inner.read().await;
+    Ok(document_symbol_inner(&inner, &uri))
+}
 
-    let Some(text) = inner.open_documents.get(&uri) else {
-        return Ok(None);
-    };
+/// Inner synchronous implementation of `document_symbol`.
+///
+/// Extracted so tests can call it directly without constructing a full
+/// `ServerState` (which requires a `tower_lsp::Client` handle). Same pattern
+/// as `structure::signature_help_inner`.
+fn document_symbol_inner(
+    inner: &crate::state::ServerStateInner,
+    uri: &url::Url,
+) -> Option<DocumentSymbolResponse> {
+    let text = inner.open_documents.get(uri)?;
 
     // Use workspace passage data for span-based resolution.
-    let Some(doc) = inner.workspace.get_document(&uri) else {
-        return Ok(None);
-    };
+    let doc = inner.workspace.get_document(uri)?;
 
     let mut symbols = Vec::new();
+
+    // `doc.passages` is stored in document source order (the SugarCube
+    // parse pipeline re-sorts by `passage_offset` after the
+    // processing-priority sort has done its job). This means
+    // `passages[i+1]` is always the next passage in the file, so the
+    // "full range = this passage start .. next passage start" computation
+    // below produces well-formed ranges.
     let passages = &doc.passages;
 
     for (i, passage) in passages.iter().enumerate() {
@@ -255,7 +269,13 @@ pub(crate) async fn document_symbol(
             } else {
                 text.len()
             };
-            helpers::byte_range_to_lsp_range(text, &(start_offset..end_offset))
+            // Defensive: clamp to ensure end >= start. If the workspace's
+            // passage data is somehow inconsistent (e.g., stale after a
+            // rapid edit), fall back to start..start so VS Code's
+            // `selectionRange must be contained in fullRange` validator
+            // never sees an inverted range.
+            let safe_end = end_offset.max(start_offset);
+            helpers::byte_range_to_lsp_range(text, &(start_offset..safe_end))
         };
 
         // Selection range: just the passage name within the header.
@@ -289,6 +309,16 @@ pub(crate) async fn document_symbol(
                 }
             });
 
+        // Defensive containment guarantee: VS Code's `asDocumentSymbol`
+        // converter throws `selectionRange must be contained in fullRange`
+        // and rejects the entire `textDocument/documentSymbol` response if
+        // ANY symbol violates the constraint. Clamp `selection_range` into
+        // `full_range` so we never trigger that — even if upstream span
+        // data is momentarily inconsistent (e.g., during a rapid edit when
+        // `header_name_span` was computed against a slightly different
+        // text version than `open_documents`).
+        let selection_range = clamp_range_to(&selection_range, &full_range);
+
         #[allow(deprecated)]
         symbols.push(DocumentSymbol {
             name,
@@ -303,10 +333,43 @@ pub(crate) async fn document_symbol(
     }
 
     if symbols.is_empty() {
-        Ok(None)
+        None
     } else {
-        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+        Some(DocumentSymbolResponse::Nested(symbols))
     }
+}
+
+/// Clamp `inner` so it is fully contained in `outer`.
+///
+/// The LSP spec requires `DocumentSymbol.selectionRange` to be contained in
+/// `DocumentSymbol.range`. VS Code's `asDocumentSymbol` validator enforces
+/// this by throwing `selectionRange must be contained in fullRange` and
+/// rejecting the entire `textDocument/documentSymbol` response if any
+/// symbol violates it.
+///
+/// This helper performs a defensive clamp so that even when upstream span
+/// data is momentarily inconsistent (e.g., during a rapid edit when
+/// `header_name_span` was computed against a different text version than
+/// `open_documents`), the LSP response is still valid. The clamp is a
+/// last-resort safety net — under normal operation the input ranges
+/// already satisfy the containment constraint and the clamp is a no-op.
+fn clamp_range_to(inner: &Range, outer: &Range) -> Range {
+    let start = clamp_position_to(inner.start, outer.start, outer.end);
+    let end = clamp_position_to(inner.end, start, outer.end);
+    // After clamping `start` to `outer`, `end` must still be >= `start`.
+    let end = if end.line < start.line || (end.line == start.line && end.character < start.character) {
+        start
+    } else {
+        end
+    };
+    Range { start, end }
+}
+
+/// Clamp `pos` so it is within `[lo, hi]` (inclusive on both ends).
+fn clamp_position_to(pos: Position, lo: Position, hi: Position) -> Position {
+    if pos.lt(&lo) { lo }
+    else if pos.gt(&hi) { hi }
+    else { pos }
 }
 
 pub(crate) async fn symbol(
@@ -568,5 +631,274 @@ pub(crate) async fn inlay_hint(
         Ok(None)
     } else {
         Ok(Some(hints))
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod document_symbol_tests {
+    use super::*;
+    use crate::state::ServerStateInner;
+    use knot_core::editing::DebounceTimer;
+    use knot_core::Document;
+    use knot_core::Workspace;
+    use knot_formats::plugin::FormatRegistry;
+    use url::Url;
+
+    /// Build a `ServerStateInner` fixture from a single twee source file.
+    /// Mirrors the helper used in `signature_help_tests` in `structure.rs`.
+    fn build_state(src: &str) -> (ServerStateInner, Url) {
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let mut registry = FormatRegistry::with_defaults();
+        let format = knot_core::passage::StoryFormat::SugarCube;
+        let parse_result = {
+            let plugin = registry
+                .get_mut(&format)
+                .expect("SugarCube plugin must be registered");
+            plugin.parse_mut(&uri, src)
+        };
+
+        let workspace = {
+            let mut ws = Workspace::new(Url::parse("file:///project/").unwrap());
+            ws.config.format = Some("SugarCube".to_string());
+            let mut doc = Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+            for passage in parse_result.passages {
+                doc.passages.push(passage);
+            }
+            ws.insert_document(doc);
+            ws
+        };
+
+        let inner = ServerStateInner {
+            workspace,
+            format_registry: registry,
+            debounce: DebounceTimer::new(),
+            editor_open_docs: std::collections::HashSet::new(),
+            open_documents: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(uri.clone(), src.to_string());
+                m
+            },
+            format_diagnostics: std::collections::HashMap::new(),
+            doc_versions: std::collections::HashMap::new(),
+            semantic_tokens: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(uri.clone(), parse_result.token_groups);
+                m
+            },
+            installed_formats: Vec::new(),
+            global_storage_path: None,
+        };
+        (inner, uri)
+    }
+
+    /// Run `document_symbol` against the fixture and return the nested symbols.
+    fn get_symbols(src: &str) -> Vec<DocumentSymbol> {
+        let (inner, uri) = build_state(src);
+        let result = document_symbol_inner(&inner, &uri);
+        match result {
+            Some(DocumentSymbolResponse::Nested(syms)) => syms,
+            Some(DocumentSymbolResponse::Flat(_)) => panic!("expected Nested response, got Flat"),
+            None => Vec::new(),
+        }
+    }
+
+    /// Assert that `inner` is contained in `outer` per the LSP
+    /// `selectionRange must be contained in fullRange` rule.
+    fn assert_contained(outer: &Range, inner: &Range, label: &str) {
+        let start_ok = inner.start.line > outer.start.line
+            || (inner.start.line == outer.start.line && inner.start.character >= outer.start.character);
+        let end_ok = inner.end.line < outer.end.line
+            || (inner.end.line == outer.end.line && inner.end.character <= outer.end.character);
+        assert!(
+            start_ok && end_ok,
+            "{label}: selectionRange {:?} not contained in fullRange {:?}",
+            inner,
+            outer
+        );
+    }
+
+    /// Regression test for the `selectionRange must be contained in fullRange`
+    /// crash that VS Code reported on the sugarcube-testbed project.
+    ///
+    /// Root cause: the SugarCube format plugin's `parse_full` ran
+    /// `classifier::sort_for_processing` (which reorders passages by
+    /// processing priority — scripts/init first, then specials, then
+    /// regulars) and stored the passages in that order in `doc.passages`.
+    /// The `document_symbol` handler computed each symbol's `full_range`
+    /// as `passages[i].start .. passages[i+1].start`, which only works in
+    /// source order. When passages were out of order, `passages[i+1].start`
+    /// could be smaller than `passages[i].start`, producing an inverted
+    /// range that VS Code rejected.
+    ///
+    /// Fix: `parse_full` now re-sorts `result.passages` by `passage_offset`
+    /// (document source order) after the processing-priority sort has done
+    /// its job for registry population. The LSP handler trusts this
+    /// invariant and no longer needs its own sort.
+    ///
+    /// This test uses a minimal input that triggers the same out-of-order
+    /// condition: a regular passage followed by `StoryData` (which has
+    /// higher processing priority and would have been sorted earlier
+    /// without the fix). Without the fix, the regular passage's full_range
+    /// would be `StoryData.start..end_of_doc` (inverted), crashing the
+    /// handler.
+    #[test]
+    fn regression_document_symbol_passages_out_of_source_order() {
+        // `:: StoryData` is a special passage with high processing priority.
+        // `:: RegularBody` is a normal passage with low priority.
+        // The plugin's `sort_for_processing` reorders `StoryData` BEFORE
+        // `RegularBody` during parsing (so its metadata is available to
+        // the registry), but `parse_full` then re-sorts the final
+        // `result.passages` by `passage_offset` (source order). Without
+        // that final re-sort, `RegularBody`'s `full_range` would be
+        // `StoryData.start..end_of_doc` (inverted), crashing the handler.
+        let src = ":: RegularBody\nSome text.\n\n:: StoryData\n{\"format\":\"SugarCube\"}\n";
+
+        let symbols = get_symbols(src);
+        assert!(!symbols.is_empty(), "should produce at least one symbol");
+
+        // Every symbol must satisfy the LSP containment constraint that
+        // VS Code's `asDocumentSymbol` validator enforces.
+        for sym in &symbols {
+            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+        }
+
+        // Sanity: both passages should appear in the outline, ordered by
+        // source position (RegularBody first, StoryData second).
+        assert_eq!(symbols.len(), 2, "should have 2 symbols: RegularBody + StoryData");
+        assert_eq!(symbols[0].name, "RegularBody");
+        assert_eq!(symbols[1].name, "StoryData");
+        // Source order: RegularBody on line 0, StoryData on line 3.
+        assert_eq!(symbols[0].range.start.line, 0);
+        assert_eq!(symbols[1].range.start.line, 3);
+        // RegularBody's full_range should extend up to StoryData's start
+        // (NOT wrap around past the end of the file).
+        assert!(
+            symbols[0].range.end.line >= 1,
+            "RegularBody full_range should cover its body, got end line {}",
+            symbols[0].range.end.line
+        );
+    }
+
+    /// Cross-check: when passages are already in source order (no specials),
+    /// the fix must not change the visible outline — full_range for each
+    /// passage should still extend from its header to the start of the next.
+    #[test]
+    fn document_symbol_passages_in_source_order_unchanged() {
+        let src = ":: First\nbody 1\n\n:: Second\nbody 2\n\n:: Third\nbody 3\n";
+        let symbols = get_symbols(src);
+        assert_eq!(symbols.len(), 3);
+        assert_eq!(symbols[0].name, "First");
+        assert_eq!(symbols[1].name, "Second");
+        assert_eq!(symbols[2].name, "Third");
+        for sym in &symbols {
+            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+        }
+        // First passage extends up to Second's header line.
+        assert!(symbols[0].range.end.line >= 1);
+        // Last passage extends to end of document.
+        assert!(symbols[2].range.end.line >= 5);
+    }
+
+    /// Stress test: simulate the exact testbed shape that originally crashed.
+    /// Multiple special passages (`StoryData`, `StoryTitle`) interspersed
+    /// with regular passages, all out of source order after
+    /// `sort_for_processing` runs.
+    #[test]
+    fn regression_document_symbol_testbed_shape_mixed_specials() {
+        let src = "\
+:: StoryData
+{\"format\":\"SugarCube\",\"start\":\"Start\"}
+
+:: StoryTitle
+My Story
+
+:: Start
+Welcome.
+
+:: Forest
+You enter the forest.
+";
+        let symbols = get_symbols(src);
+        assert_eq!(symbols.len(), 4, "should have 4 passages");
+        for sym in &symbols {
+            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+        }
+        // Source-order check: StoryData on line 0, StoryTitle on line 3,
+        // Start on line 6, Forest on line 9.
+        let line_of = |name: &str| -> u32 {
+            symbols.iter().find(|s| s.name == name).unwrap().range.start.line
+        };
+        assert_eq!(line_of("StoryData"), 0);
+        assert_eq!(line_of("StoryTitle"), 3);
+        assert_eq!(line_of("Start"), 6);
+        assert_eq!(line_of("Forest"), 9);
+    }
+
+    /// Unit test for the `clamp_range_to` defensive helper.
+    #[test]
+    fn clamp_range_to_inner_already_contained_is_noop() {
+        let outer = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 10, character: 0 },
+        };
+        let inner = Range {
+            start: Position { line: 3, character: 5 },
+            end: Position { line: 4, character: 2 },
+        };
+        let clamped = clamp_range_to(&inner, &outer);
+        assert_eq!(clamped, inner);
+    }
+
+    #[test]
+    fn clamp_range_to_inner_extends_below_outer_is_clamped() {
+        let outer = Range {
+            start: Position { line: 5, character: 0 },
+            end: Position { line: 10, character: 0 },
+        };
+        let inner = Range {
+            start: Position { line: 2, character: 4 },
+            end: Position { line: 7, character: 0 },
+        };
+        let clamped = clamp_range_to(&inner, &outer);
+        assert_eq!(clamped.start, outer.start);
+        assert_eq!(clamped.end, inner.end);
+    }
+
+    #[test]
+    fn clamp_range_to_inner_extends_above_outer_is_clamped() {
+        let outer = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 5, character: 0 },
+        };
+        let inner = Range {
+            start: Position { line: 3, character: 0 },
+            end: Position { line: 8, character: 4 },
+        };
+        let clamped = clamp_range_to(&inner, &outer);
+        assert_eq!(clamped.start, inner.start);
+        assert_eq!(clamped.end, outer.end);
+    }
+
+    #[test]
+    fn clamp_range_to_inner_completely_outside_outer_collapses_to_start() {
+        // If `inner` is entirely below `outer`, clamping both endpoints to
+        // `outer.start` produces an empty range at `outer.start` —
+        // `selectionRange` is contained in `fullRange` (vacuously, as an
+        // empty range), satisfying the LSP invariant.
+        let outer = Range {
+            start: Position { line: 10, character: 0 },
+            end: Position { line: 20, character: 0 },
+        };
+        let inner = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 5, character: 0 },
+        };
+        let clamped = clamp_range_to(&inner, &outer);
+        assert_eq!(clamped.start, outer.start);
+        assert_eq!(clamped.end, outer.start);
     }
 }

@@ -286,7 +286,7 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     kind: TextFormatKind::Super, content, span: offset + start..offset + i,
                 })
             }
-            b'<' if i + 3 < len && &text[i..i + 4] == "<!--" => {
+            b'<' if text[i..].starts_with("<!--") => {
                 // <!-- — HTML comment (or conditional comment <!--[if ...]>)
                 let start = i;
                 i += 4;
@@ -552,6 +552,13 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
 /// slice, we add the slice length to the existing `ctx.col` (we were
 /// mid-line before the delimiter, and the delimiter didn't cross a newline).
 fn resync_col_after_advance(text: &str, start: usize, end: usize, ctx: &mut ParseCtx) {
+    // Clamp `end` defensively. Callers compute `end` by adding delimiter
+    // lengths to a found-or-fallback position; in the fallback case (no
+    // closing delimiter found) the raw value would overshoot `text.len()`
+    // and panic on the slice below. Clamping here is defense-in-depth so
+    // that any future caller passing an out-of-range `end` degrades
+    // gracefully instead of crashing the LSP server.
+    let end = end.min(text.len());
     if end <= start {
         return;
     }
@@ -660,8 +667,14 @@ fn parse_inline_style(
         Vec::new()
     };
 
-    // Advance past the closing delimiter
-    *i = body_end + close_delim.len();
+    // Advance past the closing delimiter.
+    //
+    // When the closing delimiter is missing, `body_end` falls back to `len`
+    // (see `unwrap_or(len)` above). In that case `body_end + close_delim.len()`
+    // would overshoot `text.len()` and the subsequent `resync_col_after_advance`
+    // would panic on `&text[start..*i]`. Clamp to `len` so an unclosed inline
+    // style simply consumes the rest of the text without panicking.
+    *i = (body_end + close_delim.len()).min(len);
 
     // Resync the caller's column to match the new position past the closing
     // delimiter.
@@ -710,7 +723,21 @@ fn compute_initial_col(text: &str, local_start: usize) -> usize {
 /// newline, if any). If unclosed, consumes to end of text.
 fn parse_code_block(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     // *i is at the `\n` after `{{{`. Content starts after that newline.
-    let content_start = *i + 1;
+    //
+    // The caller passed `span_start = offset + start_local` where `offset` is
+    // the absolute document offset of `text`'s start and `start_local` is the
+    // local position of `{{{`. Since `{{{` is 3 bytes and `*i` is at the `\n`
+    // immediately after, `start_local = *i - 3`. We can therefore recover
+    // `offset = span_start - start_local` and use it to convert local end
+    // positions to absolute. Without this, the previous formula
+    // `span_start + (span_end - span_start)` mixed absolute `span_start` with
+    // local `span_end` and underflowed when called from a recursive context
+    // (e.g. `{{{` inside a heading body) where `offset > 0`.
+    let entry_i = *i;
+    let start_local = entry_i.saturating_sub(3);
+    let offset = span_start.saturating_sub(start_local);
+
+    let content_start = entry_i + 1;
 
     // Scan for a line consisting of exactly `}}}` (optionally followed by
     // a newline or end-of-text). We walk line-by-line through the content.
@@ -726,7 +753,7 @@ fn parse_code_block(text: &str, i: &mut usize, span_start: usize) -> AstNode {
         };
         // The line AFTER this newline starts at `nl_pos + 1`.
         let line_start = nl_pos + 1;
-        if line_start + 3 <= len && &text[line_start..line_start + 3] == "}}}" {
+        if text[line_start..].starts_with("}}}") {
             // Check that `}}}` is alone on its line: the next char must be
             // `\n`, `\r\n`, or end-of-text.
             let after = line_start + 3;
@@ -762,7 +789,7 @@ fn parse_code_block(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     *i = span_end;
     AstNode::CodeBlock {
         content,
-        span: span_start..span_start + (span_end - span_start),
+        span: span_start..offset + span_end,
     }
 }
 
@@ -780,7 +807,19 @@ fn parse_code_block(text: &str, i: &mut usize, span_start: usize) -> AstNode {
 /// consumes to end of text.
 fn parse_inline_code(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     // *i is just after `{{{`.
-    let content_start = *i;
+    //
+    // Same absolute/local coordinate fix as `parse_code_block` above: the
+    // caller passed `span_start = offset + start_local`, and `start_local`
+    // is `*i - 3` (since `*i` is just past the 3-byte `{{{`). We recover
+    // `offset` and use it to produce an absolute span end. The previous
+    // formula `span_start + (span_end - span_start)` underflowed when
+    // `parse_inline_code` was called from a recursive context (e.g. inside
+    // a heading body) where `offset > 0` made `span_start > span_end`.
+    let entry_i = *i;
+    let start_local = entry_i.saturating_sub(3);
+    let offset = span_start.saturating_sub(start_local);
+
+    let content_start = entry_i;
 
     // Non-greedy scan for the first `}}}`.
     let close_offset = text[content_start..].find("}}}");
@@ -799,7 +838,7 @@ fn parse_inline_code(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     *i = span_end;
     AstNode::InlineCode {
         content,
-        span: span_start..span_start + (span_end - span_start),
+        span: span_start..offset + span_end,
     }
 }
 
@@ -1419,7 +1458,7 @@ fn parse_blockquote_block(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: 
         };
         let line_start = nl_pos + 1;
         // Check if this line is exactly `<<<` (followed by `\n` or end-of-text).
-        if line_start + 3 <= len && &text[line_start..line_start + 3] == "<<<" {
+        if text[line_start..].starts_with("<<<") {
             let after = line_start + 3;
             let alone = after >= len
                 || bytes[after] == b'\n'
@@ -5379,5 +5418,91 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
         assert!(depth4_count == 0,
             "There should be NO BlockDepth4 — <<if $d>> inside <<elseif>> should be BlockDepth2, its <<set>> should be BlockDepth3. depth4_count={}", depth4_count);
+    }
+
+    // ── Regression tests for `format:knot-panic` bugs ──────────────────
+    //
+    // These tests cover three distinct parser panics that surfaced when the
+    // LSP server parsed the sugarcube-testbed project. Each test uses a
+    // minimal self-contained input that triggers the same code path.
+
+    #[test]
+    fn regression_unclosed_single_at_inline_style_does_not_panic() {
+        // Bug: `parse_inline_style` set `*i = body_end + close_delim.len()`
+        // where `body_end` fell back to `text.len()` when the closing `@`
+        // was missing. The overshoot caused `resync_col_after_advance` to
+        // panic on `&text[start..*i]` with "end byte index N is out of
+        // bounds for string of length N-1".
+        //
+        // Trigger: the `@e` in the email address was misread as the start
+        // of a single-`@` inline style with no closing `@` in the body.
+        let body = "Anonymous &lt;linter-test@example.com&gt;\n\n";
+        let _ = crate::sugarcube::parser::parse_passage_body(body, 0, ParseMode::Normal);
+    }
+
+    #[test]
+    fn regression_unclosed_double_at_inline_style_does_not_panic() {
+        // Same bug class as above, with the `@@` form: an unclosed
+        // `@@class;text` should not panic.
+        let body = "@@.warning;some text without close\n";
+        let _ = crate::sugarcube::parser::parse_passage_body(body, 0, ParseMode::Normal);
+    }
+
+    #[test]
+    fn regression_inline_code_inside_heading_does_not_panic() {
+        // Bug: `parse_inline_code` (and `parse_code_block`) computed its
+        // span as `span_start..span_start + (span_end - span_start)`. When
+        // called recursively from `parse_heading` with a non-zero
+        // `ctx.offset`, `span_start` was absolute but `span_end` was
+        // local, causing `span_end - span_start` to underflow with
+        // "attempt to subtract with overflow".
+        //
+        // Trigger: `{{{` inside a heading body. Heading content is parsed
+        // recursively via `parse_body_with_ctx` with `offset > 0`.
+        let body = "!!Nested {{{<<if>>}}} / {{{<<for>>}}}\n";
+        let _ = crate::sugarcube::parser::parse_passage_body(body, 0, ParseMode::Normal);
+    }
+
+    #[test]
+    fn regression_parse_inline_code_span_underflow_with_nonzero_offset() {
+        // Direct unit test for the underflow bug in `parse_inline_code`.
+        // We call the private function with a `span_start` that simulates
+        // being invoked from a recursive context where `offset > 0`.
+        //
+        // The caller's convention: `*i` is positioned just past the 3-byte
+        // `{{{` opener, and `span_start = offset + start_local` where
+        // `start_local = *i - 3`. Here we set up `*i = 0` (just past `{{{`)
+        // and `span_start = 100` (simulating `offset = 103`).
+        let text = "<<if>>}}}";
+        let mut i = 0usize;
+        let node = super::parse_inline_code(text, &mut i, 100);
+        // Span start must equal the passed-in absolute offset.
+        match node {
+            AstNode::InlineCode { span, .. } => {
+                assert_eq!(span.start, 100, "span.start should be the absolute offset");
+                assert!(span.end >= span.start, "span.end must not underflow span.start");
+            }
+            other => panic!("expected InlineCode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn regression_parse_code_block_span_underflow_with_nonzero_offset() {
+        // Same underflow bug, but for the block form (`{{{\n...\n}}}`).
+        //
+        // The caller's convention: `*i` is at the `\n` immediately after
+        // `{{{`, and `span_start = offset + start_local` where
+        // `start_local = *i - 3`. We simulate a recursive call by passing
+        // `span_start = 100` with `*i = 0`.
+        let text = "\ncode\n}}}\n";
+        let mut i = 0usize;
+        let node = super::parse_code_block(text, &mut i, 100);
+        match node {
+            AstNode::CodeBlock { span, .. } => {
+                assert_eq!(span.start, 100, "span.start should be the absolute offset");
+                assert!(span.end >= span.start, "span.end must not underflow span.start");
+            }
+            other => panic!("expected CodeBlock, got {other:?}"),
+        }
     }
 }

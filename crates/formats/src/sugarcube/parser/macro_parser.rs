@@ -844,9 +844,9 @@ fn find_into_keyword(args: &str) -> Option<usize> {
 
         // Only attempt the match at char boundaries where the byte is 'i'.
         // Since "into" starts with an ASCII char, it can only begin at a
-        // char boundary. This also avoids slicing at positions inside
-        // multi-byte UTF-8 characters, which would panic.
-        if b == b'i' && &args[i..i + 4] == "into" {
+        // char boundary. Use `starts_with` so the comparison is char-boundary
+        // safe even if a multi-byte UTF-8 sequence happens to follow.
+        if b == b'i' && args[i..].starts_with("into") {
             // Must be preceded by whitespace (or be at start — unlikely for `into`)
             let preceded_by_ws = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\r';
             // Must be followed by whitespace or end-of-args

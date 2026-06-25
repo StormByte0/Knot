@@ -289,12 +289,23 @@ pub fn strip_comments(text: &str) -> String {
                     i = len;
                 }
             } else {
-                result.push(bytes[i]);
-                i += 1;
+                // Advance by char length (not 1 byte) so `i` always lands
+                // on a char boundary. Otherwise the next iteration's
+                // `text[i..]` slice would panic on multi-byte UTF-8 chars
+                // (e.g. `—` at bytes 10..13 would leave i=11 mid-char).
+                let ch_len = text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                result.extend_from_slice(&bytes[i..i + ch_len]);
+                i += ch_len;
             }
         }
         // HTML comments: <!-- ... -->
-        else if i + 3 < len && &text[i..i + 4] == "<!--" {
+        //
+        // Use `starts_with` rather than `&text[i..i+4] == "<!--"` so the
+        // comparison is char-boundary safe: when `i+4` lands inside a
+        // multi-byte UTF-8 sequence (e.g. an em-dash `—`), direct slicing
+        // panics with "byte index N is not a char boundary". `starts_with`
+        // internally compares bytes and never panics on non-boundary indices.
+        else if text[i..].starts_with("<!--") {
             let start = i;
             // Check for conditional: <!--[if ...]>
             let rest = &text[i + 4..];
@@ -345,10 +356,14 @@ pub fn strip_comments(text: &str) -> String {
                 }
             }
         }
-        // SugarCube delimiters that need tracking: << >> [[ ]] — pass through
+        // SugarCube delimiters that need tracking: << >> [[ ]] — pass through.
+        //
+        // Advance by char length (not 1 byte) so `i` always lands on a char
+        // boundary — same reason as the JS line comment `else` branch above.
         else {
-            result.push(bytes[i]);
-            i += 1;
+            let ch_len = text[i..].chars().next().map_or(1, |c| c.len_utf8());
+            result.extend_from_slice(&bytes[i..i + ch_len]);
+            i += ch_len;
         }
     }
 
@@ -714,5 +729,54 @@ more text
         );
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].target, "Forest");
+    }
+
+    // ── Regression tests for `format:knot-panic` bugs ──────────────────
+    //
+    // These tests cover two `strip_comments` UTF-8 boundary panics that
+    // surfaced when the LSP server parsed `43-links.twee` from the
+    // sugarcube-testbed project.
+
+    #[test]
+    fn regression_strip_comments_em_dash_does_not_panic() {
+        // Bug: `strip_comments` did `&text[i..i+4] == "<!--"` to detect
+        // HTML-comment openers. When `i+4` landed inside a multi-byte
+        // UTF-8 sequence (here the em-dash `—` at bytes 10..13), the
+        // slice panicked with "byte index 11 is not a char boundary".
+        //
+        // Trigger: a `<<link "Click me — no navigation">>` macro arg
+        // processed by `extract_macro_passage_refs` → `strip_comments`.
+        let text = r#"<<"Click me — no navigation">>"#;
+        let stripped = strip_comments(text);
+        // Length is preserved (no comment matched, all bytes pass through).
+        assert_eq!(stripped.len(), text.len());
+    }
+
+    #[test]
+    fn regression_strip_comments_byte_at_a_time_advance_does_not_panic() {
+        // Bug: the default `else` branches in `strip_comments` did
+        // `i += 1` (one byte). After visiting the first byte of a
+        // multi-byte UTF-8 char, `i` landed mid-char and the next
+        // iteration's `text[i..]` panicked.
+        //
+        // Trigger: any text containing a multi-byte char that wasn't
+        // part of a recognized comment opener.
+        let text = "café — tea «—» boba";
+        let stripped = strip_comments(text);
+        assert_eq!(stripped, text);
+        assert_eq!(stripped.len(), text.len());
+    }
+
+    #[test]
+    fn regression_strip_comments_multibyte_char_before_html_comment() {
+        // Cross-check: a multi-byte char immediately before a real
+        // `<!-- ... -->` comment must not trip the boundary check.
+        let text = "«—» <!-- real comment -->";
+        let stripped = strip_comments(text);
+        assert_eq!(stripped.len(), text.len());
+        // The comment body is replaced with spaces; the leading multibyte
+        // chars and the trailing portion are preserved.
+        assert!(stripped.starts_with("«—» "));
+        assert!(stripped.ends_with("    "));
     }
 }

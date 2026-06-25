@@ -465,8 +465,10 @@ pub fn extract_data_passage_refs(body: &str) -> Vec<LinkInfo> {
     let mut i = 0usize;
 
     while i + 12 < len {
-        // Look for "data-passage"
-        if &stripped[i..i + 12] == "data-passage" {
+        // Look for "data-passage". Use `starts_with` so the comparison is
+        // char-boundary safe (direct slicing would panic if `i+12` landed
+        // inside a multi-byte UTF-8 sequence).
+        if stripped[i..].starts_with("data-passage") {
             let attr_start = i;
             i += 12;
 

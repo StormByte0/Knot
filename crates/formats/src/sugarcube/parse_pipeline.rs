@@ -205,6 +205,24 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
     // Adding them as links would cause false "BrokenLink" diagnostics since
     // the macro name is not a passage name.
 
+    // Restore source order in the stored passages.
+    //
+    // `classifier::sort_for_processing` above reordered `classified` by
+    // processing priority (scripts/init first, then specials, then regulars)
+    // so that define-before-use dependencies are honored during registry
+    // population. That order is no longer needed once parsing is complete —
+    // the registries are already populated. Every downstream consumer of
+    // `doc.passages` (document_symbol, folding_range, selection_range,
+    // navigation, diagnostics, etc.) expects **source order**, and several
+    // of them compute `passages[i].start .. passages[i+1].start` which
+    // only produces well-formed ranges when the slice is in source order.
+    //
+    // `passage_offset` is the document-absolute byte offset of the `::`
+    // header, so sorting by it restores on-disk order. The sort is stable,
+    // so passages with identical offsets (shouldn't happen, but defensive)
+    // retain their relative order.
+    passages.sort_by_key(|p| p.passage_offset);
+
     pipeline_log::parse_full_summary(
         uri.as_ref(),
         passages.len(),
