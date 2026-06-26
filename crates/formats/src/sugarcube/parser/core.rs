@@ -2817,6 +2817,90 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
             "template token should include the ? sigil, got: {:?}", token_text);
     }
 
+    #[test]
+    fn template_invocation_with_hyphen_in_name() {
+        // ?random-num — SugarCube template names can contain hyphens.
+        // The full `?random-num` should get a single Function token, not
+        // just `?random` (truncated at the hyphen).
+        //
+        // Reproduces: sugarcube-testbed/src/44-templates.twee:15
+        // `Random number: ?random-num`
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\nRandom number: ?random-num\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let func_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
+            .collect();
+        assert!(!func_tokens.is_empty(), "should have a Function token for ?random-num");
+
+        let tok = &func_tokens[0];
+        let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
+        assert_eq!(token_text, "?random-num",
+            "template token should cover the full ?random-num (including hyphen), got: {:?}", token_text);
+    }
+
+    #[test]
+    fn template_invocation_multiple_hyphens_in_name() {
+        // ?my-cool-template — multiple hyphens in the name should all be
+        // included in the token.
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\nValue: ?my-cool-template here.\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let func_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
+            .collect();
+        assert!(!func_tokens.is_empty(), "should have a Function token for ?my-cool-template");
+
+        let tok = &func_tokens[0];
+        let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
+        assert_eq!(token_text, "?my-cool-template",
+            "template token should cover ?my-cool-template (multiple hyphens), got: {:?}", token_text);
+    }
+
+    #[test]
+    fn template_invocation_all_testbed_forms() {
+        // All template forms from the testbed:
+        //   ?greeting        — simple name
+        //   ?username        — simple name
+        //   ?random-num      — with hyphen
+        //   ?random-greeting — with hyphen
+        //   ?story-name      — with hyphen
+        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n?greeting ?username! ?random-num ?random-greeting ?story-name\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let func_tokens: Vec<_> = result.token_groups.iter()
+            .flat_map(|g| g.tokens.iter())
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
+            .collect();
+        assert_eq!(func_tokens.len(), 5,
+            "should have 5 Function tokens (one per template), got {}: {:?}",
+            func_tokens.len(),
+            func_tokens.iter().map(|t| &text[t.start.min(text.len())..(t.start + t.length).min(text.len())]).collect::<Vec<_>>());
+
+        let names: Vec<&str> = func_tokens.iter()
+            .map(|t| &text[t.start.min(text.len())..(t.start + t.length).min(text.len())])
+            .collect();
+        assert!(names.contains(&"?greeting"), "missing ?greeting: {:?}", names);
+        assert!(names.contains(&"?username"), "missing ?username: {:?}", names);
+        assert!(names.contains(&"?random-num"), "missing ?random-num: {:?}", names);
+        assert!(names.contains(&"?random-greeting"), "missing ?random-greeting: {:?}", names);
+        assert!(names.contains(&"?story-name"), "missing ?story-name: {:?}", names);
+    }
+
     // ── Phase 1 tests (plan.md §7.1.6) ────────────────────────────────────
     //
     // These tests verify that the Phase 1 refactor (line-start tracking via
@@ -4900,11 +4984,60 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_all_removed_macros_are_deprecated() {
         // Per Q8: keep removed macros but mark them deprecated.
         use crate::sugarcube::macros::find_macro;
-        for name in &["click", "display", "forget", "remember", "setplaylist", "stopallaudio", "silently", "choice", "actions"] {
+        // `actions` is excluded from the deprecation_message check — its
+        // description already starts with "Deprecated." and there is no
+        // replacement macro to recommend, so `deprecation_message` is
+        // intentionally None to avoid a duplicate warning in hover.
+        for name in &["click", "display", "forget", "remember", "setplaylist", "stopallaudio", "silently", "choice"] {
             let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
             assert!(def.deprecated, "{} should be deprecated", name);
             assert!(def.deprecation_message.is_some(), "{} should have a deprecation message", name);
         }
+        // `actions` is deprecated but has no deprecation_message (see comment above).
+        let actions_def = find_macro("actions").expect("actions should be in catalog");
+        assert!(actions_def.deprecated, "actions should be deprecated");
+        assert!(actions_def.deprecation_message.is_none(),
+            "actions should have deprecation_message = None to avoid duplicate hover warning");
+    }
+
+    #[test]
+    fn actions_macro_is_inline_not_container() {
+        // <<actions>> is an INLINE macro (takes passage name args, no close
+        // tag). Previously it was incorrectly marked as a Container with
+        // Required body, causing false "Unclosed block macro" diagnostics
+        // for the correct inline usage `<<actions "Time" "Start">>`.
+        use crate::sugarcube::macros::find_macro;
+        use crate::types::{BodyRequirement, MacroKind};
+        let def = find_macro("actions").expect("actions should be in catalog");
+        assert_eq!(def.body, BodyRequirement::Never,
+            "actions should have body: Never (inline, no close tag)");
+        assert_eq!(def.kind, MacroKind::Inline,
+            "actions should have kind: Inline");
+    }
+
+    #[test]
+    fn actions_macro_no_unclosed_diagnostic() {
+        // Direct repro from sugarcube-testbed/src/24-navigation.twee:14
+        // and 43-links.twee:78:
+        //   <<actions "Time" "Start">>
+        //
+        // Before the fix, this produced a false "Unclosed block macro:
+        // <<actions>>" diagnostic because the catalog marked `actions` as
+        // a Required-body container.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n<<actions \"Time\" \"Start\">>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-unclosed" && d.message.contains("actions"))
+            .collect();
+        assert!(unclosed.is_empty(),
+            "<<actions>> should NOT produce an unclosed-block diagnostic (it's inline), got: {:?}",
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]

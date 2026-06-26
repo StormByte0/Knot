@@ -932,10 +932,26 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             body_is_raw: false,
         },
         MacroDef {
+            // <<actions>> — deprecated v2.37.0.
+            // SugarCube signature (plan.md §3.12):
+            //   <<actions passageName [passageName...] [linkMarkup] [imageMarkup]>>
+            // Body: Never (inline — creates a list of one-shot links, no body
+            // content, no close tag). The testbed uses `<<actions "Time" "Start">>`
+            // without a `<</actions>>` close tag, which is the correct form.
+            //
+            // Previously this was incorrectly marked as `body: Required,
+            // kind: Container`, which caused false "Unclosed block macro"
+            // diagnostics for the inline usage.
+            //
+            // The description explains what the macro does (matching the
+            // pattern of other deprecated macros). The deprecation_message
+            // is intentionally None to avoid a duplicate deprecation warning
+            // in hover — the "Deprecated" prefix in the description is
+            // sufficient, and there is no replacement macro to recommend.
             name: "actions",
-            description: "Deprecated. This macro has been deprecated and should no longer be used.",
-            body: Required,
-            kind: Container,
+            description: "Deprecated. Creates a list of one-shot links to the given passages, each of which is removed from the list after being used. Deprecated in SugarCube v2.37.0.",
+            body: Never,
+            kind: Inline,
             args: Some(&[MacroArgDef {
                 position: 0,
                 label: "passage",
@@ -946,7 +962,7 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: String,
             }]),
             deprecated: true,
-            deprecation_message: Some("This macro has been deprecated and should no longer be used."),
+            deprecation_message: None,
             category: MacroCategory::Links,
             container: None,
             container_any_of: None,

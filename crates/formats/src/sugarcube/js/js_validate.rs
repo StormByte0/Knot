@@ -802,4 +802,112 @@ mod tests {
             js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    // ── Custom macro (widget) cross-file registration tests ────────────
+
+    #[test]
+    fn custom_widget_invocation_no_js_error_after_registration() {
+        // Simulates the cross-file scenario from the testbed:
+        //   31-widgets.twee defines `<<widget statblock>>`
+        //   26-misc.twee invokes `<<statblock "Strength" $stats.strength>>`
+        //
+        // The format plugin's custom macro registry persists across
+        // `parse_mut` calls. When the widget-defining file is parsed
+        // FIRST, the widget name is registered. When the consumer file
+        // is parsed SECOND, the widget name is in `known_macro_names`,
+        // so the JS validation fallback in `collect_js_snippets` does
+        // NOT send the widget's args to oxc.
+        //
+        // Without the registration, `statblock` would be unknown, and
+        // its args (`"Strength" $stats.strength`) would be sent to oxc
+        // → false "Expected `,` or `)`" parse error.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+
+        // File 1: widget definition (parsed first, registers `statblock`).
+        let widgets_file = "\
+:: Widgets [widget]
+<<widget statblock>>
+<<set _label to _args[0]>>
+<<set _value to _args[1]>>
+@@.stat-block;
+**_label**: _value
+@@
+<</widget>>
+";
+        let _result1 = plugin.parse_mut(
+            &url::Url::parse("file:///widgets.twee").unwrap(),
+            widgets_file,
+        );
+
+        // File 2: consumer passage (parsed second, references `statblock`).
+        let consumer_file = "\
+:: MiscMacros
+<<statblock \"Strength\" $stats.strength>>
+";
+        let result2 = plugin.parse_mut(
+            &url::Url::parse("file:///misc.twee").unwrap(),
+            consumer_file,
+        );
+
+        // The consumer file should have NO sc-js diagnostics —
+        // `statblock` is in the registry, so the fallback path that
+        // sends widget args to oxc is skipped.
+        let js_errors: Vec<_> = result2.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for `<<statblock>>` after widget registration, got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn custom_widget_invocation_error_before_registration() {
+        // Inverse of the above test: if the consumer file is parsed
+        // BEFORE the widget definition file, the widget name is NOT in
+        // the registry, and the fallback path sends the args to oxc,
+        // producing a parse error.
+        //
+        // This test documents the pre-fix behavior (what happens without
+        // the indexing order fix in the server). It verifies that the
+        // fallback IS the root cause — the fix is to ensure definition
+        // files are parsed first, not to change the fallback logic.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+
+        // Consumer file parsed FIRST — registry is cold.
+        let consumer_file = "\
+:: MiscMacros
+<<statblock \"Strength\" $stats.strength>>
+";
+        let result = plugin.parse_mut(
+            &url::Url::parse("file:///misc.twee").unwrap(),
+            consumer_file,
+        );
+
+        // Without prior registration, `statblock` is unknown, and its
+        // args are sent to oxc. oxc sees `"Strength" $stats.strength`
+        // (after $var substitution: `"Strength" State_variables_stats_strength`)
+        // — a string literal followed by an identifier with no operator —
+        // and reports a parse error.
+        let js_errors: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            !js_errors.is_empty(),
+            "Expected JS errors for `<<statblock>>` BEFORE widget registration \
+             (this documents the pre-fix behavior — the indexing order fix \
+             in the server prevents this by parsing definition files first), \
+             got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }

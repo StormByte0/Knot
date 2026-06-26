@@ -55,7 +55,7 @@ pub(crate) async fn index_workspace(
     // .js files are included because Tweego bundles them from the source
     // directory as <script> tags in the compiled HTML. Knot parses them as
     // synthetic script passages — see `parse_script_file` in parse_pipeline.rs.
-    let twee_files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&root_path)
+    let mut twee_files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&root_path)
         .into_iter()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_file())
@@ -188,6 +188,45 @@ pub(crate) async fn index_workspace(
             format!("Pass 1 complete: format = {}", resolved_format),
         )
         .await;
+
+    // ── Reorder files: definition files first ──────────────────────────
+    //
+    // Custom macro definitions (`<<widget name>>` in [widget] passages,
+    // `Macro.add("name", …)` in [script] passages or `.js` files) must be
+    // registered in the format plugin's custom macro registry BEFORE normal
+    // passages that reference them are parsed.
+    //
+    // During initial indexing, files are parsed in walkdir (alphabetical)
+    // order. Without reordering, a file that references a custom macro
+    // defined in a LATER file (e.g. `26-misc.twee` using `<<statblock>>`
+    // defined in `31-widgets.twee`) would be parsed while the registry is
+    // still cold. The JS validation fallback in `collect_js_snippets` /
+    // `collect_macro_js_snippet` would then send the macro's args to oxc,
+    // producing false "Expected `,` or `)`" parse errors.
+    //
+    // The format plugin's registry persists across `parse_mut` calls, so
+    // parsing definition files first warms the registry for all subsequent
+    // files. Within each priority group, the original walkdir order is
+    // preserved (stable sort).
+    //
+    // Priority 0: `.js` files (always treated as script passages) and
+    //             `.twee` files containing at least one `[widget]` or
+    //             `[script]` tagged passage.
+    // Priority 1: all other `.tw`/`.twee` files.
+    twee_files.sort_by_key(|path| {
+        let is_js = path.extension().and_then(|e| e.to_str()) == Some("js");
+        if is_js {
+            return 0;
+        }
+        let uri = match Url::from_file_path(path) {
+            Ok(u) => u,
+            Err(_) => return 1,
+        };
+        match file_texts.get(&uri) {
+            Some(text) if has_definition_passages(text) => 0,
+            _ => 1,
+        }
+    });
 
     // ── Pass 2: Full parse with correct format ─────────────────────────
     client
@@ -356,6 +395,41 @@ fn quick_scan_story_data(text: &str) -> Option<StoryMetadata> {
     parse_story_data_json(body)
 }
 
+/// Check if a Twee file contains any `[widget]` or `[script]` tagged passages.
+///
+/// These passages define custom macros (`<<widget name>>` or `Macro.add()`)
+/// that other files may reference. Files containing such passages should be
+/// parsed before normal files during initial indexing so that custom macro
+/// names are in the format plugin's registry when consumer passages are parsed.
+///
+/// Detection is lightweight: a line-by-line scan for `::` passage headers
+/// with a `[...]` tag block containing `widget` or `script` (case-insensitive,
+/// whole-tag match). This avoids a full SugarCube parse.
+fn has_definition_passages(text: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("::") {
+            continue;
+        }
+        // Extract the tag block [...] if present.
+        let bracket_start = match trimmed.find('[') {
+            Some(pos) => pos,
+            None => continue,
+        };
+        let bracket_end = match trimmed[bracket_start..].find(']') {
+            Some(pos) => bracket_start + pos,
+            None => continue,
+        };
+        let tags = &trimmed[bracket_start + 1..bracket_end];
+        for tag in tags.split_whitespace() {
+            if tag.eq_ignore_ascii_case("widget") || tag.eq_ignore_ascii_case("script") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Send a `knot/indexProgress` notification to the client.
 async fn send_index_progress(client: &tower_lsp::Client, total_files: u32, parsed_files: u32) {
     let progress = KnotIndexProgress {
@@ -420,5 +494,157 @@ async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
                 e
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::has_definition_passages;
+
+    #[test]
+    fn detects_widget_tagged_passage() {
+        let text = ":: Widgets [widget]\n<<widget hello>>\nHello!\n<</widget>>\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn detects_script_tagged_passage() {
+        let text = ":: Scripts [script]\nMacro.add('foo', {});\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn detects_definition_passage_among_many() {
+        // A file with normal passages AND a widget passage.
+        let text = "\
+:: Start
+Hello world.
+
+:: Widgets [widget]
+<<widget hello>>Hi!<</widget>>
+
+:: Showcase
+<<hello>>
+";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn detects_multiple_tags_including_widget() {
+        let text = ":: MyWidgets [docs widgets widget]\n<<widget foo>><</widget>>\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn detects_multiple_tags_including_script() {
+        let text = ":: MyScripts [init script]\nconsole.log('hi');\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn does_not_match_normal_passages() {
+        let text = "\
+:: Start
+Hello world.
+
+:: Combat [story battle]
+<<set $hp to 100>>
+";
+        assert!(!has_definition_passages(text));
+    }
+
+    #[test]
+    fn does_not_match_widget_in_passage_body() {
+        // The word `widget` in passage body text should NOT trigger —
+        // only `[widget]` in the header tag block counts.
+        let text = "\
+:: Docs
+This passage talks about <<widget>> macros but doesn't define any.
+";
+        assert!(!has_definition_passages(text));
+    }
+
+    #[test]
+    fn does_not_match_widget_substring_in_tags() {
+        // `widgets` (plural) in a tag should NOT match — only the exact
+        // tag `widget` should. This prevents false positives where a
+        // user has a custom tag named `widgets`.
+        let text = ":: Showcase [docs widgets]\n<<hello>>\n";
+        assert!(!has_definition_passages(text),
+            "`widgets` (plural) should not match `widget` tag");
+    }
+
+    #[test]
+    fn case_insensitive_tag_match() {
+        let text = ":: W [Widget]\n<<widget foo>><</widget>>\n";
+        assert!(has_definition_passages(text));
+
+        let text = ":: S [SCRIPT]\nconsole.log('hi');\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn empty_text() {
+        assert!(!has_definition_passages(""));
+    }
+
+    #[test]
+    fn text_without_passage_headers() {
+        let text = "Just some prose text.\nNo passage headers here.\n";
+        assert!(!has_definition_passages(text));
+    }
+
+    #[test]
+    fn handles_leading_whitespace_before_header() {
+        // Passage headers may have leading whitespace (though unusual).
+        let text = "  :: Widgets [widget]\n<<widget foo>><</widget>>\n";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn handles_unclosed_bracket_gracefully() {
+        // Malformed header with unclosed [ — should not panic, should
+        // return false for that line.
+        let text = ":: Bad [widget\n:: Good\nHello\n";
+        assert!(!has_definition_passages(text));
+    }
+
+    #[test]
+    fn testbed_widget_file_detected() {
+        // Simulates the actual 31-widgets.twee from the testbed.
+        let text = "\
+:: Widgets [widget]
+<<widget hello>>
+Hello!
+<</widget>>
+
+<<widget statblock>>
+<<set _label to _args[0]>>
+<</widget>>
+
+:: WidgetShowcase [docs widgets]
+<<statblock \"Strength\" $stats.strength>>
+";
+        assert!(has_definition_passages(text));
+    }
+
+    #[test]
+    fn testbed_misc_file_not_detected() {
+        // Simulates the actual 26-misc.twee from the testbed — it
+        // REFERENCES widgets but doesn't DEFINE any. It should NOT be
+        // classified as a definition file.
+        let text = "\
+:: MiscMacros [docs misc]
+!Miscellaneous Macros
+
+!! <<widget>> (defined in widgets.twee — called here)
+<<hello \"World\">>
+<<statblock \"Strength\" $stats.strength>>
+";
+        assert!(!has_definition_passages(text));
     }
 }

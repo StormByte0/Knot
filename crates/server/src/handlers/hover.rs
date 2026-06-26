@@ -232,6 +232,15 @@ pub(crate) async fn hover(
         }
     }
 
+    // 5c. Try block-level markup hover — cursor on `!`, `*`, `#`, `>`,
+    //     `----`, `<<<`, or `{{{` markers. These produce semantic tokens
+    //     (Heading, ListMarker, Blockquote, etc.) but had no hover handler,
+    //     so hovering over them did nothing. This is a line-based scan that
+    //     fires when the cursor is on the marker run at column 0.
+    if let Some(hover) = try_block_markup_hover(text, byte_offset) {
+        return Ok(Some(hover));
+    }
+
     // 6. Try global object hover — check if cursor is on a format-specific global.
     //    No stored span data exists for global object occurrences, so this
     //    uses line-based scanning as a fallback.
@@ -1449,6 +1458,202 @@ fn try_operator_hover(
     })
 }
 
+/// Try to show hover info for block-level SugarCube markup markers.
+///
+/// SugarCube has several column-0-anchored markup constructs that produce
+/// semantic tokens but had no hover handler:
+///
+/// | Marker | Construct | Token type |
+/// |--------|-----------|------------|
+/// | `!`..`!!!!!!` | Heading (levels 1-6) | `Heading` |
+/// | `*`/`**`/`***` | Unordered list item | `ListMarker` |
+/// | `#`/`##`/`###` | Ordered list item | `ListMarker` |
+/// | `>`/`>>`/`>>>` | Line-style blockquote | `Blockquote` |
+/// | `<<<` | Block-style blockquote | `BlockquoteBlock` |
+/// | `----` (4+) | Horizontal rule | `HorizontalRule` |
+/// | `{{{` | Code block / inline code | `CodeBlock`/`InlineCode` |
+///
+/// Hover fires when the cursor is on the marker run itself (the `!`/`*`/`#`/
+/// `>`/`-` characters at column 0). The hover text explains what the marker
+/// does and links it to the SugarCube documentation pattern.
+///
+/// This is a line-based scan (not AST-based) because:
+/// 1. The markers are simple column-0 patterns — no need for AST traversal.
+/// 2. It works even when the AST isn't yet indexed (e.g., during incremental
+///    re-parse).
+/// 3. It's consistent with `try_operator_hover` and `try_global_hover`,
+///    which also use line-based scanning for simple patterns.
+fn try_block_markup_hover(
+    text: &str,
+    byte_offset: usize,
+) -> Option<Hover> {
+    let line_info = helpers::byte_offset_to_position(text, byte_offset);
+    let line_idx = line_info.line as usize;
+    let line = text.lines().nth(line_idx)?;
+    let char_pos = line_info.character as usize;
+    let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
+
+    let bytes = line.as_bytes();
+    if bytes.is_empty() || byte_pos > bytes.len() {
+        return None;
+    }
+
+    // All block-level markers are column-0 anchored. If the cursor is not
+    // at column 0, none of these can fire.
+    // (byte_pos is the byte offset within the line; column 0 means byte_pos == 0
+    // OR the cursor is on a leading-whitespace prefix — but SugarCube requires
+    // NO leading whitespace for block markup, so we check byte_pos == 0.)
+    //
+    // However, the cursor might be ON the marker run (e.g., on the 2nd `!` of
+    // `!!`), so we check if byte_pos is within the marker run starting at col 0.
+    let first = bytes[0];
+
+    // Determine the marker run and its hover content.
+    let (marker_end, hover_text): (usize, String) = if first == b'!' {
+        // Heading: `!` through `!!!!!!` (1-6 levels)
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'!' && end < 6 {
+            end += 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        // Cursor must be within the `!` run.
+        if byte_pos > end {
+            return None;
+        }
+        let level = end;
+        let html_tag = match level {
+            1 => "h1", 2 => "h2", 3 => "h3", 4 => "h4", 5 => "h5", _ => "h6",
+        };
+        let heading_desc = match level {
+            1 => "level 1 heading — main section title (largest)",
+            2 => "level 2 heading — subsection title",
+            3 => "level 3 heading — sub-subsection title",
+            4 => "level 4 heading — minor section title",
+            5 => "level 5 heading — small heading",
+            _ => "level 6 heading — smallest heading",
+        };
+        (end, format!("**`{}` Heading** (`{}` tag)\n\n{}", "!".repeat(level), html_tag, heading_desc))
+    } else if first == b'*' {
+        // Unordered list item: `*`, `**`, `***`, etc.
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'*' {
+            end += 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        if byte_pos > end {
+            return None;
+        }
+        let depth = end;
+        let depth_desc = if depth == 1 { "top level".to_string() } else { format!("nested (depth {})", depth) };
+        (end, format!("**`{}` Unordered List Item**\n\nCreates a `<li>` in a `<ul>`. {}", "*".repeat(depth), depth_desc))
+    } else if first == b'#' {
+        // Ordered list item: `#`, `##`, `###`, etc.
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'#' {
+            end += 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        if byte_pos > end {
+            return None;
+        }
+        let depth = end;
+        let depth_desc = if depth == 1 { "top level".to_string() } else { format!("nested (depth {})", depth) };
+        (end, format!("**`{}` Ordered List Item**\n\nCreates a `<li>` in an `<ol>`. {}", "#".repeat(depth), depth_desc))
+    } else if first == b'>' {
+        // Line-style blockquote: `>`, `>>`, `>>>`, etc.
+        // Note: `<<<` (block-style blockquote) also starts with `<`, but we
+        // check `>` here. `<<<` is handled separately below.
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'>' {
+            end += 1;
+        }
+        if end == 0 {
+            return None;
+        }
+        if byte_pos > end {
+            return None;
+        }
+        let depth = end;
+        let depth_desc = if depth == 1 { "single level".to_string() } else { format!("nested (depth {})", depth) };
+        (end, format!("**`{}` Blockquote**\n\nCreates a `<blockquote>`. {}", ">".repeat(depth), depth_desc))
+    } else if first == b'-' {
+        // Horizontal rule: `----` (4+ dashes) alone on a line.
+        // Also handles `<<<` block-style blockquote — wait, `<<<` starts with
+        // `<` not `-`. This branch only handles horizontal rules.
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'-' {
+            end += 1;
+        }
+        if end < 4 {
+            return None; // Need at least 4 dashes for a horizontal rule.
+        }
+        // Check that the rest of the line is only whitespace (HR must be alone).
+        let rest = &line[end..];
+        if !rest.trim().is_empty() {
+            return None;
+        }
+        if byte_pos > end {
+            return None;
+        }
+        (end, "**`----` Horizontal Rule**\n\nCreates an `<hr>` element. Requires 4+ dashes alone on a line at column 0.".to_string())
+    } else if first == b'<' && bytes.len() >= 3 && bytes[1] == b'<' && bytes[2] == b'<' {
+        // Block-style blockquote: `<<<` alone on a line.
+        let mut end = 0;
+        while end < bytes.len() && bytes[end] == b'<' {
+            end += 1;
+        }
+        if end != 3 {
+            return None; // Must be exactly 3 `<` characters.
+        }
+        // Check that the rest is whitespace or newline.
+        let rest = &line[end..];
+        if !rest.trim().is_empty() {
+            return None;
+        }
+        if byte_pos > end {
+            return None;
+        }
+        (end, "**`<<<` Block Blockquote**\n\nOpens a block-style blockquote. Close with another `<<<` on its own line. Content between the delimiters is wrapped in `<blockquote>`.".to_string())
+    } else if first == b'{' && bytes.len() >= 3 && bytes[1] == b'{' && bytes[2] == b'{' {
+        // Code block: `{{{\n...\n}}}` (block form at column 0).
+        // Inline code `{{{...}}}` (mid-line) is NOT column-0 anchored, but we
+        // still handle it here for hover purposes — the cursor on `{{{` should
+        // show code block info regardless of position.
+        if byte_pos > 3 {
+            return None;
+        }
+        // Check if it's block form (immediately followed by `\n`) or inline.
+        let is_block = bytes.len() > 3 && bytes[3] == b'\n';
+        if is_block {
+            (3, "**`{{{` Code Block**\n\nOpens a raw code block. Content is NOT processed (macros/variables inside are literal). Close with `}}}` alone on its own line. Renders as `<pre><code>…</code></pre>`.".to_string())
+        } else {
+            (3, "**`{{{` Inline Code**\n\nOpens inline raw code. Content is NOT processed (macros/variables inside are literal). Close with the first `}}}`. Renders as `<code>…</code>`.".to_string())
+        }
+    } else {
+        return None;
+    };
+
+    // Compute the UTF-16 range for the marker run.
+    let utf16_start = helpers::utf16_len_up_to(line, 0);
+    let utf16_end = helpers::utf16_len_up_to(line, marker_end);
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover_text,
+        }),
+        range: Some(Range {
+            start: Position { line: line_idx as u32, character: utf16_start },
+            end: Position { line: line_idx as u32, character: utf16_end },
+        }),
+    })
+}
+
 /// Try to show hover info for a global object.
 ///
 /// **Guard**: This function immediately returns `None` when the cursor
@@ -2393,6 +2598,249 @@ mod prose_hover_tests {
         assert!(result.is_none(),
             "scan_template_at_cursor must NOT match JS ternary `cond ? value : other`: got {:?}",
             result);
+    }
+}
+
+#[cfg(test)]
+mod block_markup_hover_tests {
+    use super::*;
+
+    /// Helper: find the byte offset of the first occurrence of `needle` in `src`.
+    fn cursor_on(src: &str, needle: &str) -> usize {
+        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found in src", needle))
+    }
+
+    #[test]
+    fn hover_on_h1_heading_marker() {
+        // `!Title` — cursor on the `!`.
+        let src = ":: Start\n!Title here\n";
+        let offset = cursor_on(src, "!Title");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `!` heading marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Heading"), "hover text should mention Heading: {}", m.value);
+                assert!(m.value.contains("h1"), "hover text should mention h1 tag: {}", m.value);
+                assert!(m.value.contains("level 1"), "hover text should mention level 1: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_h2_heading_marker() {
+        // `!!Title` — cursor on the 2nd `!`.
+        let src = ":: Start\n!!Subsection\n";
+        let offset = cursor_on(src, "!!Subsection") + 1; // 2nd `!`
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `!!` heading marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("level 2"), "hover text should mention level 2: {}", m.value);
+                assert!(m.value.contains("h2"), "hover text should mention h2 tag: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_h3_heading_marker() {
+        // `!!!Title` — cursor on the 3rd `!`.
+        let src = ":: Start\n!!!Sub-subsection\n";
+        let offset = cursor_on(src, "!!!Sub") + 2; // 3rd `!`
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `!!!` heading marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("level 3"), "hover text should mention level 3: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_unordered_list_marker() {
+        // `* item` — cursor on the `*`.
+        let src = ":: Start\n* item one\n";
+        let offset = cursor_on(src, "* item");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `*` list marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Unordered List"), "hover text should mention Unordered List: {}", m.value);
+                assert!(m.value.contains("<ul>"), "hover text should mention <ul>: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_nested_unordered_list_marker() {
+        // `** item` — cursor on the 2nd `*`.
+        let src = ":: Start\n** nested item\n";
+        let offset = cursor_on(src, "** nested") + 1;
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `**` nested list marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("depth 2"), "hover text should mention depth 2: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_ordered_list_marker() {
+        // `# item` — cursor on the `#`.
+        let src = ":: Start\n# first\n";
+        let offset = cursor_on(src, "# first");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `#` ordered list marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Ordered List"), "hover text should mention Ordered List: {}", m.value);
+                assert!(m.value.contains("<ol>"), "hover text should mention <ol>: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_blockquote_marker() {
+        // `> quote` — cursor on the `>`.
+        let src = ":: Start\n> quoted text\n";
+        let offset = cursor_on(src, "> quoted");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `>` blockquote marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Blockquote"), "hover text should mention Blockquote: {}", m.value);
+                assert!(m.value.contains("<blockquote>"), "hover text should mention <blockquote>: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_horizontal_rule() {
+        // `----` — cursor on a dash.
+        let src = ":: Start\n----\n";
+        let offset = cursor_on(src, "----");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `----` horizontal rule should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Horizontal Rule"), "hover text should mention Horizontal Rule: {}", m.value);
+                assert!(m.value.contains("<hr>"), "hover text should mention <hr>: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_three_dashes_does_not_fire() {
+        // `---` (3 dashes) is NOT a horizontal rule — needs 4+.
+        let src = ":: Start\n---\n";
+        let offset = cursor_on(src, "---");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_none(), "hover on `---` (3 dashes) should NOT fire (needs 4+)");
+    }
+
+    #[test]
+    fn hover_on_block_blockquote_marker() {
+        // `<<<` — cursor on a `<`.
+        let src = ":: Start\n<<<\nquoted\n<<<\n";
+        let offset = cursor_on(src, "<<<\n");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `<<<` block blockquote should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Block Blockquote"), "hover text should mention Block Blockquote: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_code_block_marker() {
+        // `{{{\n...\n}}}` — cursor on the first `{`.
+        let src = ":: Start\n{{{\ncode here\n}}}\n";
+        let offset = cursor_on(src, "{{{");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `{{{` code block marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Code Block"), "hover text should mention Code Block: {}", m.value);
+                assert!(m.value.contains("NOT processed"), "hover text should mention raw content: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_inline_code_marker() {
+        // `{{{code}}}` — cursor on the first `{` (mid-line, not block form).
+        let src = ":: Start\nSome {{{inline code}} here.\n";
+        let offset = cursor_on(src, "{{{inline");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `{{{` inline code marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Inline Code"), "hover text should mention Inline Code: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_on_heading_content_does_not_fire_marker_hover() {
+        // `!Title` — cursor on `T` (the content, not the marker).
+        // The marker hover should NOT fire — `T` is not part of the `!` run.
+        let src = ":: Start\n!Title\n";
+        let offset = cursor_on(src, "Title");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_none(),
+            "hover on heading content (not marker) should NOT fire block markup hover");
+    }
+
+    #[test]
+    fn hover_on_mid_line_exclamation_does_not_fire() {
+        // `Hello!` — `!` mid-line is NOT a heading marker (needs column 0).
+        let src = ":: Start\nHello!\n";
+        let offset = cursor_on(src, "!");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_none(),
+            "hover on mid-line `!` should NOT fire (heading requires column 0)");
+    }
+
+    #[test]
+    fn hover_on_mid_line_asterisk_does_not_fire() {
+        // `a * b` — `*` mid-line is NOT a list marker (needs column 0).
+        let src = ":: Start\na * b\n";
+        let offset = cursor_on(src, "*");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_none(),
+            "hover on mid-line `*` should NOT fire (list marker requires column 0)");
+    }
+
+    #[test]
+    fn hover_on_h6_heading_marker() {
+        // `!!!!!!Title` — 6 levels (the maximum).
+        let src = ":: Start\n!!!!!!Tiny heading\n";
+        let offset = cursor_on(src, "!!!!!!");
+        let hover = try_block_markup_hover(src, offset);
+        assert!(hover.is_some(), "hover on `!!!!!!` h6 heading marker should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("level 6"), "hover text should mention level 6: {}", m.value);
+                assert!(m.value.contains("h6"), "hover text should mention h6 tag: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn hover_range_covers_full_marker_run() {
+        // `!!Title` — hover range should cover both `!` characters.
+        let src = ":: Start\n!!Title\n";
+        let offset = cursor_on(src, "!!Title");
+        let hover = try_block_markup_hover(src, offset).expect("hover should fire");
+        if let Some(range) = hover.range {
+            // Line 1 (0-indexed), characters 0-2 (the `!!` run).
+            assert_eq!(range.start.line, 1);
+            assert_eq!(range.start.character, 0);
+            assert_eq!(range.end.line, 1);
+            assert_eq!(range.end.character, 2,
+                "range should cover 2 `!` characters, got end char {}", range.end.character);
+        }
     }
 }
 

@@ -294,6 +294,33 @@
     "comment": {
       "foreground": "#7a88cf",
       "fontStyle": "italic"
+    },
+    "heading": {
+      "foreground": "#7aa2f7",
+      "fontStyle": "bold"
+    },
+    "horizontalRule": {
+      "foreground": "#565f89"
+    },
+    "listMarker": {
+      "foreground": "#7aa2f7"
+    },
+    "blockquote": {
+      "foreground": "#7dcfff",
+      "fontStyle": "italic"
+    },
+    "blockquoteBlock": {
+      "foreground": "#7dcfff",
+      "fontStyle": "italic"
+    },
+    "table": {
+      "foreground": "#73daca"
+    },
+    "codeBlock": {
+      "foreground": "#9ece6a"
+    },
+    "inlineCode": {
+      "foreground": "#9ece6a"
     }
   }
 }

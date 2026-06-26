@@ -541,15 +541,24 @@ fn build_semantic_tokens_at_depth(
 
                 // Template invocations (?name) — scan content for ?ident.
                 // The token covers the full `?name` (including the `?` sigil).
+                //
+                // SugarCube template names can contain hyphens (e.g.,
+                // `?random-num`, `?story-name` from the testbed). The first
+                // character after `?` must be an ident-start char (letter,
+                // digit, `_`, `$`), but continuation characters also allow
+                // `-`. This matches SugarCube's `Template.add("name", ...)`
+                // which accepts any string as the name, and the `?name`
+                // invocation syntax which scans the name greedily.
                 let content_bytes = content.as_bytes();
                 let content_len = content_bytes.len();
-                let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                let is_ident_start = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
                 let mut i = 0usize;
                 while i < content_len {
-                    if content_bytes[i] == b'?' && i + 1 < content_len && is_ident(content_bytes[i + 1]) {
+                    if content_bytes[i] == b'?' && i + 1 < content_len && is_ident_start(content_bytes[i + 1]) {
                         let token_start = i;
                         let mut name_end = i + 1;
-                        while name_end < content_len && is_ident(content_bytes[name_end]) {
+                        while name_end < content_len && is_ident_char(content_bytes[name_end]) {
                             name_end += 1;
                         }
                         gaps.push(span.start + token_start..span.start + name_end);
@@ -598,13 +607,18 @@ fn build_semantic_tokens_at_depth(
 
                 // ── Emit Function tokens for ?templates ───────────────────
                 // Re-scan content for ?ident and emit tokens for the full ?name.
+                // Uses the same is_ident_start/is_ident_char split as the gap
+                // scanner above — hyphens are allowed in continuation but not
+                // as the first character after `?`.
                 {
+                    let is_ident_start = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
                     let mut i = 0usize;
                     while i < content_len {
-                        if content_bytes[i] == b'?' && i + 1 < content_len && is_ident(content_bytes[i + 1]) {
+                        if content_bytes[i] == b'?' && i + 1 < content_len && is_ident_start(content_bytes[i + 1]) {
                             let token_start = i;
                             let mut name_end = i + 1;
-                            while name_end < content_len && is_ident(content_bytes[name_end]) {
+                            while name_end < content_len && is_ident_char(content_bytes[name_end]) {
                                 name_end += 1;
                             }
                             tokens.push(SemanticToken {
