@@ -749,27 +749,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: true,
         },
-        MacroDef {
-            // <<code>> — raw-body block macro.
-            // Content is NOT parsed for SugarCube syntax (macros, links, vars
-            // inside are literal text, not executed). Unlike <<script>>, the
-            // content IS displayed to the player as prose (literal text).
-            // body_is_raw: true → parse_raw_body captures content as a single
-            // Text node without recursive parsing.
-            // is_prose: true → content is narrative (displayed to player).
-            name: "code",
-            description: "Displays its contents as literal text, without parsing any SugarCube markup within. Macros, links, and variables inside are shown verbatim.",
-            body: Required,
-            kind: Container,
-            args: None,
-            deprecated: false,
-            deprecation_message: None,
-            category: MacroCategory::Output,
-            container: None,
-            container_any_of: None,
-            body_is_raw: true,
-        },
-
         // ── Links / Interaction ───────────────────────────────────────────────
         MacroDef {
             name: "link",

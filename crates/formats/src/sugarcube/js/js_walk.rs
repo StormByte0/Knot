@@ -428,7 +428,7 @@ fn walk_expression(
             // it with `State_temporary_myHelper`. We need to emit a FunctionCallInfo
             // instead of letting the recursive walk create a Variable var_op.
             if let Expr::Identifier(id) = &call.callee {
-                if let Some(call_info) = try_classify_as_function_call(id, preprocessed) {
+                if let Some(call_info) = try_classify_as_function_call(id, preprocessed, analysis) {
                     analysis.function_calls.push(call_info);
                     // Skip the normal recursive walk into the callee — we've
                     // already handled it as a function call. Just walk args.
@@ -1365,28 +1365,145 @@ fn demangle_function_name(
 fn try_classify_as_function_call(
     id: &oxc_ast::ast::IdentifierReference<'_>,
     preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
 ) -> Option<FunctionCallInfo> {
     let name = id.name.as_str();
 
     if let Some(var_part) = name.strip_prefix("State_temporary_") {
-        let func_name = format!("_{}", var_part);
-        let original_start = preprocessed.map_to_original(id.span.start as usize);
-        let original_end = preprocessed.map_to_original(id.span.end as usize);
-        Some(FunctionCallInfo {
-            name: func_name,
-            span: original_start..original_end,
-        })
+        // Check if this substituted variable has a property path.
+        // The preprocessor replaces `$var.prop` → `State_temporary_var_prop`,
+        // so underscores in var_part after the base name represent property
+        // accesses. If there's a property path, the last segment is the
+        // method being called — emit a Variable token for the root and a
+        // Function token for just the method name.
+        let (base_name, property_path) = split_substituted_var(var_part);
+        if property_path.is_empty() {
+            // Simple _var() call — no property path
+            let func_name = format!("_{}", base_name);
+            let original_start = preprocessed.map_to_original(id.span.start as usize);
+            let original_end = preprocessed.map_to_original(id.span.end as usize);
+            Some(FunctionCallInfo {
+                name: func_name,
+                span: original_start..original_end,
+            })
+        } else {
+            // Method call on _var: _var.prop()
+            // Emit Variable token for the root, Function token for the method
+            emit_substituted_var_method_call(
+                &format!("_{}", base_name),
+                base_name,
+                property_path,
+                false, // is_temporary
+                id,
+                preprocessed,
+                analysis,
+            )
+        }
     } else if let Some(var_part) = name.strip_prefix("State_variables_") {
-        let (base_name, _property_path) = split_substituted_var(var_part);
-        let func_name = format!("${}", base_name);
-        let original_start = preprocessed.map_to_original(id.span.start as usize);
-        let original_end = preprocessed.map_to_original(id.span.end as usize);
+        let (base_name, property_path) = split_substituted_var(var_part);
+        if property_path.is_empty() {
+            // Simple $var() call — no property path
+            let func_name = format!("${}", base_name);
+            let original_start = preprocessed.map_to_original(id.span.start as usize);
+            let original_end = preprocessed.map_to_original(id.span.end as usize);
+            Some(FunctionCallInfo {
+                name: func_name,
+                span: original_start..original_end,
+            })
+        } else {
+            // Method call on $var: $var.prop()
+            // Emit Variable token for the root, Function token for the method
+            emit_substituted_var_method_call(
+                &format!("${}", base_name),
+                base_name,
+                property_path,
+                false, // is_temporary
+                id,
+                preprocessed,
+                analysis,
+            )
+        }
+    } else {
+        // ── SugarCube builtin functions ───────────────────────────────
+        if crate::sugarcube::macros::is_builtin_function(name) {
+            let original_start = preprocessed.map_to_original(id.span.start as usize);
+            let original_end = preprocessed.map_to_original(id.span.end as usize);
+            Some(FunctionCallInfo {
+                name: name.to_string(),
+                span: original_start..original_end,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// Emit a Variable token for the root and a Function token for the method
+/// when a substituted variable with a property path is called as a function.
+///
+/// Example: `$arr.last()` → preprocessed to `State_variables_arr_last()`.
+/// oxc sees this as Identifier("State_variables_arr_last") called as function.
+/// We emit:
+/// - Variable token for `$arr` (the root variable)
+/// - Property tokens for intermediate properties (if any)
+/// - Function token for `last` (the method being called)
+///
+/// Returns a FunctionCallInfo with the span of just the method name (the
+/// last segment), so the caller can push it to `function_calls`.
+fn emit_substituted_var_method_call(
+    var_name: &str,
+    _base_name: &str,
+    property_path: &str,
+    is_temporary: bool,
+    id: &oxc_ast::ast::IdentifierReference<'_>,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) -> Option<FunctionCallInfo> {
+    // The full span of the substituted identifier in original source coords
+    let original_start = preprocessed.map_to_original(id.span.start as usize);
+    let original_end = preprocessed.map_to_original(id.span.end as usize);
+    let full_span = original_start..original_end;
+
+    // Compute segment spans for the root variable and each property.
+    // This mirrors what check_identifier_for_substituted_var does, but we
+    // need to do it here because we're intercepting the call before that
+    // function gets a chance to run.
+    let segment_spans = crate::sugarcube::js::js_annotate::compute_target_segment_spans(
+        var_name,
+        property_path,
+        &full_span,
+    );
+
+    // Emit Variable token for the root (first segment)
+    if let Some(first_seg) = segment_spans.first() {
+        analysis.var_ops.push(AnalyzedVarOp {
+            name: var_name.to_string(),
+            is_temporary,
+            access_kind: VarAccessKind::Read,
+            span: first_seg.clone(),
+            property_path: property_path.to_string(),
+            segment_spans: segment_spans.clone(),
+            construct_span: None,
+            segment_construct_spans: Vec::new(),
+        });
+    }
+
+    // The last segment is the method being called — return a FunctionCallInfo
+    // with its span so the caller pushes a Function token.
+    if let Some(last_seg) = segment_spans.last() {
+        // Extract the method name from the property path (last segment)
+        let method_name = property_path.rsplit('.').next().unwrap_or(property_path);
         Some(FunctionCallInfo {
-            name: func_name,
-            span: original_start..original_end,
+            name: method_name.to_string(),
+            span: last_seg.clone(),
         })
     } else {
-        None
+        // Fallback: if no segments, use the full span
+        let method_name = property_path.rsplit('.').next().unwrap_or(property_path);
+        Some(FunctionCallInfo {
+            name: method_name.to_string(),
+            span: full_span,
+        })
     }
 }
 
@@ -1621,9 +1738,64 @@ fn extract_substitution_operators(
         }
     }
 
+    /// Detect `def` / `ndef` substitutions and return the keyword length.
+    ///
+    /// Unlike simple keyword operators (`to`, `eq`, etc.) whose
+    /// `original_text` is just the keyword itself, `def`/`ndef`
+    /// substitutions consume the entire `def $var` expression — so
+    /// `original_text` is e.g. `"def $hp"` or `"ndef _temp"`. We detect
+    /// these by prefix and return the keyword length (3 for `def`,
+    /// 4 for `ndef`) so the caller can emit an Operator span for just
+    /// the keyword portion (NOT the whole expression — the variable
+    /// portion gets its own Variable token via `check_identifier_for_substituted_var`).
+    fn def_ndef_keyword_len(original_text: &str) -> Option<usize> {
+        if original_text.starts_with("ndef") {
+            // Ensure the char after "ndef" is NOT an ident char —
+            // prevents matching "ndefinable". The substitution always
+            // has whitespace after the keyword (e.g., "ndef $x"), so
+            // this check is belt-and-suspenders.
+            let after = original_text.as_bytes().get(4).copied();
+            match after {
+                None => Some(4),
+                Some(b) if !b.is_ascii_alphanumeric() && b != b'_' => Some(4),
+                _ => None,
+            }
+        } else if original_text.starts_with("def") {
+            let after = original_text.as_bytes().get(3).copied();
+            match after {
+                None => Some(3),
+                Some(b) if !b.is_ascii_alphanumeric() && b != b'_' => Some(3),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
     for sub in &preprocessed.substitutions {
         // $var substitutions start with '$' or '_' — skip those.
         // Operator normalizations have alphabetic original_text (like "to", "eq").
+
+        // ── def / ndef ──────────────────────────────────────────────
+        // These are unary prefix operators whose substitution covers the
+        // whole `def $var` / `ndef $var` expression (because the variable
+        // must be consumed and wrapped in a typeof check). We emit an
+        // Operator span for just the keyword portion — the variable
+        // portion gets its own Variable token via the regular
+        // `check_identifier_for_substituted_var` path in walk_expression.
+        //
+        // Classify as Comparison because `def`/`ndef` are semantically
+        // comparison-like (they check equality with "undefined").
+        if let Some(kw_len) = def_ndef_keyword_len(&sub.original_text) {
+            let span = (sub.original_range.start + preprocessed.origin_offset)
+                ..(sub.original_range.start + kw_len + preprocessed.origin_offset);
+            analysis.operator_spans.push(OperatorSpan {
+                kind: OperatorKind::Comparison,
+                span,
+            });
+            continue;
+        }
+
         if let Some(kind) = classify_keyword(&sub.original_text) {
             // The substitution's original_range is relative to the preprocessed
             // source (the snippet), so we need to map it through origin_offset.

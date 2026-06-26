@@ -78,6 +78,152 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
     }
 }
 
+/// Parse a single-bracket image link: `[img[URL][Passage]]` or `[img[URL]]`.
+///
+/// `i` points to the first character after `[img[` (i.e., at the start of
+/// the URL/toast-text portion).
+/// On return, `i` points past the closing `]` of the outer `[img[...]]`.
+///
+/// `offset` is the base byte offset for the body text being parsed
+/// (0 for top-level, nonzero for nested block content).
+/// `img_start` is the position of `[img[` in `text`.
+///
+/// SugarCube single-bracket image syntax (plan.md §C2):
+///   - `[img[src]]` — image only, no link
+///   - `[img[Tooltip|src]]` — image with tooltip, no link
+///   - `[img[src][Passage]]` — image linking to passage
+///   - `[img[Tooltip|src][Passage]]` — image with tooltip linking to passage
+///
+/// The structure is: `[img[<url-part>][<link-part>]]`
+/// Where:
+///   - `<url-part>` is either `src` or `Tooltip|src`
+///   - `<link-part>` (optional) is the passage name, or `Display|Passage`
+///
+/// When `<link-part>` is absent, this is just an image (no navigation edge).
+/// We still produce an `AstNode::Link` with `kind=LinkKind::Image` and an
+/// empty target — the graph extraction will skip it (no edge created for
+/// empty targets).
+///
+/// The produced `AstNode::Link` has:
+///   - `display`: tooltip text if present, else None
+///   - `target`: passage name if link-part present, else empty string
+///   - `kind`: LinkKind::Image
+///   - `image_url`: the image source URL
+///   - `span`: covers `[img[` through closing `]`
+///   - `display_span`: covers the tooltip text (if any)
+///   - `target_span`: covers the passage name (if link-part present)
+///   - `setter_span`: None (single-bracket form has no setter)
+pub(super) fn parse_image_link(text: &str, i: &mut usize, offset: usize, img_start: usize) -> AstNode {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    // *i is at the start of the url-part (after "[img[").
+    // Scan for the closing ] of the url-part, handling nested [ (rare but valid).
+    let url_part_start = *i;
+    let mut bracket_depth = 1u32; // we're inside the [img[ ... ] bracket
+    while *i < len {
+        if bytes[*i] == b'[' {
+            bracket_depth += 1;
+        } else if bytes[*i] == b']' {
+            bracket_depth -= 1;
+            if bracket_depth == 0 {
+                break;
+            }
+        }
+        *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+    let url_part_end = *i;
+    let url_part = &text[url_part_start..url_part_end];
+
+    // Advance past the closing ] of the url-part
+    if *i < len {
+        *i += 1;
+    }
+
+    // Parse the url-part: either "src" or "Tooltip|src"
+    let (tooltip, image_url) = if let Some(pipe_pos) = url_part.find('|') {
+        let tip = url_part[..pipe_pos].to_string();
+        let url = url_part[pipe_pos + 1..].to_string();
+        (Some(tip), url)
+    } else {
+        (None, url_part.to_string())
+    };
+
+    // The display_span (tooltip) is relative to the body, shifted by offset + img_start + 5
+    // (5 = length of "[img["). The url_part starts at url_part_start which is img_start + 5.
+    let url_part_offset = offset + url_part_start;
+    let display_span = tooltip.as_ref().map(|_| {
+        let tip_start = url_part_offset;
+        let tip_end = url_part_offset + url_part.find('|').unwrap_or(url_part.len());
+        tip_start..tip_end
+    });
+
+    // Check if there's a link-part: `[Passage]`
+    let (target, target_span) = if *i < len && bytes[*i] == b'[' {
+        // There's a link-part. Skip the opening [.
+        *i += 1;
+        let target_start = *i;
+
+        // Scan for the closing ] of the link-part
+        let mut depth = 1u32;
+        while *i < len {
+            if bytes[*i] == b'[' {
+                depth += 1;
+            } else if bytes[*i] == b']' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
+        }
+        let target_end = *i;
+        let target_text = text[target_start..target_end].to_string();
+
+        // Advance past the closing ]
+        if *i < len {
+            *i += 1;
+        }
+
+        // The target could be "Display|Passage" — extract just the passage
+        let target_passage = if let Some(pipe_pos) = target_text.find('|') {
+            target_text[pipe_pos + 1..].trim().to_string()
+        } else {
+            target_text.trim().to_string()
+        };
+
+        let target_span = (offset + target_start)..(offset + target_end);
+        (target_passage, Some(target_span))
+    } else {
+        // No link-part — just an image, no navigation target.
+        (String::new(), None)
+    };
+
+    // Consume the outer closing ] of [img[...]].
+    // The structure is [img[URL][Passage]] — after parsing img[URL] and
+    // [Passage], there's one final ] that closes the outer [.
+    // If the image was unclosed (no outer ]), we just consume to end.
+    if *i < len && bytes[*i] == b']' {
+        *i += 1;
+    }
+
+    // The overall span covers [img[ through the final ] we consumed.
+    // If the image was unclosed (ran to end of text), span covers to end.
+    let span_end = offset + *i;
+
+    AstNode::Link {
+        display: tooltip,
+        target,
+        kind: LinkKind::Image,
+        setter_var: None,
+        image_url: Some(image_url),
+        span: (offset + img_start)..span_end,
+        display_span,
+        target_span: target_span.unwrap_or((offset + *i)..(offset + *i)),
+        setter_span: None,
+    }
+}
+
 /// Parsed link content with sub-spans.
 ///
 /// All spans are relative to the start of `content` (the text between `[[`

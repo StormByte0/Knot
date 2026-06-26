@@ -104,6 +104,32 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
             }
+            b'[' if i + 3 < len && bytes[i + 1] == b'i' && bytes[i + 2] == b'm' && bytes[i + 3] == b'g' && i + 4 < len && bytes[i + 4] == b'[' => {
+                // [img[ — single-bracket image link form (plan.md §C2).
+                //
+                // SugarCube supports two image link syntaxes:
+                //   1. Double-bracket: [[img[URL][Passage]]] — a link whose
+                //      display is an image. Handled by parse_link above (the
+                //      [[ arm dispatches to parse_link which detects img[
+                //      prefix in parse_link_content).
+                //   2. Single-bracket: [img[URL][Passage]] — a standalone
+                //      image that links to a passage. This arm handles it.
+                //
+                // The single-bracket form can also appear without a link
+                // target: [img[URL]] (just an image, no passage navigation).
+                // In that case, target is empty and no graph edge is created.
+                //
+                // Both forms produce the same AstNode::Link with
+                // kind=LinkKind::Image — the token builder and graph
+                // extraction treat them identically.
+                let start = i;
+                i += 5; // skip "[img["
+                ctx.col += 5;
+                let node = super::link_parser::parse_image_link(text, &mut i, offset, start);
+                resync_col_after_advance(text, start, i, ctx);
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(node)
+            }
             b'/' if i + 1 < len && bytes[i + 1] == b'%' => {
                 // /% or /%% — Twine/SugarCube comment
                 let start = i;
@@ -421,6 +447,30 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 } else {
                     parse_inline_code(text, &mut i, offset + start)
                 };
+                resync_col_after_advance(text, start, i, ctx);
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(node)
+            }
+            b'"' if i + 2 < len && bytes[i + 1] == b'"' && bytes[i + 2] == b'"' => {
+                // """ — verbatim text block (plan.md §AD-12).
+                //
+                // SugarCube's verbatim block: content between `"""` and the
+                // first closing `"""` is rendered as plain text WITHOUT any
+                // markup processing. Macros, variables, links, and inline
+                // formatting inside are NOT executed.
+                //
+                // The closing `"""` is the first one found (non-greedy), same
+                // as inline code's `}}}`. There's no block form — `"""`
+                // always works the same way regardless of position.
+                //
+                // Token builder emits NO tokens for the content — the entire
+                // block renders in default prose color. This is the fix for
+                // "content inside `""" ... """` verbatim text gets highlights
+                // when it shouldn't."
+                let start = i;
+                i += 3;
+                ctx.col += 3;
+                let node = parse_verbatim(text, &mut i, offset + start);
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
@@ -892,6 +942,49 @@ fn parse_inline_code(text: &str, i: &mut usize, span_start: usize) -> AstNode {
 
     *i = span_end;
     AstNode::InlineCode {
+        content,
+        span: span_start..offset + span_end,
+    }
+}
+
+/// Parse a verbatim text block: `"""..."""` (non-greedy, first `"""` closes).
+///
+/// `*i` is positioned just after the opening `"""`. `span_start` is the
+/// body-relative byte offset of the opening `"""`.
+///
+/// SugarCube's verbatim block (plan.md §AD-12): content between `"""` and
+/// the first closing `"""` is rendered as plain text WITHOUT any SugarCube
+/// markup processing — macros, variables, links, and inline formatting
+/// inside are NOT executed.
+///
+/// On return, `*i` points just past the closing `"""`. If unclosed,
+/// consumes to end of text.
+fn parse_verbatim(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // *i is just after `"""`.
+    //
+    // Same absolute/local coordinate fix as `parse_inline_code` above.
+    let entry_i = *i;
+    let start_local = entry_i.saturating_sub(3);
+    let offset = span_start.saturating_sub(start_local);
+
+    let content_start = entry_i;
+
+    // Non-greedy scan for the first `"""`.
+    let close_offset = text[content_start..].find("\"\"\"");
+
+    let (content, span_end) = if let Some(close_rel) = close_offset {
+        let close_abs = content_start + close_rel;
+        let content = text[content_start..close_abs].to_string();
+        let end = close_abs + 3;  // skip past `"""`
+        (content, end)
+    } else {
+        // Unclosed — consume rest of text.
+        let content = text[content_start..].to_string();
+        (content, text.len())
+    };
+
+    *i = span_end;
+    AstNode::Verbatim {
         content,
         span: span_start..offset + span_end,
     }

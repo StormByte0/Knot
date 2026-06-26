@@ -1,0 +1,11 @@
+:: StoryInit
+
+<<set $gs = {
+  /* config block — contains nested macros in comments
+   * like <<set $foo to 1>> and <<run $bar.baz()>>
+   */
+  name: "test",
+  /* another block comment with >> inside
+   */
+  value: 42
+}>>

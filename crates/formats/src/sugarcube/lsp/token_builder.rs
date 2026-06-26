@@ -679,6 +679,17 @@ fn build_semantic_tokens_at_depth(
                     modifier: None,
                 });
             }
+            // Verbatim text ("""..."""): emit NO tokens for the content.
+            // The entire block renders as default prose color — no markup
+            // highlighting inside. This is the fix for "content inside
+            // `""" ... """` verbatim text gets highlights when it shouldn't."
+            //
+            // The parser already ensures the content is NOT recursively
+            // parsed (no macros/variables/links inside), so we don't need
+            // to worry about inner tokens — there are none. We just need
+            // to NOT emit a token for the Verbatim span itself, so the
+            // default prose color shows through.
+            ast::AstNode::Verbatim { .. } => {}
             // Phase 3: Heading — emit a `Heading` token for the `!` run (the
             // marker), then recurse into children for prose/macro/variable
             // tokens. Content is recursively parsed (macros execute inside
@@ -958,19 +969,23 @@ fn emit_literal_tokens(literals: &[ast::LiteralSpan], tokens: &mut Vec<SemanticT
 ///
 /// SugarCube keyword operators (`to`, `eq`, `and`, etc.) are classified as
 /// comparison/assignment/logical operators by `OperatorKind`. Standard JS
-/// operators that weren't substituted are also emitted here. Logical operators
-/// get the `ControlFlow` modifier to enable distinct visual styling.
+/// operators that weren't substituted are also emitted here.
+///
+/// All operators emit the same token type (`Operator`) with no modifiers —
+/// they should render in a single unified color. Previously, `Logical`
+/// operators received a `ControlFlow` modifier which caused themes to render
+/// them in a separate color from other operators. The user-facing decision is
+/// that operators should be visually unified regardless of category; theme
+/// authors who want per-category styling can still distinguish via the
+/// `OperatorKind` data exposed in the AST (should we ever re-introduce
+/// modifiers behind a setting).
 fn emit_operator_tokens(operators: &[ast::OperatorSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
     for op in operators {
-        let modifier = match op.kind {
-            ast::OperatorKind::Logical => Some(SemanticTokenModifier::ControlFlow),
-            _ => None,
-        };
         tokens.push(SemanticToken {
             start: body_offset_in_passage + op.span.start,
             length: op.span.end - op.span.start,
             token_type: SemanticTokenType::Operator,
-            modifier,
+            modifier: None,
         });
     }
 }

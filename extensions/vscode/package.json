@@ -548,6 +548,118 @@
         }
       }
     ],
+    "semanticTokenTypes": [
+      {
+        "id": "passageHeader",
+        "description": "Twee passage header line (:: Name [tags])"
+      },
+      {
+        "id": "passageName",
+        "description": "Passage name in a header"
+      },
+      {
+        "id": "link",
+        "description": "Link target in [[...]] syntax"
+      },
+      {
+        "id": "passageRef",
+        "description": "Passage reference in macro args"
+      },
+      {
+        "id": "specialPassageHeader",
+        "description": "Special passage header (StoryData, StoryInit, etc.)"
+      },
+      {
+        "id": "specialPassage",
+        "description": "Special passage name"
+      },
+      {
+        "id": "tag",
+        "description": "Passage tag in [tags] syntax"
+      },
+      {
+        "id": "prose",
+        "description": "Narrative prose text (story content)"
+      },
+      {
+        "id": "inlineStyle",
+        "description": "SugarCube inline style markup (@@.class;text@@)"
+      },
+      {
+        "id": "textFormat",
+        "description": "SugarCube text formatting markup (//italic//, ''bold'', __underline__, ==strike==, ~~sub~~, ^^super^^)"
+      },
+      {
+        "id": "macroDelimiter",
+        "description": "Macro delimiters (<<, >>, <</)"
+      },
+      {
+        "id": "heading",
+        "description": "Heading markup (! Heading)"
+      },
+      {
+        "id": "horizontalRule",
+        "description": "Horizontal rule (----)"
+      },
+      {
+        "id": "listMarker",
+        "description": "List marker (*, #)"
+      },
+      {
+        "id": "blockquote",
+        "description": "Blockquote marker (>)"
+      },
+      {
+        "id": "blockquoteBlock",
+        "description": "Blockquote block content"
+      },
+      {
+        "id": "table",
+        "description": "Table cell content"
+      },
+      {
+        "id": "codeBlock",
+        "description": "Block code ({{{...}}})"
+      },
+      {
+        "id": "inlineCode",
+        "description": "Inline code ({{{...}}})"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "definition",
+        "description": "Variable is being defined (written to)"
+      },
+      {
+        "id": "controlFlow",
+        "description": "Control flow context (silent expressions, etc.)"
+      },
+      {
+        "id": "blockDepth1",
+        "description": "Macro at block nesting depth 1"
+      },
+      {
+        "id": "blockDepth2",
+        "description": "Macro at block nesting depth 2"
+      },
+      {
+        "id": "blockDepth3",
+        "description": "Macro at block nesting depth 3"
+      },
+      {
+        "id": "blockDepth4",
+        "description": "Macro at block nesting depth 4"
+      },
+      {
+        "id": "blockDepth5",
+        "description": "Macro at block nesting depth 5"
+      },
+      {
+        "id": "blockDepth6",
+        "description": "Macro at block nesting depth 6"
+      }
+    ],
     "semanticTokenScopes": [
       {
         "_comment": "All five language IDs use identical scopes so that semantic tokens render with the same colors regardless of which language ID is active. This prevents visual inconsistency when the formatDetected notification switches language IDs after workspace indexing. Format-specific TextMate grammars handle syntax pattern differences independently.",

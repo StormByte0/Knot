@@ -897,9 +897,10 @@ fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
             // scan for `_args[N]` references inside widget bodies. For
             // now these arms never fire.
             //
-            // NOTE: CodeBlock and InlineCode content is raw (no macro
-            // processing), so even when emitted they should NOT be
-            // recursed into here — `_args` inside `{{{...}}}` is literal.
+            // NOTE: CodeBlock, InlineCode, and Verbatim content is raw (no
+            // macro processing), so even when emitted they should NOT be
+            // recursed into here — `_args` inside `{{{...}}}` or `"""..."""`
+            // is literal.
             ast::AstNode::Heading { .. }
             | ast::AstNode::HorizontalRule { .. }
             | ast::AstNode::ListItem { .. }
@@ -907,7 +908,8 @@ fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
             | ast::AstNode::BlockquoteBlock { .. }
             | ast::AstNode::Table { .. }
             | ast::AstNode::CodeBlock { .. }
-            | ast::AstNode::InlineCode { .. } => {}
+            | ast::AstNode::InlineCode { .. }
+            | ast::AstNode::Verbatim { .. } => {}
         }
     }
 

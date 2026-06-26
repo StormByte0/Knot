@@ -89,7 +89,8 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) 
             | ast::AstNode::BlockquoteBlock { .. }
             | ast::AstNode::Table { .. }
             | ast::AstNode::CodeBlock { .. }
-            | ast::AstNode::InlineCode { .. } => {}
+            | ast::AstNode::InlineCode { .. }
+            | ast::AstNode::Verbatim { .. } => {}
         }
     }
     blocks

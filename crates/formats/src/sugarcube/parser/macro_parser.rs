@@ -619,6 +619,7 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
                     operator: SetOperator::Into,
                     expression: Some(expr_part.to_string()),
                     expression_span: Some(args_offset..args_offset + into_pos),
+                    operator_span: Some(args_offset + into_pos..args_offset + into_pos + 4),
                 });
             }
         }
@@ -697,6 +698,7 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
             operator: SetOperator::PostfixPlus,
             expression: None,
             expression_span: None,
+            operator_span: Some(args_offset + i..args_offset + i + 2),
         });
     }
     if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
@@ -705,6 +707,7 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
             operator: SetOperator::PostfixMinus,
             expression: None,
             expression_span: None,
+            operator_span: Some(args_offset + i..args_offset + i + 2),
         });
     }
 
@@ -736,6 +739,10 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
         return None;
     };
 
+    // The operator starts at the current position (before we skip past it).
+    // Capture the operator span BEFORE advancing `i`.
+    let op_start = i;
+
     // Skip past the operator and any whitespace
     i += op_len;
     while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
@@ -758,6 +765,7 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
         } else {
             None
         },
+        operator_span: Some(args_offset + op_start..args_offset + op_start + op_len),
     })
 }
 
@@ -1031,10 +1039,16 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
     let close_tag_alt = format!("<</ {}>>", macro_name); // with space after /
 
     // Determine whether the raw body is prose (displayed to player) or code.
-    // <<script>> body is code (is_prose: false).
-    // <<code>> body is prose (is_prose: true) — displayed as literal text.
-    // Default: false (safe for any future raw-body macros that are code-like).
-    let is_prose = macro_name.eq_ignore_ascii_case("code");
+    // Currently the only builtin raw-body macro is `<<script>>` (is_prose:
+    // false — its body is code, not displayed to the player).
+    //
+    // NOTE: `<<code>>` was previously a builtin raw-body macro with
+    // is_prose=true, but it has been removed from the catalog (it is not a
+    // SugarCube builtin — it's a user-defined macro typically declared via
+    // `Macro.add` in story.js). If `<<code>>` or any other user-defined
+    // raw-body macro needs to be supported in the future, this should be
+    // driven by the custom macro registry, not by a hardcoded name check.
+    let is_prose = false;
 
     let len = text.len();
 
@@ -1417,7 +1431,7 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
         // Quoted string: "..." or '...'
         if b == b'"' || b == b'\'' {
             let quote = b;
-            let _token_start = i;
+            let token_start = i; // opening quote position
             i += 1; // skip opening quote
             let content_start = i;
             while i < len && bytes[i] != quote {
@@ -1430,12 +1444,18 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
             let content_end = i;
             let value = args[content_start..content_end].to_string();
             if i < len {
-                i += 1; // skip closing quote
+                i += 1; // skip closing quote — i is now past it
             }
+            // Span includes the surrounding quote characters so that the
+            // token color covers the full literal, not just the inner
+            // content. Previously the span was `content_start..content_end`
+            // which left the quote characters uncolored (rendered as default
+            // prose text). The `value` field still holds the unquoted
+            // content for semantic lookups (passage name, label text, etc.).
             tokens.push(ArgToken {
                 kind: ArgTokenKind::QuotedString,
                 value,
-                span: args_offset + content_start..args_offset + content_end,
+                span: args_offset + token_start..args_offset + i,
             });
             continue;
         }
@@ -2428,7 +2448,7 @@ mod tests {
         // <<goto "Cave">>
         // 0123456789012345
         //   args start at position 6 (after "<<goto ")
-        //   "Cave" content starts at position 7
+        //   opening quote at position 6, "Cave" content at 7..11, closing quote at 11
         let ast = parse_passage_body(r#"<<goto "Cave">>"#, 0, ParseMode::Normal);
         let macro_node = ast.nodes.iter().find_map(|n| match n {
             AstNode::Macro { name, structured_args, .. } if name == "goto" => Some(structured_args.clone()),
@@ -2437,8 +2457,11 @@ mod tests {
 
         let args = macro_node.unwrap();
         assert_eq!(args[0].value, "Cave");
-        // The span should cover "Cave" (4 chars), starting after the opening quote
-        assert_eq!(args[0].span.end - args[0].span.start, 4);
+        // The span should cover `"Cave"` (6 chars) — INCLUDING the surrounding
+        // quote characters so the token color renders across the full literal.
+        // Previously the span excluded the quotes (4 chars), leaving them
+        // uncolored in the editor.
+        assert_eq!(args[0].span.end - args[0].span.start, 6);
     }
 
     #[test]

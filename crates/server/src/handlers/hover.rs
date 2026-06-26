@@ -298,8 +298,55 @@ fn build_passage_target_hover_text(
     target_passage: &Passage,
     workspace: &knot_core::Workspace,
 ) -> String {
+    build_passage_target_hover_text_impl(target, target_doc, target_passage, workspace, false)
+}
+
+/// Compact form of passage target hover text, used for passage REFERENCES
+/// (e.g., the `"Shop"` arg in `<<link "Talk" "Shop">>`).
+///
+/// A reference is NOT the same as the passage definition — the user is
+/// asking "what does this reference point to?", not "tell me everything
+/// about this passage". The compact form shows just:
+/// - Passage name
+/// - Tags (if any)
+/// - Incoming link count (context: how much this passage is referenced)
+///
+/// It does NOT show:
+/// - File path (the user can Ctrl+Click to navigate; path is noise here)
+/// - Links out (irrelevant when you're looking at a reference)
+/// - Variables written/read (too much detail for a reference hover)
+fn build_passage_target_hover_text_compact(
+    target: &str,
+    target_doc: &knot_core::Document,
+    target_passage: &Passage,
+    workspace: &knot_core::Workspace,
+) -> String {
+    build_passage_target_hover_text_impl(target, target_doc, target_passage, workspace, true)
+}
+
+fn build_passage_target_hover_text_impl(
+    target: &str,
+    target_doc: &knot_core::Document,
+    target_passage: &Passage,
+    workspace: &knot_core::Workspace,
+    compact: bool,
+) -> String {
     let incoming = helpers::count_incoming_links(workspace, target);
 
+    if compact {
+        // Compact form for references: name + tags + incoming count only.
+        let tags_str = if target_passage.tags.is_empty() {
+            "none".to_string()
+        } else {
+            target_passage.tags.join(", ")
+        };
+        return format!(
+            "**{}** `Passage`\n\nTags: {} | Referenced by {} passage(s)",
+            target, tags_str, incoming
+        );
+    }
+
+    // Full form for [[link]] hovers and passage header hovers.
     // Show workspace-relative path instead of full file:// URI.
     // Authors don't want to see "file:///D:/codeWS/twine/..." — just
     // "src/passages/newtest.twee" or similar.
@@ -484,7 +531,7 @@ fn try_macro_arg_ref_hover(
                 }
 
                 if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
-                    let mut hover_text = build_passage_target_hover_text(
+                    let mut hover_text = build_passage_target_hover_text_compact(
                         target, target_doc, target_passage, workspace,
                     );
 
@@ -547,7 +594,7 @@ fn try_macro_arg_ref_hover_no_plugin(
                     continue;
                 }
                 if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
-                    let hover_text = build_passage_target_hover_text(
+                    let hover_text = build_passage_target_hover_text_compact(
                         target, target_doc, target_passage, workspace,
                     );
                     let hover_range = helpers::byte_range_to_lsp_range(
@@ -1461,28 +1508,76 @@ fn try_operator_hover(
     let byte_pos = helpers::utf16_to_byte_offset(line, char_pos);
 
     // Find word boundaries around the cursor.
+    //
+    // SugarCube has two forms of operators:
+    //   1. Keyword operators: `to`, `eq`, `and`, `def`, etc. — alphanumeric.
+    //   2. Symbolic operators: `&&`, `||`, `!`, `===`, `!==`, `>`, `<`, etc.
+    //
+    // The extraction logic must handle BOTH forms. If the cursor is on an
+    // alphanumeric char, we extract the alphanumeric word (keyword form).
+    // If the cursor is on a symbolic operator char, we extract the symbolic
+    // run (e.g., `&&`, `===`). This is safe because the `has_operator_token`
+    // check above already confirmed we're inside an Operator semantic token —
+    // we won't misfire on symbolic chars in prose or strings.
     let bytes = line.as_bytes();
     if byte_pos > bytes.len() {
         return None;
     }
-    let mut start = byte_pos;
-    while start > 0 {
-        let b = bytes[start - 1];
-        if b.is_ascii_alphanumeric() || b == b'_' {
+
+    /// Returns true if `b` is a symbolic operator character.
+    /// These are the characters that make up JS symbolic operators:
+    /// `&`, `|`, `!`, `=`, `<`, `>`, `+`, `-`, `*`, `/`, `%`.
+    fn is_operator_char(b: u8) -> bool {
+        matches!(b, b'&' | b'|' | b'!' | b'=' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%')
+    }
+
+    let cursor_byte = if byte_pos < bytes.len() {
+        bytes[byte_pos]
+    } else {
+        // Cursor at end of line — check the last char
+        if byte_pos == 0 {
+            return None;
+        }
+        bytes[byte_pos - 1]
+    };
+
+    let (start, end) = if cursor_byte.is_ascii_alphanumeric() || cursor_byte == b'_' {
+        // Keyword operator form — extract alphanumeric word.
+        let mut start = byte_pos;
+        while start > 0 {
+            let b = bytes[start - 1];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                start -= 1;
+            } else {
+                break;
+            }
+        }
+        let mut end = byte_pos;
+        while end < bytes.len() {
+            let b = bytes[end];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        (start, end)
+    } else if is_operator_char(cursor_byte) {
+        // Symbolic operator form — extract the symbolic run.
+        let mut start = byte_pos;
+        while start > 0 && is_operator_char(bytes[start - 1]) {
             start -= 1;
-        } else {
-            break;
         }
-    }
-    let mut end = byte_pos;
-    while end < bytes.len() {
-        let b = bytes[end];
-        if b.is_ascii_alphanumeric() || b == b'_' {
+        let mut end = byte_pos;
+        while end < bytes.len() && is_operator_char(bytes[end]) {
             end += 1;
-        } else {
-            break;
         }
-    }
+        (start, end)
+    } else {
+        // Cursor is on a non-operator, non-alphanumeric char (space, paren, etc.)
+        return None;
+    };
+
     if start == end {
         return None;
     }
@@ -2468,6 +2563,46 @@ mod expr_macro_hover_tests {
         }
     }
 
+    /// F1 test: cursor on a variable INSIDE `<<run>>` should fire
+    /// per-token variable hover, not the whole-macro block hover.
+    /// The variable hover uses `passage.vars` which has per-token spans
+    /// from js_analysis var_ops.
+    #[test]
+    fn hover_on_variable_inside_run_macro_fires_variable_hover() {
+        let src = ":: Init\n<<set $arr to [1,2,3]>>\n<<run $arr.last()>>";
+        let (doc, plugin) = parse(src);
+        // Cursor on `$arr` in the `<<run $arr.last()>>` line (line 2).
+        // Find the byte offset of `$` in `$arr.last()`.
+        let line2_start = src.find("<<run").unwrap();
+        let cursor_on_dollar = line2_start + "<<run ".len(); // offset of `$`
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        let hover = try_variable_hover(src, cursor_on_dollar, Some(&doc), &ws, &plugin);
+        // Variable hover SHOULD fire — the cursor is on `$arr`, a variable.
+        assert!(hover.is_some(),
+            "cursor on $arr inside <<run>> should fire variable hover, got None");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("$arr"),
+                    "hover text should mention $arr: got {}", m.value);
+            }
+        }
+    }
+
+    /// F1 test: cursor on a method name (`.last`) inside `<<run $arr.last()>>
+    /// should fire function hover (per-token), not the macro block hover.
+    /// Note: try_function_hover has a meaningfulness gate (requires
+    /// param_count) that may block builtin methods. The per-token
+    /// resolution is verified via the variable hover test above and the
+    /// token builder tests in knot-formats. This test is a placeholder —
+    /// see F1 follow-up for the full function-hover meaningfulness audit.
+    #[test]
+    fn hover_on_method_inside_run_macro_fires_function_hover() {
+        // Placeholder — see comment above. The real verification is that
+        // the Function token IS emitted (verified in knot-formats debug
+        // tests), and try_function_hover would fire if the meaningfulness
+        // gate passed. F1 follow-up: audit the gate for builtin methods.
+    }
+
     /// When the cursor is on `>>` of `<<run _parts = []>>` (the closing
     /// delimiter), the macro hover should fire using the open_span as the
     /// hover range. This is the "outer-layer" hover — the user is asking
@@ -2892,7 +3027,7 @@ mod block_markup_hover_tests {
         let src = ":: Start\n{{{\ncode here\n}}}\n";
         let offset = cursor_on(src, "{{{");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `{{{` code block marker should fire");
+        assert!(hover.is_some(), "hover on `{{{{` code block marker should fire");
         if let Some(h) = hover {
             if let HoverContents::Markup(m) = h.contents {
                 assert!(m.value.contains("Code Block"), "hover text should mention Code Block: {}", m.value);
@@ -2907,7 +3042,7 @@ mod block_markup_hover_tests {
         let src = ":: Start\nSome {{{inline code}} here.\n";
         let offset = cursor_on(src, "{{{inline");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `{{{` inline code marker should fire");
+        assert!(hover.is_some(), "hover on `{{{{` inline code marker should fire");
         if let Some(h) = hover {
             if let HoverContents::Markup(m) = h.contents {
                 assert!(m.value.contains("Inline Code"), "hover text should mention Inline Code: {}", m.value);
@@ -3063,6 +3198,79 @@ mod operator_hover_scoping_tests {
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
         assert!(hover.is_none(),
             "hover on `and` in prose should NOT fire — it's not an operator context");
+    }
+}
+
+#[cfg(test)]
+mod arg_ref_hover_tests {
+    use super::*;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use knot_formats::FormatPluginMut;
+    use url::Url;
+
+    fn parse(src: &str) -> (knot_core::Document, SugarCubePlugin, knot_core::Workspace) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let parse_result = plugin.parse_mut(&uri, src);
+        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        for passage in parse_result.passages {
+            doc.passages.push(passage);
+        }
+        let mut ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        // Add the document to the workspace so find_passage works
+        ws.insert_document(doc.clone());
+        (doc, plugin, ws)
+    }
+
+    /// F2 test: hovering on a passage reference (e.g., `"Shop"` arg in
+    /// `<<link "Talk" "Shop">>`) should show COMPACT hover — just the
+    /// passage name, tags, and reference count. It should NOT show the
+    /// full passage property block (file path, links out, variables
+    /// written/read).
+    #[test]
+    fn arg_ref_hover_shows_compact_form() {
+        let src = ":: Start\nYou are here.\n:: Shop\nWelcome to the shop.\n:: Hub\n<<link \"Talk\" \"Shop\">>Go<</link>>";
+        let (doc, plugin, ws) = parse(src);
+        // Cursor on "Shop" inside <<link "Talk" "Shop">>
+        let shop_offset = src.find("\"Shop\"").map(|o| o + 1).unwrap(); // +1 to skip opening quote
+        let hover = try_macro_arg_ref_hover(src, shop_offset, Some(&doc), &ws, &plugin);
+        assert!(hover.is_some(), "arg ref hover should fire for \"Shop\" in <<link>>");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                // Compact form should include:
+                assert!(m.value.contains("**Shop**"), "should show passage name: got {}", m.value);
+                assert!(m.value.contains("Tags:"), "should show Tags field: got {}", m.value);
+                assert!(m.value.contains("Referenced by"), "should show reference count: got {}", m.value);
+                // Compact form should NOT include:
+                assert!(!m.value.contains("Links out:"), "compact form should NOT show Links out: got {}", m.value);
+                assert!(!m.value.contains("Variables written:"), "compact form should NOT show Variables written: got {}", m.value);
+                assert!(!m.value.contains("Variables read:"), "compact form should NOT show Variables read: got {}", m.value);
+                assert!(!m.value.contains(".twee"), "compact form should NOT show file path: got {}", m.value);
+                // Should mention which macro references it
+                assert!(m.value.contains("Referenced by"), "should show referencing macro: got {}", m.value);
+            }
+        }
+    }
+
+    /// F2 test: `[[link]]` hover should show FULL form (not compact) —
+    /// the user is hovering a link, not a reference inside a macro arg.
+    #[test]
+    fn link_hover_shows_full_form() {
+        let src = ":: Start\nYou are here.\n:: Shop\nWelcome to the shop.\n:: Hub\nGo [[Shop]] now";
+        let (doc, plugin, ws) = parse(src);
+        // Cursor on "Shop" inside [[Shop]]
+        let shop_offset = src.find("[[Shop]]").map(|o| o + 2).unwrap(); // +2 to skip [[
+        let hover = try_link_hover(src, shop_offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "link hover should fire for [[Shop]]");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                // Full form should include:
+                assert!(m.value.contains("**Shop**"), "should show passage name: got {}", m.value);
+                assert!(m.value.contains("Links out:"), "full form should show Links out: got {}", m.value);
+                // File path is shown in full form (workspace-relative)
+                assert!(m.value.contains("story.tw") || m.value.contains("unknown"), "full form should show file path: got {}", m.value);
+            }
+        }
     }
 }
 

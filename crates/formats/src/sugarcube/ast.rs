@@ -613,6 +613,13 @@ pub struct SetAssignment {
     pub expression: Option<String>,
     /// Byte range of the expression in the passage body.
     pub expression_span: Option<Range<usize>>,
+    /// Byte range of the assignment operator itself (`to`, `=`, `+=`, `++`,
+    /// etc.) in the passage body. Used to emit an `Operator` semantic token
+    /// for the operator — without this, the operator would render as default
+    /// prose text because oxc only sees the RHS expression (never the
+    /// operator), so the standard `emit_*_operator` paths in `js_walk` never
+    /// fire for `<<set>>` assignments.
+    pub operator_span: Option<Range<usize>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,6 +1117,24 @@ pub enum AstNode {
         /// Raw content between `{{{` and `}}}`. Not recursively parsed.
         content: String,
         /// Byte range of the entire inline code (`{{{` through `}}}`).
+        span: Range<usize>,
+    },
+
+    /// Verbatim text: `"""..."""` (raw content, no markup processing).
+    ///
+    /// SugarCube's verbatim block (plan.md §AD-12). The content between the
+    /// triple-double-quote delimiters is rendered as plain text WITHOUT any
+    /// SugarCube markup processing — macros, variables, links, and inline
+    /// formatting inside are NOT executed. The closing `"""` is the first
+    /// one found (non-greedy).
+    ///
+    /// This is similar to `InlineCode` but renders as plain prose (no `<code>`
+    /// wrapper). Token builder emits NO tokens for the content — the entire
+    /// block renders in default prose color.
+    Verbatim {
+        /// Raw content between `"""` and `"""`. Not recursively parsed.
+        content: String,
+        /// Byte range of the entire verbatim block (`"""` through `"""`).
         span: Range<usize>,
     },
 }

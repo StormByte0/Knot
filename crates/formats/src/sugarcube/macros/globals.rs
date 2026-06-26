@@ -135,3 +135,66 @@ pub fn global_hover_text(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Builtin standalone functions
+// ---------------------------------------------------------------------------
+
+/// SugarCube builtin standalone functions callable in TwineScript without
+/// any object prefix (e.g., `random(1, 10)`, `either("a", "b")`).
+///
+/// These are NOT the same as global objects like `State` or `Engine` —
+/// those are namespaces accessed via dot notation. Builtin functions
+/// are called directly by name.
+///
+/// Source: SugarCube 2 docs — "Functions" section.
+pub fn builtin_functions() -> &'static [(&'static str, &'static str)] {
+    static FUNCTIONS: &[(&str, &str)] = &[
+        // ── Value functions ───────────────────────────────────────────
+        ("clone",         "Deep-clones a value. Useful for copying objects/arrays before mutation."),
+        ("either",        "Returns one of the given arguments at random. Often used with `<<set>>` and `<<link>>`."),
+
+        // ── Random functions ──────────────────────────────────────────
+        ("random",        "Returns a random integer in the inclusive range [min, max]."),
+        ("randomFloat",   "Returns a random floating-point number in the inclusive range [min, max]."),
+
+        // ── History / passage functions ───────────────────────────────
+        ("visited",       "Returns the number of times the given passage(s) have been visited. With no args, returns the current passage's visit count."),
+        ("visitedTags",   "Returns the number of times passages with ALL the given tag(s) have been visited."),
+        ("hasVisited",    "Returns whether the given passage(s) have been visited at least once."),
+        ("lastVisited",   "Returns the Unix timestamp of the last time the given passage was visited. With no args, uses the current passage."),
+        ("passage",       "Returns the name of the current passage. Optionally accepts a passage name to check."),
+        ("previous",      "Returns the name of the previous passage (the passage shown before the current one)."),
+        ("tags",          "Returns the tags of the current passage as an array. Optionally accepts a passage name."),
+
+        // ── Session functions ─────────────────────────────────────────
+        ("turns",         "Returns the total number of turns played in the current session."),
+        ("time",          "Returns the number of milliseconds elapsed since the last `<<timed>>` or `<<repeat>>` macro was triggered."),
+
+        // ── Memorize / recall functions ───────────────────────────────
+        ("memorize",      "Stores a value under the given name. Persisted across sessions via localStorage."),
+        ("recall",        "Retrieves a previously memorized value. Returns `undefined` if not found."),
+        ("forget",        "Removes a previously memorized value."),
+
+        // ── DOM / page functions ──────────────────────────────────────
+        ("setPageElement","Sets the content of a DOM element by ID from a passage. Useful for AJAX-like updates."),
+        ("triggerEvent",  "Triggers a custom event on the document. Useful for hooking into SugarCube's event system."),
+        ("importScripts", "Dynamically imports one or more external JavaScript files. Returns a Promise."),
+        ("importStyles",  "Dynamically imports one or more external CSS files. Returns a Promise."),
+    ];
+
+    FUNCTIONS
+}
+
+/// Check if a name is a SugarCube builtin function.
+pub fn is_builtin_function(name: &str) -> bool {
+    builtin_functions().iter().any(|(n, _)| *n == name)
+}
+
+/// Get the description for a SugarCube builtin function.
+pub fn describe_builtin_function(name: &str) -> Option<&'static str> {
+    builtin_functions()
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, desc)| *desc)
+}

@@ -279,9 +279,6 @@
     "operator": {
       "foreground": "#0369a1"
     },
-    "operator.controlFlow": {
-      "foreground": "#6b3fa0"
-    },
     "string": {
       "foreground": "#336f3c"
     },

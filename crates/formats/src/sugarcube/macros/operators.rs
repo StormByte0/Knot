@@ -94,22 +94,30 @@ pub fn comparison_operators() -> Vec<&'static str> {
 /// Returns `None` for unknown operators. Covers assignment, comparison,
 /// equality, and logical operators — the ones a user might hover over
 /// in a `<<set>>` or `<<if>>` expression.
+///
+/// Both SugarCube keyword forms (`to`, `eq`, `and`, etc.) and their
+/// JavaScript symbolic equivalents (`=`, `===`, `&&`, etc.) are supported.
+/// SugarCube allows both forms in TwineScript expressions; the keyword
+/// forms are idiomatic, but the symbolic forms are valid and common in
+/// code ported from JavaScript.
 pub fn describe_operator(op: &str) -> Option<&'static str> {
     match op {
         // Assignment
         "to" | "into" | "=" => Some("assignment — assigns the value on the right to the variable on the left"),
+        // Range keyword (specific to <<for>> range form)
+        "from" => Some("range start — introduces the starting value in a <<for>> range loop (e.g., <<for $i from 1 to 10>>)"),
         // Comparison
-        "gt" => Some("greater than — true if the left value is strictly greater than the right"),
-        "gte" => Some("greater than or equal — true if the left value is greater than or equal to the right"),
-        "lt" => Some("less than — true if the left value is strictly less than the right"),
-        "lte" => Some("less than or equal — true if the left value is less than or equal to the right"),
+        "gt" | ">" => Some("greater than — true if the left value is strictly greater than the right"),
+        "gte" | ">=" => Some("greater than or equal — true if the left value is greater than or equal to the right"),
+        "lt" | "<" => Some("less than — true if the left value is strictly less than the right"),
+        "lte" | "<=" => Some("less than or equal — true if the left value is less than or equal to the right"),
         // Equality
-        "eq" | "is" => Some("equal — true if both values are strictly equal (===)"),
-        "neq" | "isnot" => Some("not equal — true if the values are not strictly equal (!==)"),
+        "eq" | "is" | "===" => Some("equal — true if both values are strictly equal (===)"),
+        "neq" | "isnot" | "!==" => Some("not equal — true if the values are not strictly equal (!==)"),
         // Logical
-        "and" => Some("logical AND — true if both operands are true"),
-        "or" => Some("logical OR — true if either operand is true"),
-        "not" => Some("logical NOT — inverts the boolean value of the operand"),
+        "and" | "&&" => Some("logical AND — true if both operands are true"),
+        "or" | "||" => Some("logical OR — true if either operand is true"),
+        "not" | "!" => Some("logical NOT — inverts the boolean value of the operand"),
         // Defined checks (unary prefix — handled specially by the JS
         // preprocessor via a typeof wrapper, not via simple text
         // replacement like the operators above).

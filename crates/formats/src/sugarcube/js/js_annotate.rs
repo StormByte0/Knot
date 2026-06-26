@@ -164,6 +164,21 @@ fn annotate_inline_js(
                     *js_analysis = Some(analysis);
                 }
 
+                // ── <<for>> manual annotation ──────────────────────────────
+                // <<for>> is NOT sent to oxc because its SugarCube-specific
+                // syntax (range form `from...to`, simplified `_i, $array`)
+                // can't be reliably substituted into valid JS. We manually
+                // scan the args string for SugarCube keyword operators and
+                // numeric literals, emitting Operator and Number spans.
+                //
+                // Variable tokens for $var/_var references are already
+                // emitted by the `var_refs` scanner in `extraction.rs`,
+                // so we only handle operators and literals here.
+                if name.eq_ignore_ascii_case("for") {
+                    let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                    annotate_for_macro_args(args, open_span.clone(), analysis);
+                }
+
                 // For <<set>> with block literal RHS (object or array):
                 // decompose into leaf writes per the propagation model
                 // (see docs/variable-write-propagation-model.md).
@@ -282,6 +297,73 @@ fn annotate_inline_js(
                                     segment_construct_spans: vec![target_span],
                                 });
                             }
+                        } else {
+                            // Postfix ++ / -- (expression is None).
+                            // Emit a Write var_op on the target variable so it
+                            // gets a Variable(Definition) token. Without this,
+                            // `<<set $a++>>` produces the `++` Operator token
+                            // but NO Variable token for `$a` — the variable
+                            // appears uncolored.
+                            let target_span = sa.target.span.clone();
+                            let segment_spans = compute_target_segment_spans(
+                                &sa.target.name,
+                                &sa.target.property_path,
+                                &target_span,
+                            );
+                            let var_name = if sa.target.is_temporary {
+                                format!("_{}", sa.target.name)
+                            } else {
+                                format!("${}", sa.target.name)
+                            };
+                            let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                            analysis.var_ops.push(AnalyzedVarOp {
+                                name: var_name,
+                                is_temporary: sa.target.is_temporary,
+                                access_kind: VarAccessKind::Write,
+                                span: target_span.clone(),
+                                property_path: sa.target.property_path.clone(),
+                                segment_spans,
+                                construct_span: Some(target_span.clone()),
+                                segment_construct_spans: vec![target_span],
+                            });
+                        }
+                    }
+                }
+
+                // ── Emit operator token for <<set>> assignment operators ──
+                // oxc only sees the RHS expression (never the operator), so
+                // the standard `emit_*_operator` paths in `js_walk` never
+                // fire for `<<set>>`. We emit the operator span directly
+                // here, using the `operator_span` captured by the parser.
+                //
+                // This covers: `to`, `into`, `=`, `+=`, `-=`, `*=`, `/=`,
+                // `%=`, `++` (postfix), `--` (postfix).
+                if name.eq_ignore_ascii_case("set") {
+                    if let Some(sa) = set_assignment {
+                        if let Some(op_span) = &sa.operator_span {
+                            let kind = match sa.operator {
+                                crate::sugarcube::ast::SetOperator::To
+                                | crate::sugarcube::ast::SetOperator::Into
+                                | crate::sugarcube::ast::SetOperator::Eq => {
+                                    crate::sugarcube::ast::OperatorKind::Assignment
+                                }
+                                crate::sugarcube::ast::SetOperator::PlusEq
+                                | crate::sugarcube::ast::SetOperator::MinusEq
+                                | crate::sugarcube::ast::SetOperator::StarEq
+                                | crate::sugarcube::ast::SetOperator::SlashEq
+                                | crate::sugarcube::ast::SetOperator::PercentEq => {
+                                    crate::sugarcube::ast::OperatorKind::CompoundAssign
+                                }
+                                crate::sugarcube::ast::SetOperator::PostfixPlus
+                                | crate::sugarcube::ast::SetOperator::PostfixMinus => {
+                                    crate::sugarcube::ast::OperatorKind::Arithmetic
+                                }
+                            };
+                            let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                            analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
+                                kind,
+                                span: op_span.clone(),
+                            });
                         }
                     }
                 }
@@ -399,6 +481,178 @@ fn collect_macro_js_snippet(
         }
     } else {
         None
+    }
+}
+
+/// Manually annotate `<<for>>` macro args with Operator and Number tokens.
+///
+/// `<<for>>` is NOT sent to oxc because its SugarCube-specific syntax
+/// (range form `from...to`, simplified `_i, $array`, C-style with
+/// SugarCube keywords) can't be reliably substituted into valid JS.
+/// This function manually scans the args string for:
+///
+/// - SugarCube keyword operators (`from`, `to`, `and`, `or`, `not`,
+///   `lt`, `gt`, `lte`, `gte`, `eq`, `neq`, `is`, `isnot`, `def`, `ndef`)
+/// - Numeric literals (`42`, `3.14`)
+/// - Symbolic operators that might appear in C-style form (`++`, `--`,
+///   `<`, `>`, `=`, `;`)
+///
+/// Variable tokens for `$var`/`_var` references are already emitted by
+/// the `var_refs` scanner in `extraction.rs`, so we don't duplicate that
+/// here.
+///
+/// `args` is the raw args string (between `<<for ` and `>>`).
+/// `open_span` is the body-relative span of `<<for args` (from `<<` to
+/// just before `>>`). We compute the args offset from this.
+fn annotate_for_macro_args(
+    args: &str,
+    open_span: std::ops::Range<usize>,
+    analysis: &mut JsAnalysis,
+) {
+    if args.is_empty() {
+        return;
+    }
+
+    // Compute the body-relative offset of the args string.
+    //
+    // `open_span` covers `<<name args>>` — from `<<` to PAST `>>`.
+    // So `open_span.end` is 2 bytes past the `>>` delimiter.
+    // The args string (stored on the Macro node) does NOT include `>>`
+    // or the leading space after the macro name — it starts at the first
+    // non-space char after `<<name ` and ends at the last char before `>>`.
+    //
+    // Therefore: args_offset = open_span.end - 2 (for `>>`) - args.len()
+    let args_offset = open_span.end.saturating_sub(2 + args.len());
+
+    let bytes = args.as_bytes();
+    let len = bytes.len();
+    let mut i = 0usize;
+
+    // SugarCube keyword operators that can appear in <<for>> args.
+    // Sorted by length (longest first) to ensure longest-match.
+    const FOR_KEYWORDS: &[&str] = &[
+        "isnot", "ndef", "from",
+        "and", "ndef", "gte", "lte", "neq", "def",
+        "eq", "gt", "is", "lt", "or", "to",
+        "not",
+    ];
+
+    // Symbolic operator chars that can appear in C-style <<for>>.
+    fn is_sym_op_char(b: u8) -> bool {
+        matches!(b, b'+' | b'-' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'*' | b'/' | b'%')
+    }
+
+    fn is_ident_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    while i < len {
+        let b = bytes[i];
+
+        // Skip whitespace and semicolons (C-style for separator)
+        if b == b' ' || b == b'\t' || b == b';' || b == b',' {
+            i += 1;
+            continue;
+        }
+
+        // Check for SugarCube keyword operators (alphabetic words at word boundaries)
+        if b.is_ascii_alphabetic() {
+            // Word boundary before: previous char must NOT be an ident char
+            let word_boundary_before = i == 0 || !is_ident_char(bytes[i - 1]);
+
+            if word_boundary_before {
+                // Try to match a keyword (longest first)
+                let mut matched = None;
+                for &kw in FOR_KEYWORDS {
+                    if args[i..].starts_with(kw) {
+                        // Word boundary after: next char must NOT be an ident char
+                        let after_pos = i + kw.len();
+                        let word_boundary_after = after_pos >= len || !is_ident_char(bytes[after_pos]);
+                        if word_boundary_after {
+                            matched = Some(kw);
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(kw) = matched {
+                    let kind = match kw {
+                        "to" => crate::sugarcube::ast::OperatorKind::Assignment,
+                        "from" => crate::sugarcube::ast::OperatorKind::Assignment,
+                        "and" | "or" | "not" => crate::sugarcube::ast::OperatorKind::Logical,
+                        "eq" | "neq" | "is" | "isnot" | "gt" | "gte" | "lt" | "lte" => {
+                            crate::sugarcube::ast::OperatorKind::Comparison
+                        }
+                        "def" | "ndef" => crate::sugarcube::ast::OperatorKind::Comparison,
+                        _ => unreachable!(),
+                    };
+                    let span = (args_offset + i)..(args_offset + i + kw.len());
+                    analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
+                        kind,
+                        span,
+                    });
+                    i += kw.len();
+                    continue;
+                }
+            }
+
+            // Not a keyword — skip the rest of this word
+            while i < len && is_ident_char(bytes[i]) {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Check for numeric literals
+        if b.is_ascii_digit() {
+            let start = i;
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let span = (args_offset + start)..(args_offset + i);
+            analysis.literal_spans.push(crate::sugarcube::ast::LiteralSpan {
+                kind: crate::sugarcube::ast::LiteralKind::Number,
+                span,
+            });
+            continue;
+        }
+
+        // Check for symbolic operators (C-style form: ++, --, <, >, =, etc.)
+        if is_sym_op_char(b) {
+            let start = i;
+            while i < len && is_sym_op_char(bytes[i]) {
+                i += 1;
+            }
+            // Only emit if this looks like an operator, not a lone `-` in
+            // a variable name (already handled by the ident scanner above).
+            let op_text = &args[start..i];
+            let kind = match op_text {
+                "++" | "--" => crate::sugarcube::ast::OperatorKind::Arithmetic,
+                "=" | "+=" | "-=" | "*=" | "/=" | "%=" => {
+                    crate::sugarcube::ast::OperatorKind::Assignment
+                }
+                "==" | "===" | "!=" | "!==" | "<" | ">" | "<=" | ">=" => {
+                    crate::sugarcube::ast::OperatorKind::Comparison
+                }
+                "&&" | "||" | "!" => crate::sugarcube::ast::OperatorKind::Logical,
+                "+" | "-" | "*" | "/" | "%" => {
+                    crate::sugarcube::ast::OperatorKind::Arithmetic
+                }
+                _ => {
+                    // Unknown symbolic sequence — skip without emitting
+                    continue;
+                }
+            };
+            let span = (args_offset + start)..(args_offset + i);
+            analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
+                kind,
+                span,
+            });
+            continue;
+        }
+
+        // Skip any other character (parens, dots in property paths, etc.)
+        i += 1;
     }
 }
 
