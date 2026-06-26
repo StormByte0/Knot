@@ -171,8 +171,13 @@ pub(crate) async fn hover(
     // 3b. Try operator hover — cursor on a SugarCube operator like `gt`,
     //     `to`, `eq`, `and`. Shows a plain-English description so users
     //     can model their story logic without memorizing the operator names.
+    //
+    //     SCOPE: Only fires when an Operator semantic token exists at the
+    //     cursor — operators are valid only inside macro expressions, not
+    //     in prose or link text. This prevents `to` in "Jump to combat"
+    //     from triggering an operator hover.
     if let Some(plugin) = plugin {
-        if let Some(hover) = try_operator_hover(text, byte_offset, plugin) {
+        if let Some(hover) = try_operator_hover(text, byte_offset, plugin, &token_groups) {
             return Ok(Some(hover));
         }
     }
@@ -1401,11 +1406,53 @@ fn scan_variable_at_cursor(
 /// operator via `plugin.describe_operator()`. Returns a plain-English
 /// description so users can model their story logic without memorizing
 /// the operator names.
+///
+/// **Scoping**: SugarCube keyword operators (`to`, `eq`, `gt`, `and`, etc.)
+/// are ONLY valid inside macro expression contexts (e.g., `<<set $x to 5>>`,
+/// `<<if $hp gt 0>>`). They are NOT operators when they appear in:
+/// - Prose text (e.g., "Jump to combat demo")
+/// - Link display text (e.g., `[[Jump to combat demo|CombatEncounter]]`)
+/// - String literals inside macro args (e.g., `<<link "Go to forest">>`)
+///
+/// The token builder already correctly emits `Operator` semantic tokens
+/// ONLY from oxc JS analysis of macro expressions. So this handler checks
+/// whether an `Operator` token exists at the cursor position before firing.
+/// If no Operator token is found, the word is just prose/text, not an
+/// operator — return `None` so other hover handlers get a chance.
 fn try_operator_hover(
     text: &str,
     byte_offset: usize,
     plugin: &dyn fmt_plugin::FormatPlugin,
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
 ) -> Option<Hover> {
+    // ── Scope check: only fire if there's an Operator token at the cursor ──
+    //
+    // The token builder emits Operator tokens exclusively from oxc JS
+    // analysis (inside macro expressions like `<<set $x to 5>>`). Words
+    // like `to` in prose or link text do NOT get Operator tokens. So
+    // checking for an Operator token at the cursor is the precise way
+    // to distinguish a real operator from a coincidental word match.
+    let mut has_operator_token = false;
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                if matches!(token.token_type, knot_formats::plugin::SemanticTokenType::Operator) {
+                    has_operator_token = true;
+                    break;
+                }
+            }
+        }
+        if has_operator_token {
+            break;
+        }
+    }
+    if !has_operator_token {
+        return None;
+    }
+
     // Extract the word at the cursor position.
     let line_info = helpers::byte_offset_to_position(text, byte_offset);
     let line_idx = line_info.line as usize;
@@ -2841,6 +2888,94 @@ mod block_markup_hover_tests {
             assert_eq!(range.end.character, 2,
                 "range should cover 2 `!` characters, got end char {}", range.end.character);
         }
+    }
+}
+
+#[cfg(test)]
+mod operator_hover_scoping_tests {
+    use super::*;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use knot_formats::FormatPluginMut;
+    use url::Url;
+
+    /// Helper: parse a source and return (text, token_groups, plugin).
+    fn parse(src: &str) -> (String, Vec<knot_formats::plugin::PassageTokenGroup>, SugarCubePlugin) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.tw").unwrap();
+        let result = plugin.parse_mut(&uri, src);
+        (src.to_string(), result.token_groups, plugin)
+    }
+
+    /// Helper: find byte offset of `needle` in `src`.
+    fn cursor_on(src: &str, needle: &str) -> usize {
+        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found", needle))
+    }
+
+    #[test]
+    fn operator_hover_fires_inside_macro_expression() {
+        // `<<set $x to 5>>` — `to` is an assignment operator inside a macro.
+        let src = ":: Start\n<<set $x to 5>>\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "to 5");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_some(),
+            "hover on `to` inside <<set>> should fire (it's a real operator)");
+    }
+
+    #[test]
+    fn operator_hover_does_not_fire_in_link_display_text() {
+        // `[[Jump to combat demo|CombatEncounter]]` — `to` is part of the
+        // link display text, NOT an operator.
+        let src = ":: Start\n[[Jump to combat demo|CombatEncounter]]\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "to combat");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_none(),
+            "hover on `to` in link display text should NOT fire — it's prose, not an operator");
+    }
+
+    #[test]
+    fn operator_hover_does_not_fire_in_prose() {
+        // `Go to the forest.` — `to` is a preposition in prose.
+        let src = ":: Start\nGo to the forest.\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "to the");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_none(),
+            "hover on `to` in prose should NOT fire — it's not an operator context");
+    }
+
+    #[test]
+    fn operator_hover_does_not_fire_in_string_literal() {
+        // `<<link "Go to forest">>` — `to` is inside a string literal arg.
+        let src = ":: Start\n<<link \"Go to forest\">><</link>>\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "to forest");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_none(),
+            "hover on `to` inside a string literal should NOT fire");
+    }
+
+    #[test]
+    fn operator_hover_fires_for_gt_in_if_condition() {
+        // `<<if $hp gt 0>>` — `gt` is a comparison operator.
+        let src = ":: Start\n<<if $hp gt 0>><</if>>\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "gt 0");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_some(),
+            "hover on `gt` inside <<if>> should fire (it's a real operator)");
+    }
+
+    #[test]
+    fn operator_hover_does_not_fire_for_and_in_prose() {
+        // `You and I` — `and` is a conjunction in prose.
+        let src = ":: Start\nYou and I went home.\n";
+        let (text, token_groups, plugin) = parse(src);
+        let offset = cursor_on(&text, "and I");
+        let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
+        assert!(hover.is_none(),
+            "hover on `and` in prose should NOT fire — it's not an operator context");
     }
 }
 

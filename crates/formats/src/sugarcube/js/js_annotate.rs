@@ -24,6 +24,7 @@
 use crate::sugarcube::ast::{AnalyzedVarOp, AstNode, JsAnalysis, PassageAst};
 use crate::sugarcube::js::js_preprocess;
 use crate::sugarcube::js::js_walk;
+use crate::sugarcube::registries::variable_tree::VarAccessKind;
 use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
 use oxc_span::GetSpan;
 
@@ -171,6 +172,13 @@ fn annotate_inline_js(
                 // leaf scalar properties get direct writes, which then
                 // propagate up. Each leaf write carries segment_construct_spans
                 // for propagation.
+                //
+                // For <<set>> with SCALAR RHS (string, number, bool, etc.):
+                // emit a direct Write var_op on the target. The oxc analysis
+                // path only sees the RHS expression (not the full assignment),
+                // so without this, scalar-assigned variables get NO variable
+                // token — inconsistent with block-assigned variables which
+                // get tokens via leaf write decomposition.
                 if name.eq_ignore_ascii_case("set") {
                     if let Some(sa) = set_assignment {
                         if let Some(expr) = &sa.expression {
@@ -215,7 +223,64 @@ fn annotate_inline_js(
                                     for op in leaf_writes {
                                         analysis.var_ops.push(op);
                                     }
+                                } else {
+                                    // Empty block literal (e.g., `<<set $x to []>>`
+                                    // or `<<set $x to {}>>`) — no leaf writes to
+                                    // decompose. Emit a direct Write on the root
+                                    // so the variable still gets a token, matching
+                                    // the behavior for scalar assignments and
+                                    // non-empty block assignments.
+                                    let target_span = sa.target.span.clone();
+                                    let segment_spans = compute_target_segment_spans(
+                                        &sa.target.name,
+                                        &sa.target.property_path,
+                                        &target_span,
+                                    );
+                                    let var_name = if sa.target.is_temporary {
+                                        format!("_{}", sa.target.name)
+                                    } else {
+                                        format!("${}", sa.target.name)
+                                    };
+                                    let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                                    analysis.var_ops.push(AnalyzedVarOp {
+                                        name: var_name,
+                                        is_temporary: sa.target.is_temporary,
+                                        access_kind: VarAccessKind::Write,
+                                        span: target_span.clone(),
+                                        property_path: sa.target.property_path.clone(),
+                                        segment_spans,
+                                        construct_span: Some(target_span.clone()),
+                                        segment_construct_spans: vec![target_span],
+                                    });
                                 }
+                            } else {
+                                // Scalar RHS — emit a direct Write var_op on
+                                // the target variable. This ensures every
+                                // `<<set $var to <scalar>>>` produces a
+                                // Variable+Definition token, matching the
+                                // behavior for block-literal assignments.
+                                let target_span = sa.target.span.clone();
+                                let segment_spans = compute_target_segment_spans(
+                                    &sa.target.name,
+                                    &sa.target.property_path,
+                                    &target_span,
+                                );
+                                let var_name = if sa.target.is_temporary {
+                                    format!("_{}", sa.target.name)
+                                } else {
+                                    format!("${}", sa.target.name)
+                                };
+                                let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                                analysis.var_ops.push(AnalyzedVarOp {
+                                    name: var_name,
+                                    is_temporary: sa.target.is_temporary,
+                                    access_kind: VarAccessKind::Write,
+                                    span: target_span.clone(),
+                                    property_path: sa.target.property_path.clone(),
+                                    segment_spans,
+                                    construct_span: Some(target_span.clone()),
+                                    segment_construct_spans: vec![target_span],
+                                });
                             }
                         }
                     }
@@ -675,4 +740,142 @@ pub fn compute_target_segment_spans(
     }
 
     spans
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::{FormatPluginMut, SemanticTokenType};
+    use crate::sugarcube::SugarCubePlugin;
+    use url::Url;
+
+    /// Helper: parse a source and return all semantic tokens of the given type.
+    fn tokens_of_type(src: &str, token_type: SemanticTokenType) -> Vec<(usize, usize, String)> {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.tw").unwrap();
+        let result = plugin.parse_mut(&uri, src);
+        let mut found = Vec::new();
+        for group in &result.token_groups {
+            for token in &group.tokens {
+                if token.token_type == token_type {
+                    let start = (token.start + group.passage_offset).min(src.len());
+                    let end = (start + token.length).min(src.len());
+                    let text = src[start..end].to_string();
+                    found.push((start, token.length, text));
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn scalar_set_emits_variable_token() {
+        // `<<set $playerName to "Alex">>` — scalar RHS (string).
+        // Before the fix, this produced NO variable token because oxc
+        // only saw `"Alex"` (not the full assignment).
+        let src = ":: Start\n<<set $playerName to \"Alex\">>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(!var_tokens.is_empty(),
+            "scalar <<set>> should emit a Variable token for the target, got: {:?}", var_tokens);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$playerName"),
+            "Variable token should cover $playerName, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn number_set_emits_variable_token() {
+        // `<<set $playerLevel to 1>>` — scalar RHS (number).
+        let src = ":: Start\n<<set $playerLevel to 1>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$playerLevel"),
+            "Variable token should cover $playerLevel, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn empty_array_set_emits_variable_token() {
+        // `<<set $visitedRooms to []>>` — empty array RHS.
+        // Before the fix, decompose_block_literal_for_set returned an
+        // empty vec (no leaf writes), so no token was emitted.
+        let src = ":: Start\n<<set $visitedRooms to []>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$visitedRooms"),
+            "empty array <<set>> should emit a Variable token for the target, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn empty_object_set_emits_variable_token() {
+        // `<<set $empty to {}>>` — empty object RHS.
+        let src = ":: Start\n<<set $empty to {}>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$empty"),
+            "empty object <<set>> should emit a Variable token, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn nonempty_array_set_emits_variable_token() {
+        // `<<set $inventory to ["Lantern", "Rope"]>>` — non-empty array.
+        // This already worked via leaf write decomposition, but verify
+        // the fix didn't break it.
+        let src = ":: Start\n<<set $inventory to [\"Lantern\", \"Rope\"]>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$inventory"),
+            "non-empty array <<set>> should emit a Variable token, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn nonempty_object_set_emits_variable_token() {
+        // `<<set $stats to { strength: 10 }>>` — non-empty object.
+        let src = ":: Start\n<<set $stats to { strength: 10 }>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$stats"),
+            "non-empty object <<set>> should emit a Variable token, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn new_expression_set_emits_variable_token() {
+        // `<<set $npcs to new Map([...])>>` — NewExpression RHS.
+        // This falls to the scalar branch (not `{` or `[`), so should
+        // emit a direct Write token.
+        let src = ":: Start\n<<set $npcs to new Map([[\"bard\", { name: \"Lila\" }]])>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
+            "new-expression <<set>> should emit a Variable token, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn temp_var_set_emits_variable_token() {
+        // `<<set _count to 0>>` — temporary variable, scalar RHS.
+        let src = ":: Start\n<<set _count to 0>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "_count"),
+            "temp var <<set>> should emit a Variable token, got: {:?}", var_tokens);
+    }
+
+    #[test]
+    fn all_storyinit_vars_get_tokens() {
+        // Reproduces the exact inconsistency from the testbed's StoryInit:
+        // all of these should get Variable tokens, not just the block ones.
+        let src = "\
+:: StoryInit
+<<set $playerName to \"Alex\">>
+<<set $playerLevel to 1>>
+<<set $playerHP to 100>>
+<<set $playerMaxHP to 100>>
+<<set $playerGold to 50>>
+<<set $inventory to [\"Lantern\", \"Rope\"]>>
+<<set $stats to { strength: 10, dexterity: 12 }>>
+<<set $flags to { metKing: false, hasKey: false }>>
+<<set $visitedRooms to []>>
+<<set $questLog to []>>
+";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        let names: Vec<&str> = var_tokens.iter().map(|(_, _, t)| t.as_str()).collect();
+        for expected in &["$playerName", "$playerLevel", "$playerHP", "$playerMaxHP", "$playerGold", "$inventory", "$stats", "$flags", "$visitedRooms", "$questLog"] {
+            assert!(names.contains(expected),
+                "Variable token missing for {}: got {:?}", expected, names);
+        }
+    }
 }

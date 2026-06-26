@@ -3053,37 +3053,35 @@ impl SugarCubePlugin {
 
     /// Build default completions when no specific context is detected.
     ///
-    /// Offers workspace symbols: passages, variables, custom macros, and JS globals.
+    /// Offers workspace symbols: variables, custom macros, and JS globals.
+    ///
+    /// **NOT included**: Passage names. They are only valid inside `[[link]]`
+    /// syntax or macro passage-ref args — both contexts are handled by
+    /// earlier branches in `provide_completions` (trigger-based and
+    /// semantic-token-based). Including them here caused false passage
+    /// suggestions in plain prose.
     fn build_default_completions(
         &self,
-        workspace: &knot_core::Workspace,
+        _workspace: &knot_core::Workspace,
     ) -> Vec<crate::types::FormatCompletionItem> {
         use crate::types::{FormatCompletionItem, FormatCompletionKind, FormatInsertTextFormat};
 
         let mut items = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // ── Passage names ────────────────────────────────────────────
-        let passage_names = workspace.all_passage_names();
-        for (i, name) in passage_names.iter().enumerate() {
-            seen.insert(format!("passage:{}", name));
-            items.push(FormatCompletionItem {
-                label: name.clone(),
-                kind: FormatCompletionKind::Module,
-                detail: Some("Passage".to_string()),
-                sort_text: Some(format!("0_{:06}", i)),
-                filter_text: Some(name.clone()),
-                insert_text: Some(name.clone()),
-                insert_text_format: FormatInsertTextFormat::PlainText,
-                text_edit: None,
-                deprecated: false,
-                preselect: name == "Start",
-                data: Some(serde_json::json!({"type": "passage", "name": name})),
-                commit_characters: Vec::new(),
-            });
-        }
-
         // ── Story variables ──────────────────────────────────────────
+        //
+        // NOTE: Passage names are deliberately NOT included in the default
+        // completions. Passage names are only valid in specific contexts:
+        //   - Inside `[[link]]` syntax (handled by the `[` trigger branch)
+        //   - Inside macro passage-ref args (handled by the `"` trigger and
+        //     semantic-token branches in `provide_completions`)
+        //
+        // Including passage names in the default fallback caused them to
+        // appear when the user hit Ctrl+Space in plain prose — confusing
+        // because bare passage names in prose are just text, not references.
+        // All valid passage-name contexts are handled by earlier branches
+        // in `provide_completions`, so the default fallback doesn't need them.
         let var_names = self.registry.variable_names();
         let mut sorted_vars: Vec<_> = var_names.into_iter().collect();
         sorted_vars.sort();
@@ -3384,6 +3382,36 @@ mod completion_debug_tests {
         assert!(passage_items.is_empty(),
             "Single [ should not trigger passage completions, got {} passage items",
             passage_items.len());
+    }
+
+    /// Test that Ctrl+Space in plain prose does NOT show passage names.
+    ///
+    /// Before the scoping fix, `build_default_completions` included ALL
+    /// passage names as a fallback when no specific context was detected.
+    /// This caused passage names to appear when the user hit Ctrl+Space
+    /// in plain prose — confusing because bare passage names in prose
+    /// are just text, not references. Passage completions should only
+    /// appear inside `[[link]]` syntax or macro passage-ref args.
+    #[test]
+    fn test_ctrl_space_in_prose_no_passage_completions() {
+        let plugin = SugarCubePlugin::new();
+        let text = ":: Start\nYou are in a forest.\n";
+        let line = 1u32;
+        let character = 10u32; // cursor in the middle of prose
+        let uri = Url::parse("file:///test.twee").unwrap();
+        let workspace = make_workspace_with_passages(&uri, &["Start", "Forest", "Cave", "Town"]);
+
+        let items = plugin.provide_completions(
+            text, &workspace, &uri, line, character, None, &[],
+        );
+        // No passage names should appear in the default completions
+        let passage_items: Vec<_> = items.iter()
+            .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))
+            .collect();
+        assert!(passage_items.is_empty(),
+            "Ctrl+Space in prose should NOT show passage names, got {} passage items: {:?}",
+            passage_items.len(),
+            passage_items.iter().map(|i| &i.label).collect::<Vec<_>>());
     }
 
     /// Test that `[[` DOES trigger passage completions.
