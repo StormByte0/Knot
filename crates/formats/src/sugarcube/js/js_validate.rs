@@ -45,6 +45,7 @@ use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity};
 use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
 
 use crate::sugarcube::ast::{self, JsSnippet};
+use std::collections::HashSet;
 
 /// Validate all JS snippets in a passage AST and return diagnostics.
 ///
@@ -60,8 +61,9 @@ use crate::sugarcube::ast::{self, JsSnippet};
 pub fn validate_inline_js(
     nodes: &[ast::AstNode],
     body_offset_in_passage: usize,
+    known_macro_names: &HashSet<String>,
 ) -> Vec<FormatDiagnostic> {
-    let snippets = ast::collect_js_snippets(nodes);
+    let snippets = ast::collect_js_snippets(nodes, known_macro_names);
     let mut diagnostics = Vec::new();
 
     for snippet in &snippets {
@@ -255,7 +257,7 @@ mod tests {
         // <<set $hp to 100>> — valid JS after preprocessing
         let body = "<<set $hp to 100>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         // Should produce no diagnostics — the JS expression is valid
         // after $hp → State_variables_hp and to → =
@@ -275,7 +277,7 @@ mod tests {
         // <<run function(>> — invalid JS (unclosed paren)
         let body = "<<run function(>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         // Should produce at least one JS diagnostic
         let js_errors: Vec<_> = diagnostics
@@ -293,7 +295,7 @@ mod tests {
         // <<print $gold>> — valid expression after preprocessing
         let body = "<<print $gold>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -312,7 +314,7 @@ mod tests {
         let body = "<<run bad[>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let body_offset_in_passage = 20; // e.g. header line + newline
-        let diagnostics = validate_inline_js(&ast.nodes, body_offset_in_passage);
+        let diagnostics = validate_inline_js(&ast.nodes, body_offset_in_passage, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -337,7 +339,7 @@ mod tests {
         // (empty args are not collected as snippets)
         let body = "<<set >>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -355,7 +357,7 @@ mod tests {
         // Multiple JS-containing macros in one passage
         let body = "<<set $x to 1>><<run Math.sqrt(4)>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -378,7 +380,7 @@ mod tests {
   }
 ]>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -465,7 +467,7 @@ mod tests {
 
 ]>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -492,7 +494,7 @@ mod tests {
         // to the >> closing tag.
         let body = r#"<<set $x to [1, 2, bad@@]>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -519,7 +521,7 @@ mod tests {
         // the error span should point to the expression, not to <<.
         let body = r#"<<set $arr.push(bad@@)>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -546,7 +548,7 @@ mod tests {
         // not to the << opening tag.
         let body = r#"<<run bad@@syntax>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -570,7 +572,7 @@ mod tests {
         // <<set $var to {key: "value"}>> — object literal with SugarCube `to`
         let body = r#"<<set $config to {key: "value", nested: {a: 1}}>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -591,7 +593,7 @@ mod tests {
         // assignment structurally. The comma expression goes to oxc as-is.
         let body = r#"<<set $a = 1, $b = 2>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         // This might produce JS errors because $b is not substituted in the
         // expression portion (only the RHS of the first assignment goes to oxc).
@@ -608,7 +610,7 @@ mod tests {
         // at the >> inside the comment, causing "Unexpected token" errors.
         let body = r#"<<set $x = [1, /* >> */ 2, 3]>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -629,7 +631,7 @@ mod tests {
         // Regression test: >> inside a // comment must NOT close the macro.
         let body = "<<set $x = [1, // >> close\n2, 3]>>";
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -665,7 +667,7 @@ mod tests {
   journal: { quests: [] }
 }>>"#;
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let js_errors: Vec<_> = diagnostics
             .iter()
@@ -695,7 +697,7 @@ mod tests {
             content
         };
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
-        let diagnostics = validate_inline_js(&ast.nodes, 0);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         let unterminated: Vec<_> = diagnostics
             .iter()
@@ -708,6 +710,96 @@ mod tests {
             unterminated.is_empty(),
             "Expected no 'unterminated comment' diagnostics for _special.twee, got: {:?}",
             unterminated
+        );
+    }
+
+    // ── def / ndef operator tests ──────────────────────────────────────
+
+    #[test]
+    fn validate_def_in_if_macro_no_js_error() {
+        // `<<if def _defended and _defended>>` — the exact expression
+        // from sugarcube-testbed/src/51-combat.twee:99.
+        //
+        // Before the def/ndef fix, `def` was left as a bare identifier
+        // and oxc reported: "Expected `,` or `)` but found `Identifier`"
+        // (sc-js diagnostic at the `def` token).
+        //
+        // After the fix, `def _defended` is preprocessed to
+        // `(typeof State_temporary_defended !== "undefined")`, which oxc
+        // parses without error.
+        let body = "<<if def _defended and _defended>><</if>>";
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for `<<if def _defended and _defended>>`, got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_ndef_in_if_macro_no_js_error() {
+        // `<<if ndef $missing>>` — the form from
+        // sugarcube-testbed/src/28-operators.twee:47.
+        let body = "<<if ndef $missing>><</if>>";
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for `<<if ndef $missing>>`, got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_def_in_ternary_no_js_error() {
+        // `<<link `"Visit " + (def _target ? _target : "Time")` "Time">>`
+        // — the form from sugarcube-testbed/src/60-edge-cases.twee:20.
+        //
+        // The backtick expression contains `def _target ? _target : "Time"`,
+        // which after preprocessing becomes:
+        //   (typeof State_temporary_target !== "undefined") ? State_temporary_target : "Time"
+        let body = "<<link `\"Visit \" + (def _target ? _target : \"Time\")` \"Time\">><</link>>";
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for `def` in ternary, got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn validate_def_story_variable_no_js_error() {
+        // `<<if def $a>>` — the form from
+        // sugarcube-testbed/src/28-operators.twee:46.
+        let body = "<<if def $a>><</if>>";
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
+
+        let js_errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == "sc-js")
+            .collect();
+        assert!(
+            js_errors.is_empty(),
+            "Expected no JS errors for `<<if def $a>>`, got: {:?}",
+            js_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 }

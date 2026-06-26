@@ -265,8 +265,21 @@ pub(crate) async fn index_workspace(
         inner_guard.workspace.graph = rebuild_graph(&inner_guard.workspace, &inner_guard.format_registry, format.clone());
         inner_guard.workspace.mark_indexed();
 
-        // Notify the client of the detected format so it can switch language IDs
-        doc_uris = inner_guard.open_documents.keys().map(|u| u.to_string()).collect();
+        // Notify the client of the detected format so it can switch language IDs.
+        //
+        // IMPORTANT: Only include `.tw`/`.twee` files here. `.js` files are
+        // indexed and parsed by Knot (for Macro.add/Template.add registration,
+        // JS diagnostics, etc.) but they must keep their original `javascript`
+        // language ID — switching them to `twee-sugarcube` would break VS
+        // Code's built-in JS language features (IntelliSense, formatting,
+        // etc.) and confuse users.
+        doc_uris = inner_guard.open_documents.keys()
+            .filter(|u| {
+                let is_js = u.path().rsplit('.').next() == Some("js");
+                !is_js
+            })
+            .map(|u| u.to_string())
+            .collect();
 
         diagnostics = analyze_with_format_vars(&inner_guard.workspace, &inner_guard.format_registry);
         open_docs = inner_guard.open_documents.clone();

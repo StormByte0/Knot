@@ -79,6 +79,13 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
             let js_node_count = count_js_nodes(&passage_ast.nodes);
             pipeline_log::parse_phase2_enter(&cp.header.name, js_node_count);
+            // Build the set of all known macro names (builtin + custom) so
+            // the fallback in collect_macro_js_snippet doesn't send custom
+            // widget args to oxc.
+            let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+            for m in super::macros::builtin_macros() {
+                known_macro_names.insert(m.name.to_string());
+            }
             super::js::js_annotate::annotate_js(
                 &mut passage_ast,
                 &cp.body_text,
@@ -88,6 +95,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 // use $var references. The preprocessor handles the
                 // $var → State.variables.var substitution.
                 true,
+                &known_macro_names,
             );
             let total_var_ops = count_total_var_ops(&passage_ast);
             pipeline_log::parse_phase2_exit(&cp.header.name, total_var_ops);
@@ -194,10 +202,20 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 );
                 passage_diagnostics.extend(js_diagnostics);
             } else {
-                // Normal passages: validate inline <<script>>/<<set>>/<<run>> snippets
+                // Normal passages: validate inline <<script>>/<<set>>/<<run>> snippets.
+                //
+                // Build the set of all known macro names (builtin catalog +
+                // custom macros from the registry) so the fallback in
+                // `collect_js_snippets` doesn't send custom widget args
+                // (e.g. `<<statblock "Strength" $stats.strength>>`) to oxc.
+                let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+                for m in super::macros::builtin_macros() {
+                    known_macro_names.insert(m.name.to_string());
+                }
                 let js_diagnostics = super::js_validate::validate_inline_js(
                     &passage_ast.nodes,
                     body_offset_in_passage,
+                    &known_macro_names,
                 );
                 passage_diagnostics.extend(js_diagnostics);
             }
@@ -335,6 +353,11 @@ pub(super) fn parse_single(
 
     // Phase 2: JS annotation pass
     if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
+        let registry = plugin.registry();
+        let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+        for m in super::macros::builtin_macros() {
+            known_macro_names.insert(m.name.to_string());
+        }
         super::js::js_annotate::annotate_js(
             &mut passage_ast,
             passage_text,
@@ -342,6 +365,7 @@ pub(super) fn parse_single(
             // Incremental re-parse of a single Twee passage — SugarCube syntax
             // is always allowed.
             true,
+            &known_macro_names,
         );
     }
 
@@ -512,7 +536,11 @@ pub(super) fn parse_script_file(
     // passages). The SugarCube preprocessor runs ($var → State.variables.var,
     // keyword operators → JS equivalents) so that .js files have the same JS
     // analysis behavior as [script]-tagged passages.
-    super::js::js_annotate::annotate_js(&mut passage_ast, text, true, true);
+    //
+    // `known_macro_names` is empty here — standalone .js files have no
+    // inline macro calls, so the fallback path is never reached.
+    let empty_set = std::collections::HashSet::new();
+    super::js::js_annotate::annotate_js(&mut passage_ast, text, true, true, &empty_set);
 
     // Phase 3: Registry population
     registry_populate::populate_registries_from_unified_ast(

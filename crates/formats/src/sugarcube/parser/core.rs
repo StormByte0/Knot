@@ -331,14 +331,69 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // @ or @@ — SugarCube inline styling
                 // Double-at: @@class;text@@
                 // Single-at: @class;text@ (class may start with . or # for CSS selectors)
+                //
+                // SugarCube requires the class spec + `;` separator to be on
+                // the SAME LINE as the opening `@@`/`@`. A `@@` followed by a
+                // newline (or by another `@@` with no `;` in between) is NOT
+                // a valid inline-style opener — it's either a closing
+                // delimiter (consumed by the matching opener's
+                // `parse_inline_style` call) or literal text.
+                //
+                // Without this guard, a standalone `@@` on its own line would
+                // be treated as an opener and `find_class_and_body_start`
+                // would scan forward for the next `@@`, consuming everything
+                // in between as a bogus "class name" string. Any block macros
+                // in that range would never be parsed, producing spurious
+                // "Unclosed block macro" diagnostics for macros whose closers
+                // were swallowed.
+                // See: sugarcube-testbed/src/51-combat.twee lines 42, 52, 65,
+                // 76, 85 — standalone `@@` markers that were eating
+                // `<</replace>>` / `<</link>>` / `<</if>>` closers.
                 let is_double_at = bytes[i + 1] == b'@';
-                let start = i;
-                let adv = if is_double_at { 2 } else { 1 };
-                i += adv;
-                ctx.col += adv;
-                let node = parse_inline_style(text, &mut i, ctx, start, is_double_at);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(node)
+
+                // Look ahead from just after the opener for a `;` on the same
+                // line. Break on `\n` (no `;` on this line) or on the close
+                // delimiter (no `;` at all — class-less form, which SugarCube
+                // does not document and the testbed does not use).
+                let mut k = i + if is_double_at { 2 } else { 1 };
+                let mut found_semi = false;
+                while k < len {
+                    let b = bytes[k];
+                    if b == b';' {
+                        found_semi = true;
+                        break;
+                    }
+                    if b == b'\n' {
+                        break;
+                    }
+                    if is_double_at {
+                        if b == b'@' && k + 1 < len && bytes[k + 1] == b'@' {
+                            break;
+                        }
+                    } else if b == b'@' {
+                        break;
+                    }
+                    k += 1;
+                }
+
+                if !found_semi {
+                    // Not a valid inline-style opener — treat `@@`/`@` as
+                    // literal text. Advance past the opener characters; the
+                    // catch-all's text-flush logic will include them in the
+                    // next Text node.
+                    let adv = if is_double_at { 2 } else { 1 };
+                    i += adv;
+                    ctx.col += adv;
+                    None
+                } else {
+                    let start = i;
+                    let adv = if is_double_at { 2 } else { 1 };
+                    i += adv;
+                    ctx.col += adv;
+                    let node = parse_inline_style(text, &mut i, ctx, start, is_double_at);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    Some(node)
+                }
             }
             b'{' if i + 2 < len && bytes[i + 1] == b'{' && bytes[i + 2] == b'{' => {
                 // {{{ — code block (block form) or inline code (inline form).
@@ -5504,5 +5559,171 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
             }
             other => panic!("expected CodeBlock, got {other:?}"),
         }
+    }
+
+    // ── Standalone `@@` regression — sugarcube-testbed/51-combat.twee ────
+
+    #[test]
+    fn standalone_double_at_does_not_eat_block_macro_closers() {
+        // Regression for the bug where a standalone `@@` on its own line
+        // (no `;` separator) was treated as an inline-style opener and
+        // `find_class_and_body_start` scanned forward to the next `@@`,
+        // consuming everything in between as a bogus "class name" string.
+        //
+        // Any block macros in that range were never parsed, so their
+        // openers stayed on the tree-builder stack without closers →
+        // spurious "Unclosed block macro" diagnostics.
+        //
+        // Reproduces: sugarcube-testbed/src/51-combat.twee lines 42-52
+        // (the `<<link "Attack">>` block with a stray `@@` before
+        // `<</replace>>` / `<</link>>`).
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        // Minimal repro: <<link>> opens, then a stray `@@` on its own
+        // line, then the closers. Before the fix, the `@@` would swallow
+        // the closers and `<<link>>` would be reported unclosed.
+        let text = ":: Start\n<<link \"Attack\">>\n<<set _x to 1>>\n@@\n<</link>>\n";
+        let result = plugin.parse_mut(
+            &url::Url::parse("file:///test.tw").unwrap(),
+            text,
+        );
+
+        let unclosed_link: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-unclosed" && d.message.contains("link"))
+            .collect();
+        assert!(unclosed_link.is_empty(),
+            "standalone @@ should not swallow <</link>> — got: {:?}",
+            unclosed_link.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn standalone_double_at_multiple_markers_no_unclosed_diagnostic() {
+        // Multi-marker repro mirroring 51-combat.twee: several stray `@@`
+        // markers each sitting between a `<<replace>>` body and its
+        // `<</replace>>` closer. Before the fix, each `@@` would pair
+        // with the next, eating all the closers in between.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let mut plugin = SugarCubePlugin::new();
+        let text = ":: Start\n\
+<<link \"Attack\">>\n\
+\t<<replace \"#out\">>\n\
+\tbody A\n\
+\t@@\n\
+\t<</replace>>\n\
+<</link>>\n\
+<<link \"Defend\">>\n\
+\t<<replace \"#out\">>\n\
+\tbody B\n\
+\t@@\n\
+\t<</replace>>\n\
+<</link>>\n";
+        let result = plugin.parse_mut(
+            &url::Url::parse("file:///test.tw").unwrap(),
+            text,
+        );
+
+        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-unclosed")
+            .collect();
+        assert!(unclosed.is_empty(),
+            "standalone @@ markers must not produce unclosed-block diagnostics: {:?}",
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn standalone_double_at_treated_as_text_not_inlinestyle() {
+        // A standalone `@@\n` should NOT produce an InlineStyle node.
+        // It should be consumed as text (the `@@` characters appear in a
+        // Text node). This verifies the "fall through to catch-all" path.
+        let body = "@@\n";
+        let ast = crate::sugarcube::parser::parse_passage_body(body, 0, ParseMode::Normal);
+
+        let has_inlinestyle = ast.nodes.iter().any(|n| matches!(n, AstNode::InlineStyle { .. }));
+        assert!(!has_inlinestyle,
+            "standalone @@\\n should not produce an InlineStyle node, got: {:?}",
+            ast.nodes);
+    }
+
+    #[test]
+    fn valid_inline_styles_still_parsed_after_fix() {
+        // The fix must NOT break valid `@@` forms that have a `;` on the
+        // same line as the opener. Covers all forms used in the
+        // sugarcube-testbed corpus:
+        //   - @@#id;@@              (empty body anchor)
+        //   - @@.class;text@@       (class + body, single line)
+        //   - @@#id;style;text@@    (id + inline style + body)
+        //   - @@.class;\n...\n@@    (multi-line body)
+        let cases = [
+            // (input, expected_class)
+            ("@@#link-out;@@", "#link-out"),
+            ("@@.highlight;important text@@", ".highlight"),
+            ("@@#my-id;color:blue;Text@@", "#my-id"),
+            ("@@.block-style;\nbody line 1\nbody line 2\n@@", ".block-style"),
+            ("@@.warning;some text without close\n", ".warning"), // unclosed, no panic
+        ];
+
+        for (input, expected_class) in cases {
+            let ast = crate::sugarcube::parser::parse_passage_body(
+                input, 0, ParseMode::Normal,
+            );
+            let found = ast.nodes.iter().find_map(|n| match n {
+                AstNode::InlineStyle { class, .. } => Some(class.clone()),
+                _ => None,
+            });
+            assert_eq!(
+                found.as_deref(), Some(expected_class),
+                "input {:?} should produce InlineStyle with class {:?}, got nodes: {:?}",
+                input, expected_class, ast.nodes,
+            );
+        }
+    }
+
+    #[test]
+    fn combat_encounter_repro_no_unclosed_diagnostic() {
+        // Direct repro from sugarcube-testbed/src/51-combat.twee — the
+        // CombatEncounter passage up to the first `<<link "Defend">>`.
+        // Before the fix, the stray `@@` on line 42 paired with the next
+        // `@@` on line 52, eating `<</replace>>` and `<</link>>` closers
+        // and producing "Unclosed block macro: <<link>>" / <<replace>>.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+
+        let body = "\
+<<link \"Attack\">>
+\t<<set _dmg to 1>>
+\t<<set _enemyHP to 5>>
+\t<<replace \"#combat-log\">>
+\t!!Turn 1
+\tYou hit the enemy for _dmg damage.
+\t<<if _enemyHP lte 0>>
+\t\t@@.victory;Enemy falls!@@
+\t\tYou win.
+\t<<else>>
+\t\t<<include \"EnemyTurn\">>
+\t<</if>>
+\t@@
+\t<</replace>>
+<</link>>
+";
+        let text = format!(":: CombatEncounter\n{body}");
+        let mut plugin = SugarCubePlugin::new();
+        let result = plugin.parse_mut(
+            &url::Url::parse("file:///test.tw").unwrap(),
+            &text,
+        );
+
+        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "sc-unclosed")
+            .collect();
+        assert!(unclosed.is_empty(),
+            "CombatEncounter repro should have no unclosed-block diagnostics: {:?}",
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 }

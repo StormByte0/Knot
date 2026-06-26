@@ -110,6 +110,11 @@ pub fn describe_operator(op: &str) -> Option<&'static str> {
         "and" => Some("logical AND — true if both operands are true"),
         "or" => Some("logical OR — true if either operand is true"),
         "not" => Some("logical NOT — inverts the boolean value of the operand"),
+        // Defined checks (unary prefix — handled specially by the JS
+        // preprocessor via a typeof wrapper, not via simple text
+        // replacement like the operators above).
+        "def" => Some("defined — true if the variable has been assigned a value"),
+        "ndef" => Some("not defined — true if the variable has not been assigned a value"),
         _ => None,
     }
 }

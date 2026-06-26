@@ -1885,7 +1885,7 @@ mod tests {
     fn set_macro_only_rhs_goes_to_oxc() {
         // Verify that collect_js_snippets only gets the RHS for <<set>>
         let ast = parse_passage_body("<<set $hp to 100>>", 0, ParseMode::Normal);
-        let snippets = collect_js_snippets(&ast.nodes);
+        let snippets = collect_js_snippets(&ast.nodes, &std::collections::HashSet::new());
         // Only one snippet, and it should be just the RHS "100"
         let set_snippets: Vec<_> = snippets.iter().filter(|s| s.macro_name == "set").collect();
         assert_eq!(set_snippets.len(), 1);
@@ -1896,7 +1896,7 @@ mod tests {
     fn set_macro_postfix_no_js_snippet() {
         // Postfix ++ and -- should NOT produce JS snippets
         let ast = parse_passage_body("<<set $hp++>>", 0, ParseMode::Normal);
-        let snippets = collect_js_snippets(&ast.nodes);
+        let snippets = collect_js_snippets(&ast.nodes, &std::collections::HashSet::new());
         let set_snippets: Vec<_> = snippets.iter().filter(|s| s.macro_name == "set").collect();
         assert!(set_snippets.is_empty());
     }
@@ -1905,7 +1905,7 @@ mod tests {
     fn set_macro_method_call_full_args_to_oxc() {
         // Method calls should send full args to oxc (like <<run>>)
         let ast = parse_passage_body(r#"<<set $arr.push("item")>>"#, 0, ParseMode::Normal);
-        let snippets = collect_js_snippets(&ast.nodes);
+        let snippets = collect_js_snippets(&ast.nodes, &std::collections::HashSet::new());
         let set_snippets: Vec<_> = snippets.iter().filter(|s| s.macro_name == "set").collect();
         assert_eq!(set_snippets.len(), 1);
         assert!(set_snippets[0].source.contains("push"));

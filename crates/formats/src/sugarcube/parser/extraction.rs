@@ -59,6 +59,19 @@ fn extract_links_recursive(nodes: &[AstNode], links: &mut Vec<LinkInfo>) {
                     extract_links_recursive(ch, links);
                 }
             }
+            // Recurse into any container node that holds parsed children.
+            // Links inside headings, list items, blockquotes, inline styles,
+            // and blockquote blocks must be extracted for the graph builder
+            // to find them — otherwise passages linked only from list items
+            // (e.g. `* [[Widget showcase|WidgetShowcase]]`) produce false
+            // "UnreachablePassage" diagnostics.
+            AstNode::Heading { children, .. }
+            | AstNode::ListItem { children, .. }
+            | AstNode::Blockquote { children, .. }
+            | AstNode::BlockquoteBlock { children, .. }
+            | AstNode::InlineStyle { children, .. } => {
+                extract_links_recursive(children, links);
+            }
             _ => {}
         }
     }
@@ -202,30 +215,37 @@ fn extract_macro_passage_refs(
                     source,
                 });
             } else if string_args.len() == 1 {
-                // For <<back>> / <<return>>: one string arg is display text only.
-                // The navigation target is dynamic (browser history), so we mark
+                // Single string arg for navigation/back/return macros.
+                //
+                // For <<back>> / <<return>>: the arg is display text only.
+                // Navigation target is dynamic (browser history), so we mark
                 // it as dynamic with no fixed target to avoid false "BrokenLink"
-                // diagnostics. The display text is NOT a passage name.
-                if matches!(source, LinkSource::Back | LinkSource::Return) {
-                    links.push(LinkInfo {
-                        display: Some(string_args[0].clone()),
-                        target: String::new(), // no fixed passage target
-                        span: open_span.clone(),
-                        is_dynamic: true, // target is dynamic (history-based)
-                        source,
-                    });
-                } else {
-                    // For <<link>> / <<button>>: single arg is both display + target
-                    links.push(LinkInfo {
-                        display: Some(string_args[0].clone()),
-                        target: string_args[0].clone(),
-                        span: open_span.clone(),
-                        is_dynamic: false,
-                        source,
-                    });
-                }
+                // diagnostics.
+                //
+                // For <<link>> / <<button>>: a single string arg is the
+                // **display text** — the macro becomes a click handler whose
+                // behavior is defined by the body (e.g. `<<set>>`, `<<replace>>`).
+                // It does NOT navigate to a passage. Only `<<link "Display"
+                // "Passage">>` (two args) navigates to a passage.
+                //
+                // Previous bug: the single arg was treated as BOTH display
+                // and target, producing false "BrokenLink" diagnostics for
+                // click-handler usage like `<<link "Click me">><<set
+                // $x to 1>><</link>>`.
+                //
+                // We still check for a bare passage name arg below (e.g.
+                // `<<link "Display" PassageName>>`) — that form DOES navigate.
+                links.push(LinkInfo {
+                    display: Some(string_args[0].clone()),
+                    target: String::new(), // no fixed passage target
+                    span: open_span.clone(),
+                    is_dynamic: true, // target is dynamic (click handler or history)
+                    source,
+                });
             }
             // For <<link>> / <<button>>: also check for bare passage name
+            // after the string arg. SugarCube allows `<<link "Display"
+            // PassageName>>` (unquoted passage name) — that form navigates.
             if matches!(source, LinkSource::NavigationMacro) && string_args.len() == 1 {
                 let bare = extract_bare_args_after_strings(&stripped_args, string_args.len());
                 if let Some(bare_target) = bare.first() {

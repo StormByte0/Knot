@@ -27,6 +27,11 @@
 //!    | `or`      | `||` | Logical OR       |
 //!    | `not`     | `!`  | Logical NOT      |
 //!
+//!    `def` and `ndef` are unary prefix operators that require special
+//!    handling (they wrap the operand variable in a `typeof` check) and
+//!    are handled in a separate branch before the `$var` scanner. See
+//!    the inline comment in `preprocess_for_oxc_sugarcube` for details.
+//!
 //! ## Parsing boundary
 //!
 //! The SugarCube parser and oxc have a clear division of responsibility:
@@ -311,6 +316,143 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
             i += 2;
             result_offset += 2;
             continue;
+        }
+
+        // ── def / ndef SugarCube unary operators ───────────────────────
+        // `def $var` / `def _var` / `ndef $var` / `ndef _var`
+        //
+        // SugarCube's `def` and `ndef` are unary prefix operators that
+        // check whether a variable has been defined (`def`) or is
+        // undefined (`ndef`). They are NOT simple text-replaceable
+        // operators like `and`→`&&` because the operand (a `$var` or
+        // `_var`) must be consumed and wrapped in a `typeof` check.
+        //
+        // Translation:
+        //   def $x   → (typeof State_variables_x !== "undefined")
+        //   def _x   → (typeof State_temporary_x !== "undefined")
+        //   ndef $x  → (typeof State_variables_x === "undefined")
+        //   ndef _x  → (typeof State_temporary_x === "undefined")
+        //
+        // The `typeof` check is required (rather than a direct
+        // `!== undefined`) because the substituted identifier
+        // `State_variables_x` is a synthetic placeholder that doesn't
+        // exist as a real JS variable — accessing it directly would
+        // throw a ReferenceError. `typeof` is safe with undeclared
+        // identifiers and always returns a string.
+        //
+        // We MUST consume the variable ourselves (rather than letting
+        // the $var/_var scanner below handle it) so the entire
+        // `def $x` source range maps to a single typeof substitution.
+        // This keeps position mapping correct for oxc diagnostic
+        // back-mapping. The handler therefore runs BEFORE the $var
+        // scanner.
+        //
+        // Non-variable operands (e.g. `def someFunc()`) are NOT
+        // handled here — the keyword falls through to regular text
+        // and oxc reports a parse error, matching pre-fix behavior.
+        // The sugarcube-testbed corpus only uses the variable form.
+        if (b == b'd' || b == b'n') && (i == 0 || !is_ident_char(bytes[i - 1])) {
+            // Match `ndef` (starts with `n`) or `def` (starts with `d`).
+            // No prefix conflict between the two since they start with
+            // different bytes, but we still check the first byte for
+            // efficiency to avoid `starts_with` on every `d`/`n`.
+            let (kw_len, is_negated) = if b == b'n' && source[i..].starts_with("ndef") {
+                (4, true)
+            } else if b == b'd' && source[i..].starts_with("def") {
+                (3, false)
+            } else {
+                (0, false)
+            };
+
+            if kw_len > 0 {
+                // Word boundary after: prevents matching "def" inside
+                // "define" or "ndef" inside "ndefinable".
+                let word_boundary_after = i + kw_len >= len
+                    || !is_ident_char(bytes[i + kw_len]);
+
+                if word_boundary_after {
+                    // Skip whitespace between keyword and operand.
+                    let mut j = i + kw_len;
+                    while j < len && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                        j += 1;
+                    }
+
+                    // Look for $var or _var operand.
+                    if j < len {
+                        let sigil = bytes[j];
+                        let is_temp = sigil == b'_';
+                        let is_story = sigil == b'$';
+
+                        // For _var, the existing scanner requires a word
+                        // boundary before `_`. Since we just skipped
+                        // whitespace, the char before `_` is a space/tab
+                        // (or the keyword), which is NOT an ident char —
+                        // so the boundary is satisfied.
+                        if (is_temp || is_story) && j + 1 < len && is_ident_start(bytes[j + 1]) {
+                            j += 1; // skip sigil
+                            let name_start = j;
+                            while j < len && is_ident_char(bytes[j]) {
+                                j += 1;
+                            }
+                            let name = &source[name_start..j];
+
+                            // Scan dot-notation property path (mirrors
+                            // the $var scanner's logic, including the
+                            // `-` → `_` normalization for hyphenated
+                            // property names like $obj.my-prop).
+                            let mut property_path = String::new();
+                            while j < len && bytes[j] == b'.' {
+                                j += 1;
+                                let prop_start = j;
+                                while j < len && is_ident_char(bytes[j]) {
+                                    j += 1;
+                                }
+                                if j > prop_start {
+                                    property_path.push('.');
+                                    property_path.push_str(&source[prop_start..j]);
+                                }
+                            }
+
+                            // Build the typeof check expression.
+                            let normalized_path = property_path
+                                .replace('.', "_")
+                                .replace('-', "_");
+                            let var_js = if is_temp {
+                                format!("State_temporary_{}{}", name, normalized_path)
+                            } else {
+                                format!("State_variables_{}{}", name, normalized_path)
+                            };
+                            let op_str = if is_negated { "===" } else { "!==" };
+                            let replacement = format!(
+                                "(typeof {} {} \"undefined\")",
+                                var_js, op_str,
+                            );
+
+                            let original_text = source[i..j].to_string();
+                            let original_range = i..j;
+                            let processed_start = result_offset;
+                            result.push_str(&replacement);
+                            result_offset += replacement.len();
+
+                            substitutions.push(Substitution {
+                                original_range,
+                                processed_range: processed_start..result_offset,
+                                original_text,
+                                replacement,
+                            });
+
+                            i = j;
+                            continue;
+                        }
+                    }
+
+                    // No variable operand found after def/ndef — fall
+                    // through. The keyword will be emitted as regular
+                    // text by the catch-all, and oxc will report a
+                    // parse error (same as pre-fix behavior for
+                    // non-variable operands like `def someFunc()`).
+                }
+            }
         }
 
         // ── $var story variable ────────────────────────────────────────
@@ -925,5 +1067,191 @@ mod tests {
                 case
             );
         }
+    }
+
+    // ── def / ndef operator tests ──────────────────────────────────────
+
+    #[test]
+    fn def_story_variable_translates_to_typeof_check() {
+        // `def $a` → (typeof State_variables_a !== "undefined")
+        let result = preprocess_for_oxc("def $a", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_variables_a !== \"undefined\")"
+        );
+        assert_eq!(result.substitutions.len(), 1);
+        let sub = &result.substitutions[0];
+        assert_eq!(sub.original_text, "def $a");
+        assert_eq!(sub.replacement, "(typeof State_variables_a !== \"undefined\")");
+    }
+
+    #[test]
+    fn ndef_story_variable_translates_to_typeof_check() {
+        // `ndef $missing` → (typeof State_variables_missing === "undefined")
+        let result = preprocess_for_oxc("ndef $missing", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_variables_missing === \"undefined\")"
+        );
+        assert_eq!(result.substitutions.len(), 1);
+        assert_eq!(result.substitutions[0].original_text, "ndef $missing");
+    }
+
+    #[test]
+    fn def_temporary_variable_translates_to_typeof_check() {
+        // `def _defended` → (typeof State_temporary_defended !== "undefined")
+        // This is the exact form from sugarcube-testbed/51-combat.twee:99.
+        let result = preprocess_for_oxc("def _defended", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_temporary_defended !== \"undefined\")"
+        );
+        assert_eq!(result.substitutions.len(), 1);
+        assert_eq!(result.substitutions[0].original_text, "def _defended");
+    }
+
+    #[test]
+    fn ndef_temporary_variable_translates_to_typeof_check() {
+        let result = preprocess_for_oxc("ndef _count", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_temporary_count === \"undefined\")"
+        );
+    }
+
+    #[test]
+    fn def_with_property_path() {
+        // `def $obj.prop` → (typeof State_variables_obj_prop !== "undefined")
+        let result = preprocess_for_oxc("def $obj.prop", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_variables_obj_prop !== \"undefined\")"
+        );
+    }
+
+    #[test]
+    fn def_in_compound_expression() {
+        // `def _defended and _defended` — the exact expression from
+        // sugarcube-testbed/51-combat.twee:99.
+        //
+        // `def _defended` is translated to a typeof check, then ` and `
+        // becomes ` && `, then the second `_defended` is substituted as a
+        // regular temporary variable reference.
+        let result = preprocess_for_oxc("def _defended and _defended", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_temporary_defended !== \"undefined\") && State_temporary_defended"
+        );
+    }
+
+    #[test]
+    fn def_in_ternary_expression() {
+        // `def _target ? _target : "Time"` — the exact form from
+        // sugarcube-testbed/60-edge-cases.twee:20 (inside a backtick expression).
+        let result = preprocess_for_oxc("def _target ? _target : \"Time\"", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_temporary_target !== \"undefined\") ? State_temporary_target : \"Time\""
+        );
+    }
+
+    #[test]
+    fn def_inside_string_literal_not_substituted() {
+        // The string handler runs before def/ndef, so `def` inside a
+        // string literal must be preserved as-is.
+        let result = preprocess_for_oxc("\"def $x is not a real check\"", true);
+        assert_eq!(result.source, "\"def $x is not a real check\"");
+        assert!(result.substitutions.is_empty(),
+            "no substitutions should be made inside string literals, got: {:?}",
+            result.substitutions);
+    }
+
+    #[test]
+    fn def_inside_comment_not_substituted() {
+        // Line and block comments are copied as-is.
+        let line_comment = preprocess_for_oxc("// def $x\n$x", true);
+        assert!(line_comment.source.contains("// def $x"),
+            "line comment should be preserved: {}", line_comment.source);
+
+        let block_comment = preprocess_for_oxc("/* def $x */ $x", true);
+        assert!(block_comment.source.contains("/* def $x */"),
+            "block comment should be preserved: {}", block_comment.source);
+    }
+
+    #[test]
+    fn def_word_boundary_not_matched_inside_identifier() {
+        // `define` starts with `def` but is NOT the `def` operator —
+        // the word-boundary-after check must reject it. Same for
+        // `ndefinable` starting with `ndef`.
+        let result = preprocess_for_oxc("define(5)", true);
+        assert_eq!(result.source, "define(5)");
+        assert!(result.substitutions.is_empty(),
+            "`define` should not match the `def` operator, got subs: {:?}",
+            result.substitutions);
+
+        let result = preprocess_for_oxc("ndefinable", true);
+        assert_eq!(result.source, "ndefinable");
+        assert!(result.substitutions.is_empty(),
+            "`ndefinable` should not match the `ndef` operator, got subs: {:?}",
+            result.substitutions);
+    }
+
+    #[test]
+    fn def_word_boundary_before_not_matched() {
+        // `foodef $x` — the char before `def` is an ident char (`o`),
+        // so the word-boundary-before check must reject the match.
+        let result = preprocess_for_oxc("foodef $x", true);
+        // `foodef` should be left as-is, and `$x` should be substituted.
+        assert!(result.source.contains("foodef"),
+            "`foodef` should be preserved: {}", result.source);
+        assert!(result.source.contains("State_variables_x"),
+            "`$x` should still be substituted: {}", result.source);
+        // There should be exactly 1 substitution (for $x), not 2.
+        assert_eq!(result.substitutions.len(), 1,
+            "only `$x` should produce a substitution: {:?}",
+            result.substitutions);
+    }
+
+    #[test]
+    fn def_no_variable_operand_falls_through() {
+        // `def someFunc()` — not a variable operand, so the keyword
+        // falls through to regular text. oxc will report a parse error,
+        // which matches pre-fix behavior. The preprocessor itself must
+        // not crash or produce a malformed substitution.
+        let result = preprocess_for_oxc("def someFunc()", true);
+        // `def` is left as text, `someFunc` is left as text, `()` is text.
+        // No $var/_var to substitute.
+        assert!(result.source.contains("def"),
+            "def should fall through as text: {}", result.source);
+        // No typeof substitution should have been recorded.
+        assert!(result.substitutions.iter().all(|s| !s.replacement.contains("typeof")),
+            "non-variable def should not produce a typeof substitution: {:?}",
+            result.substitutions);
+    }
+
+    #[test]
+    fn def_no_whitespace_before_variable() {
+        // `def$x` (no space) — still valid SugarCube syntax since `$`
+        // is not an ident char, so the word-boundary-after check on
+        // `def` passes. The handler should still consume the variable.
+        let result = preprocess_for_oxc("def$x", true);
+        assert_eq!(
+            result.source,
+            "(typeof State_variables_x !== \"undefined\")"
+        );
+    }
+
+    #[test]
+    fn def_position_mapping_preserved() {
+        // Verify that the substitution's original_range covers the full
+        // `def $a` source span, so oxc diagnostic back-mapping works.
+        let result = preprocess_for_oxc("<<if def $a>>", true);
+        let def_sub = result.substitutions.iter()
+            .find(|s| s.replacement.contains("typeof"))
+            .expect("should have a typeof substitution");
+        // Original range should cover exactly `def $a` (6 bytes).
+        assert_eq!(def_sub.original_text, "def $a");
+        assert_eq!(def_sub.original_range.start, 5); // after `<<if `
+        assert_eq!(def_sub.original_range.end, 11);  // before `>>`
     }
 }

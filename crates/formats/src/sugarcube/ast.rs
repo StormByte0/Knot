@@ -1315,13 +1315,27 @@ pub struct JsSnippet {
 }
 
 /// Collect JS snippets from the AST for oxc validation.
-pub fn collect_js_snippets(nodes: &[AstNode]) -> Vec<JsSnippet> {
+///
+/// `known_macro_names` is the set of all macro names the system knows about
+/// (builtin catalog names + custom macro names from the registry). The
+/// fallback that sends `$var`-containing args to oxc only fires for macros
+/// NOT in this set — this prevents false JS validation errors on custom
+/// widgets like `<<statblock "Strength" $stats.strength>>` whose args use
+/// SugarCube discrete-argument syntax, not JS.
+pub fn collect_js_snippets(
+    nodes: &[AstNode],
+    known_macro_names: &std::collections::HashSet<String>,
+) -> Vec<JsSnippet> {
     let mut result = Vec::new();
-    collect_js_snippets_recursive(nodes, &mut result);
+    collect_js_snippets_recursive(nodes, &mut result, known_macro_names);
     result
 }
 
-fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>) {
+fn collect_js_snippets_recursive(
+    nodes: &[AstNode],
+    result: &mut Vec<JsSnippet>,
+    known_macro_names: &std::collections::HashSet<String>,
+) {
     /// Macro names that contain full JS blocks.
     const BLOCK_JS_MACROS: &[&str] = &["script"];
 
@@ -1441,10 +1455,32 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
                         is_block: false,
                     });
                 }
-            } else if name != "for" && (args.contains('$') || args.contains('_')) {
-                // Fallback: any macro whose args contain $var or _var references
-                // likely contains a JS expression. This catches macros not in
-                // the inline_js_macro_names set (e.g., <<goto $target>>).
+            } else if name != "for"
+                && (args.contains('$') || args.contains('_'))
+                && !known_macro_names.contains(name.as_str())
+            {
+                // Fallback: any UNKNOWN macro whose args contain $var or _var
+                // references likely contains a JS expression. This catches
+                // macros not in the catalog at all (e.g., <<goto $target>>
+                // when goto isn't yet in the catalog, or custom macros that
+                // take a variable reference).
+                //
+                // CRITICAL: we ONLY apply this fallback when the macro is NOT
+                // in the builtin catalog. Macros like <<textbox>>, <<checkbox>>,
+                // <<radiobutton>>, <<listbox>>, <<cycle>>, etc. ARE in the
+                // catalog with mixed arg kinds (Variable + String + Keyword +
+                // Number) — their args are SugarCube discrete-argument syntax,
+                // NOT valid JS. Sending `"$playerName" $playerName "Time"
+                // autofocus` to oxc produces false "Expected `,` or `)`"
+                // errors.
+                //
+                // `inline_js_macro_names()` already correctly excludes these
+                // mixed-arg macros. But this fallback was catching them anyway
+                // because their args contain `$var`. The `find_macro(name)
+                // .is_none()` guard ensures we only fall back for macros the
+                // catalog doesn't know about — for catalog macros, the
+                // deliberate inclusion/exclusion in `inline_js_macro_names()`
+                // is respected.
                 //
                 // NOTE: `for` is excluded because its args use SugarCube's own
                 // syntax (C-style, range, simple iteration, for-in) — not JS.
@@ -1463,7 +1499,7 @@ fn collect_js_snippets_recursive(nodes: &[AstNode], result: &mut Vec<JsSnippet>)
 
             // Recurse into children
             if let Some(ch) = children {
-                collect_js_snippets_recursive(ch, result);
+                collect_js_snippets_recursive(ch, result, known_macro_names);
             }
         }
 

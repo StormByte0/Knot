@@ -963,7 +963,7 @@ mod tests {
         let mut ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
 
         // Phase 2: JS annotation (sugarcube_syntax = true for Twee passages)
-        js_annotate::annotate_js(&mut ast, body, false, true);
+        js_annotate::annotate_js(&mut ast, body, false, true, &std::collections::HashSet::new());
 
         let mut registry = SugarCubeRegistry::new();
 

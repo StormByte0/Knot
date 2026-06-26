@@ -47,6 +47,7 @@ pub fn annotate_js(
     body_text: &str,
     is_script_passage: bool,
     sugarcube_syntax: bool,
+    known_macro_names: &std::collections::HashSet<String>,
 ) {
     if is_script_passage {
         annotate_script_passage(passage_ast, body_text, sugarcube_syntax);
@@ -54,7 +55,7 @@ pub fn annotate_js(
         // Inline JS inside Twee passages always uses SugarCube syntax
         // ($var, keyword operators). The `sugarcube_syntax` flag is
         // irrelevant for inline JS.
-        annotate_inline_js(&mut passage_ast.nodes, body_text);
+        annotate_inline_js(&mut passage_ast.nodes, body_text, known_macro_names);
     }
 }
 
@@ -101,7 +102,11 @@ fn annotate_script_passage(
 ///
 /// Walks the AST, finds Macro and Expression nodes that contain JS,
 /// preprocesses + parses each with oxc, and attaches `JsAnalysis`.
-fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
+fn annotate_inline_js(
+    nodes: &mut [AstNode],
+    _body_text: &str,
+    known_macro_names: &std::collections::HashSet<String>,
+) {
     for node in nodes.iter_mut() {
         match node {
             AstNode::Macro {
@@ -143,14 +148,14 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
                     }
                     // Still recurse into children for nested constructs
                     if let Some(ch) = children {
-                        annotate_inline_js(ch, _body_text);
+                        annotate_inline_js(ch, _body_text, known_macro_names);
                     }
                     continue;
                 }
 
                 // For all other macros, determine if they contain JS that needs annotation
                 let snippet = collect_macro_js_snippet(
-                    name, args, open_span.clone(), set_assignment.as_ref(),
+                    name, args, open_span.clone(), set_assignment.as_ref(), known_macro_names,
                 );
 
                 if let Some((source, body_offset, is_block)) = snippet {
@@ -218,7 +223,7 @@ fn annotate_inline_js(nodes: &mut [AstNode], _body_text: &str) {
 
                 // Recurse into children
                 if let Some(ch) = children {
-                    annotate_inline_js(ch, _body_text);
+                    annotate_inline_js(ch, _body_text, known_macro_names);
                 }
             }
             AstNode::Expression {
@@ -266,6 +271,7 @@ fn collect_macro_js_snippet(
     args: &str,
     open_span: std::ops::Range<usize>,
     set_assignment: Option<&crate::sugarcube::ast::SetAssignment>,
+    known_macro_names: &std::collections::HashSet<String>,
 ) -> Option<(String, usize, bool)> {
     use crate::sugarcube::macros::inline_js_macro_names;
 
@@ -310,7 +316,14 @@ fn collect_macro_js_snippet(
         } else {
             None
         }
-    } else if args.contains('$') || args.contains('_') {
+    } else if (args.contains('$') || args.contains('_'))
+        && !known_macro_names.contains(name)
+    {
+        // Fallback: unknown macros whose args contain $var/_var may contain
+        // JS expressions. But ONLY for macros not in the known set — custom
+        // widgets like <<statblock "Strength" $stats.strength>> use
+        // SugarCube discrete-argument syntax (not JS), and sending their
+        // args to oxc produces false "Expected `,` or `)`" errors.
         let trimmed = args.trim();
         if !trimmed.is_empty() {
             let leading_ws = args.len() - args.trim_start().len();

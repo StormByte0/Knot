@@ -406,12 +406,21 @@ mod tests {
 
     #[test]
     fn link_macro_single_arg() {
-        // <<link "Forest">> — single arg is both display and target
+        // <<link "Forest">> — single arg is display text only (click handler).
+        // SugarCube: `<<link "Display">>` with no second arg is a click
+        // handler whose behavior is defined by the macro body. It does NOT
+        // navigate to a passage named "Forest". Only `<<link "Display"
+        // "Passage">>` (two args) navigates.
+        //
+        // Previous bug: the single arg was treated as BOTH display and
+        // target, producing false "BrokenLink: Link target 'Forest' not
+        // found" diagnostics for click-handler usage.
         let ast = parse_passage_body(r#"<<link "Forest">>"#, 0, ParseMode::Normal);
         let nav_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::NavigationMacro).collect();
         assert_eq!(nav_links.len(), 1);
         assert_eq!(nav_links[0].display.as_deref(), Some("Forest"));
-        assert_eq!(nav_links[0].target, "Forest");
+        assert_eq!(nav_links[0].target, ""); // no fixed target — click handler
+        assert!(nav_links[0].is_dynamic); // dynamic — no BrokenLink diagnostic
     }
 
     #[test]
