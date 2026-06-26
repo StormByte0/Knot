@@ -748,6 +748,55 @@ fn walk_expression(
             emit_param_tokens(&arrow.params, preprocessed, analysis);
             walk_function_body(&arrow.body, preprocessed, analysis);
         }
+        Expr::ChainExpression(chain) => {
+            // Optional chaining (?.) — recurse into the inner expression.
+            // The `?.` operator itself doesn't get a separate Operator token
+            // (it's part of the member expression syntax), but the operands
+            // (variables, properties) inside it still need to be walked.
+            //
+            // `chain.expression` is a `ChainElement` enum wrapping either a
+            // `CallExpression` or a `MemberExpression`. We match on the
+            // variants and walk the relevant sub-expressions directly
+            // (object, property, arguments) rather than reconstructing an
+            // `Expr` variant (which would require cloning arena-allocated
+            // nodes).
+            use oxc_ast::ast::ChainElement;
+            match &chain.expression {
+                ChainElement::CallExpression(call) => {
+                    // Walk the callee and arguments (same as CallExpression handling above)
+                    walk_expression(&call.callee, preprocessed, analysis);
+                    for arg in &call.arguments {
+                        walk_argument(arg, preprocessed, analysis);
+                    }
+                }
+                ChainElement::StaticMemberExpression(member) => {
+                    // Walk the object (same as StaticMemberExpression handling above)
+                    walk_expression(&member.object, preprocessed, analysis);
+                }
+                ChainElement::ComputedMemberExpression(member) => {
+                    // Walk the object and the expression inside []
+                    walk_expression(&member.object, preprocessed, analysis);
+                    walk_expression(&member.expression, preprocessed, analysis);
+                }
+                // TSNonNullExpression (TypeScript `expr!`) and
+                // PrivateFieldExpression (`obj.#field`) are not relevant
+                // for SugarCube/JS. Skip them — they're rare and would
+                // require additional handling not worth the complexity.
+                _ => {}
+            }
+        }
+        Expr::AwaitExpression(await_expr) => {
+            // `await expr` — emit `await` keyword, walk the argument.
+            push_keyword(analysis, "await", await_expr.span.start as usize, preprocessed);
+            walk_expression(&await_expr.argument, preprocessed, analysis);
+        }
+        Expr::YieldExpression(yield_expr) => {
+            // `yield expr` — emit `yield` keyword, walk the argument if present.
+            push_keyword(analysis, "yield", yield_expr.span.start as usize, preprocessed);
+            if let Some(arg) = &yield_expr.argument {
+                walk_expression(arg, preprocessed, analysis);
+            }
+        }
         _ => {}
     }
 }

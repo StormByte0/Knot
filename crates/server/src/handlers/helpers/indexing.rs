@@ -123,6 +123,32 @@ pub(crate) async fn index_workspace(
         return Ok(());
     }
 
+    // ── max_files safety check ───────────────────────────────────────
+    //
+    // If the workspace has more files than the configured limit, index
+    // only the first N and warn the user. This prevents the server from
+    // hanging on very large workspaces (e.g., monorepos with thousands
+    // of files). The limit comes from knot.json `max_files` or the VS
+    // Code setting `knot.indexing.maxFiles` (default 1000).
+    let max_files = {
+        let inner = inner.read().await;
+        inner.workspace.config.max_files.unwrap_or(1000)
+    };
+    if (total_files as usize) > max_files {
+        client
+            .log_message(
+                MessageType::WARNING,
+                format!(
+                    "Workspace has {} files, exceeding the max_files limit of {}. \
+                     Indexing only the first {} files. \
+                     Increase 'knot.indexing.maxFiles' or add 'ignore' patterns.",
+                    total_files, max_files, max_files
+                ),
+            )
+            .await;
+        twee_files.truncate(max_files);
+    }
+
     client
         .log_message(
             MessageType::INFO,

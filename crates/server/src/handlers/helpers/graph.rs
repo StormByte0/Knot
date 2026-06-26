@@ -87,6 +87,15 @@ pub(crate) fn rebuild_graph(
     // Priority: edge_type_hint from link extraction > classify_edge() > Navigation.
     for (source, _, _, _, _, _, _, edges) in &info {
         for (display_text, target, hint) in edges {
+            // Skip links with empty targets — these are dynamic navigation
+            // macros (<<return "Display">>, <<back "Display">>) where the
+            // target is determined at runtime via browser history. Creating
+            // a graph edge with an empty target would produce a false
+            // "BrokenLink" diagnostic. The link IS kept in `passage.links`
+            // (for dead-end detection), but we don't add a graph edge for it.
+            if target.is_empty() {
+                continue;
+            }
             let target_exists = graph.contains_passage(target);
             // Determine the edge type using a priority chain:
             // 1. Broken links always win (target doesn't exist)

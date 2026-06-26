@@ -136,12 +136,20 @@ pub fn build_passage(
     passage.body = build_body_blocks(&passage_ast.nodes, body_offset_in_passage);
 
     // Build links from AST (shift spans by body_offset_in_passage)
-    // Skip links with empty targets — these are dynamic navigation macros
-    // (e.g., <<back "Display">> or <<return "Display">>) where the target
-    // is determined at runtime via browser history. An empty target would
-    // create a false "BrokenLink" diagnostic.
+    //
+    // We keep ALL links, including those with empty targets. Links with empty
+    // targets come from dynamic navigation macros like `<<return "Display">>`
+    // and `<<back "Display">>` — the target is determined at runtime via
+    // browser history, so there's no fixed passage name.
+    //
+    // Keeping these in `passage.links` is important for dead-end detection:
+    // a passage with `<<return>>` HAS outgoing navigation (the player can
+    // leave via the return link), so it should NOT be flagged as a dead end.
+    //
+    // The graph builder (in `helpers/graph.rs`) skips links with empty
+    // targets when adding edges — this prevents false "BrokenLink"
+    // diagnostics for dynamic navigation.
     passage.links = passage_ast.links.iter()
-        .filter(|link_info| !link_info.target.is_empty())
         .map(|link_info| {
             let edge_type_hint = link_source_to_edge_type(link_info.source);
             knot_core::passage::Link {

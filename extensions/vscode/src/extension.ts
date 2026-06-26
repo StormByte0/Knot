@@ -55,16 +55,9 @@ let profileRefreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 // ---------------------------------------------------------------------------
 
 export async function activate(context: vscode.ExtensionContext) {
-    const useRustServer = vscode.workspace
-        .getConfiguration('knot')
-        .get<boolean>('experimental.rustServer', true);
-
-    if (!useRustServer) {
-        vscode.window.showInformationMessage(
-            'Knot: Rust language server is disabled. Using TextMate grammar only.'
-        );
-        return;
-    }
+    // The Rust language server is always used — there is no legacy
+    // TextMate-only fallback. The old `knot.experimental.rustServer`
+    // setting has been removed; the server is the server.
 
     const serverPath = await getServerPath(context);
     if (!serverPath) {
@@ -128,6 +121,15 @@ export async function activate(context: vscode.ExtensionContext) {
             // storyformats" architecture: the extension downloads tweego and
             // formats into globalStorage, and the server uses them at build time.
             globalStoragePath: context.globalStorageUri.fsPath,
+
+            // Pass indexing settings from VS Code configuration. These are
+            // merged with patterns from .vscode/knot.json on the server side.
+            indexingExclude: vscode.workspace
+                .getConfiguration('knot.indexing')
+                .get<string[]>('exclude', []),
+            indexingMaxFiles: vscode.workspace
+                .getConfiguration('knot.indexing')
+                .get<number>('maxFiles', 1000),
         },
     };
 

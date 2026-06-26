@@ -1821,16 +1821,104 @@ fn try_link_hover(
         for link in &passage.links {
             if passage.span_contains_abs_offset(&link.span, byte_offset) {
                 let target = link.target.trim();
+                let abs_link_span = passage.abs_range(&link.span);
 
+                // ── Determine label and target sub-spans within the link ──
+                //
+                // For `[[target]]` (no pipe): the entire inner text is both
+                // the display text and the target. Hovering anywhere shows
+                // passage info for the target.
+                //
+                // For `[[label|target]]` (pipe syntax): hovering on the
+                // label part shows "Link display text" info; hovering on
+                // the target part shows passage info for the target. This
+                // mirrors how the token builder colors the two parts
+                // differently (display = green, target = teal underline).
+                //
+                // We scan the source text within the link span to find the
+                // `|` separator (if any), then compute the label and target
+                // sub-spans.
+                let link_text = &text[abs_link_span.start..abs_link_span.end.min(text.len())];
+
+                // Find the `|` separator, skipping the opening `[[`.
+                // The inner content starts at offset 2 (after `[[`).
+                // We scan for `|` but NOT inside string literals or nested
+                // brackets — though SugarCube link syntax doesn't support
+                // those, a simple find is sufficient.
+                let pipe_pos = link_text[2..]
+                    .find('|')
+                    .map(|pos| 2 + pos);
+
+                if let Some(pipe_rel) = pipe_pos {
+                    // `[[label|target]]` — pipe syntax.
+                    let label_start = abs_link_span.start + 2; // after `[[
+                    let label_end = abs_link_span.start + pipe_rel; // before `|`
+                    let target_start = abs_link_span.start + pipe_rel + 1; // after `|`
+                    let target_end = abs_link_span.end - 2; // before `]]`
+
+                    let on_label = byte_offset >= label_start && byte_offset < label_end;
+                    let on_target = byte_offset >= target_start && byte_offset < target_end;
+                    let on_pipe = byte_offset == abs_link_span.start + pipe_rel;
+
+                    if on_label || on_pipe {
+                        // Hovering on the label (display text) part.
+                        let label_text = &text[label_start..label_end];
+                        let hover_text = if label_text.trim().is_empty() {
+                            "**Link display text** (empty — the target passage name will be used as display text)".to_string()
+                        } else {
+                            format!("**Link display text**\n\n`{}`\n\nLinks to passage `{}`", label_text, target)
+                        };
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &(label_start..label_end));
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: hover_text,
+                            }),
+                            range: Some(hover_range),
+                        });
+                    } else if on_target {
+                        // Hovering on the target part — show passage info.
+                        if !target.is_empty() {
+                            if let Some((doc, passage)) = workspace.find_passage(target) {
+                                let hover_text = build_passage_target_hover_text(
+                                    target, doc, passage, workspace,
+                                );
+                                let hover_range = helpers::byte_range_to_lsp_range(text, &(target_start..target_end));
+                                return Some(Hover {
+                                    contents: HoverContents::Markup(MarkupContent {
+                                        kind: MarkupKind::Markdown,
+                                        value: hover_text,
+                                    }),
+                                    range: Some(hover_range),
+                                });
+                            } else {
+                                // Broken link — passage doesn't exist
+                                let hover_range = helpers::byte_range_to_lsp_range(text, &(target_start..target_end));
+                                return Some(Hover {
+                                    contents: HoverContents::Markup(MarkupContent {
+                                        kind: MarkupKind::Markdown,
+                                        value: format!(
+                                            "**Broken link** — passage `{}` does not exist",
+                                            target
+                                        ),
+                                    }),
+                                    range: Some(hover_range),
+                                });
+                            }
+                        }
+                    }
+                    // If cursor is on `[[` or `]]` delimiters, fall through
+                    // to the full-link hover below.
+                }
+
+                // `[[target]]` (no pipe) OR cursor on delimiters of pipe link —
+                // show passage info for the target with the full link span.
                 if !target.is_empty() {
                     if let Some((doc, passage)) = workspace.find_passage(target) {
                         let hover_text = build_passage_target_hover_text(
                             target, doc, passage, workspace,
                         );
-
-                        // Convert the link's byte span to an LSP Range.
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &abs_link_span);
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
@@ -1840,8 +1928,7 @@ fn try_link_hover(
                         });
                     } else {
                         // Broken link — passage doesn't exist
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &abs_link_span);
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
@@ -2976,6 +3063,163 @@ mod operator_hover_scoping_tests {
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
         assert!(hover.is_none(),
             "hover on `and` in prose should NOT fire — it's not an operator context");
+    }
+}
+
+#[cfg(test)]
+mod link_hover_tests {
+    use super::*;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use knot_formats::FormatPluginMut;
+    use url::Url;
+
+    /// Helper: parse source with multiple passages into a Document + Workspace.
+    fn parse_with_workspace(src: &str) -> (String, knot_core::Document, knot_core::Workspace) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///test.tw").unwrap();
+        let result = plugin.parse_mut(&uri, src);
+        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        for passage in result.passages {
+            doc.passages.push(passage);
+        }
+        let ws = knot_core::Workspace::new(url::Url::parse("file:///").unwrap());
+        (src.to_string(), doc, ws)
+    }
+
+    /// Helper: find byte offset of needle in src.
+    fn cursor_on(src: &str, needle: &str) -> usize {
+        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found", needle))
+    }
+
+    #[test]
+    fn pipe_link_label_hover_shows_display_text() {
+        // `[[Go to forest|Forest]]` — hovering on "Go to forest" (the label)
+        // should show "Link display text" info, NOT passage info for "Forest".
+        let src = ":: Start\n[[Go to forest|Forest]]\n:: Forest\nYou are in the forest.\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        // Insert doc into workspace for find_passage
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        // Cursor on "Go" in the label
+        let offset = cursor_on(&text, "Go to forest");
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "hover on label should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Link display text"),
+                    "label hover should mention 'Link display text': {}", m.value);
+                assert!(m.value.contains("Go to forest"),
+                    "label hover should contain the label text: {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn pipe_link_target_hover_shows_passage_info() {
+        // `[[Go to forest|Forest]]` — hovering on "Forest" (the target)
+        // should show passage info for "Forest", NOT "Link display text".
+        let src = ":: Start\n[[Go to forest|Forest]]\n:: Forest\nYou are in the forest.\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        // Cursor on "Forest" (the target, after the pipe)
+        let offset = cursor_on(&text, "|Forest") + 1; // skip the pipe
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "hover on target should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(!m.value.contains("Link display text"),
+                    "target hover should NOT mention 'Link display text': {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn simple_link_hover_shows_passage_info() {
+        // `[[Forest]]` — no pipe, so hovering anywhere shows passage info.
+        let src = ":: Start\n[[Forest]]\n:: Forest\nYou are in the forest.\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        let offset = cursor_on(&text, "Forest]]");
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "hover on simple link should fire");
+    }
+
+    #[test]
+    fn pipe_link_label_range_covers_only_label() {
+        // The hover range for the label should NOT include the target or pipe.
+        let src = ":: Start\n[[Go to forest|Forest]]\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        let offset = cursor_on(&text, "Go to forest");
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws).expect("hover should fire");
+        if let Some(range) = hover.range {
+            // The range should cover "Go to forest" (12 chars) on line 1.
+            assert_eq!(range.start.line, 1);
+            assert_eq!(range.end.line, 1);
+            assert_eq!(range.end.character - range.start.character, 12,
+                "label range should cover 'Go to forest' (12 chars), got {}",
+                range.end.character - range.start.character);
+        }
+    }
+
+    #[test]
+    fn pipe_link_target_range_covers_only_target() {
+        // The hover range for the target should NOT include the label or pipe.
+        let src = ":: Start\n[[Go to forest|Forest]]\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        // Cursor on "Forest"
+        let offset = cursor_on(&text, "|Forest") + 1;
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws).expect("hover should fire");
+        if let Some(range) = hover.range {
+            // The range should cover "Forest" (6 chars) on line 1.
+            assert_eq!(range.start.line, 1);
+            assert_eq!(range.end.line, 1);
+            assert_eq!(range.end.character - range.start.character, 6,
+                "target range should cover 'Forest' (6 chars), got {}",
+                range.end.character - range.start.character);
+        }
+    }
+
+    #[test]
+    fn broken_pipe_link_target_shows_broken_message() {
+        // `[[Go to forest|MissingPassage]]` — target doesn't exist.
+        let src = ":: Start\n[[Go to forest|MissingPassage]]\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        let offset = cursor_on(&text, "|MissingPassage") + 1;
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "hover on broken target should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("Broken link"),
+                    "broken target hover should mention 'Broken link': {}", m.value);
+            }
+        }
+    }
+
+    #[test]
+    fn empty_label_pipe_link_shows_empty_hint() {
+        // `[[|Forest]]` — empty label. Should show the "empty" hint.
+        let src = ":: Start\n[[|Forest]]\n:: Forest\nForest.\n";
+        let (text, doc, ws) = parse_with_workspace(src);
+        let mut ws = ws;
+        ws.insert_document(doc.clone());
+        // Cursor right after [[ (on the pipe position)
+        let offset = cursor_on(&text, "[[|") + 1; // on the pipe
+        let hover = try_link_hover(&text, offset, Some(&doc), &ws);
+        assert!(hover.is_some(), "hover on empty label should fire");
+        if let Some(h) = hover {
+            if let HoverContents::Markup(m) = h.contents {
+                assert!(m.value.contains("empty"),
+                    "empty label hover should mention 'empty': {}", m.value);
+            }
+        }
     }
 }
 

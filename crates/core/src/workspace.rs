@@ -87,6 +87,13 @@ pub struct KnotConfig {
     /// Files/patterns to ignore during indexing.
     #[serde(default)]
     pub ignore: Vec<String>,
+    /// Maximum number of files to index. If the workspace exceeds this
+    /// limit, indexing stops and a warning is shown. Prevents the server
+    /// from hanging on very large workspaces. When `None`, uses the
+    /// default from the VS Code setting `knot.indexing.maxFiles` (or
+    /// 1000 if unset).
+    #[serde(default)]
+    pub max_files: Option<usize>,
     /// Story format override. When set, this takes priority over StoryData
     /// as the resolved format (Priority 1 in the architecture). This allows
     /// developers to test their project with a different format without

@@ -878,4 +878,132 @@ mod tests {
                 "Variable token missing for {}: got {:?}", expected, names);
         }
     }
+
+    // ── Operator token tests ────────────────────────────────────────────
+
+    #[test]
+    fn nullish_coalescing_in_print_macro_gets_operator_token() {
+        // `<<= $playerClass ?? "Undecided">>` — the `??` (nullish coalescing)
+        // operator should get an Operator semantic token.
+        //
+        // `??` is a LogicalExpression in oxc, handled by `emit_logical_operator`.
+        let src = ":: Start\n<<= $playerClass ?? \"Undecided\">>\n";
+        let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
+        assert!(!op_tokens.is_empty(),
+            "?? should get an Operator token, got: {:?}", op_tokens);
+        // Verify the token text contains `??`
+        assert!(op_tokens.iter().any(|(_, _, text)| text.contains("??")),
+            "Operator token should contain '??', got: {:?}", op_tokens);
+    }
+
+    #[test]
+    fn nullish_coalescing_in_set_macro_gets_operator_token() {
+        // `<<set _counter to (_counter ?? 0) + 1>>` — from testbed 26-misc.twee:12
+        let src = ":: Start\n<<set _counter to (_counter ?? 0) + 1>>\n";
+        let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
+        assert!(op_tokens.iter().any(|(_, _, text)| text.contains("??")),
+            "?? in <<set>> should get an Operator token, got: {:?}", op_tokens);
+    }
+
+    #[test]
+    fn logical_and_or_get_operator_tokens() {
+        // `<<if $x and $y or $z>>` — `and` and `or` are SugarCube operators
+        // that get substituted to `&&` and `||`. They should get Operator tokens.
+        let src = ":: Start\n<<if $x and $y or $z>><</if>>\n";
+        let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
+        assert!(op_tokens.len() >= 2,
+            "and + or should produce 2+ Operator tokens, got: {:?}", op_tokens);
+    }
+
+    #[test]
+    fn optional_chaining_in_set_macro_walks_operands() {
+        // `<<set _mood to $npcs.get("fisherman")?.mood ?? 0>>` — from testbed
+        // 50-story.twee:167. The `?.` (optional chaining) is a ChainExpression
+        // in oxc. The operands ($npcs, .mood) should still get tokens.
+        let src = ":: Start\n<<set _mood to $npcs.get(\"fisherman\")?.mood ?? 0>>\n";
+        let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
+        assert!(var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
+            "$npcs should get a Variable token even with optional chaining, got: {:?}", var_tokens);
+    }
+
+    // ── Dead-end / link extraction tests ────────────────────────────────
+
+    #[test]
+    fn return_macro_produces_link_with_empty_target() {
+        // `<<return "Return to start">>` — produces a link with empty target
+        // (history-based navigation). The link should be in passage.links
+        // so the passage is NOT flagged as a dead end.
+        //
+        // Before the fix, the link was filtered out by `.filter(|l| !l.target.is_empty())`
+        // in passage_build.rs, causing false dead-end diagnostics.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = ":: SomePassage\nYou are here.\n<<return \"Go back\">>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        // Find the passage and check its links
+        let passage = result.passages.iter()
+            .find(|p| p.name == "SomePassage")
+            .expect("SomePassage should exist");
+        assert!(!passage.links.is_empty(),
+            "Passage with <<return>> should have at least 1 link (for dead-end detection), got 0 links");
+        // The link should have an empty target (dynamic navigation)
+        assert!(passage.links.iter().any(|l| l.target.is_empty()),
+            "<<return>> link should have empty target (history-based nav), got: {:?}",
+            passage.links.iter().map(|l| &l.target).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn back_macro_produces_link_with_empty_target() {
+        // Same as return — <<back "Display">> produces a link with empty target.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = ":: SomePassage\n<<back \"Go back\">>\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        let passage = result.passages.iter()
+            .find(|p| p.name == "SomePassage")
+            .expect("SomePassage should exist");
+        assert!(!passage.links.is_empty(),
+            "Passage with <<back>> should have at least 1 link, got 0");
+    }
+
+    #[test]
+    fn passage_with_only_return_is_not_dead_end() {
+        // Integration test: a passage whose only outgoing navigation is
+        // <<return>> should NOT be flagged as a dead end. The <<return>> link
+        // (with empty target) is kept in passage.links, so dead-end detection
+        // sees it as having outgoing navigation.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = "\
+:: Start
+You begin your adventure.
+[[Go north|North]]
+
+:: North
+You are in the north.
+<<return \"Go back south\">>
+";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        // The "North" passage has <<return>> as its only outgoing navigation.
+        // It should NOT produce a DeadEndPassage diagnostic.
+        let dead_end_diags: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "dead-end" || d.message.contains("dead end"))
+            .collect();
+        assert!(dead_end_diags.is_empty(),
+            "Passage with <<return>> should NOT be flagged as dead end, got: {:?}",
+            dead_end_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
 }
