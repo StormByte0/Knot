@@ -184,32 +184,10 @@
       "foreground": "#c0caf5"
     },
     "inlineStyle": {
-      "foreground": "#73daca",
-      "fontStyle": "italic"
+      "foreground": "#73daca"
     },
     "textFormat": {
-      "foreground": "#9ece6a",
-      "fontStyle": "italic"
-    },
-    "textFormat.bold": {
-      "foreground": "#9ece6a",
-      "fontStyle": "bold"
-    },
-    "textFormat.underline": {
-      "foreground": "#9ece6a",
-      "fontStyle": "underline"
-    },
-    "textFormat.strikethrough": {
-      "foreground": "#9ece6a",
-      "fontStyle": "strikethrough"
-    },
-    "textFormat.subscript": {
-      "foreground": "#7aa2f7",
-      "fontStyle": "italic"
-    },
-    "textFormat.superscript": {
-      "foreground": "#bb9af7",
-      "fontStyle": "italic"
+      "foreground": "#9ece6a"
     },
     "variable": {
       "foreground": "#f7768e",
