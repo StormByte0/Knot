@@ -125,7 +125,7 @@
         "command": "knot.openStoryMap",
         "title": "Knot: Open Story Map",
         "category": "Knot",
-        "icon": "$(graph)"
+        "icon": "media/knot-icon.svg"
       },
       {
         "command": "knot.build",

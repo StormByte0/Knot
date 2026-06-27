@@ -653,25 +653,49 @@ fn build_semantic_tokens_at_depth(
                 });
                 build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names, body_text);
             }
-            // Text formatting markup: emit TextFormat token with a modifier
-            // based on the formatting kind. This allows themes to style each
-            // kind differently (bold→bold, underline→underline, etc.).
-            // Italic is the default (no modifier) for backward compat.
-            ast::AstNode::TextFormat { span, kind, .. } => {
-                let modifier = match kind {
-                    ast::TextFormatKind::Bold       => Some(SemanticTokenModifier::Bold),
-                    ast::TextFormatKind::Italic     => None, // default — theme's `textFormat` entry
-                    ast::TextFormatKind::Underline  => Some(SemanticTokenModifier::Underline),
-                    ast::TextFormatKind::Strike     => Some(SemanticTokenModifier::Strikethrough),
-                    ast::TextFormatKind::Sub        => Some(SemanticTokenModifier::Subscript),
-                    ast::TextFormatKind::Super      => Some(SemanticTokenModifier::Superscript),
-                };
-                tokens.push(SemanticToken {
-                    start: body_offset_in_passage + span.start,
-                    length: span.end - span.start,
-                    token_type: SemanticTokenType::TextFormat,
-                    modifier,
-                });
+            // Text formatting markup: split into delimiter tokens and content
+            // token. Delimiters (e.g., `//`, `''`, `__`) get the `Heading`
+            // token type (bold, heading color) so they look like markup
+            // markers. Content gets `TextFormat` (slightly off from prose,
+            // no font styles applied).
+            //
+            // All SugarCube markup delimiters are 2 chars: //, '', __, ==, ^^, ~~
+            ast::AstNode::TextFormat { span, .. } => {
+                let delim_len = 2usize;
+                let full_start = body_offset_in_passage + span.start;
+                let full_end = body_offset_in_passage + span.end;
+                let content_start = full_start + delim_len;
+                let content_end = full_end.saturating_sub(delim_len);
+
+                // Opening delimiter — styled like heading markers (bold, heading color)
+                if full_end > full_start + delim_len {
+                    tokens.push(SemanticToken {
+                        start: full_start,
+                        length: delim_len,
+                        token_type: SemanticTokenType::Heading,
+                        modifier: None,
+                    });
+                }
+
+                // Content — slightly off from prose, no font styles
+                if content_end > content_start {
+                    tokens.push(SemanticToken {
+                        start: content_start,
+                        length: content_end - content_start,
+                        token_type: SemanticTokenType::TextFormat,
+                        modifier: None,
+                    });
+                }
+
+                // Closing delimiter — same as opening
+                if full_end > content_end {
+                    tokens.push(SemanticToken {
+                        start: content_end,
+                        length: delim_len,
+                        token_type: SemanticTokenType::Heading,
+                        modifier: None,
+                    });
+                }
             }
             // MacroClose nodes are consumed by the tree builder and should not
             // appear in the final AST. If one slips through, skip it.

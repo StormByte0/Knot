@@ -50,7 +50,7 @@ export function createStatusBarItems(
     );
 
     // ── Story Map ────────────────────────────────────────────────────
-    storyMap.text = '$(graph) Story Map';
+    storyMap.text = '$(compass) Story Map';
     storyMap.tooltip = 'Knot: Open the Story Map';
     storyMap.command = 'knot.openStoryMap';
     storyMap.show();
