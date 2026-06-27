@@ -223,7 +223,7 @@
         {
           "id": "knot-container",
           "title": "Knot IDE",
-          "icon": "$(graph)"
+          "icon": "media/knot-icon.svg"
         }
       ]
     },

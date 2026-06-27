@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect width="128" height="128" fill="none"/>
+  <polygon points="46.54 12.5 26.54 12.5 27.54 83.78 27.54 130.5 47.54 130.5 47.54 83.3 46.54 12.5" style="fill:none;stroke:#73daca;stroke-miterlimit:10;stroke-width:5px" transform="translate(-12, -12)"/>
+  <polygon points="87.26 64.5 121.81 14.5 99.08 14.5 76.35 45.41 59.26 45.41 59.26 64.5 87.26 64.5" style="fill:none;stroke:#73daca;stroke-miterlimit:10;stroke-width:5px" transform="translate(-12, -12)"/>
+  <path d="M68,75.93s29.45,54,29.46,54H118l-30.36-54Z" style="fill:none;stroke:#73daca;stroke-miterlimit:10;stroke-width:5px" transform="translate(-12, -12)"/>
+</svg>
