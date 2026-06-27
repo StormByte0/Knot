@@ -242,6 +242,23 @@ fn extract_macro_passage_refs(
                     is_dynamic: true, // target is dynamic (click handler or history)
                     source,
                 });
+            } else if matches!(source, LinkSource::Back | LinkSource::Return) {
+                // Zero-arg <<return>> / <<back>>: these macros navigate via
+                // browser history even without any args. The default display
+                // text is "↶" (back) or "↺" (return) per SugarCube, but the
+                // important thing is that the passage IS NOT a dead-end —
+                // it has outgoing navigation via history.
+                //
+                // Without this entry, the dead-end detector sees
+                // `passage.links.is_empty() == true` and flags the passage
+                // as a dead-end. This is the J3 fix.
+                links.push(LinkInfo {
+                    display: None,
+                    target: String::new(), // dynamic — resolved from history at runtime
+                    span: open_span.clone(),
+                    is_dynamic: true,
+                    source,
+                });
             }
             // For <<link>> / <<button>>: also check for bare passage name
             // after the string arg. SugarCube allows `<<link "Display"

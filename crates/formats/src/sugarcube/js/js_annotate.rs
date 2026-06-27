@@ -251,11 +251,7 @@ fn annotate_inline_js(
                                         &sa.target.property_path,
                                         &target_span,
                                     );
-                                    let var_name = if sa.target.is_temporary {
-                                        format!("_{}", sa.target.name)
-                                    } else {
-                                        format!("${}", sa.target.name)
-                                    };
+                                    let var_name = sa.target.name.clone();
                                     let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
                                     analysis.var_ops.push(AnalyzedVarOp {
                                         name: var_name,
@@ -280,11 +276,7 @@ fn annotate_inline_js(
                                     &sa.target.property_path,
                                     &target_span,
                                 );
-                                let var_name = if sa.target.is_temporary {
-                                    format!("_{}", sa.target.name)
-                                } else {
-                                    format!("${}", sa.target.name)
-                                };
+                                let var_name = sa.target.name.clone();
                                 let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
                                 analysis.var_ops.push(AnalyzedVarOp {
                                     name: var_name,
@@ -310,11 +302,7 @@ fn annotate_inline_js(
                                 &sa.target.property_path,
                                 &target_span,
                             );
-                            let var_name = if sa.target.is_temporary {
-                                format!("_{}", sa.target.name)
-                            } else {
-                                format!("${}", sa.target.name)
-                            };
+                            let var_name = sa.target.name.clone();
                             let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
                             analysis.var_ops.push(AnalyzedVarOp {
                                 name: var_name,
@@ -1259,5 +1247,122 @@ You are in the north.
         assert!(dead_end_diags.is_empty(),
             "Passage with <<return>> should NOT be flagged as dead end, got: {:?}",
             dead_end_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn passage_with_only_zero_arg_return_is_not_dead_end() {
+        // J3 regression: <<return>> with NO args (just <<return>>) must
+        // still count as outgoing navigation. Without the J3 fix, zero-arg
+        // <<return>> produced no link entry, causing the passage to be
+        // flagged as a dead-end.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = "\
+:: Start
+You begin your adventure.
+[[Go north|North]]
+
+:: North
+You are in the north.
+<<return>>
+";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        let dead_end_diags: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "dead-end" || d.message.contains("dead end"))
+            .collect();
+        assert!(dead_end_diags.is_empty(),
+            "Passage with zero-arg <<return>> should NOT be flagged as dead end, got: {:?}",
+            dead_end_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn link_single_arg_does_not_create_macro_arg_ref() {
+        // J1/J2 regression: <<link "Forest">> (single arg) should NOT
+        // create a MacroArgRef with target="Forest". The single arg is
+        // a click handler label, not a passage target. Only
+        // <<link "Display" "Passage">> (two args) creates a PassageRef.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = "\
+:: Start
+<<link \"Forest\">>Click<</link>>
+";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        // Check that no passage has a macro_arg_ref with target "Forest"
+        for passage in &result.passages {
+            for arg_ref in &passage.macro_arg_refs {
+                assert_ne!(arg_ref.target, "Forest",
+                    "Single-arg <<link \"Forest\">> should NOT create a MacroArgRef with target \"Forest\". \
+                     The arg is a click handler label, not a passage target. Got: {:?}", arg_ref);
+            }
+        }
+    }
+
+    #[test]
+    fn return_label_arg_does_not_create_macro_arg_ref() {
+        // J2 regression: <<return "Return to start">> should NOT create
+        // a MacroArgRef with target="Return to start". The arg is display
+        // text, not a passage target.
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        let src = "\
+:: Start
+<<return \"Return to start\">>
+";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        for passage in &result.passages {
+            for arg_ref in &passage.macro_arg_refs {
+                assert_ne!(arg_ref.target, "Return to start",
+                    "<<return \"Return to start\">> should NOT create a MacroArgRef with the label as target. \
+                     Got: {:?}", arg_ref);
+            }
+        }
+    }
+
+    #[test]
+    fn link_single_arg_does_not_produce_broken_link_diagnostic() {
+        // Regression: <<link "Forest">> (single arg) is a click handler,
+        // NOT passage navigation. It must NOT produce a "Link target
+        // 'Forest' not found" broken-link diagnostic, even if no passage
+        // named "Forest" exists.
+        //
+        // Per SugarCube docs: https://www.motoslave.net/sugarcube/2/docs/#macros-macro-link
+        //   "May be called with either the link text and passage name as
+        //    separate arguments, a link markup, or an image markup."
+        //   - 1 arg = link text only (click handler with body)
+        //   - 2 args = link text + passage name (navigation)
+        use crate::plugin::FormatPluginMut;
+        use crate::sugarcube::SugarCubePlugin;
+        use url::Url;
+
+        let mut plugin = SugarCubePlugin::new();
+        // Note: NO passage named "Forest" exists in this story.
+        let src = "\
+:: Start
+<<link \"Forest\">><<set $x to 1>><</link>>
+";
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
+
+        let broken_diags: Vec<_> = result.diagnostic_groups.iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "broken-link" || d.message.contains("not found"))
+            .collect();
+        assert!(broken_diags.is_empty(),
+            "Single-arg <<link \"Forest\">> should NOT produce broken-link diagnostics. \
+             Got: {:?}",
+            broken_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 }

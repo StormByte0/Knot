@@ -3632,7 +3632,7 @@ mod completion_debug_tests {
         }];
 
         let items = plugin.provide_completions(
-            text, &workspace, &uri, 1, 12, None, &token_groups,
+            text, &workspace, &uri, 1, 9, None, &token_groups,
         );
         let passage_items: Vec<_> = items.iter()
             .filter(|i| i.data.as_ref().and_then(|d| d.get("type")).and_then(|v| v.as_str()) == Some("passage"))

@@ -1640,6 +1640,43 @@ fn try_block_markup_hover(
         return None;
     }
 
+    // ── Mid-line inline code `{{{...}}}` ───────────────────────────
+    // Inline code can appear anywhere in a line, not just at column 0.
+    // Scan for `{{{` at or near the cursor position. This handles cases
+    // like `Some {{{inline code}} here.` where `{{{` is at byte_pos 5.
+    // The cursor could be on any of the 3 `{` bytes, so we check starts
+    // from byte_pos-2 through byte_pos (clamped to valid range).
+    //
+    // Skip this when the line starts with `{{{` at column 0 AND the cursor
+    // is within the first 3 bytes — that case is handled by the column-0
+    // check below (which distinguishes Code Block vs Inline Code).
+    let is_col0_triple_brace = bytes.len() >= 3
+        && bytes[0] == b'{' && bytes[1] == b'{' && bytes[2] == b'{';
+    if !(is_col0_triple_brace && byte_pos < 3) {
+        let scan_start = byte_pos.saturating_sub(2);
+        for start in scan_start..=byte_pos {
+            if start + 3 <= bytes.len()
+                && bytes[start] == b'{'
+                && bytes[start + 1] == b'{'
+                && bytes[start + 2] == b'{'
+                && byte_pos < start + 3
+            {
+                let utf16_start = helpers::utf16_len_up_to(line, start);
+                let utf16_end = helpers::utf16_len_up_to(line, start + 3);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: "**`{{{` Inline Code**\n\nOpens inline raw code. Content is NOT processed (macros/variables inside are literal). Close with the first `}}}`. Renders as `<code>…</code>`.".to_string(),
+                    }),
+                    range: Some(Range {
+                        start: Position { line: line_idx as u32, character: utf16_start },
+                        end: Position { line: line_idx as u32, character: utf16_end },
+                    }),
+                });
+            }
+        }
+    }
+
     // All block-level markers are column-0 anchored. If the cursor is not
     // at column 0, none of these can fire.
     // (byte_pos is the byte offset within the line; column 0 means byte_pos == 0
@@ -1661,7 +1698,7 @@ fn try_block_markup_hover(
             return None;
         }
         // Cursor must be within the `!` run.
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         let level = end;
@@ -1686,7 +1723,7 @@ fn try_block_markup_hover(
         if end == 0 {
             return None;
         }
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         let depth = end;
@@ -1701,7 +1738,7 @@ fn try_block_markup_hover(
         if end == 0 {
             return None;
         }
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         let depth = end;
@@ -1718,7 +1755,7 @@ fn try_block_markup_hover(
         if end == 0 {
             return None;
         }
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         let depth = end;
@@ -1740,7 +1777,7 @@ fn try_block_markup_hover(
         if !rest.trim().is_empty() {
             return None;
         }
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         (end, "**`----` Horizontal Rule**\n\nCreates an `<hr>` element. Requires 4+ dashes alone on a line at column 0.".to_string())
@@ -1758,7 +1795,7 @@ fn try_block_markup_hover(
         if !rest.trim().is_empty() {
             return None;
         }
-        if byte_pos > end {
+        if byte_pos >= end {
             return None;
         }
         (end, "**`<<<` Block Blockquote**\n\nOpens a block-style blockquote. Close with another `<<<` on its own line. Content between the delimiters is wrapped in `<blockquote>`.".to_string())
@@ -1770,8 +1807,10 @@ fn try_block_markup_hover(
         if byte_pos > 3 {
             return None;
         }
-        // Check if it's block form (immediately followed by `\n`) or inline.
-        let is_block = bytes.len() > 3 && bytes[3] == b'\n';
+        // Check if it's block form. `text.lines()` strips the trailing `\n`,
+        // so a block-form line is exactly `{{{` (3 bytes, nothing else).
+        // Inline form has content after `{{{` on the same line (len > 3).
+        let is_block = bytes.len() == 3;
         if is_block {
             (3, "**`{{{` Code Block**\n\nOpens a raw code block. Content is NOT processed (macros/variables inside are literal). Close with `}}}` alone on its own line. Renders as `<pre><code>…</code></pre>`.".to_string())
         } else {
@@ -3418,8 +3457,8 @@ mod link_hover_tests {
         let (text, doc, ws) = parse_with_workspace(src);
         let mut ws = ws;
         ws.insert_document(doc.clone());
-        // Cursor right after [[ (on the pipe position)
-        let offset = cursor_on(&text, "[[|") + 1; // on the pipe
+        // Cursor on the pipe character
+        let offset = cursor_on(&text, "[[|") + 2; // on the `|`
         let hover = try_link_hover(&text, offset, Some(&doc), &ws);
         assert!(hover.is_some(), "hover on empty label should fire");
         if let Some(h) = hover {

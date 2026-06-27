@@ -63,10 +63,15 @@ impl ServerState {
         let unreachable_diags = workspace.graph.detect_unreachable(start_passage);
         let is_reachable = !unreachable_diags.iter().any(|d| d.passage_name == params.passage_name);
 
-        // Outgoing links
+        // Outgoing links — skip dynamic links with empty targets.
+        // These include single-arg <<link "Display">> (click handler),
+        // zero-arg <<return>>/<<back>> (history-based), and any link
+        // with is_dynamic=true and no fixed target. They're not broken
+        // links — they just don't have a fixed passage target.
         let outgoing_links: Vec<KnotPassageLink> = passage
             .links
             .iter()
+            .filter(|l| !l.target.is_empty())
             .map(|l| KnotPassageLink {
                 passage_name: l.target.clone(),
                 display_text: l.display_text.clone(),

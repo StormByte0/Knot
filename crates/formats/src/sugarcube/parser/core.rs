@@ -331,6 +331,32 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     Some(node)
                 }
             }
+            b'<' if text[i..].starts_with("<nowiki>") => {
+                // <nowiki> — raw content zone (plan.md Round 2 §I1).
+                //
+                // SugarCube's <nowiki> tag suppresses ALL markup processing
+                // — macros, variables, links, and inline formatting inside
+                // are rendered as literal text. Semantically identical to
+                // """verbatim""" (A4). We reuse the AstNode::Verbatim
+                // variant so the token builder, passage builder, and
+                // registry populate all treat it the same way (no tokens,
+                // no recursion, no _args scanning).
+                //
+                // The closing </nowiki> is the first one found (non-greedy),
+                // same as parse_verbatim's closing """. If unclosed, consumes
+                // to end of text.
+                //
+                // SugarCube docs: <nowiki> is the HTML-style equivalent of
+                // """...""". Authors use it for readability when the content
+                // contains many `"` characters.
+                let start = i;
+                i += 8; // skip "<nowiki>"
+                ctx.col += 8;
+                let node = parse_nowiki(text, &mut i, offset + start);
+                resync_col_after_advance(text, start, i, ctx);
+                flush_text(text, &mut text_start, start, offset, &mut nodes);
+                Some(node)
+            }
             b'$' if i + 1 < len && bytes[i + 1] == b'$' => {
                 // $$ — escaped dollar, include in text
                 i += 2;
@@ -976,6 +1002,54 @@ fn parse_verbatim(text: &str, i: &mut usize, span_start: usize) -> AstNode {
         let close_abs = content_start + close_rel;
         let content = text[content_start..close_abs].to_string();
         let end = close_abs + 3;  // skip past `"""`
+        (content, end)
+    } else {
+        // Unclosed — consume rest of text.
+        let content = text[content_start..].to_string();
+        (content, text.len())
+    };
+
+    *i = span_end;
+    AstNode::Verbatim {
+        content,
+        span: span_start..offset + span_end,
+    }
+}
+
+/// Parse a `<nowiki>...</nowiki>` raw content block (non-greedy, first
+/// `</nowiki>` closes).
+///
+/// `*i` is positioned just after the opening `<nowiki>`. `span_start` is
+/// the body-relative byte offset of the opening `<nowiki>`.
+///
+/// SugarCube's `<nowiki>` tag (plan.md Round 2 §I1): content between
+/// `<nowiki>` and the first closing `</nowiki>` is rendered as plain
+/// text WITHOUT any SugarCube markup processing — macros, variables,
+/// links, and inline formatting inside are NOT executed.
+///
+/// This is semantically identical to `"""verbatim"""` (A4). We reuse
+/// the `AstNode::Verbatim` variant so all downstream code (token
+/// builder, passage builder, registry populate) treats it uniformly.
+///
+/// On return, `*i` points just past the closing `</nowiki>`. If
+/// unclosed, consumes to end of text.
+fn parse_nowiki(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+    // *i is just after `<nowiki>` (8 bytes).
+    //
+    // Same absolute/local coordinate fix as `parse_verbatim` above.
+    let entry_i = *i;
+    let start_local = entry_i.saturating_sub(8);
+    let offset = span_start.saturating_sub(start_local);
+
+    let content_start = entry_i;
+
+    // Non-greedy scan for the first `</nowiki>`.
+    let close_offset = text[content_start..].find("</nowiki>");
+
+    let (content, span_end) = if let Some(close_rel) = close_offset {
+        let close_abs = content_start + close_rel;
+        let content = text[content_start..close_abs].to_string();
+        let end = close_abs + 9;  // skip past `</nowiki>` (9 bytes)
         (content, end)
     } else {
         // Unclosed — consume rest of text.

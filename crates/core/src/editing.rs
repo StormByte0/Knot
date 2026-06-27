@@ -91,6 +91,19 @@ pub fn graph_surgery(
 
             // Re-add edges for this passage
             for link in &passage.links {
+                // Skip dynamic links with no fixed target. These include:
+                //   - Single-arg <<link "Display">> (click handler, no navigation)
+                //   - Zero-arg <<return>> / <<back>> (history-based, dynamic target)
+                //   - Any link with is_dynamic=true and empty target
+                // These links exist in passage.links solely to prevent false
+                // dead-end diagnostics (they count as outgoing navigation).
+                // They must NOT create graph edges — the target is either
+                // empty (no passage to connect to) or resolved at runtime
+                // from browser history. Creating an edge to an empty-string
+                // target produces a false "Broken link" diagnostic.
+                if link.target.is_empty() {
+                    continue;
+                }
                 let target_exists = graph.contains_passage(&link.target);
                 let (edge_type, pre_broken_type) = if !target_exists {
                     let would_be = link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation);

@@ -356,9 +356,6 @@ fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocat
 }
 
 fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, body_offset_in_passage: usize) {
-    let label_then_passage: std::collections::HashSet<&str> =
-        crate::sugarcube::macros::label_then_passage_macros();
-
     for node in nodes {
         if let ast::AstNode::Macro {
             name,
@@ -376,15 +373,22 @@ fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, b
             if let Some(sargs) = structured_args {
                 for sarg in sargs {
                     let is_passage_ref = matches!(sarg.kind, ast::ParsedArgKind::PassageRef);
-                    // For label_then_passage macros (e.g., <<link "Talk">>), when the
-                    // single arg is classified as Label, it doubles as the passage target
-                    // (equivalent to [[Talk]]). Treat it as a PassageRef for hover layering.
-                    let is_label_as_passage = !is_passage_ref
-                        && matches!(sarg.kind, ast::ParsedArgKind::Label)
-                        && label_then_passage.contains(name.as_str())
-                        && sargs.len() == 1;
 
-                    if is_passage_ref || is_label_as_passage {
+                    // Only PassageRef args create MacroArgRef entries.
+                    //
+                    // Previously, single-arg Label args for label_then_passage
+                    // macros (<<link "Forest">>, <<return "Go back">>) were
+                    // treated as PassageRef via an `is_label_as_passage` check.
+                    // This was WRONG per SugarCube docs:
+                    //   - <<link "Display">> (1 arg) = click handler, NOT navigation
+                    //   - <<link "Display" "Passage">> (2 args) = navigation to passage
+                    //   - <<return "Label">> (1 arg) = return to previous passage, label is display text
+                    //   - <<back "Label">> (1 arg) = go back in history, label is display text
+                    //
+                    // The is_label_as_passage logic caused false broken-link
+                    // diagnostics ("Link target 'Return to start' not found")
+                    // and false hover popups for label text. Removed in J1/J2.
+                    if is_passage_ref {
                         refs.push(MacroArgRef {
                             target: sarg.value.clone(),
                             span: body_offset_in_passage + sarg.span.start..body_offset_in_passage + sarg.span.end,
