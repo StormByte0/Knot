@@ -198,3 +198,54 @@ pub fn describe_builtin_function(name: &str) -> Option<&'static str> {
         .find(|(n, _)| *n == name)
         .map(|(_, desc)| *desc)
 }
+
+// ---------------------------------------------------------------------------
+// SugarCube extension methods (Array, String, Number prototypes)
+// ---------------------------------------------------------------------------
+
+/// SugarCube extension methods added to JavaScript prototypes at runtime.
+///
+/// SugarCube extends `Array.prototype`, `String.prototype`, and
+/// `Number.prototype` with additional methods. These are NOT standard JS —
+/// they're injected by the SugarCube runtime. oxc parses them as valid
+/// member-expression calls (syntactically correct), but the LSP has no
+/// way to know they're valid SugarCube methods without this catalog.
+///
+/// Source: SugarCube 2 docs — "Native Object Methods" section.
+pub fn builtin_methods() -> &'static [(&'static str, &'static str)] {
+    static METHODS: &[(&str, &str)] = &[
+        // ── Array methods (SugarCube extensions) ──────────────────────
+        ("first",        "Array: Returns the first element of the array. Returns `undefined` if the array is empty."),
+        ("last",         "Array: Returns the last element of the array. Returns `undefined` if the array is empty."),
+        ("includes",     "Array/String: Returns whether the given value exists within the array/string. (SugarCube's version, not the native ES2016 method.)"),
+        ("includesAll",  "Array: Returns whether ALL of the given values exist within the array."),
+        ("includesAny",  "Array: Returns whether ANY of the given values exist within the array."),
+        ("pushUnique",   "Array: Appends one or more elements to the end of the array, but only if they're not already present. Returns the new length."),
+        ("deleteWith",   "Array: Removes all elements that match the given predicate function. Returns the array for chaining."),
+        ("deleteAt",     "Array: Removes the element at the given index(es). Returns the array for chaining."),
+        ("count",        "Array/String: Returns the number of elements/characters that match the given value or predicate."),
+        ("toShuffled",   "Array: Returns a new array with the same elements in random order. Does not modify the original."),
+        ("random",       "Array: Returns a random element from the array. Also works on the `random()` builtin function."),
+        ("flatten",      "Array: Returns a new array with all sub-array elements concatenated into it recursively up to the specified depth."),
+        ("toUpperFirst", "String: Returns a copy of the string with the first character converted to uppercase."),
+        ("clamp",        "Number: Returns the value clamped to the inclusive range [min, max]. Example: `(15).clamp(0, 10)` returns `10`."),
+        // Note: .length is a native JS property, not a SugarCube extension,
+        // but we include it here so hover works on $arr.length.
+        ("length",       "Array/String: Returns the number of elements/characters. (Native JS property, not a SugarCube extension.)"),
+    ];
+
+    METHODS
+}
+
+/// Check if a name is a SugarCube extension method.
+pub fn is_builtin_method(name: &str) -> bool {
+    builtin_methods().iter().any(|(n, _)| *n == name)
+}
+
+/// Get the description for a SugarCube extension method.
+pub fn describe_builtin_method(name: &str) -> Option<&'static str> {
+    builtin_methods()
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, desc)| *desc)
+}

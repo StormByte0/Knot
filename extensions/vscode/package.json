@@ -1,6 +1,6 @@
 {
   "name": "knot",
-  "displayName": "Knot — Twine IDE",
+  "displayName": "Knot \u2014 Twine IDE",
   "description": "Next-generation IDE for Twine and Twee projects",
   "version": "2.0.0",
   "publisher": "stormbyte",
@@ -270,7 +270,7 @@
     },
     "configuration": [
       {
-        "title": "Knot — Language Server",
+        "title": "Knot \u2014 Language Server",
         "properties": {
           "knot.server.path": {
             "type": "string",
@@ -295,7 +295,7 @@
         }
       },
       {
-        "title": "Knot — Build",
+        "title": "Knot \u2014 Build",
         "properties": {
           "knot.tweegoPath": {
             "type": "string",
@@ -312,7 +312,7 @@
           "knot.build.sourceDir": {
             "type": "string",
             "default": "",
-            "description": "Subdirectory (relative to the workspace root) containing your .twee source files. Set this if your project has non-source files at the root — for example, a bundled tweego/ folder. Without this, Tweego scans the entire workspace and may pick up stray .js files as passages. Leave empty to use the workspace root as the source directory.",
+            "description": "Subdirectory (relative to the workspace root) containing your .twee source files. Set this if your project has non-source files at the root \u2014 for example, a bundled tweego/ folder. Without this, Tweego scans the entire workspace and may pick up stray .js files as passages. Leave empty to use the workspace root as the source directory.",
             "scope": "machine-overridable"
           },
           "knot.build.outputDir": {
@@ -324,7 +324,7 @@
         }
       },
       {
-        "title": "Knot — Indexing",
+        "title": "Knot \u2014 Indexing",
         "properties": {
           "knot.indexing.exclude": {
             "type": "array",
@@ -345,7 +345,7 @@
         }
       },
       {
-        "title": "Knot — Diagnostics",
+        "title": "Knot \u2014 Diagnostics",
         "properties": {
           "knot.diagnostics.broken-link": {
             "type": "string",
@@ -482,26 +482,26 @@
         }
       },
       {
-        "title": "Knot — Managed Paths",
+        "title": "Knot \u2014 Managed Paths",
         "properties": {
           "knot.managed.storagePath": {
             "type": "string",
             "default": "",
-            "description": "Read-only. The extension's managed storage directory where the Tweego binary and story format cache are downloaded. Do not edit — this is updated automatically by the extension on startup.",
+            "description": "Read-only. The extension's managed storage directory where the Tweego binary and story format cache are downloaded. Do not edit \u2014 this is updated automatically by the extension on startup.",
             "scope": "application",
             "readOnly": true
           },
           "knot.managed.tweegoPath": {
             "type": "string",
             "default": "",
-            "description": "Read-only. Path to the extension-managed Tweego binary (downloaded automatically). Do not edit — updated by the extension. To use your own Tweego binary, set 'knot.tweegoPath' instead.",
+            "description": "Read-only. Path to the extension-managed Tweego binary (downloaded automatically). Do not edit \u2014 updated by the extension. To use your own Tweego binary, set 'knot.tweegoPath' instead.",
             "scope": "application",
             "readOnly": true
           },
           "knot.managed.storyformatsPath": {
             "type": "string",
             "default": "",
-            "description": "Read-only. Path to the extension-managed story formats cache (versioned per format). Do not edit — updated by the extension. To use your own story formats folder, set 'knot.storyformats.path' instead.",
+            "description": "Read-only. Path to the extension-managed story formats cache (versioned per format). Do not edit \u2014 updated by the extension. To use your own story formats folder, set 'knot.storyformats.path' instead.",
             "scope": "application",
             "readOnly": true
           }
@@ -515,7 +515,7 @@
         "path": "./themes/knot-dark.json"
       },
       {
-        "label": "Knot Dark — Tokens Only",
+        "label": "Knot Dark \u2014 Tokens Only",
         "uiTheme": "vs-dark",
         "path": "./themes/knot-dark-tokens.json"
       },
@@ -525,7 +525,7 @@
         "path": "./themes/knot-light.json"
       },
       {
-        "label": "Knot Light — Tokens Only",
+        "label": "Knot Light \u2014 Tokens Only",
         "uiTheme": "vs",
         "path": "./themes/knot-light-tokens.json"
       }
@@ -658,6 +658,26 @@
       {
         "id": "blockDepth6",
         "description": "Macro at block nesting depth 6"
+      },
+      {
+        "id": "bold",
+        "description": "Bold text formatting markup"
+      },
+      {
+        "id": "underline",
+        "description": "Underline text formatting markup"
+      },
+      {
+        "id": "strikethrough",
+        "description": "Strikethrough text formatting markup"
+      },
+      {
+        "id": "subscript",
+        "description": "Subscript text formatting markup"
+      },
+      {
+        "id": "superscript",
+        "description": "Superscript text formatting markup"
       }
     ],
     "semanticTokenScopes": [

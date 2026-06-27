@@ -191,6 +191,26 @@
       "foreground": "#9ece6a",
       "fontStyle": "italic"
     },
+    "textFormat.bold": {
+      "foreground": "#9ece6a",
+      "fontStyle": "bold"
+    },
+    "textFormat.underline": {
+      "foreground": "#9ece6a",
+      "fontStyle": "underline"
+    },
+    "textFormat.strikethrough": {
+      "foreground": "#9ece6a",
+      "fontStyle": "strikethrough"
+    },
+    "textFormat.subscript": {
+      "foreground": "#7aa2f7",
+      "fontStyle": "italic"
+    },
+    "textFormat.superscript": {
+      "foreground": "#bb9af7",
+      "fontStyle": "italic"
+    },
     "variable": {
       "foreground": "#f7768e",
       "fontStyle": "italic"

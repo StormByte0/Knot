@@ -1278,6 +1278,27 @@ fn check_identifier_for_substituted_var(
 ) {
     let name = id.name.as_str();
 
+    // Guard: skip identifiers that are part of a def/ndef substitution.
+    // These are already handled by extract_substitution_operators which
+    // emits both the Operator token (for "def"/"ndef") and the Variable
+    // token (for the operand) with correct spans. If we let this function
+    // also emit a var_op, it produces a DUPLICATE Variable token at the
+    // wrong position (mapped to the start of the substitution instead of
+    // the variable's actual position).
+    //
+    // We detect def/ndef substitutions by checking if the identifier's
+    // processed position falls within any substitution whose original_text
+    // starts with "def " or "ndef ".
+    let id_processed_start = id.span.start as usize;
+    for sub in &preprocessed.substitutions {
+        if (sub.original_text.starts_with("def ") || sub.original_text.starts_with("ndef "))
+            && id_processed_start >= sub.processed_range.start
+            && id_processed_start < sub.processed_range.end
+        {
+            return; // Skip — already handled by extract_substitution_operators
+        }
+    }
+
     if let Some(_var_part) = name.strip_prefix("State_variables_") {
         let (base_name, property_path) = split_substituted_var(_var_part);
         let var_name = format!("${}", base_name);
@@ -1465,46 +1486,67 @@ fn emit_substituted_var_method_call(
     let full_span = original_start..original_end;
 
     // Compute segment spans for the root variable and each property.
-    // This mirrors what check_identifier_for_substituted_var does, but we
-    // need to do it here because we're intercepting the call before that
-    // function gets a chance to run.
-    let segment_spans = crate::sugarcube::js::js_annotate::compute_target_segment_spans(
+    let all_segments = crate::sugarcube::js::js_annotate::compute_target_segment_spans(
         var_name,
         property_path,
         &full_span,
     );
 
-    // Emit Variable token for the root (first segment)
-    if let Some(first_seg) = segment_spans.first() {
+    // The last segment is the method name being called. We must NOT emit
+    // a Property token for it — it gets a Function token from
+    // `function_calls` instead. Overlapping Property + Function tokens
+    // at the same span causes VS Code to show "Property" instead of
+    // "Function" (undefined behavior for overlapping semantic tokens).
+    //
+    // So we split: all_segments except the last → var_op's segment_spans
+    // (emits Variable for root + Property for intermediate props).
+    // Last segment → FunctionCallInfo (emits Function token).
+    let (var_op_segments, method_segment) = if all_segments.len() > 1 {
+        let split_pos = all_segments.len() - 1;
+        (all_segments[..split_pos].to_vec(), all_segments[split_pos].clone())
+    } else {
+        // Only one segment (shouldn't happen for method calls, but handle
+        // gracefully) — use it for the Function token, emit no var_op.
+        (Vec::new(), all_segments.first().cloned().unwrap_or(full_span.clone()))
+    };
+
+    // Emit Variable token for the root + Property tokens for intermediate
+    // segments (everything EXCEPT the method name).
+    //
+    // IMPORTANT: The var_op's property_path must NOT include the method
+    // name. Only intermediate properties (e.g., `name` in `$arr.name.first()`)
+    // should be registered. The method name is handled via FunctionCallInfo
+    // and must NOT appear in the variable tree as a property — otherwise
+    // the VSCode variable panel shows methods like `.last()`, `.pushUnique()`
+    // mixed in with real properties like `.length`.
+    if let Some(first_seg) = var_op_segments.first() {
+        // Strip the last segment (method name) from property_path.
+        // E.g., "name.first" → "name", "last" → "" (no intermediate props).
+        let var_op_property_path = if let Some(last_dot) = property_path.rfind('.') {
+            property_path[..last_dot].to_string()
+        } else {
+            String::new() // No intermediate properties — just the root variable
+        };
+
         analysis.var_ops.push(AnalyzedVarOp {
             name: var_name.to_string(),
             is_temporary,
             access_kind: VarAccessKind::Read,
             span: first_seg.clone(),
-            property_path: property_path.to_string(),
-            segment_spans: segment_spans.clone(),
+            property_path: var_op_property_path,
+            segment_spans: var_op_segments,
             construct_span: None,
             segment_construct_spans: Vec::new(),
         });
     }
 
-    // The last segment is the method being called — return a FunctionCallInfo
-    // with its span so the caller pushes a Function token.
-    if let Some(last_seg) = segment_spans.last() {
-        // Extract the method name from the property path (last segment)
-        let method_name = property_path.rsplit('.').next().unwrap_or(property_path);
-        Some(FunctionCallInfo {
-            name: method_name.to_string(),
-            span: last_seg.clone(),
-        })
-    } else {
-        // Fallback: if no segments, use the full span
-        let method_name = property_path.rsplit('.').next().unwrap_or(property_path);
-        Some(FunctionCallInfo {
-            name: method_name.to_string(),
-            span: full_span,
-        })
-    }
+    // Return the method segment as a FunctionCallInfo so the caller
+    // pushes a Function token for it.
+    let method_name = property_path.rsplit('.').next().unwrap_or(property_path);
+    Some(FunctionCallInfo {
+        name: method_name.to_string(),
+        span: method_segment,
+    })
 }
 
 /// Extract a string value from a function argument.
@@ -1787,12 +1829,58 @@ fn extract_substitution_operators(
         // Classify as Comparison because `def`/`ndef` are semantically
         // comparison-like (they check equality with "undefined").
         if let Some(kw_len) = def_ndef_keyword_len(&sub.original_text) {
-            let span = (sub.original_range.start + preprocessed.origin_offset)
+            let op_span = (sub.original_range.start + preprocessed.origin_offset)
                 ..(sub.original_range.start + kw_len + preprocessed.origin_offset);
             analysis.operator_spans.push(OperatorSpan {
                 kind: OperatorKind::Comparison,
-                span,
+                span: op_span,
             });
+
+            // Also emit a var_op for the variable operand with the CORRECT
+            // span. The substitution's original_text is like "def $hp" or
+            // "ndef $obj.prop". The variable starts after the keyword + any
+            // whitespace. We find the `$` or `_` sigil in the original_text
+            // and compute the variable span relative to original_range.
+            //
+            // Without this, the var_op from check_identifier_for_substituted_var
+            // maps the State_variables_hp identifier back through the
+            // preprocessor, which clamps to the START of the substitution
+            // (position of "def"), producing a Variable token at the wrong
+            // position (on "def" instead of "$hp").
+            let orig_text = &sub.original_text;
+            let orig_base = sub.original_range.start + preprocessed.origin_offset;
+            // Find the sigil position within original_text (after the keyword)
+            if let Some(sigil_rel) = orig_text[kw_len..].find(|c| c == '$' || c == '_') {
+                let var_start_rel = kw_len + sigil_rel;
+                let var_start = orig_base + var_start_rel;
+                let var_end = orig_base + orig_text.len();
+                let var_span = var_start..var_end;
+
+                // Extract the variable name (sigil + identifier + dot-path)
+                let var_text = &orig_text[var_start_rel..];
+                let is_temp = var_text.starts_with('_');
+                // Name is sigil + identifier (no dot-path)
+                let var_name: String = var_text.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+                    .collect();
+                // Property path is everything after the first identifier
+                let property_path = if let Some(dot_pos) = var_text.find('.') {
+                    var_text[dot_pos..].to_string()
+                } else {
+                    String::new()
+                };
+
+                analysis.var_ops.push(AnalyzedVarOp {
+                    name: var_name,
+                    is_temporary: is_temp,
+                    access_kind: VarAccessKind::Read,
+                    span: var_span.clone(),
+                    property_path: property_path.clone(),
+                    segment_spans: vec![var_span],
+                    construct_span: None,
+                    segment_construct_spans: Vec::new(),
+                });
+            }
             continue;
         }
 

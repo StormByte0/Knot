@@ -282,6 +282,21 @@ pub enum SemanticTokenModifier {
     /// Block macro at nesting depth 6+ (wraps around for deeper nesting).
     /// LSP modifier: `blockDepth6`
     BlockDepth6,
+    /// Text formatting: bold markup (`''bold''`).
+    /// LSP modifier: `bold`
+    Bold,
+    /// Text formatting: underline markup (`__underline__`).
+    /// LSP modifier: `underline`
+    Underline,
+    /// Text formatting: strikethrough markup (`==strike==`).
+    /// LSP modifier: `strikethrough`
+    Strikethrough,
+    /// Text formatting: subscript markup (`~~sub~~`).
+    /// LSP modifier: `subscript`
+    Subscript,
+    /// Text formatting: superscript markup (`^^super^^`).
+    /// LSP modifier: `superscript`
+    Superscript,
 }
 
 impl SemanticTokenType {
@@ -404,6 +419,11 @@ impl SemanticTokenModifier {
             Self::BlockDepth4,   // bit 10
             Self::BlockDepth5,   // bit 11
             Self::BlockDepth6,   // bit 12
+            Self::Bold,          // bit 13
+            Self::Underline,     // bit 14
+            Self::Strikethrough, // bit 15
+            Self::Subscript,     // bit 16
+            Self::Superscript,   // bit 17
         ]
     }
 
@@ -426,6 +446,11 @@ impl SemanticTokenModifier {
             Self::BlockDepth4  => "blockDepth4",
             Self::BlockDepth5  => "blockDepth5",
             Self::BlockDepth6  => "blockDepth6",
+            Self::Bold          => "bold",
+            Self::Underline     => "underline",
+            Self::Strikethrough => "strikethrough",
+            Self::Subscript     => "subscript",
+            Self::Superscript   => "superscript",
         }
     }
 
@@ -1766,6 +1791,15 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// Returns `(passage_name, file_uri, defined_at_offset)` if found.
     fn find_function(&self, _name: &str) -> Option<FunctionDefInfo> {
+        None
+    }
+
+    /// Look up a description for a builtin method (e.g., `.pushUnique()`,
+    /// `.toUpperFirst()`, `.clamp()`). Returns None for unknown methods.
+    ///
+    /// SugarCube implements this by checking its builtin method catalog
+    /// (Array/String/Number prototype extensions). Other formats return None.
+    fn describe_builtin_method(&self, _name: &str) -> Option<&'static str> {
         None
     }
 

@@ -1017,6 +1017,19 @@ impl FormatPlugin for SugarCubePlugin {
         })
     }
 
+    fn describe_builtin_method(&self, name: &str) -> Option<&'static str> {
+        // Check SugarCube extension methods first (.pushUnique, .toUpperFirst, etc.)
+        if let Some(desc) = macros::describe_builtin_method(name) {
+            return Some(desc);
+        }
+        // Also check builtin standalone functions (random, either, visited, etc.)
+        // — these can appear as Function tokens too.
+        if let Some(desc) = macros::describe_builtin_function(name) {
+            return Some(desc);
+        }
+        None
+    }
+
     // ── Template registry ─────────────────────────────────────────────
 
     fn template_names(&self) -> Vec<String> {

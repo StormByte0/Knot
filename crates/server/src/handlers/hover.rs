@@ -163,6 +163,7 @@ pub(crate) async fn hover(
             doc,
             &inner.workspace,
             plugin,
+            &token_groups,
         ) {
             return Ok(Some(hover));
         }
@@ -1053,8 +1054,30 @@ fn try_variable_hover(
     doc: Option<&knot_core::Document>,
     workspace: &knot_core::Workspace,
     plugin: &dyn fmt_plugin::FormatPlugin,
+    token_groups: &[knot_formats::plugin::PassageTokenGroup],
 ) -> Option<Hover> {
     let doc = doc?;
+
+    // Guard: if there's a Function semantic token at the cursor position,
+    // skip variable hover. The cursor is on a method/function name (e.g.,
+    // `.last()` in `$arr.last()`), which should be handled by
+    // try_function_hover (step 4c, runs after this). Without this guard,
+    // variable hover fires on the method name because the var_op's span
+    // (from the fallback var_refs scanner) covers the full dot-path
+    // (`$arr.last`), and the cursor on "last" falls within that span.
+    for group in token_groups {
+        let group_offset = group.passage_offset;
+        for token in &group.tokens {
+            if token.token_type != knot_formats::plugin::SemanticTokenType::Function {
+                continue;
+            }
+            let abs_start = token.start + group_offset;
+            let abs_end = abs_start + token.length;
+            if byte_offset >= abs_start && byte_offset < abs_end {
+                return None; // Function token at cursor — let function hover handle it
+            }
+        }
+    }
 
     // Iterate over all passages in the document and check if the cursor
     // byte offset falls within any variable's span. Variable spans are
@@ -2271,25 +2294,45 @@ fn try_function_hover(
             let abs_end = abs_start + token.length;
             if byte_offset >= abs_start && byte_offset < abs_end {
                 let name = &text[abs_start..abs_end];
-                let info = plugin.find_function(name)?;
 
-                // Meaningfulness gate: only show function hover when there's
-                // info beyond what's visible in the code. The function name
-                // is already visible; we need param count to justify a popup.
-                // "Defined in `:: Story JavaScript`" alone is too thin.
-                let param_count = info.param_count?;
-                let hover_text = format!(
-                    "**{}** `Function` ({} params)\n\nDefined in `:: {}`",
-                    name, param_count, info.defined_in
-                );
-                let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
-                return Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: hover_text,
-                    }),
-                    range: Some(hover_range),
-                });
+                // Path 1: User-defined function (from script passages).
+                // Has definition location + param count.
+                if let Some(info) = plugin.find_function(name) {
+                    // Meaningfulness gate: only show function hover when there's
+                    // info beyond what's visible in the code. The function name
+                    // is already visible; we need param count to justify a popup.
+                    if let Some(param_count) = info.param_count {
+                        let hover_text = format!(
+                            "**{}** `Function` ({} params)\n\nDefined in `:: {}`",
+                            name, param_count, info.defined_in
+                        );
+                        let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: hover_text,
+                            }),
+                            range: Some(hover_range),
+                        });
+                    }
+                }
+
+                // Path 2: SugarCube builtin method or function.
+                // These are runtime extensions (.pushUnique, .toUpperFirst,
+                // .clamp, etc.) or standalone builtins (random, either, etc.).
+                // No definition location (they're in the SugarCube runtime),
+                // but we have descriptions from the docs.
+                if let Some(desc) = plugin.describe_builtin_method(name) {
+                    let hover_text = format!("**{}** `Method`\n\n{}", name, desc);
+                    let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: hover_text,
+                        }),
+                        range: Some(hover_range),
+                    });
+                }
             }
         }
     }
@@ -2335,6 +2378,16 @@ fn try_property_hover(
     let prop_start = prop_abs_start?;
     let prop_end = prop_abs_end?;
     if prop_name.is_empty() {
+        return None;
+    }
+
+    // Guard: if this "property" name is actually a known SugarCube builtin
+    // method (e.g., `.last()`, `.pushUnique()`, `.toUpperFirst()`), skip
+    // property hover. These should get Function hover instead (which runs
+    // before this handler in the layered design). This guard catches cases
+    // where a stale Property token overlaps with a Function token, or where
+    // the method name happens to match a real property name.
+    if plugin.describe_builtin_method(&prop_name).is_some() {
         return None;
     }
 
@@ -2565,7 +2618,7 @@ mod expr_macro_hover_tests {
         let (doc, plugin) = parse(src);
         let body_offset = ":: Init\n".len(); // cursor on `<<`
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
-        let hover = try_variable_hover(src, body_offset, Some(&doc), &ws, &plugin);
+        let hover = try_variable_hover(src, body_offset, Some(&doc), &ws, &plugin, &[]);
         assert!(hover.is_none(),
             "variable hover must NOT fire when cursor is on `<<` of `<<=>>`, got: {:?}",
             hover);
@@ -2615,7 +2668,7 @@ mod expr_macro_hover_tests {
         let line2_start = src.find("<<run").unwrap();
         let cursor_on_dollar = line2_start + "<<run ".len(); // offset of `$`
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
-        let hover = try_variable_hover(src, cursor_on_dollar, Some(&doc), &ws, &plugin);
+        let hover = try_variable_hover(src, cursor_on_dollar, Some(&doc), &ws, &plugin, &[]);
         // Variable hover SHOULD fire — the cursor is on `$arr`, a variable.
         assert!(hover.is_some(),
             "cursor on $arr inside <<run>> should fire variable hover, got None");
@@ -2720,7 +2773,7 @@ mod prose_hover_tests {
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
         // Cursor on `g` of `$gold` (offset = ":: Start\nYou have $".len() = 18).
         let cursor_offset = ":: Start\nYou have $".len();
-        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
         assert!(hover.is_some(),
             "hover on prose `$gold` should fire via text-scan fallback, got None");
         if let Some(h) = hover {
@@ -2744,7 +2797,7 @@ mod prose_hover_tests {
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
         // Cursor on `n` of `.name` (offset = ":: Start\nYou have $player.".len() = 24).
         let cursor_offset = ":: Start\nYou have $player.".len();
-        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
         assert!(hover.is_some(),
             "hover on prose `$player.name` should fire, got None");
         if let Some(h) = hover {
@@ -2832,7 +2885,7 @@ mod prose_hover_tests {
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
         // Cursor on `_` in `snake_case` (offset = ":: Start\nUse snake".len() = 16).
         let cursor_offset = ":: Start\nUse snake".len();
-        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin);
+        let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
         assert!(hover.is_none(),
             "hover must NOT fire on `_` in `snake_case` (not a temp var): got {:?}",
             hover);

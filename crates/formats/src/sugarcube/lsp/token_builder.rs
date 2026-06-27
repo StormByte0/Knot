@@ -51,6 +51,13 @@ pub fn build_semantic_tokens(
     body_text: &str,
 ) {
     build_semantic_tokens_at_depth(nodes, tokens, body_offset_in_passage, custom_macro_names, 0, body_text);
+    // Filter out zero-length tokens. These can arise from:
+    // - def/ndef substitution position mapping (clamped to substitution start)
+    // - structured_args scanner producing empty spans for unknown macros
+    // - edge cases in oxc span mapping
+    // Zero-length tokens are useless noise — VS Code ignores them, but they
+    // clutter debug output and can interfere with hover detection.
+    tokens.retain(|t| t.length > 0);
 }
 
 /// Recursive token builder that tracks block-macro nesting depth.
@@ -646,13 +653,24 @@ fn build_semantic_tokens_at_depth(
                 });
                 build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names, body_text);
             }
-            // Text formatting markup: emit TextFormat token for the construct
-            ast::AstNode::TextFormat { span, .. } => {
+            // Text formatting markup: emit TextFormat token with a modifier
+            // based on the formatting kind. This allows themes to style each
+            // kind differently (bold→bold, underline→underline, etc.).
+            // Italic is the default (no modifier) for backward compat.
+            ast::AstNode::TextFormat { span, kind, .. } => {
+                let modifier = match kind {
+                    ast::TextFormatKind::Bold       => Some(SemanticTokenModifier::Bold),
+                    ast::TextFormatKind::Italic     => None, // default — theme's `textFormat` entry
+                    ast::TextFormatKind::Underline  => Some(SemanticTokenModifier::Underline),
+                    ast::TextFormatKind::Strike     => Some(SemanticTokenModifier::Strikethrough),
+                    ast::TextFormatKind::Sub        => Some(SemanticTokenModifier::Subscript),
+                    ast::TextFormatKind::Super      => Some(SemanticTokenModifier::Superscript),
+                };
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + span.start,
                     length: span.end - span.start,
                     token_type: SemanticTokenType::TextFormat,
-                    modifier: None,
+                    modifier,
                 });
             }
             // MacroClose nodes are consumed by the tree builder and should not
