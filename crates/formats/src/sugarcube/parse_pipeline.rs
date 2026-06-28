@@ -23,13 +23,13 @@
 use knot_core::passage::{Passage, PassageCategory as CorePassageCategory};
 use url::Url;
 
-use crate::plugin::{FormatPlugin, ParseResult, PassageDiagnosticGroup, PassageTokenGroup};
 use super::SugarCubePlugin;
 use super::ast::ParseMode;
 use super::classifier::{self, ClassifiedPassage, is_script_passage};
 use super::lsp::pipeline_log;
 use super::passage_build;
 use super::registry_populate;
+use crate::plugin::{FormatPlugin, ParseResult, PassageDiagnosticGroup, PassageTokenGroup};
 
 /// Full parse: split → classify → sort → per-passage dispatch.
 ///
@@ -82,7 +82,10 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             // Build the set of all known macro names (builtin + custom) so
             // the fallback in collect_macro_js_snippet doesn't send custom
             // widget args to oxc.
-            let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+            let mut known_macro_names = registry
+                .custom_macro_names()
+                .into_iter()
+                .collect::<std::collections::HashSet<String>>();
             for m in super::macros::builtin_macros() {
                 known_macro_names.insert(m.name.to_string());
             }
@@ -119,12 +122,14 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         );
 
         // Build the Passage struct (passage-relative spans via body_offset_in_passage)
-        let mut passage = passage_build::build_passage(cp, &passage_ast, body_offset_in_passage, passage_head);
+        let mut passage =
+            passage_build::build_passage(cp, &passage_ast, body_offset_in_passage, passage_head);
         passage.span = 0..(header_line_end - passage_head + cp.body_text.len());
         passage.passage_offset = passage_head;
 
         // Build passage.vars from the unified AST (including js_analysis + script_js_analysis)
-        passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, body_offset_in_passage);
+        passage.vars =
+            passage_build::build_vars_from_unified_ast(&passage_ast, body_offset_in_passage);
 
         // Build semantic tokens for this passage (passage-relative offsets).
         // The passage_offset is the document-absolute position of the `::`
@@ -139,7 +144,8 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
 
         // Body tokens (shift body-relative AST spans by body_offset_in_passage)
         if matches!(mode, ParseMode::Minimal) {
-            let json_tokens = super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
+            let json_tokens =
+                super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
             passage_tokens.extend(json_tokens);
         } else if matches!(mode, ParseMode::Stylesheet) {
             // Stylesheet passages are pure CSS. CSS parsing is currently
@@ -208,7 +214,10 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 // custom macros from the registry) so the fallback in
                 // `collect_js_snippets` doesn't send custom widget args
                 // (e.g. `<<statblock "Strength" $stats.strength>>`) to oxc.
-                let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+                let mut known_macro_names = registry
+                    .custom_macro_names()
+                    .into_iter()
+                    .collect::<std::collections::HashSet<String>>();
                 for m in super::macros::builtin_macros() {
                     known_macro_names.insert(m.name.to_string());
                 }
@@ -257,8 +266,14 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
     pipeline_log::parse_full_summary(
         uri.as_ref(),
         passages.len(),
-        all_token_groups.iter().map(|g| g.tokens.len()).sum::<usize>(),
-        all_diagnostic_groups.iter().map(|g| g.diagnostics.len()).sum::<usize>(),
+        all_token_groups
+            .iter()
+            .map(|g| g.tokens.len())
+            .sum::<usize>(),
+        all_diagnostic_groups
+            .iter()
+            .map(|g| g.diagnostics.len())
+            .sum::<usize>(),
     );
 
     ParseResult {
@@ -301,7 +316,11 @@ fn count_total_var_ops(ast: &super::ast::PassageAst) -> usize {
         let mut n = 0;
         for node in nodes {
             match node {
-                super::ast::AstNode::Macro { js_analysis, children, .. } => {
+                super::ast::AstNode::Macro {
+                    js_analysis,
+                    children,
+                    ..
+                } => {
                     if let Some(analysis) = js_analysis {
                         n += analysis.var_ops.len();
                     }
@@ -309,10 +328,11 @@ fn count_total_var_ops(ast: &super::ast::PassageAst) -> usize {
                         n += count_in_nodes(ch);
                     }
                 }
-                super::ast::AstNode::Expression { js_analysis, .. } => {
-                    if let Some(analysis) = js_analysis {
-                        n += analysis.var_ops.len();
-                    }
+                super::ast::AstNode::Expression {
+                    js_analysis: Some(analysis),
+                    ..
+                } => {
+                    n += analysis.var_ops.len();
                 }
                 _ => {}
             }
@@ -334,11 +354,20 @@ pub(super) fn parse_single(
     file_uri: &str,
 ) -> Option<Passage> {
     // Determine the parse mode from the tags
-    let mode = if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("script")) {
+    let mode = if passage_tags
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("script"))
+    {
         ParseMode::Script
-    } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style")) {
+    } else if passage_tags
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style"))
+    {
         ParseMode::Stylesheet
-    } else if passage_tags.iter().any(|t| t.eq_ignore_ascii_case("widget")) {
+    } else if passage_tags
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("widget"))
+    {
         ParseMode::Widget
     } else if passage_name == "StoryInterface" {
         ParseMode::Interface
@@ -354,7 +383,10 @@ pub(super) fn parse_single(
     // Phase 2: JS annotation pass
     if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
         let registry = plugin.registry();
-        let mut known_macro_names = registry.custom_macro_names().into_iter().collect::<std::collections::HashSet<String>>();
+        let mut known_macro_names = registry
+            .custom_macro_names()
+            .into_iter()
+            .collect::<std::collections::HashSet<String>>();
         for m in super::macros::builtin_macros() {
             known_macro_names.insert(m.name.to_string());
         }
@@ -413,9 +445,8 @@ pub(super) fn parse_single(
 
     // header_name_span: in parse_single, header_start=0, name_start=0,
     // so the span is already passage-relative.
-    passage.header_name_span = Some(
-        cp.header.name_start..cp.header.name_start + cp.header.name.len()
-    );
+    passage.header_name_span =
+        Some(cp.header.name_start..cp.header.name_start + cp.header.name.len());
 
     // Override vars with unified AST vars (includes js_analysis + script_js_analysis)
     passage.vars = passage_build::build_vars_from_unified_ast(&passage_ast, 0);

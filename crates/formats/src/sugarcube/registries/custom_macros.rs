@@ -62,7 +62,10 @@ impl CustomMacro {
     ///
     /// Prefer using `body` directly in new code.
     pub fn is_container(&self) -> bool {
-        matches!(self.body, crate::types::BodyRequirement::Required | crate::types::BodyRequirement::Optional)
+        matches!(
+            self.body,
+            crate::types::BodyRequirement::Required | crate::types::BodyRequirement::Optional
+        )
     }
 }
 
@@ -218,7 +221,14 @@ mod tests {
     #[test]
     fn register_widget() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "Widgets", "file:///test.tw", 100, None, crate::types::BodyRequirement::Never);
+        registry.register_widget(
+            "myWidget",
+            "Widgets",
+            "file:///test.tw",
+            100,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
 
         let m = registry.get("myWidget").unwrap();
         assert_eq!(m.name, "myWidget");
@@ -230,7 +240,14 @@ mod tests {
     #[test]
     fn register_container_widget() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("wrapWidget", "Widgets", "file:///test.tw", 200, None, crate::types::BodyRequirement::Required);
+        registry.register_widget(
+            "wrapWidget",
+            "Widgets",
+            "file:///test.tw",
+            200,
+            None,
+            crate::types::BodyRequirement::Required,
+        );
 
         let m = registry.get("wrapWidget").unwrap();
         assert!(m.is_widget);
@@ -240,7 +257,14 @@ mod tests {
     #[test]
     fn register_macro_add() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_macro_add("showStats", "Scripts", "file:///test.tw", 200, Some(2), crate::types::BodyRequirement::Never);
+        registry.register_macro_add(
+            "showStats",
+            "Scripts",
+            "file:///test.tw",
+            200,
+            Some(2),
+            crate::types::BodyRequirement::Never,
+        );
 
         let m = registry.get("showStats").unwrap();
         assert_eq!(m.name, "showStats");
@@ -251,9 +275,30 @@ mod tests {
     #[test]
     fn completion_names() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("myWidget", "W", "f", 0, None, crate::types::BodyRequirement::Never);
-        registry.register_widget("myMacro", "W", "f", 0, None, crate::types::BodyRequirement::Never);
-        registry.register_widget("otherThing", "W", "f", 0, None, crate::types::BodyRequirement::Never);
+        registry.register_widget(
+            "myWidget",
+            "W",
+            "f",
+            0,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
+        registry.register_widget(
+            "myMacro",
+            "W",
+            "f",
+            0,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
+        registry.register_widget(
+            "otherThing",
+            "W",
+            "f",
+            0,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
 
         let names = registry.completion_names("my");
         assert_eq!(names.len(), 2);
@@ -262,8 +307,22 @@ mod tests {
     #[test]
     fn remove_file() {
         let mut registry = CustomMacroRegistry::new();
-        registry.register_widget("a", "W", "file:///a.tw", 0, None, crate::types::BodyRequirement::Never);
-        registry.register_widget("b", "W", "file:///b.tw", 0, None, crate::types::BodyRequirement::Never);
+        registry.register_widget(
+            "a",
+            "W",
+            "file:///a.tw",
+            0,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
+        registry.register_widget(
+            "b",
+            "W",
+            "file:///b.tw",
+            0,
+            None,
+            crate::types::BodyRequirement::Never,
+        );
 
         registry.remove_file("file:///a.tw");
         assert!(!registry.contains("a"));

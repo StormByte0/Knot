@@ -62,9 +62,9 @@
 //! `Passage.passage_offset` separately to the document-absolute position of the
 //! passage head for LSP boundary conversion.
 
-use knot_core::passage::{Block, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer};
 use crate::header::TweeHeader;
 use crate::plugin::{FormatPlugin, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use knot_core::passage::{Block, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer};
 
 // ---------------------------------------------------------------------------
 // Core tag constants
@@ -141,10 +141,16 @@ pub fn classify_core_special(
     // in knot_core. The classify_tag() method returns a SemanticTokenModifier
     // (not a SpecialPassageDef), so we can't use it for behavior classification.
     for tag in passage_tags {
-        if CORE_SCRIPT_TAGS.iter().any(|core_tag| tag.eq_ignore_ascii_case(core_tag)) {
+        if CORE_SCRIPT_TAGS
+            .iter()
+            .any(|core_tag| tag.eq_ignore_ascii_case(core_tag))
+        {
             return Some(CoreSpecialKind::Script);
         }
-        if CORE_STYLESHEET_TAGS.iter().any(|core_tag| tag.eq_ignore_ascii_case(core_tag)) {
+        if CORE_STYLESHEET_TAGS
+            .iter()
+            .any(|core_tag| tag.eq_ignore_ascii_case(core_tag))
+        {
             return Some(CoreSpecialKind::Stylesheet);
         }
     }
@@ -223,7 +229,10 @@ pub fn parse_stylesheet_body(
     let blocks = raw_body_blocks(body, body_offset_in_passage);
     let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
-    CoreSpecialBodyResult { blocks, header_tokens }
+    CoreSpecialBodyResult {
+        blocks,
+        header_tokens,
+    }
 }
 
 /// Handle a script passage body in a format-agnostic way.
@@ -264,7 +273,10 @@ pub fn parse_script_body(
     let blocks = raw_body_blocks(body, body_offset_in_passage);
     let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
-    CoreSpecialBodyResult { blocks, header_tokens }
+    CoreSpecialBodyResult {
+        blocks,
+        header_tokens,
+    }
 }
 
 /// Handle a core metadata passage body (StoryTitle, StoryData) in a
@@ -293,7 +305,10 @@ pub fn parse_metadata_body(
     let blocks = raw_body_blocks(body, body_offset_in_passage);
     let header_tokens = build_special_header_tokens(passage_head, name_start, name_len, layer);
 
-    CoreSpecialBodyResult { blocks, header_tokens }
+    CoreSpecialBodyResult {
+        blocks,
+        header_tokens,
+    }
 }
 
 /// Create raw body blocks for any core special passage.
@@ -345,23 +360,22 @@ pub fn build_special_header_tokens(
         SpecialPassageLayer::UserDefined => SemanticTokenModifier::UserDefined,
     });
 
-    let mut tokens = Vec::new();
-
-    // `::` prefix token — always at passage-relative offset 0
-    tokens.push(SemanticToken {
-        start: 0,
-        length: 2,
-        token_type: SemanticTokenType::SpecialPassageHeader,
-        modifier: layer_modifier,
-    });
-
-    // Passage name token — passage-relative
-    tokens.push(SemanticToken {
-        start: name_start - passage_head,
-        length: name_len,
-        token_type: SemanticTokenType::SpecialPassage,
-        modifier: layer_modifier,
-    });
+    let tokens = vec![
+        // `::` prefix token — always at passage-relative offset 0
+        SemanticToken {
+            start: 0,
+            length: 2,
+            token_type: SemanticTokenType::SpecialPassageHeader,
+            modifier: layer_modifier,
+        },
+        // Passage name token — passage-relative
+        SemanticToken {
+            start: name_start - passage_head,
+            length: name_len,
+            token_type: SemanticTokenType::SpecialPassage,
+            modifier: layer_modifier,
+        },
+    ];
 
     tokens
 }
@@ -390,7 +404,9 @@ pub fn build_tag_tokens(
         return Vec::new();
     }
 
-    let bracket_start = header.tags_raw.find('[')
+    let bracket_start = header
+        .tags_raw
+        .find('[')
         .map(|bs| header.name_start - passage_head + bs)
         .unwrap_or(header.name_start - passage_head + header.name_text_raw.len());
     let tags_inner_start = bracket_start + 1; // after `[`

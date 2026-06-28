@@ -442,7 +442,7 @@ export interface KnotRefreshSemanticTokensParams {
 // ---------------------------------------------------------------------------
 
 /** Request: knot/clientReady */
-export interface KnotClientReadyParams {}
+export type KnotClientReadyParams = Record<string, never>;
 
 /** Response: knot/clientReady */
 export interface KnotClientReadyResponse {

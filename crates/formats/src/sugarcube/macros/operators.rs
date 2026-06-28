@@ -46,19 +46,58 @@ pub fn describe_variable_sigil(sigil: char) -> Option<&'static str> {
 /// Maps SugarCube's English-like operators to their JavaScript equivalents.
 pub fn operator_normalization() -> Vec<OperatorNormalization> {
     vec![
-        OperatorNormalization { from: "to",    to: "=" },
-        OperatorNormalization { from: "into",  to: "=" },
-        OperatorNormalization { from: "eq",    to: "===" },
-        OperatorNormalization { from: "neq",   to: "!==" },
-        OperatorNormalization { from: "is",    to: "===" },
-        OperatorNormalization { from: "isnot", to: "!==" },
-        OperatorNormalization { from: "gt",    to: ">" },
-        OperatorNormalization { from: "gte",   to: ">=" },
-        OperatorNormalization { from: "lt",    to: "<" },
-        OperatorNormalization { from: "lte",   to: "<=" },
-        OperatorNormalization { from: "and",   to: "&&" },
-        OperatorNormalization { from: "or",    to: "||" },
-        OperatorNormalization { from: "not",   to: "!" },
+        OperatorNormalization {
+            from: "to",
+            to: "=",
+        },
+        OperatorNormalization {
+            from: "into",
+            to: "=",
+        },
+        OperatorNormalization {
+            from: "eq",
+            to: "===",
+        },
+        OperatorNormalization {
+            from: "neq",
+            to: "!==",
+        },
+        OperatorNormalization {
+            from: "is",
+            to: "===",
+        },
+        OperatorNormalization {
+            from: "isnot",
+            to: "!==",
+        },
+        OperatorNormalization {
+            from: "gt",
+            to: ">",
+        },
+        OperatorNormalization {
+            from: "gte",
+            to: ">=",
+        },
+        OperatorNormalization {
+            from: "lt",
+            to: "<",
+        },
+        OperatorNormalization {
+            from: "lte",
+            to: "<=",
+        },
+        OperatorNormalization {
+            from: "and",
+            to: "&&",
+        },
+        OperatorNormalization {
+            from: "or",
+            to: "||",
+        },
+        OperatorNormalization {
+            from: "not",
+            to: "!",
+        },
     ]
 }
 
@@ -103,17 +142,29 @@ pub fn comparison_operators() -> Vec<&'static str> {
 pub fn describe_operator(op: &str) -> Option<&'static str> {
     match op {
         // Assignment
-        "to" | "into" | "=" => Some("assignment — assigns the value on the right to the variable on the left"),
+        "to" | "into" | "=" => {
+            Some("assignment — assigns the value on the right to the variable on the left")
+        }
         // Range keyword (specific to <<for>> range form)
-        "from" => Some("range start — introduces the starting value in a <<for>> range loop (e.g., <<for $i from 1 to 10>>)"),
+        "from" => Some(
+            "range start — introduces the starting value in a <<for>> range loop (e.g., <<for $i from 1 to 10>>)",
+        ),
         // Comparison
-        "gt" | ">" => Some("greater than — true if the left value is strictly greater than the right"),
-        "gte" | ">=" => Some("greater than or equal — true if the left value is greater than or equal to the right"),
+        "gt" | ">" => {
+            Some("greater than — true if the left value is strictly greater than the right")
+        }
+        "gte" | ">=" => Some(
+            "greater than or equal — true if the left value is greater than or equal to the right",
+        ),
         "lt" | "<" => Some("less than — true if the left value is strictly less than the right"),
-        "lte" | "<=" => Some("less than or equal — true if the left value is less than or equal to the right"),
+        "lte" | "<=" => {
+            Some("less than or equal — true if the left value is less than or equal to the right")
+        }
         // Equality
         "eq" | "is" | "===" => Some("equal — true if both values are strictly equal (===)"),
-        "neq" | "isnot" | "!==" => Some("not equal — true if the values are not strictly equal (!==)"),
+        "neq" | "isnot" | "!==" => {
+            Some("not equal — true if the values are not strictly equal (!==)")
+        }
         // Logical
         "and" | "&&" => Some("logical AND — true if both operands are true"),
         "or" | "||" => Some("logical OR — true if either operand is true"),

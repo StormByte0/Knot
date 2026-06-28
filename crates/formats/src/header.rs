@@ -99,7 +99,7 @@ pub fn parse_twee_header(line: &str, offset: usize) -> Option<TweeHeader> {
 
     // ── Phase 2: Extract tags from all `[...]` blocks ─────────────────
     // Multiple `[tag1] [tag2 tag3]` blocks are merged into a single list.
-    let (name_text, tags) = extract_tags(&rest_after_json);
+    let (name_text, tags) = extract_tags(rest_after_json);
 
     let name = name_text.trim().to_string();
 
@@ -304,9 +304,7 @@ pub fn passage_name_range_in_header(after_colons: &str) -> Option<Range<usize>> 
     let (rest_after_json, _) = extract_json_block(rest);
 
     // Find where the name ends (before the first `[`)
-    let name_end = rest_after_json
-        .find('[')
-        .unwrap_or(rest_after_json.len());
+    let name_end = rest_after_json.find('[').unwrap_or(rest_after_json.len());
     let name_text = rest_after_json[..name_end].trim_end();
 
     if name_text.is_empty() {
@@ -350,15 +348,22 @@ mod tests {
         let result = parse_twee_header(r#":: Start {"position":"100,200"}"#, 0).unwrap();
         assert_eq!(result.name, "Start");
         assert!(result.tags.is_empty());
-        assert_eq!(result.metadata_json.as_deref(), Some(r#"{"position":"100,200"}"#));
+        assert_eq!(
+            result.metadata_json.as_deref(),
+            Some(r#"{"position":"100,200"}"#)
+        );
     }
 
     #[test]
     fn test_header_with_tags_and_metadata() {
-        let result = parse_twee_header(r#":: Forest [dark scary] {"position":"100,200"}"#, 0).unwrap();
+        let result =
+            parse_twee_header(r#":: Forest [dark scary] {"position":"100,200"}"#, 0).unwrap();
         assert_eq!(result.name, "Forest");
         assert_eq!(result.tags, vec!["dark", "scary"]);
-        assert_eq!(result.metadata_json.as_deref(), Some(r#"{"position":"100,200"}"#));
+        assert_eq!(
+            result.metadata_json.as_deref(),
+            Some(r#"{"position":"100,200"}"#)
+        );
     }
 
     #[test]
@@ -370,10 +375,17 @@ mod tests {
 
     #[test]
     fn test_header_multiple_tags_with_metadata() {
-        let result = parse_twee_header(r#":: Forest [dark] [scary] {"position":"100,200","group":"Intro"}"#, 0).unwrap();
+        let result = parse_twee_header(
+            r#":: Forest [dark] [scary] {"position":"100,200","group":"Intro"}"#,
+            0,
+        )
+        .unwrap();
         assert_eq!(result.name, "Forest");
         assert_eq!(result.tags, vec!["dark", "scary"]);
-        assert_eq!(result.metadata_json.as_deref(), Some(r#"{"position":"100,200","group":"Intro"}"#));
+        assert_eq!(
+            result.metadata_json.as_deref(),
+            Some(r#"{"position":"100,200","group":"Intro"}"#)
+        );
     }
 
     #[test]
@@ -403,7 +415,10 @@ mod tests {
     fn test_header_metadata_only_no_tags() {
         let result = parse_twee_header(r#":: Coworker {"position":"40,660"}"#, 0).unwrap();
         assert_eq!(result.name, "Coworker");
-        assert_eq!(result.metadata_json.as_deref(), Some(r#"{"position":"40,660"}"#));
+        assert_eq!(
+            result.metadata_json.as_deref(),
+            Some(r#"{"position":"40,660"}"#)
+        );
     }
 
     #[test]
@@ -418,10 +433,8 @@ mod tests {
 
     #[test]
     fn test_header_nested_json_metadata() {
-        let result = parse_twee_header(
-            r#":: Test {"position":"100,200","data":{"x":1}}"#,
-            0,
-        ).unwrap();
+        let result =
+            parse_twee_header(r#":: Test {"position":"100,200","data":{"x":1}}"#, 0).unwrap();
         assert_eq!(result.name, "Test");
         assert!(result.metadata_json.is_some());
     }
@@ -498,13 +511,14 @@ mod tests {
 
     #[test]
     fn test_custom_tag_with_metadata() {
-        let result = parse_twee_header(
-            r#":: Forest [mysterious dark] {"position":"100,200"}"#,
-            0,
-        ).unwrap();
+        let result =
+            parse_twee_header(r#":: Forest [mysterious dark] {"position":"100,200"}"#, 0).unwrap();
         assert_eq!(result.name, "Forest");
         assert_eq!(result.tags, vec!["mysterious", "dark"]);
-        assert_eq!(result.metadata_json.as_deref(), Some(r#"{"position":"100,200"}"#));
+        assert_eq!(
+            result.metadata_json.as_deref(),
+            Some(r#"{"position":"100,200"}"#)
+        );
     }
 
     #[test]
@@ -521,7 +535,8 @@ mod tests {
         let result = parse_twee_header(
             r#":: Helpers [widget] [custom helpers] {"position":"300,400","group":"Code"}"#,
             0,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.name, "Helpers");
         assert_eq!(result.tags, vec!["widget", "custom", "helpers"]);
         assert!(result.metadata_json.is_some());

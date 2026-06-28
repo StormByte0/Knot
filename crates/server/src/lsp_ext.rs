@@ -543,8 +543,6 @@ pub struct KnotTemporaryVariable {
     pub references: Vec<KnotVariableReference>,
 }
 
-
-
 // ---------------------------------------------------------------------------
 // knot/profile — get workspace profiling statistics
 // ---------------------------------------------------------------------------
@@ -696,8 +694,6 @@ pub struct KnotCompilerDetectResponse {
     /// The path to the compiler binary.
     pub compiler_path: Option<String>,
 }
-
-
 
 // ---------------------------------------------------------------------------
 // knot/watchVariables — watch specific variables across passages

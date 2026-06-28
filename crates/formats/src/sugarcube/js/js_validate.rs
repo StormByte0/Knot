@@ -42,7 +42,7 @@
 //! before mapping.
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity};
-use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
+use knot_core::oxc::{ParseMode as JsParseMode, parse_js};
 
 use crate::sugarcube::ast::{self, JsSnippet};
 use std::collections::HashSet;
@@ -106,14 +106,11 @@ pub fn validate_script_passage(
     // Convert each diagnostic to a FormatDiagnostic.
     // For [script] passages, the snippet starts at body_offset_in_passage
     // (the body IS the snippet — no macro wrapper to account for).
-    outcome.diagnostics
+    outcome
+        .diagnostics
         .iter()
         .filter_map(|js_diag| {
-            convert_script_passage_diagnostic(
-                js_diag,
-                &preprocessed,
-                body_offset_in_passage,
-            )
+            convert_script_passage_diagnostic(js_diag, &preprocessed, body_offset_in_passage)
         })
         .collect()
 }
@@ -138,10 +135,17 @@ fn validate_snippet(snippet: &JsSnippet, body_offset_in_passage: usize) -> Vec<F
     let outcome = parse_js(&preprocessed.source, js_mode);
     // Convert ALL diagnostics (oxc may produce multiple per snippet via
     // error recovery) to FormatDiagnostic with precise position mapping.
-    outcome.diagnostics
+    outcome
+        .diagnostics
         .iter()
         .filter_map(|js_diag| {
-            convert_js_diagnostic(js_diag, &preprocessed, snippet, body_offset_in_passage, js_mode)
+            convert_js_diagnostic(
+                js_diag,
+                &preprocessed,
+                snippet,
+                body_offset_in_passage,
+                js_mode,
+            )
         })
         .collect()
 }
@@ -194,7 +198,10 @@ fn convert_js_diagnostic(
 
     // Prefix the message with the macro name for context
     let message = if snippet.macro_name == "=" || snippet.macro_name == "-" {
-        format!("In <<{}>> expression: {}", snippet.macro_name, js_diag.message)
+        format!(
+            "In <<{}>> expression: {}",
+            snippet.macro_name, js_diag.message
+        )
     } else {
         format!("In <<{}>> macro: {}", snippet.macro_name, js_diag.message)
     };
@@ -261,10 +268,7 @@ mod tests {
 
         // Should produce no diagnostics — the JS expression is valid
         // after $hp → State_variables_hp and to → =
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for valid <<set>> macro, got: {:?}",
@@ -280,10 +284,7 @@ mod tests {
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
         // Should produce at least one JS diagnostic
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             !js_errors.is_empty(),
             "Expected JS errors for invalid <<run>> macro"
@@ -297,10 +298,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for valid <<print>> expression, got: {:?}",
@@ -316,10 +314,7 @@ mod tests {
         let body_offset_in_passage = 20; // e.g. header line + newline
         let diagnostics = validate_inline_js(&ast.nodes, body_offset_in_passage, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
 
         if !js_errors.is_empty() {
             // All diagnostic ranges should be at or past body_offset_in_passage (20)
@@ -341,10 +336,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for empty <<set>> macro, got: {:?}",
@@ -359,10 +351,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for valid multi-macro passage, got: {:?}",
@@ -382,10 +371,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         for e in &js_errors {
             eprintln!("JS error: {:?} range={:?}", e.message, e.range);
         }
@@ -469,10 +455,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         for e in &js_errors {
             eprintln!("JS error: {:?} range={:?}", e.message, e.range);
         }
@@ -496,10 +479,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
 
         if !js_errors.is_empty() {
             // The error should NOT be at the very end of the macro (>>)
@@ -509,7 +489,9 @@ mod tests {
                 assert!(
                     diag.range.start < macro_close_pos,
                     "JS error span (start={}) should be before >> (pos={}), got message: {}",
-                    diag.range.start, macro_close_pos, diag.message
+                    diag.range.start,
+                    macro_close_pos,
+                    diag.message
                 );
             }
         }
@@ -523,10 +505,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
 
         if !js_errors.is_empty() {
             // The error should NOT be at the start of the macro (<<)
@@ -536,7 +515,9 @@ mod tests {
                 assert!(
                     diag.range.start >= args_start,
                     "JS error span (start={}) should be at or past args start (pos={}), got: {}",
-                    diag.range.start, args_start, diag.message
+                    diag.range.start,
+                    args_start,
+                    diag.message
                 );
             }
         }
@@ -550,10 +531,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
 
         if !js_errors.is_empty() {
             let args_start = "<<run ".len();
@@ -561,7 +539,9 @@ mod tests {
                 assert!(
                     diag.range.start >= args_start,
                     "JS error span (start={}) should be at or past args start (pos={}), got: {}",
-                    diag.range.start, args_start, diag.message
+                    diag.range.start,
+                    args_start,
+                    diag.message
                 );
             }
         }
@@ -574,10 +554,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for <<set $config to {{object}}>>, got: {:?}",
@@ -612,10 +589,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         for e in &js_errors {
             eprintln!("JS error: {:?} range={:?}", e.message, e.range);
         }
@@ -633,10 +607,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         for e in &js_errors {
             eprintln!("JS error: {:?} range={:?}", e.message, e.range);
         }
@@ -669,10 +640,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         for e in &js_errors {
             eprintln!("JS error: {:?} range={:?}", e.message, e.range);
         }
@@ -704,7 +672,10 @@ mod tests {
             .filter(|d| d.code == "sc-js" && d.message.to_lowercase().contains("unterminated"))
             .collect();
         for e in &unterminated {
-            eprintln!("Unterminated comment diag: {:?} range={:?}", e.message, e.range);
+            eprintln!(
+                "Unterminated comment diag: {:?} range={:?}",
+                e.message, e.range
+            );
         }
         assert!(
             unterminated.is_empty(),
@@ -731,10 +702,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for `<<if def _defended and _defended>>`, got: {:?}",
@@ -750,10 +718,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for `<<if ndef $missing>>`, got: {:?}",
@@ -773,10 +738,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for `def` in ternary, got: {:?}",
@@ -792,10 +754,7 @@ mod tests {
         let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
         let diagnostics = validate_inline_js(&ast.nodes, 0, &HashSet::new());
 
-        let js_errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.code == "sc-js")
-            .collect();
+        let js_errors: Vec<_> = diagnostics.iter().filter(|d| d.code == "sc-js").collect();
         assert!(
             js_errors.is_empty(),
             "Expected no JS errors for `<<if def $a>>`, got: {:?}",
@@ -855,7 +814,9 @@ mod tests {
         // The consumer file should have NO sc-js diagnostics —
         // `statblock` is in the registry, so the fallback path that
         // sends widget args to oxc is skipped.
-        let js_errors: Vec<_> = result2.diagnostic_groups.iter()
+        let js_errors: Vec<_> = result2
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-js")
             .collect();
@@ -897,7 +858,9 @@ mod tests {
         // (after $var substitution: `"Strength" State_variables_stats_strength`)
         // — a string literal followed by an identifier with no operator —
         // and reports a parse error.
-        let js_errors: Vec<_> = result.diagnostic_groups.iter()
+        let js_errors: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-js")
             .collect();

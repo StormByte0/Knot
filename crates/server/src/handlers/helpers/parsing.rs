@@ -60,9 +60,8 @@ pub(crate) fn parse_with_format_plugin(
         // Wrap the parse call in catch_unwind to prevent panics in format
         // parsers from crashing the server. This is the primary defense
         // against EPIPE errors caused by the server process dying.
-        let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plugin.parse_mut(uri, text)
-        }));
+        let parse_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.parse_mut(uri, text)));
 
         match parse_result {
             Ok(result) => {

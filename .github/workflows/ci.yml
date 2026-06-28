@@ -1,13 +1,13 @@
-# CI — runs on every push to ver_3 and every PR
+# CI — runs on every push to main and every PR targeting main
 # Lints, tests, and verifies the build compiles. No publishing.
 
 name: CI
 
 on:
   push:
-    branches: [ver_3]
+    branches: [main]
   pull_request:
-    branches: [ver_3]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

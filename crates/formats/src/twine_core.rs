@@ -19,20 +19,21 @@
 //! actual story format cannot be determined. Users making new story formats
 //! still get core Twine engine highlights and handlers.
 
-use knot_core::passage::{
-    Link, Passage, SpecialPassageDef, StoryFormat,
-};
+use knot_core::passage::{Link, Passage, SpecialPassageDef, StoryFormat};
 use url::Url;
 
 use crate::header::{self, TweeHeader};
-use crate::plugin::{FormatPlugin, FormatPluginMut, ParseResult, PassageTokenGroup, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use crate::plugin::{
+    FormatPlugin, FormatPluginMut, ParseResult, PassageTokenGroup, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType,
+};
 
 // ---------------------------------------------------------------------------
 // Regex patterns (LazyLock for one-time compilation)
 // ---------------------------------------------------------------------------
 
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 static RE_LINK_SIMPLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
@@ -43,8 +44,7 @@ static RE_LINK_PIPE: LazyLock<Regex> =
 /// Detect passage header lines: starts with `::` followed by at least one
 /// non-whitespace character. The actual name/tag/metadata extraction is done
 /// by the unified `parse_twee_header()` in `crate::header`.
-static RE_HEADER_DETECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
+static RE_HEADER_DETECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -88,7 +88,13 @@ impl TwineCorePlugin {
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
             // Rust's str::lines() strips both \n and \r\n, so we must check
             // the raw text to know which one was present.
-            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") {
+                2
+            } else if line_end < text.len() {
+                1
+            } else {
+                0
+            };
             byte_offset = line_end + newline_len;
         }
 
@@ -97,14 +103,22 @@ impl TwineCorePlugin {
             let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line's newline (CRLF = 2, LF = 1).
-            let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") { 2 } else if header_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") {
+                2
+            } else if header_end < text.len() {
+                1
+            } else {
+                0
+            };
             let body_start = header_end + newline_len;
             let body_end = if i + 1 < header_spans.len() {
                 header_spans[i + 1].0
             } else {
                 text.len()
             };
-            let body_text = text.get(body_start.min(text.len())..body_end.min(text.len())).unwrap_or("");
+            let body_text = text
+                .get(body_start.min(text.len())..body_end.min(text.len()))
+                .unwrap_or("");
 
             if let Some(hdr) = parsed {
                 results.push((hdr, body_text));
@@ -152,7 +166,10 @@ impl TwineCorePlugin {
             let m = caps.get(0).unwrap();
             // Skip if this match is already covered by an arrow/pipe link
             let start = body_offset + m.start();
-            if links.iter().any(|l| l.span.start <= start && l.span.end >= body_offset + m.end()) {
+            if links
+                .iter()
+                .any(|l| l.span.start <= start && l.span.end >= body_offset + m.end())
+            {
                 continue;
             }
             let target = caps.get(1).unwrap().as_str().to_string();
@@ -175,10 +192,7 @@ impl TwineCorePlugin {
     ///
     /// All returned `start` values are relative to the passage head (the `::`
     /// prefix at offset 0 within the passage).
-    fn build_passage_tokens(
-        header_line: &str,
-        is_special: bool,
-    ) -> Vec<SemanticToken> {
+    fn build_passage_tokens(header_line: &str, is_special: bool) -> Vec<SemanticToken> {
         let mut tokens = Vec::new();
 
         // "::" prefix token — always at passage-relative offset 0
@@ -203,20 +217,20 @@ impl TwineCorePlugin {
         // Passage name token — use the unified header parser to find the
         // exact name span. This correctly handles multiple [tags] and
         // {} metadata blocks.
-        if let Some(after_colons) = header_line.strip_prefix("::") {
-            if let Some(name_range) = header::passage_name_range_in_header(after_colons) {
-                let name_type = if is_special {
-                    SemanticTokenType::SpecialPassage
-                } else {
-                    SemanticTokenType::PassageName
-                };
-                tokens.push(SemanticToken {
-                    start: 2 + name_range.start,
-                    length: name_range.end - name_range.start,
-                    token_type: name_type,
-                    modifier: prefix_modifier,
-                });
-            }
+        if let Some(after_colons) = header_line.strip_prefix("::")
+            && let Some(name_range) = header::passage_name_range_in_header(after_colons)
+        {
+            let name_type = if is_special {
+                SemanticTokenType::SpecialPassage
+            } else {
+                SemanticTokenType::PassageName
+            };
+            tokens.push(SemanticToken {
+                start: 2 + name_range.start,
+                length: name_range.end - name_range.start,
+                token_type: name_type,
+                modifier: prefix_modifier,
+            });
         }
 
         tokens
@@ -247,17 +261,16 @@ impl FormatPluginMut for TwineCorePlugin {
             let header_line = &text[header.header_start..header_line_end];
 
             let mut passage_tokens = Vec::new();
-            passage_tokens.extend(Self::build_passage_tokens(
-                header_line,
-                is_special,
-            ));
+            passage_tokens.extend(Self::build_passage_tokens(header_line, is_special));
 
             if !header.tags.is_empty() {
                 // Compute tag positions relative to the passage head.
                 // tags_raw is aligned with name_start, so
                 // name_start + find('[') gives the document-absolute bracket
                 // position; subtract passage_head for passage-relative.
-                let bracket_start_rel = header.tags_raw.find('[')
+                let bracket_start_rel = header
+                    .tags_raw
+                    .find('[')
                     .map(|bs| header.name_start - passage_head + bs)
                     .unwrap_or(header.name_start - passage_head + header.name_text_raw.len());
                 let tags_inner_start_rel = bracket_start_rel + 1;
@@ -292,10 +305,18 @@ impl FormatPluginMut for TwineCorePlugin {
             }
 
             let body_offset_in_passage = body_offset - passage_head;
-            let body_blocks = crate::core_specials::raw_body_blocks(body_text, body_offset_in_passage);
+            let body_blocks =
+                crate::core_specials::raw_body_blocks(body_text, body_offset_in_passage);
             let links = Self::extract_links(body_text, body_offset);
 
-            let mut passage = Passage::new(header.name.clone(), header.header_start..(header.header_start + text[header.header_start..].find('\n').unwrap_or(text[header.header_start..].len())));
+            let mut passage = Passage::new(
+                header.name.clone(),
+                header.header_start
+                    ..(header.header_start
+                        + text[header.header_start..]
+                            .find('\n')
+                            .unwrap_or(text[header.header_start..].len())),
+            );
             passage.tags = header.tags.clone();
             passage.body = body_blocks;
             passage.links = links;
@@ -319,7 +340,13 @@ impl FormatPluginMut for TwineCorePlugin {
         }
     }
 
-    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
+    fn parse_passage_mut(
+        &mut self,
+        passage_name: &str,
+        passage_tags: &[String],
+        passage_text: &str,
+        _file_uri: &str,
+    ) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
         let is_special = special_def.is_some();
 
@@ -348,8 +375,6 @@ impl FormatPlugin for TwineCorePlugin {
     fn display_name(&self) -> &str {
         "Twine Core"
     }
-
-
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         // Core plugin does NOT define its own special passages —

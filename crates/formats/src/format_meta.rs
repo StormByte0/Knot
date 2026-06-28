@@ -43,8 +43,8 @@
 //! `Macro.add()` extraction, etc.), so we reuse `knot_core::oxc::parse_js()`
 //! — no new dependencies.
 
-use knot_core::oxc::parse_js;
 use knot_core::oxc::ParseMode;
+use knot_core::oxc::parse_js;
 use oxc_ast::ast::{Expression, ObjectPropertyKind, PropertyKey, Statement};
 use serde::{Deserialize, Serialize};
 
@@ -480,11 +480,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("create temp dir");
         let format_dir = temp.path().join("sugarcube-2");
         std::fs::create_dir_all(&format_dir).unwrap();
-        std::fs::write(
-            format_dir.join("format.js"),
-            SAMPLE_SUGARCUBE,
-        )
-        .unwrap();
+        std::fs::write(format_dir.join("format.js"), SAMPLE_SUGARCUBE).unwrap();
 
         let formats = scan_storyformats_dir(temp.path());
         assert_eq!(formats.len(), 1);
@@ -517,7 +513,9 @@ mod tests {
 
     #[test]
     fn test_scan_nonexistent_dir_returns_empty() {
-        let formats = scan_storyformats_dir(std::path::Path::new("/nonexistent/path/that/does/not/exist"));
+        let formats = scan_storyformats_dir(std::path::Path::new(
+            "/nonexistent/path/that/does/not/exist",
+        ));
         assert!(formats.is_empty());
     }
 }

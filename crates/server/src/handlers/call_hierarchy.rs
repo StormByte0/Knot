@@ -21,8 +21,16 @@ pub(crate) async fn prepare_call_hierarchy(
         return Ok(None);
     };
 
-    let target_passage = helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
-        .or_else(|| helpers::find_link_target_at_position_span_based(text, &inner.workspace, &uri, position));
+    let target_passage =
+        helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
+            .or_else(|| {
+                helpers::find_link_target_at_position_span_based(
+                    text,
+                    &inner.workspace,
+                    &uri,
+                    position,
+                )
+            });
 
     let Some(name) = target_passage else {
         return Ok(None);
@@ -76,7 +84,9 @@ pub(crate) async fn incoming_calls(
             None => continue,
         };
         for passage in &doc.passages {
-            let matching_links: Vec<_> = passage.links.iter()
+            let matching_links: Vec<_> = passage
+                .links
+                .iter()
                 .filter(|l| l.target.trim() == name)
                 .collect();
 
@@ -91,10 +101,13 @@ pub(crate) async fn incoming_calls(
             seen_passages.insert(doc.uri.clone());
 
             let source_range = helpers::find_passage_header_range_span_based(
-                text, &inner.workspace, &passage.name,
+                text,
+                &inner.workspace,
+                &passage.name,
             );
 
-            let from_ranges: Vec<Range> = matching_links.iter()
+            let from_ranges: Vec<Range> = matching_links
+                .iter()
                 .map(|link| helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)))
                 .collect();
 
@@ -136,7 +149,8 @@ pub(crate) async fn outgoing_calls(
     if let Some((doc, passage)) = inner.workspace.find_passage(name) {
         let text = inner.open_documents.get(&doc.uri);
         for link in &passage.links {
-            if let Some((target_doc, _target_passage)) = inner.workspace.find_passage(&link.target) {
+            if let Some((target_doc, _target_passage)) = inner.workspace.find_passage(&link.target)
+            {
                 let target_uri = target_doc.uri.clone();
                 let target_text = inner.open_documents.get(&target_uri);
                 let target_range = if let Some(t) = target_text {
@@ -147,7 +161,12 @@ pub(crate) async fn outgoing_calls(
 
                 // Find the link ranges in the source using span-based resolution
                 let from_ranges = if let Some(t) = text {
-                    helpers::find_link_ranges_for_target(t, &inner.workspace, &doc.uri, &link.target)
+                    helpers::find_link_ranges_for_target(
+                        t,
+                        &inner.workspace,
+                        &doc.uri,
+                        &link.target,
+                    )
                 } else {
                     vec![]
                 };

@@ -157,7 +157,12 @@ pub fn parse_phase3_exit(
 /// Emits an `INFO`-level event after `parse_full()` completes,
 /// with aggregate metrics for the entire file.
 #[inline]
-pub fn parse_full_summary(file_uri: &str, passage_count: usize, token_count: usize, diagnostic_count: usize) {
+pub fn parse_full_summary(
+    file_uri: &str,
+    passage_count: usize,
+    token_count: usize,
+    diagnostic_count: usize,
+) {
     tracing::info!(
         file = file_uri,
         passages = passage_count,
@@ -195,7 +200,13 @@ pub fn token_cache_lookup(uri: &url::Url, hit: bool) {
 /// Emits a `DEBUG`-level event with the results of incremental
 /// graph surgery (added, removed, modified passages).
 #[inline]
-pub fn graph_surgery_result(added: usize, removed: usize, modified: usize, total_nodes: usize, total_edges: usize) {
+pub fn graph_surgery_result(
+    added: usize,
+    removed: usize,
+    modified: usize,
+    total_nodes: usize,
+    total_edges: usize,
+) {
     tracing::debug!(
         added = added,
         removed = removed,
@@ -226,8 +237,5 @@ pub fn format_switch(event: &str, format: &str, document_count: usize) {
 /// refresh is scheduled or skipped (coalesced).
 #[inline]
 pub fn debounced_refresh(action: &str) {
-    tracing::debug!(
-        action = action,
-        "refresh: debounced semantic tokens"
-    );
+    tracing::debug!(action = action, "refresh: debounced semantic tokens");
 }

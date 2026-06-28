@@ -375,7 +375,7 @@ export class StoryMapPanelManager {
     }
 
     /** Fallback HTML shown when the React webview hasn't been built yet. */
-    private _getFallbackHtml(webview: vscode.Webview, nonce: string): string {
+    private _getFallbackHtml(webview: vscode.Webview, _nonce: string): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>

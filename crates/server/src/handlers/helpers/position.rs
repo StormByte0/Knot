@@ -15,9 +15,9 @@ use url::Url;
 /// characters (U+0000–U+FFFF) occupy one UTF-16 code unit; supplementary
 /// characters (U+10000–U+10FFFF) occupy two (a surrogate pair).
 pub(crate) fn utf16_len(s: &str) -> u32 {
-    s.chars().map(|c| {
-        if (c as u32) < 0x10000 { 1u32 } else { 2u32 }
-    }).sum()
+    s.chars()
+        .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
+        .sum()
 }
 
 /// Count UTF-16 code units in the first `byte_limit` bytes of `text`.
@@ -47,7 +47,11 @@ pub(crate) fn utf16_to_byte_offset(line: &str, utf16_offset: usize) -> usize {
         if utf16_count >= utf16_offset {
             break;
         }
-        utf16_count += if (ch as u32) < 0x10000 { 1usize } else { 2usize };
+        utf16_count += if (ch as u32) < 0x10000 {
+            1usize
+        } else {
+            2usize
+        };
         byte_offset += ch.len_utf8();
     }
     byte_offset
@@ -75,9 +79,9 @@ pub(crate) fn byte_offset_to_position(text: &str, offset: usize) -> Position {
         // so we need to handle that case explicitly.
         let line_count = text_before.lines().count() as u32;
         if text_before.ends_with('\n') {
-            line_count  // the \n itself is part of the previous line
+            line_count // the \n itself is part of the previous line
         } else {
-            line_count - 1  // we're on the last counted line
+            line_count - 1 // we're on the last counted line
         }
     };
 
@@ -191,14 +195,17 @@ pub(crate) fn find_passage_name_range(text: &str, passage_name: &str) -> Range {
             let name = parse_passage_name_from_header(&line[2..]);
             if name == passage_name {
                 let after_colons = &line[2..];
-                if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
+                if let Some(name_range) =
+                    knot_formats::header::passage_name_range_in_header(after_colons)
+                {
                     // The `::` prefix is 2 UTF-16 code units that must be
                     // included in the character offset — passage_name_range_in_header()
                     // returns offsets relative to after_colons, but LSP positions
                     // are relative to the full line.
                     let prefix_len = utf16_len(&line[..2]);
                     let start_char = prefix_len + utf16_len(&after_colons[..name_range.start]);
-                    let end_char = start_char + utf16_len(&after_colons[name_range.start..name_range.end]);
+                    let end_char =
+                        start_char + utf16_len(&after_colons[name_range.start..name_range.end]);
                     return Range {
                         start: Position {
                             line: line_idx as u32,
@@ -391,17 +398,18 @@ pub(crate) fn update_passage_metadata_in_header(
     // Peel off JSON blocks from right to left, keeping only the last one.
     // The unified parser validates each block as proper JSON before stripping.
     loop {
-        if let Some((rest, json_str)) = knot_formats::header::extract_json_block_public(stripped_line.trim_end()) {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                // Keep the last (rightmost) block's data — it has the
-                // most recent position/group/color values.
-                if existing_json.is_none() {
-                    existing_json = Some(parsed);
-                }
-                // Strip this block and continue scanning for more
-                stripped_line = rest;
-                continue;
+        if let Some((rest, json_str)) =
+            knot_formats::header::extract_json_block_public(stripped_line.trim_end())
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str)
+        {
+            // Keep the last (rightmost) block's data — it has the
+            // most recent position/group/color values.
+            if existing_json.is_none() {
+                existing_json = Some(parsed);
             }
+            // Strip this block and continue scanning for more
+            stripped_line = rest;
+            continue;
         }
         break;
     }
@@ -447,10 +455,10 @@ pub(crate) fn update_passage_metadata_in_header(
         // Remove empty object — if only "position" remains and it was the
         // only field, we still keep it. But if position is also None and the
         // object is empty, don't write an empty {} block.
-        if let Some(obj) = json_val.as_object() {
-            if obj.is_empty() {
-                return stripped_line.to_string();
-            }
+        if let Some(obj) = json_val.as_object()
+            && obj.is_empty()
+        {
+            return stripped_line.to_string();
         }
 
         if let Ok(new_json) = serde_json::to_string(&json_val) {
@@ -463,10 +471,7 @@ pub(crate) fn update_passage_metadata_in_header(
 
     if let Some((x, y)) = position {
         let pos_str = format!("{},{}", format_coord(x), format_coord(y));
-        json_obj.insert(
-            "position".to_string(),
-            serde_json::Value::String(pos_str),
-        );
+        json_obj.insert("position".to_string(), serde_json::Value::String(pos_str));
     }
 
     if let Some(Some(v)) = group {
@@ -540,7 +545,8 @@ pub(crate) fn extract_positions_from_storydata(
                         brace_depth -= 1;
                         if brace_depth == 0 {
                             // Try to parse the JSON
-                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_buf) {
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&json_buf)
+                            {
                                 extract_positions_from_storydata_value(&value, positions);
                             }
                             return;
@@ -561,17 +567,12 @@ fn extract_positions_from_storydata_value(
     // StoryData may contain a "passages" array with per-passage metadata
     if let Some(passages) = value.get("passages").and_then(|v| v.as_array()) {
         for passage in passages {
-            if let Some(name) = passage.get("name").and_then(|v| v.as_str()) {
-                if let Some(pos) = passage.get("position").and_then(|v| v.as_array()) {
-                    if pos.len() >= 2 {
-                        if let (Some(x), Some(y)) = (
-                            pos[0].as_f64(),
-                            pos[1].as_f64(),
-                        ) {
-                            positions.insert(name.to_string(), (x, y));
-                        }
-                    }
-                }
+            if let Some(name) = passage.get("name").and_then(|v| v.as_str())
+                && let Some(pos) = passage.get("position").and_then(|v| v.as_array())
+                && pos.len() >= 2
+                && let (Some(x), Some(y)) = (pos[0].as_f64(), pos[1].as_f64())
+            {
+                positions.insert(name.to_string(), (x, y));
             }
         }
     }
@@ -608,7 +609,11 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
         if utf16_count >= utf16_offset {
             break;
         }
-        let code_units = if (ch as u32) < 0x10000 { 1usize } else { 2usize };
+        let code_units = if (ch as u32) < 0x10000 {
+            1usize
+        } else {
+            2usize
+        };
         utf16_count += code_units;
         byte_offset += ch.len_utf8();
     }
@@ -655,7 +660,11 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
 /// boundary is required before the sigil to avoid false matches (e.g.,
 /// matching `_bar` inside `foo_bar`).
 #[allow(dead_code)]
-pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: &[char]) -> Option<String> {
+pub(crate) fn find_variable_at_position(
+    text: &str,
+    position: Position,
+    sigils: &[char],
+) -> Option<String> {
     let line_idx = position.line as usize;
     let line = text.lines().nth(line_idx)?;
     let char_idx = position.character as usize;
@@ -666,7 +675,12 @@ pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: 
 
     // Scan backwards from the cursor to find an identifier body
     let mut start = char_idx;
-    while start > 0 && line.as_bytes().get(start - 1).map_or(false, |&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    while start > 0
+        && line
+            .as_bytes()
+            .get(start - 1)
+            .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         start -= 1;
     }
 
@@ -678,12 +692,10 @@ pub(crate) fn find_variable_at_position(text: &str, position: Position, sigils: 
             // For sigils that are valid inside identifiers (like `_`),
             // require a word boundary before the sigil to avoid false
             // matches (e.g., matching `_bar` inside `foo_bar`).
-            if prev_char.is_alphanumeric() || prev_char == '_' {
-                if start >= 2 {
-                    let before_sigil = line.as_bytes().get(start - 2)?;
-                    if before_sigil.is_ascii_alphanumeric() || *before_sigil == b'_' {
-                        return None; // No word boundary — skip
-                    }
+            if (prev_char.is_alphanumeric() || prev_char == '_') && start >= 2 {
+                let before_sigil = line.as_bytes().get(start - 2)?;
+                if before_sigil.is_ascii_alphanumeric() || *before_sigil == b'_' {
+                    return None; // No word boundary — skip
                 }
             }
             let var_name = &line[start..char_idx.max(start)];
@@ -766,12 +778,12 @@ pub(crate) fn find_passage_name_range_span_based(
     workspace: &Workspace,
     passage_name: &str,
 ) -> Range {
-    if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
-        if let Some(ref name_span) = passage.header_name_span {
-            return byte_range_to_lsp_range(text, &passage.abs_range(name_span));
-        }
-        // header_name_span not available — fall through to line-based
+    if let Some((_doc, passage)) = workspace.find_passage(passage_name)
+        && let Some(ref name_span) = passage.header_name_span
+    {
+        return byte_range_to_lsp_range(text, &passage.abs_range(name_span));
     }
+    // header_name_span not available — fall through to line-based
     // Fallback: line-based scan
     find_passage_name_range(text, passage_name)
 }
@@ -958,13 +970,12 @@ pub(crate) fn find_token_at_position_span_based(
         for token in &group.tokens {
             let abs_start = token.start + group_offset;
             let abs_end = abs_start + token.length;
-            if byte_offset >= abs_start && byte_offset < abs_end {
-                if abs_start < text.len() && abs_end <= text.len() {
-                    return Some((
-                        token.token_type.clone(),
-                        text[abs_start..abs_end].to_string(),
-                    ));
-                }
+            if byte_offset >= abs_start
+                && byte_offset < abs_end
+                && abs_start < text.len()
+                && abs_end <= text.len()
+            {
+                return Some((token.token_type, text[abs_start..abs_end].to_string()));
             }
         }
     }
@@ -1012,24 +1023,22 @@ pub(crate) fn find_unclosed_block_macros_span_based(
 
         // Process body blocks for macro invocations
         for block in &passage.body {
-            match block {
-                knot_core::passage::Block::Macro { name, span, .. } => {
-                    if body_macro_names.contains(name.as_str()) {
-                        let abs_start = passage.abs_offset(span.start);
-                        // Only include events before the cursor
-                        if abs_start < byte_offset {
-                            events.push((name.clone(), true, abs_start));
-                        }
-                    }
+            if let knot_core::passage::Block::Macro { name, span, .. } = block
+                && body_macro_names.contains(name.as_str())
+            {
+                let abs_start = passage.abs_offset(span.start);
+                // Only include events before the cursor
+                if abs_start < byte_offset {
+                    events.push((name.clone(), true, abs_start));
                 }
-                _ => {}
             }
         }
 
         // Also use the format plugin's scan for close tags.
         // We need the text of the passage up to the cursor to find close tags.
         let passage_abs_start = passage.abs_offset(0);
-        let passage_text_up_to_cursor = &text[passage_abs_start.min(text.len())..byte_offset.min(text.len())];
+        let passage_text_up_to_cursor =
+            &text[passage_abs_start.min(text.len())..byte_offset.min(text.len())];
 
         // Scan for close tags using the plugin
         for (line_idx, line) in passage_text_up_to_cursor.lines().enumerate() {

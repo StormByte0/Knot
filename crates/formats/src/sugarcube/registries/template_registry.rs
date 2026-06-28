@@ -141,10 +141,7 @@ impl TemplateRegistry {
 
     /// Get template names for completion (with `?` prefix added).
     pub fn completion_names(&self) -> Vec<String> {
-        self.templates
-            .keys()
-            .map(|n| format!("?{}", n))
-            .collect()
+        self.templates.keys().map(|n| format!("?{}", n)).collect()
     }
 }
 

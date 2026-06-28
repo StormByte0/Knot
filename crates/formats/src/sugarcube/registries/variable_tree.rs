@@ -222,7 +222,10 @@ impl VarAccess {
         // <<set>> macro), the propagated copy should use the construct span
         // as its span. This gives focus-level granularity: the parent sees
         // the full construct span, not the child's individual key token span.
-        let span = self.construct_span.clone().unwrap_or_else(|| self.span.clone());
+        let span = self
+            .construct_span
+            .clone()
+            .unwrap_or_else(|| self.span.clone());
 
         VarAccess {
             passage_name: self.passage_name.clone(),
@@ -239,7 +242,6 @@ impl VarAccess {
         }
     }
 }
-
 
 /// Compute the `State.variables.*` / `State.temporary.*` path from a
 /// normalized variable name.
@@ -302,14 +304,15 @@ pub fn compute_passage_positions(source: &str, file_uri: &str) -> PassagePositio
 
     while line_start < len {
         // Find end of current line
-        let line_end = source[line_start..].find('\n')
+        let line_end = source[line_start..]
+            .find('\n')
             .map_or(len, |pos| line_start + pos);
 
         // Check if this line is a passage header (:: Name ...)
         let line_text = &source[line_start..line_end];
         if let Some(rest) = line_text.strip_prefix("::") {
             // Extract passage name (up to [ or { or end of line)
-            let name_end = rest.find(|c: char| c == '[' || c == '{').unwrap_or(rest.len());
+            let name_end = rest.find(['[', '{']).unwrap_or(rest.len());
             let name = rest[..name_end].trim();
             if !name.is_empty() {
                 let body_start_offset = if line_end < len { line_end + 1 } else { len };
@@ -564,8 +567,7 @@ impl VarMeta {
         // Construct-span dedup
         if let Some(ref cs) = access.construct_span {
             let already_covered = self.refs.iter().any(|existing| {
-                existing.kind == access.kind
-                    && existing.construct_span.as_ref() == Some(cs)
+                existing.kind == access.kind && existing.construct_span.as_ref() == Some(cs)
             });
             if already_covered {
                 return;
@@ -576,12 +578,18 @@ impl VarMeta {
 
     /// Get all direct (non-propagated) write accesses.
     pub fn direct_writes(&self) -> Vec<&VarAccess> {
-        self.refs.iter().filter(|a| a.is_write() && !a.propagated).collect()
+        self.refs
+            .iter()
+            .filter(|a| a.is_write() && !a.propagated)
+            .collect()
     }
 
     /// Get all direct (non-propagated) read accesses.
     pub fn direct_reads(&self) -> Vec<&VarAccess> {
-        self.refs.iter().filter(|a| a.is_read() && !a.propagated).collect()
+        self.refs
+            .iter()
+            .filter(|a| a.is_read() && !a.propagated)
+            .collect()
     }
 
     /// Get all write accesses (direct + propagated).
@@ -702,7 +710,11 @@ impl VarArena {
             id
         } else {
             let id = self.nodes.len() as NodeId;
-            assert!(id < NO_NODE, "VarArena::alloc: exceeded maximum node count ({}) — this indicates an unbounded variable tree growth or a logic bug", NO_NODE);
+            assert!(
+                id < NO_NODE,
+                "VarArena::alloc: exceeded maximum node count ({}) — this indicates an unbounded variable tree growth or a logic bug",
+                NO_NODE
+            );
             self.nodes.push(node);
             id
         }
@@ -714,7 +726,10 @@ impl VarArena {
     /// Panics with a descriptive message if `id` is `NO_NODE` or out of bounds.
     /// Use [`try_get`](Self::try_get) for a non-panicking version.
     pub fn get(&self, id: NodeId) -> &VarArenaNode {
-        assert!(id != NO_NODE, "VarArena::get: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking");
+        assert!(
+            id != NO_NODE,
+            "VarArena::get: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking"
+        );
         &self.nodes[id as usize]
     }
 
@@ -724,7 +739,10 @@ impl VarArena {
     /// Panics with a descriptive message if `id` is `NO_NODE` or out of bounds.
     /// Use [`try_get_mut`](Self::try_get_mut) for a non-panicking version.
     pub fn get_mut(&mut self, id: NodeId) -> &mut VarArenaNode {
-        assert!(id != NO_NODE, "VarArena::get_mut: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking");
+        assert!(
+            id != NO_NODE,
+            "VarArena::get_mut: called with NO_NODE sentinel — this indicates a logic bug where a missing-node handle was used without checking"
+        );
         &mut self.nodes[id as usize]
     }
 
@@ -821,8 +839,12 @@ impl VarArena {
         }
 
         // Update the parent's known_child_count in nav index
-        self.get_mut(parent_id).meta.nav.known_child_count =
-            self.get(parent_id).meta.nav.known_child_count.saturating_add(1);
+        self.get_mut(parent_id).meta.nav.known_child_count = self
+            .get(parent_id)
+            .meta
+            .nav
+            .known_child_count
+            .saturating_add(1);
 
         child_id
     }
@@ -947,8 +969,12 @@ impl VarArena {
             self.get_mut(parent_id).first_child = next;
             self.get_mut(child_id).next_sibling = NO_NODE;
             // Update child count
-            self.get_mut(parent_id).meta.nav.known_child_count =
-                self.get_mut(parent_id).meta.nav.known_child_count.saturating_sub(1);
+            self.get_mut(parent_id).meta.nav.known_child_count = self
+                .get_mut(parent_id)
+                .meta
+                .nav
+                .known_child_count
+                .saturating_sub(1);
             return true;
         }
 
@@ -961,8 +987,12 @@ impl VarArena {
                 self.get_mut(prev_id).next_sibling = next;
                 self.get_mut(child_id).next_sibling = NO_NODE;
                 // Update child count
-                self.get_mut(parent_id).meta.nav.known_child_count =
-                    self.get_mut(parent_id).meta.nav.known_child_count.saturating_sub(1);
+                self.get_mut(parent_id).meta.nav.known_child_count = self
+                    .get_mut(parent_id)
+                    .meta
+                    .nav
+                    .known_child_count
+                    .saturating_sub(1);
                 return true;
             }
             prev_id = prev.next_sibling;
@@ -1206,7 +1236,9 @@ impl VariableTree {
         let scope = if is_temporary {
             // Use a simple hash of the passage name as the passage_id.
             // This is workspace-local and non-cryptographic — good enough.
-            let passage_id = passage_name.chars().fold(0u32, |acc, c| acc.wrapping_add(c as u32));
+            let passage_id = passage_name
+                .chars()
+                .fold(0u32, |acc, c| acc.wrapping_add(c as u32));
             VarScope::Temporary { passage_id }
         } else {
             VarScope::Persistent
@@ -1243,10 +1275,16 @@ impl VariableTree {
             // for the VarAccess record (focus-level span). The segment_spans[0]
             // gives the assignment target span (e.g., `$ITEMS`) for precision
             // nav pointing.
-            let def_span = segment_spans.first().cloned().unwrap_or_else(|| access.span.clone());
+            let def_span = segment_spans
+                .first()
+                .cloned()
+                .unwrap_or_else(|| access.span.clone());
             // For ref_site, use the root variable token span for precision pointing
             // (e.g., `$foo` in `<<set $foo = {...}>>`), not the full construct span.
-            let ref_span = segment_spans.first().cloned().unwrap_or_else(|| access.span.clone());
+            let ref_span = segment_spans
+                .first()
+                .cloned()
+                .unwrap_or_else(|| access.span.clone());
             let nav_loc = SourceLocation {
                 passage_name: passage_name.to_string(),
                 file_uri: file_uri.to_string(),
@@ -1265,11 +1303,18 @@ impl VariableTree {
             if kind.is_write() {
                 // def_site points to the assignment target (e.g., $ITEMS in
                 // `<<set $ITEMS = {...}>>`) for precision "Go to Definition".
-                self.arena.get_mut(var_id).meta.nav.def_sites.push(def_nav_loc);
+                self.arena
+                    .get_mut(var_id)
+                    .meta
+                    .nav
+                    .def_sites
+                    .push(def_nav_loc);
             }
         } else {
             // Walk/create the property path
-            let leaf_id = self.arena.ensure_path(var_id, property_path, is_temporary, scope);
+            let leaf_id = self
+                .arena
+                .ensure_path(var_id, property_path, is_temporary, scope);
 
             // Build nav SourceLocation for the leaf node.
             // With the segment_spans convention:
@@ -1279,7 +1324,10 @@ impl VariableTree {
             let leaf_span = if segment_spans.is_empty() {
                 access.span.clone()
             } else {
-                segment_spans.last().cloned().unwrap_or_else(|| access.span.clone())
+                segment_spans
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| access.span.clone())
             };
             let nav_loc = SourceLocation {
                 passage_name: passage_name.to_string(),
@@ -1289,8 +1337,16 @@ impl VariableTree {
             };
 
             // Record the access on the leaf node
-            self.arena.get_mut(leaf_id).meta.record_access(access.clone());
-            self.arena.get_mut(leaf_id).meta.nav.ref_sites.push(nav_loc.clone());
+            self.arena
+                .get_mut(leaf_id)
+                .meta
+                .record_access(access.clone());
+            self.arena
+                .get_mut(leaf_id)
+                .meta
+                .nav
+                .ref_sites
+                .push(nav_loc.clone());
             if kind.is_write() {
                 self.arena.get_mut(leaf_id).meta.nav.def_sites.push(nav_loc);
             }
@@ -1325,7 +1381,9 @@ impl VariableTree {
             let _op_id = if !segment_construct_spans.is_empty() {
                 segment_construct_spans[0].clone()
             } else {
-                construct_span.clone().unwrap_or_else(|| access.span.clone())
+                construct_span
+                    .clone()
+                    .unwrap_or_else(|| access.span.clone())
             };
 
             while ancestor_id != NO_NODE && ancestor_id != root_id {
@@ -1347,7 +1405,9 @@ impl VariableTree {
                 {
                     segment_construct_spans[ancestor_depth].clone()
                 } else {
-                    construct_span.clone().unwrap_or_else(|| access.span.clone())
+                    construct_span
+                        .clone()
+                        .unwrap_or_else(|| access.span.clone())
                 };
 
                 // Dedup: if the ancestor already has a write from the SAME
@@ -1370,8 +1430,7 @@ impl VariableTree {
                 }
 
                 // Nav ref_sites: use segment_spans for precision pointing.
-                let nav_span = if !segment_spans.is_empty()
-                    && ancestor_depth < segment_spans.len()
+                let nav_span = if !segment_spans.is_empty() && ancestor_depth < segment_spans.len()
                 {
                     segment_spans[ancestor_depth].clone()
                 } else {
@@ -1386,8 +1445,7 @@ impl VariableTree {
                 };
                 let ancestor_node = self.arena.get_mut(ancestor_id);
                 let already_has_ref = ancestor_node.meta.nav.ref_sites.iter().any(|existing| {
-                    existing.passage_name == nav_ref.passage_name
-                        && existing.span == nav_ref.span
+                    existing.passage_name == nav_ref.passage_name && existing.span == nav_ref.span
                 });
                 if !already_has_ref {
                     ancestor_node.meta.nav.ref_sites.push(nav_ref);
@@ -1411,7 +1469,9 @@ impl VariableTree {
             for segment in &segments {
                 if let Some(child_id) = self.arena.find_child_by_name(current_id, segment) {
                     path_prefix = format!("{}.{}", path_prefix, segment);
-                    self.path_index.entry(path_prefix.clone()).or_insert(child_id);
+                    self.path_index
+                        .entry(path_prefix.clone())
+                        .or_insert(child_id);
                     current_id = child_id;
                 }
             }
@@ -1432,7 +1492,9 @@ impl VariableTree {
             return id;
         }
 
-        let passage_id = passage_name.chars().fold(0u32, |acc, c| acc.wrapping_add(c as u32));
+        let passage_id = passage_name
+            .chars()
+            .fold(0u32, |acc, c| acc.wrapping_add(c as u32));
         let node = VarArenaNode::new(
             format!("<temp:{}>", passage_name),
             true,
@@ -1586,7 +1648,11 @@ impl VariableTree {
 
     /// Get the number of persistent variables.
     pub fn len(&self) -> usize {
-        self.arena.get(self.persistent_root).meta.nav.known_child_count as usize
+        self.arena
+            .get(self.persistent_root)
+            .meta
+            .nav
+            .known_child_count as usize
     }
 
     /// Get the number of entries in the path index.
@@ -1625,7 +1691,9 @@ impl VariableTree {
         // 1. Their data is stale and shouldn't be modified
         // 2. Operating on freed nodes can create incorrect refs that
         //    make arena_node_is_alive return true for dead nodes
-        let ids: Vec<NodeId> = self.arena.iter_ids()
+        let ids: Vec<NodeId> = self
+            .arena
+            .iter_ids()
             .filter(|&id| self.is_live_node(id))
             .collect();
         for id in ids {
@@ -1642,14 +1710,22 @@ impl VariableTree {
     pub fn remove_passage(&mut self, passage_name: &str) {
         // Walk all LIVE nodes in the arena, filter accesses.
         // Skip freed slots for the same reasons as remove_file.
-        let ids: Vec<NodeId> = self.arena.iter_ids()
+        let ids: Vec<NodeId> = self
+            .arena
+            .iter_ids()
             .filter(|&id| self.is_live_node(id))
             .collect();
         for id in ids {
             let node = self.arena.get_mut(id);
             node.meta.refs.retain(|a| a.passage_name != passage_name);
-            node.meta.nav.def_sites.retain(|s| s.passage_name != passage_name);
-            node.meta.nav.ref_sites.retain(|s| s.passage_name != passage_name);
+            node.meta
+                .nav
+                .def_sites
+                .retain(|s| s.passage_name != passage_name);
+            node.meta
+                .nav
+                .ref_sites
+                .retain(|s| s.passage_name != passage_name);
         }
         // Remove the temp root for this passage. We unlink it from its
         // parent (if any) and remove its path_index entries BEFORE calling
@@ -1669,7 +1745,9 @@ impl VariableTree {
             // no refs and no parent.)
             let subtree_ids = self.arena.collect_subtree(temp_root_id);
             let subtree_set: HashSet<NodeId> = subtree_ids.into_iter().collect();
-            let paths_to_remove: Vec<String> = self.path_index.iter()
+            let paths_to_remove: Vec<String> = self
+                .path_index
+                .iter()
                 .filter(|(_, id)| subtree_set.contains(id))
                 .map(|(path, _)| path.clone())
                 .collect();
@@ -1703,7 +1781,7 @@ impl VariableTree {
     fn prune_dead_nodes(&mut self) {
         // Step 1: Collect dead root node IDs (nodes with no alive descendants).
         let mut dead_roots: Vec<NodeId> = Vec::new();
-        for (_, &id) in &self.path_index {
+        for &id in self.path_index.values() {
             if !self.arena_node_is_alive(id) {
                 dead_roots.push(id);
             }
@@ -1760,9 +1838,8 @@ impl VariableTree {
         // `remove_passage` when their declaring passage is removed.
         // (Temps seeded by special passages is a degenerate case
         // anyway — see `mark_seeded`.)
-        self.seeded_vars.retain(|name| {
-            name.starts_with('_') || self.path_index.contains_key(name)
-        });
+        self.seeded_vars
+            .retain(|name| name.starts_with('_') || self.path_index.contains_key(name));
     }
 
     /// Check if an arena node ID refers to a live (non-freed) node.
@@ -1776,7 +1853,7 @@ impl VariableTree {
     /// to a freed-and-reused slot).
     fn is_live_node(&self, id: NodeId) -> bool {
         id == self.persistent_root
-            || self.arena.try_get(id).map_or(false, |n| n.parent != NO_NODE)
+            || self.arena.try_get(id).is_some_and(|n| n.parent != NO_NODE)
             || self.temp_roots.values().any(|&tr| tr == id)
     }
 
@@ -1831,7 +1908,8 @@ impl VariableTree {
     ///
     /// [`completion_names_for_passage`]: Self::completion_names_for_passage
     pub fn completion_names(&self) -> HashSet<String> {
-        let mut names: HashSet<String> = self.arena
+        let mut names: HashSet<String> = self
+            .arena
             .children_of(self.persistent_root)
             .map(|id| self.arena.get(id).name.clone())
             .collect();
@@ -1863,17 +1941,18 @@ impl VariableTree {
     /// walk roots that don't belong to the requested passage.
     pub fn completion_names_for_passage(&self, passage_name: Option<&str>) -> HashSet<String> {
         // Persistent vars are workspace-global — always included.
-        let mut names: HashSet<String> = self.arena
+        let mut names: HashSet<String> = self
+            .arena
             .children_of(self.persistent_root)
             .map(|id| self.arena.get(id).name.clone())
             .collect();
 
         // Temps are passage-scoped — include only the matching root.
-        if let Some(passage) = passage_name {
-            if let Some(&temp_root_id) = self.temp_roots.get(passage) {
-                for child_id in self.arena.children_of(temp_root_id) {
-                    names.insert(self.arena.get(child_id).name.clone());
-                }
+        if let Some(passage) = passage_name
+            && let Some(&temp_root_id) = self.temp_roots.get(passage)
+        {
+            for child_id in self.arena.children_of(temp_root_id) {
+                names.insert(self.arena.get(child_id).name.clone());
             }
         }
 
@@ -1935,7 +2014,9 @@ impl VariableTree {
 
         // Assign graph_order to every access in every node
         // Collect LIVE IDs only — skip freed slots to avoid modifying stale data
-        let ids: Vec<NodeId> = self.arena.iter_ids()
+        let ids: Vec<NodeId> = self
+            .arena
+            .iter_ids()
             .filter(|&id| self.is_live_node(id))
             .collect();
         for id in ids {
@@ -1947,7 +2028,9 @@ impl VariableTree {
             node.meta.refs.sort_by(|a, b| {
                 let order_a = a.graph_order.unwrap_or(u32::MAX);
                 let order_b = b.graph_order.unwrap_or(u32::MAX);
-                order_a.cmp(&order_b).then_with(|| a.span.start.cmp(&b.span.start))
+                order_a
+                    .cmp(&order_b)
+                    .then_with(|| a.span.start.cmp(&b.span.start))
             });
         }
     }
@@ -1976,14 +2059,16 @@ impl VariableTree {
         let is_temporary = var_node.is_temporary;
         let state_path = compute_state_path(&name, is_temporary);
 
-        let written_in = self.accesses_to_usage_locations(
-            &var_node.meta.all_writes(), passage_positions,
-        );
-        let read_in = self.accesses_to_usage_locations(
-            &var_node.meta.all_reads(), passage_positions,
-        );
+        let written_in =
+            self.accesses_to_usage_locations(&var_node.meta.all_writes(), passage_positions);
+        let read_in =
+            self.accesses_to_usage_locations(&var_node.meta.all_reads(), passage_positions);
 
-        let is_unused = !var_node.meta.refs.iter().any(|a| a.is_read() && !a.is_write());
+        let is_unused = !var_node
+            .meta
+            .refs
+            .iter()
+            .any(|a| a.is_read() && !a.is_write());
         let initialized_at_start = var_node.meta.seeded_by_special;
 
         let properties = self.build_property_nodes(var_id, &name, &state_path, passage_positions);
@@ -2026,12 +2111,10 @@ impl VariableTree {
             let full_name = format!("{}.{}", parent_full_name, child_name);
             let state_path = format!("{}.{}", parent_state_path, child_name);
 
-            let written_in = self.accesses_to_usage_locations(
-                &child_node.meta.all_writes(), passage_positions,
-            );
-            let read_in = self.accesses_to_usage_locations(
-                &child_node.meta.all_reads(), passage_positions,
-            );
+            let written_in =
+                self.accesses_to_usage_locations(&child_node.meta.all_writes(), passage_positions);
+            let read_in =
+                self.accesses_to_usage_locations(&child_node.meta.all_reads(), passage_positions);
 
             let rel_line = child_node
                 .meta
@@ -2048,7 +2131,8 @@ impl VariableTree {
                 .map(|pos| pos.body_start_line + rel_line)
                 .unwrap_or(rel_line);
 
-            let properties = self.build_property_nodes(child_id, &full_name, &state_path, passage_positions);
+            let properties =
+                self.build_property_nodes(child_id, &full_name, &state_path, passage_positions);
             let kind = self.infer_kind_from_arena_node(child_id);
 
             result.push(VariablePropertyNode {
@@ -2080,18 +2164,14 @@ impl VariableTree {
         accesses
             .iter()
             .map(|a| {
-                let pos = passage_positions
-                    .get(&(a.file_uri.clone(), a.passage_name.clone()));
-                let abs_line = pos
-                    .map(|p| p.body_start_line + a.line)
-                    .unwrap_or(a.line);
+                let pos = passage_positions.get(&(a.file_uri.clone(), a.passage_name.clone()));
+                let abs_line = pos.map(|p| p.body_start_line + a.line).unwrap_or(a.line);
                 // Translate span from passage-body-relative to document-absolute
                 // by adding body_start_offset. This is the boundary where
                 // passage-relative positions become document-absolute for
                 // consumption by the LSP client.
-                let abs_span = pos.and_then(|p| {
-                    Some(a.span.start + p.body_start_offset..a.span.end + p.body_start_offset)
-                });
+                let abs_span = pos
+                    .map(|p| a.span.start + p.body_start_offset..a.span.end + p.body_start_offset);
                 VariableUsageLocation {
                     passage_name: a.passage_name.clone(),
                     file_uri: a.file_uri.clone(),
@@ -2140,10 +2220,7 @@ impl VariableTree {
     ///
     /// Returns an empty iterator if the passage has no temp root yet
     /// (i.e., no `_var` has ever been recorded in that passage).
-    pub fn iter_temp_for_passage(
-        &self,
-        passage_name: &str,
-    ) -> Vec<(String, NodeId)> {
+    pub fn iter_temp_for_passage(&self, passage_name: &str) -> Vec<(String, NodeId)> {
         let Some(&root_id) = self.temp_roots.get(passage_name) else {
             return Vec::new();
         };
@@ -2179,7 +2256,19 @@ impl VariableTree {
         } else {
             VarAccessKind::Read
         };
-        self.record_var(name, is_temporary, kind, passage_name, file_uri, span, property_path, body_text, &[], None, &[]);
+        self.record_var(
+            name,
+            is_temporary,
+            kind,
+            passage_name,
+            file_uri,
+            span,
+            property_path,
+            body_text,
+            &[],
+            None,
+            &[],
+        );
     }
 
     /// Resolve line numbers for all variable accesses in the tree using source text.
@@ -2305,11 +2394,11 @@ impl VariableTree {
                             access.segment_spans.len() - 1,
                             &access.segment_spans,
                         );
-                        if let Some(ref p) = path {
-                            if last_span.end > best_end {
-                                best_path = Some(p.clone());
-                                best_end = last_span.end;
-                            }
+                        if let Some(ref p) = path
+                            && last_span.end > best_end
+                        {
+                            best_path = Some(p.clone());
+                            best_end = last_span.end;
                         }
                     }
                 }
@@ -2376,8 +2465,7 @@ impl VariableTree {
             let mut path = root_name.clone();
             let mut current_id = root_id;
 
-            for depth in 1..=seg_idx {
-                let target_span = &segment_spans[depth];
+            for target_span in segment_spans.iter().take(seg_idx + 1).skip(1) {
                 let mut found_child = None;
 
                 for child_id in self.arena.children_of(current_id) {
@@ -2393,8 +2481,7 @@ impl VariableTree {
                         .any(|site| {
                             // The site span should overlap with or be
                             // contained within the target segment span.
-                            site.span.start >= target_span.start
-                                && site.span.end <= target_span.end
+                            site.span.start >= target_span.start && site.span.end <= target_span.end
                         });
 
                     if span_matches {
@@ -2573,7 +2660,10 @@ impl VariableTree {
 
         if children.is_empty() {
             PropertyKind::Scalar
-        } else if children.iter().any(|c| c == "length" || c == "push" || c == "pop") {
+        } else if children
+            .iter()
+            .any(|c| c == "length" || c == "push" || c == "pop")
+        {
             PropertyKind::Array
         } else {
             PropertyKind::Object
@@ -2633,11 +2723,34 @@ mod tests {
     // Arena-based VariableTree tests
     // =======================================================================
 
-    #[test]
     fn arena_record_and_retrieve_variable() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$hp", false, VarAccessKind::Read, "Forest", "file:///test.tw", 50..53, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Read,
+            "Forest",
+            "file:///test.tw",
+            50..53,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (id, node) = tree.get_variable("$hp").unwrap();
         assert_eq!(node.name, "$hp");
@@ -2652,8 +2765,32 @@ mod tests {
     #[test]
     fn arena_variable_names() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$gold", false, VarAccessKind::Write, "Start", "file:///test.tw", 20..25, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            20..25,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let names = tree.variable_names();
         assert!(names.contains(&"$hp".to_string()));
@@ -2664,14 +2801,40 @@ mod tests {
     #[test]
     fn arena_property_tracking_creates_tree() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..17, "name", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 20..27, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..17,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            20..27,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (var_id, var_node) = tree.get_variable("$player").unwrap();
         assert_eq!(var_node.name, "$player");
 
         // Children: "name" and "hp"
-        let children: Vec<String> = tree.arena().children_of(var_id)
+        let children: Vec<String> = tree
+            .arena()
+            .children_of(var_id)
             .map(|id| tree.arena().get(id).name.clone())
             .collect();
         assert!(children.contains(&"name".to_string()));
@@ -2687,7 +2850,19 @@ mod tests {
     #[test]
     fn arena_deep_nesting() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..30, "hp.max", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..30,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Should create: $player -> hp -> max
         let (var_id, _) = tree.get_variable("$player").unwrap();
@@ -2703,21 +2878,63 @@ mod tests {
         assert_eq!(max_node.name, "max");
 
         // Leaf should have a direct write
-        assert!(max_node.meta.refs.iter().any(|a| a.is_write() && !a.propagated));
+        assert!(
+            max_node
+                .meta
+                .refs
+                .iter()
+                .any(|a| a.is_write() && !a.propagated)
+        );
 
         // "hp" should have a propagated write
-        assert!(hp_node.meta.refs.iter().any(|a| a.is_write() && a.propagated));
+        assert!(
+            hp_node
+                .meta
+                .refs
+                .iter()
+                .any(|a| a.is_write() && a.propagated)
+        );
 
         // "$player" should have a propagated write
         let player_node = tree.arena().get(var_id);
-        assert!(player_node.meta.refs.iter().any(|a| a.is_write() && a.propagated));
+        assert!(
+            player_node
+                .meta
+                .refs
+                .iter()
+                .any(|a| a.is_write() && a.propagated)
+        );
     }
 
     #[test]
     fn arena_propagation_read_and_write() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..20, "hp", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Read, "Fight", "file:///test.tw", 30..40, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..20,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Read,
+            "Fight",
+            "file:///test.tw",
+            30..40,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (var_id, var_node) = tree.get_variable("$player").unwrap();
 
@@ -2732,10 +2949,18 @@ mod tests {
         // "hp" child: 1 direct write + 1 direct read
         let hp_id = tree.arena().find_child_by_name(var_id, "hp").unwrap();
         let hp_node = tree.arena().get(hp_id);
-        let hp_direct_writes: Vec<_> = hp_node.meta.refs.iter()
-            .filter(|a| a.is_write() && !a.propagated).collect();
-        let hp_direct_reads: Vec<_> = hp_node.meta.refs.iter()
-            .filter(|a| a.is_read() && !a.propagated).collect();
+        let hp_direct_writes: Vec<_> = hp_node
+            .meta
+            .refs
+            .iter()
+            .filter(|a| a.is_write() && !a.propagated)
+            .collect();
+        let hp_direct_reads: Vec<_> = hp_node
+            .meta
+            .refs
+            .iter()
+            .filter(|a| a.is_read() && !a.propagated)
+            .collect();
         assert_eq!(hp_direct_writes.len(), 1);
         assert_eq!(hp_direct_reads.len(), 1);
     }
@@ -2743,15 +2968,47 @@ mod tests {
     #[test]
     fn arena_mixed_direct_and_propagated() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 5..12, "", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 15..25, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            5..12,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            15..25,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (_var_id, var_node) = tree.get_variable("$player").unwrap();
 
-        let direct_writes: Vec<_> = var_node.meta.refs.iter()
-            .filter(|a| a.is_write() && !a.propagated).collect();
-        let prop_writes: Vec<_> = var_node.meta.refs.iter()
-            .filter(|a| a.is_write() && a.propagated).collect();
+        let direct_writes: Vec<_> = var_node
+            .meta
+            .refs
+            .iter()
+            .filter(|a| a.is_write() && !a.propagated)
+            .collect();
+        let prop_writes: Vec<_> = var_node
+            .meta
+            .refs
+            .iter()
+            .filter(|a| a.is_write() && a.propagated)
+            .collect();
         assert_eq!(direct_writes.len(), 1);
         assert_eq!(prop_writes.len(), 1);
     }
@@ -2759,7 +3016,19 @@ mod tests {
     #[test]
     fn arena_temporary_variable() {
         let mut tree = VariableTree::new();
-        tree.record_var("_i", true, VarAccessKind::Write, "Loop", "file:///test.tw", 5..7, "", BT, &[], None, &[]);
+        tree.record_var(
+            "_i",
+            true,
+            VarAccessKind::Write,
+            "Loop",
+            "file:///test.tw",
+            5..7,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (_id, node) = tree.get_variable("_i").unwrap();
         assert!(node.is_temporary);
@@ -2769,7 +3038,19 @@ mod tests {
     #[test]
     fn arena_mark_seeded() {
         let mut tree = VariableTree::new();
-        tree.record_var("$gold", false, VarAccessKind::Write, "StoryInit", "file:///test.tw", 10..15, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///test.tw",
+            10..15,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
         tree.mark_seeded("$gold");
 
         let (_, node) = tree.get_variable("$gold").unwrap();
@@ -2784,8 +3065,32 @@ mod tests {
     #[test]
     fn arena_completion_names() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("_i", true, VarAccessKind::Write, "Loop", "file:///test.tw", 5..7, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "_i",
+            true,
+            VarAccessKind::Write,
+            "Loop",
+            "file:///test.tw",
+            5..7,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let names = tree.completion_names();
         assert!(names.contains("$hp"));
@@ -2795,9 +3100,45 @@ mod tests {
     #[test]
     fn arena_property_map() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..17, "name", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 20..27, "hp", BT, &[], None, &[]);
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 30..33, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..17,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            20..27,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            30..33,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let map = tree.property_map();
         assert!(map.contains_key("$player"));
@@ -2809,8 +3150,32 @@ mod tests {
     #[test]
     fn arena_remove_file() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///a.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$hp", false, VarAccessKind::Read, "Forest", "file:///b.tw", 50..53, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///a.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Read,
+            "Forest",
+            "file:///b.tw",
+            50..53,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         tree.remove_file("file:///a.tw");
         let (_, node) = tree.get_variable("$hp").unwrap();
@@ -2821,7 +3186,19 @@ mod tests {
     #[test]
     fn arena_remove_file_with_properties() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///a.tw", 10..25, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///a.tw",
+            10..25,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         tree.remove_file("file:///a.tw");
         // Variable and all children should be pruned
@@ -2831,8 +3208,32 @@ mod tests {
     #[test]
     fn arena_remove_passage() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///a.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$hp", false, VarAccessKind::Read, "Forest", "file:///a.tw", 50..53, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///a.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Read,
+            "Forest",
+            "file:///a.tw",
+            50..53,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         tree.remove_passage("Start");
         let (_, node) = tree.get_variable("$hp").unwrap();
@@ -2844,8 +3245,32 @@ mod tests {
     #[test]
     fn arena_clear() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$gold", false, VarAccessKind::Write, "Start", "file:///test.tw", 20..25, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            20..25,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         tree.clear();
         assert!(tree.is_empty());
@@ -2856,9 +3281,45 @@ mod tests {
     #[test]
     fn arena_compute_graph_order() {
         let mut tree = VariableTree::new();
-        tree.record_var("$gold", false, VarAccessKind::Write, "StoryInit", "file:///test.tw", 10..15, "", BT, &[], None, &[]);
-        tree.record_var("$gold", false, VarAccessKind::Read, "Start", "file:///test.tw", 20..25, "", BT, &[], None, &[]);
-        tree.record_var("$gold", false, VarAccessKind::CompoundWrite, "Forest", "file:///test.tw", 30..35, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///test.tw",
+            10..15,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Read,
+            "Start",
+            "file:///test.tw",
+            20..25,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::CompoundWrite,
+            "Forest",
+            "file:///test.tw",
+            30..35,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let special: HashSet<String> = ["StoryInit".to_string()].into_iter().collect();
         tree.compute_graph_order(&special, "Start", &["Forest".to_string()]);
@@ -2872,8 +3333,32 @@ mod tests {
     #[test]
     fn arena_build_tree() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..25, "hp", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Read, "Fight", "file:///test.tw", 30..40, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..25,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Read,
+            "Fight",
+            "file:///test.tw",
+            30..40,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let nodes = tree.build_tree(&PassagePositionMap::new());
         let player = nodes.iter().find(|n| n.name == "$player").unwrap();
@@ -2890,7 +3375,19 @@ mod tests {
     #[test]
     fn arena_build_tree_deep_nesting() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..30, "hp.max", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..30,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let nodes = tree.build_tree(&PassagePositionMap::new());
         let player = nodes.iter().find(|n| n.name == "$player").unwrap();
@@ -2909,7 +3406,19 @@ mod tests {
     fn arena_passage_relative_line_computation() {
         let mut tree = VariableTree::new();
         let body = "line 0\n<<set $hp to 100>>\nline 2";
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 7..10, "", body, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            7..10,
+            "",
+            body,
+            &[],
+            None,
+            &[],
+        );
 
         let (_, node) = tree.get_variable("$hp").unwrap();
         assert_eq!(node.meta.refs[0].line, 1);
@@ -2918,7 +3427,19 @@ mod tests {
     #[test]
     fn arena_path_index_consistency() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..30, "hp.max", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..30,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // All paths should be in path_index
         assert!(tree.get_node_by_path("$player").is_some());
@@ -2969,14 +3490,26 @@ mod tests {
         arena.ensure_path(root_id, "x.y.z", false, VarScope::Persistent);
 
         // resolve_path should find existing nodes
-        assert_eq!(arena.resolve_path(root_id, "x.y.z"), Some(arena.find_child_by_name(
-            arena.find_child_by_name(
-                arena.find_child_by_name(root_id, "x").unwrap(), "y"
-            ).unwrap(), "z"
-        ).unwrap()));
-        assert_eq!(arena.resolve_path(root_id, "x.y"), arena.find_child_by_name(
-            arena.find_child_by_name(root_id, "x").unwrap(), "y"
-        ));
+        assert_eq!(
+            arena.resolve_path(root_id, "x.y.z"),
+            Some(
+                arena
+                    .find_child_by_name(
+                        arena
+                            .find_child_by_name(
+                                arena.find_child_by_name(root_id, "x").unwrap(),
+                                "y"
+                            )
+                            .unwrap(),
+                        "z"
+                    )
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            arena.resolve_path(root_id, "x.y"),
+            arena.find_child_by_name(arena.find_child_by_name(root_id, "x").unwrap(), "y")
+        );
         assert_eq!(arena.resolve_path(root_id, "nonexistent"), None);
     }
 
@@ -2993,7 +3526,8 @@ mod tests {
         }
 
         // Children should iterate in insertion order
-        let child_names: Vec<String> = arena.children_of(root_id)
+        let child_names: Vec<String> = arena
+            .children_of(root_id)
             .map(|id| arena.get(id).name.clone())
             .collect();
         assert_eq!(child_names, vec!["c", "a", "b"]);
@@ -3016,7 +3550,8 @@ mod tests {
         assert!(arena.unlink_child(root_id, b_id));
 
         // Children should now be a, c
-        let child_names: Vec<String> = arena.children_of(root_id)
+        let child_names: Vec<String> = arena
+            .children_of(root_id)
             .map(|id| arena.get(id).name.clone())
             .collect();
         assert_eq!(child_names, vec!["a", "c"]);
@@ -3036,7 +3571,8 @@ mod tests {
 
         // Should include "a" and "b"
         assert_eq!(subtree.len(), 2);
-        let names: Vec<&str> = subtree.iter()
+        let names: Vec<&str> = subtree
+            .iter()
             .map(|id| arena.get(*id).name.as_str())
             .collect();
         assert!(names.contains(&"a"));
@@ -3046,8 +3582,32 @@ mod tests {
     #[test]
     fn arena_propagate_flags() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..20, "hp.max", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Read, "Fight", "file:///test.tw", 30..40, "hp", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..20,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Read,
+            "Fight",
+            "file:///test.tw",
+            30..40,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         tree.propagate();
 
@@ -3068,13 +3628,40 @@ mod tests {
         // Simulate what record_var would receive for object literal paths:
         // <<set $ITEMS = { "pencil-skirt-navy": { name: "..." } }>>
         // The JS annotate pass extracts these as separate record_var calls with property_paths
-        tree.record_var("$ITEMS", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..15, "pencil-skirt-navy", BT, &[], None, &[]);
-        tree.record_var("$ITEMS", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..15, "pencil-skirt-navy.name", BT, &[], None, &[]);
+        tree.record_var(
+            "$ITEMS",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..15,
+            "pencil-skirt-navy",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$ITEMS",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..15,
+            "pencil-skirt-navy.name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let (var_id, _) = tree.get_variable("$ITEMS").unwrap();
 
         // $ITEMS should have a "pencil-skirt-navy" child
-        let psn_id = tree.arena().find_child_by_name(var_id, "pencil-skirt-navy").unwrap();
+        let psn_id = tree
+            .arena()
+            .find_child_by_name(var_id, "pencil-skirt-navy")
+            .unwrap();
         assert_eq!(tree.arena().get(psn_id).name, "pencil-skirt-navy");
 
         // "pencil-skirt-navy" should have a "name" child
@@ -3084,14 +3671,41 @@ mod tests {
         // Path index should have all paths
         assert!(tree.get_node_by_path("$ITEMS").is_some());
         assert!(tree.get_node_by_path("$ITEMS.pencil-skirt-navy").is_some());
-        assert!(tree.get_node_by_path("$ITEMS.pencil-skirt-navy.name").is_some());
+        assert!(
+            tree.get_node_by_path("$ITEMS.pencil-skirt-navy.name")
+                .is_some()
+        );
     }
 
     #[test]
     fn arena_collect_file_uris() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///a.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$hp", false, VarAccessKind::Read, "Forest", "file:///b.tw", 50..53, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///a.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Read,
+            "Forest",
+            "file:///b.tw",
+            50..53,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let uris = tree.collect_file_uris();
         assert!(uris.contains("file:///a.tw"));
@@ -3101,8 +3715,26 @@ mod tests {
     #[test]
     fn arena_record_var_simple() {
         let mut tree = VariableTree::new();
-        tree.record_var_simple("$hp", false, true, "Start", "file:///test.tw", 10..13, "", BT);
-        tree.record_var_simple("$hp", false, false, "Forest", "file:///test.tw", 50..53, "", BT);
+        tree.record_var_simple(
+            "$hp",
+            false,
+            true,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+        );
+        tree.record_var_simple(
+            "$hp",
+            false,
+            false,
+            "Forest",
+            "file:///test.tw",
+            50..53,
+            "",
+            BT,
+        );
 
         let (_, node) = tree.get_variable("$hp").unwrap();
         assert_eq!(node.meta.refs.len(), 2);
@@ -3113,8 +3745,32 @@ mod tests {
     #[test]
     fn arena_iter() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("$gold", false, VarAccessKind::Write, "Start", "file:///test.tw", 20..25, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            20..25,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let entries: Vec<_> = tree.iter().collect();
         assert_eq!(entries.len(), 2);
@@ -3129,19 +3785,67 @@ mod tests {
         assert!(tree.is_empty());
         assert_eq!(tree.len(), 0);
 
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
         assert!(!tree.is_empty());
         assert_eq!(tree.len(), 1);
 
-        tree.record_var("$gold", false, VarAccessKind::Write, "Start", "file:///test.tw", 20..25, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$gold",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            20..25,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
         assert_eq!(tree.len(), 2);
     }
 
     #[test]
     fn arena_known_properties() {
         let mut tree = VariableTree::new();
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..17, "name", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 20..27, "hp.max", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..17,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            20..27,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         let props = tree.known_properties("$player");
         assert!(props.contains("name"));
@@ -3156,8 +3860,32 @@ mod tests {
     #[test]
     fn arena_dual_scope_temp_and_persistent() {
         let mut tree = VariableTree::new();
-        tree.record_var("$hp", false, VarAccessKind::Write, "Start", "file:///test.tw", 10..13, "", BT, &[], None, &[]);
-        tree.record_var("_i", true, VarAccessKind::Write, "Start", "file:///test.tw", 20..22, "", BT, &[], None, &[]);
+        tree.record_var(
+            "$hp",
+            false,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            10..13,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "_i",
+            true,
+            VarAccessKind::Write,
+            "Start",
+            "file:///test.tw",
+            20..22,
+            "",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Both should be findable
         let (_, hp_node) = tree.get_variable("$hp").unwrap();
@@ -3188,9 +3916,45 @@ mod tests {
 
         // Simulate StoryInit writing deep property paths like
         // <<set $player.hp.max to 100>><<set $player.hp.current to 80>>
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 10..30, "hp.max", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 40..65, "hp.current", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 70..85, "name", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            10..30,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            40..65,
+            "hp.current",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            70..85,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Verify the tree structure
         let (_, player_node) = tree.get_variable("$player").unwrap();
@@ -3202,19 +3966,61 @@ mod tests {
         tree.remove_file("file:///special.tw");
 
         // The variable should be completely gone
-        assert!(tree.get_variable("$player").is_none(), "$player should be pruned after file removal");
+        assert!(
+            tree.get_variable("$player").is_none(),
+            "$player should be pruned after file removal"
+        );
 
         // Now re-populate with the same file (simulates re-open/re-parse).
         // This exercises the free-list reuse path — if the free list was
         // corrupted by double-frees, alloc() would return stale IDs
         // and the tree would be corrupted.
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 10..30, "hp.max", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 40..65, "hp.current", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "StoryInit", "file:///special.tw", 70..85, "name", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            10..30,
+            "hp.max",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            40..65,
+            "hp.current",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "StoryInit",
+            "file:///special.tw",
+            70..85,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Verify the tree is valid after re-population
         let (_, player_node) = tree.get_variable("$player").unwrap();
-        assert!(player_node.has_children(), "$player should have children after re-population");
+        assert!(
+            player_node.has_children(),
+            "$player should have children after re-population"
+        );
 
         // Verify path_index consistency — no stale entries
         let prop_map = tree.property_map();
@@ -3227,7 +4033,19 @@ mod tests {
     fn arena_children_with_kind_deep_nesting() {
         let mut tree = VariableTree::new();
         // Create: $item -> work -> pen -> color
-        tree.record_var("$item", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..40, "work.pen.color", BT, &[], None, &[]);
+        tree.record_var(
+            "$item",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..40,
+            "work.pen.color",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Level 0: children of $item
         let root_children = tree.children_with_kind("$item");
@@ -3251,17 +4069,59 @@ mod tests {
         // Verify kinds at each level
         assert_eq!(tree.kind_at_path("$item"), Some(PropertyKind::Object));
         assert_eq!(tree.kind_at_path("$item.work"), Some(PropertyKind::Object));
-        assert_eq!(tree.kind_at_path("$item.work.pen"), Some(PropertyKind::Object));
-        assert_eq!(tree.kind_at_path("$item.work.pen.color"), Some(PropertyKind::Scalar));
+        assert_eq!(
+            tree.kind_at_path("$item.work.pen"),
+            Some(PropertyKind::Object)
+        );
+        assert_eq!(
+            tree.kind_at_path("$item.work.pen.color"),
+            Some(PropertyKind::Scalar)
+        );
     }
 
     #[test]
     fn arena_children_with_kind_multiple_properties() {
         let mut tree = VariableTree::new();
         // $player has hp, name, and address.city
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 10..20, "hp", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 20..30, "name", BT, &[], None, &[]);
-        tree.record_var("$player", false, VarAccessKind::Write, "Init", "file:///test.tw", 30..50, "address.city", BT, &[], None, &[]);
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            10..20,
+            "hp",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            20..30,
+            "name",
+            BT,
+            &[],
+            None,
+            &[],
+        );
+        tree.record_var(
+            "$player",
+            false,
+            VarAccessKind::Write,
+            "Init",
+            "file:///test.tw",
+            30..50,
+            "address.city",
+            BT,
+            &[],
+            None,
+            &[],
+        );
 
         // Root level: should have 3 children
         let root_children = tree.children_with_kind("$player");

@@ -21,7 +21,10 @@
 
 use std::collections::HashSet;
 
-use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use crate::plugin::{
+    FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType,
+};
 use crate::sugarcube::ast;
 use crate::sugarcube::macros::{deprecated_macros, folding_modifier_names};
 use crate::sugarcube::special_passages;
@@ -50,7 +53,14 @@ pub fn build_semantic_tokens(
     custom_macro_names: &HashSet<String>,
     body_text: &str,
 ) {
-    build_semantic_tokens_at_depth(nodes, tokens, body_offset_in_passage, custom_macro_names, 0, body_text);
+    build_semantic_tokens_at_depth(
+        nodes,
+        tokens,
+        body_offset_in_passage,
+        custom_macro_names,
+        0,
+        body_text,
+    );
     // Filter out zero-length tokens. These can arise from:
     // - def/ndef substitution position mapping (clamped to substitution start)
     // - structured_args scanner producing empty spans for unknown macros
@@ -82,7 +92,21 @@ fn build_semantic_tokens_at_depth(
 ) {
     for node in nodes {
         match node {
-            ast::AstNode::Macro { name, name_span, js_analysis, var_refs, children, definition_name_span, capture_target, for_loop_vars, structured_args, close_name_span, open_span, close_span, .. } => {
+            ast::AstNode::Macro {
+                name,
+                name_span,
+                js_analysis,
+                var_refs,
+                children,
+                definition_name_span,
+                capture_target,
+                for_loop_vars,
+                structured_args,
+                close_name_span,
+                open_span,
+                close_span,
+                ..
+            } => {
                 // Modifier macros (else, elseif, case, default) are structurally
                 // siblings of their parent, not children. They're in the parent's
                 // children array, but they should render at the parent's depth,
@@ -175,18 +199,34 @@ fn build_semantic_tokens_at_depth(
                 //
                 // The close tag's `<</` is a 3-byte delimiter (the name lives
                 // in `close_name_span`, between `<</` and `>>`).
-                push_delimiter(tokens, body_offset_in_passage, open_span.start, 2, delim_modifier);
+                push_delimiter(
+                    tokens,
+                    body_offset_in_passage,
+                    open_span.start,
+                    2,
+                    delim_modifier,
+                );
                 if open_span.end >= 2 {
-                    push_delimiter(tokens, body_offset_in_passage, open_span.end - 2, 2, delim_modifier);
+                    push_delimiter(
+                        tokens,
+                        body_offset_in_passage,
+                        open_span.end - 2,
+                        2,
+                        delim_modifier,
+                    );
                 }
-                if is_block {
-                    if let Some(cs) = close_span {
-                        // `<</` — 3 bytes at the start of the close tag
-                        push_delimiter(tokens, body_offset_in_passage, cs.start, 3, delim_modifier);
-                        // `>>` — 2 bytes at the end of the close tag
-                        if cs.end >= 2 {
-                            push_delimiter(tokens, body_offset_in_passage, cs.end - 2, 2, delim_modifier);
-                        }
+                if is_block && let Some(cs) = close_span {
+                    // `<</` — 3 bytes at the start of the close tag
+                    push_delimiter(tokens, body_offset_in_passage, cs.start, 3, delim_modifier);
+                    // `>>` — 2 bytes at the end of the close tag
+                    if cs.end >= 2 {
+                        push_delimiter(
+                            tokens,
+                            body_offset_in_passage,
+                            cs.end - 2,
+                            2,
+                            delim_modifier,
+                        );
                     }
                 }
 
@@ -195,15 +235,13 @@ fn build_semantic_tokens_at_depth(
                 // modifier as the open name (`name_modifier`) — NOT the
                 // depth modifier. This keeps the name visually stable on
                 // both open and close tags; only the delimiters show depth.
-                if is_block {
-                    if let Some(cn_span) = close_name_span {
-                        tokens.push(SemanticToken {
-                            start: body_offset_in_passage + cn_span.start,
-                            length: cn_span.end - cn_span.start,
-                            token_type,
-                            modifier: name_modifier,
-                        });
-                    }
+                if is_block && let Some(cn_span) = close_name_span {
+                    tokens.push(SemanticToken {
+                        start: body_offset_in_passage + cn_span.start,
+                        length: cn_span.end - cn_span.start,
+                        token_type,
+                        modifier: name_modifier,
+                    });
                 }
 
                 // For <<widget>> definitions: emit Function + Definition token
@@ -255,7 +293,11 @@ fn build_semantic_tokens_at_depth(
                     // Emit operator tokens (SugarCube keywords + JS operators)
                     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
                     // Emit namespace tokens (SugarCube global objects)
-                    emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
+                    emit_namespace_tokens(
+                        &analysis.namespace_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
@@ -263,24 +305,52 @@ fn build_semantic_tokens_at_depth(
                     emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
                     // Emit JS local variable references and definitions
                     emit_js_var_tokens(&analysis.js_var_spans, tokens, body_offset_in_passage);
-                    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, body_offset_in_passage);
+                    emit_js_var_def_tokens(
+                        &analysis.js_var_def_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS method calls (.forEach, .getElementById, etc.)
-                    emit_js_method_tokens(&analysis.js_method_spans, tokens, body_offset_in_passage);
+                    emit_js_method_tokens(
+                        &analysis.js_method_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS property accesses (.left, .length, .innerHTML, etc.)
-                    emit_js_property_tokens(&analysis.js_property_spans, tokens, body_offset_in_passage);
+                    emit_js_property_tokens(
+                        &analysis.js_property_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS global object references (document, Array, Math, etc.)
-                    emit_js_global_tokens(&analysis.js_global_spans, tokens, body_offset_in_passage);
+                    emit_js_global_tokens(
+                        &analysis.js_global_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit function definition tokens from oxc analysis
-                    emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
+                    emit_function_def_tokens(
+                        &analysis.function_defs,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit function call site tokens from oxc analysis
-                    emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
+                    emit_function_call_tokens(
+                        &analysis.function_calls,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                 } else {
                     for vr in var_refs {
                         tokens.push(SemanticToken {
                             start: body_offset_in_passage + vr.span.start,
                             length: vr.span.end - vr.span.start,
                             token_type: SemanticTokenType::Variable,
-                            modifier: if vr.is_write { Some(SemanticTokenModifier::Definition) } else { None },
+                            modifier: if vr.is_write {
+                                Some(SemanticTokenModifier::Definition)
+                            } else {
+                                None
+                            },
                         });
                     }
                 }
@@ -298,28 +368,28 @@ fn build_semantic_tokens_at_depth(
                 // This is the direct equivalent of how <<script>> gets JS
                 // tokens via js_analysis — but CSS doesn't need an annotation
                 // pass, so we emit directly here.
-                if name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("css") {
-                    if let Some(ch) = children {
-                        let mut css_source = String::new();
-                        let mut body_start = 0usize;
-                        for child in ch.iter() {
-                            if let ast::AstNode::Text { content, span, .. } = child {
-                                if css_source.is_empty() {
-                                    body_start = span.start;
-                                }
-                                css_source.push_str(content);
+                if (name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("css"))
+                    && let Some(ch) = children
+                {
+                    let mut css_source = String::new();
+                    let mut body_start = 0usize;
+                    for child in ch.iter() {
+                        if let ast::AstNode::Text { content, span, .. } = child {
+                            if css_source.is_empty() {
+                                body_start = span.start;
                             }
+                            css_source.push_str(content);
                         }
-                        if !css_source.trim().is_empty() {
-                            let css_analysis = crate::sugarcube::css::analyze_css(css_source.trim());
-                            for css_tok in &css_analysis.tokens {
-                                tokens.push(SemanticToken {
-                                    start: body_offset_in_passage + body_start + css_tok.start,
-                                    length: css_tok.length,
-                                    token_type: css_tok.token_type,
-                                    modifier: css_tok.modifier,
-                                });
-                            }
+                    }
+                    if !css_source.trim().is_empty() {
+                        let css_analysis = crate::sugarcube::css::analyze_css(css_source.trim());
+                        for css_tok in &css_analysis.tokens {
+                            tokens.push(SemanticToken {
+                                start: body_offset_in_passage + body_start + css_tok.start,
+                                length: css_tok.length,
+                                token_type: css_tok.token_type,
+                                modifier: css_tok.modifier,
+                            });
                         }
                     }
                 }
@@ -343,7 +413,14 @@ fn build_semantic_tokens_at_depth(
                 //     <</if>>
                 //   <</if>>
                 if let Some(ch) = children {
-                    build_semantic_tokens_at_depth(ch, tokens, body_offset_in_passage, custom_macro_names, effective_depth + 1, body_text);
+                    build_semantic_tokens_at_depth(
+                        ch,
+                        tokens,
+                        body_offset_in_passage,
+                        custom_macro_names,
+                        effective_depth + 1,
+                        body_text,
+                    );
                 }
             }
             ast::AstNode::Link {
@@ -441,10 +518,11 @@ fn build_semantic_tokens_at_depth(
                         let body_s_start = s_start.saturating_sub(body_offset_in_passage);
                         let body_s_end = s_end.saturating_sub(body_offset_in_passage);
                         if let Some(setter_text) = body_text.get(body_s_start..body_s_end) {
-                            let setter_var_refs = super::super::parser::variable_scan::scan_inline_vars(
-                                setter_text,
-                                s_start,
-                            );
+                            let setter_var_refs =
+                                super::super::parser::variable_scan::scan_inline_vars(
+                                    setter_text,
+                                    s_start,
+                                );
                             for vr in setter_var_refs {
                                 tokens.push(SemanticToken {
                                     start: vr.span.start,
@@ -457,7 +535,13 @@ fn build_semantic_tokens_at_depth(
                     }
                 }
             }
-            ast::AstNode::Expression { kind, js_analysis, var_refs, span, .. } => {
+            ast::AstNode::Expression {
+                kind,
+                js_analysis,
+                var_refs,
+                span,
+                ..
+            } => {
                 // Emit a Macro token for the expression sigil (= or -) so
                 // it's visually consistent with <<print>> getting a Macro token.
                 // The sigil is at span.start + 2 (after the opening <<).
@@ -494,7 +578,11 @@ fn build_semantic_tokens_at_depth(
                     // Emit operator tokens (SugarCube keywords + JS operators)
                     emit_operator_tokens(&analysis.operator_spans, tokens, body_offset_in_passage);
                     // Emit namespace tokens (SugarCube global objects)
-                    emit_namespace_tokens(&analysis.namespace_spans, tokens, body_offset_in_passage);
+                    emit_namespace_tokens(
+                        &analysis.namespace_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
                     // Emit comment tokens (/* */ and // inside JS expressions)
                     emit_comment_tokens(&analysis.comment_spans, tokens, body_offset_in_passage);
@@ -502,17 +590,41 @@ fn build_semantic_tokens_at_depth(
                     emit_keyword_tokens(&analysis.keyword_spans, tokens, body_offset_in_passage);
                     // Emit JS local variable references and definitions
                     emit_js_var_tokens(&analysis.js_var_spans, tokens, body_offset_in_passage);
-                    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, body_offset_in_passage);
+                    emit_js_var_def_tokens(
+                        &analysis.js_var_def_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS method calls (.forEach, .getElementById, etc.)
-                    emit_js_method_tokens(&analysis.js_method_spans, tokens, body_offset_in_passage);
+                    emit_js_method_tokens(
+                        &analysis.js_method_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS property accesses (.left, .length, .innerHTML, etc.)
-                    emit_js_property_tokens(&analysis.js_property_spans, tokens, body_offset_in_passage);
+                    emit_js_property_tokens(
+                        &analysis.js_property_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit JS global object references (document, Array, Math, etc.)
-                    emit_js_global_tokens(&analysis.js_global_spans, tokens, body_offset_in_passage);
+                    emit_js_global_tokens(
+                        &analysis.js_global_spans,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit function definition tokens from oxc analysis
-                    emit_function_def_tokens(&analysis.function_defs, tokens, body_offset_in_passage);
+                    emit_function_def_tokens(
+                        &analysis.function_defs,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     // Emit function call site tokens from oxc analysis
-                    emit_function_call_tokens(&analysis.function_calls, tokens, body_offset_in_passage);
+                    emit_function_call_tokens(
+                        &analysis.function_calls,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                 } else {
                     for vr in var_refs {
                         tokens.push(SemanticToken {
@@ -532,7 +644,13 @@ fn build_semantic_tokens_at_depth(
                     modifier: None,
                 });
             }
-            ast::AstNode::Text { content, var_refs, span, is_prose, .. } => {
+            ast::AstNode::Text {
+                content,
+                var_refs,
+                span,
+                is_prose,
+                ..
+            } => {
                 // ── Collect all "special" spans (variables + templates) ────
                 // These are the positions where we DON'T want to emit a Prose
                 // token, because a more specific token (Variable or Function)
@@ -559,10 +677,14 @@ fn build_semantic_tokens_at_depth(
                 let content_bytes = content.as_bytes();
                 let content_len = content_bytes.len();
                 let is_ident_start = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
-                let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
+                let is_ident_char =
+                    |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
                 let mut i = 0usize;
                 while i < content_len {
-                    if content_bytes[i] == b'?' && i + 1 < content_len && is_ident_start(content_bytes[i + 1]) {
+                    if content_bytes[i] == b'?'
+                        && i + 1 < content_len
+                        && is_ident_start(content_bytes[i + 1])
+                    {
                         let token_start = i;
                         let mut name_end = i + 1;
                         while name_end < content_len && is_ident_char(content_bytes[name_end]) {
@@ -618,11 +740,16 @@ fn build_semantic_tokens_at_depth(
                 // scanner above — hyphens are allowed in continuation but not
                 // as the first character after `?`.
                 {
-                    let is_ident_start = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
-                    let is_ident_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
+                    let is_ident_start =
+                        |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+                    let is_ident_char =
+                        |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
                     let mut i = 0usize;
                     while i < content_len {
-                        if content_bytes[i] == b'?' && i + 1 < content_len && is_ident_start(content_bytes[i + 1]) {
+                        if content_bytes[i] == b'?'
+                            && i + 1 < content_len
+                            && is_ident_start(content_bytes[i + 1])
+                        {
                             let token_start = i;
                             let mut name_end = i + 1;
                             while name_end < content_len && is_ident_char(content_bytes[name_end]) {
@@ -644,14 +771,24 @@ fn build_semantic_tokens_at_depth(
             ast::AstNode::Error { .. } => {}
             // Inline styling: emit InlineStyle token for the class name,
             // then recurse into children for prose/variable tokens.
-            ast::AstNode::InlineStyle { class_span, children, .. } => {
+            ast::AstNode::InlineStyle {
+                class_span,
+                children,
+                ..
+            } => {
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + class_span.start,
                     length: class_span.end - class_span.start,
                     token_type: SemanticTokenType::InlineStyle,
                     modifier: None,
                 });
-                build_semantic_tokens(children, tokens, body_offset_in_passage, custom_macro_names, body_text);
+                build_semantic_tokens(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    body_text,
+                );
             }
             // Text formatting markup: split into delimiter tokens and content
             // token. Delimiters (e.g., `//`, `''`, `__`) get the `Heading`
@@ -747,7 +884,12 @@ fn build_semantic_tokens_at_depth(
             // so that macros inside headings get the correct `BlockDepthN`
             // modifier. This is the pattern recommended in plan.md §4.3.4
             // (avoiding the `InlineStyle` depth-reset behavior).
-            ast::AstNode::Heading { level, children, span, .. } => {
+            ast::AstNode::Heading {
+                level,
+                children,
+                span,
+                ..
+            } => {
                 // Marker token: the `!` run at the start of the span.
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + span.start,
@@ -780,7 +922,12 @@ fn build_semantic_tokens_at_depth(
             // `Blockquote` token for the `>` run (the marker), then recurse
             // into children for prose/macro/variable tokens. Content is
             // recursively parsed (macros execute per §3.8.1).
-            ast::AstNode::Blockquote { depth, children, span, .. } => {
+            ast::AstNode::Blockquote {
+                depth,
+                children,
+                span,
+                ..
+            } => {
                 // Marker token: the `>` run at the start of the span.
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + span.start,
@@ -802,7 +949,12 @@ fn build_semantic_tokens_at_depth(
             // tokens for the opening and closing `<<<` delimiters, then
             // recurse into children for content tokens. Content is recursively
             // parsed (macros execute per §3.8.2).
-            ast::AstNode::BlockquoteBlock { children, open_span, close_span, .. } => {
+            ast::AstNode::BlockquoteBlock {
+                children,
+                open_span,
+                close_span,
+                ..
+            } => {
                 // Opening `<<<` delimiter token.
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + open_span.start,
@@ -837,7 +989,12 @@ fn build_semantic_tokens_at_depth(
             // The marker run length = `marker.len()` (e.g. 1 for `*`, 2 for `**`).
             // The marker token covers exactly the marker characters, NOT the
             // item content — content tokens are emitted by the recursive call.
-            ast::AstNode::ListItem { marker, children, span, .. } => {
+            ast::AstNode::ListItem {
+                marker,
+                children,
+                span,
+                ..
+            } => {
                 // Marker token: the `*`/`#` run at the start of the span.
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + span.start,
@@ -954,7 +1111,11 @@ fn push_delimiter(
 ///
 /// Uses `segment_spans` for per-token highlighting when available,
 /// giving exact span precision for each variable/property token.
-fn emit_var_op_tokens(op: &ast::AnalyzedVarOp, tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_var_op_tokens(
+    op: &ast::AnalyzedVarOp,
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     let modifier = if op.access_kind.is_write() {
         Some(SemanticTokenModifier::Definition)
     } else {
@@ -964,9 +1125,9 @@ fn emit_var_op_tokens(op: &ast::AnalyzedVarOp, tokens: &mut Vec<SemanticToken>, 
     if !op.segment_spans.is_empty() {
         for (i, seg_span) in op.segment_spans.iter().enumerate() {
             let token_type = if i == 0 {
-                SemanticTokenType::Variable  // $foo — the root variable
+                SemanticTokenType::Variable // $foo — the root variable
             } else {
-                SemanticTokenType::Property  // .bar, .baz — property access
+                SemanticTokenType::Property // .bar, .baz — property access
             };
             tokens.push(SemanticToken {
                 start: body_offset_in_passage + seg_span.start,
@@ -990,13 +1151,17 @@ fn emit_var_op_tokens(op: &ast::AnalyzedVarOp, tokens: &mut Vec<SemanticToken>, 
 /// Maps `LiteralKind` to the appropriate `SemanticTokenType` and pushes
 /// a token for each literal. The spans are passage-body-relative (already
 /// mapped through the preprocessor), so we just add `body_offset_in_passage`.
-fn emit_literal_tokens(literals: &[ast::LiteralSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_literal_tokens(
+    literals: &[ast::LiteralSpan],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for lit in literals {
         let token_type = match lit.kind {
-            ast::LiteralKind::String  => SemanticTokenType::String,
-            ast::LiteralKind::Number  => SemanticTokenType::Number,
+            ast::LiteralKind::String => SemanticTokenType::String,
+            ast::LiteralKind::Number => SemanticTokenType::Number,
             ast::LiteralKind::Boolean => SemanticTokenType::Boolean,
-            ast::LiteralKind::Null    => SemanticTokenType::Keyword,
+            ast::LiteralKind::Null => SemanticTokenType::Keyword,
         };
         tokens.push(SemanticToken {
             start: body_offset_in_passage + lit.span.start,
@@ -1021,7 +1186,11 @@ fn emit_literal_tokens(literals: &[ast::LiteralSpan], tokens: &mut Vec<SemanticT
 /// authors who want per-category styling can still distinguish via the
 /// `OperatorKind` data exposed in the AST (should we ever re-introduce
 /// modifiers behind a setting).
-fn emit_operator_tokens(operators: &[ast::OperatorSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_operator_tokens(
+    operators: &[ast::OperatorSpan],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for op in operators {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + op.span.start,
@@ -1042,8 +1211,12 @@ fn emit_operator_tokens(operators: &[ast::OperatorSpan], tokens: &mut Vec<Semant
 /// **Deduplication note**: `State.variables.x` patterns are NOT emitted here
 /// because they're already covered by `AnalyzedVarOp` (which emits `Variable`
 /// + `Property` tokens). Only non-variable-access patterns on globals
-/// (e.g., `State.turns`, `Engine.play()`, `Config.debug`) are emitted.
-fn emit_namespace_tokens(namespaces: &[ast::NamespaceSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+///   (e.g., `State.turns`, `Engine.play()`, `Config.debug`) are emitted.
+fn emit_namespace_tokens(
+    namespaces: &[ast::NamespaceSpan],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for ns in namespaces {
         // Namespace token for the global object name
         tokens.push(SemanticToken {
@@ -1072,7 +1245,11 @@ fn emit_namespace_tokens(namespaces: &[ast::NamespaceSpan], tokens: &mut Vec<Sem
 /// - `function myHelper() { ... }` → Function token on "myHelper"
 /// - `var calculateScore = function() { ... }` → Function token on "calculateScore"
 /// - `const add = () => { ... }` → Function token on "add"
-fn emit_function_def_tokens(function_defs: &[ast::FunctionDefInfo], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_function_def_tokens(
+    function_defs: &[ast::FunctionDefInfo],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for func_def in function_defs {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + func_def.name_offset,
@@ -1083,9 +1260,19 @@ fn emit_function_def_tokens(function_defs: &[ast::FunctionDefInfo], tokens: &mut
     }
 }
 
-
-fn emit_comment_tokens(comments: &[ast::CommentSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
-    for c in comments { tokens.push(SemanticToken { start: body_offset_in_passage + c.span.start, length: c.span.end - c.span.start, token_type: SemanticTokenType::Comment, modifier: None }); }
+fn emit_comment_tokens(
+    comments: &[ast::CommentSpan],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
+    for c in comments {
+        tokens.push(SemanticToken {
+            start: body_offset_in_passage + c.span.start,
+            length: c.span.end - c.span.start,
+            token_type: SemanticTokenType::Comment,
+            modifier: None,
+        });
+    }
 }
 
 /// Emit semantic tokens for JS keywords found by oxc.
@@ -1095,7 +1282,11 @@ fn emit_comment_tokens(comments: &[ast::CommentSpan], tokens: &mut Vec<SemanticT
 /// `const`), and expression-level keywords (`new`, `typeof`, `instanceof`,
 /// `delete`, `void`, `in`). Each gets a `Keyword` token so themes can
 /// color JS keywords distinctly from SugarCube macro names.
-fn emit_keyword_tokens(keywords: &[ast::KeywordSpan], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_keyword_tokens(
+    keywords: &[ast::KeywordSpan],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for kw in keywords {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + kw.span.start,
@@ -1112,7 +1303,11 @@ fn emit_keyword_tokens(keywords: &[ast::KeywordSpan], tokens: &mut Vec<SemanticT
 /// is used as a function call target (e.g., `_myHelper()`), it should be
 /// classified as a function call, not a variable reference. This function
 /// emits `Function` tokens for those call sites.
-fn emit_function_call_tokens(function_calls: &[ast::FunctionCallInfo], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_function_call_tokens(
+    function_calls: &[ast::FunctionCallInfo],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for call in function_calls {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + call.span.start,
@@ -1128,7 +1323,11 @@ fn emit_function_call_tokens(function_calls: &[ast::FunctionCallInfo], tokens: &
 /// These are identifiers that are NOT SugarCube variables (`$var`/`_var`),
 /// NOT properties, and NOT function calls — just plain JS locals like
 /// `el`, `g`, `profile`, `vm`, `html`. Emitted as `Variable` tokens.
-fn emit_js_var_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_js_var_tokens(
+    spans: &[std::ops::Range<usize>],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for span in spans {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + span.start,
@@ -1144,7 +1343,11 @@ fn emit_js_var_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<Semanti
 /// These are the binding names in `var x = ...`, `let x = ...`, `const x = ...`,
 /// and function parameters. Emitted as `Variable` tokens with the `Definition`
 /// modifier so themes can bold them.
-fn emit_js_var_def_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_js_var_def_tokens(
+    spans: &[std::ops::Range<usize>],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for span in spans {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + span.start,
@@ -1160,7 +1363,11 @@ fn emit_js_var_def_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<Sem
 /// These are the property names in `expr.method(...)` patterns, e.g.
 /// `.forEach`, `.getElementById`, `.isArray`, `.filter`. Emitted as
 /// `Function` tokens so they're visually distinct from property accesses.
-fn emit_js_method_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_js_method_tokens(
+    spans: &[std::ops::Range<usize>],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for span in spans {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + span.start,
@@ -1176,7 +1383,11 @@ fn emit_js_method_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<Sema
 /// These are the property names in `expr.prop` patterns (not followed by `(`),
 /// e.g. `.left`, `.length`, `.innerHTML`, `.showIf`. Emitted as `Property`
 /// tokens so themes can color them distinctly from variables.
-fn emit_js_property_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_js_property_tokens(
+    spans: &[std::ops::Range<usize>],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for span in spans {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + span.start,
@@ -1191,7 +1402,11 @@ fn emit_js_property_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<Se
 ///
 /// These are identifiers matching known JS globals (`document`, `Array`,
 /// `Math`, `JSON`, `console`, etc.). Emitted as `Namespace` tokens.
-fn emit_js_global_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_js_global_tokens(
+    spans: &[std::ops::Range<usize>],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for span in spans {
         tokens.push(SemanticToken {
             start: body_offset_in_passage + span.start,
@@ -1220,7 +1435,11 @@ fn emit_js_global_tokens(spans: &[std::ops::Range<usize>], tokens: &mut Vec<Sema
 /// dynamic passage target) while var_ops captures the *JS semantics* (read
 /// vs write). The editor typically uses the last-emitted token for a position,
 /// so this is acceptable — the user sees the correct highlighting either way.
-fn emit_structured_arg_tokens(sargs: &[ast::StructuredMacroArg], tokens: &mut Vec<SemanticToken>, body_offset_in_passage: usize) {
+fn emit_structured_arg_tokens(
+    sargs: &[ast::StructuredMacroArg],
+    tokens: &mut Vec<SemanticToken>,
+    body_offset_in_passage: usize,
+) {
     for sarg in sargs {
         let token_type = match sarg.kind {
             ast::ParsedArgKind::PassageRef => SemanticTokenType::Link,
@@ -1277,7 +1496,14 @@ pub fn build_diagnostics(
                 code: "sc-parse".to_string(),
             });
         }
-        if let ast::AstNode::Macro { children, name, name_span, close_span, .. } = node {
+        if let ast::AstNode::Macro {
+            children,
+            name,
+            name_span,
+            close_span,
+            ..
+        } = node
+        {
             // Unclosed block macro diagnostic.
             //
             // Only emit for macros with BodyRequirement::Required that have
@@ -1295,7 +1521,8 @@ pub fn build_diagnostics(
                 let body_req = lookup_body_requirement(name, custom_macros);
                 if body_req == crate::types::BodyRequirement::Required {
                     diagnostics.push(FormatDiagnostic {
-                        range: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                        range: body_offset_in_passage + name_span.start
+                            ..body_offset_in_passage + name_span.end,
                         message: format!("Unclosed block macro: <<{}>>", name),
                         severity: FormatDiagnosticSeverity::Error,
                         code: "sc-unclosed".to_string(),
@@ -1305,7 +1532,8 @@ pub fn build_diagnostics(
             // Deprecated macro usage diagnostic
             if let Some(msg) = dep_macros.get(name.as_str()) {
                 diagnostics.push(FormatDiagnostic {
-                    range: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
+                    range: body_offset_in_passage + name_span.start
+                        ..body_offset_in_passage + name_span.end,
                     message: (*msg).to_string(),
                     severity: FormatDiagnosticSeverity::Hint,
                     code: "sc-deprecated".to_string(),
@@ -1451,7 +1679,10 @@ fn find_word_in_text(text: &str, word: &str) -> Option<usize> {
 /// byte 0 is the `::` prefix of the passage header. The `TweeHeader` fields
 /// `header_start` and `name_start` are document-absolute, so we subtract
 /// `header_start` to produce passage-relative offsets.
-pub fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool) -> Vec<SemanticToken> {
+pub fn build_header_tokens(
+    header: &crate::header::TweeHeader,
+    is_special: bool,
+) -> Vec<SemanticToken> {
     let mut tokens = Vec::new();
 
     // All header offsets are relative to the passage head (:: prefix).
@@ -1466,7 +1697,7 @@ pub fn build_header_tokens(header: &crate::header::TweeHeader, is_special: bool)
         SemanticTokenType::PassageHeader
     };
     tokens.push(SemanticToken {
-        start: 0, // :: is always at the very start of the passage
+        start: 0,  // :: is always at the very start of the passage
         length: 2, // ::
         token_type: header_type,
         modifier: None,
@@ -1571,7 +1802,7 @@ pub fn build_json_body_tokens(body: &str, body_offset_in_passage: usize) -> Vec<
                 let end = pos;
 
                 let mut lookahead = pos;
-                while lookahead < len && bytes[lookahead] == b' ' || lookahead < len && bytes[lookahead] == b'\t' || lookahead < len && bytes[lookahead] == b'\n' || lookahead < len && bytes[lookahead] == b'\r' {
+                while lookahead < len && matches!(bytes[lookahead], b' ' | b'\t' | b'\n' | b'\r') {
                     lookahead += 1;
                 }
                 let is_property_name = lookahead < len && bytes[lookahead] == b':';
@@ -1605,7 +1836,14 @@ pub fn build_json_body_tokens(body: &str, body_offset_in_passage: usize) -> Vec<
                 if bytes[pos] == b'-' {
                     pos += 1;
                 }
-                while pos < len && (bytes[pos].is_ascii_digit() || bytes[pos] == b'.' || bytes[pos] == b'e' || bytes[pos] == b'E' || bytes[pos] == b'+' || bytes[pos] == b'-') {
+                while pos < len
+                    && (bytes[pos].is_ascii_digit()
+                        || bytes[pos] == b'.'
+                        || bytes[pos] == b'e'
+                        || bytes[pos] == b'E'
+                        || bytes[pos] == b'+'
+                        || bytes[pos] == b'-')
+                {
                     pos += 1;
                 }
                 if pos == start + 1 && bytes[start] == b'-' {
@@ -1683,18 +1921,25 @@ fn is_folding_modifier(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::SemanticTokenType;
     use crate::sugarcube::ast::ParseMode;
     use crate::sugarcube::parser::parse_passage_body;
-    use crate::plugin::SemanticTokenType;
 
     /// Build semantic tokens for a body string and return all tokens
     /// as `(type_name, text)` pairs.
     fn all_token_texts(body: &str) -> Vec<(&'static str, String)> {
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &std::collections::HashSet::new(), body);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &std::collections::HashSet::new(),
+            body,
+        );
 
-        tokens.iter()
+        tokens
+            .iter()
             .map(|t| {
                 let type_name = match t.token_type {
                     SemanticTokenType::Link => "Link",
@@ -1706,7 +1951,8 @@ mod tests {
                     SemanticTokenType::Prose => "Prose",
                     _ => "Other",
                 };
-                let text = body[t.start.min(body.len())..(t.start + t.length).min(body.len())].to_string();
+                let text =
+                    body[t.start.min(body.len())..(t.start + t.length).min(body.len())].to_string();
                 (type_name, text)
             })
             .filter(|(tn, _)| matches!(*tn, "Link" | "String" | "Variable"))
@@ -1732,28 +1978,37 @@ mod tests {
     #[test]
     fn link_token_pipe_link_decomposes_into_display_and_target() {
         let tokens = all_token_texts("[[Return to start|Start]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Start".to_string()),
-            ("String", "Return to start".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Start".to_string()),
+                ("String", "Return to start".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn link_token_arrow_right_decomposes() {
         let tokens = all_token_texts("[[Display->Target]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Target".to_string()),
-            ("String", "Display".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Target".to_string()),
+                ("String", "Display".to_string()),
+            ]
+        );
     }
 
     #[test]
     fn link_token_arrow_left_decomposes() {
         let tokens = all_token_texts("[[Target<-Display]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Target".to_string()),
-            ("String", "Display".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Target".to_string()),
+                ("String", "Display".to_string()),
+            ]
+        );
     }
 
     /// Regression test: setter links `[[Display|Target][$var += 5]]` should
@@ -1764,11 +2019,14 @@ mod tests {
     #[test]
     fn link_token_setter_link_emits_variable_for_setter_var() {
         let tokens = all_token_texts("[[Link with setter|Time][$playerGold += 5]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Time".to_string()),
-            ("String", "Link with setter".to_string()),
-            ("Variable", "$playerGold".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Time".to_string()),
+                ("String", "Link with setter".to_string()),
+                ("Variable", "$playerGold".to_string()),
+            ]
+        );
     }
 
     /// Regression test: image links `[[img[url][Target]]` should produce
@@ -1785,10 +2043,13 @@ mod tests {
     #[test]
     fn link_token_image_link_with_display_decomposes() {
         let tokens = all_token_texts("[[img[http://example.com/pic.jpg][Dark Forest|Forest]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Forest".to_string()),
-            ("String", "Dark Forest".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Forest".to_string()),
+                ("String", "Dark Forest".to_string()),
+            ]
+        );
     }
 
     /// Regression test: links with multi-byte UTF-8 characters should not
@@ -1796,9 +2057,12 @@ mod tests {
     #[test]
     fn link_token_multibyte_utf8_decomposes_correctly() {
         let tokens = all_token_texts("[[Café—naïve|Target]]");
-        assert_eq!(tokens, vec![
-            ("Link", "Target".to_string()),
-            ("String", "Café—naïve".to_string()),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                ("Link", "Target".to_string()),
+                ("String", "Café—naïve".to_string()),
+            ]
+        );
     }
 }

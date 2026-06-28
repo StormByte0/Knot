@@ -23,19 +23,18 @@
 //! highlighting and completion.
 
 use knot_core::passage::{
-    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
-    StoryFormat, VarKind, VarOp,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef,
+    SpecialPassageLayer, StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use std::sync::LazyLock;
 use url::Url;
 
-
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
-    PassageDiagnosticGroup, PassageTokenGroup,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    PassageDiagnosticGroup, PassageTokenGroup, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType,
 };
 use crate::types::BodyRequirement;
 
@@ -44,34 +43,42 @@ use crate::types::BodyRequirement;
 // ---------------------------------------------------------------------------
 
 /// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
+static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
+});
 /// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
+static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
+});
 /// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
+static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
+});
 /// Detect passage header lines: starts with `::` followed by at least one
 /// non-whitespace character. The actual name/tag/metadata extraction is done
 /// by the unified `parse_twee_header()` in `crate::header`.
 static RE_HEADER_DETECT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^::\s*\S").expect("invalid regex for RE_HEADER_DETECT"));
 /// Regex for state variable writes: `state.varName =`
-static RE_STATE_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_STATE_WRITE"));
+static RE_STATE_WRITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_STATE_WRITE")
+});
 /// Regex for state variable reads: `state.varName`
-static RE_STATE_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_STATE_READ"));
+static RE_STATE_READ: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_STATE_READ")
+});
 /// Regex for `[modify]` key-value lines: `key: value`
-static RE_MODIFY_KV: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").expect("invalid regex for RE_MODIFY_KV"));
+static RE_MODIFY_KV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:").expect("invalid regex for RE_MODIFY_KV")
+});
 /// Regex for open modifier blocks: `[modifierName]`
-static RE_MODIFIER_OPEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_OPEN"));
+static RE_MODIFIER_OPEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_OPEN")
+});
 /// Regex for close modifier blocks: `[/modifierName]`
-static RE_MODIFIER_CLOSE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_CLOSE"));
+static RE_MODIFIER_CLOSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]").expect("invalid regex for RE_MODIFIER_CLOSE")
+});
 
 // ---------------------------------------------------------------------------
 // Template segment
@@ -82,11 +89,26 @@ enum TemplateSegment {
     /// Plain text content.
     Text { start: usize, end: usize },
     /// A `[javascript]...[/javascript]` block.
-    Javascript { start: usize, end: usize, content_start: usize, content_end: usize },
+    Javascript {
+        start: usize,
+        end: usize,
+        content_start: usize,
+        content_end: usize,
+    },
     /// A `[modify]...[/modify]` block.
-    Modify { start: usize, end: usize, content_start: usize, content_end: usize },
+    Modify {
+        start: usize,
+        end: usize,
+        content_start: usize,
+        content_end: usize,
+    },
     /// A `{{expression}}` insert.
-    Insert { start: usize, end: usize, expr_start: usize, expr_end: usize },
+    Insert {
+        start: usize,
+        end: usize,
+        expr_start: usize,
+        expr_end: usize,
+    },
     /// An unclosed `[javascript]` block.
     UnclosedJavascript { start: usize, end: usize },
     /// An unclosed `[modify]` block.
@@ -136,7 +158,13 @@ impl ChapbookPlugin {
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
             // Rust's str::lines() strips both \n and \r\n, so we must check
             // the raw text to know which one was present.
-            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") {
+                2
+            } else if line_end < text.len() {
+                1
+            } else {
+                0
+            };
             byte_offset = line_end + newline_len;
         }
 
@@ -146,14 +174,22 @@ impl ChapbookPlugin {
             let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line's newline (CRLF = 2, LF = 1).
-            let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") { 2 } else if header_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") {
+                2
+            } else if header_end < text.len() {
+                1
+            } else {
+                0
+            };
             let body_start = header_end + newline_len;
             let body_end = if i + 1 < header_spans.len() {
                 header_spans[i + 1].0
             } else {
                 text.len()
             };
-            let body_text = text.get(body_start.min(text.len())..body_end.min(text.len())).unwrap_or("");
+            let body_text = text
+                .get(body_start.min(text.len())..body_end.min(text.len()))
+                .unwrap_or("");
 
             if let Some(hdr) = parsed {
                 results.push((hdr, body_text));
@@ -162,7 +198,6 @@ impl ChapbookPlugin {
 
         results
     }
-
 
     // -----------------------------------------------------------------------
     // Pass 2: Body analysis
@@ -175,8 +210,12 @@ impl ChapbookPlugin {
         // Arrow-style links: [[Display->Target]]
         for caps in RE_LINK_ARROW.captures_iter(body) {
             let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else { continue };
-            let Some(target_match) = caps.get(2) else { continue };
+            let Some(display_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(target_match) = caps.get(2) else {
+                continue;
+            };
             let display = display_match.as_str().trim().to_string();
             let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
@@ -194,8 +233,12 @@ impl ChapbookPlugin {
         // Pipe-style links: [[Display|Target]]
         for caps in RE_LINK_PIPE.captures_iter(body) {
             let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else { continue };
-            let Some(target_match) = caps.get(2) else { continue };
+            let Some(display_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(target_match) = caps.get(2) else {
+                continue;
+            };
             let display = display_match.as_str().trim().to_string();
             let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
@@ -223,9 +266,13 @@ impl ChapbookPlugin {
         for caps in RE_LINK_SIMPLE.captures_iter(body) {
             let Some(m) = caps.get(0) else { continue };
             let span = m.start()..m.end();
-            let overlaps = known_spans.iter().any(|s| span.start >= s.start && span.end <= s.end);
+            let overlaps = known_spans
+                .iter()
+                .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
-                let Some(target_match) = caps.get(1) else { continue };
+                let Some(target_match) = caps.get(1) else {
+                    continue;
+                };
                 let target = target_match.as_str().trim().to_string();
                 // Filter: skip targets containing "::" — JS namespace accessor
                 if target.contains("::") {
@@ -367,7 +414,9 @@ impl ChapbookPlugin {
         // Detect writes: state.varName = value
         for caps in RE_STATE_WRITE.captures_iter(content) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(var_match) = caps.get(1) else { continue };
+            let Some(var_match) = caps.get(1) else {
+                continue;
+            };
             let var_name = format!("state.{}", var_match.as_str());
             let var_start = content_offset + full.start();
             let var_end = var_start + var_name.len();
@@ -418,7 +467,9 @@ impl ChapbookPlugin {
 
         for line in content.lines() {
             if let Some(caps) = RE_MODIFY_KV.captures(line) {
-                let Some(key_match) = caps.get(1) else { continue };
+                let Some(key_match) = caps.get(1) else {
+                    continue;
+                };
                 let key = key_match.as_str();
                 let var_name = format!("modify.{}", key);
                 // Find the key position within the line
@@ -459,7 +510,12 @@ impl ChapbookPlugin {
     }
 
     /// Build blocks from template segments.
-    fn build_blocks(&self, body: &str, body_offset: usize, segments: &[TemplateSegment]) -> Vec<Block> {
+    fn build_blocks(
+        &self,
+        body: &str,
+        body_offset: usize,
+        segments: &[TemplateSegment],
+    ) -> Vec<Block> {
         let mut blocks = Vec::new();
 
         for seg in segments {
@@ -473,7 +529,12 @@ impl ChapbookPlugin {
                         });
                     }
                 }
-                TemplateSegment::Javascript { start, end, content_start, content_end } => {
+                TemplateSegment::Javascript {
+                    start,
+                    end,
+                    content_start,
+                    content_end,
+                } => {
                     let code = body[*content_start..*content_end].to_string();
                     blocks.push(Block::Macro {
                         name: "javascript".to_string(),
@@ -481,7 +542,12 @@ impl ChapbookPlugin {
                         span: body_offset + *start..body_offset + *end,
                     });
                 }
-                TemplateSegment::Modify { start, end, content_start, content_end } => {
+                TemplateSegment::Modify {
+                    start,
+                    end,
+                    content_start,
+                    content_end,
+                } => {
                     let content = body[*content_start..*content_end].to_string();
                     blocks.push(Block::Macro {
                         name: "modify".to_string(),
@@ -489,7 +555,12 @@ impl ChapbookPlugin {
                         span: body_offset + *start..body_offset + *end,
                     });
                 }
-                TemplateSegment::Insert { start, end, expr_start, expr_end } => {
+                TemplateSegment::Insert {
+                    start,
+                    end,
+                    expr_start,
+                    expr_end,
+                } => {
                     let expr = body[*expr_start..*expr_end].to_string();
                     blocks.push(Block::Expression {
                         content: expr,
@@ -562,14 +633,20 @@ impl ChapbookPlugin {
 
         for seg in &segments {
             match seg {
-                TemplateSegment::Javascript { content_start, content_end, .. } => {
+                TemplateSegment::Javascript {
+                    content_start,
+                    content_end,
+                    ..
+                } => {
                     let content = &body[*content_start..*content_end];
                     let content_offset = body_offset + *content_start;
 
                     // Write tokens
                     for caps in RE_STATE_WRITE.captures_iter(content) {
                         let Some(full) = caps.get(0) else { continue };
-                        let Some(var_match) = caps.get(1) else { continue };
+                        let Some(var_match) = caps.get(1) else {
+                            continue;
+                        };
                         let var_name = format!("state.{}", var_match.as_str());
                         let var_start = content_offset + full.start();
                         let var_end = var_start + var_name.len();
@@ -608,7 +685,11 @@ impl ChapbookPlugin {
                         modifier: None,
                     });
                 }
-                TemplateSegment::Modify { start, content_start: _, .. } => {
+                TemplateSegment::Modify {
+                    start,
+                    content_start: _,
+                    ..
+                } => {
                     // Macro token for the [modify] block
                     tokens.push(SemanticToken {
                         start: body_offset + *start,
@@ -699,14 +780,15 @@ impl ChapbookPlugin {
         }
 
         if link_depth > 0
-            && let Some(pos) = link_open {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset + pos..body_offset + pos + 2,
-                    message: "Unclosed link `[[` — missing `]]`".into(),
-                    severity: FormatDiagnosticSeverity::Warning,
-                    code: "cb-broken-link".into(),
-                });
-            }
+            && let Some(pos) = link_open
+        {
+            diagnostics.push(FormatDiagnostic {
+                range: body_offset + pos..body_offset + pos + 2,
+                message: "Unclosed link `[[` — missing `]]`".into(),
+                severity: FormatDiagnosticSeverity::Warning,
+                code: "cb-broken-link".into(),
+            });
+        }
 
         diagnostics
     }
@@ -773,9 +855,16 @@ impl FormatPluginMut for ChapbookPlugin {
             let body_offset_in_passage = body_offset - passage_head;
 
             let mut passage = if let Some(ref def) = special_def {
-                Passage::new_special(header.name.clone(), header.header_start..body_offset + body.len(), def.clone())
+                Passage::new_special(
+                    header.name.clone(),
+                    header.header_start..body_offset + body.len(),
+                    def.clone(),
+                )
             } else {
-                Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
+                Passage::new(
+                    header.name.clone(),
+                    header.header_start..body_offset + body.len(),
+                )
             };
 
             passage.tags = header.tags.clone();
@@ -796,22 +885,42 @@ impl FormatPluginMut for ChapbookPlugin {
                     header.name.len(),
                     layer,
                 ));
-                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(
+                    header,
+                    passage_head,
+                    self,
+                ));
             } else {
                 passage.links = self.extract_links(body, body_offset);
                 let segments = self.parse_template_segments(body);
                 let mut vars = Vec::new();
                 for seg in &segments {
                     match seg {
-                        TemplateSegment::Javascript { content_start, content_end, .. } => {
+                        TemplateSegment::Javascript {
+                            content_start,
+                            content_end,
+                            ..
+                        } => {
                             let content = &body[*content_start..*content_end];
-                            vars.extend(self.extract_js_vars(content, body_offset + *content_start));
+                            vars.extend(
+                                self.extract_js_vars(content, body_offset + *content_start),
+                            );
                         }
-                        TemplateSegment::Modify { content_start, content_end, .. } => {
+                        TemplateSegment::Modify {
+                            content_start,
+                            content_end,
+                            ..
+                        } => {
                             let content = &body[*content_start..*content_end];
-                            vars.extend(self.extract_modify_vars(content, body_offset + *content_start));
+                            vars.extend(
+                                self.extract_modify_vars(content, body_offset + *content_start),
+                            );
                         }
-                        TemplateSegment::Insert { expr_start, expr_end, .. } => {
+                        TemplateSegment::Insert {
+                            expr_start,
+                            expr_end,
+                            ..
+                        } => {
                             let expr = &body[*expr_start..*expr_end];
                             vars.extend(self.extract_insert_vars(expr, body_offset + *expr_start));
                         }
@@ -821,7 +930,10 @@ impl FormatPluginMut for ChapbookPlugin {
                 passage.vars = vars;
                 passage.body = self.build_blocks(body, body_offset, &segments);
                 let is_special_for_tokens = crate::core_specials::is_special_for_tokens(
-                    self, &header.name, &header.tags, special_def.as_ref(),
+                    self,
+                    &header.name,
+                    &header.tags,
+                    special_def.as_ref(),
                 );
                 if is_special_for_tokens {
                     let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
@@ -845,7 +957,11 @@ impl FormatPluginMut for ChapbookPlugin {
                         modifier: None,
                     });
                 }
-                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(
+                    header,
+                    passage_head,
+                    self,
+                ));
                 // body_tokens returns document-absolute offsets; convert to passage-relative
                 for mut tok in self.body_tokens(body, body_offset) {
                     tok.start -= passage_head;
@@ -881,7 +997,13 @@ impl FormatPluginMut for ChapbookPlugin {
         }
     }
 
-    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
+    fn parse_passage_mut(
+        &mut self,
+        passage_name: &str,
+        passage_tags: &[String],
+        passage_text: &str,
+        _file_uri: &str,
+    ) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -903,15 +1025,27 @@ impl FormatPluginMut for ChapbookPlugin {
             let mut vars = Vec::new();
             for seg in &segments {
                 match seg {
-                    TemplateSegment::Javascript { content_start, content_end, .. } => {
+                    TemplateSegment::Javascript {
+                        content_start,
+                        content_end,
+                        ..
+                    } => {
                         let content = &passage_text[*content_start..*content_end];
                         vars.extend(self.extract_js_vars(content, *content_start));
                     }
-                    TemplateSegment::Modify { content_start, content_end, .. } => {
+                    TemplateSegment::Modify {
+                        content_start,
+                        content_end,
+                        ..
+                    } => {
                         let content = &passage_text[*content_start..*content_end];
                         vars.extend(self.extract_modify_vars(content, *content_start));
                     }
-                    TemplateSegment::Insert { expr_start, expr_end, .. } => {
+                    TemplateSegment::Insert {
+                        expr_start,
+                        expr_end,
+                        ..
+                    } => {
                         let expr = &passage_text[*expr_start..*expr_end];
                         vars.extend(self.extract_insert_vars(expr, *expr_start));
                     }
@@ -993,8 +1127,12 @@ impl FormatPlugin for ChapbookPlugin {
         // Chapbook uses [modifier]...[/modifier] blocks and {expression} inline.
         // Detect [modifier] at position.
         for caps in RE_MODIFIER_OPEN.captures_iter(line) {
-            let Some(full_match) = caps.get(0) else { continue };
-            let Some(name_match) = caps.get(1) else { continue };
+            let Some(full_match) = caps.get(0) else {
+                continue;
+            };
+            let Some(name_match) = caps.get(1) else {
+                continue;
+            };
             let bracket_start = full_match.start();
             let bracket_end = full_match.end();
             let name_start = name_match.start();
@@ -1057,7 +1195,10 @@ impl FormatPlugin for ChapbookPlugin {
             if let Some(name_match) = caps.get(1) {
                 let name = name_match.as_str();
                 // Only certain Chapbook modifiers are "block" modifiers
-                if matches!(name, "javascript" | "insert" | "replace" | "append" | "prepend" | "continue") {
+                if matches!(
+                    name,
+                    "javascript" | "insert" | "replace" | "append" | "prepend" | "continue"
+                ) {
                     events.push(MacroBlockEvent {
                         name: name.to_string(),
                         line: line_idx,
@@ -1175,7 +1316,8 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Init),
             "Should detect state.gold write"
         );
     }
@@ -1189,7 +1331,8 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Read),
             "Should detect state.gold read"
         );
     }
@@ -1197,13 +1340,20 @@ mod tests {
     #[test]
     fn javascript_block_write_and_read() {
         let mut plugin = ChapbookPlugin::new();
-        let src = ":: Start\n[javascript]\nstate.gold = 10;\nconsole.log(state.gold);\n[/javascript]\n";
+        let src =
+            ":: Start\n[javascript]\nstate.gold = 10;\nconsole.log(state.gold);\n[/javascript]\n";
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read));
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Read)
+        );
     }
 
     #[test]
@@ -1215,7 +1365,9 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let blocks = &result.passages[0].body;
         assert!(
-            blocks.iter().any(|b| matches!(b, Block::Macro { name, .. } if name == "javascript")),
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::Macro { name, .. } if name == "javascript")),
             "Should create a Macro block for [javascript]"
         );
     }
@@ -1227,7 +1379,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-javascript"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| g.diagnostics.iter())
+                .any(|d| d.code == "cb-unclosed-javascript"),
             "Should warn about unclosed [javascript] block"
         );
     }
@@ -1258,11 +1414,13 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "modify.gold" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "modify.gold" && v.kind == VarKind::Init),
             "Should detect modify.gold write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "modify.name" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "modify.name" && v.kind == VarKind::Init),
             "Should detect modify.name write"
         );
     }
@@ -1275,7 +1433,9 @@ mod tests {
 
         let blocks = &result.passages[0].body;
         assert!(
-            blocks.iter().any(|b| matches!(b, Block::Macro { name, .. } if name == "modify")),
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::Macro { name, .. } if name == "modify")),
             "Should create a Macro block for [modify]"
         );
     }
@@ -1287,7 +1447,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-modify"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| g.diagnostics.iter())
+                .any(|d| d.code == "cb-unclosed-modify"),
             "Should warn about unclosed [modify] block"
         );
     }
@@ -1305,7 +1469,8 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Read),
             "Should detect state.gold read from {{insert}}"
         );
     }
@@ -1330,7 +1495,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-unclosed-insert"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| g.diagnostics.iter())
+                .any(|d| d.code == "cb-unclosed-insert"),
             "Should warn about unclosed {{ insert"
         );
     }
@@ -1346,7 +1515,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).any(|d| d.code == "cb-broken-link"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| g.diagnostics.iter())
+                .any(|d| d.code == "cb-broken-link"),
             "Should warn about unclosed link"
         );
     }
@@ -1369,20 +1542,40 @@ mod tests {
         assert_eq!(passage.links[0].target, "Cave");
 
         // Should have variable operations
-        assert!(passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == VarKind::Init));
-        assert!(passage.vars.iter().any(|v| v.name == "state.gold" && v.kind == VarKind::Read));
+        assert!(
+            passage
+                .vars
+                .iter()
+                .any(|v| v.name == "state.visited" && v.kind == VarKind::Init)
+        );
+        assert!(
+            passage
+                .vars
+                .iter()
+                .any(|v| v.name == "state.gold" && v.kind == VarKind::Read)
+        );
 
         // Should have mixed blocks
-        let block_types: Vec<&str> = passage.body.iter().map(|b| match b {
-            Block::Text { .. } => "Text",
-            Block::Macro { name, .. } => name.as_str(),
-            Block::Expression { .. } => "Expression",
-            Block::Incomplete { .. } => "Incomplete",
-            Block::Heading { .. } => "Heading",
-        }).collect();
+        let block_types: Vec<&str> = passage
+            .body
+            .iter()
+            .map(|b| match b {
+                Block::Text { .. } => "Text",
+                Block::Macro { name, .. } => name.as_str(),
+                Block::Expression { .. } => "Expression",
+                Block::Incomplete { .. } => "Incomplete",
+                Block::Heading { .. } => "Heading",
+            })
+            .collect();
         assert!(block_types.contains(&"Text"), "Should have Text blocks");
-        assert!(block_types.contains(&"javascript"), "Should have javascript Macro block");
-        assert!(block_types.contains(&"Expression"), "Should have Expression block");
+        assert!(
+            block_types.contains(&"javascript"),
+            "Should have javascript Macro block"
+        );
+        assert!(
+            block_types.contains(&"Expression"),
+            "Should have Expression block"
+        );
     }
 
     #[test]
@@ -1392,7 +1585,10 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
-        assert!(result.passages[0].vars.is_empty(), "Empty [javascript] block should have no variables");
+        assert!(
+            result.passages[0].vars.is_empty(),
+            "Empty [javascript] block should have no variables"
+        );
     }
 
     #[test]
@@ -1409,14 +1605,25 @@ mod tests {
     #[test]
     fn multiple_passages_with_javascript() {
         let mut plugin = ChapbookPlugin::new();
-        let src = ":: Start\n[javascript]\nstate.x = 1;\n[/javascript]\n:: Forest\n{{state.x}} trees.\n";
+        let src =
+            ":: Start\n[javascript]\nstate.x = 1;\n[/javascript]\n:: Forest\n{{state.x}} trees.\n";
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
         assert_eq!(result.passages[1].name, "Forest");
-        assert!(result.passages[0].vars.iter().any(|v| v.name == "state.x" && v.kind == VarKind::Init));
-        assert!(result.passages[1].vars.iter().any(|v| v.name == "state.x" && v.kind == VarKind::Read));
+        assert!(
+            result.passages[0]
+                .vars
+                .iter()
+                .any(|v| v.name == "state.x" && v.kind == VarKind::Init)
+        );
+        assert!(
+            result.passages[1]
+                .vars
+                .iter()
+                .any(|v| v.name == "state.x" && v.kind == VarKind::Read)
+        );
     }
 
     #[test]
@@ -1426,7 +1633,10 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
-        assert!(result.passages[0].is_special, "Tagged [header] passage should be special");
+        assert!(
+            result.passages[0].is_special,
+            "Tagged [header] passage should be special"
+        );
     }
 
     #[test]
@@ -1436,7 +1646,10 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert_eq!(result.passages.len(), 1);
-        assert!(result.passages[0].is_special, "Tagged [footer] passage should be special");
+        assert!(
+            result.passages[0].is_special,
+            "Tagged [footer] passage should be special"
+        );
     }
 
     #[test]
@@ -1448,7 +1661,11 @@ mod tests {
 
         // With the buggy approach, this would produce only 1 passage.
         // With byte-offset tracking, we get 2.
-        assert_eq!(result.passages.len(), 2, "Should correctly split duplicate passage headers");
+        assert_eq!(
+            result.passages.len(),
+            2,
+            "Should correctly split duplicate passage headers"
+        );
         assert_eq!(result.passages[1].name, "Room");
     }
 
@@ -1459,15 +1676,17 @@ mod tests {
     #[test]
     fn parse_passage_tagged_header() {
         let mut plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "TopBar",
-            &["header".to_string()],
-            "Header content\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("TopBar", &["header".to_string()], "Header content\n", "");
         let p = result.expect("tagged [header] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'header' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [header]"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
@@ -1475,15 +1694,17 @@ mod tests {
     #[test]
     fn parse_passage_tagged_footer() {
         let mut plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "BottomBar",
-            &["footer".to_string()],
-            "Footer content\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("BottomBar", &["footer".to_string()], "Footer content\n", "");
         let p = result.expect("tagged [footer] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'footer' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [footer]"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
@@ -1491,14 +1712,12 @@ mod tests {
     #[test]
     fn parse_passage_name_matched_passage_header() {
         let mut plugin = ChapbookPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "PassageHeader",
-            &[],
-            "Header content\n",
-            "",
-        );
+        let result = plugin.parse_passage_mut("PassageHeader", &[], "Header content\n", "");
         let p = result.expect("PassageHeader (name-matched) should be classified as special");
-        assert!(p.is_special, "PassageHeader should be special via name matching");
+        assert!(
+            p.is_special,
+            "PassageHeader should be special via name matching"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }

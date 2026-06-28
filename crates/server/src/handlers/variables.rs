@@ -19,27 +19,35 @@ fn convert_property_node(p: knot_formats::types::VariablePropertyNode) -> KnotVa
         knot_formats::types::PropertyKind::Array => "array",
         knot_formats::types::PropertyKind::Unknown => "unknown",
     };
-    let element_shape = p.element_shape.map(|shape| {
-        Box::new(convert_property_node(*shape))
-    });
+    let element_shape = p
+        .element_shape
+        .map(|shape| Box::new(convert_property_node(*shape)));
     KnotVariableProperty {
         name: p.name,
         full_name: p.full_name,
         state_path: p.state_path,
-        written_in: p.written_in.into_iter().map(|l| KnotVariableLocation {
-            passage_name: l.passage_name,
-            file_uri: l.file_uri,
-            is_write: l.is_write,
-            line: l.line,
-            span: l.span.map(|s| (s.start as u32, s.end as u32)),
-        }).collect(),
-        read_in: p.read_in.into_iter().map(|l| KnotVariableLocation {
-            passage_name: l.passage_name,
-            file_uri: l.file_uri,
-            is_write: l.is_write,
-            line: l.line,
-            span: l.span.map(|s| (s.start as u32, s.end as u32)),
-        }).collect(),
+        written_in: p
+            .written_in
+            .into_iter()
+            .map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+                line: l.line,
+                span: l.span.map(|s| (s.start as u32, s.end as u32)),
+            })
+            .collect(),
+        read_in: p
+            .read_in
+            .into_iter()
+            .map(|l| KnotVariableLocation {
+                passage_name: l.passage_name,
+                file_uri: l.file_uri,
+                is_write: l.is_write,
+                line: l.line,
+                span: l.span.map(|s| (s.start as u32, s.end as u32)),
+            })
+            .collect(),
         properties: convert_properties(p.properties),
         kind: kind_str.to_string(),
         element_shape,
@@ -106,7 +114,8 @@ pub(crate) fn build_passage_variable_references(
 
     // Sort by line number for display, then by variable name
     references.sort_by(|a, b| {
-        a.line.cmp(&b.line)
+        a.line
+            .cmp(&b.line)
             .then_with(|| a.variable_name.cmp(&b.variable_name))
     });
 
@@ -148,15 +157,19 @@ pub(crate) fn build_passage_temporary_variables(
             name: s.name,
             write_count: s.write_count,
             read_count: s.read_count,
-            references: s.refs.into_iter().map(|r| KnotVariableReference {
-                variable_name: r.variable_name,
-                is_write: r.is_write,
-                line: r.line,
-                file_uri: r.file_uri,
-                passage_name: r.passage_name,
-                span_start: r.span.as_ref().map(|s| s.start as u32),
-                span_end: r.span.as_ref().map(|s| s.end as u32),
-            }).collect(),
+            references: s
+                .refs
+                .into_iter()
+                .map(|r| KnotVariableReference {
+                    variable_name: r.variable_name,
+                    is_write: r.is_write,
+                    line: r.line,
+                    file_uri: r.file_uri,
+                    passage_name: r.passage_name,
+                    span_start: r.span.as_ref().map(|s| s.start as u32),
+                    span_end: r.span.as_ref().map(|s| s.end as u32),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -181,7 +194,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/variableFlow: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -191,7 +205,7 @@ impl ServerState {
 
         // Only provide variable flow for formats that support it
         let plugin = inner.format_registry.get(&format);
-        let supports_tracking = plugin.as_ref().map_or(false, |p| {
+        let supports_tracking = plugin.as_ref().is_some_and(|p| {
             p.supports_full_variable_tracking() || p.supports_partial_variable_tracking()
         });
         if !supports_tracking {
@@ -225,34 +239,40 @@ impl ServerState {
                     name: node.name,
                     state_path: node.state_path,
                     is_temporary: node.is_temporary,
-                    written_in: node.written_in.into_iter().map(|l| KnotVariableLocation {
-                        passage_name: l.passage_name,
-                        file_uri: l.file_uri,
-                        is_write: l.is_write,
-                        line: l.line,
-                        span: l.span.map(|s| (s.start as u32, s.end as u32)),
-                    }).collect(),
-                    read_in: node.read_in.into_iter().map(|l| KnotVariableLocation {
-                        passage_name: l.passage_name,
-                        file_uri: l.file_uri,
-                        is_write: l.is_write,
-                        line: l.line,
-                        span: l.span.map(|s| (s.start as u32, s.end as u32)),
-                    }).collect(),
+                    written_in: node
+                        .written_in
+                        .into_iter()
+                        .map(|l| KnotVariableLocation {
+                            passage_name: l.passage_name,
+                            file_uri: l.file_uri,
+                            is_write: l.is_write,
+                            line: l.line,
+                            span: l.span.map(|s| (s.start as u32, s.end as u32)),
+                        })
+                        .collect(),
+                    read_in: node
+                        .read_in
+                        .into_iter()
+                        .map(|l| KnotVariableLocation {
+                            passage_name: l.passage_name,
+                            file_uri: l.file_uri,
+                            is_write: l.is_write,
+                            line: l.line,
+                            span: l.span.map(|s| (s.start as u32, s.end as u32)),
+                        })
+                        .collect(),
                     initialized_at_start: node.initialized_at_start,
                     is_unused: node.is_unused,
                     properties: convert_properties(node.properties),
                     kind: kind_str.to_string(),
-                    element_shape: node.element_shape.map(|shape| {
-                        Box::new(convert_property_node(*shape))
-                    }),
+                    element_shape: node
+                        .element_shape
+                        .map(|shape| Box::new(convert_property_node(*shape))),
                 }
             })
             .collect();
 
-        Ok(KnotVariableFlowResponse {
-            variables,
-        })
+        Ok(KnotVariableFlowResponse { variables })
     }
 
     /// `knot/watchVariables` — get variable state at a specific passage.
@@ -268,7 +288,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/watchVariables: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -278,7 +299,7 @@ impl ServerState {
 
         // Only provide variable watch for formats that support it
         let plugin = inner.format_registry.get(&format);
-        let supports_tracking = plugin.as_ref().map_or(false, |p| {
+        let supports_tracking = plugin.as_ref().is_some_and(|p| {
             p.supports_full_variable_tracking() || p.supports_partial_variable_tracking()
         });
         if !supports_tracking {
@@ -299,8 +320,14 @@ impl ServerState {
             .unwrap_or("Start");
 
         let passage_data = AnalysisEngine::collect_passage_data(workspace);
-        let seed_init = AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
-        let flow_states = AnalysisEngine::run_dataflow_from_engine(workspace, start_passage, &passage_data, &seed_init);
+        let seed_init =
+            AnalysisEngine::collect_special_passage_initializers(workspace, &passage_data);
+        let flow_states = AnalysisEngine::run_dataflow_from_engine(
+            workspace,
+            start_passage,
+            &passage_data,
+            &seed_init,
+        );
 
         // Get passage info
         let (doc_uri, passage) = match workspace.find_passage(&params.at_passage) {
@@ -323,16 +350,13 @@ impl ServerState {
             .unwrap_or_default();
 
         // Apply filter if specified
-        let filter_set: Option<std::collections::HashSet<String>> = params
-            .filter
-            .map(|f| f.into_iter().collect());
+        let filter_set: Option<std::collections::HashSet<String>> =
+            params.filter.map(|f| f.into_iter().collect());
 
         // Build initialized-at-entry list
         let initialized_at_entry: Vec<KnotWatchVariable> = entry_init
             .iter()
-            .filter(|v| {
-                filter_set.as_ref().is_none_or(|f| f.contains(*v))
-            })
+            .filter(|v| filter_set.as_ref().is_none_or(|f| f.contains(*v)))
             .map(|v| KnotWatchVariable {
                 name: v.clone(),
                 is_temporary: false,
@@ -344,9 +368,7 @@ impl ServerState {
         // Build written-in-passage list
         let written_in_passage: Vec<KnotWatchVariable> = passage
             .persistent_variable_inits()
-            .filter(|v| {
-                filter_set.as_ref().is_none_or(|f| f.contains(&v.name))
-            })
+            .filter(|v| filter_set.as_ref().is_none_or(|f| f.contains(&v.name)))
             .map(|v| KnotWatchVariable {
                 name: v.name.clone(),
                 is_temporary: v.is_temporary,
@@ -358,9 +380,7 @@ impl ServerState {
         // Build read-in-passage list
         let read_in_passage: Vec<KnotWatchVariable> = passage
             .persistent_variable_reads()
-            .filter(|v| {
-                filter_set.as_ref().is_none_or(|f| f.contains(&v.name))
-            })
+            .filter(|v| filter_set.as_ref().is_none_or(|f| f.contains(&v.name)))
             .map(|v| KnotWatchVariable {
                 name: v.name.clone(),
                 is_temporary: v.is_temporary,
@@ -374,7 +394,9 @@ impl ServerState {
         let mut potentially_uninitialized = Vec::new();
 
         for var in passage.vars_sorted_by_span() {
-            if var.is_temporary { continue; }
+            if var.is_temporary {
+                continue;
+            }
             if filter_set.as_ref().is_none_or(|f| f.contains(&var.name)) {
                 match var.kind {
                     knot_core::passage::VarKind::Read => {

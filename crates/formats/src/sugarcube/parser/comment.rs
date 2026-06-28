@@ -21,7 +21,12 @@ use crate::sugarcube::ast::*;
 // ---------------------------------------------------------------------------
 
 /// Parse a block comment (/% ... %/ or /%% ... %%/).
-pub(super) fn parse_block_comment(text: &str, i: &mut usize, span_start: usize, is_sugarcube: bool) -> AstNode {
+pub(super) fn parse_block_comment(
+    text: &str,
+    i: &mut usize,
+    span_start: usize,
+    is_sugarcube: bool,
+) -> AstNode {
     let (close_delim, kind) = if is_sugarcube {
         ("%%/", CommentKind::SugarCube)
     } else {
@@ -146,7 +151,11 @@ pub(super) fn parse_js_line_comment(text: &str, i: &mut usize, span_start: usize
 /// Internet Explorer conditional comments are a legacy but still-valid
 /// HTML pattern. The content between `<!--[if ...]>` and `<![endif]-->`
 /// is excluded from all analysis.
-pub(super) fn parse_html_conditional_comment(text: &str, i: &mut usize, span_start: usize) -> AstNode {
+pub(super) fn parse_html_conditional_comment(
+    text: &str,
+    i: &mut usize,
+    span_start: usize,
+) -> AstNode {
     // delim_len = 4 for <!-- (caller already consumed it)
     let delim_len = 4;
     let content_start = *i;
@@ -276,16 +285,14 @@ pub fn strip_comments(text: &str) -> String {
                 let start = i;
                 i += 2;
                 if let Some(pos) = text[i..].find('\n') {
-                    for _ in &bytes[start..i + pos] {
-                        result.push(b' ');
-                    }
+                    let count = (i + pos) - start;
+                    result.extend(std::iter::repeat_n(b' ', count));
                     // Advance to the newline position so the outer loop
                     // picks it up as normal text.
                     i += pos;
                 } else {
-                    for _ in &bytes[start..] {
-                        result.push(b' ');
-                    }
+                    let count = len - start;
+                    result.extend(std::iter::repeat_n(b' ', count));
                     i = len;
                 }
             } else {
@@ -384,24 +391,49 @@ mod tests {
     fn parse_twine_comment() {
         let ast = parse_passage_body("before/% comment %/after", 0, ParseMode::Normal);
         // Should have: Text("before"), Comment, Text("after")
-        let has_comment = ast.nodes.iter().any(|n| matches!(n, AstNode::Comment { .. }));
+        let has_comment = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::Comment { .. }));
         assert!(has_comment);
     }
 
     #[test]
     fn parse_html_comment() {
         let ast = parse_passage_body("before<!-- comment -->after", 0, ParseMode::Normal);
-        let has_comment = ast.nodes.iter().any(|n| matches!(n, AstNode::Comment { kind: CommentKind::Html, .. }));
+        let has_comment = ast.nodes.iter().any(|n| {
+            matches!(
+                n,
+                AstNode::Comment {
+                    kind: CommentKind::Html,
+                    ..
+                }
+            )
+        });
         assert!(has_comment);
     }
 
     #[test]
     fn html_comment_excludes_content() {
-        let ast = parse_passage_body("before<!-- $gold and [[Forest]] -->after", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "before<!-- $gold and [[Forest]] -->after",
+            0,
+            ParseMode::Normal,
+        );
         let var_names: Vec<&str> = ast.var_ops.iter().map(|v| v.name.as_str()).collect();
-        assert!(!var_names.contains(&"$gold"), "Variable inside HTML comment should not be extracted");
-        let passage_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::PassageLink).collect();
-        assert!(passage_links.is_empty(), "Link inside HTML comment should not be extracted");
+        assert!(
+            !var_names.contains(&"$gold"),
+            "Variable inside HTML comment should not be extracted"
+        );
+        let passage_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::PassageLink)
+            .collect();
+        assert!(
+            passage_links.is_empty(),
+            "Link inside HTML comment should not be extracted"
+        );
     }
 
     #[test]
@@ -410,7 +442,10 @@ mod tests {
         let ast = parse_passage_body("before/% <<set $x to 1>> %/after", 0, ParseMode::Normal);
         // The <<set>> inside the comment should NOT produce variable operations
         let var_names: Vec<&str> = ast.var_ops.iter().map(|v| v.name.as_str()).collect();
-        assert!(!var_names.contains(&"$x"), "Variable inside comment macro should not be extracted");
+        assert!(
+            !var_names.contains(&"$x"),
+            "Variable inside comment macro should not be extracted"
+        );
     }
 
     #[test]
@@ -420,7 +455,10 @@ mod tests {
         // Only the text "before" and "after" should be scanned for variables,
         // not the "$gold" inside the comment
         let var_names: Vec<&str> = ast.var_ops.iter().map(|v| v.name.as_str()).collect();
-        assert!(!var_names.contains(&"$gold"), "Variable inside comment should not be extracted");
+        assert!(
+            !var_names.contains(&"$gold"),
+            "Variable inside comment should not be extracted"
+        );
     }
 
     #[test]
@@ -429,8 +467,15 @@ mod tests {
         let ast = parse_passage_body("before/% [[Forest]] %/after", 0, ParseMode::Normal);
         // Only text-level links should be extracted; the [[Forest]] inside
         // the comment should not produce a LinkInfo
-        let passage_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::PassageLink).collect();
-        assert!(passage_links.is_empty(), "Link inside comment should not be extracted");
+        let passage_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::PassageLink)
+            .collect();
+        assert!(
+            passage_links.is_empty(),
+            "Link inside comment should not be extracted"
+        );
     }
 
     #[test]
@@ -438,13 +483,17 @@ mod tests {
         let body = "before /* this is a CSS comment */ after";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
         // Should have: Text("before "), Comment(CStyle), Text(" after")
-        let comments: Vec<_> = ast.nodes.iter().filter_map(|n| {
-            if let AstNode::Comment { kind, content, .. } = n {
-                Some((*kind, content.clone()))
-            } else {
-                None
-            }
-        }).collect();
+        let comments: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let AstNode::Comment { kind, content, .. } = n {
+                    Some((*kind, content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].0, CommentKind::CStyle);
         assert_eq!(comments[0].1.trim(), "this is a CSS comment");
@@ -475,14 +524,22 @@ mod tests {
     fn test_js_line_comment_parsed() {
         let body = "// this is a comment\nreal text";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let comments: Vec<_> = ast.nodes.iter().filter_map(|n| {
-            if let AstNode::Comment { kind, content, .. } = n {
-                Some((*kind, content.clone()))
-            } else {
-                None
-            }
-        }).collect();
-        assert!(comments.iter().any(|(k, c)| *k == CommentKind::JsLine && c.contains("this is a comment")));
+        let comments: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let AstNode::Comment { kind, content, .. } = n {
+                    Some((*kind, content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            comments
+                .iter()
+                .any(|(k, c)| *k == CommentKind::JsLine && c.contains("this is a comment"))
+        );
     }
 
     #[test]
@@ -490,13 +547,21 @@ mod tests {
         // http://example.com should NOT be treated as a comment
         let body = "Visit http://example.com for more";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let js_comments: Vec<_> = ast.nodes.iter().filter_map(|n| {
-            if let AstNode::Comment { kind: CommentKind::JsLine, .. } = n {
-                Some(true)
-            } else {
-                None
-            }
-        }).collect();
+        let js_comments: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let AstNode::Comment {
+                    kind: CommentKind::JsLine,
+                    ..
+                } = n
+                {
+                    Some(true)
+                } else {
+                    None
+                }
+            })
+            .collect();
         // The URL should NOT produce a JS line comment node
         assert!(js_comments.is_empty());
     }
@@ -505,14 +570,22 @@ mod tests {
     fn test_html_conditional_comment_parsed() {
         let body = "<!--[if IE]><p>IE only</p><![endif]--> normal text";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let comments: Vec<_> = ast.nodes.iter().filter_map(|n| {
-            if let AstNode::Comment { kind, content, .. } = n {
-                Some((*kind, content.clone()))
-            } else {
-                None
-            }
-        }).collect();
-        assert!(comments.iter().any(|(k, c)| *k == CommentKind::HtmlConditional && c.contains("IE only")));
+        let comments: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let AstNode::Comment { kind, content, .. } = n {
+                    Some((*kind, content.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            comments
+                .iter()
+                .any(|(k, c)| *k == CommentKind::HtmlConditional && c.contains("IE only"))
+        );
     }
 
     #[test]
@@ -520,13 +593,17 @@ mod tests {
         let body = r#"Text /% Twine %/ more /* C-style */ end
 <!-- HTML --> final"#;
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let comment_kinds: Vec<_> = ast.nodes.iter().filter_map(|n| {
-            if let AstNode::Comment { kind, .. } = n {
-                Some(*kind)
-            } else {
-                None
-            }
-        }).collect();
+        let comment_kinds: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if let AstNode::Comment { kind, .. } = n {
+                    Some(*kind)
+                } else {
+                    None
+                }
+            })
+            .collect();
         assert!(comment_kinds.contains(&CommentKind::Twine));
         assert!(comment_kinds.contains(&CommentKind::CStyle));
         assert!(comment_kinds.contains(&CommentKind::Html));
@@ -544,8 +621,16 @@ more text
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
 
         // Should have comment nodes
-        let comment_count = ast.nodes.iter().filter(|n| matches!(n, AstNode::Comment { .. })).count();
-        assert!(comment_count >= 4, "Expected at least 4 comment nodes, got {}", comment_count);
+        let comment_count = ast
+            .nodes
+            .iter()
+            .filter(|n| matches!(n, AstNode::Comment { .. }))
+            .count();
+        assert!(
+            comment_count >= 4,
+            "Expected at least 4 comment nodes, got {}",
+            comment_count
+        );
 
         // Should still extract the link
         assert!(ast.links.iter().any(|l| l.target == "TargetPassage"));
@@ -612,7 +697,11 @@ more text
         let stripped = strip_comments(text);
 
         // Verify comments are replaced with spaces but newlines preserved
-        assert_eq!(stripped.len(), text.len(), "strip_comments must preserve string length");
+        assert_eq!(
+            stripped.len(),
+            text.len(),
+            "strip_comments must preserve string length"
+        );
         assert!(!stripped.contains("/%"));
         assert!(!stripped.contains("%/"));
         assert!(!stripped.contains("<!--"));
@@ -666,17 +755,29 @@ more text
         // `start` bytes. Verify the span is correct.
         let body = "before /* comment */ after";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let comment = ast.nodes.iter().find_map(|n| {
-            if let AstNode::Comment { span, kind: CommentKind::CStyle, .. } = n {
-                Some(span.clone())
-            } else {
-                None
-            }
-        }).expect("should find CStyle comment");
+        let comment = ast
+            .nodes
+            .iter()
+            .find_map(|n| {
+                if let AstNode::Comment {
+                    span,
+                    kind: CommentKind::CStyle,
+                    ..
+                } = n
+                {
+                    Some(span.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should find CStyle comment");
         // The comment starts at byte 7 (the / of /*) and ends at byte 20
         // (exclusive, after the / of */), so span should be 7..20
         assert_eq!(comment.start, 7, "comment span start should be at /*");
-        assert_eq!(comment.end, 20, "comment span end should be at position after */");
+        assert_eq!(
+            comment.end, 20,
+            "comment span end should be at position after */"
+        );
         // Verify the span length equals the actual comment length in the text
         let comment_text = &body[comment.start..comment.end];
         assert_eq!(comment_text, "/* comment */");
@@ -686,13 +787,22 @@ more text
     fn twine_comment_span_does_not_extend_past_close() {
         let body = "before /% comment %/ after";
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
-        let comment = ast.nodes.iter().find_map(|n| {
-            if let AstNode::Comment { span, kind: CommentKind::Twine, .. } = n {
-                Some(span.clone())
-            } else {
-                None
-            }
-        }).expect("should find Twine comment");
+        let comment = ast
+            .nodes
+            .iter()
+            .find_map(|n| {
+                if let AstNode::Comment {
+                    span,
+                    kind: CommentKind::Twine,
+                    ..
+                } = n
+                {
+                    Some(span.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should find Twine comment");
         // /% starts at byte 7, %/ ends at byte 20 (exclusive, after the /), span = 7..20
         assert_eq!(comment.start, 7);
         assert_eq!(comment.end, 20);
@@ -706,13 +816,22 @@ more text
         // `start` bytes past the closing delimiter.
         let body = "x".repeat(1000) + "/* short */ rest";
         let ast = parse_passage_body(&body, 0, ParseMode::Normal);
-        let comment = ast.nodes.iter().find_map(|n| {
-            if let AstNode::Comment { span, kind: CommentKind::CStyle, .. } = n {
-                Some(span.clone())
-            } else {
-                None
-            }
-        }).expect("should find CStyle comment");
+        let comment = ast
+            .nodes
+            .iter()
+            .find_map(|n| {
+                if let AstNode::Comment {
+                    span,
+                    kind: CommentKind::CStyle,
+                    ..
+                } = n
+                {
+                    Some(span.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should find CStyle comment");
         // Comment starts at byte 1000, ends at byte 1011 (exclusive, after */)
         assert_eq!(comment.start, 1000);
         assert_eq!(comment.end, 1011);

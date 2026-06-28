@@ -74,18 +74,19 @@ impl ServerState {
         let global_storage = inner.global_storage_path.clone();
 
         // Check if the project's needed format is already in the managed cache.
-        let project_format_cached = match (&global_storage, &project_format, &project_format_version) {
-            (Some(gs), Some(fmt), Some(ver)) => {
-                let format_id = format_name_to_id(fmt)?;
-                let format_js = gs
-                    .join("storyformats")
-                    .join(format!("{}@{}", format_id, ver))
-                    .join(format_id)
-                    .join("format.js");
-                Some(format_js.exists())
-            }
-            _ => None,
-        };
+        let project_format_cached =
+            match (&global_storage, &project_format, &project_format_version) {
+                (Some(gs), Some(fmt), Some(ver)) => {
+                    let format_id = format_name_to_id(fmt)?;
+                    let format_js = gs
+                        .join("storyformats")
+                        .join(format!("{}@{}", format_id, ver))
+                        .join(format_id)
+                        .join("format.js");
+                    Some(format_js.exists())
+                }
+                _ => None,
+            };
 
         let configured_path = inner
             .workspace
@@ -108,8 +109,7 @@ impl ServerState {
                 });
             }
             let formats = scan_storyformats_dir(&path);
-            let entries: Vec<KnotFormatEntry> =
-                formats.iter().map(format_to_entry).collect();
+            let entries: Vec<KnotFormatEntry> = formats.iter().map(format_to_entry).collect();
             return Ok(KnotFormatsListResponse {
                 resolved_dir: Some(path.to_string_lossy().to_string()),
                 formats: entries,
@@ -164,11 +164,7 @@ impl ServerState {
         // Take a read lock to copy what we need, then drop before scanning.
         let (config_storyformats_path, workspace_root_path, tweego_path) = {
             let inner = self.inner.read().await;
-            let workspace_root = inner
-                .workspace
-                .root_uri
-                .to_file_path()
-                .ok();
+            let workspace_root = inner.workspace.root_uri.to_file_path().ok();
             let tweego_path = inner.workspace.config.compiler_path.clone();
             (
                 inner.workspace.config.storyformats_path.clone(),
@@ -200,9 +196,7 @@ impl ServerState {
         };
 
         let format_count = formats.len();
-        let resolved_dir_str = resolved
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
+        let resolved_dir_str = resolved.as_ref().map(|p| p.to_string_lossy().to_string());
 
         // Acquire the write lock to update the cached catalog.
         {

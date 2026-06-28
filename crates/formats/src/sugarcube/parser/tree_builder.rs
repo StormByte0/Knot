@@ -18,8 +18,8 @@
 use std::ops::Range;
 
 use crate::sugarcube::ast::AstNode;
-use crate::types::BodyRequirement;
 use crate::sugarcube::macros;
+use crate::types::BodyRequirement;
 
 /// Build a nested AST from a flat list of AST nodes.
 ///
@@ -41,7 +41,11 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
 
     for node in flat {
         match node {
-            AstNode::MacroClose { name, name_span, span } => {
+            AstNode::MacroClose {
+                name,
+                name_span,
+                span,
+            } => {
                 // Find the matching open macro on the stack
                 let match_idx = stack.iter().rposition(|entry| {
                     matches!(&entry.node, AstNode::Macro { name: n, .. } if n.eq_ignore_ascii_case(&name))
@@ -50,7 +54,8 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
 
                 if let Some(idx) = match_idx {
                     // Pop everything above the match — these become the matched macro's children
-                    let above: Vec<AstNode> = stack.drain(idx + 1..)
+                    let above: Vec<AstNode> = stack
+                        .drain(idx + 1..)
                         .flat_map(|e| e.into_nodes())
                         .collect();
 
@@ -95,7 +100,13 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
 
             AstNode::Macro { .. } => {
                 // Check if this macro already has children (script/style pre-nesting)
-                let already_has_children = matches!(&node, AstNode::Macro { children: Some(_), .. });
+                let already_has_children = matches!(
+                    &node,
+                    AstNode::Macro {
+                        children: Some(_),
+                        ..
+                    }
+                );
 
                 if already_has_children {
                     // Script/style macros are pre-nested by the parser.
@@ -238,25 +249,23 @@ impl StackEntry {
                     }
 
                     // No close tag, Never body — inline macro (correct)
-                    (false, BodyRequirement::Never) => {
-                        AstNode::Macro {
-                            name,
-                            args,
-                            var_refs,
-                            js_analysis,
-                            children: None,
-                            name_span,
-                            open_span,
-                            close_span: None,
-                            full_span,
-                            set_assignment,
-                            definition_name_span,
-                            close_name_span: None,
-                            capture_target,
-                            for_loop_vars,
-                            structured_args,
-                        }
-                    }
+                    (false, BodyRequirement::Never) => AstNode::Macro {
+                        name,
+                        args,
+                        var_refs,
+                        js_analysis,
+                        children: None,
+                        name_span,
+                        open_span,
+                        close_span: None,
+                        full_span,
+                        set_assignment,
+                        definition_name_span,
+                        close_name_span: None,
+                        capture_target,
+                        for_loop_vars,
+                        structured_args,
+                    },
 
                     // No close tag, Optional body — block without close tag
                     // (e.g. <<case "x">>content without <</case>>).
@@ -403,10 +412,10 @@ fn mark_non_prose(nodes: &mut [AstNode]) {
             AstNode::Text { is_prose, .. } => {
                 *is_prose = false;
             }
-            AstNode::Macro { children, .. } => {
-                if let Some(ch) = children {
-                    mark_non_prose(ch);
-                }
+            AstNode::Macro {
+                children: Some(ch), ..
+            } => {
+                mark_non_prose(ch);
             }
             _ => {}
         }

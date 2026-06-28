@@ -22,7 +22,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/passageDiagnostics: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -61,7 +62,9 @@ impl ServerState {
             .map(|m| m.start_passage.as_str())
             .unwrap_or("Start");
         let unreachable_diags = workspace.graph.detect_unreachable(start_passage);
-        let is_reachable = !unreachable_diags.iter().any(|d| d.passage_name == params.passage_name);
+        let is_reachable = !unreachable_diags
+            .iter()
+            .any(|d| d.passage_name == params.passage_name);
 
         // Outgoing links — skip dynamic links with empty targets.
         // These include single-arg <<link "Display">> (click handler),

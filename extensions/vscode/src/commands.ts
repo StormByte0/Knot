@@ -13,7 +13,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-import { execSync, execFileSync } from 'child_process';
+import { execSync } from 'child_process';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotFormatsListResponse, KnotFormatsRefreshResponse } from './types';
 import { StoryMapPanelManager } from './storyMapProvider';
 import { DebugViewProvider } from './debugViewProvider';
@@ -1076,7 +1076,9 @@ async function ensureTweegoAvailable(
  */
 async function downloadTweego(context: vscode.ExtensionContext): Promise<string | undefined> {
     const platform = process.platform;
-    const arch = process.arch;
+    // `process.arch` not currently used — kept for future per-arch URL selection.
+    const _arch = process.arch;
+    void _arch;
 
     // Determine download URL and binary name based on platform
     let downloadUrl: string;

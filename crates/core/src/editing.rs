@@ -10,7 +10,7 @@
 //! 5. Analysis Invalidation (only affected regions)
 //! 6. Diagnostics Return
 
-use crate::graph::{EdgeType, PassageEdge, PassageNode, PassageGraph};
+use crate::graph::{EdgeType, PassageEdge, PassageGraph, PassageNode};
 use crate::passage::Passage;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
@@ -76,68 +76,74 @@ pub fn graph_surgery(
     // (in both), so we process all of them. The added/modified Vecs are used
     // for the UpdateResult return value, not for filtering here.
     for passage in new_passages {
-            // Add/update the node with the correct file URI
-            let node = PassageNode {
-                name: passage.name.clone(),
-                file_uri: file_uri.to_string(),
-                is_special: passage.is_special,
-                is_metadata: passage.is_metadata(),
-                is_placeholder: false,
-                layer: passage.special_def.as_ref().map(|d| d.layer.clone()),
-                category: passage.category(),
-                behavior: passage.special_def.as_ref().map(|d| d.behavior.clone()),
-            };
-            graph.add_passage(node);
+        // Add/update the node with the correct file URI
+        let node = PassageNode {
+            name: passage.name.clone(),
+            file_uri: file_uri.to_string(),
+            is_special: passage.is_special,
+            is_metadata: passage.is_metadata(),
+            is_placeholder: false,
+            layer: passage.special_def.as_ref().map(|d| d.layer),
+            category: passage.category(),
+            behavior: passage.special_def.as_ref().map(|d| d.behavior.clone()),
+        };
+        graph.add_passage(node);
 
-            // Re-add edges for this passage
-            for link in &passage.links {
-                // Skip dynamic links with no fixed target. These include:
-                //   - Single-arg <<link "Display">> (click handler, no navigation)
-                //   - Zero-arg <<return>> / <<back>> (history-based, dynamic target)
-                //   - Any link with is_dynamic=true and empty target
-                // These links exist in passage.links solely to prevent false
-                // dead-end diagnostics (they count as outgoing navigation).
-                // They must NOT create graph edges — the target is either
-                // empty (no passage to connect to) or resolved at runtime
-                // from browser history. Creating an edge to an empty-string
-                // target produces a false "Broken link" diagnostic.
-                if link.target.is_empty() {
-                    continue;
-                }
-                let target_exists = graph.contains_passage(&link.target);
+        // Re-add edges for this passage
+        for link in &passage.links {
+            // Skip dynamic links with no fixed target. These include:
+            //   - Single-arg <<link "Display">> (click handler, no navigation)
+            //   - Zero-arg <<return>> / <<back>> (history-based, dynamic target)
+            //   - Any link with is_dynamic=true and empty target
+            // These links exist in passage.links solely to prevent false
+            // dead-end diagnostics (they count as outgoing navigation).
+            // They must NOT create graph edges — the target is either
+            // empty (no passage to connect to) or resolved at runtime
+            // from browser history. Creating an edge to an empty-string
+            // target produces a false "Broken link" diagnostic.
+            if link.target.is_empty() {
+                continue;
+            }
+            let target_exists = graph.contains_passage(&link.target);
+            let (edge_type, pre_broken_type) = if !target_exists {
+                let would_be = link
+                    .edge_type_hint
+                    .unwrap_or(crate::graph::EdgeType::Navigation);
+                (crate::graph::EdgeType::Broken, Some(would_be))
+            } else {
+                (
+                    link.edge_type_hint
+                        .unwrap_or(crate::graph::EdgeType::Navigation),
+                    None,
+                )
+            };
+            let edge = PassageEdge {
+                display_text: link.display_text.clone(),
+                edge_type,
+                pre_broken_type,
+            };
+            // All edges go source → target (including Include).
+            graph.add_edge(&passage.name, &link.target, edge);
+        }
+
+        // Re-add extra edges (dynamic navigation links) for this passage
+        for (source, display_text, target, hint) in extra_edges {
+            if *source == passage.name {
+                let target_exists = graph.contains_passage(target);
                 let (edge_type, pre_broken_type) = if !target_exists {
-                    let would_be = link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation);
-                    (crate::graph::EdgeType::Broken, Some(would_be))
+                    let would_be = hint.unwrap_or(EdgeType::Navigation);
+                    (EdgeType::Broken, Some(would_be))
                 } else {
-                    (link.edge_type_hint.unwrap_or(crate::graph::EdgeType::Navigation), None)
+                    (hint.unwrap_or(EdgeType::Navigation), None)
                 };
                 let edge = PassageEdge {
-                    display_text: link.display_text.clone(),
+                    display_text: display_text.clone(),
                     edge_type,
                     pre_broken_type,
                 };
-                // All edges go source → target (including Include).
-                graph.add_edge(&passage.name, &link.target, edge);
+                graph.add_edge(source, target, edge);
             }
-
-            // Re-add extra edges (dynamic navigation links) for this passage
-            for (source, display_text, target, hint) in extra_edges {
-                if *source == passage.name {
-                    let target_exists = graph.contains_passage(target);
-                    let (edge_type, pre_broken_type) = if !target_exists {
-                        let would_be = hint.unwrap_or(EdgeType::Navigation);
-                        (EdgeType::Broken, Some(would_be))
-                    } else {
-                        (hint.unwrap_or(EdgeType::Navigation), None)
-                    };
-                    let edge = PassageEdge {
-                        display_text: display_text.clone(),
-                        edge_type,
-                        pre_broken_type,
-                    };
-                    graph.add_edge(source, target, edge);
-                }
-            }
+        }
     }
 
     UpdateResult {

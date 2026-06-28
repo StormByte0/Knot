@@ -44,8 +44,7 @@ pub(crate) async fn range_formatting(
     let filtered: Vec<TextEdit> = all_edits
         .into_iter()
         .filter(|edit| {
-            edit.range.start.line >= range.start.line
-                && edit.range.end.line <= range.end.line
+            edit.range.start.line >= range.start.line && edit.range.end.line <= range.end.line
         })
         .collect();
 
@@ -78,9 +77,15 @@ pub(crate) async fn on_type_formatting(
     if ch == "]" && byte_pos >= 2 {
         let before = &line_text[..byte_pos];
         if before.ends_with("[[") {
-            let insert_pos = Position { line: position.line, character: position.character };
+            let insert_pos = Position {
+                line: position.line,
+                character: position.character,
+            };
             return Ok(Some(vec![TextEdit {
-                range: Range { start: insert_pos, end: insert_pos },
+                range: Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
                 new_text: "]]".to_string(),
             }]));
         }
@@ -100,9 +105,15 @@ pub(crate) async fn on_type_formatting(
                 .map(|p| p.format_macro_label("if").starts_with("<<"))
                 .unwrap_or(false);
             if uses_angle_brackets {
-                let insert_pos = Position { line: position.line, character: position.character };
+                let insert_pos = Position {
+                    line: position.line,
+                    character: position.character,
+                };
                 return Ok(Some(vec![TextEdit {
-                    range: Range { start: insert_pos, end: insert_pos },
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
                     new_text: ">>".to_string(),
                 }]));
             }
@@ -126,24 +137,33 @@ pub(crate) async fn linked_editing_range(
     };
 
     // If cursor is on a passage header name, find all [[link]] references
-    if let Some(name) = helpers::find_passage_at_position_span_based(
-        text, &inner.workspace, &uri, position,
-    ) {
+    if let Some(name) =
+        helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
+    {
         // Use header_name_span for the primary range when available;
         // fall back to computing from the header line using the header parser.
         let primary_range = if let Some((_, passage)) = inner.workspace.find_passage(&name) {
             if let Some(ref name_span) = passage.header_name_span {
                 helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
             } else {
-                helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span))
+                helpers::compute_passage_name_range_fallback(
+                    text,
+                    &passage.abs_range(&passage.span),
+                )
             }
         } else {
             // Passage not found in workspace — use line-based fallback
             let line_text = text.lines().nth(position.line as usize).unwrap_or("");
             let name_start = line_text.find(&name).unwrap_or(2);
             Range {
-                start: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start) },
-                end: Position { line: position.line, character: helpers::utf16_len_up_to(line_text, name_start + name.len()) },
+                start: Position {
+                    line: position.line,
+                    character: helpers::utf16_len_up_to(line_text, name_start),
+                },
+                end: Position {
+                    line: position.line,
+                    character: helpers::utf16_len_up_to(line_text, name_start + name.len()),
+                },
             }
         };
 
@@ -154,7 +174,10 @@ pub(crate) async fn linked_editing_range(
             for passage in &doc.passages {
                 for link in &passage.links {
                     if link.target.trim() == name {
-                        ranges.push(helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
+                        ranges.push(helpers::byte_range_to_lsp_range(
+                            text,
+                            &passage.abs_range(&link.span),
+                        ));
                     }
                 }
             }
@@ -169,7 +192,6 @@ pub(crate) async fn linked_editing_range(
     Ok(None)
 }
 
-
 pub(crate) async fn prepare_rename(
     state: &ServerState,
     params: TextDocumentPositionParams,
@@ -183,7 +205,9 @@ pub(crate) async fn prepare_rename(
     // all renamable target types (passages, custom macros, functions,
     // templates) with the failsafe: if the definition can't be confirmed,
     // rename is not allowed (returns None -> F2 does nothing).
-    let Some((range, placeholder)) = crate::handlers::navigation::rename_range_at_cursor(&inner, &uri, position) else {
+    let Some((range, placeholder)) =
+        crate::handlers::navigation::rename_range_at_cursor(&inner, &uri, position)
+    else {
         return Ok(None);
     };
 
@@ -206,7 +230,9 @@ pub(crate) async fn rename(
     // Resolve the target at the cursor. This is the same resolution used by
     // goto-definition and find-references -- format-isolated, goes through
     // `&dyn FormatPlugin` trait methods.
-    let Some(target) = crate::handlers::navigation::resolve_target_at_cursor(&inner, &uri, position) else {
+    let Some(target) =
+        crate::handlers::navigation::resolve_target_at_cursor(&inner, &uri, position)
+    else {
         return Ok(None);
     };
 

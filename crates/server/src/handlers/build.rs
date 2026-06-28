@@ -78,7 +78,11 @@ fn format_to_id(format: &knot_core::passage::StoryFormat) -> &'static str {
 /// SugarCube runtime errors.
 fn is_toolchain_dir(path: &Path) -> bool {
     // Check for tweego binary
-    let tweego_bin = path.join(if cfg!(windows) { "tweego.exe" } else { "tweego" });
+    let tweego_bin = path.join(if cfg!(windows) {
+        "tweego.exe"
+    } else {
+        "tweego"
+    });
     if tweego_bin.exists() {
         return true;
     }
@@ -105,11 +109,7 @@ fn extract_story_title(workspace: &knot_core::workspace::Workspace) -> Option<St
         .join("")
         .trim()
         .to_string();
-    if title.is_empty() {
-        None
-    } else {
-        Some(title)
-    }
+    if title.is_empty() { None } else { Some(title) }
 }
 
 /// Sanitize a story title for use as a filename.
@@ -167,7 +167,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/build: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -179,7 +180,10 @@ impl ServerState {
         // All of this MUST happen before drop(inner) since workspace state is
         // only accessible while holding the read lock.
         let story_format = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
-        let format_version = inner.workspace.metadata.as_ref()
+        let format_version = inner
+            .workspace
+            .metadata
+            .as_ref()
             .and_then(|m| m.format_version.clone());
         let story_title = extract_story_title(&inner.workspace);
         let global_storage_path = inner.global_storage_path.clone();
@@ -212,7 +216,11 @@ impl ServerState {
         } else {
             // Check managed binary
             if let Some(ref gs) = global_storage_path {
-                let managed_bin = gs.join("tweego").join(if cfg!(windows) { "tweego.exe" } else { "tweego" });
+                let managed_bin = gs.join("tweego").join(if cfg!(windows) {
+                    "tweego.exe"
+                } else {
+                    "tweego"
+                });
                 if managed_bin.exists() {
                     Some(managed_bin)
                 } else {
@@ -492,7 +500,8 @@ impl ServerState {
                     " — project needs {} v{} but it's not in the managed cache.\n\
                      Expected at: {}\n\
                      Use 'Knot: Configure Story Formats' to download it.",
-                    format_id, ver,
+                    format_id,
+                    ver,
                     expected.display()
                 )
             }
@@ -504,7 +513,9 @@ impl ServerState {
                     format_id, ver
                 )
             }
-            _ => " — no StoryData format/version detected. Is StoryData passage present?".to_string(),
+            _ => {
+                " — no StoryData format/version detected. Is StoryData passage present?".to_string()
+            }
         };
 
         (
@@ -518,6 +529,7 @@ impl ServerState {
     /// Merges `params.flags` (from VS Code settings) with `config.build.flags`
     /// (from `.vscode/knot.json`). Adds `-l` for stats logging. Parses the
     /// stats line from stdout and emits it as a build output line.
+    #[allow(clippy::too_many_arguments)]
     async fn run_tweego(
         &self,
         compiler_path: &Path,
@@ -555,7 +567,11 @@ impl ServerState {
         // Source directory must be the LAST argument
         args.push(source_path.to_string_lossy().to_string());
 
-        tracing::info!("Build command: {} {}", compiler_path.display(), args.join(" "));
+        tracing::info!(
+            "Build command: {} {}",
+            compiler_path.display(),
+            args.join(" ")
+        );
 
         // Run the compiler with cwd set to the workspace root.
         let mut command = tokio::process::Command::new(compiler_path);
@@ -594,15 +610,13 @@ impl ServerState {
                         let words = extract_stat(line, "Words:");
                         if let (Some(p), Some(w)) = (passages, words) {
                             self.client
-                                .send_notification::<KnotBuildOutputNotification>(
-                                    KnotBuildOutput {
-                                        line: format!(
-                                            "Knot: Build stats — {} passages, {} words",
-                                            p, w
-                                        ),
-                                        is_error: false,
-                                    },
-                                )
+                                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                                    line: format!(
+                                        "Knot: Build stats — {} passages, {} words",
+                                        p, w
+                                    ),
+                                    is_error: false,
+                                })
                                 .await;
                             stats_emitted = true;
                             continue; // Don't emit the raw line too
@@ -663,16 +677,18 @@ impl ServerState {
         params: KnotPlayParams,
     ) -> Result<KnotPlayResponse, tower_lsp::jsonrpc::Error> {
         // Build first
-        let build_result = self.knot_build(KnotBuildParams {
-            workspace_uri: params.workspace_uri.clone(),
-            start_passage: params.start_passage.clone(),
-            compiler_path: params.compiler_path.clone(),
-            source_dir: params.source_dir.clone(),
-            output_dir: params.output_dir.clone(),
-            storyformats_path: params.storyformats_path.clone(),
-            managed_storyformats_path: params.managed_storyformats_path.clone(),
-            flags: params.flags.clone(),
-        }).await?;
+        let build_result = self
+            .knot_build(KnotBuildParams {
+                workspace_uri: params.workspace_uri.clone(),
+                start_passage: params.start_passage.clone(),
+                compiler_path: params.compiler_path.clone(),
+                source_dir: params.source_dir.clone(),
+                output_dir: params.output_dir.clone(),
+                storyformats_path: params.storyformats_path.clone(),
+                managed_storyformats_path: params.managed_storyformats_path.clone(),
+                flags: params.flags.clone(),
+            })
+            .await?;
 
         if build_result.success {
             Ok(KnotPlayResponse {
@@ -700,7 +716,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/compilerDetect: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -710,14 +727,15 @@ impl ServerState {
 
         // Check configured path first
         if let Some(ref path) = config.compiler_path
-            && path.exists() {
-                return Ok(KnotCompilerDetectResponse {
-                    compiler_found: true,
-                    compiler_name: Some("tweego".to_string()),
-                    compiler_version: helpers::detect_compiler_version(path).await,
-                    compiler_path: Some(path.to_string_lossy().to_string()),
-                });
-            }
+            && path.exists()
+        {
+            return Ok(KnotCompilerDetectResponse {
+                compiler_found: true,
+                compiler_name: Some("tweego".to_string()),
+                compiler_version: helpers::detect_compiler_version(path).await,
+                compiler_path: Some(path.to_string_lossy().to_string()),
+            });
+        }
 
         // Check PATH
         if let Some(path) = helpers::which_compiler() {
@@ -790,5 +808,3 @@ mod tests {
         assert_eq!(force_relative(""), "");
     }
 }
-
-

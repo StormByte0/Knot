@@ -367,8 +367,7 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
             if kw_len > 0 {
                 // Word boundary after: prevents matching "def" inside
                 // "define" or "ndef" inside "ndefinable".
-                let word_boundary_after = i + kw_len >= len
-                    || !is_ident_char(bytes[i + kw_len]);
+                let word_boundary_after = i + kw_len >= len || !is_ident_char(bytes[i + kw_len]);
 
                 if word_boundary_after {
                     // Skip whitespace between keyword and operand.
@@ -414,19 +413,15 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
                             }
 
                             // Build the typeof check expression.
-                            let normalized_path = property_path
-                                .replace('.', "_")
-                                .replace('-', "_");
+                            let normalized_path = property_path.replace(['.', '-'], "_");
                             let var_js = if is_temp {
                                 format!("State_temporary_{}{}", name, normalized_path)
                             } else {
                                 format!("State_variables_{}{}", name, normalized_path)
                             };
                             let op_str = if is_negated { "===" } else { "!==" };
-                            let replacement = format!(
-                                "(typeof {} {} \"undefined\")",
-                                var_js, op_str,
-                            );
+                            let replacement =
+                                format!("(typeof {} {} \"undefined\")", var_js, op_str,);
 
                             let original_text = source[i..j].to_string();
                             let original_range = i..j;
@@ -484,9 +479,8 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
             // result is a valid JS identifier. SugarCube allows hyphens in
             // property names (e.g. $obj.my-prop), but JS identifiers can't
             // contain hyphens — so we normalize them for oxc.
-            let normalized_path = property_path.replace('.', "_").replace('-', "_");
-            let replacement =
-                format!("State_variables_{}{}", name, normalized_path);
+            let normalized_path = property_path.replace(['.', '-'], "_");
+            let replacement = format!("State_variables_{}{}", name, normalized_path);
 
             let original_range = start..i;
             let processed_start = result_offset;
@@ -504,8 +498,8 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
 
         // ── _var temporary variable ────────────────────────────────────
         if b == b'_' && i + 1 < len && is_ident_start(bytes[i + 1]) {
-            let is_word_boundary = i == 0
-                || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
+            let is_word_boundary =
+                i == 0 || (!bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_');
             if is_word_boundary {
                 let start = i;
                 i += 1; // skip _
@@ -869,7 +863,9 @@ mod tests {
         // Realistic <<if>> condition: <<if $hp gt 0 and $name is "hero">>
         let result = preprocess_for_oxc("$hp gt 0 and $name is \"hero\"", true);
         assert!(
-            result.source.contains("State_variables_hp > 0 && State_variables_name === \"hero\""),
+            result
+                .source
+                .contains("State_variables_hp > 0 && State_variables_name === \"hero\""),
             "expected proper normalization, got '{}'",
             result.source
         );
@@ -900,7 +896,9 @@ mod tests {
         // "gt" inside a string literal should NOT be replaced
         let result = preprocess_for_oxc("$msg is \"greater than five\"", true);
         assert!(
-            result.source.contains("State_variables_msg === \"greater than five\""),
+            result
+                .source
+                .contains("State_variables_msg === \"greater than five\""),
             "expected string preserved, got '{}'",
             result.source
         );
@@ -1027,7 +1025,9 @@ mod tests {
         // Multi-byte chars inside string literals should be preserved
         let result = preprocess_for_oxc("$msg is \"hello — world\"", true);
         assert!(
-            result.source.contains("State_variables_msg === \"hello — world\""),
+            result
+                .source
+                .contains("State_variables_msg === \"hello — world\""),
             "expected string with em-dash preserved, got '{}'",
             result.source
         );
@@ -1038,7 +1038,9 @@ mod tests {
         // Full realistic case: variables + operators + multi-byte text
         let result = preprocess_for_oxc("$name is \"Alice—\" and $hp gt 0", true);
         assert!(
-            result.source.contains("State_variables_name === \"Alice—\" && State_variables_hp > 0"),
+            result
+                .source
+                .contains("State_variables_name === \"Alice—\" && State_variables_hp > 0"),
             "expected mixed content preserved, got '{}'",
             result.source
         );
@@ -1050,13 +1052,13 @@ mod tests {
         // would cause &source[i..] to panic when i landed inside a char.
         // Test various multi-byte chars to ensure no panics.
         let cases = vec![
-            "café",           // 2-byte: é
-            "naïve",          // 2-byte: ï
-            "日本語",          // 3-byte CJK
-            "🎮",             // 4-byte emoji
-            "a—b",            // 3-byte em-dash
-            "$x + café",      // variable + 2-byte
-            "$y gt 日本語",    // variable + operator + 3-byte
+            "café",         // 2-byte: é
+            "naïve",        // 2-byte: ï
+            "日本語",       // 3-byte CJK
+            "🎮",           // 4-byte emoji
+            "a—b",          // 3-byte em-dash
+            "$x + café",    // variable + 2-byte
+            "$y gt 日本語", // variable + operator + 3-byte
         ];
         for case in cases {
             // Must not panic
@@ -1082,7 +1084,10 @@ mod tests {
         assert_eq!(result.substitutions.len(), 1);
         let sub = &result.substitutions[0];
         assert_eq!(sub.original_text, "def $a");
-        assert_eq!(sub.replacement, "(typeof State_variables_a !== \"undefined\")");
+        assert_eq!(
+            sub.replacement,
+            "(typeof State_variables_a !== \"undefined\")"
+        );
     }
 
     #[test]
@@ -1161,21 +1166,29 @@ mod tests {
         // string literal must be preserved as-is.
         let result = preprocess_for_oxc("\"def $x is not a real check\"", true);
         assert_eq!(result.source, "\"def $x is not a real check\"");
-        assert!(result.substitutions.is_empty(),
+        assert!(
+            result.substitutions.is_empty(),
             "no substitutions should be made inside string literals, got: {:?}",
-            result.substitutions);
+            result.substitutions
+        );
     }
 
     #[test]
     fn def_inside_comment_not_substituted() {
         // Line and block comments are copied as-is.
         let line_comment = preprocess_for_oxc("// def $x\n$x", true);
-        assert!(line_comment.source.contains("// def $x"),
-            "line comment should be preserved: {}", line_comment.source);
+        assert!(
+            line_comment.source.contains("// def $x"),
+            "line comment should be preserved: {}",
+            line_comment.source
+        );
 
         let block_comment = preprocess_for_oxc("/* def $x */ $x", true);
-        assert!(block_comment.source.contains("/* def $x */"),
-            "block comment should be preserved: {}", block_comment.source);
+        assert!(
+            block_comment.source.contains("/* def $x */"),
+            "block comment should be preserved: {}",
+            block_comment.source
+        );
     }
 
     #[test]
@@ -1185,15 +1198,19 @@ mod tests {
         // `ndefinable` starting with `ndef`.
         let result = preprocess_for_oxc("define(5)", true);
         assert_eq!(result.source, "define(5)");
-        assert!(result.substitutions.is_empty(),
+        assert!(
+            result.substitutions.is_empty(),
             "`define` should not match the `def` operator, got subs: {:?}",
-            result.substitutions);
+            result.substitutions
+        );
 
         let result = preprocess_for_oxc("ndefinable", true);
         assert_eq!(result.source, "ndefinable");
-        assert!(result.substitutions.is_empty(),
+        assert!(
+            result.substitutions.is_empty(),
             "`ndefinable` should not match the `ndef` operator, got subs: {:?}",
-            result.substitutions);
+            result.substitutions
+        );
     }
 
     #[test]
@@ -1202,14 +1219,23 @@ mod tests {
         // so the word-boundary-before check must reject the match.
         let result = preprocess_for_oxc("foodef $x", true);
         // `foodef` should be left as-is, and `$x` should be substituted.
-        assert!(result.source.contains("foodef"),
-            "`foodef` should be preserved: {}", result.source);
-        assert!(result.source.contains("State_variables_x"),
-            "`$x` should still be substituted: {}", result.source);
+        assert!(
+            result.source.contains("foodef"),
+            "`foodef` should be preserved: {}",
+            result.source
+        );
+        assert!(
+            result.source.contains("State_variables_x"),
+            "`$x` should still be substituted: {}",
+            result.source
+        );
         // There should be exactly 1 substitution (for $x), not 2.
-        assert_eq!(result.substitutions.len(), 1,
+        assert_eq!(
+            result.substitutions.len(),
+            1,
             "only `$x` should produce a substitution: {:?}",
-            result.substitutions);
+            result.substitutions
+        );
     }
 
     #[test]
@@ -1221,12 +1247,20 @@ mod tests {
         let result = preprocess_for_oxc("def someFunc()", true);
         // `def` is left as text, `someFunc` is left as text, `()` is text.
         // No $var/_var to substitute.
-        assert!(result.source.contains("def"),
-            "def should fall through as text: {}", result.source);
+        assert!(
+            result.source.contains("def"),
+            "def should fall through as text: {}",
+            result.source
+        );
         // No typeof substitution should have been recorded.
-        assert!(result.substitutions.iter().all(|s| !s.replacement.contains("typeof")),
+        assert!(
+            result
+                .substitutions
+                .iter()
+                .all(|s| !s.replacement.contains("typeof")),
             "non-variable def should not produce a typeof substitution: {:?}",
-            result.substitutions);
+            result.substitutions
+        );
     }
 
     #[test]
@@ -1246,12 +1280,14 @@ mod tests {
         // Verify that the substitution's original_range covers the full
         // `def $a` source span, so oxc diagnostic back-mapping works.
         let result = preprocess_for_oxc("<<if def $a>>", true);
-        let def_sub = result.substitutions.iter()
+        let def_sub = result
+            .substitutions
+            .iter()
             .find(|s| s.replacement.contains("typeof"))
             .expect("should have a typeof substitution");
         // Original range should cover exactly `def $a` (6 bytes).
         assert_eq!(def_sub.original_text, "def $a");
         assert_eq!(def_sub.original_range.start, 5); // after `<<if `
-        assert_eq!(def_sub.original_range.end, 11);  // before `>>`
+        assert_eq!(def_sub.original_range.end, 11); // before `>>`
     }
 }

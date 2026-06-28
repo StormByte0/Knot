@@ -3,7 +3,9 @@
 //! Contains the canonical list of all SugarCube 2 builtin macro definitions,
 //! organized by category (Control flow, Variables, Output, DOM, Links, etc.).
 
-use crate::types::{BodyRequirement, MacroArgDef, MacroArgKind, MacroCategory, MacroDef, MacroKind};
+use crate::types::{
+    BodyRequirement, MacroArgDef, MacroArgKind, MacroCategory, MacroDef, MacroKind,
+};
 
 /// The full list of SugarCube builtin macro definitions.
 ///
@@ -11,8 +13,8 @@ use crate::types::{BodyRequirement, MacroArgDef, MacroArgKind, MacroCategory, Ma
 /// DOM manipulation, links, forms, navigation, timing, widgets, audio, and
 /// deprecated macros.
 pub fn builtin_macros() -> &'static [MacroDef] {
-    use MacroArgKind::*;
     use BodyRequirement::*;
+    use MacroArgKind::*;
     use MacroKind::*;
 
     static BUILTINS: &[MacroDef] = &[
@@ -121,17 +123,15 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             description: "A case arm within a `<<switch>>` block. Its value list is compared against the result of the parent `<<switch>>`'s expression; upon a successful match, this case's contents are executed. At most one case will execute.",
             body: Optional,
             kind: SubMacro,
-            args: Some(&[
-                MacroArgDef {
-                    position: 0,
-                    label: "valueList",
-                    is_passage_ref: false,
-                    is_selector: false,
-                    is_variable: false,
-                    is_required: true,
-                    kind: String,
-                },
-            ]),
+            args: Some(&[MacroArgDef {
+                position: 0,
+                label: "valueList",
+                is_passage_ref: false,
+                is_selector: false,
+                is_variable: false,
+                is_required: true,
+                kind: String,
+            }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Control,
@@ -152,7 +152,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── Variables ─────────────────────────────────────────────────────────
         MacroDef {
             name: "set",
@@ -238,7 +237,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── Output ────────────────────────────────────────────────────────────
         MacroDef {
             name: "print",
@@ -501,17 +499,15 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             description: "Causes one or more `<<do>>` macros to update their contents.",
             body: Never,
             kind: Inline,
-            args: Some(&[
-                MacroArgDef {
-                    position: 0,
-                    label: "tags",
-                    is_passage_ref: false,
-                    is_selector: false,
-                    is_variable: false,
-                    is_required: false,
-                    kind: Keyword,
-                },
-            ]),
+            args: Some(&[MacroArgDef {
+                position: 0,
+                label: "tags",
+                is_passage_ref: false,
+                is_selector: false,
+                is_variable: false,
+                is_required: false,
+                kind: Keyword,
+            }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Output,
@@ -519,7 +515,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── DOM / Display ─────────────────────────────────────────────────────
         MacroDef {
             name: "append",
@@ -731,17 +726,15 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             //   <<script [language]>> ... <</script>>
             // language ∈ {JavaScript, TwineScript} (case-insensitive, default JS).
             // Added v2.37.0.
-            args: Some(&[
-                MacroArgDef {
-                    position: 0,
-                    label: "language",
-                    is_passage_ref: false,
-                    is_selector: false,
-                    is_variable: false,
-                    is_required: false,
-                    kind: Keyword,
-                },
-            ]),
+            args: Some(&[MacroArgDef {
+                position: 0,
+                label: "language",
+                is_passage_ref: false,
+                is_selector: false,
+                is_variable: false,
+                is_required: false,
+                kind: Keyword,
+            }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Dom,
@@ -977,7 +970,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 },
             ]),
             deprecated: true,
-            deprecation_message: Some("<<choice>> was deprecated in SugarCube v2.37.0 and should no longer be used."),
+            deprecation_message: Some(
+                "<<choice>> was deprecated in SugarCube v2.37.0 and should no longer be used.",
+            ),
             category: MacroCategory::Links,
             container: None,
             container_any_of: None,
@@ -1009,13 +1004,14 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 },
             ]),
             deprecated: true,
-            deprecation_message: Some("<<click>> was removed in SugarCube 2. Use <<link>> instead."),
+            deprecation_message: Some(
+                "<<click>> was removed in SugarCube 2. Use <<link>> instead.",
+            ),
             category: MacroCategory::Links,
             container: None,
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── Forms ─────────────────────────────────────────────────────────────
         MacroDef {
             name: "checkbox",
@@ -1385,7 +1381,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: Some(&["listbox", "cycle"]),
             body_is_raw: false,
         },
-
         // ── Navigation ────────────────────────────────────────────────────────
         MacroDef {
             name: "goto",
@@ -1506,7 +1501,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── Timing ────────────────────────────────────────────────────────────
         MacroDef {
             name: "timed",
@@ -1584,7 +1578,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: None,
             body_is_raw: false,
         },
-
         // ── Widgets / Audio ───────────────────────────────────────────────────
         MacroDef {
             name: "widget",
@@ -1702,17 +1695,15 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             description: "Controls the master audio settings.",
             body: Never,
             kind: Inline,
-            args: Some(&[
-                MacroArgDef {
-                    position: 0,
-                    label: "actionList",
-                    is_passage_ref: false,
-                    is_selector: false,
-                    is_variable: false,
-                    is_required: true,
-                    kind: Keyword,
-                },
-            ]),
+            args: Some(&[MacroArgDef {
+                position: 0,
+                label: "actionList",
+                is_passage_ref: false,
+                is_selector: false,
+                is_variable: false,
+                is_required: true,
+                kind: Keyword,
+            }]),
             deprecated: false,
             deprecation_message: None,
             category: MacroCategory::Audio,
@@ -1862,7 +1853,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: String,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<setplaylist>> was removed in SugarCube v2.37.0. Use <<createplaylist>> instead."),
+            deprecation_message: Some(
+                "<<setplaylist>> was removed in SugarCube v2.37.0. Use <<createplaylist>> instead.",
+            ),
             category: MacroCategory::Audio,
             container: None,
             container_any_of: None,
@@ -1878,7 +1871,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             kind: Inline,
             args: None,
             deprecated: true,
-            deprecation_message: Some("<<stopallaudio>> was removed in SugarCube v2.37.0. Use <<audio \":all\" stop>> or <<masteraudio stop>> instead."),
+            deprecation_message: Some(
+                "<<stopallaudio>> was removed in SugarCube v2.37.0. Use <<audio \":all\" stop>> or <<masteraudio stop>> instead.",
+            ),
             category: MacroCategory::Audio,
             container: None,
             container_any_of: None,
@@ -1916,7 +1911,6 @@ pub fn builtin_macros() -> &'static [MacroDef] {
             container_any_of: Some(&["createaudiogroup", "createplaylist"]),
             body_is_raw: false,
         },
-
         // ── Deprecated macros ─────────────────────────────────────────────────
         MacroDef {
             name: "display",
@@ -1933,7 +1927,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: String,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<display>> was removed in SugarCube 2. Use <<include>> instead."),
+            deprecation_message: Some(
+                "<<display>> was removed in SugarCube 2. Use <<include>> instead.",
+            ),
             category: MacroCategory::Navigation,
             container: None,
             container_any_of: None,
@@ -1954,7 +1950,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: Expression,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<remember>> was removed in SugarCube 2. Use <<set>> with persistent storage instead."),
+            deprecation_message: Some(
+                "<<remember>> was removed in SugarCube 2. Use <<set>> with persistent storage instead.",
+            ),
             category: MacroCategory::Variables,
             container: None,
             container_any_of: None,
@@ -1975,7 +1973,9 @@ pub fn builtin_macros() -> &'static [MacroDef] {
                 kind: Variable,
             }]),
             deprecated: true,
-            deprecation_message: Some("<<forget>> was removed in SugarCube 2. Use <<unset>> with persistent storage instead."),
+            deprecation_message: Some(
+                "<<forget>> was removed in SugarCube 2. Use <<unset>> with persistent storage instead.",
+            ),
             category: MacroCategory::Variables,
             container: None,
             container_any_of: None,

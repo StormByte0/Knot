@@ -21,7 +21,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/graph: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -47,14 +48,12 @@ impl ServerState {
                 .sum();
             if writable.workspace.graph.passage_count() == 0 && passage_count > 0 {
                 let format = writable.workspace.resolve_format();
-                writable.workspace.graph = helpers::rebuild_graph(
-                    &writable.workspace,
-                    &writable.format_registry,
-                    format,
-                );
+                writable.workspace.graph =
+                    helpers::rebuild_graph(&writable.workspace, &writable.format_registry, format);
                 tracing::info!(
                     "knot/graph: rebuilt empty graph from {} documents / {} passages",
-                    document_count, passage_count
+                    document_count,
+                    passage_count
                 );
             }
             drop(writable);
@@ -122,9 +121,11 @@ impl ServerState {
 
         // Also extract positions from StoryData if available (Twine 2 JSON format
         // stores passage positions in the "position" field of each passage entry)
-        if let Some(text) = inner.workspace.documents().find_map(|doc| {
-            inner.open_documents.get(&doc.uri)
-        }) {
+        if let Some(text) = inner
+            .workspace
+            .documents()
+            .find_map(|doc| inner.open_documents.get(&doc.uri))
+        {
             helpers::extract_positions_from_storydata(text, &mut passage_positions);
         }
 
@@ -259,7 +260,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/updatePositions: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }

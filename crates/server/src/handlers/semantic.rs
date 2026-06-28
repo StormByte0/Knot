@@ -37,7 +37,11 @@ fn convert_semantic_tokens(
 ) -> Vec<SemTok> {
     let mut tokens = Vec::new();
     let text_len = text.len();
-    let line_count = if text.is_empty() { 0u32 } else { text.lines().count() as u32 };
+    let line_count = if text.is_empty() {
+        0u32
+    } else {
+        text.lines().count() as u32
+    };
 
     // Pre-compute line start byte offsets for efficient line lookup.
     // line_starts[i] = byte offset of the start of line i.
@@ -93,7 +97,8 @@ fn convert_semantic_tokens(
                 }
 
                 // Get the byte range of this line
-                let line_start_byte = line_starts.get(current_line as usize)
+                let line_start_byte = line_starts
+                    .get(current_line as usize)
                     .copied()
                     .unwrap_or(text_len);
                 let line_end_byte = if (current_line + 1) as usize >= line_starts.len() {
@@ -110,7 +115,9 @@ fn convert_semantic_tokens(
                 // The token's portion on this line:
                 //   - Start: max(safe_start, line_start_byte)
                 //   - End: min(safe_end, line_end_byte_excluding_newline)
-                let line_content_end = if line_end_byte > 0 && text.as_bytes().get(line_end_byte - 1) == Some(&b'\n') {
+                let line_content_end = if line_end_byte > 0
+                    && text.as_bytes().get(line_end_byte - 1) == Some(&b'\n')
+                {
                     line_end_byte - 1 // exclude the newline
                 } else {
                     line_end_byte
@@ -128,7 +135,8 @@ fn convert_semantic_tokens(
 
                     // Calculate the UTF-16 length of this segment
                     let segment_text = &text[segment_start..segment_end];
-                    let segment_utf16_len: u32 = segment_text.chars()
+                    let segment_utf16_len: u32 = segment_text
+                        .chars()
                         .map(|c| if (c as u32) < 0x10000 { 1u32 } else { 2u32 })
                         .sum();
 
@@ -178,7 +186,11 @@ fn map_token_modifier(modifier: &Option<fmt_plugin::SemanticTokenModifier>) -> u
 /// Delta-encode semantic tokens into the LSP wire format.
 fn encode_semantic_tokens(tokens: &[SemTok]) -> Vec<lsp_types::SemanticToken> {
     let mut sorted: Vec<&SemTok> = tokens.iter().collect();
-    sorted.sort_by(|a, b| a.line.cmp(&b.line).then_with(|| a.start_char.cmp(&b.start_char)));
+    sorted.sort_by(|a, b| {
+        a.line
+            .cmp(&b.line)
+            .then_with(|| a.start_char.cmp(&b.start_char))
+    });
 
     let mut data = Vec::with_capacity(sorted.len());
     let mut prev_line = 0u32;
@@ -265,7 +277,9 @@ fn document_symbol_inner(
         let full_range = {
             let start_offset = passage.abs_offset(passage.span.start).min(text.len());
             let end_offset = if i + 1 < passages.len() {
-                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
+                passages[i + 1]
+                    .abs_offset(passages[i + 1].span.start)
+                    .min(text.len())
             } else {
                 text.len()
             };
@@ -293,18 +307,34 @@ fn document_symbol_inner(
                     .unwrap_or(text.len());
                 let header_line = &text[span_start..line_end];
                 let after_colons = header_line.strip_prefix("::").unwrap_or(header_line);
-                if let Some(name_range) = knot_formats::header::passage_name_range_in_header(after_colons) {
+                if let Some(name_range) =
+                    knot_formats::header::passage_name_range_in_header(after_colons)
+                {
                     let prefix_len = helpers::utf16_len(&header_line[..2]);
-                    let start_char = prefix_len + helpers::utf16_len(&after_colons[..name_range.start]);
-                    let end_char = start_char + helpers::utf16_len(&after_colons[name_range.start..name_range.end]);
+                    let start_char =
+                        prefix_len + helpers::utf16_len(&after_colons[..name_range.start]);
+                    let end_char = start_char
+                        + helpers::utf16_len(&after_colons[name_range.start..name_range.end]);
                     Range {
-                        start: Position { line: full_range.start.line, character: start_char },
-                        end: Position { line: full_range.start.line, character: end_char },
+                        start: Position {
+                            line: full_range.start.line,
+                            character: start_char,
+                        },
+                        end: Position {
+                            line: full_range.start.line,
+                            character: end_char,
+                        },
                     }
                 } else {
                     Range {
-                        start: Position { line: full_range.start.line, character: 0 },
-                        end: Position { line: full_range.start.line, character: helpers::utf16_len(header_line) },
+                        start: Position {
+                            line: full_range.start.line,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: full_range.start.line,
+                            character: helpers::utf16_len(header_line),
+                        },
                     }
                 }
             });
@@ -357,19 +387,24 @@ fn clamp_range_to(inner: &Range, outer: &Range) -> Range {
     let start = clamp_position_to(inner.start, outer.start, outer.end);
     let end = clamp_position_to(inner.end, start, outer.end);
     // After clamping `start` to `outer`, `end` must still be >= `start`.
-    let end = if end.line < start.line || (end.line == start.line && end.character < start.character) {
-        start
-    } else {
-        end
-    };
+    let end =
+        if end.line < start.line || (end.line == start.line && end.character < start.character) {
+            start
+        } else {
+            end
+        };
     Range { start, end }
 }
 
 /// Clamp `pos` so it is within `[lo, hi]` (inclusive on both ends).
 fn clamp_position_to(pos: Position, lo: Position, hi: Position) -> Position {
-    if pos.lt(&lo) { lo }
-    else if pos.gt(&hi) { hi }
-    else { pos }
+    if pos.lt(&lo) {
+        lo
+    } else if pos.gt(&hi) {
+        hi
+    } else {
+        pos
+    }
 }
 
 pub(crate) async fn symbol(
@@ -404,7 +439,9 @@ pub(crate) async fn symbol(
             let range = passage
                 .header_name_span
                 .as_ref()
-                .map(|name_span| helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span)))
+                .map(|name_span| {
+                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(name_span))
+                })
                 .unwrap_or_else(|| {
                     let span_start = passage.abs_offset(passage.span.start).min(text.len());
                     let line_end = text[span_start..]
@@ -506,7 +543,11 @@ pub(crate) async fn code_lens(
     let mut lenses = Vec::new();
 
     for passage in &doc.passages {
-        let outgoing = inner.workspace.graph.outgoing_neighbors(&passage.name).len();
+        let outgoing = inner
+            .workspace
+            .graph
+            .outgoing_neighbors(&passage.name)
+            .len();
         let incoming = helpers::count_incoming_links(&inner.workspace, &passage.name);
 
         if outgoing > 0 || incoming > 0 {
@@ -548,7 +589,10 @@ pub(crate) async fn inlay_hint(
     // Short-circuit if the server is shutting down — the dataflow analysis
     // below is the single most expensive handler; if the stream is about to
     // be destroyed, there is no point running it.
-    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         return Ok(None);
     }
 
@@ -567,12 +611,21 @@ pub(crate) async fn inlay_hint(
         .unwrap_or("Start");
 
     let passage_data = AnalysisEngine::collect_passage_data(&inner.workspace);
-    let core_seed = AnalysisEngine::collect_special_passage_initializers(&inner.workspace, &passage_data);
+    let core_seed =
+        AnalysisEngine::collect_special_passage_initializers(&inner.workspace, &passage_data);
     let format = inner.workspace.resolve_format();
     let seed_init = helpers::supplement_seed_with_format_specials(
-        core_seed, &inner.workspace, &inner.format_registry, format
+        core_seed,
+        &inner.workspace,
+        &inner.format_registry,
+        format,
     );
-    let flow_states = AnalysisEngine::run_dataflow_from_engine(&inner.workspace, start_passage, &passage_data, &seed_init);
+    let flow_states = AnalysisEngine::run_dataflow_from_engine(
+        &inner.workspace,
+        start_passage,
+        &passage_data,
+        &seed_init,
+    );
 
     let mut hints = Vec::new();
 
@@ -604,7 +657,10 @@ pub(crate) async fn inlay_hint(
                 };
                 let label = format!("// init: {}{}", names.join(", "), suffix);
                 // Position the hint at the start of the passage header
-                let position = helpers::byte_offset_to_position(text, passage.abs_offset(passage.span.start).min(text.len()));
+                let position = helpers::byte_offset_to_position(
+                    text,
+                    passage.abs_offset(passage.span.start).min(text.len()),
+                );
                 hints.push(InlayHint {
                     position,
                     label: InlayHintLabel::String(label),
@@ -642,9 +698,9 @@ pub(crate) async fn inlay_hint(
 mod document_symbol_tests {
     use super::*;
     use crate::state::ServerStateInner;
-    use knot_core::editing::DebounceTimer;
     use knot_core::Document;
     use knot_core::Workspace;
+    use knot_core::editing::DebounceTimer;
     use knot_formats::plugin::FormatRegistry;
     use url::Url;
 
@@ -710,7 +766,8 @@ mod document_symbol_tests {
     /// `selectionRange must be contained in fullRange` rule.
     fn assert_contained(outer: &Range, inner: &Range, label: &str) {
         let start_ok = inner.start.line > outer.start.line
-            || (inner.start.line == outer.start.line && inner.start.character >= outer.start.character);
+            || (inner.start.line == outer.start.line
+                && inner.start.character >= outer.start.character);
         let end_ok = inner.end.line < outer.end.line
             || (inner.end.line == outer.end.line && inner.end.character <= outer.end.character);
         assert!(
@@ -763,12 +820,20 @@ mod document_symbol_tests {
         // Every symbol must satisfy the LSP containment constraint that
         // VS Code's `asDocumentSymbol` validator enforces.
         for sym in &symbols {
-            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+            assert_contained(
+                &sym.range,
+                &sym.selection_range,
+                &format!("passage {:?}", sym.name),
+            );
         }
 
         // Sanity: both passages should appear in the outline, ordered by
         // source position (RegularBody first, StoryData second).
-        assert_eq!(symbols.len(), 2, "should have 2 symbols: RegularBody + StoryData");
+        assert_eq!(
+            symbols.len(),
+            2,
+            "should have 2 symbols: RegularBody + StoryData"
+        );
         assert_eq!(symbols[0].name, "RegularBody");
         assert_eq!(symbols[1].name, "StoryData");
         // Source order: RegularBody on line 0, StoryData on line 3.
@@ -795,7 +860,11 @@ mod document_symbol_tests {
         assert_eq!(symbols[1].name, "Second");
         assert_eq!(symbols[2].name, "Third");
         for sym in &symbols {
-            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+            assert_contained(
+                &sym.range,
+                &sym.selection_range,
+                &format!("passage {:?}", sym.name),
+            );
         }
         // First passage extends up to Second's header line.
         assert!(symbols[0].range.end.line >= 1);
@@ -825,12 +894,22 @@ You enter the forest.
         let symbols = get_symbols(src);
         assert_eq!(symbols.len(), 4, "should have 4 passages");
         for sym in &symbols {
-            assert_contained(&sym.range, &sym.selection_range, &format!("passage {:?}", sym.name));
+            assert_contained(
+                &sym.range,
+                &sym.selection_range,
+                &format!("passage {:?}", sym.name),
+            );
         }
         // Source-order check: StoryData on line 0, StoryTitle on line 3,
         // Start on line 6, Forest on line 9.
         let line_of = |name: &str| -> u32 {
-            symbols.iter().find(|s| s.name == name).unwrap().range.start.line
+            symbols
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap()
+                .range
+                .start
+                .line
         };
         assert_eq!(line_of("StoryData"), 0);
         assert_eq!(line_of("StoryTitle"), 3);
@@ -842,12 +921,24 @@ You enter the forest.
     #[test]
     fn clamp_range_to_inner_already_contained_is_noop() {
         let outer = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 10, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 10,
+                character: 0,
+            },
         };
         let inner = Range {
-            start: Position { line: 3, character: 5 },
-            end: Position { line: 4, character: 2 },
+            start: Position {
+                line: 3,
+                character: 5,
+            },
+            end: Position {
+                line: 4,
+                character: 2,
+            },
         };
         let clamped = clamp_range_to(&inner, &outer);
         assert_eq!(clamped, inner);
@@ -856,12 +947,24 @@ You enter the forest.
     #[test]
     fn clamp_range_to_inner_extends_below_outer_is_clamped() {
         let outer = Range {
-            start: Position { line: 5, character: 0 },
-            end: Position { line: 10, character: 0 },
+            start: Position {
+                line: 5,
+                character: 0,
+            },
+            end: Position {
+                line: 10,
+                character: 0,
+            },
         };
         let inner = Range {
-            start: Position { line: 2, character: 4 },
-            end: Position { line: 7, character: 0 },
+            start: Position {
+                line: 2,
+                character: 4,
+            },
+            end: Position {
+                line: 7,
+                character: 0,
+            },
         };
         let clamped = clamp_range_to(&inner, &outer);
         assert_eq!(clamped.start, outer.start);
@@ -871,12 +974,24 @@ You enter the forest.
     #[test]
     fn clamp_range_to_inner_extends_above_outer_is_clamped() {
         let outer = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 5, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 5,
+                character: 0,
+            },
         };
         let inner = Range {
-            start: Position { line: 3, character: 0 },
-            end: Position { line: 8, character: 4 },
+            start: Position {
+                line: 3,
+                character: 0,
+            },
+            end: Position {
+                line: 8,
+                character: 4,
+            },
         };
         let clamped = clamp_range_to(&inner, &outer);
         assert_eq!(clamped.start, inner.start);
@@ -890,12 +1005,24 @@ You enter the forest.
         // `selectionRange` is contained in `fullRange` (vacuously, as an
         // empty range), satisfying the LSP invariant.
         let outer = Range {
-            start: Position { line: 10, character: 0 },
-            end: Position { line: 20, character: 0 },
+            start: Position {
+                line: 10,
+                character: 0,
+            },
+            end: Position {
+                line: 20,
+                character: 0,
+            },
         };
         let inner = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 5, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 5,
+                character: 0,
+            },
         };
         let clamped = clamp_range_to(&inner, &outer);
         assert_eq!(clamped.start, outer.start);

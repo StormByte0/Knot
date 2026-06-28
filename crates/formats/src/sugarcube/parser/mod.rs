@@ -34,22 +34,22 @@
 //! handler that scans to the matching close delimiter, handling nesting
 //! and string escaping along the way.
 
-mod core;
-mod macro_parser;
-mod link_parser;
 mod comment;
+mod core;
+mod link_parser;
+mod macro_parser;
 // `variable_scan` is accessed by `lsp::token_builder` to scan `$var`/`_var`
 // references inside link setter expressions (`[[...][$var += 5]]`). The
 // inline scanner doesn't run inside link constructs (see its module doc),
 // so the token builder runs it directly on the setter slice.
-pub(in crate::sugarcube) mod variable_scan;
 mod extraction;
-mod tree_builder;
 pub(crate) mod predicates;
+mod tree_builder;
+pub(in crate::sugarcube) mod variable_scan;
 
 // Re-export public API from sub-modules
 pub use comment::strip_comments;
-pub use extraction::{is_bare_passage_name, extract_bare_args_after_strings, extract_string_args};
+pub use extraction::{extract_bare_args_after_strings, extract_string_args, is_bare_passage_name};
 
 use crate::sugarcube::ast::*;
 
@@ -102,8 +102,6 @@ pub fn parse_passage_body(body: &str, _body_offset: usize, mode: ParseMode) -> P
                 script_js_analysis: None,
             }
         }
-        ParseMode::Script | ParseMode::Stylesheet | ParseMode::Minimal => {
-            PassageAst::empty(mode)
-        }
+        ParseMode::Script | ParseMode::Stylesheet | ParseMode::Minimal => PassageAst::empty(mode),
     }
 }

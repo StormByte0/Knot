@@ -52,17 +52,17 @@
 //! Normal passages      → SC parser  → variables (can query all registries)
 //! ```
 
-pub mod function_registry;
-pub mod template_registry;
-pub mod variable_tree;
 pub mod custom_macros;
-pub mod var_extract;
+pub mod function_registry;
 pub mod registry_populate;
+pub mod template_registry;
+pub mod var_extract;
+pub mod variable_tree;
 
 use std::collections::HashSet;
 
-use variable_tree::VariableTree;
 use crate::types::{FormatRegistry, VariableTreeNode};
+use variable_tree::VariableTree;
 
 pub use custom_macros::{CustomMacro, CustomMacroRegistry};
 pub use function_registry::{FunctionEntry, FunctionKind, FunctionRegistry};
@@ -155,8 +155,18 @@ impl SugarCubeRegistry {
     /// Get mutable access to the definition registries (custom macros,
     /// functions, templates) for populate functions that need to write
     /// to multiple registries at once.
-    pub fn definition_registries_mut(&mut self) -> (&mut CustomMacroRegistry, &mut FunctionRegistry, &mut TemplateRegistry) {
-        (&mut self.custom_macros, &mut self.functions, &mut self.templates)
+    pub fn definition_registries_mut(
+        &mut self,
+    ) -> (
+        &mut CustomMacroRegistry,
+        &mut FunctionRegistry,
+        &mut TemplateRegistry,
+    ) {
+        (
+            &mut self.custom_macros,
+            &mut self.functions,
+            &mut self.templates,
+        )
     }
 
     // ── Bulk operations (coordinated across all sub-registries) ────────
@@ -250,7 +260,10 @@ impl SugarCubeRegistry {
     /// converted to document-absolute line numbers at the output boundary.
     /// Line numbers are computed at record time from passage body text,
     /// so no post-hoc `resolve_line_numbers()` call is needed.
-    pub fn build_variable_tree(&self, source_text: &dyn crate::plugin::SourceTextProvider) -> Vec<VariableTreeNode> {
+    pub fn build_variable_tree(
+        &self,
+        source_text: &dyn crate::plugin::SourceTextProvider,
+    ) -> Vec<VariableTreeNode> {
         // Compute passage positions from the source text for relative→absolute conversion.
         let passage_positions = self.compute_passage_positions(source_text);
 
@@ -263,7 +276,10 @@ impl SugarCubeRegistry {
     /// a map from `(file_uri, passage_name)` to `PassagePosition`. This map
     /// is used at the output boundary to convert passage-relative line numbers
     /// and byte offsets to document-absolute values.
-    pub fn compute_passage_positions(&self, source_text: &dyn crate::plugin::SourceTextProvider) -> variable_tree::PassagePositionMap {
+    pub fn compute_passage_positions(
+        &self,
+        source_text: &dyn crate::plugin::SourceTextProvider,
+    ) -> variable_tree::PassagePositionMap {
         use variable_tree::compute_passage_positions;
 
         // Collect all unique file URIs from the variable tree
@@ -328,5 +344,3 @@ impl FormatRegistry for SugarCubeRegistry {
         self.templates.completion_names()
     }
 }
-
-

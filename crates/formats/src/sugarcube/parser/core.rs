@@ -1,18 +1,15 @@
 //! Core parser — main parse loop and text flushing.
 
-use std::ops::Range;
-use crate::sugarcube::ast::*;
-use super::predicates::is_ident_start;
-use super::variable_scan::{scan_variable, scan_inline_vars};
-use super::macro_parser::parse_macro;
-use super::link_parser::parse_link;
 use super::comment::{
-    parse_block_comment,
-    parse_cstyle_comment,
+    parse_block_comment, parse_cstyle_comment, parse_html_comment, parse_html_conditional_comment,
     parse_js_line_comment,
-    parse_html_comment,
-    parse_html_conditional_comment,
 };
+use super::link_parser::parse_link;
+use super::macro_parser::parse_macro;
+use super::predicates::is_ident_start;
+use super::variable_scan::{scan_inline_vars, scan_variable};
+use crate::sugarcube::ast::*;
+use std::ops::Range;
 
 /// Mutable parser state threaded through the main parse loop.
 ///
@@ -104,7 +101,13 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
             }
-            b'[' if i + 3 < len && bytes[i + 1] == b'i' && bytes[i + 2] == b'm' && bytes[i + 3] == b'g' && i + 4 < len && bytes[i + 4] == b'[' => {
+            b'[' if i + 3 < len
+                && bytes[i + 1] == b'i'
+                && bytes[i + 2] == b'm'
+                && bytes[i + 3] == b'g'
+                && i + 4 < len
+                && bytes[i + 4] == b'[' =>
+            {
                 // [img[ — single-bracket image link form (plan.md §C2).
                 //
                 // SugarCube supports two image link syntaxes:
@@ -206,7 +209,8 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                         // for the start-of-input edge case to preserve existing
                         // behavior during the Phase 1 refactor.
                         let at_line_start = ctx.col == 0 || (i > 0 && bytes[i - 1] == b'\n');
-                        let preceded_by_whitespace = i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
+                        let preceded_by_whitespace =
+                            i > 0 && (bytes[i - 1] == b' ' || bytes[i - 1] == b'\t');
                         at_line_start || preceded_by_whitespace
                     } else {
                         true
@@ -237,11 +241,15 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
                 let content = text[content_start..i].to_string();
-                if i + 1 < len { i += 2; }
+                if i + 1 < len {
+                    i += 2;
+                }
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Bold, content, span: offset + start..offset + i,
+                    kind: TextFormatKind::Bold,
+                    content,
+                    span: offset + start..offset + i,
                 })
             }
             b'_' if i + 1 < len && bytes[i + 1] == b'_' => {
@@ -254,11 +262,15 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
                 let content = text[content_start..i].to_string();
-                if i + 1 < len { i += 2; }
+                if i + 1 < len {
+                    i += 2;
+                }
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Underline, content, span: offset + start..offset + i,
+                    kind: TextFormatKind::Underline,
+                    content,
+                    span: offset + start..offset + i,
                 })
             }
             b'=' if i + 1 < len && bytes[i + 1] == b'=' => {
@@ -271,11 +283,15 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
                 let content = text[content_start..i].to_string();
-                if i + 1 < len { i += 2; }
+                if i + 1 < len {
+                    i += 2;
+                }
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Strike, content, span: offset + start..offset + i,
+                    kind: TextFormatKind::Strike,
+                    content,
+                    span: offset + start..offset + i,
                 })
             }
             b'~' if i + 1 < len && bytes[i + 1] == b'~' => {
@@ -288,11 +304,15 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
                 let content = text[content_start..i].to_string();
-                if i + 1 < len { i += 2; }
+                if i + 1 < len {
+                    i += 2;
+                }
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Sub, content, span: offset + start..offset + i,
+                    kind: TextFormatKind::Sub,
+                    content,
+                    span: offset + start..offset + i,
                 })
             }
             b'^' if i + 1 < len && bytes[i + 1] == b'^' => {
@@ -305,11 +325,15 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                 }
                 let content = text[content_start..i].to_string();
-                if i + 1 < len { i += 2; }
+                if i + 1 < len {
+                    i += 2;
+                }
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Super, content, span: offset + start..offset + i,
+                    kind: TextFormatKind::Super,
+                    content,
+                    span: offset + start..offset + i,
                 })
             }
             b'<' if text[i..].starts_with("<!--") => {
@@ -379,7 +403,12 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // flush_text extract them.
                 None
             }
-            b'@' if i + 1 < len && (bytes[i + 1] == b'@' || bytes[i + 1] == b'.' || bytes[i + 1] == b'#' || is_ident_start(bytes[i + 1])) => {
+            b'@' if i + 1 < len
+                && (bytes[i + 1] == b'@'
+                    || bytes[i + 1] == b'.'
+                    || bytes[i + 1] == b'#'
+                    || is_ident_start(bytes[i + 1])) =>
+            {
                 // @ or @@ — SugarCube inline styling
                 // Double-at: @@class;text@@
                 // Single-at: @class;text@ (class may start with . or # for CSS selectors)
@@ -731,8 +760,8 @@ fn flush_text(
         var_refs,
         span: offset + *text_start..offset + end,
         is_prose: true, // Default: top-level text is always prose.
-        // The tree builder will set is_prose = false for Text nodes
-        // inside non-rendering macros (<<silently>>, <<script>>, <<style>>).
+                        // The tree builder will set is_prose = false for Text nodes
+                        // inside non-rendering macros (<<silently>>, <<script>>, <<style>>).
     });
     *text_start = end;
 }
@@ -764,9 +793,7 @@ fn parse_inline_style(
     let len = bytes.len();
 
     // Find the class name (up to ; or the close delimiter)
-    let (class, class_span, body_start) = find_class_and_body_start(
-        text, *i, offset, is_double_at,
-    );
+    let (class, class_span, body_start) = find_class_and_body_start(text, *i, offset, is_double_at);
 
     // Find the closing delimiter
     let close_delim = if is_double_at { "@@" } else { "@" };
@@ -792,7 +819,10 @@ fn parse_inline_style(
     let children = if !body_content.is_empty() {
         let body_local_start = body_start - offset;
         let initial_col = compute_initial_col(text, body_local_start);
-        let mut child_ctx = ParseCtx { offset: body_start, col: initial_col };
+        let mut child_ctx = ParseCtx {
+            offset: body_start,
+            col: initial_col,
+        };
         parse_body_with_ctx(body_content, &mut child_ctx)
     } else {
         Vec::new()
@@ -874,13 +904,13 @@ fn parse_code_block(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     // a newline or end-of-text). We walk line-by-line through the content.
     let bytes = text.as_bytes();
     let len = bytes.len();
-    let mut close_offset = None;  // byte offset (relative to content_start) where the `}}}` line starts
+    let mut close_offset = None; // byte offset (relative to content_start) where the `}}}` line starts
     let mut search = content_start;
     while search < len {
         // Find the next `\n` from `search`.
         let nl_pos = match text[search..].find('\n') {
             Some(rel) => search + rel,
-            None => break,  // no more newlines; no closing `}}}` line
+            None => break, // no more newlines; no closing `}}}` line
         };
         // The line AFTER this newline starts at `nl_pos + 1`.
         let line_start = nl_pos + 1;
@@ -958,7 +988,7 @@ fn parse_inline_code(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     let (content, span_end) = if let Some(close_rel) = close_offset {
         let close_abs = content_start + close_rel;
         let content = text[content_start..close_abs].to_string();
-        let end = close_abs + 3;  // skip past `}}}`
+        let end = close_abs + 3; // skip past `}}}`
         (content, end)
     } else {
         // Unclosed — consume rest of text.
@@ -1001,7 +1031,7 @@ fn parse_verbatim(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     let (content, span_end) = if let Some(close_rel) = close_offset {
         let close_abs = content_start + close_rel;
         let content = text[content_start..close_abs].to_string();
-        let end = close_abs + 3;  // skip past `"""`
+        let end = close_abs + 3; // skip past `"""`
         (content, end)
     } else {
         // Unclosed — consume rest of text.
@@ -1049,7 +1079,7 @@ fn parse_nowiki(text: &str, i: &mut usize, span_start: usize) -> AstNode {
     let (content, span_end) = if let Some(close_rel) = close_offset {
         let close_abs = content_start + close_rel;
         let content = text[content_start..close_abs].to_string();
-        let end = close_abs + 9;  // skip past `</nowiki>` (9 bytes)
+        let end = close_abs + 9; // skip past `</nowiki>` (9 bytes)
         (content, end)
     } else {
         // Unclosed — consume rest of text.
@@ -1100,7 +1130,8 @@ fn parse_heading(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: usize) ->
 
     // Find end of line (next `\n` or end of text).
     let content_start = *i;
-    let end_of_line = text[content_start..].find('\n')
+    let end_of_line = text[content_start..]
+        .find('\n')
         .map(|pos| content_start + pos)
         .unwrap_or(len);
 
@@ -1242,7 +1273,8 @@ fn parse_blockquote_line(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: u
 
     // Find end of line (next `\n` or end of text).
     let content_start = *i;
-    let end_of_line = text[content_start..].find('\n')
+    let end_of_line = text[content_start..]
+        .find('\n')
         .map(|pos| content_start + pos)
         .unwrap_or(len);
 
@@ -1320,7 +1352,8 @@ fn parse_list_item(
 
     // Find end of line (next `\n` or end of text).
     let content_start = *i;
-    let end_of_line = text[content_start..].find('\n')
+    let end_of_line = text[content_start..]
+        .find('\n')
         .map(|pos| content_start + pos)
         .unwrap_or(len);
 
@@ -1465,9 +1498,7 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
 
         // Find end of line.
         let line_start = *i;
-        let line_end = text[*i..].find('\n')
-            .map(|pos| *i + pos)
-            .unwrap_or(len);
+        let line_end = text[*i..].find('\n').map(|pos| *i + pos).unwrap_or(len);
         let line = &text[line_start..line_end];
 
         // Determine row type and closing `|` position (relative to line start).
@@ -1488,10 +1519,17 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
         match row_type {
             TableRowType::Caption => {
                 // Caption row: extract cell content as caption string.
-                let caption_text: String = cells.iter()
-                    .flat_map(|c| c.children.iter().filter_map(|n| {
-                        if let AstNode::Text { content, .. } = n { Some(content.as_str()) } else { None }
-                    }))
+                let caption_text: String = cells
+                    .iter()
+                    .flat_map(|c| {
+                        c.children.iter().filter_map(|n| {
+                            if let AstNode::Text { content, .. } = n {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    })
                     .collect::<Vec<_>>()
                     .join("");
                 caption = Some(caption_text);
@@ -1499,31 +1537,50 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
             }
             TableRowType::Class => {
                 // Class row: extract cell content as class string.
-                let class_text: String = cells.iter()
-                    .flat_map(|c| c.children.iter().filter_map(|n| {
-                        if let AstNode::Text { content, .. } = n { Some(content.as_str()) } else { None }
-                    }))
+                let class_text: String = cells
+                    .iter()
+                    .flat_map(|c| {
+                        c.children.iter().filter_map(|n| {
+                            if let AstNode::Text { content, .. } = n {
+                                Some(content.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    })
                     .collect::<Vec<_>>()
                     .join("");
                 class = Some(class_text);
                 class_span = Some(row_span.clone());
             }
             TableRowType::Header => {
-                let row = TableRow { cells, row_type, span: row_span };
+                let row = TableRow {
+                    cells,
+                    row_type,
+                    span: row_span,
+                };
                 if header.is_none() {
                     header = Some(row.clone());
                 }
                 all_rows.push(row);
             }
             TableRowType::Footer => {
-                let row = TableRow { cells, row_type, span: row_span };
+                let row = TableRow {
+                    cells,
+                    row_type,
+                    span: row_span,
+                };
                 if footer.is_none() {
                     footer = Some(row.clone());
                 }
                 all_rows.push(row);
             }
             TableRowType::Body => {
-                all_rows.push(TableRow { cells, row_type, span: row_span });
+                all_rows.push(TableRow {
+                    cells,
+                    row_type,
+                    span: row_span,
+                });
             }
         }
 
@@ -1540,9 +1597,7 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
 
     // Compute the table span: from the first `|` to the last consumed position.
     // If no rows were parsed (shouldn't happen — guard checked), span is empty.
-    let table_start = offset + (all_rows.first()
-        .map(|r| r.span.start - offset)
-        .unwrap_or(0));
+    let table_start = offset + (all_rows.first().map(|r| r.span.start - offset).unwrap_or(0));
     let table_end = offset + (*i);
 
     AstNode::Table {
@@ -1715,7 +1770,11 @@ fn parse_blockquote_block(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: 
         } else if end + 1 < len && bytes[end] == b'\r' && bytes[end + 1] == b'\n' {
             end += 2;
         }
-        (children, end, Some(offset + close_start..offset + close_start + 3))
+        (
+            children,
+            end,
+            Some(offset + close_start..offset + close_start + 3),
+        )
     } else {
         // Unclosed — consume rest of text as content.
         let content = &text[content_start..];
@@ -1781,7 +1840,7 @@ fn find_class_and_body_start(
 
 #[cfg(test)]
 mod tests {
-    use crate::sugarcube::ast::{AstNode, CommentKind, ParseMode, LinkSource, TextFormatKind};
+    use crate::sugarcube::ast::{AstNode, CommentKind, LinkSource, ParseMode, TextFormatKind};
 
     #[test]
     fn line_comment_no_space_after_slashes_is_recognized() {
@@ -1790,12 +1849,19 @@ mod tests {
         // `<<link "x" "y">>  //content1` was getting a Prose token instead
         // of a Comment token because the old heuristic required a space
         // AFTER // (followed_by_space).
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "//content1", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("//content1", 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
-        assert!(matches!(&ast.nodes[0], AstNode::Comment { kind: CommentKind::JsLine, .. }),
-            "//content1 should be a Comment node, got {:?}", ast.nodes[0]);
+        assert!(
+            matches!(
+                &ast.nodes[0],
+                AstNode::Comment {
+                    kind: CommentKind::JsLine,
+                    ..
+                }
+            ),
+            "//content1 should be a Comment node, got {:?}",
+            ast.nodes[0]
+        );
     }
 
     #[test]
@@ -1805,24 +1871,36 @@ mod tests {
         // Note: <<link>> is a Required-body macro, so it goes on the stack
         // and the comment becomes its child (not a top-level node).
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "<<link \"x\" \"y\">>  //content1", 0, ParseMode::Normal,
+            "<<link \"x\" \"y\">>  //content1",
+            0,
+            ParseMode::Normal,
         );
 
         fn has_comment_recursive(nodes: &[AstNode]) -> bool {
             for n in nodes {
-                if matches!(n, AstNode::Comment { kind: CommentKind::JsLine, .. }) {
+                if matches!(
+                    n,
+                    AstNode::Comment {
+                        kind: CommentKind::JsLine,
+                        ..
+                    }
+                ) {
                     return true;
                 }
-                if let AstNode::Macro { children: Some(ch), .. } = n {
-                    if has_comment_recursive(ch) {
-                        return true;
-                    }
+                if let AstNode::Macro {
+                    children: Some(ch), ..
+                } = n
+                    && has_comment_recursive(ch)
+                {
+                    return true;
                 }
             }
             false
         }
-        assert!(has_comment_recursive(&ast.nodes),
-            "should have a Comment node for //content1 somewhere in the tree");
+        assert!(
+            has_comment_recursive(&ast.nodes),
+            "should have a Comment node for //content1 somewhere in the tree"
+        );
     }
 
     #[test]
@@ -1839,15 +1917,21 @@ mod tests {
                 if matches!(n, AstNode::Comment { .. }) {
                     count += 1;
                 }
-                if let AstNode::Macro { children: Some(ch), .. } = n {
+                if let AstNode::Macro {
+                    children: Some(ch), ..
+                } = n
+                {
                     count += count_comments(ch);
                 }
             }
             count
         }
         let comment_count = count_comments(&ast.nodes);
-        assert_eq!(comment_count, 3,
-            "should have 3 Comment nodes (//content1, //content2, //content3), got {}", comment_count);
+        assert_eq!(
+            comment_count, 3,
+            "should have 3 Comment nodes (//content1, //content2, //content3), got {}",
+            comment_count
+        );
     }
 
     #[test]
@@ -1856,7 +1940,9 @@ mod tests {
         // builder's stack, swallowing trailing text/comments into
         // pending_children and dropping them when finalized as inline.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "<<set $x to 1>> some narrative text", 0, ParseMode::Normal,
+            "<<set $x to 1>> some narrative text",
+            0,
+            ParseMode::Normal,
         );
         assert_eq!(ast.nodes.len(), 2, "should have Macro + Text nodes");
         assert!(matches!(&ast.nodes[0], AstNode::Macro { name, .. } if name == "set"));
@@ -1878,7 +1964,11 @@ mod tests {
 
     #[test]
     fn parse_variable_in_text() {
-        let ast = crate::sugarcube::parser::parse_passage_body("You have $gold coins.", 0, ParseMode::Normal);
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "You have $gold coins.",
+            0,
+            ParseMode::Normal,
+        );
         assert!(!ast.var_ops.is_empty());
         assert_eq!(ast.var_ops[0].name, "$gold");
         assert!(!ast.var_ops[0].is_write);
@@ -1886,9 +1976,14 @@ mod tests {
 
     #[test]
     fn parse_temp_variable() {
-        let ast = crate::sugarcube::parser::parse_passage_body("<<set _i to 0>>", 0, ParseMode::Normal);
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("<<set _i to 0>>", 0, ParseMode::Normal);
         assert!(!ast.var_ops.is_empty());
-        assert!(ast.var_ops.iter().any(|v| v.name == "_i" && v.is_temporary && v.is_write));
+        assert!(
+            ast.var_ops
+                .iter()
+                .any(|v| v.name == "_i" && v.is_temporary && v.is_write)
+        );
     }
 
     #[test]
@@ -1896,7 +1991,9 @@ mod tests {
         let ast = crate::sugarcube::parser::parse_passage_body("$$notavar", 0, ParseMode::Normal);
         // $$ should not be treated as a variable reference
         match &ast.nodes[0] {
-            AstNode::Text { content, var_refs, .. } => {
+            AstNode::Text {
+                content, var_refs, ..
+            } => {
                 assert!(content.contains("$$notavar"));
                 assert!(var_refs.is_empty());
             }
@@ -1906,7 +2003,11 @@ mod tests {
 
     #[test]
     fn stylesheet_mode_empty() {
-        let ast = crate::sugarcube::parser::parse_passage_body("body { color: red; }", 0, ParseMode::Stylesheet);
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            "body { color: red; }",
+            0,
+            ParseMode::Stylesheet,
+        );
         assert!(ast.nodes.is_empty());
     }
 
@@ -1924,16 +2025,33 @@ mod tests {
             ParseMode::Normal,
         );
         let connections = ast.graph_connections();
-        assert!(connections.iter().any(|c| c.target == "Forest" && c.edge_type == knot_core::graph::EdgeType::Navigation));
-        assert!(connections.iter().any(|c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Navigation));
-        assert!(connections.iter().any(|c| c.target == "Shop" && c.edge_type == knot_core::graph::EdgeType::Include));
+        assert!(
+            connections
+                .iter()
+                .any(|c| c.target == "Forest"
+                    && c.edge_type == knot_core::graph::EdgeType::Navigation)
+        );
+        assert!(
+            connections.iter().any(
+                |c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Navigation
+            )
+        );
+        assert!(
+            connections
+                .iter()
+                .any(|c| c.target == "Shop" && c.edge_type == knot_core::graph::EdgeType::Include)
+        );
     }
 
     #[test]
     fn interface_mode_extracts_data_passage() {
         let html = r#"<div id="story"><div data-passage="Sidebar"></div></div>"#;
         let ast = crate::sugarcube::parser::parse_passage_body(html, 0, ParseMode::Interface);
-        let dp_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::DataPassage).collect();
+        let dp_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::DataPassage)
+            .collect();
         assert_eq!(dp_links.len(), 1);
         assert_eq!(dp_links[0].target, "Sidebar");
     }
@@ -1980,7 +2098,9 @@ mod tests {
         let ast = crate::sugarcube::parser::parse_passage_body("Hello world", 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
-            AstNode::Text { content, is_prose, .. } => {
+            AstNode::Text {
+                content, is_prose, ..
+            } => {
                 assert_eq!(content, "Hello world");
                 assert!(*is_prose, "top-level text should be prose");
             }
@@ -2000,10 +2120,16 @@ mod tests {
             ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, children: Some(children), .. } => {
+            AstNode::Macro {
+                name,
+                children: Some(children),
+                ..
+            } => {
                 assert_eq!(name, "if");
                 match &children[0] {
-                    AstNode::Text { content, is_prose, .. } => {
+                    AstNode::Text {
+                        content, is_prose, ..
+                    } => {
                         assert!(content.contains("go to town"));
                         assert!(*is_prose, "text inside <<if>> should be prose");
                     }
@@ -2023,7 +2149,11 @@ mod tests {
             ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, children: Some(children), .. } => {
+            AstNode::Macro {
+                name,
+                children: Some(children),
+                ..
+            } => {
                 assert_eq!(name, "silently");
                 for child in children {
                     if let AstNode::Text { is_prose, .. } = child {
@@ -2044,7 +2174,11 @@ mod tests {
             ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, children: Some(children), .. } => {
+            AstNode::Macro {
+                name,
+                children: Some(children),
+                ..
+            } => {
                 assert_eq!(name, "script");
                 for child in children {
                     if let AstNode::Text { is_prose, .. } = child {
@@ -2069,17 +2203,29 @@ mod tests {
         // But "more visible" might end up inside the silently macro's children
         // if the tree builder picks it up before the close tag. Let's check
         // the actual structure flexibly.
-        let top_text_nodes: Vec<_> = ast.nodes.iter()
+        let top_text_nodes: Vec<_> = ast
+            .nodes
+            .iter()
             .filter_map(|n| match n {
-                AstNode::Text { content, is_prose, .. } => Some((content.clone(), *is_prose)),
+                AstNode::Text {
+                    content, is_prose, ..
+                } => Some((content.clone(), *is_prose)),
                 _ => None,
             })
             .collect();
 
         // "visible text" should be prose
-        let visible = top_text_nodes.iter().find(|(c, _)| c.contains("visible text"));
-        assert!(visible.is_some(), "should find 'visible text' as top-level node");
-        assert!(visible.unwrap().1, "top-level text before <<silently>> should be prose");
+        let visible = top_text_nodes
+            .iter()
+            .find(|(c, _)| c.contains("visible text"));
+        assert!(
+            visible.is_some(),
+            "should find 'visible text' as top-level node"
+        );
+        assert!(
+            visible.unwrap().1,
+            "top-level text before <<silently>> should be prose"
+        );
 
         // Find the silently macro and verify its children are NOT prose
         let silently = ast.nodes.iter().find_map(|n| match n {
@@ -2088,18 +2234,25 @@ mod tests {
         });
         if let Some(silently_children) = silently {
             for child in &silently_children {
-                if let AstNode::Text { content, is_prose, .. } = child {
-                    if content.contains("hidden") {
-                        assert!(!*is_prose, "text inside <<silently>> should NOT be prose");
-                    }
+                if let AstNode::Text {
+                    content, is_prose, ..
+                } = child
+                    && content.contains("hidden")
+                {
+                    assert!(!*is_prose, "text inside <<silently>> should NOT be prose");
                 }
             }
         }
 
         // "more visible" should be prose (it's after <</silently>>)
-        let more_visible = top_text_nodes.iter().find(|(c, _)| c.contains("more visible"));
+        let more_visible = top_text_nodes
+            .iter()
+            .find(|(c, _)| c.contains("more visible"));
         if let Some((_, is_prose)) = more_visible {
-            assert!(is_prose, "top-level text after <<silently>> should be prose");
+            assert!(
+                is_prose,
+                "top-level text after <<silently>> should be prose"
+            );
         }
         // If "more visible" isn't a top-level node, it may be inside the
         // silently macro — but that shouldn't happen with proper close-tag pairing.
@@ -2115,16 +2268,27 @@ mod tests {
             ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, children: Some(children), .. } => {
+            AstNode::Macro {
+                name,
+                children: Some(children),
+                ..
+            } => {
                 assert_eq!(name, "silently");
                 // Find the <<if>> macro inside
                 for child in children {
-                    if let AstNode::Macro { name, children: Some(if_children), .. } = child {
+                    if let AstNode::Macro {
+                        name,
+                        children: Some(if_children),
+                        ..
+                    } = child
+                    {
                         assert_eq!(name, "if");
                         for if_child in if_children {
                             if let AstNode::Text { is_prose, .. } = if_child {
-                                assert!(!*is_prose,
-                                    "text inside <<if>> nested in <<silently>> should NOT be prose");
+                                assert!(
+                                    !*is_prose,
+                                    "text inside <<if>> nested in <<silently>> should NOT be prose"
+                                );
                             }
                         }
                     }
@@ -2143,7 +2307,11 @@ mod tests {
             ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, children: Some(children), .. } => {
+            AstNode::Macro {
+                name,
+                children: Some(children),
+                ..
+            } => {
                 assert_eq!(name, "done");
                 // The tree builder should have marked any Text children as non-prose
                 for child in children {
@@ -2168,21 +2336,28 @@ mod tests {
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<= $hp>>");
 
         // Should have at least a Macro token for the = sigil and a Variable token for $hp
-        let macro_tokens: Vec<_> = tokens.iter()
+        let macro_tokens: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
-        assert!(!macro_tokens.is_empty(), "<<=>> should emit a Macro token for the sigil");
+        assert!(
+            !macro_tokens.is_empty(),
+            "<<=>> should emit a Macro token for the sigil"
+        );
         // The sigil token should be at offset 2 (past <<) and length 1
         let sigil = &macro_tokens[0];
         assert_eq!(sigil.start, 2, "sigil token should start at offset 2");
         assert_eq!(sigil.length, 1, "sigil token length should be 1");
-        assert!(sigil.modifier.is_none(), "<<=>> sigil should have no modifier");
+        assert!(
+            sigil.modifier.is_none(),
+            "<<=>> sigil should have no modifier"
+        );
     }
 
     #[test]
     fn silent_expression_sigil_has_control_flow_modifier() {
         // <<->> should emit a Macro token with ControlFlow modifier
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
@@ -2190,15 +2365,22 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<- $hp>>");
 
-        let sigil_tokens: Vec<_> = tokens.iter()
+        let sigil_tokens: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
-        assert!(!sigil_tokens.is_empty(), "<<->> should emit a Macro token for the sigil");
+        assert!(
+            !sigil_tokens.is_empty(),
+            "<<->> should emit a Macro token for the sigil"
+        );
         let sigil = &sigil_tokens[0];
         assert_eq!(sigil.start, 2, "sigil token should start at offset 2");
         assert_eq!(sigil.length, 1, "sigil token length should be 1");
-        assert_eq!(sigil.modifier, Some(SemanticTokenModifier::ControlFlow),
-            "<<->> sigil should have ControlFlow modifier");
+        assert_eq!(
+            sigil.modifier,
+            Some(SemanticTokenModifier::ControlFlow),
+            "<<->> sigil should have ControlFlow modifier"
+        );
     }
 
     #[test]
@@ -2216,10 +2398,15 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let delims: Vec<_> = tokens.iter()
+        let delims: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
-        assert_eq!(delims.len(), 2, "inline macro should emit exactly 2 delimiter tokens (<< and >>)");
+        assert_eq!(
+            delims.len(),
+            2,
+            "inline macro should emit exactly 2 delimiter tokens (<< and >>)"
+        );
 
         // Sort by start offset to make assertions order-independent
         let mut delims_sorted = delims.clone();
@@ -2228,16 +2415,23 @@ mod tests {
         // First delimiter: `<<`
         assert_eq!(delims_sorted[0].start, 0, "`<<` should start at offset 0");
         assert_eq!(delims_sorted[0].length, 2, "`<<` should be length 2");
-        assert!(delims_sorted[0].modifier.is_none(),
-            "inline non-deprecated macro delimiters should have no modifier");
+        assert!(
+            delims_sorted[0].modifier.is_none(),
+            "inline non-deprecated macro delimiters should have no modifier"
+        );
 
         // Second delimiter: `>>` — at the end of the input minus 2
         let expected_close_start = input.len() - 2;
-        assert_eq!(delims_sorted[1].start, expected_close_start,
-            "`>>` should start at offset {}", expected_close_start);
+        assert_eq!(
+            delims_sorted[1].start, expected_close_start,
+            "`>>` should start at offset {}",
+            expected_close_start
+        );
         assert_eq!(delims_sorted[1].length, 2, "`>>` should be length 2");
-        assert!(delims_sorted[1].modifier.is_none(),
-            "inline non-deprecated macro delimiters should have no modifier");
+        assert!(
+            delims_sorted[1].modifier.is_none(),
+            "inline non-deprecated macro delimiters should have no modifier"
+        );
     }
 
     #[test]
@@ -2258,24 +2452,36 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let delims: Vec<_> = tokens.iter()
+        let delims: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
-        assert_eq!(delims.len(), 4,
-            "block macro should emit 4 delimiter tokens (<<, >>, <</, >>), got {:?}", delims);
+        assert_eq!(
+            delims.len(),
+            4,
+            "block macro should emit 4 delimiter tokens (<<, >>, <</, >>), got {:?}",
+            delims
+        );
 
         // All four should have None (top-level, depth 0 = base color)
         for (i, d) in delims.iter().enumerate() {
-            assert!(d.modifier.is_none(),
-                "delimiter {} should have NO modifier (depth 0 = base color), got {:?}", i, d.modifier);
+            assert!(
+                d.modifier.is_none(),
+                "delimiter {} should have NO modifier (depth 0 = base color), got {:?}",
+                i,
+                d.modifier
+            );
         }
 
         // Verify the `<</` is 3 bytes
-        let slash_open = delims.iter()
+        let slash_open = delims
+            .iter()
             .find(|t| t.length == 3)
             .expect("should have one 3-byte delimiter (`<</`)");
-        assert!(slash_open.start >= 17,
-            "`<</` should start after the open tag's `>>`");
+        assert!(
+            slash_open.start >= 17,
+            "`<</` should start after the open tag's `>>`"
+        );
     }
 
     #[test]
@@ -2283,7 +2489,7 @@ mod tests {
         // Outer <<if>> at depth 0 (top-level), inner <<if>> at depth 1.
         // Outer delimiters → None (base, depth 0)
         // Inner delimiters → BlockDepth1 (depth 1, inside one block)
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
@@ -2292,19 +2498,30 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let depth0_delims = tokens.iter()
-            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)
-                && t.modifier.is_none())
+        let depth0_delims = tokens
+            .iter()
+            .filter(|t| {
+                matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.modifier.is_none()
+            })
             .count();
-        let depth1_delims = tokens.iter()
-            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)
-                && t.modifier == Some(SemanticTokenModifier::BlockDepth1))
+        let depth1_delims = tokens
+            .iter()
+            .filter(|t| {
+                matches!(t.token_type, SemanticTokenType::MacroDelimiter)
+                    && t.modifier == Some(SemanticTokenModifier::BlockDepth1)
+            })
             .count();
 
         // Outer block macro: 4 delimiters at depth 0 (None) — <<, >>, <</, >>
         // Inner block macro: 4 delimiters at depth 1 (BlockDepth1) — <<, >>, <</, >>
-        assert_eq!(depth0_delims, 4, "outer macro should contribute 4 base-color delimiters (None modifier)");
-        assert_eq!(depth1_delims, 4, "inner macro should contribute 4 BlockDepth1 delimiters");
+        assert_eq!(
+            depth0_delims, 4,
+            "outer macro should contribute 4 base-color delimiters (None modifier)"
+        );
+        assert_eq!(
+            depth1_delims, 4,
+            "inner macro should contribute 4 BlockDepth1 delimiters"
+        );
     }
 
     #[test]
@@ -2318,7 +2535,7 @@ mod tests {
         //   - `set` name  → None (base macro color)
         //   - `<<link>>` delimiters → None (depth 0 = base delimiter color)
         //   - `<<set>>` delimiters  → BlockDepth1 (depth 1, inside one block)
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
@@ -2328,43 +2545,64 @@ mod tests {
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
         // <<link>> name at offset 2, length 4 — should be None (base color, no depth)
-        let link_name = tokens.iter()
-            .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.start == 2 && t.length == 4)
+        let link_name = tokens
+            .iter()
+            .find(|t| {
+                matches!(t.token_type, SemanticTokenType::Macro) && t.start == 2 && t.length == 4
+            })
             .expect("should find link name token");
-        assert!(link_name.modifier.is_none(),
+        assert!(
+            link_name.modifier.is_none(),
             "<<link>> name should have NO depth modifier (base macro color), got {:?}",
-            link_name.modifier);
+            link_name.modifier
+        );
 
         // <<set>> name at offset 24, length 3 — should be None (base color, no depth)
-        let set_name = tokens.iter()
-            .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.start == 24 && t.length == 3)
+        let set_name = tokens
+            .iter()
+            .find(|t| {
+                matches!(t.token_type, SemanticTokenType::Macro) && t.start == 24 && t.length == 3
+            })
             .expect("should find set name token");
-        assert!(set_name.modifier.is_none(),
+        assert!(
+            set_name.modifier.is_none(),
             "<<set>> name should have NO depth modifier (base macro color), got {:?}",
-            set_name.modifier);
+            set_name.modifier
+        );
 
         // <<link>> delimiters (offset 0) → None (depth 0 = base color)
-        let link_open_delim = tokens.iter()
+        let link_open_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 0)
             .expect("should find `<<` delimiter for <<link>>");
-        assert!(link_open_delim.modifier.is_none(),
+        assert!(
+            link_open_delim.modifier.is_none(),
             "<<link>> `<<` delimiter should have NO modifier (depth 0 = base), got {:?}",
-            link_open_delim.modifier);
+            link_open_delim.modifier
+        );
 
         // <<set>> delimiters (offset 22, 35) → BlockDepth1 (depth 1, inside link)
-        let set_open_delim = tokens.iter()
+        let set_open_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 22)
             .expect("should find `<<` delimiter for inner <<set>>");
-        assert_eq!(set_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+        assert_eq!(
+            set_open_delim.modifier,
+            Some(SemanticTokenModifier::BlockDepth1),
             "inner `<<` delimiter should be BlockDepth1 (inside one block), got {:?}",
-            set_open_delim.modifier);
+            set_open_delim.modifier
+        );
 
-        let set_close_delim = tokens.iter()
+        let set_close_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 35)
             .expect("should find `>>` delimiter for inner <<set>>");
-        assert_eq!(set_close_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+        assert_eq!(
+            set_close_delim.modifier,
+            Some(SemanticTokenModifier::BlockDepth1),
             "inner `>>` delimiter should be BlockDepth1 (inside one block), got {:?}",
-            set_close_delim.modifier);
+            set_close_delim.modifier
+        );
     }
 
     #[test]
@@ -2379,51 +2617,67 @@ mod tests {
         //
         // The macro NAMES (link, if, adjustStat) all use the base `macro`
         // color — NO depth modifier on names. Only the delimiters track depth.
-        use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
-        let input = "<<link \"Chat\" \"Coworker\">><<if true>><<adjustStat \"stress\" -3>><</if>><</link>>";
+        let input =
+            "<<link \"Chat\" \"Coworker\">><<if true>><<adjustStat \"stress\" -3>><</if>><</link>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let macro_tokens: Vec<_> = tokens.iter()
+        let macro_tokens: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
 
         // All macro NAMES should have NO depth modifier — base macro color only.
         // (link at offset 2 len 4, if at offset 28 len 2, adjustStat at offset 39 len 10)
         for t in &macro_tokens {
-            assert!(t.modifier.is_none(),
+            assert!(
+                t.modifier.is_none(),
                 "macro name at offset {} should have NO depth modifier (base color only), got {:?}",
-                t.start, t.modifier);
+                t.start,
+                t.modifier
+            );
         }
 
         // Delimiters track depth — verify the `<<` before each name.
         // <<link>> `<<` at offset 0 → None (depth 0 = base color)
-        let link_open_delim = tokens.iter()
+        let link_open_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 0)
             .expect("should find `<<` delimiter for <<link>>");
-        assert!(link_open_delim.modifier.is_none(),
+        assert!(
+            link_open_delim.modifier.is_none(),
             "<<link>> `<<` delimiter should have NO modifier (depth 0 = base), got {:?}",
-            link_open_delim.modifier);
+            link_open_delim.modifier
+        );
 
         // <<if>> `<<` at offset 26 (28 - 2) → BlockDepth1 (depth 1, inside link)
-        let if_open_delim = tokens.iter()
+        let if_open_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 26)
             .expect("should find `<<` delimiter for <<if>>");
-        assert_eq!(if_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth1),
+        assert_eq!(
+            if_open_delim.modifier,
+            Some(SemanticTokenModifier::BlockDepth1),
             "<<if>> `<<` delimiter should be BlockDepth1 (inside one block), got {:?}",
-            if_open_delim.modifier);
+            if_open_delim.modifier
+        );
 
         // <<adjustStat>> `<<` at offset 37 (39 - 2) → BlockDepth2 (depth 2, inside link+if)
-        let adjust_open_delim = tokens.iter()
+        let adjust_open_delim = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter) && t.start == 37)
             .expect("should find `<<` delimiter at offset 37 (immediately before adjustStat)");
-        assert_eq!(adjust_open_delim.modifier, Some(SemanticTokenModifier::BlockDepth2),
+        assert_eq!(
+            adjust_open_delim.modifier,
+            Some(SemanticTokenModifier::BlockDepth2),
             "<<adjustStat>>'s `<<` delimiter should be BlockDepth2 (inside two blocks), got {:?}",
-            adjust_open_delim.modifier);
+            adjust_open_delim.modifier
+        );
     }
 
     #[test]
@@ -2441,18 +2695,27 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let set_name = tokens.iter()
+        let set_name = tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::Macro) && t.length == 3)
             .expect("should find `set` name token");
-        assert!(set_name.modifier.is_none(),
+        assert!(
+            set_name.modifier.is_none(),
             "top-level `<<set>>` should have no depth modifier, got {:?}",
-            set_name.modifier);
+            set_name.modifier
+        );
 
         // All delimiter tokens at top level should also have no modifier
-        for t in tokens.iter().filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter)) {
-            assert!(t.modifier.is_none(),
+        for t in tokens
+            .iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
+        {
+            assert!(
+                t.modifier.is_none(),
                 "top-level delimiter at offset {} should have no modifier, got {:?}",
-                t.start, t.modifier);
+                t.start,
+                t.modifier
+            );
         }
     }
 
@@ -2469,11 +2732,15 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
 
-        let delims: Vec<_> = tokens.iter()
+        let delims: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
-        assert_eq!(delims.len(), 2,
-            "expression macro should emit 2 delimiter tokens (<< and >>)");
+        assert_eq!(
+            delims.len(),
+            2,
+            "expression macro should emit 2 delimiter tokens (<< and >>)"
+        );
 
         let mut sorted = delims.clone();
         sorted.sort_by_key(|t| t.start);
@@ -2491,13 +2758,27 @@ mod tests {
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
-        let ast = crate::sugarcube::parser::parse_passage_body("<<set $x to 1>>", 0, ParseMode::Normal);
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("<<set $x to 1>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<set $x to 1>>");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "<<set $x to 1>>",
+        );
 
-        let has_macro_name = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::Macro));
-        let has_delimiter = tokens.iter().any(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter));
-        assert!(has_macro_name, "should have a Macro token for the name `set`");
+        let has_macro_name = tokens
+            .iter()
+            .any(|t| matches!(t.token_type, SemanticTokenType::Macro));
+        let has_delimiter = tokens
+            .iter()
+            .any(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter));
+        assert!(
+            has_macro_name,
+            "should have a Macro token for the name `set`"
+        );
         assert!(has_delimiter, "should have MacroDelimiter tokens for << >>");
     }
 
@@ -2508,53 +2789,74 @@ mod tests {
         use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
         use std::collections::HashSet;
 
-        let ast_print = crate::sugarcube::parser::parse_passage_body(
-            "<<print $hp>>", 0, ParseMode::Normal,
-        );
-        let ast_expr = crate::sugarcube::parser::parse_passage_body(
-            "<<= $hp>>", 0, ParseMode::Normal,
-        );
+        let ast_print =
+            crate::sugarcube::parser::parse_passage_body("<<print $hp>>", 0, ParseMode::Normal);
+        let ast_expr =
+            crate::sugarcube::parser::parse_passage_body("<<= $hp>>", 0, ParseMode::Normal);
 
         let mut tokens_print = Vec::new();
         let mut tokens_expr = Vec::new();
         build_semantic_tokens(&ast_print.nodes, &mut tokens_print, 0, &HashSet::new(), "");
         build_semantic_tokens(&ast_expr.nodes, &mut tokens_expr, 0, &HashSet::new(), "");
 
-        let var_tokens_print: Vec<_> = tokens_print.iter()
+        let var_tokens_print: Vec<_> = tokens_print
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
             .collect();
-        let var_tokens_expr: Vec<_> = tokens_expr.iter()
+        let var_tokens_expr: Vec<_> = tokens_expr
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
             .collect();
 
-        assert!(!var_tokens_print.is_empty(), "<<print>> should emit Variable tokens");
-        assert!(!var_tokens_expr.is_empty(), "<<=>> should emit Variable tokens");
+        assert!(
+            !var_tokens_print.is_empty(),
+            "<<print>> should emit Variable tokens"
+        );
+        assert!(
+            !var_tokens_expr.is_empty(),
+            "<<=>> should emit Variable tokens"
+        );
         // Both should have the same number of Variable tokens for the same expression
-        assert_eq!(var_tokens_print.len(), var_tokens_expr.len(),
-            "<<print>> and <<=>> should emit the same number of Variable tokens");
+        assert_eq!(
+            var_tokens_print.len(),
+            var_tokens_expr.len(),
+            "<<print>> and <<=>> should emit the same number of Variable tokens"
+        );
     }
 
     #[test]
     fn inline_style_double_at() {
         // @@.highlight;important text@@
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "@@.highlight;important text@@", 0, ParseMode::Normal,
+            "@@.highlight;important text@@",
+            0,
+            ParseMode::Normal,
         );
-        let style_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::InlineStyle { class, .. } => Some(class.clone()),
-            _ => None,
-        }).expect("should find InlineStyle node");
+        let style_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::InlineStyle { class, .. } => Some(class.clone()),
+                _ => None,
+            })
+            .expect("should find InlineStyle node");
         assert_eq!(style_node, ".highlight");
 
         // Verify children contain prose text
-        let style = ast.nodes.iter().find_map(|n| match n {
-            node @ AstNode::InlineStyle { .. } => Some(node.clone()),
-            _ => None,
-        }).unwrap();
+        let style = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                node @ AstNode::InlineStyle { .. } => Some(node.clone()),
+                _ => None,
+            })
+            .unwrap();
         match &style {
             AstNode::InlineStyle { children, .. } => {
                 assert!(!children.is_empty(), "InlineStyle should have children");
-                let has_prose = children.iter().any(|c| matches!(c, AstNode::Text { is_prose: true, .. }));
+                let has_prose = children
+                    .iter()
+                    .any(|c| matches!(c, AstNode::Text { is_prose: true, .. }));
                 assert!(has_prose, "children should contain prose text");
             }
             _ => unreachable!(),
@@ -2565,12 +2867,18 @@ mod tests {
     fn inline_style_single_at() {
         // @.red;warning text@
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "@.red;warning text@", 0, ParseMode::Normal,
+            "@.red;warning text@",
+            0,
+            ParseMode::Normal,
         );
-        let style_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::InlineStyle { class, .. } => Some(class.clone()),
-            _ => None,
-        }).expect("should find InlineStyle node");
+        let style_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::InlineStyle { class, .. } => Some(class.clone()),
+                _ => None,
+            })
+            .expect("should find InlineStyle node");
         assert_eq!(style_node, ".red");
     }
 
@@ -2582,18 +2890,27 @@ mod tests {
             0,
             ParseMode::Normal,
         );
-        let style = ast.nodes.iter().find_map(|n| match n {
-            node @ AstNode::InlineStyle { .. } => Some(node.clone()),
-            _ => None,
-        }).expect("should find InlineStyle node");
+        let style = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                node @ AstNode::InlineStyle { .. } => Some(node.clone()),
+                _ => None,
+            })
+            .expect("should find InlineStyle node");
         match &style {
-            AstNode::InlineStyle { class, children, .. } => {
+            AstNode::InlineStyle {
+                class, children, ..
+            } => {
                 assert_eq!(class, ".highlight");
                 // Children should contain a Text node with a $gold variable ref
-                let text_with_var = children.iter().any(|c| {
-                    matches!(c, AstNode::Text { var_refs, .. } if !var_refs.is_empty())
-                });
-                assert!(text_with_var, "children should contain Text with variable refs");
+                let text_with_var = children
+                    .iter()
+                    .any(|c| matches!(c, AstNode::Text { var_refs, .. } if !var_refs.is_empty()));
+                assert!(
+                    text_with_var,
+                    "children should contain Text with variable refs"
+                );
             }
             _ => unreachable!(),
         }
@@ -2614,47 +2931,84 @@ mod tests {
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
 
-        let style_tokens: Vec<_> = tokens.iter()
+        let style_tokens: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::InlineStyle))
             .collect();
-        assert!(!style_tokens.is_empty(), "should emit InlineStyle token for class name");
-        assert_eq!(style_tokens[0].length, ".highlight".len(),
-            "InlineStyle token should cover the class name");
+        assert!(
+            !style_tokens.is_empty(),
+            "should emit InlineStyle token for class name"
+        );
+        assert_eq!(
+            style_tokens[0].length,
+            ".highlight".len(),
+            "InlineStyle token should cover the class name"
+        );
     }
 
     #[test]
     fn text_format_bold() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "This is ''bold'' text", 0, ParseMode::Normal,
+            "This is ''bold'' text",
+            0,
+            ParseMode::Normal,
         );
-        let bold_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::TextFormat { kind: TextFormatKind::Bold, content, .. } => Some(content.clone()),
-            _ => None,
-        }).expect("should find Bold TextFormat node");
+        let bold_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::TextFormat {
+                    kind: TextFormatKind::Bold,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("should find Bold TextFormat node");
         assert_eq!(bold_node, "bold");
     }
 
     #[test]
     fn text_format_italic() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "This is //italic// text", 0, ParseMode::Normal,
+            "This is //italic// text",
+            0,
+            ParseMode::Normal,
         );
-        let italic_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::TextFormat { kind: TextFormatKind::Italic, content, .. } => Some(content.clone()),
-            _ => None,
-        }).expect("should find Italic TextFormat node");
+        let italic_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::TextFormat {
+                    kind: TextFormatKind::Italic,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("should find Italic TextFormat node");
         assert_eq!(italic_node, "italic");
     }
 
     #[test]
     fn text_format_strike() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "This is ==struck== text", 0, ParseMode::Normal,
+            "This is ==struck== text",
+            0,
+            ParseMode::Normal,
         );
-        let node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::TextFormat { kind: TextFormatKind::Strike, content, .. } => Some(content.clone()),
-            _ => None,
-        }).expect("should find Strike TextFormat node");
+        let node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::TextFormat {
+                    kind: TextFormatKind::Strike,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("should find Strike TextFormat node");
         assert_eq!(node, "struck");
     }
 
@@ -2665,15 +3019,21 @@ mod tests {
         use std::collections::HashSet;
 
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "Some ''bold'' text", 0, ParseMode::Normal,
+            "Some ''bold'' text",
+            0,
+            ParseMode::Normal,
         );
         let mut tokens = Vec::new();
         build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
 
-        let format_tokens: Vec<_> = tokens.iter()
+        let format_tokens: Vec<_> = tokens
+            .iter()
             .filter(|t| matches!(t.token_type, SemanticTokenType::TextFormat))
             .collect();
-        assert!(!format_tokens.is_empty(), "should emit TextFormat token for bold");
+        assert!(
+            !format_tokens.is_empty(),
+            "should emit TextFormat token for bold"
+        );
     }
 
     #[test]
@@ -2699,13 +3059,20 @@ mod tests {
     #[test]
     fn text_format_closed_with_multibyte_content() {
         // Text-format markup with multi-byte characters inside should parse correctly
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "''bold — dash''", 0, ParseMode::Normal,
-        );
-        let node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::TextFormat { kind: TextFormatKind::Bold, content, .. } => Some(content.clone()),
-            _ => None,
-        }).expect("should find Bold TextFormat node");
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("''bold — dash''", 0, ParseMode::Normal);
+        let node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::TextFormat {
+                    kind: TextFormatKind::Bold,
+                    content,
+                    ..
+                } => Some(content.clone()),
+                _ => None,
+            })
+            .expect("should find Bold TextFormat node");
         assert_eq!(node, "bold — dash");
     }
 
@@ -2713,7 +3080,9 @@ mod tests {
     fn prose_with_em_dash_no_panic() {
         // Plain prose with em dashes should never panic
         let _ast = crate::sugarcube::parser::parse_passage_body(
-            "The state — never here — is tracked.", 0, ParseMode::Normal,
+            "The state — never here — is tracked.",
+            0,
+            ParseMode::Normal,
         );
     }
 
@@ -2744,10 +3113,14 @@ mod tests {
     fn expression_macro_with_multibyte_utf8() {
         // <<= and <<->> with multi-byte chars in the expression
         let _ast1 = crate::sugarcube::parser::parse_passage_body(
-            "<<= 'hello—world'>>", 0, ParseMode::Normal,
+            "<<= 'hello—world'>>",
+            0,
+            ParseMode::Normal,
         );
         let _ast2 = crate::sugarcube::parser::parse_passage_body(
-            "<<- 'silent—expr'>>", 0, ParseMode::Normal,
+            "<<- 'silent—expr'>>",
+            0,
+            ParseMode::Normal,
         );
     }
 
@@ -2756,7 +3129,8 @@ mod tests {
         // <<script>> body with em dashes should not panic
         let _ast = crate::sugarcube::parser::parse_passage_body(
             "<<script>>\n// comment — dash\nvar x = 1;\n<</script>>",
-            0, ParseMode::Normal,
+            0,
+            ParseMode::Normal,
         );
     }
 
@@ -2765,7 +3139,8 @@ mod tests {
         // <<style>> body with em dashes should not panic
         let _ast = crate::sugarcube::parser::parse_passage_body(
             "<<style>>\n/* style — dash */\n.foo { color: red; }\n<</style>>",
-            0, ParseMode::Normal,
+            0,
+            ParseMode::Normal,
         );
     }
 
@@ -2773,7 +3148,9 @@ mod tests {
     fn inline_vars_with_multibyte_utf8() {
         // Variable scanning in text with multi-byte chars
         let _ast = crate::sugarcube::parser::parse_passage_body(
-            "The value — $gs.x — is tracked.", 0, ParseMode::Normal,
+            "The value — $gs.x — is tracked.",
+            0,
+            ParseMode::Normal,
         );
     }
 
@@ -2825,12 +3202,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<set $x = { /* inner comment */ a: 1 }>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let comment_tokens: Vec<_> = result.token_groups.iter()
+        let comment_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
             .collect();
-        assert!(!comment_tokens.is_empty(),
-            "should have at least one Comment token for /* inner comment */ inside <<set>> args");
+        assert!(
+            !comment_tokens.is_empty(),
+            "should have at least one Comment token for /* inner comment */ inside <<set>> args"
+        );
     }
 
     #[test]
@@ -2844,13 +3225,17 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<set $x = { a: 1, // inner line comment\n b: 2 }>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let comment_tokens: Vec<_> = result.token_groups.iter()
+        let comment_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
             .collect();
-        assert!(!comment_tokens.is_empty(),
+        assert!(
+            !comment_tokens.is_empty(),
             "should have at least one Comment token for // inner line comment inside <<set>> args, got {} comment tokens",
-            comment_tokens.len());
+            comment_tokens.len()
+        );
     }
 
     #[test]
@@ -2865,25 +3250,41 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<set $x = {\n  /* this is\n     a multi-line\n     comment */\n  a: 1\n}>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let comment_tokens: Vec<_> = result.token_groups.iter()
+        let comment_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Comment))
             .collect();
-        assert!(!comment_tokens.is_empty(),
+        assert!(
+            !comment_tokens.is_empty(),
             "should have at least one Comment token for multi-line /* */ inside <<set>> args, got {} comment tokens",
-            comment_tokens.len());
+            comment_tokens.len()
+        );
 
         // The comment token should span the FULL multi-line comment including
         // the closing */ and all content lines.
-        let full_comment_text: String = comment_tokens.iter()
-            .map(|t| text[t.start.min(text.len())..(t.start + t.length).min(text.len())].to_string())
+        let full_comment_text: String = comment_tokens
+            .iter()
+            .map(|t| {
+                text[t.start.min(text.len())..(t.start + t.length).min(text.len())].to_string()
+            })
             .collect();
-        assert!(full_comment_text.contains("*/"),
-            "comment token should include the closing */, got: {:?}", full_comment_text);
-        assert!(full_comment_text.contains("multi-line"),
-            "comment token should include 'multi-line' from line 2, got: {:?}", full_comment_text);
-        assert!(full_comment_text.contains("this is"),
-            "comment token should include 'this is' from line 1, got: {:?}", full_comment_text);
+        assert!(
+            full_comment_text.contains("*/"),
+            "comment token should include the closing */, got: {:?}",
+            full_comment_text
+        );
+        assert!(
+            full_comment_text.contains("multi-line"),
+            "comment token should include 'multi-line' from line 2, got: {:?}",
+            full_comment_text
+        );
+        assert!(
+            full_comment_text.contains("this is"),
+            "comment token should include 'this is' from line 1, got: {:?}",
+            full_comment_text
+        );
     }
 
     #[test]
@@ -2898,12 +3299,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<set $arr = [{a:1}, {b:2}]>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let number_tokens: Vec<_> = result.token_groups.iter()
+        let number_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Number))
             .collect();
-        assert_eq!(number_tokens.len(), 2,
-            "should have 2 Number tokens for 1 and 2 inside objects in array, got {}", number_tokens.len());
+        assert_eq!(
+            number_tokens.len(),
+            2,
+            "should have 2 Number tokens for 1 and 2 inside objects in array, got {}",
+            number_tokens.len()
+        );
     }
 
     #[test]
@@ -2918,12 +3325,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<set $arr = [[1,2], [3,4]]>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let number_tokens: Vec<_> = result.token_groups.iter()
+        let number_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Number))
             .collect();
-        assert_eq!(number_tokens.len(), 4,
-            "should have 4 Number tokens for 1,2,3,4 inside nested arrays, got {}", number_tokens.len());
+        assert_eq!(
+            number_tokens.len(),
+            4,
+            "should have 4 Number tokens for 1,2,3,4 inside nested arrays, got {}",
+            number_tokens.len()
+        );
     }
 
     #[test]
@@ -2939,11 +3352,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\nYou have $gold coins.\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let all_tokens: Vec<_> = result.token_groups.iter()
+        let all_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .collect();
 
-        let var_token = all_tokens.iter()
+        let var_token = all_tokens
+            .iter()
             .find(|t| matches!(t.token_type, SemanticTokenType::Variable))
             .expect("should have a Variable token for $gold");
 
@@ -2954,9 +3370,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
                 let prose_start = t.start;
                 let prose_end = t.start + t.length;
                 let overlaps = var_start < prose_end && prose_start < var_end;
-                assert!(!overlaps,
+                assert!(
+                    !overlaps,
                     "Prose token [{},{}) should not overlap Variable token [{},{})",
-                    prose_start, prose_end, var_start, var_end);
+                    prose_start, prose_end, var_start, var_end
+                );
             }
         }
     }
@@ -2972,16 +3390,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\nWelcome ?playerName to the game.\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let func_tokens: Vec<_> = result.token_groups.iter()
+        let func_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
             .collect();
-        assert!(!func_tokens.is_empty(), "should have a Function token for ?playerName");
+        assert!(
+            !func_tokens.is_empty(),
+            "should have a Function token for ?playerName"
+        );
 
         let tok = &func_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert!(token_text.starts_with('?'),
-            "template token should include the ? sigil, got: {:?}", token_text);
+        assert!(
+            token_text.starts_with('?'),
+            "template token should include the ? sigil, got: {:?}",
+            token_text
+        );
     }
 
     #[test]
@@ -2999,16 +3425,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\nRandom number: ?random-num\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let func_tokens: Vec<_> = result.token_groups.iter()
+        let func_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
             .collect();
-        assert!(!func_tokens.is_empty(), "should have a Function token for ?random-num");
+        assert!(
+            !func_tokens.is_empty(),
+            "should have a Function token for ?random-num"
+        );
 
         let tok = &func_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "?random-num",
-            "template token should cover the full ?random-num (including hyphen), got: {:?}", token_text);
+        assert_eq!(
+            token_text, "?random-num",
+            "template token should cover the full ?random-num (including hyphen), got: {:?}",
+            token_text
+        );
     }
 
     #[test]
@@ -3022,16 +3456,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\nValue: ?my-cool-template here.\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let func_tokens: Vec<_> = result.token_groups.iter()
+        let func_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
             .collect();
-        assert!(!func_tokens.is_empty(), "should have a Function token for ?my-cool-template");
+        assert!(
+            !func_tokens.is_empty(),
+            "should have a Function token for ?my-cool-template"
+        );
 
         let tok = &func_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "?my-cool-template",
-            "template token should cover ?my-cool-template (multiple hyphens), got: {:?}", token_text);
+        assert_eq!(
+            token_text, "?my-cool-template",
+            "template token should cover ?my-cool-template (multiple hyphens), got: {:?}",
+            token_text
+        );
     }
 
     #[test]
@@ -3049,23 +3491,52 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n?greeting ?username! ?random-num ?random-greeting ?story-name\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let func_tokens: Vec<_> = result.token_groups.iter()
+        let func_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Function))
             .collect();
-        assert_eq!(func_tokens.len(), 5,
+        assert_eq!(
+            func_tokens.len(),
+            5,
             "should have 5 Function tokens (one per template), got {}: {:?}",
             func_tokens.len(),
-            func_tokens.iter().map(|t| &text[t.start.min(text.len())..(t.start + t.length).min(text.len())]).collect::<Vec<_>>());
+            func_tokens
+                .iter()
+                .map(|t| &text[t.start.min(text.len())..(t.start + t.length).min(text.len())])
+                .collect::<Vec<_>>()
+        );
 
-        let names: Vec<&str> = func_tokens.iter()
+        let names: Vec<&str> = func_tokens
+            .iter()
             .map(|t| &text[t.start.min(text.len())..(t.start + t.length).min(text.len())])
             .collect();
-        assert!(names.contains(&"?greeting"), "missing ?greeting: {:?}", names);
-        assert!(names.contains(&"?username"), "missing ?username: {:?}", names);
-        assert!(names.contains(&"?random-num"), "missing ?random-num: {:?}", names);
-        assert!(names.contains(&"?random-greeting"), "missing ?random-greeting: {:?}", names);
-        assert!(names.contains(&"?story-name"), "missing ?story-name: {:?}", names);
+        assert!(
+            names.contains(&"?greeting"),
+            "missing ?greeting: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"?username"),
+            "missing ?username: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"?random-num"),
+            "missing ?random-num: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"?random-greeting"),
+            "missing ?random-greeting: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"?story-name"),
+            "missing ?story-name: {:?}",
+            names
+        );
     }
 
     // ── Phase 1 tests (plan.md §7.1.6) ────────────────────────────────────
@@ -3086,11 +3557,22 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // //comment at column 0 should be a line comment.
         // This exercises the `ctx.col == 0` branch in the `//` heuristic.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "//comment at col 0", 0, ParseMode::Normal,
+            "//comment at col 0",
+            0,
+            ParseMode::Normal,
         );
         assert_eq!(ast.nodes.len(), 1);
-        assert!(matches!(&ast.nodes[0], AstNode::Comment { kind: CommentKind::JsLine, .. }),
-            "expected JsLine comment at col 0, got {:?}", ast.nodes[0]);
+        assert!(
+            matches!(
+                &ast.nodes[0],
+                AstNode::Comment {
+                    kind: CommentKind::JsLine,
+                    ..
+                }
+            ),
+            "expected JsLine comment at col 0, got {:?}",
+            ast.nodes[0]
+        );
     }
 
     #[test]
@@ -3098,13 +3580,20 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // text//more — the // is NOT at line start and NOT preceded by
         // whitespace, so it's neither italic (no closing //) nor a comment.
         // It should be plain prose text.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "text//more", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("text//more", 0, ParseMode::Normal);
         // Should produce a single Text node (the // is just text).
-        assert_eq!(ast.nodes.len(), 1, "expected single Text node, got {} nodes: {:?}", ast.nodes.len(), ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::Text { .. }),
-            "expected Text node, got {:?}", ast.nodes[0]);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Text node, got {} nodes: {:?}",
+            ast.nodes.len(),
+            ast.nodes
+        );
+        assert!(
+            matches!(&ast.nodes[0], AstNode::Text { .. }),
+            "expected Text node, got {:?}",
+            ast.nodes[0]
+        );
     }
 
     #[test]
@@ -3112,21 +3601,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Line 1 text\n//comment — the // on line 2 is at column 0.
         // This exercises the column reset on `\n` in the main loop.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "line one\n//comment", 0, ParseMode::Normal,
+            "line one\n//comment",
+            0,
+            ParseMode::Normal,
         );
         // Should have: Text("line one\n") + Comment(JsLine)
         // OR the comment might flush differently. The key assertion is
         // that a JsLine comment exists.
         fn has_js_line_comment(nodes: &[AstNode]) -> bool {
             for n in nodes {
-                if matches!(n, AstNode::Comment { kind: CommentKind::JsLine, .. }) {
+                if matches!(
+                    n,
+                    AstNode::Comment {
+                        kind: CommentKind::JsLine,
+                        ..
+                    }
+                ) {
                     return true;
                 }
             }
             false
         }
-        assert!(has_js_line_comment(&ast.nodes),
-            "expected a JsLine comment on line 2, got nodes: {:?}", ast.nodes);
+        assert!(
+            has_js_line_comment(&ast.nodes),
+            "expected a JsLine comment on line 2, got nodes: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -3134,17 +3634,28 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Multiple lines with // at various positions. This is a regression
         // test to ensure the column counter correctly resets on each \n.
         let text = "first line\n//comment line\nthird line\n//another comment";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         // Count JsLine comments — should be 2 (lines 2 and 4).
         fn count_js_line_comments(nodes: &[AstNode]) -> usize {
-            nodes.iter().filter(|n| matches!(n, AstNode::Comment { kind: CommentKind::JsLine, .. })).count()
+            nodes
+                .iter()
+                .filter(|n| {
+                    matches!(
+                        n,
+                        AstNode::Comment {
+                            kind: CommentKind::JsLine,
+                            ..
+                        }
+                    )
+                })
+                .count()
         }
         let comment_count = count_js_line_comments(&ast.nodes);
-        assert_eq!(comment_count, 2,
+        assert_eq!(
+            comment_count, 2,
             "expected 2 JsLine comments (lines 2 and 4), got {}: nodes={:?}",
-            comment_count, ast.nodes);
+            comment_count, ast.nodes
+        );
     }
 
     #[test]
@@ -3152,7 +3663,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Compile-time check: ensure the new AstNode variants exist and
         // have the expected fields. This test doesn't assert runtime
         // behavior — it just confirms the variants are usable.
-        use crate::sugarcube::ast::{TableRow, TableCell, TableRowType};
+        use crate::sugarcube::ast::{TableCell, TableRow, TableRowType};
         use std::ops::Range;
 
         let _heading = AstNode::Heading {
@@ -3228,10 +3739,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::plugin::SemanticTokenType;
 
         assert_eq!(SemanticTokenType::Heading.lsp_name(), "heading");
-        assert_eq!(SemanticTokenType::HorizontalRule.lsp_name(), "horizontalRule");
+        assert_eq!(
+            SemanticTokenType::HorizontalRule.lsp_name(),
+            "horizontalRule"
+        );
         assert_eq!(SemanticTokenType::ListMarker.lsp_name(), "listMarker");
         assert_eq!(SemanticTokenType::Blockquote.lsp_name(), "blockquote");
-        assert_eq!(SemanticTokenType::BlockquoteBlock.lsp_name(), "blockquoteBlock");
+        assert_eq!(
+            SemanticTokenType::BlockquoteBlock.lsp_name(),
+            "blockquoteBlock"
+        );
         assert_eq!(SemanticTokenType::Table.lsp_name(), "table");
         assert_eq!(SemanticTokenType::CodeBlock.lsp_name(), "codeBlock");
         assert_eq!(SemanticTokenType::InlineCode.lsp_name(), "inlineCode");
@@ -3258,15 +3775,28 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // @@.highlight;Hello [[Forest]]@@ should produce an InlineStyle
         // with a Link child.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "@@.highlight;Hello [[Forest]]@@", 0, ParseMode::Normal,
+            "@@.highlight;Hello [[Forest]]@@",
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single InlineStyle node, got {} nodes", ast.nodes.len());
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single InlineStyle node, got {} nodes",
+            ast.nodes.len()
+        );
         match &ast.nodes[0] {
-            AstNode::InlineStyle { children, class, .. } => {
+            AstNode::InlineStyle {
+                children, class, ..
+            } => {
                 assert_eq!(class, ".highlight");
                 // Should have a Text node ("Hello ") and a Link node.
                 let has_link = children.iter().any(|c| matches!(c, AstNode::Link { .. }));
-                assert!(has_link, "expected a Link child in InlineStyle, got: {:?}", children);
+                assert!(
+                    has_link,
+                    "expected a Link child in InlineStyle, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected InlineStyle, got {:?}", other),
         }
@@ -3285,22 +3815,39 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // {{{ <<set $x to 1>> }}} — single line, so this is INLINE code.
         // The `<<set>>` must NOT be parsed as a macro.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "{{{ <<set $x to 1>> }}}", 0, ParseMode::Normal,
+            "{{{ <<set $x to 1>> }}}",
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single InlineCode node, got {} nodes: {:?}", ast.nodes.len(), ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single InlineCode node, got {} nodes: {:?}",
+            ast.nodes.len(),
+            ast.nodes
+        );
         match &ast.nodes[0] {
             AstNode::InlineCode { content, span } => {
-                assert_eq!(content, " <<set $x to 1>> ",
-                    "InlineCode content should be the raw text between triple-braces");
+                assert_eq!(
+                    content, " <<set $x to 1>> ",
+                    "InlineCode content should be the raw text between triple-braces"
+                );
                 // Span should cover the entire construct including delimiters.
                 assert_eq!(span.start, 0, "span start should be 0");
-                assert_eq!(span.end, 23, "span end should be 23 (full construct length)");
+                assert_eq!(
+                    span.end, 23,
+                    "span end should be 23 (full construct length)"
+                );
             }
             other => panic!("expected InlineCode, got {:?}", other),
         }
         // Critical: verify NO Macro nodes were produced.
         let has_macro = ast.nodes.iter().any(|n| matches!(n, AstNode::Macro { .. }));
-        assert!(!has_macro, "CRITICAL: <<set>> macro was parsed/executed inside InlineCode! nodes: {:?}", ast.nodes);
+        assert!(
+            !has_macro,
+            "CRITICAL: <<set>> macro was parsed/executed inside InlineCode! nodes: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -3310,36 +3857,67 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // }}}
         // This is BLOCK code ({{{ at col 0 followed by \n, }}} on own line).
         let text = "{{{\n<<set $x to 1>>\n}}}";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single CodeBlock node, got {} nodes: {:?}",
+            ast.nodes.len(),
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single CodeBlock node, got {} nodes: {:?}", ast.nodes.len(), ast.nodes);
         match &ast.nodes[0] {
             AstNode::CodeBlock { content, span } => {
-                assert_eq!(content, "<<set $x to 1>>\n",
-                    "CodeBlock content should be the raw text between the opening and closing lines");
+                assert_eq!(
+                    content, "<<set $x to 1>>\n",
+                    "CodeBlock content should be the raw text between the opening and closing lines"
+                );
                 assert_eq!(span.start, 0, "span start should be 0");
-                assert_eq!(span.end, text.len(), "span end should cover the entire construct");
+                assert_eq!(
+                    span.end,
+                    text.len(),
+                    "span end should cover the entire construct"
+                );
             }
             other => panic!("expected CodeBlock, got {:?}", other),
         }
         // Critical: verify NO Macro nodes were produced.
         let has_macro = ast.nodes.iter().any(|n| matches!(n, AstNode::Macro { .. }));
-        assert!(!has_macro, "CRITICAL: <<set>> macro was parsed/executed inside CodeBlock! nodes: {:?}", ast.nodes);
+        assert!(
+            !has_macro,
+            "CRITICAL: <<set>> macro was parsed/executed inside CodeBlock! nodes: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
     fn phase2a_inline_code_with_variables_not_interpolated() {
         // Variables inside {{{...}}} should be literal, not interpolated.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "The variable {{{$name}}} is shown.", 0, ParseMode::Normal,
+            "The variable {{{$name}}} is shown.",
+            0,
+            ParseMode::Normal,
         );
         // Should produce: Text("The variable ") + InlineCode("$name") + Text(" is shown.")
-        assert_eq!(ast.nodes.len(), 3, "expected 3 nodes (Text + InlineCode + Text), got: {:?}", ast.nodes);
-        let inline_code = ast.nodes.iter().find(|n| matches!(n, AstNode::InlineCode { .. }));
-        assert!(inline_code.is_some(), "expected an InlineCode node, got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            3,
+            "expected 3 nodes (Text + InlineCode + Text), got: {:?}",
+            ast.nodes
+        );
+        let inline_code = ast
+            .nodes
+            .iter()
+            .find(|n| matches!(n, AstNode::InlineCode { .. }));
+        assert!(
+            inline_code.is_some(),
+            "expected an InlineCode node, got: {:?}",
+            ast.nodes
+        );
         if let Some(AstNode::InlineCode { content, .. }) = inline_code {
-            assert_eq!(content, "$name", "InlineCode content should be the raw '$name'");
+            assert_eq!(
+                content, "$name",
+                "InlineCode content should be the raw '$name'"
+            );
         }
         // Verify no variable references were extracted from the InlineCode content.
         // (var_refs are only on Text and Macro nodes, not on InlineCode.)
@@ -3349,15 +3927,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase2a_inline_code_with_links_not_processed() {
         // Links inside {{{...}}} should be literal text, not turned into Link nodes.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "See {{{[[Forest]]}}} for details.", 0, ParseMode::Normal,
+            "See {{{[[Forest]]}}} for details.",
+            0,
+            ParseMode::Normal,
         );
         // Should produce: Text("See ") + InlineCode("[[Forest]]") + Text(" for details.")
-        assert_eq!(ast.nodes.len(), 3, "expected 3 nodes (Text + InlineCode + Text), got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            3,
+            "expected 3 nodes (Text + InlineCode + Text), got: {:?}",
+            ast.nodes
+        );
         let has_link = ast.nodes.iter().any(|n| matches!(n, AstNode::Link { .. }));
-        assert!(!has_link, "CRITICAL: [[Forest]] was parsed as a Link inside InlineCode! nodes: {:?}", ast.nodes);
-        let inline_code = ast.nodes.iter().find(|n| matches!(n, AstNode::InlineCode { .. }));
+        assert!(
+            !has_link,
+            "CRITICAL: [[Forest]] was parsed as a Link inside InlineCode! nodes: {:?}",
+            ast.nodes
+        );
+        let inline_code = ast
+            .nodes
+            .iter()
+            .find(|n| matches!(n, AstNode::InlineCode { .. }));
         if let Some(AstNode::InlineCode { content, .. }) = inline_code {
-            assert_eq!(content, "[[Forest]]", "InlineCode content should be the raw '[[Forest]]'");
+            assert_eq!(
+                content, "[[Forest]]",
+                "InlineCode content should be the raw '[[Forest]]'"
+            );
         }
     }
 
@@ -3365,15 +3960,23 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase2a_block_code_disambiguation_requires_newline() {
         // {{{ at col 0 but NOT followed by \n is INLINE code, not block.
         // E.g., a passage body starting with "{{{code}}}" (no newline after {{{).
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "{{{code}}}", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("{{{code}}}", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
             AstNode::InlineCode { content, .. } => {
-                assert_eq!(content, "code", "should be InlineCode (no newline after opening triple-brace)");
+                assert_eq!(
+                    content, "code",
+                    "should be InlineCode (no newline after opening triple-brace)"
+                );
             }
-            AstNode::CodeBlock { .. } => panic!("should be InlineCode, not CodeBlock (no newline after opening triple-brace)"),
+            AstNode::CodeBlock { .. } => panic!(
+                "should be InlineCode, not CodeBlock (no newline after opening triple-brace)"
+            ),
             other => panic!("expected InlineCode, got {:?}", other),
         }
     }
@@ -3382,13 +3985,21 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase2a_block_code_mid_line_is_inline() {
         // {{{ NOT at col 0 is always inline code, even if followed by content.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "text {{{code}}} more", 0, ParseMode::Normal,
+            "text {{{code}}} more",
+            0,
+            ParseMode::Normal,
         );
         // Should produce: Text("text ") + InlineCode("code") + Text(" more")
         assert_eq!(ast.nodes.len(), 3, "expected 3 nodes, got: {:?}", ast.nodes);
-        let has_inline_code = ast.nodes.iter().any(|n| matches!(n, AstNode::InlineCode { .. }));
+        let has_inline_code = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::InlineCode { .. }));
         assert!(has_inline_code, "expected an InlineCode node");
-        let has_code_block = ast.nodes.iter().any(|n| matches!(n, AstNode::CodeBlock { .. }));
+        let has_code_block = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::CodeBlock { .. }));
         assert!(!has_code_block, "should NOT be a CodeBlock (not at col 0)");
     }
 
@@ -3396,11 +4007,22 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase2a_unclosed_inline_code_consumes_to_end() {
         // Unclosed {{{ should consume the rest of the text as InlineCode content.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "text {{{unclosed code here", 0, ParseMode::Normal,
+            "text {{{unclosed code here",
+            0,
+            ParseMode::Normal,
         );
         // Should produce: Text("text ") + InlineCode("unclosed code here")
-        assert_eq!(ast.nodes.len(), 2, "expected 2 nodes (Text + InlineCode), got: {:?}", ast.nodes);
-        if let Some(AstNode::InlineCode { content, .. }) = ast.nodes.iter().find(|n| matches!(n, AstNode::InlineCode { .. })) {
+        assert_eq!(
+            ast.nodes.len(),
+            2,
+            "expected 2 nodes (Text + InlineCode), got: {:?}",
+            ast.nodes
+        );
+        if let Some(AstNode::InlineCode { content, .. }) = ast
+            .nodes
+            .iter()
+            .find(|n| matches!(n, AstNode::InlineCode { .. }))
+        {
             assert_eq!(content, "unclosed code here");
         }
     }
@@ -3410,10 +4032,13 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Unclosed block code ({{{ at col 0 + \n, but no closing }}}) should
         // consume the rest of the text as CodeBlock content.
         let text = "{{{\nunclosed block code\nmore code\nno closing";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single CodeBlock node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single CodeBlock node, got: {:?}", ast.nodes);
         if let AstNode::CodeBlock { content, .. } = &ast.nodes[0] {
             assert_eq!(content, "unclosed block code\nmore code\nno closing");
         }
@@ -3429,19 +4054,27 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\nSome {{{inline code}}} here.\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let inline_code_tokens: Vec<_> = result.token_groups.iter()
+        let inline_code_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::InlineCode))
             .collect();
-        assert_eq!(inline_code_tokens.len(), 1,
+        assert_eq!(
+            inline_code_tokens.len(),
+            1,
             "expected exactly 1 InlineCode token, got {}: {:?}",
-            inline_code_tokens.len(), inline_code_tokens);
+            inline_code_tokens.len(),
+            inline_code_tokens
+        );
 
         let tok = &inline_code_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert!(token_text.starts_with("{{{") && token_text.ends_with("}}}"),
+        assert!(
+            token_text.starts_with("{{{") && token_text.ends_with("}}}"),
             "InlineCode token should span the full triple-brace construct, got: {:?}",
-            token_text);
+            token_text
+        );
     }
 
     #[test]
@@ -3454,20 +4087,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n{{{\nblock code\n}}}\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let code_block_tokens: Vec<_> = result.token_groups.iter()
+        let code_block_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::CodeBlock))
             .collect();
-        assert_eq!(code_block_tokens.len(), 1,
+        assert_eq!(
+            code_block_tokens.len(),
+            1,
             "expected exactly 1 CodeBlock token, got {}: {:?}",
-            code_block_tokens.len(), code_block_tokens);
+            code_block_tokens.len(),
+            code_block_tokens
+        );
 
         let tok = &code_block_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert!(token_text.starts_with("{{{"),
-            "CodeBlock token should start with opening triple-brace, got: {:?}", token_text);
-        assert!(token_text.contains("}}}"),
-            "CodeBlock token should contain the closing triple-brace, got: {:?}", token_text);
+        assert!(
+            token_text.starts_with("{{{"),
+            "CodeBlock token should start with opening triple-brace, got: {:?}",
+            token_text
+        );
+        assert!(
+            token_text.contains("}}}"),
+            "CodeBlock token should contain the closing triple-brace, got: {:?}",
+            token_text
+        );
     }
 
     #[test]
@@ -3475,14 +4120,27 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Inline code followed by a macro — the macro should still execute
         // (it's outside the code block).
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "{{{code}}} <<set $y to 2>>", 0, ParseMode::Normal,
+            "{{{code}}} <<set $y to 2>>",
+            0,
+            ParseMode::Normal,
         );
         // Should produce: InlineCode("code") + Text(" ") + Macro("set")
-        assert_eq!(ast.nodes.len(), 3, "expected 3 nodes (InlineCode + Text + Macro), got: {:?}", ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == "code"),
-            "first node should be InlineCode(\"code\"), got: {:?}", ast.nodes[0]);
-        assert!(matches!(&ast.nodes[2], AstNode::Macro { name, .. } if name == "set"),
-            "third node should be Macro(\"set\"), got: {:?}", ast.nodes[2]);
+        assert_eq!(
+            ast.nodes.len(),
+            3,
+            "expected 3 nodes (InlineCode + Text + Macro), got: {:?}",
+            ast.nodes
+        );
+        assert!(
+            matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == "code"),
+            "first node should be InlineCode(\"code\"), got: {:?}",
+            ast.nodes[0]
+        );
+        assert!(
+            matches!(&ast.nodes[2], AstNode::Macro { name, .. } if name == "set"),
+            "third node should be Macro(\"set\"), got: {:?}",
+            ast.nodes[2]
+        );
     }
 
     // ── Architecture invariant tests ───────────────────────────────────────
@@ -3502,33 +4160,54 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // A [[link]] inside a code block is literal text, not a real link.
         // The parser should NOT produce a Link node for it.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "{{{ [[Forest]] }}}", 0, ParseMode::Normal,
+            "{{{ [[Forest]] }}}",
+            0,
+            ParseMode::Normal,
         );
         // Should produce a single InlineCode node containing "[[Forest]]".
-        assert_eq!(ast.nodes.len(), 1, "expected single InlineCode, got: {:?}", ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == " [[Forest]] "),
-            "expected InlineCode containing the literal link text, got: {:?}", ast.nodes[0]);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single InlineCode, got: {:?}",
+            ast.nodes
+        );
+        assert!(
+            matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == " [[Forest]] "),
+            "expected InlineCode containing the literal link text, got: {:?}",
+            ast.nodes[0]
+        );
         // The links collection on PassageAst must be empty — the [[Forest]]
         // inside the code block is not a real link.
-        assert!(ast.links.is_empty(),
+        assert!(
+            ast.links.is_empty(),
             "architectural violation: links were extracted from inside a code block! links: {:?}",
-            ast.links);
+            ast.links
+        );
     }
 
     #[test]
     fn arch_code_block_content_not_extracted_as_var_op() {
         // A $variable inside a code block is literal text, not a variable read.
         // The parser should NOT produce var_ops for it.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "{{{ $score }}}", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("{{{ $score }}}", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single InlineCode, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single InlineCode, got: {:?}", ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == " $score "),
-            "expected InlineCode containing the literal variable text, got: {:?}", ast.nodes[0]);
+        assert!(
+            matches!(&ast.nodes[0], AstNode::InlineCode { content, .. } if content == " $score "),
+            "expected InlineCode containing the literal variable text, got: {:?}",
+            ast.nodes[0]
+        );
         // The var_ops collection on PassageAst must be empty.
-        assert!(ast.var_ops.is_empty(),
+        assert!(
+            ast.var_ops.is_empty(),
             "architectural violation: var_ops were extracted from inside a code block! var_ops: {:?}",
-            ast.var_ops);
+            ast.var_ops
+        );
     }
 
     #[test]
@@ -3536,16 +4215,28 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Multi-line block code with both a link and a variable inside —
         // neither should be extracted.
         let text = "{{{\n[[Forest]] and $score\n}}}";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single CodeBlock, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single CodeBlock, got: {:?}", ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::CodeBlock { content, .. } if content.contains("[[Forest]]") && content.contains("$score")),
-            "expected CodeBlock containing literal link and variable text, got: {:?}", ast.nodes[0]);
-        assert!(ast.links.is_empty(),
-            "architectural violation: links extracted from block code! links: {:?}", ast.links);
-        assert!(ast.var_ops.is_empty(),
-            "architectural violation: var_ops extracted from block code! var_ops: {:?}", ast.var_ops);
+        assert!(
+            matches!(&ast.nodes[0], AstNode::CodeBlock { content, .. } if content.contains("[[Forest]]") && content.contains("$score")),
+            "expected CodeBlock containing literal link and variable text, got: {:?}",
+            ast.nodes[0]
+        );
+        assert!(
+            ast.links.is_empty(),
+            "architectural violation: links extracted from block code! links: {:?}",
+            ast.links
+        );
+        assert!(
+            ast.var_ops.is_empty(),
+            "architectural violation: var_ops extracted from block code! var_ops: {:?}",
+            ast.var_ops
+        );
     }
 
     // NOTE on extract_data_passage_refs:
@@ -3590,23 +4281,53 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // "blue" at position 2 (checkedValue, String).
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<checkbox "$color" "red" "blue">>"#, 0, ParseMode::Normal,
+            r#"<<checkbox "$color" "red" "blue">>"#,
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Macro node, got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Macro node, got: {:?}",
+            ast.nodes
+        );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "checkbox");
-                let args = structured_args.as_ref().expect("checkbox should have structured_args");
-                assert_eq!(args.len(), 3, "checkbox should have 3 structured args, got: {:?}", args);
+                let args = structured_args
+                    .as_ref()
+                    .expect("checkbox should have structured_args");
+                assert_eq!(
+                    args.len(),
+                    3,
+                    "checkbox should have 3 structured args, got: {:?}",
+                    args
+                );
                 // Position 0: variable reference ($color)
-                assert_eq!(args[0].kind, ParsedArgKind::VariableRef,
-                    "arg 0 should be VariableRef (the receiver variable), got: {:?}", args[0].kind);
+                assert_eq!(
+                    args[0].kind,
+                    ParsedArgKind::VariableRef,
+                    "arg 0 should be VariableRef (the receiver variable), got: {:?}",
+                    args[0].kind
+                );
                 // Position 1: unchecked value ("red")
-                assert_eq!(args[1].kind, ParsedArgKind::String,
-                    "arg 1 should be String (uncheckedValue), got: {:?}", args[1].kind);
+                assert_eq!(
+                    args[1].kind,
+                    ParsedArgKind::String,
+                    "arg 1 should be String (uncheckedValue), got: {:?}",
+                    args[1].kind
+                );
                 // Position 2: checked value ("blue")
-                assert_eq!(args[2].kind, ParsedArgKind::String,
-                    "arg 2 should be String (checkedValue), got: {:?}", args[2].kind);
+                assert_eq!(
+                    args[2].kind,
+                    ParsedArgKind::String,
+                    "arg 2 should be String (checkedValue), got: {:?}",
+                    args[2].kind
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -3619,20 +4340,46 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // "blue" at position 1 (checkedValue, String).
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<radiobutton "$color" "blue">>"#, 0, ParseMode::Normal,
+            r#"<<radiobutton "$color" "blue">>"#,
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Macro node, got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Macro node, got: {:?}",
+            ast.nodes
+        );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "radiobutton");
-                let args = structured_args.as_ref().expect("radiobutton should have structured_args");
-                assert_eq!(args.len(), 2, "radiobutton should have 2 structured args, got: {:?}", args);
+                let args = structured_args
+                    .as_ref()
+                    .expect("radiobutton should have structured_args");
+                assert_eq!(
+                    args.len(),
+                    2,
+                    "radiobutton should have 2 structured args, got: {:?}",
+                    args
+                );
                 // Position 0: variable reference ($color)
-                assert_eq!(args[0].kind, ParsedArgKind::VariableRef,
-                    "arg 0 should be VariableRef (the receiver variable), got: {:?}", args[0].kind);
+                assert_eq!(
+                    args[0].kind,
+                    ParsedArgKind::VariableRef,
+                    "arg 0 should be VariableRef (the receiver variable), got: {:?}",
+                    args[0].kind
+                );
                 // Position 1: checked value ("blue")
-                assert_eq!(args[1].kind, ParsedArgKind::String,
-                    "arg 1 should be String (checkedValue), got: {:?}", args[1].kind);
+                assert_eq!(
+                    args[1].kind,
+                    ParsedArgKind::String,
+                    "arg 1 should be String (checkedValue), got: {:?}",
+                    args[1].kind
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -3645,16 +4392,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // variable extraction — previously the "label" arg at position 0
         // misclassified the variable as a display label.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<checkbox "$color" "red" "blue">>"#, 0, ParseMode::Normal,
+            r#"<<checkbox "$color" "red" "blue">>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::Macro { var_refs, .. } => {
-                assert!(!var_refs.is_empty(),
-                    "checkbox should have var_refs for the receiver variable, got: {:?}", var_refs);
+                assert!(
+                    !var_refs.is_empty(),
+                    "checkbox should have var_refs for the receiver variable, got: {:?}",
+                    var_refs
+                );
                 // VarRef.name includes the sigil (e.g., "$color", not "color").
                 let has_color = var_refs.iter().any(|v| v.name == "$color");
-                assert!(has_color,
-                    "var_refs should include '$color' (the receiver variable), got: {:?}", var_refs);
+                assert!(
+                    has_color,
+                    "var_refs should include '$color' (the receiver variable), got: {:?}",
+                    var_refs
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -3663,15 +4418,23 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase2b_radiobutton_var_refs_extracted_from_receiver_arg() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<radiobutton "$color" "blue">>"#, 0, ParseMode::Normal,
+            r#"<<radiobutton "$color" "blue">>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::Macro { var_refs, .. } => {
-                assert!(!var_refs.is_empty(),
-                    "radiobutton should have var_refs for the receiver variable, got: {:?}", var_refs);
+                assert!(
+                    !var_refs.is_empty(),
+                    "radiobutton should have var_refs for the receiver variable, got: {:?}",
+                    var_refs
+                );
                 let has_color = var_refs.iter().any(|v| v.name == "$color");
-                assert!(has_color,
-                    "var_refs should include '$color' (the receiver variable), got: {:?}", var_refs);
+                assert!(
+                    has_color,
+                    "var_refs should include '$color' (the receiver variable), got: {:?}",
+                    var_refs
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -3683,25 +4446,43 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::macro_snippet;
         let snippet = macro_snippet("checkbox").expect("checkbox should have a snippet");
         // The snippet should have unchecked at placeholder 2 and checked at placeholder 3.
-        assert!(snippet.contains(r#""${2:unchecked}""#),
-            "checkbox snippet should have unchecked at placeholder 2, got: {}", snippet);
-        assert!(snippet.contains(r#""${3:checked}""#),
-            "checkbox snippet should have checked at placeholder 3, got: {}", snippet);
+        assert!(
+            snippet.contains(r#""${2:unchecked}""#),
+            "checkbox snippet should have unchecked at placeholder 2, got: {}",
+            snippet
+        );
+        assert!(
+            snippet.contains(r#""${3:checked}""#),
+            "checkbox snippet should have checked at placeholder 3, got: {}",
+            snippet
+        );
     }
 
     #[test]
     fn phase2b_checkbox_completion_form_has_correct_value_order() {
         // Verify the CHECKBOX_FORMS completion form has unchecked THEN checked.
         use crate::sugarcube::macros::macro_completion_forms;
-        let forms = macro_completion_forms("checkbox").expect("checkbox should have completion forms");
-        let primary = forms.iter().find(|f| f.sort_priority == 0)
+        let forms =
+            macro_completion_forms("checkbox").expect("checkbox should have completion forms");
+        let primary = forms
+            .iter()
+            .find(|f| f.sort_priority == 0)
             .expect("checkbox should have a primary form (sort_priority 0)");
-        assert!(primary.label.contains(r#""unchecked" "checked""#),
-            "primary checkbox form label should have unchecked THEN checked, got: {}", primary.label);
-        assert!(primary.snippet.contains(r#""${2:unchecked}""#),
-            "primary checkbox form snippet should have unchecked at placeholder 2, got: {}", primary.snippet);
-        assert!(primary.snippet.contains(r#""${3:checked}""#),
-            "primary checkbox form snippet should have checked at placeholder 3, got: {}", primary.snippet);
+        assert!(
+            primary.label.contains(r#""unchecked" "checked""#),
+            "primary checkbox form label should have unchecked THEN checked, got: {}",
+            primary.label
+        );
+        assert!(
+            primary.snippet.contains(r#""${2:unchecked}""#),
+            "primary checkbox form snippet should have unchecked at placeholder 2, got: {}",
+            primary.snippet
+        );
+        assert!(
+            primary.snippet.contains(r#""${3:checked}""#),
+            "primary checkbox form snippet should have checked at placeholder 3, got: {}",
+            primary.snippet
+        );
     }
 
     // ── Phase 3 tests (plan.md §7.3) — Headings (`!` through `!!!!!!`) ─────
@@ -3720,19 +4501,35 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase3_heading_level_1() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "!Hello World", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("!Hello World", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, span } => {
+            AstNode::Heading {
+                level,
+                children,
+                span,
+            } => {
                 assert_eq!(*level, 1, "level should be 1 for single '!'");
                 assert_eq!(span.start, 0, "span should start at 0");
                 assert_eq!(span.end, 12, "span should cover '!Hello World' (12 bytes)");
                 // Content "Hello World" should be a single Text node.
-                assert_eq!(children.len(), 1, "expected 1 child (Text), got: {:?}", children);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "Hello World"),
-                    "child should be Text('Hello World'), got: {:?}", children[0]);
+                assert_eq!(
+                    children.len(),
+                    1,
+                    "expected 1 child (Text), got: {:?}",
+                    children
+                );
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "Hello World"),
+                    "child should be Text('Hello World'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3740,16 +4537,30 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase3_heading_level_3() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "!!!Section Title", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("!!!Section Title", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, .. } => {
+            AstNode::Heading {
+                level, children, ..
+            } => {
                 assert_eq!(*level, 3, "level should be 3 for '!!!'");
-                assert_eq!(children.len(), 1, "expected 1 child (Text), got: {:?}", children);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "Section Title"),
-                    "child should be Text('Section Title'), got: {:?}", children[0]);
+                assert_eq!(
+                    children.len(),
+                    1,
+                    "expected 1 child (Text), got: {:?}",
+                    children
+                );
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "Section Title"),
+                    "child should be Text('Section Title'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3757,15 +4568,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase3_heading_level_6_max() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "!!!!!!Deepest", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("!!!!!!Deepest", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, .. } => {
+            AstNode::Heading {
+                level, children, ..
+            } => {
                 assert_eq!(*level, 6, "level should be 6 for '!!!!!!'");
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "Deepest"),
-                    "child should be Text('Deepest'), got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "Deepest"),
+                    "child should be Text('Deepest'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3774,16 +4594,25 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase3_heading_seventh_bang_becomes_content() {
         // !!! !!!! is 7 `!` — 6 consumed as marker (level 6), 7th is content.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "!!!!!!!Seven", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("!!!!!!!Seven", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, .. } => {
+            AstNode::Heading {
+                level, children, ..
+            } => {
                 assert_eq!(*level, 6, "level should be capped at 6 even with 7 '!'");
                 // Content should start with the 7th '!'.
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "!Seven"),
-                    "7th '!' should be content: expected Text('!Seven'), got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "!Seven"),
+                    "7th '!' should be content: expected Text('!Seven'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3792,15 +4621,23 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase3_heading_with_space_after_bangs() {
         // `! Heading` — the space becomes part of the content.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Heading", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("! Heading", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, .. } => {
+            AstNode::Heading {
+                level, children, ..
+            } => {
                 assert_eq!(*level, 1);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == " Heading"),
-                    "space after '!' should be part of content, got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == " Heading"),
+                    "space after '!' should be part of content, got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3810,26 +4647,43 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase3_heading_with_leading_whitespace_not_a_heading() {
         // ` ! Heading` — leading space means NOT at column 0, so NOT a heading.
         // Falls through to plain Text.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            " ! Heading", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(" ! Heading", 0, ParseMode::Normal);
         // Should be a single Text node (the `!` is just text mid-line).
-        assert_eq!(ast.nodes.len(), 1, "expected single Text node, got: {:?}", ast.nodes);
-        assert!(matches!(&ast.nodes[0], AstNode::Text { .. }),
-            "leading space should prevent heading parsing, got: {:?}", ast.nodes[0]);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Text node, got: {:?}",
+            ast.nodes
+        );
+        assert!(
+            matches!(&ast.nodes[0], AstNode::Text { .. }),
+            "leading space should prevent heading parsing, got: {:?}",
+            ast.nodes[0]
+        );
         // Verify no Heading nodes.
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Heading { .. })),
-            "should NOT have a Heading node (leading space)");
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::Heading { .. })),
+            "should NOT have a Heading node (leading space)"
+        );
     }
 
     #[test]
     fn phase3_heading_mid_line_not_a_heading() {
         // `text ! not a heading` — `!` is mid-line, not at column 0.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "text ! not a heading", 0, ParseMode::Normal,
+            "text ! not a heading",
+            0,
+            ParseMode::Normal,
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Heading { .. })),
-            "mid-line '!' should NOT produce a Heading, got: {:?}", ast.nodes);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::Heading { .. })),
+            "mid-line '!' should NOT produce a Heading, got: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -3837,21 +4691,44 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // CRITICAL: macros inside heading text ARE processed (per §3.5).
         // `! Some <<set $x to 1>> heading` — the <<set>> is a real Macro node.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Some <<set $x to 1>> heading", 0, ParseMode::Normal,
+            "! Some <<set $x to 1>> heading",
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
+        );
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, .. } => {
+            AstNode::Heading {
+                level, children, ..
+            } => {
                 assert_eq!(*level, 1);
                 // Should have: Text(" Some ") + Macro("set") + Text(" heading")
                 // (the content starts with a space after `!`, so first Text is " Some ")
-                assert_eq!(children.len(), 3, "expected 3 children (Text + Macro + Text), got: {:?}", children);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == " Some "),
-                    "first child should be Text(' Some ') — content starts with space after '!', got: {:?}", children[0]);
-                assert!(matches!(&children[1], AstNode::Macro { name, .. } if name == "set"),
-                    "second child should be Macro('set'), got: {:?}", children[1]);
-                assert!(matches!(&children[2], AstNode::Text { content, .. } if content == " heading"),
-                    "third child should be Text(' heading'), got: {:?}", children[2]);
+                assert_eq!(
+                    children.len(),
+                    3,
+                    "expected 3 children (Text + Macro + Text), got: {:?}",
+                    children
+                );
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == " Some "),
+                    "first child should be Text(' Some ') — content starts with space after '!', got: {:?}",
+                    children[0]
+                );
+                assert!(
+                    matches!(&children[1], AstNode::Macro { name, .. } if name == "set"),
+                    "second child should be Macro('set'), got: {:?}",
+                    children[1]
+                );
+                assert!(
+                    matches!(&children[2], AstNode::Text { content, .. } if content == " heading"),
+                    "third child should be Text(' heading'), got: {:?}",
+                    children[2]
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3860,20 +4737,38 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase3_heading_with_variable_reference() {
         // Variables inside heading text ARE interpolated (not literal).
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Hello $name", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("! Hello $name", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
             AstNode::Heading { children, .. } => {
                 // Should have a Text node containing "Hello $name" — the $name
                 // is an inline var ref extracted from the text gap.
                 let text_node = children.iter().find(|n| matches!(n, AstNode::Text { .. }));
-                assert!(text_node.is_some(), "expected a Text child, got: {:?}", children);
-                if let Some(AstNode::Text { content, var_refs, .. }) = text_node {
-                    assert!(content.contains("$name"), "content should contain '$name': {}", content);
-                    assert!(var_refs.iter().any(|v| v.name == "$name"),
-                        "var_refs should include '$name', got: {:?}", var_refs);
+                assert!(
+                    text_node.is_some(),
+                    "expected a Text child, got: {:?}",
+                    children
+                );
+                if let Some(AstNode::Text {
+                    content, var_refs, ..
+                }) = text_node
+                {
+                    assert!(
+                        content.contains("$name"),
+                        "content should contain '$name': {}",
+                        content
+                    );
+                    assert!(
+                        var_refs.iter().any(|v| v.name == "$name"),
+                        "var_refs should include '$name', got: {:?}",
+                        var_refs
+                    );
                 }
             }
             other => panic!("expected Heading, got {:?}", other),
@@ -3884,13 +4779,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase3_heading_with_link() {
         // Links inside heading text ARE processed.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Go to [[Forest]]", 0, ParseMode::Normal,
+            "! Go to [[Forest]]",
+            0,
+            ParseMode::Normal,
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
+        );
         match &ast.nodes[0] {
             AstNode::Heading { children, .. } => {
                 let has_link = children.iter().any(|n| matches!(n, AstNode::Link { .. }));
-                assert!(has_link, "expected a Link child inside heading, got: {:?}", children);
+                assert!(
+                    has_link,
+                    "expected a Link child inside heading, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3903,36 +4809,67 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // consumed by the main loop and merges with the next line's prose
         // into a single Text node.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Title\nSome prose text.\n", 0, ParseMode::Normal,
+            "! Title\nSome prose text.\n",
+            0,
+            ParseMode::Normal,
         );
         // Expected: Heading + Text (the \n + prose + \n merged into one Text node)
-        assert_eq!(ast.nodes.len(), 2, "expected 2 nodes (Heading + Text), got: {:?}", ast.nodes);
+        assert_eq!(
+            ast.nodes.len(),
+            2,
+            "expected 2 nodes (Heading + Text), got: {:?}",
+            ast.nodes
+        );
         // First node: Heading
-        assert!(matches!(&ast.nodes[0], AstNode::Heading { level, .. } if *level == 1),
-            "first node should be Heading level 1, got: {:?}", ast.nodes[0]);
+        assert!(
+            matches!(&ast.nodes[0], AstNode::Heading { level, .. } if *level == 1),
+            "first node should be Heading level 1, got: {:?}",
+            ast.nodes[0]
+        );
         // The heading span should NOT include the \n.
         if let AstNode::Heading { span, .. } = &ast.nodes[0] {
-            assert_eq!(span.end, 7, "heading span should end at 7 (before \\n), got: {:?}", span);
+            assert_eq!(
+                span.end, 7,
+                "heading span should end at 7 (before \\n), got: {:?}",
+                span
+            );
         }
         // Second node: Text containing the prose (the \n merges into it).
-        let has_prose = ast.nodes.iter().any(|n| {
-            matches!(n, AstNode::Text { content, .. } if content.contains("Some prose text"))
-        });
-        assert!(has_prose, "expected prose text after heading, got: {:?}", ast.nodes);
+        let has_prose = ast.nodes.iter().any(
+            |n| matches!(n, AstNode::Text { content, .. } if content.contains("Some prose text")),
+        );
+        assert!(
+            has_prose,
+            "expected prose text after heading, got: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
     fn phase3_heading_no_trailing_newline() {
         // Heading at end of text with no trailing \n.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "! Last heading", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("! Last heading", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Heading node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Heading node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Heading { level, children, span } => {
+            AstNode::Heading {
+                level,
+                children,
+                span,
+            } => {
                 assert_eq!(*level, 1);
-                assert_eq!(span.end, 14, "span should cover the full '! Last heading' (14 bytes)");
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == " Last heading"));
+                assert_eq!(
+                    span.end, 14,
+                    "span should cover the full '! Last heading' (14 bytes)"
+                );
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == " Last heading")
+                );
             }
             other => panic!("expected Heading, got {:?}", other),
         }
@@ -3949,26 +4886,39 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n! Hello World\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let heading_tokens: Vec<_> = result.token_groups.iter()
+        let heading_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Heading))
             .collect();
-        assert_eq!(heading_tokens.len(), 1,
+        assert_eq!(
+            heading_tokens.len(),
+            1,
             "expected exactly 1 Heading token, got {}: {:?}",
-            heading_tokens.len(), heading_tokens);
+            heading_tokens.len(),
+            heading_tokens
+        );
 
         let tok = &heading_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "!",
-            "Heading token should cover just the '!' marker, got: {:?}", token_text);
+        assert_eq!(
+            token_text, "!",
+            "Heading token should cover just the '!' marker, got: {:?}",
+            token_text
+        );
 
         // There should also be a Prose token for "Hello World".
-        let prose_tokens: Vec<_> = result.token_groups.iter()
+        let prose_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Prose))
             .collect();
-        assert!(!prose_tokens.is_empty(),
-            "expected at least 1 Prose token for heading content, got 0");
+        assert!(
+            !prose_tokens.is_empty(),
+            "expected at least 1 Prose token for heading content, got 0"
+        );
     }
 
     #[test]
@@ -3982,7 +4932,9 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
         // Should have a Heading token for `!`.
-        let heading_tokens: Vec<_> = result.token_groups.iter()
+        let heading_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Heading))
             .collect();
@@ -3990,12 +4942,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
         // Should have a Macro token for `set` (proving the heading's children
         // were recursively tokenized).
-        let macro_tokens: Vec<_> = result.token_groups.iter()
+        let macro_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
-        assert!(!macro_tokens.is_empty(),
-            "expected at least 1 Macro token for <<set>> inside heading, got 0");
+        assert!(
+            !macro_tokens.is_empty(),
+            "expected at least 1 Macro token for <<set>> inside heading, got 0"
+        );
     }
 
     // ── Phase 4 tests — Horizontal rule + blockquotes ─────────────────────
@@ -4009,10 +4965,13 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase4_horizontal_rule_basic() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "----", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("----", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single HorizontalRule node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single HorizontalRule node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
             AstNode::HorizontalRule { span } => {
                 assert_eq!(span.start, 0);
@@ -4024,9 +4983,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase4_horizontal_rule_five_dashes() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "-----", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("-----", 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
             AstNode::HorizontalRule { span } => {
@@ -4039,13 +4996,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_horizontal_rule_with_trailing_whitespace() {
         // `----   ` — trailing whitespace is allowed, NOT part of span.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "----   ", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("----   ", 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
             AstNode::HorizontalRule { span } => {
-                assert_eq!(span.end, 4, "span should cover only the 4 dashes, not trailing whitespace");
+                assert_eq!(
+                    span.end, 4,
+                    "span should cover only the 4 dashes, not trailing whitespace"
+                );
             }
             other => panic!("expected HorizontalRule, got {:?}", other),
         }
@@ -4054,31 +5012,40 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_three_dashes_not_a_horizontal_rule() {
         // `---` (3 dashes) is NOT a horizontal rule.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "---", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("---", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::HorizontalRule { .. })),
+            "--- should NOT be a HorizontalRule, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::HorizontalRule { .. })),
-            "--- should NOT be a HorizontalRule, got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase4_horizontal_rule_with_trailing_text_not_a_hr() {
         // `---- text` — trailing non-whitespace means NOT a horizontal rule.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "---- text", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("---- text", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::HorizontalRule { .. })),
+            "---- text should NOT be a HorizontalRule (trailing non-whitespace), got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::HorizontalRule { .. })),
-            "---- text should NOT be a HorizontalRule (trailing non-whitespace), got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase4_horizontal_rule_with_leading_space_not_a_hr() {
         // ` ----` — leading space means NOT at column 0, so NOT a horizontal rule.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            " ----", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(" ----", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::HorizontalRule { .. })),
+            "leading space should prevent HR parsing, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::HorizontalRule { .. })),
-            "leading space should prevent HR parsing, got: {:?}", ast.nodes);
     }
 
     #[test]
@@ -4090,32 +5057,48 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n----\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let hr_tokens: Vec<_> = result.token_groups.iter()
+        let hr_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::HorizontalRule))
             .collect();
         assert_eq!(hr_tokens.len(), 1, "expected 1 HorizontalRule token");
         let tok = &hr_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "----", "HorizontalRule token should cover the 4 dashes, got: {:?}", token_text);
+        assert_eq!(
+            token_text, "----",
+            "HorizontalRule token should cover the 4 dashes, got: {:?}",
+            token_text
+        );
     }
 
     // ── Line-style blockquote tests ───────────────────────────────────────
 
     #[test]
     fn phase4_blockquote_line_depth_1() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            ">Some text", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(">Some text", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Blockquote node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Blockquote node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Blockquote { depth, children, span } => {
+            AstNode::Blockquote {
+                depth,
+                children,
+                span,
+            } => {
                 assert_eq!(*depth, 1, "depth should be 1 for single '>'");
                 assert_eq!(span.start, 0);
                 assert_eq!(span.end, 10, "span should cover '>Some text'");
                 assert_eq!(children.len(), 1, "expected 1 child (Text)");
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "Some text"),
-                    "child should be Text('Some text'), got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "Some text"),
+                    "child should be Text('Some text'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Blockquote, got {:?}", other),
         }
@@ -4123,13 +5106,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase4_blockquote_line_depth_2() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            ">>Nested", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(">>Nested", 0, ParseMode::Normal);
         match &ast.nodes[0] {
-            AstNode::Blockquote { depth, children, .. } => {
+            AstNode::Blockquote {
+                depth, children, ..
+            } => {
                 assert_eq!(*depth, 2, "depth should be 2 for '>>'");
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "Nested"));
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "Nested")
+                );
             }
             other => panic!("expected Blockquote, got {:?}", other),
         }
@@ -4138,14 +5123,17 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_blockquote_line_with_space_after_marker() {
         // `> Text` — space becomes part of content.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "> Text", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("> Text", 0, ParseMode::Normal);
         match &ast.nodes[0] {
-            AstNode::Blockquote { depth, children, .. } => {
+            AstNode::Blockquote {
+                depth, children, ..
+            } => {
                 assert_eq!(*depth, 1);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == " Text"),
-                    "space after '>' should be part of content, got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == " Text"),
+                    "space after '>' should be part of content, got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected Blockquote, got {:?}", other),
         }
@@ -4154,23 +5142,34 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_blockquote_line_with_leading_space_not_a_blockquote() {
         // ` > text` — leading space means NOT at column 0.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            " > text", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(" > text", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::Blockquote { .. })),
+            "leading space should prevent blockquote parsing, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Blockquote { .. })),
-            "leading space should prevent blockquote parsing, got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase4_blockquote_line_macros_execute_inside() {
         // Macros inside blockquote content ARE processed.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "> Hello <<set $x to 1>> world", 0, ParseMode::Normal,
+            "> Hello <<set $x to 1>> world",
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::Blockquote { children, .. } => {
-                let has_macro = children.iter().any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
-                assert!(has_macro, "expected Macro('set') child inside blockquote, got: {:?}", children);
+                let has_macro = children
+                    .iter()
+                    .any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
+                assert!(
+                    has_macro,
+                    "expected Macro('set') child inside blockquote, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected Blockquote, got {:?}", other),
         }
@@ -4179,12 +5178,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_blockquote_line_with_link() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "> Go to [[Forest]]", 0, ParseMode::Normal,
+            "> Go to [[Forest]]",
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::Blockquote { children, .. } => {
                 let has_link = children.iter().any(|n| matches!(n, AstNode::Link { .. }));
-                assert!(has_link, "expected Link child inside blockquote, got: {:?}", children);
+                assert!(
+                    has_link,
+                    "expected Link child inside blockquote, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected Blockquote, got {:?}", other),
         }
@@ -4199,21 +5204,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n> Hello world\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let bq_tokens: Vec<_> = result.token_groups.iter()
+        let bq_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Blockquote))
             .collect();
         assert_eq!(bq_tokens.len(), 1, "expected 1 Blockquote token");
         let tok = &bq_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, ">", "Blockquote token should cover just the '>' marker, got: {:?}", token_text);
+        assert_eq!(
+            token_text, ">",
+            "Blockquote token should cover just the '>' marker, got: {:?}",
+            token_text
+        );
 
         // Should also have Prose tokens for content.
-        let prose_tokens: Vec<_> = result.token_groups.iter()
+        let prose_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Prose))
             .collect();
-        assert!(!prose_tokens.is_empty(), "expected Prose tokens for blockquote content");
+        assert!(
+            !prose_tokens.is_empty(),
+            "expected Prose tokens for blockquote content"
+        );
     }
 
     // ── Block-style blockquote tests (`<<<...<<<`) ────────────────────────
@@ -4221,22 +5237,45 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase4_blockquote_block_basic() {
         let text = "<<<\nSome content\n<<<";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single BlockquoteBlock node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single BlockquoteBlock node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::BlockquoteBlock { children, open_span, close_span, span } => {
-                assert!(open_span.start == 0 && open_span.end == 3, "open_span should cover opening '<<<': {:?}", open_span);
-                assert!(close_span.is_some(), "close_span should be Some (block was closed)");
+            AstNode::BlockquoteBlock {
+                children,
+                open_span,
+                close_span,
+                span,
+            } => {
+                assert!(
+                    open_span.start == 0 && open_span.end == 3,
+                    "open_span should cover opening '<<<': {:?}",
+                    open_span
+                );
+                assert!(
+                    close_span.is_some(),
+                    "close_span should be Some (block was closed)"
+                );
                 // Content should include "Some content\n"
                 let has_content = children.iter().any(|n| {
                     matches!(n, AstNode::Text { content, .. } if content.contains("Some content"))
                 });
-                assert!(has_content, "expected content 'Some content' in children, got: {:?}", children);
+                assert!(
+                    has_content,
+                    "expected content 'Some content' in children, got: {:?}",
+                    children
+                );
                 // Full span should cover from opening <<< to end of closing <<<.
                 assert_eq!(span.start, 0, "full span should start at 0");
-                assert_eq!(span.end, text.len(), "full span should cover the entire construct");
+                assert_eq!(
+                    span.end,
+                    text.len(),
+                    "full span should cover the entire construct"
+                );
             }
             other => panic!("expected BlockquoteBlock, got {:?}", other),
         }
@@ -4246,13 +5285,17 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase4_blockquote_block_with_macros_inside() {
         // Macros inside block-style blockquote ARE processed.
         let text = "<<<\n<<set $x to 1>>\n<<<";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::BlockquoteBlock { children, .. } => {
-                let has_macro = children.iter().any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
-                assert!(has_macro, "expected Macro('set') inside blockquote block, got: {:?}", children);
+                let has_macro = children
+                    .iter()
+                    .any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
+                assert!(
+                    has_macro,
+                    "expected Macro('set') inside blockquote block, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected BlockquoteBlock, got {:?}", other),
         }
@@ -4262,17 +5305,31 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase4_blockquote_block_unclosed() {
         // Unclosed blockquote block — consumes to end of text.
         let text = "<<<\nSome unclosed content\nmore text";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single BlockquoteBlock node, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single BlockquoteBlock node, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::BlockquoteBlock { close_span, children, .. } => {
-                assert!(close_span.is_none(), "unclosed block should have close_span = None");
+            AstNode::BlockquoteBlock {
+                close_span,
+                children,
+                ..
+            } => {
+                assert!(
+                    close_span.is_none(),
+                    "unclosed block should have close_span = None"
+                );
                 let has_content = children.iter().any(|n| {
                     matches!(n, AstNode::Text { content, .. } if content.contains("Some unclosed content"))
                 });
-                assert!(has_content, "expected unclosed content in children, got: {:?}", children);
+                assert!(
+                    has_content,
+                    "expected unclosed content in children, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected BlockquoteBlock, got {:?}", other),
         }
@@ -4283,12 +5340,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // `<<<\n` at col 0 is a blockquote block, NOT a macro.
         // Verify no Macro node is produced for the opening `<<<`.
         let text = "<<<\ncontent\n<<<";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         // Should NOT have any top-level Macro nodes (the `<<<` is not a macro).
         let has_macro = ast.nodes.iter().any(|n| matches!(n, AstNode::Macro { .. }));
-        assert!(!has_macro, "<<< should NOT be parsed as a macro, got: {:?}", ast.nodes);
+        assert!(
+            !has_macro,
+            "<<< should NOT be parsed as a macro, got: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -4296,12 +5355,17 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // `text <<<\n` — `<<<` not at col 0 should be parsed as macro `<<` + `<`.
         // (This is unusual but the `<<` macro arm handles it.)
         let text = "text <<<\n";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         // Should NOT have a BlockquoteBlock (not at col 0).
-        let has_bqb = ast.nodes.iter().any(|n| matches!(n, AstNode::BlockquoteBlock { .. }));
-        assert!(!has_bqb, "<<< not at col 0 should NOT be a BlockquoteBlock, got: {:?}", ast.nodes);
+        let has_bqb = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::BlockquoteBlock { .. }));
+        assert!(
+            !has_bqb,
+            "<<< not at col 0 should NOT be a BlockquoteBlock, got: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -4313,47 +5377,80 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<<\nContent here\n<<<\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let bqb_tokens: Vec<_> = result.token_groups.iter()
+        let bqb_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::BlockquoteBlock))
             .collect();
-        assert_eq!(bqb_tokens.len(), 2, "expected 2 BlockquoteBlock tokens (open + close), got: {}", bqb_tokens.len());
+        assert_eq!(
+            bqb_tokens.len(),
+            2,
+            "expected 2 BlockquoteBlock tokens (open + close), got: {}",
+            bqb_tokens.len()
+        );
 
         // Both tokens should cover `<<<`.
         for tok in &bqb_tokens {
-            let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-            assert_eq!(token_text, "<<<", "BlockquoteBlock token should cover '<<<', got: {:?}", token_text);
+            let token_text =
+                &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
+            assert_eq!(
+                token_text, "<<<",
+                "BlockquoteBlock token should cover '<<<', got: {:?}",
+                token_text
+            );
         }
 
         // Should also have Prose tokens for content.
-        let prose_tokens: Vec<_> = result.token_groups.iter()
+        let prose_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Prose))
             .collect();
-        assert!(!prose_tokens.is_empty(), "expected Prose tokens for blockquote block content");
+        assert!(
+            !prose_tokens.is_empty(),
+            "expected Prose tokens for blockquote block content"
+        );
     }
 
     #[test]
     fn phase4_blockquote_block_multi_paragraph() {
         // Block-style blockquote can span multiple paragraphs.
         let text = "<<<\nParagraph 1\n\nParagraph 2\n<<<";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single BlockquoteBlock, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single BlockquoteBlock, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::BlockquoteBlock { children, close_span, .. } => {
+            AstNode::BlockquoteBlock {
+                children,
+                close_span,
+                ..
+            } => {
                 assert!(close_span.is_some(), "block should be closed");
                 // Should contain text from both paragraphs.
-                let all_text: String = children.iter()
+                let all_text: String = children
+                    .iter()
                     .filter_map(|n| match n {
                         AstNode::Text { content, .. } => Some(content.as_str()),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
                     .join("");
-                assert!(all_text.contains("Paragraph 1"), "missing 'Paragraph 1' in: {}", all_text);
-                assert!(all_text.contains("Paragraph 2"), "missing 'Paragraph 2' in: {}", all_text);
+                assert!(
+                    all_text.contains("Paragraph 1"),
+                    "missing 'Paragraph 1' in: {}",
+                    all_text
+                );
+                assert!(
+                    all_text.contains("Paragraph 2"),
+                    "missing 'Paragraph 2' in: {}",
+                    all_text
+                );
             }
             other => panic!("expected BlockquoteBlock, got {:?}", other),
         }
@@ -4370,20 +5467,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase5_unordered_list_depth_1() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "*item", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("*item", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single ListItem, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single ListItem, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::ListItem { depth, ordered, marker, children, span } => {
+            AstNode::ListItem {
+                depth,
+                ordered,
+                marker,
+                children,
+                span,
+            } => {
                 assert_eq!(*depth, 1, "depth should be 1");
                 assert!(!*ordered, "should be unordered (false)");
                 assert_eq!(marker, "*", "marker should be '*'");
                 assert_eq!(span.start, 0);
                 assert_eq!(span.end, 5, "span should cover '*item'");
                 assert_eq!(children.len(), 1);
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "item"),
-                    "child should be Text('item'), got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "item"),
+                    "child should be Text('item'), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4391,12 +5500,21 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase5_ordered_list_depth_1() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "#item", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("#item", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single ListItem, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single ListItem, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::ListItem { depth, ordered, marker, children, .. } => {
+            AstNode::ListItem {
+                depth,
+                ordered,
+                marker,
+                children,
+                ..
+            } => {
                 assert_eq!(*depth, 1);
                 assert!(*ordered, "should be ordered (true)");
                 assert_eq!(marker, "#", "marker should be '#'");
@@ -4408,15 +5526,21 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase5_unordered_list_depth_2() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "**nested", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("**nested", 0, ParseMode::Normal);
         match &ast.nodes[0] {
-            AstNode::ListItem { depth, ordered, marker, children, .. } => {
+            AstNode::ListItem {
+                depth,
+                ordered,
+                marker,
+                children,
+                ..
+            } => {
                 assert_eq!(*depth, 2, "depth should be 2 for '**'");
                 assert!(!*ordered);
                 assert_eq!(marker, "**", "marker should be '**'");
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "nested"));
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "nested")
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4424,11 +5548,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase5_ordered_list_depth_3() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "###deep", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("###deep", 0, ParseMode::Normal);
         match &ast.nodes[0] {
-            AstNode::ListItem { depth, ordered, marker, children, .. } => {
+            AstNode::ListItem {
+                depth,
+                ordered,
+                marker,
+                children,
+                ..
+            } => {
                 assert_eq!(*depth, 3, "depth should be 3 for '###'");
                 assert!(*ordered);
                 assert_eq!(marker, "###");
@@ -4441,13 +5569,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase5_list_with_space_after_marker() {
         // `* item` — space becomes part of content.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "* item", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("* item", 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::ListItem { children, .. } => {
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == " item"),
-                    "space after '*' should be part of content, got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == " item"),
+                    "space after '*' should be part of content, got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4456,29 +5585,44 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase5_list_with_leading_space_not_a_list() {
         // ` *item` — leading space means NOT at column 0.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            " *item", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(" *item", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::ListItem { .. })),
+            "leading space should prevent list parsing, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::ListItem { .. })),
-            "leading space should prevent list parsing, got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase5_mixed_markers_not_supported() {
         // `*#item` — mixed markers NOT supported. Only `*` matches (depth 1),
         // the `#` becomes literal content.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "*#item", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("*#item", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single ListItem, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single ListItem, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::ListItem { depth, ordered, marker, children, .. } => {
+            AstNode::ListItem {
+                depth,
+                ordered,
+                marker,
+                children,
+                ..
+            } => {
                 assert_eq!(*depth, 1, "only the first '*' should match");
                 assert!(!*ordered, "should be unordered (only * matched)");
                 assert_eq!(marker, "*");
                 // Content should start with '#' (the unmatched marker).
-                assert!(matches!(&children[0], AstNode::Text { content, .. } if content == "#item"),
-                    "'#' should be literal content (not a marker), got: {:?}", children[0]);
+                assert!(
+                    matches!(&children[0], AstNode::Text { content, .. } if content == "#item"),
+                    "'#' should be literal content (not a marker), got: {:?}",
+                    children[0]
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4488,12 +5632,20 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase5_list_macros_execute_inside() {
         // Macros inside list item content ARE processed.
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "* Hello <<set $x to 1>> world", 0, ParseMode::Normal,
+            "* Hello <<set $x to 1>> world",
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::ListItem { children, .. } => {
-                let has_macro = children.iter().any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
-                assert!(has_macro, "expected Macro('set') child inside list item, got: {:?}", children);
+                let has_macro = children
+                    .iter()
+                    .any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
+                assert!(
+                    has_macro,
+                    "expected Macro('set') child inside list item, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4501,17 +5653,22 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase5_list_with_variable_reference() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "* Hello $name", 0, ParseMode::Normal,
-        );
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("* Hello $name", 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::ListItem { children, .. } => {
                 let text_node = children.iter().find(|n| matches!(n, AstNode::Text { .. }));
                 assert!(text_node.is_some());
-                if let Some(AstNode::Text { content, var_refs, .. }) = text_node {
+                if let Some(AstNode::Text {
+                    content, var_refs, ..
+                }) = text_node
+                {
                     assert!(content.contains("$name"));
-                    assert!(var_refs.iter().any(|v| v.name == "$name"),
-                        "var_refs should include '$name', got: {:?}", var_refs);
+                    assert!(
+                        var_refs.iter().any(|v| v.name == "$name"),
+                        "var_refs should include '$name', got: {:?}",
+                        var_refs
+                    );
                 }
             }
             other => panic!("expected ListItem, got {:?}", other),
@@ -4521,12 +5678,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase5_list_with_link() {
         let ast = crate::sugarcube::parser::parse_passage_body(
-            "* Go to [[Forest]]", 0, ParseMode::Normal,
+            "* Go to [[Forest]]",
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
             AstNode::ListItem { children, .. } => {
                 let has_link = children.iter().any(|n| matches!(n, AstNode::Link { .. }));
-                assert!(has_link, "expected Link child inside list item, got: {:?}", children);
+                assert!(
+                    has_link,
+                    "expected Link child inside list item, got: {:?}",
+                    children
+                );
             }
             other => panic!("expected ListItem, got {:?}", other),
         }
@@ -4536,39 +5699,49 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase5_multiple_list_items() {
         // Multiple list items on consecutive lines.
         let text = "* first\n* second\n* third";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
-        let list_items: Vec<_> = ast.nodes.iter()
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        let list_items: Vec<_> = ast
+            .nodes
+            .iter()
             .filter(|n| matches!(n, AstNode::ListItem { .. }))
             .collect();
-        assert_eq!(list_items.len(), 3, "expected 3 ListItem nodes, got: {}", list_items.len());
+        assert_eq!(
+            list_items.len(),
+            3,
+            "expected 3 ListItem nodes, got: {}",
+            list_items.len()
+        );
     }
 
     #[test]
     fn phase5_nested_list_items() {
         // Nested list items with varying depth.
         let text = "* top\n** nested\n*** deeper";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
-        let list_items: Vec<_> = ast.nodes.iter()
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        let list_items: Vec<_> = ast
+            .nodes
+            .iter()
             .filter_map(|n| match n {
                 AstNode::ListItem { depth, .. } => Some(*depth),
                 _ => None,
             })
             .collect();
-        assert_eq!(list_items, vec![1, 2, 3], "expected depths 1, 2, 3, got: {:?}", list_items);
+        assert_eq!(
+            list_items,
+            vec![1, 2, 3],
+            "expected depths 1, 2, 3, got: {:?}",
+            list_items
+        );
     }
 
     #[test]
     fn phase5_mixed_ul_and_ol() {
         // Mixed unordered and ordered list items (same-depth type switching).
         let text = "* ul item\n## ol item";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
-        let list_items: Vec<_> = ast.nodes.iter()
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
+        let list_items: Vec<_> = ast
+            .nodes
+            .iter()
             .filter_map(|n| match n {
                 AstNode::ListItem { ordered, depth, .. } => Some((*ordered, *depth)),
                 _ => None,
@@ -4582,11 +5755,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase5_list_mid_line_asterisk_not_a_list() {
         // `text * not a list` — `*` is mid-line, not at column 0.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "text * not a list", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("text * not a list", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes
+                .iter()
+                .any(|n| matches!(n, AstNode::ListItem { .. })),
+            "mid-line '*' should NOT produce a ListItem, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::ListItem { .. })),
-            "mid-line '*' should NOT produce a ListItem, got: {:?}", ast.nodes);
     }
 
     #[test]
@@ -4598,21 +5775,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n* item text\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let list_tokens: Vec<_> = result.token_groups.iter()
+        let list_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::ListMarker))
             .collect();
         assert_eq!(list_tokens.len(), 1, "expected 1 ListMarker token");
         let tok = &list_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "*", "ListMarker token should cover just the '*' marker, got: {:?}", token_text);
+        assert_eq!(
+            token_text, "*",
+            "ListMarker token should cover just the '*' marker, got: {:?}",
+            token_text
+        );
 
         // Should also have Prose tokens for content.
-        let prose_tokens: Vec<_> = result.token_groups.iter()
+        let prose_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Prose))
             .collect();
-        assert!(!prose_tokens.is_empty(), "expected Prose tokens for list item content");
+        assert!(
+            !prose_tokens.is_empty(),
+            "expected Prose tokens for list item content"
+        );
     }
 
     #[test]
@@ -4624,14 +5812,20 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n## numbered\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let list_tokens: Vec<_> = result.token_groups.iter()
+        let list_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::ListMarker))
             .collect();
         assert_eq!(list_tokens.len(), 1, "expected 1 ListMarker token");
         let tok = &list_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "##", "ListMarker token should cover '##', got: {:?}", token_text);
+        assert_eq!(
+            token_text, "##",
+            "ListMarker token should cover '##', got: {:?}",
+            token_text
+        );
     }
 
     #[test]
@@ -4644,19 +5838,25 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
         // Should have a ListMarker token for `*`.
-        let list_tokens: Vec<_> = result.token_groups.iter()
+        let list_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::ListMarker))
             .collect();
         assert_eq!(list_tokens.len(), 1, "expected 1 ListMarker token");
 
         // Should have a Macro token for `set` (proving recursive tokenization).
-        let macro_tokens: Vec<_> = result.token_groups.iter()
+        let macro_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
-        assert!(!macro_tokens.is_empty(),
-            "expected at least 1 Macro token for <<set>> inside list item, got 0");
+        assert!(
+            !macro_tokens.is_empty(),
+            "expected at least 1 Macro token for <<set>> inside list item, got 0"
+        );
     }
 
     // ── Phase 6 tests — Tables (TiddlyWiki syntax) ───────────────────────
@@ -4670,12 +5870,23 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 
     #[test]
     fn phase6_table_basic_body_row() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "|cell1|cell2|", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("|cell1|cell2|", 0, ParseMode::Normal);
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "expected single Table, got: {:?}",
+            ast.nodes
         );
-        assert_eq!(ast.nodes.len(), 1, "expected single Table, got: {:?}", ast.nodes);
         match &ast.nodes[0] {
-            AstNode::Table { rows, header, footer, caption, class, .. } => {
+            AstNode::Table {
+                rows,
+                header,
+                footer,
+                caption,
+                class,
+                ..
+            } => {
                 assert_eq!(rows.len(), 1, "expected 1 row");
                 assert!(header.is_none(), "no header row expected");
                 assert!(footer.is_none());
@@ -4683,10 +5894,17 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
                 assert!(class.is_none());
                 let row = &rows[0];
                 assert_eq!(row.cells.len(), 2, "expected 2 cells");
-                assert!(matches!(row.row_type, crate::sugarcube::ast::TableRowType::Body));
+                assert!(matches!(
+                    row.row_type,
+                    crate::sugarcube::ast::TableRowType::Body
+                ));
                 // Cell content should be Text nodes.
-                assert!(matches!(&row.cells[0].children[0], AstNode::Text { content, .. } if content == "cell1"));
-                assert!(matches!(&row.cells[1].children[0], AstNode::Text { content, .. } if content == "cell2"));
+                assert!(
+                    matches!(&row.cells[0].children[0], AstNode::Text { content, .. } if content == "cell1")
+                );
+                assert!(
+                    matches!(&row.cells[1].children[0], AstNode::Text { content, .. } if content == "cell2")
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4695,14 +5913,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_multiple_rows() {
         let text = "|r1c1|r1c2|\n|r2c1|r2c2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 assert_eq!(rows.len(), 2, "expected 2 rows");
-                assert!(matches!(&rows[0].cells[0].children[0], AstNode::Text { content, .. } if content == "r1c1"));
-                assert!(matches!(&rows[1].cells[1].children[0], AstNode::Text { content, .. } if content == "r2c2"));
+                assert!(
+                    matches!(&rows[0].cells[0].children[0], AstNode::Text { content, .. } if content == "r1c1")
+                );
+                assert!(
+                    matches!(&rows[1].cells[1].children[0], AstNode::Text { content, .. } if content == "r2c2")
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4711,19 +5931,23 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_header_row() {
         let text = "|!H1|!H2|h\n|b1|b2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, header, .. } => {
                 assert!(header.is_some(), "expected header row");
                 assert_eq!(rows.len(), 2, "expected 2 rows (header + body)");
                 // Header cells should have is_header=true.
                 let h = header.as_ref().unwrap();
-                assert!(h.cells.iter().all(|c| c.is_header), "all header cells should have is_header=true");
+                assert!(
+                    h.cells.iter().all(|c| c.is_header),
+                    "all header cells should have is_header=true"
+                );
                 // Body row cells should have is_header=false.
                 let body = &rows[1];
-                assert!(body.cells.iter().all(|c| !c.is_header), "body cells should have is_header=false");
+                assert!(
+                    body.cells.iter().all(|c| !c.is_header),
+                    "body cells should have is_header=false"
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4732,14 +5956,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_footer_row() {
         let text = "|b1|b2|\n|f1|f2|f";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, footer, .. } => {
                 assert!(footer.is_some(), "expected footer row");
                 assert_eq!(rows.len(), 2, "expected 2 rows (body + footer)");
-                assert!(matches!(rows[1].row_type, crate::sugarcube::ast::TableRowType::Footer));
+                assert!(matches!(
+                    rows[1].row_type,
+                    crate::sugarcube::ast::TableRowType::Footer
+                ));
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4748,15 +5973,21 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_caption_row() {
         let text = "|My Caption|c\n|b1|b2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { caption, rows, .. } => {
                 assert!(caption.is_some(), "expected caption");
-                assert_eq!(caption.as_deref(), Some("My Caption"), "caption text mismatch");
+                assert_eq!(
+                    caption.as_deref(),
+                    Some("My Caption"),
+                    "caption text mismatch"
+                );
                 // Caption row is NOT stored in rows (only body/header/footer are).
-                assert_eq!(rows.len(), 1, "expected 1 body row (caption row not in rows)");
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "expected 1 body row (caption row not in rows)"
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4765,9 +5996,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_class_row() {
         let text = "|myclass|k\n|b1|b2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { class, rows, .. } => {
                 assert!(class.is_some(), "expected class");
@@ -4781,14 +6010,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_colspan_cell() {
         let text = "|>|b2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 let row = &rows[0];
                 assert!(row.cells[0].colspan, "first cell should have colspan=true");
-                assert!(!row.cells[1].colspan, "second cell should have colspan=false");
+                assert!(
+                    !row.cells[1].colspan,
+                    "second cell should have colspan=false"
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4797,14 +6027,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_rowspan_cell() {
         let text = "|~|b2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 let row = &rows[0];
                 assert!(row.cells[0].rowspan, "first cell should have rowspan=true");
-                assert!(!row.cells[1].rowspan, "second cell should have rowspan=false");
+                assert!(
+                    !row.cells[1].rowspan,
+                    "second cell should have rowspan=false"
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4813,44 +6044,52 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_not_a_table_row_no_closing_pipe() {
         // `| not a table row` — no closing `|`, so NOT a table.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "| not a table row", 0, ParseMode::Normal,
+        let ast =
+            crate::sugarcube::parser::parse_passage_body("| not a table row", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
+            "should NOT be a Table (no closing |), got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
-            "should NOT be a Table (no closing |), got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase6_table_not_a_table_invalid_suffix() {
         // `|cell|x` — suffix `x` is not h/f/c/k, so NOT a table row.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "|cell|x", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body("|cell|x", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
+            "should NOT be a Table (invalid suffix x), got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
-            "should NOT be a Table (invalid suffix x), got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase6_table_with_leading_space_not_a_table() {
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            " |cell|", 0, ParseMode::Normal,
+        let ast = crate::sugarcube::parser::parse_passage_body(" |cell|", 0, ParseMode::Normal);
+        assert!(
+            !ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
+            "leading space should prevent table parsing, got: {:?}",
+            ast.nodes
         );
-        assert!(!ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. })),
-            "leading space should prevent table parsing, got: {:?}", ast.nodes);
     }
 
     #[test]
     fn phase6_table_macros_execute_inside_cells() {
         let text = "|<<set $x to 1>>|cell2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 let row = &rows[0];
-                let has_macro = row.cells[0].children.iter()
+                let has_macro = row.cells[0]
+                    .children
+                    .iter()
                     .any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
-                assert!(has_macro, "expected Macro('set') in first cell, got: {:?}", row.cells[0].children);
+                assert!(
+                    has_macro,
+                    "expected Macro('set') in first cell, got: {:?}",
+                    row.cells[0].children
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4859,17 +6098,21 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_with_variable_in_cell() {
         let text = "|Hello $name|cell2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 let cell = &rows[0].cells[0];
-                let text_node = cell.children.iter().find(|n| matches!(n, AstNode::Text { .. }));
+                let text_node = cell
+                    .children
+                    .iter()
+                    .find(|n| matches!(n, AstNode::Text { .. }));
                 assert!(text_node.is_some());
                 if let Some(AstNode::Text { var_refs, .. }) = text_node {
-                    assert!(var_refs.iter().any(|v| v.name == "$name"),
-                        "expected '$name' in var_refs, got: {:?}", var_refs);
+                    assert!(
+                        var_refs.iter().any(|v| v.name == "$name"),
+                        "expected '$name' in var_refs, got: {:?}",
+                        var_refs
+                    );
                 }
             }
             other => panic!("expected Table, got {:?}", other),
@@ -4879,12 +6122,12 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase6_table_with_link_in_cell() {
         let text = "|[[Forest]]|cell2|";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
-                let has_link = rows[0].cells[0].children.iter()
+                let has_link = rows[0].cells[0]
+                    .children
+                    .iter()
                     .any(|n| matches!(n, AstNode::Link { .. }));
                 assert!(has_link, "expected Link in first cell");
             }
@@ -4896,16 +6139,19 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase6_table_followed_by_text() {
         // Table on lines 1-2, prose on line 3.
         let text = "|r1c1|r1c2|\n|r2c1|r2c2|\nSome prose.";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         // Should have: Table + Text (prose).
         let has_table = ast.nodes.iter().any(|n| matches!(n, AstNode::Table { .. }));
-        let has_prose = ast.nodes.iter().any(|n| {
-            matches!(n, AstNode::Text { content, .. } if content.contains("Some prose"))
-        });
+        let has_prose = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::Text { content, .. } if content.contains("Some prose")));
         assert!(has_table, "expected a Table node");
-        assert!(has_prose, "expected prose text after table, got: {:?}", ast.nodes);
+        assert!(
+            has_prose,
+            "expected prose text after table, got: {:?}",
+            ast.nodes
+        );
     }
 
     #[test]
@@ -4917,21 +6163,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n|cell1|cell2|\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let table_tokens: Vec<_> = result.token_groups.iter()
+        let table_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Table))
             .collect();
         assert_eq!(table_tokens.len(), 1, "expected 1 Table token (opening |)");
         let tok = &table_tokens[0];
         let token_text = &text[tok.start.min(text.len())..(tok.start + tok.length).min(text.len())];
-        assert_eq!(token_text, "|", "Table token should cover opening |, got: {:?}", token_text);
+        assert_eq!(
+            token_text, "|",
+            "Table token should cover opening |, got: {:?}",
+            token_text
+        );
 
         // Should also have Prose tokens for cell content.
-        let prose_tokens: Vec<_> = result.token_groups.iter()
+        let prose_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Prose))
             .collect();
-        assert!(!prose_tokens.is_empty(), "expected Prose tokens for cell content");
+        assert!(
+            !prose_tokens.is_empty(),
+            "expected Prose tokens for cell content"
+        );
     }
 
     #[test]
@@ -4944,32 +6201,38 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
         // Should have a Table token for opening `|`.
-        let table_tokens: Vec<_> = result.token_groups.iter()
+        let table_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Table))
             .collect();
         assert_eq!(table_tokens.len(), 1, "expected 1 Table token");
 
         // Should have a Macro token for `set` (proving cell content was recursively tokenized).
-        let macro_tokens: Vec<_> = result.token_groups.iter()
+        let macro_tokens: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::Macro))
             .collect();
-        assert!(!macro_tokens.is_empty(),
-            "expected at least 1 Macro token for <<set>> inside table cell, got 0");
+        assert!(
+            !macro_tokens.is_empty(),
+            "expected at least 1 Macro token for <<set>> inside table cell, got 0"
+        );
     }
 
     #[test]
     fn phase6_table_empty_cells() {
         // `|||` — two empty cells.
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            "|||", 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body("|||", 0, ParseMode::Normal);
         match &ast.nodes[0] {
             AstNode::Table { rows, .. } => {
                 assert_eq!(rows[0].cells.len(), 2, "expected 2 empty cells");
-                assert!(rows[0].cells.iter().all(|c| c.children.is_empty()),
-                    "empty cells should have no children");
+                assert!(
+                    rows[0].cells.iter().all(|c| c.children.is_empty()),
+                    "empty cells should have no children"
+                );
             }
             other => panic!("expected Table, got {:?}", other),
         }
@@ -4986,9 +6249,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7a_script_still_has_raw_body() {
         // <<script>> should still capture its body as raw text (no macro parsing).
         let text = "<<script>>\n<<set $x to 1>>\n<</script>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1, "expected single Macro node");
         match &ast.nodes[0] {
             AstNode::Macro { name, children, .. } => {
@@ -4999,13 +6260,20 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
                 // The <<set>> inside should NOT be a Macro child — it should
                 // be part of the raw Text content.
                 let has_macro_child = ch.iter().any(|n| matches!(n, AstNode::Macro { .. }));
-                assert!(!has_macro_child,
-                    "CRITICAL: <<set>> inside <<script>> should NOT be parsed as a Macro! children: {:?}", ch);
+                assert!(
+                    !has_macro_child,
+                    "CRITICAL: <<set>> inside <<script>> should NOT be parsed as a Macro! children: {:?}",
+                    ch
+                );
                 // The raw text should contain the <<set>> literally.
                 let has_text_with_set = ch.iter().any(|n| {
                     matches!(n, AstNode::Text { content, .. } if content.contains("<<set $x to 1>>"))
                 });
-                assert!(has_text_with_set, "expected raw Text containing '<<set>>', got: {:?}", ch);
+                assert!(
+                    has_text_with_set,
+                    "expected raw Text containing '<<set>>', got: {:?}",
+                    ch
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5017,24 +6285,30 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // It should now be parsed as a regular macro with no special raw-body
         // handling (the tree builder will try to pair it with <</css>> if present).
         let text = "<<css>>\nbody { color: red; }\n<</css>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         // `<<css>>` is no longer in the catalog, so it's treated as an unknown
         // macro. It should still be parsed (the parser handles unknown macros),
         // but it should NOT have raw body — its children should be parsed
         // normally (macros/links/vars inside would be processed).
-        let css_macro = ast.nodes.iter().find(|n| {
-            matches!(n, AstNode::Macro { name, .. } if name == "css")
-        });
-        assert!(css_macro.is_some(), "expected a Macro named 'css' (unknown macro, still parsed)");
-        if let Some(AstNode::Macro { children, .. }) = css_macro {
+        let css_macro = ast
+            .nodes
+            .iter()
+            .find(|n| matches!(n, AstNode::Macro { name, .. } if name == "css"));
+        assert!(
+            css_macro.is_some(),
+            "expected a Macro named 'css' (unknown macro, still parsed)"
+        );
+        if let Some(AstNode::Macro {
+            children: Some(ch), ..
+        }) = css_macro
+        {
             // Children should be parsed normally (not raw Text).
             // The body "body { color: red; }\n" should be a Text node (prose).
-            if let Some(ch) = children {
-                let has_text = ch.iter().any(|n| matches!(n, AstNode::Text { .. }));
-                assert!(has_text, "expected Text children (not raw body) for unknown 'css' macro");
-            }
+            let has_text = ch.iter().any(|n| matches!(n, AstNode::Text { .. }));
+            assert!(
+                has_text,
+                "expected Text children (not raw body) for unknown 'css' macro"
+            );
         }
     }
 
@@ -5044,9 +6318,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // parser check. Now that the check is catalog-driven, `<<style>>` is
         // treated as an unknown macro (no raw body).
         use crate::sugarcube::macros::find_macro;
-        assert!(find_macro("style").is_none(), "<<style>> should NOT be in the catalog");
-        assert!(find_macro("css").is_none(), "<<css>> should NOT be in the catalog");
-        assert!(find_macro("script").is_some(), "<<script>> should be in the catalog");
+        assert!(
+            find_macro("style").is_none(),
+            "<<style>> should NOT be in the catalog"
+        );
+        assert!(
+            find_macro("css").is_none(),
+            "<<css>> should NOT be in the catalog"
+        );
+        assert!(
+            find_macro("script").is_some(),
+            "<<script>> should be in the catalog"
+        );
     }
 
     #[test]
@@ -5054,11 +6337,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // Verify the catalog has body_is_raw: true for script only.
         use crate::sugarcube::macros::find_macro;
         let script_def = find_macro("script").expect("script should be in catalog");
-        assert!(script_def.body_is_raw, "script should have body_is_raw: true");
+        assert!(
+            script_def.body_is_raw,
+            "script should have body_is_raw: true"
+        );
 
         // Check a few other macros have body_is_raw: false.
         for name in &["if", "for", "link", "set", "print", "widget"] {
-            let def = find_macro(name).expect(&format!("{} should be in catalog", name));
+            let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
             assert!(!def.body_is_raw, "{} should have body_is_raw: false", name);
         }
     }
@@ -5067,14 +6353,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7a_script_with_macros_outside_still_works() {
         // Macros OUTSIDE <<script>> should still execute normally.
         let text = "<<set $y to 2>><<script>>\nraw code\n<</script>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 2, "expected 2 nodes (Macro + Macro)");
-        assert!(matches!(&ast.nodes[0], AstNode::Macro { name, .. } if name == "set"),
-            "first node should be Macro('set'), got: {:?}", ast.nodes[0]);
-        assert!(matches!(&ast.nodes[1], AstNode::Macro { name, .. } if name == "script"),
-            "second node should be Macro('script'), got: {:?}", ast.nodes[1]);
+        assert!(
+            matches!(&ast.nodes[0], AstNode::Macro { name, .. } if name == "set"),
+            "first node should be Macro('set'), got: {:?}",
+            ast.nodes[0]
+        );
+        assert!(
+            matches!(&ast.nodes[1], AstNode::Macro { name, .. } if name == "script"),
+            "second node should be Macro('script'), got: {:?}",
+            ast.nodes[1]
+        );
     }
 
     // ── Phase 7b tests — Add missing macros ──────────────────────────────
@@ -5090,7 +6380,10 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_silent_in_catalog() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("silent").expect("<<silent>> should be in catalog");
-        assert!(!def.deprecated, "<<silent>> should NOT be deprecated (it's the replacement)");
+        assert!(
+            !def.deprecated,
+            "<<silent>> should NOT be deprecated (it's the replacement)"
+        );
         assert_eq!(def.body, crate::types::BodyRequirement::Required);
         assert_eq!(def.kind, crate::types::MacroKind::Container);
     }
@@ -5118,7 +6411,10 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("choice").expect("<<choice>> should be in catalog");
         assert!(def.deprecated, "<<choice>> should be deprecated (v2.37.0)");
-        assert!(def.deprecation_message.is_some(), "<<choice>> should have a deprecation message");
+        assert!(
+            def.deprecation_message.is_some(),
+            "<<choice>> should have a deprecation message"
+        );
         assert_eq!(def.body, crate::types::BodyRequirement::Never);
         assert_eq!(def.kind, crate::types::MacroKind::Inline);
     }
@@ -5126,7 +6422,8 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_setplaylist_in_catalog_and_deprecated() {
         use crate::sugarcube::macros::find_macro;
-        let def = find_macro("setplaylist").expect("<<setplaylist>> should be in catalog (deprecated)");
+        let def =
+            find_macro("setplaylist").expect("<<setplaylist>> should be in catalog (deprecated)");
         assert!(def.deprecated, "<<setplaylist>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
@@ -5134,7 +6431,8 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_stopallaudio_in_catalog_and_deprecated() {
         use crate::sugarcube::macros::find_macro;
-        let def = find_macro("stopallaudio").expect("<<stopallaudio>> should be in catalog (deprecated)");
+        let def =
+            find_macro("stopallaudio").expect("<<stopallaudio>> should be in catalog (deprecated)");
         assert!(def.deprecated, "<<stopallaudio>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
@@ -5142,7 +6440,8 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_silently_still_deprecated() {
         use crate::sugarcube::macros::find_macro;
-        let def = find_macro("silently").expect("<<silently>> should still be in catalog (deprecated)");
+        let def =
+            find_macro("silently").expect("<<silently>> should still be in catalog (deprecated)");
         assert!(def.deprecated, "<<silently>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
@@ -5155,16 +6454,31 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // description already starts with "Deprecated." and there is no
         // replacement macro to recommend, so `deprecation_message` is
         // intentionally None to avoid a duplicate warning in hover.
-        for name in &["click", "display", "forget", "remember", "setplaylist", "stopallaudio", "silently", "choice"] {
+        for name in &[
+            "click",
+            "display",
+            "forget",
+            "remember",
+            "setplaylist",
+            "stopallaudio",
+            "silently",
+            "choice",
+        ] {
             let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
             assert!(def.deprecated, "{} should be deprecated", name);
-            assert!(def.deprecation_message.is_some(), "{} should have a deprecation message", name);
+            assert!(
+                def.deprecation_message.is_some(),
+                "{} should have a deprecation message",
+                name
+            );
         }
         // `actions` is deprecated but has no deprecation_message (see comment above).
         let actions_def = find_macro("actions").expect("actions should be in catalog");
         assert!(actions_def.deprecated, "actions should be deprecated");
-        assert!(actions_def.deprecation_message.is_none(),
-            "actions should have deprecation_message = None to avoid duplicate hover warning");
+        assert!(
+            actions_def.deprecation_message.is_none(),
+            "actions should have deprecation_message = None to avoid duplicate hover warning"
+        );
     }
 
     #[test]
@@ -5176,10 +6490,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         use crate::types::{BodyRequirement, MacroKind};
         let def = find_macro("actions").expect("actions should be in catalog");
-        assert_eq!(def.body, BodyRequirement::Never,
-            "actions should have body: Never (inline, no close tag)");
-        assert_eq!(def.kind, MacroKind::Inline,
-            "actions should have kind: Inline");
+        assert_eq!(
+            def.body,
+            BodyRequirement::Never,
+            "actions should have body: Never (inline, no close tag)"
+        );
+        assert_eq!(
+            def.kind,
+            MacroKind::Inline,
+            "actions should have kind: Inline"
+        );
     }
 
     #[test]
@@ -5198,21 +6518,36 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<actions \"Time\" \"Start\">>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed" && d.message.contains("actions"))
             .collect();
-        assert!(unclosed.is_empty(),
+        assert!(
+            unclosed.is_empty(),
             "<<actions>> should NOT produce an unclosed-block diagnostic (it's inline), got: {:?}",
-            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn phase7b_new_macros_have_snippets() {
         // All new macros should have snippets for completion.
         use crate::sugarcube::macros::macro_snippet;
-        for name in &["silent", "do", "redo", "choice", "setplaylist", "stopallaudio"] {
-            assert!(macro_snippet(name).is_some(), "{} should have a snippet", name);
+        for name in &[
+            "silent",
+            "do",
+            "redo",
+            "choice",
+            "setplaylist",
+            "stopallaudio",
+        ] {
+            assert!(
+                macro_snippet(name).is_some(),
+                "{} should have a snippet",
+                name
+            );
         }
     }
 
@@ -5220,19 +6555,26 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_silent_parses_as_block_macro() {
         // <<silent>> should parse as a block macro with body content.
         let text = "<<silent>>\n<<set $x to 1>>\n<</silent>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1, "expected single Macro node");
         match &ast.nodes[0] {
             AstNode::Macro { name, children, .. } => {
                 assert_eq!(name, "silent");
-                assert!(children.is_some(), "<<silent>> should have children (body content)");
+                assert!(
+                    children.is_some(),
+                    "<<silent>> should have children (body content)"
+                );
                 // The <<set>> inside should be parsed as a real Macro child
                 // (silent is NOT raw-body — its content is parsed normally).
                 let ch = children.as_ref().unwrap();
-                let has_macro = ch.iter().any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
-                assert!(has_macro, "expected Macro('set') child inside <<silent>>, got: {:?}", ch);
+                let has_macro = ch
+                    .iter()
+                    .any(|n| matches!(n, AstNode::Macro { name, .. } if name == "set"));
+                assert!(
+                    has_macro,
+                    "expected Macro('set') child inside <<silent>>, got: {:?}",
+                    ch
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5241,9 +6583,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_do_parses_as_block_macro() {
         let text = "<<do>>\nSome content\n<</do>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
             AstNode::Macro { name, children, .. } => {
@@ -5253,7 +6593,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
                 let has_text = ch.iter().any(|n| {
                     matches!(n, AstNode::Text { content, .. } if content.contains("Some content"))
                 });
-                assert!(has_text, "expected 'Some content' in <<do>> body, got: {:?}", ch);
+                assert!(
+                    has_text,
+                    "expected 'Some content' in <<do>> body, got: {:?}",
+                    ch
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5262,15 +6606,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_redo_parses_as_inline_macro() {
         let text = "<<redo>>";
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
             AstNode::Macro { name, children, .. } => {
                 assert_eq!(name, "redo");
                 // redo is inline (body: Never) — children should be None.
-                assert!(children.is_none(), "<<redo>> should have no children (inline macro)");
+                assert!(
+                    children.is_none(),
+                    "<<redo>> should have no children (inline macro)"
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5279,14 +6624,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     #[test]
     fn phase7b_choice_parses_as_inline_macro() {
         let text = r#"<<choice "Forest" "Go to forest">>"#;
-        let ast = crate::sugarcube::parser::parse_passage_body(
-            text, 0, ParseMode::Normal,
-        );
+        let ast = crate::sugarcube::parser::parse_passage_body(text, 0, ParseMode::Normal);
         assert_eq!(ast.nodes.len(), 1);
         match &ast.nodes[0] {
             AstNode::Macro { name, children, .. } => {
                 assert_eq!(name, "choice");
-                assert!(children.is_none(), "<<choice>> should have no children (inline macro)");
+                assert!(
+                    children.is_none(),
+                    "<<choice>> should have no children (inline macro)"
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5299,11 +6645,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("textbox").expect("textbox should be in catalog");
         let args = def.args.expect("textbox should have args");
-        assert_eq!(args.len(), 4, "textbox should have 4 args (receiverName, defaultValue, passage, autofocus)");
+        assert_eq!(
+            args.len(),
+            4,
+            "textbox should have 4 args (receiverName, defaultValue, passage, autofocus)"
+        );
         assert_eq!(args[0].label, "receiverName");
         assert_eq!(args[1].label, "defaultValue");
         assert_eq!(args[2].label, "passage");
-        assert!(args[2].is_passage_ref, "passage arg should be is_passage_ref");
+        assert!(
+            args[2].is_passage_ref,
+            "passage arg should be is_passage_ref"
+        );
         assert_eq!(args[3].label, "autofocus");
         assert_eq!(args[3].kind, crate::types::MacroArgKind::Keyword);
     }
@@ -5315,7 +6668,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let args = def.args.expect("numberbox should have args");
         assert_eq!(args.len(), 4);
         assert_eq!(args[1].label, "defaultValue");
-        assert_eq!(args[1].kind, crate::types::MacroArgKind::Number, "defaultValue should be Number kind");
+        assert_eq!(
+            args[1].kind,
+            crate::types::MacroArgKind::Number,
+            "defaultValue should be Number kind"
+        );
         assert_eq!(args[3].label, "autofocus");
         assert_eq!(args[3].kind, crate::types::MacroArgKind::Keyword);
     }
@@ -5325,11 +6682,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("textarea").expect("textarea should be in catalog");
         let args = def.args.expect("textarea should have args");
-        assert_eq!(args.len(), 3, "textarea should have 3 args (receiverName, defaultValue, autofocus)");
+        assert_eq!(
+            args.len(),
+            3,
+            "textarea should have 3 args (receiverName, defaultValue, autofocus)"
+        );
         assert_eq!(args[2].label, "autofocus");
         assert_eq!(args[2].kind, crate::types::MacroArgKind::Keyword);
         // Verify NO passage arg
-        assert!(!args.iter().any(|a| a.is_passage_ref), "textarea should NOT have a passage arg");
+        assert!(
+            !args.iter().any(|a| a.is_passage_ref),
+            "textarea should NOT have a passage arg"
+        );
     }
 
     #[test]
@@ -5337,7 +6701,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("option").expect("option should be in catalog");
         let args = def.args.expect("option should have args");
-        assert_eq!(args.len(), 3, "option should have 3 args (label, value, selected)");
+        assert_eq!(
+            args.len(),
+            3,
+            "option should have 3 args (label, value, selected)"
+        );
         assert_eq!(args[0].label, "label");
         assert_eq!(args[2].label, "selected");
         assert_eq!(args[2].kind, crate::types::MacroArgKind::Keyword);
@@ -5348,7 +6716,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("include").expect("include should be in catalog");
         let args = def.args.expect("include should have args");
-        assert_eq!(args.len(), 2, "include should have 2 args (passageName, elementName)");
+        assert_eq!(
+            args.len(),
+            2,
+            "include should have 2 args (passageName, elementName)"
+        );
         assert_eq!(args[0].label, "passageName");
         assert!(args[0].is_passage_ref);
         assert_eq!(args[1].label, "elementName");
@@ -5359,7 +6731,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("widget").expect("widget should be in catalog");
         let args = def.args.expect("widget should have args");
-        assert_eq!(args.len(), 2, "widget should have 2 args (widgetName, container)");
+        assert_eq!(
+            args.len(),
+            2,
+            "widget should have 2 args (widgetName, container)"
+        );
         assert_eq!(args[0].label, "widgetName");
         assert_eq!(args[1].label, "container");
         assert_eq!(args[1].kind, crate::types::MacroArgKind::Keyword);
@@ -5380,7 +6756,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("cacheaudio").expect("cacheaudio should be in catalog");
         let args = def.args.expect("cacheaudio should now have args");
-        assert_eq!(args.len(), 2, "cacheaudio should have 2 args (trackId, sourceList)");
+        assert_eq!(
+            args.len(),
+            2,
+            "cacheaudio should have 2 args (trackId, sourceList)"
+        );
         assert_eq!(args[0].label, "trackId");
         assert_eq!(args[1].label, "sourceList");
     }
@@ -5410,15 +6790,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<numberbox "$x" 100>> — the 100 should be classified as Number.
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<numberbox "$x" 100>>"#, 0, ParseMode::Normal,
+            r#"<<numberbox "$x" 100>>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "numberbox");
-                let args = structured_args.as_ref().expect("should have structured_args");
+                let args = structured_args
+                    .as_ref()
+                    .expect("should have structured_args");
                 assert_eq!(args.len(), 2, "should have 2 args");
-                assert_eq!(args[0].kind, ParsedArgKind::VariableRef, "arg 0 should be VariableRef");
-                assert_eq!(args[1].kind, ParsedArgKind::Number, "arg 1 (100) should be Number, got: {:?}", args[1].kind);
+                assert_eq!(
+                    args[0].kind,
+                    ParsedArgKind::VariableRef,
+                    "arg 0 should be VariableRef"
+                );
+                assert_eq!(
+                    args[1].kind,
+                    ParsedArgKind::Number,
+                    "arg 1 (100) should be Number, got: {:?}",
+                    args[1].kind
+                );
             }
             other => panic!("expected Macro, got {:?}", other),
         }
@@ -5429,14 +6826,27 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<textarea "$x" "default" autofocus>> — autofocus should be Keyword.
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<textarea "$x" "default" autofocus>>"#, 0, ParseMode::Normal,
+            r#"<<textarea "$x" "default" autofocus>>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "textarea");
-                let args = structured_args.as_ref().expect("should have structured_args");
+                let args = structured_args
+                    .as_ref()
+                    .expect("should have structured_args");
                 assert_eq!(args.len(), 3);
-                assert_eq!(args[2].kind, ParsedArgKind::Keyword, "autofocus should be Keyword, got: {:?}", args[2].kind);
+                assert_eq!(
+                    args[2].kind,
+                    ParsedArgKind::Keyword,
+                    "autofocus should be Keyword, got: {:?}",
+                    args[2].kind
+                );
                 assert_eq!(args[2].value, "autofocus");
             }
             other => panic!("expected Macro, got {:?}", other),
@@ -5448,14 +6858,27 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<widget "say" container>> — container should be Keyword.
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<widget "say" container>>"#, 0, ParseMode::Normal,
+            r#"<<widget "say" container>>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "widget");
-                let args = structured_args.as_ref().expect("should have structured_args");
+                let args = structured_args
+                    .as_ref()
+                    .expect("should have structured_args");
                 assert_eq!(args.len(), 2);
-                assert_eq!(args[1].kind, ParsedArgKind::Keyword, "container should be Keyword, got: {:?}", args[1].kind);
+                assert_eq!(
+                    args[1].kind,
+                    ParsedArgKind::Keyword,
+                    "container should be Keyword, got: {:?}",
+                    args[1].kind
+                );
                 assert_eq!(args[1].value, "container");
             }
             other => panic!("expected Macro, got {:?}", other),
@@ -5467,14 +6890,27 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<option "Red" "red" selected>> — selected should be Keyword.
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<option "Red" "red" selected>>"#, 0, ParseMode::Normal,
+            r#"<<option "Red" "red" selected>>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "option");
-                let args = structured_args.as_ref().expect("should have structured_args");
+                let args = structured_args
+                    .as_ref()
+                    .expect("should have structured_args");
                 assert_eq!(args.len(), 3);
-                assert_eq!(args[2].kind, ParsedArgKind::Keyword, "selected should be Keyword, got: {:?}", args[2].kind);
+                assert_eq!(
+                    args[2].kind,
+                    ParsedArgKind::Keyword,
+                    "selected should be Keyword, got: {:?}",
+                    args[2].kind
+                );
                 assert_eq!(args[2].value, "selected");
             }
             other => panic!("expected Macro, got {:?}", other),
@@ -5486,15 +6922,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<include "Forest" "div">> — elementName should be String.
         use crate::sugarcube::ast::ParsedArgKind;
         let ast = crate::sugarcube::parser::parse_passage_body(
-            r#"<<include "Forest" "div">>"#, 0, ParseMode::Normal,
+            r#"<<include "Forest" "div">>"#,
+            0,
+            ParseMode::Normal,
         );
         match &ast.nodes[0] {
-            AstNode::Macro { name, structured_args, .. } => {
+            AstNode::Macro {
+                name,
+                structured_args,
+                ..
+            } => {
                 assert_eq!(name, "include");
-                let args = structured_args.as_ref().expect("should have structured_args");
+                let args = structured_args
+                    .as_ref()
+                    .expect("should have structured_args");
                 assert_eq!(args.len(), 2);
-                assert_eq!(args[0].kind, ParsedArgKind::PassageRef, "arg 0 should be PassageRef");
-                assert_eq!(args[1].kind, ParsedArgKind::String, "elementName should be String, got: {:?}", args[1].kind);
+                assert_eq!(
+                    args[0].kind,
+                    ParsedArgKind::PassageRef,
+                    "arg 0 should be PassageRef"
+                );
+                assert_eq!(
+                    args[1].kind,
+                    ParsedArgKind::String,
+                    "elementName should be String, got: {:?}",
+                    args[1].kind
+                );
                 assert_eq!(args[1].value, "div");
             }
             other => panic!("expected Macro, got {:?}", other),
@@ -5511,14 +6964,32 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::builtin_macros;
 
         let js_expr_macros: &[&str] = &[
-            "if", "elseif", "else", "for", "break", "continue",
-            "switch", "set", "run", "print", "=", "-",
-            "silent", "silently", "next",
-            "createaudiogroup", "createplaylist",
-            "stop", "default",
-            "unset", "capture", "waitforaudio",
-            "redo", "stopallaudio",
-            "nobr", "done",
+            "if",
+            "elseif",
+            "else",
+            "for",
+            "break",
+            "continue",
+            "switch",
+            "set",
+            "run",
+            "print",
+            "=",
+            "-",
+            "silent",
+            "silently",
+            "next",
+            "createaudiogroup",
+            "createplaylist",
+            "stop",
+            "default",
+            "unset",
+            "capture",
+            "waitforaudio",
+            "redo",
+            "stopallaudio",
+            "nobr",
+            "done",
             "waitforaudio",
             "code", // raw-body macro with no args
         ];
@@ -5528,9 +6999,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
                 continue;
             }
             // All other macros should have args: Some
-            assert!(m.args.is_some(),
+            assert!(
+                m.args.is_some(),
                 "'{}' should have args: Some (not None) — only JS-expression macros should have None",
-                m.name);
+                m.name
+            );
         }
     }
 
@@ -5551,7 +7024,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("type").expect("type should be in catalog");
         let args = def.args.expect("type should have args");
-        assert!(args.len() >= 7, "type should have at least 7 args (speed + 6 optional), got: {}", args.len());
+        assert!(
+            args.len() >= 7,
+            "type should have at least 7 args (speed + 6 optional), got: {}",
+            args.len()
+        );
         assert_eq!(args[0].label, "speed");
         assert!(args[0].is_required, "speed should be required");
     }
@@ -5561,7 +7038,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("cycle").expect("cycle should be in catalog");
         let args = def.args.expect("cycle should have args");
-        assert_eq!(args.len(), 3, "cycle should have 3 args (receiverName, once, autoselect)");
+        assert_eq!(
+            args.len(),
+            3,
+            "cycle should have 3 args (receiverName, once, autoselect)"
+        );
         assert_eq!(args[1].label, "once");
         assert_eq!(args[1].kind, crate::types::MacroArgKind::Keyword);
         assert_eq!(args[2].label, "autoselect");
@@ -5573,7 +7054,11 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("listbox").expect("listbox should be in catalog");
         let args = def.args.expect("listbox should have args");
-        assert_eq!(args.len(), 2, "listbox should have 2 args (receiverName, autoselect)");
+        assert_eq!(
+            args.len(),
+            2,
+            "listbox should have 2 args (receiverName, autoselect)"
+        );
         assert_eq!(args[1].label, "autoselect");
         assert_eq!(args[1].kind, crate::types::MacroArgKind::Keyword);
     }
@@ -5583,8 +7068,14 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         for name in &["link", "button"] {
             let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
-            let args = def.args.expect(&format!("{} should have args", name));
-            assert_eq!(args[0].label, "linkText", "{} arg 0 should be labeled 'linkText'", name);
+            let args = def
+                .args
+                .unwrap_or_else(|| panic!("{} should have args", name));
+            assert_eq!(
+                args[0].label, "linkText",
+                "{} arg 0 should be labeled 'linkText'",
+                name
+            );
         }
     }
 
@@ -5606,21 +7097,28 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<case>> and <<default>> have BodyRequirement::Optional, so they
         // should NOT produce "Unclosed block macro" diagnostics when used
         // without closing tags inside <<switch>>.
-        use crate::plugin::{FormatPluginMut, SemanticTokenType};
+        use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
 
         let mut plugin = SugarCubePlugin::new();
         let text = ":: Start\n<<switch $x>>\n<<case 1>>\nOne\n<<case 2>>\nTwo\n<<default>>\nOther\n<</switch>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let unclosed_diags: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed")
             .collect();
 
-        assert!(unclosed_diags.is_empty(),
+        assert!(
+            unclosed_diags.is_empty(),
             "case/default should NOT produce unclosed diagnostics, got: {:?}",
-            unclosed_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+            unclosed_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5633,19 +7131,29 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<switch $x>>\n<<case 1>>\nOne\n<<default>>\nOther\n<</switch>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed" && d.message.contains("case"))
             .collect();
-        assert!(unclosed.is_empty(),
-            "<<case>> without <</case>> should NOT be unclosed, got: {:?}", unclosed);
+        assert!(
+            unclosed.is_empty(),
+            "<<case>> without <</case>> should NOT be unclosed, got: {:?}",
+            unclosed
+        );
 
-        let unclosed_default: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed_default: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed" && d.message.contains("default"))
             .collect();
-        assert!(unclosed_default.is_empty(),
-            "<<default>> without <</default>> should NOT be unclosed, got: {:?}", unclosed_default);
+        assert!(
+            unclosed_default.is_empty(),
+            "<<default>> without <</default>> should NOT be unclosed, got: {:?}",
+            unclosed_default
+        );
     }
 
     #[test]
@@ -5658,12 +7166,16 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let text = ":: Start\n<<switch $x>>\n<<case 1>>\nOne\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let switch_unclosed: Vec<_> = result.diagnostic_groups.iter()
+        let switch_unclosed: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed" && d.message.contains("switch"))
             .collect();
-        assert!(!switch_unclosed.is_empty(),
-            "<<switch>> without <</switch>> SHOULD be unclosed");
+        assert!(
+            !switch_unclosed.is_empty(),
+            "<<switch>> without <</switch>> SHOULD be unclosed"
+        );
     }
 
     #[test]
@@ -5692,24 +7204,31 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // token builder adjusts its effective_depth to 0 (segmenter) → None.
         //
         // The key assertion: NO BlockDepth3 should appear.
-        use crate::plugin::{FormatPluginMut, SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{FormatPluginMut, SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::SugarCubePlugin;
 
         let mut plugin = SugarCubePlugin::new();
-        let text = ":: Start\n<<if $a>>\n<<set $x to 1>>\n<<elseif $b>>\n<<set $y to 2>>\n<</if>>\n";
+        let text =
+            ":: Start\n<<if $a>>\n<<set $x to 1>>\n<<elseif $b>>\n<<set $y to 2>>\n<</if>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let delimiters: Vec<_> = result.token_groups.iter()
+        let delimiters: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
 
-        let depth3_count = delimiters.iter()
+        let depth3_count = delimiters
+            .iter()
             .filter(|t| t.modifier == Some(SemanticTokenModifier::BlockDepth3))
             .count();
 
-        assert!(depth3_count == 0,
-            "There should be NO BlockDepth3 — <<set>> inside <<if>> (whether before or after <<elseif>>) should be BlockDepth1. depth3_count={}", depth3_count);
+        assert!(
+            depth3_count == 0,
+            "There should be NO BlockDepth3 — <<set>> inside <<if>> (whether before or after <<elseif>>) should be BlockDepth1. depth3_count={}",
+            depth3_count
+        );
     }
 
     #[test]
@@ -5722,24 +7241,30 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // <<default>>      depth=1, eff=0 → BlockDepth1 (segmenter)
         //   <<set $b>>     depth=1 (eff+1) → BlockDepth2
         // <</switch>>
-        use crate::plugin::{FormatPluginMut, SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{FormatPluginMut, SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::SugarCubePlugin;
 
         let mut plugin = SugarCubePlugin::new();
         let text = ":: Start\n<<switch $x>>\n<<case 1>>\n<<set $a to 1>>\n<<default>>\n<<set $b to 2>>\n<</switch>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let delimiters: Vec<_> = result.token_groups.iter()
+        let delimiters: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
 
-        let depth3_count = delimiters.iter()
+        let depth3_count = delimiters
+            .iter()
             .filter(|t| t.modifier == Some(SemanticTokenModifier::BlockDepth3))
             .count();
 
-        assert!(depth3_count == 0,
-            "There should be NO BlockDepth3 delimiters — <<set>> inside <<case>>/<<default>> should be BlockDepth2. depth3_count={}", depth3_count);
+        assert!(
+            depth3_count == 0,
+            "There should be NO BlockDepth3 delimiters — <<set>> inside <<case>>/<<default>> should be BlockDepth2. depth3_count={}",
+            depth3_count
+        );
     }
 
     #[test]
@@ -5755,24 +7280,30 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         //     <<set $y>>    depth=2, eff=2 → BlockDepth3
         //   <</if>>
         // <</if>>
-        use crate::plugin::{FormatPluginMut, SemanticTokenType, SemanticTokenModifier};
+        use crate::plugin::{FormatPluginMut, SemanticTokenModifier, SemanticTokenType};
         use crate::sugarcube::SugarCubePlugin;
 
         let mut plugin = SugarCubePlugin::new();
         let text = ":: Start\n<<if $a>>\n<<if $b>>\n<<set $x to 1>>\n<</if>>\n<<elseif $c>>\n<<if $d>>\n<<set $y to 2>>\n<</if>>\n<</if>>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let delimiters: Vec<_> = result.token_groups.iter()
+        let delimiters: Vec<_> = result
+            .token_groups
+            .iter()
             .flat_map(|g| g.tokens.iter())
             .filter(|t| matches!(t.token_type, SemanticTokenType::MacroDelimiter))
             .collect();
 
-        let depth4_count = delimiters.iter()
+        let depth4_count = delimiters
+            .iter()
             .filter(|t| t.modifier == Some(SemanticTokenModifier::BlockDepth4))
             .count();
 
-        assert!(depth4_count == 0,
-            "There should be NO BlockDepth4 — <<if $d>> inside <<elseif>> should be BlockDepth2, its <<set>> should be BlockDepth3. depth4_count={}", depth4_count);
+        assert!(
+            depth4_count == 0,
+            "There should be NO BlockDepth4 — <<if $d>> inside <<elseif>> should be BlockDepth2, its <<set>> should be BlockDepth3. depth4_count={}",
+            depth4_count
+        );
     }
 
     // ── Regression tests for `format:knot-panic` bugs ──────────────────
@@ -5835,7 +7366,10 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         match node {
             AstNode::InlineCode { span, .. } => {
                 assert_eq!(span.start, 100, "span.start should be the absolute offset");
-                assert!(span.end >= span.start, "span.end must not underflow span.start");
+                assert!(
+                    span.end >= span.start,
+                    "span.end must not underflow span.start"
+                );
             }
             other => panic!("expected InlineCode, got {other:?}"),
         }
@@ -5855,7 +7389,10 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         match node {
             AstNode::CodeBlock { span, .. } => {
                 assert_eq!(span.start, 100, "span.start should be the absolute offset");
-                assert!(span.end >= span.start, "span.end must not underflow span.start");
+                assert!(
+                    span.end >= span.start,
+                    "span.end must not underflow span.start"
+                );
             }
             other => panic!("expected CodeBlock, got {other:?}"),
         }
@@ -5885,18 +7422,19 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         // line, then the closers. Before the fix, the `@@` would swallow
         // the closers and `<<link>>` would be reported unclosed.
         let text = ":: Start\n<<link \"Attack\">>\n<<set _x to 1>>\n@@\n<</link>>\n";
-        let result = plugin.parse_mut(
-            &url::Url::parse("file:///test.tw").unwrap(),
-            text,
-        );
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let unclosed_link: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed_link: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed" && d.message.contains("link"))
             .collect();
-        assert!(unclosed_link.is_empty(),
+        assert!(
+            unclosed_link.is_empty(),
             "standalone @@ should not swallow <</link>> — got: {:?}",
-            unclosed_link.iter().map(|d| &d.message).collect::<Vec<_>>());
+            unclosed_link.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5922,18 +7460,19 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 \t@@\n\
 \t<</replace>>\n\
 <</link>>\n";
-        let result = plugin.parse_mut(
-            &url::Url::parse("file:///test.tw").unwrap(),
-            text,
-        );
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed")
             .collect();
-        assert!(unclosed.is_empty(),
+        assert!(
+            unclosed.is_empty(),
             "standalone @@ markers must not produce unclosed-block diagnostics: {:?}",
-            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -5944,10 +7483,15 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         let body = "@@\n";
         let ast = crate::sugarcube::parser::parse_passage_body(body, 0, ParseMode::Normal);
 
-        let has_inlinestyle = ast.nodes.iter().any(|n| matches!(n, AstNode::InlineStyle { .. }));
-        assert!(!has_inlinestyle,
+        let has_inlinestyle = ast
+            .nodes
+            .iter()
+            .any(|n| matches!(n, AstNode::InlineStyle { .. }));
+        assert!(
+            !has_inlinestyle,
             "standalone @@\\n should not produce an InlineStyle node, got: {:?}",
-            ast.nodes);
+            ast.nodes
+        );
     }
 
     #[test]
@@ -5964,22 +7508,26 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
             ("@@#link-out;@@", "#link-out"),
             ("@@.highlight;important text@@", ".highlight"),
             ("@@#my-id;color:blue;Text@@", "#my-id"),
-            ("@@.block-style;\nbody line 1\nbody line 2\n@@", ".block-style"),
+            (
+                "@@.block-style;\nbody line 1\nbody line 2\n@@",
+                ".block-style",
+            ),
             ("@@.warning;some text without close\n", ".warning"), // unclosed, no panic
         ];
 
         for (input, expected_class) in cases {
-            let ast = crate::sugarcube::parser::parse_passage_body(
-                input, 0, ParseMode::Normal,
-            );
+            let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
             let found = ast.nodes.iter().find_map(|n| match n {
                 AstNode::InlineStyle { class, .. } => Some(class.clone()),
                 _ => None,
             });
             assert_eq!(
-                found.as_deref(), Some(expected_class),
+                found.as_deref(),
+                Some(expected_class),
                 "input {:?} should produce InlineStyle with class {:?}, got nodes: {:?}",
-                input, expected_class, ast.nodes,
+                input,
+                expected_class,
+                ast.nodes,
             );
         }
     }
@@ -6013,17 +7561,18 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
 ";
         let text = format!(":: CombatEncounter\n{body}");
         let mut plugin = SugarCubePlugin::new();
-        let result = plugin.parse_mut(
-            &url::Url::parse("file:///test.tw").unwrap(),
-            &text,
-        );
+        let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), &text);
 
-        let unclosed: Vec<_> = result.diagnostic_groups.iter()
+        let unclosed: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "sc-unclosed")
             .collect();
-        assert!(unclosed.is_empty(),
+        assert!(
+            unclosed.is_empty(),
             "CombatEncounter repro should have no unclosed-block diagnostics: {:?}",
-            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>());
+            unclosed.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 }

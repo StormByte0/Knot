@@ -729,7 +729,13 @@ pub struct ForLoopVars {
 ///
 /// Each variant represents a syntactic construct found by the parser.
 /// The parser produces a `Vec<AstNode>` for each passage body.
+//
+// `Macro` is the largest variant (~992 bytes) due to embedded `JsAnalysis`.
+// Boxing just that field would shrink the enum, but `AstNode` is hot path
+// data (every parsed macro creates one); the size is intentional for cache
+// locality. Suppress the lint here.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum AstNode {
     /// Plain text content between delimiters.
     ///
@@ -976,7 +982,6 @@ pub enum AstNode {
     //
     // Spans are body-relative (byte 0 = first character after the passage
     // header newline), matching the convention used by all other variants.
-
     /// A heading: `!` through `!!!!!!` (1-6 levels).
     ///
     /// SugarCube's `heading` parser calls `subWikify`, so macros, variables,
@@ -1249,15 +1254,16 @@ impl PassageAst {
     /// with concrete `EdgeType` values. This is the primary method for
     /// the graph handler to get edge data from a parsed passage.
     pub fn graph_connections(&self) -> Vec<PassageConnection> {
-        self.links.iter().map(|link| {
-            PassageConnection {
+        self.links
+            .iter()
+            .map(|link| PassageConnection {
                 target: link.target.clone(),
                 display: link.display.clone(),
                 edge_type: link.source.to_edge_type(),
                 is_dynamic: link.is_dynamic,
                 span: link.span.clone(),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
@@ -1300,7 +1306,9 @@ pub fn collect_links(nodes: &[AstNode]) -> Vec<&AstNode> {
     for node in nodes {
         match node {
             AstNode::Link { .. } => result.push(node),
-            AstNode::Macro { children: Some(ch), .. } => {
+            AstNode::Macro {
+                children: Some(ch), ..
+            } => {
                 result.extend(collect_links(ch));
             }
             AstNode::Macro { children: None, .. } => {}
@@ -1316,7 +1324,9 @@ pub fn collect_errors(nodes: &[AstNode]) -> Vec<&AstNode> {
     for node in nodes {
         match node {
             AstNode::Error { .. } => result.push(node),
-            AstNode::Macro { children: Some(ch), .. } => {
+            AstNode::Macro {
+                children: Some(ch), ..
+            } => {
                 result.extend(collect_errors(ch));
             }
             AstNode::Macro { children: None, .. } => {}
@@ -1419,7 +1429,9 @@ fn collect_js_snippets_recursive(
                             // were trimmed from the expression, so the offset
                             // accounts for the trim.
                             let leading_ws = expr.len() - expr.trim_start().len();
-                            let expr_body_offset = sa.expression_span.as_ref()
+                            let expr_body_offset = sa
+                                .expression_span
+                                .as_ref()
                                 .map(|s| s.start + leading_ws)
                                 .unwrap_or(open_span.start);
                             result.push(JsSnippet {
@@ -1483,6 +1495,7 @@ fn collect_js_snippets_recursive(
             } else if name != "for"
                 && (args.contains('$') || args.contains('_'))
                 && !known_macro_names.contains(name.as_str())
+                && super::macros::find_macro(name).is_none()
             {
                 // Fallback: any UNKNOWN macro whose args contain $var or _var
                 // references likely contains a JS expression. This catches
@@ -1492,23 +1505,34 @@ fn collect_js_snippets_recursive(
                 //
                 // CRITICAL: we ONLY apply this fallback when the macro is NOT
                 // in the builtin catalog. Macros like <<textbox>>, <<checkbox>>,
-                // <<radiobutton>>, <<listbox>>, <<cycle>>, etc. ARE in the
-                // catalog with mixed arg kinds (Variable + String + Keyword +
-                // Number) — their args are SugarCube discrete-argument syntax,
-                // NOT valid JS. Sending `"$playerName" $playerName "Time"
-                // autofocus` to oxc produces false "Expected `,` or `)`"
-                // errors.
+                // <<radiobutton>>, <<listbox>>, <<cycle>>, <<link>>, etc. ARE
+                // in the catalog with mixed arg kinds (Variable + String +
+                // Keyword + Number) — their args are SugarCube discrete-argument
+                // syntax, NOT valid JS. Sending `"$playerName" $playerName
+                // "Time" autofocus` (or `` `"Visit" + (def _target ?
+                // _target : "Time")` "Time"`` for <<link>>) to oxc produces
+                // false "Expected `,` or `)`" errors.
                 //
                 // `inline_js_macro_names()` already correctly excludes these
                 // mixed-arg macros. But this fallback was catching them anyway
-                // because their args contain `$var`. The `find_macro(name)
-                // .is_none()` guard ensures we only fall back for macros the
-                // catalog doesn't know about — for catalog macros, the
-                // deliberate inclusion/exclusion in `inline_js_macro_names()`
-                // is respected.
+                // because their args contain `$var` or `_var`. The
+                // `find_macro(name).is_none()` guard ensures we only fall back
+                // for macros the builtin catalog doesn't know about — for
+                // catalog macros, the deliberate inclusion/exclusion in
+                // `inline_js_macro_names()` is respected.
+                //
+                // `known_macro_names` (custom widgets registered via
+                // `<<widget>>`) is also checked — those are skipped because
+                // their args are SugarCube discrete-argument syntax, not JS.
                 //
                 // NOTE: `for` is excluded because its args use SugarCube's own
                 // syntax (C-style, range, simple iteration, for-in) — not JS.
+                //
+                // NOTE: Backtick expressions inside macro args (e.g.,
+                // `<<link \`"Visit " + name\` "Passage">>`) are NOT validated
+                // by this fallback — they would need a dedicated backtick
+                // extractor. The fallback's job is to catch unknown macros
+                // that take a single JS expression as their entire args.
                 let trimmed = args.trim();
                 if !trimmed.is_empty() {
                     let leading_ws = args.len() - args.trim_start().len();
@@ -1528,7 +1552,13 @@ fn collect_js_snippets_recursive(
             }
         }
 
-        if let AstNode::Expression { content, kind: _, span, .. } = node {
+        if let AstNode::Expression {
+            content,
+            kind: _,
+            span,
+            ..
+        } = node
+        {
             let trimmed = content.trim();
             if !trimmed.is_empty() {
                 result.push(JsSnippet {

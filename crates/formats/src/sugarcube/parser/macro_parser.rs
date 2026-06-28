@@ -14,9 +14,9 @@
 //! already populated, since the body is opaque JS/CSS that must not be
 //! parsed for SugarCube syntax.
 
-use crate::sugarcube::ast::*;
 use super::predicates::{is_ident_char, is_ident_start, is_var_ident_char};
 use super::variable_scan::scan_inline_vars;
+use crate::sugarcube::ast::*;
 
 /// Parse a macro starting after `<<`.
 ///
@@ -67,7 +67,11 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
     // `>>` after the `=` or `-` sigil closes the macro. This is different
     // from regular macros which use depth-tracked `<<`/`>>` matching.
     if *i < len && (bytes[*i] == b'=' || bytes[*i] == b'-') {
-        let kind = if bytes[*i] == b'=' { ExprKind::Print } else { ExprKind::Silent };
+        let kind = if bytes[*i] == b'=' {
+            ExprKind::Print
+        } else {
+            ExprKind::Silent
+        };
         *i += 1;
         // Skip to the first >> (expression macros close at the first >>)
         let content_start = *i;
@@ -612,16 +616,18 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
     if let Some(into_pos) = find_into_keyword(args) {
         let expr_part = args[..into_pos].trim();
         let after_into = args[into_pos + 4..].trim(); // skip "into"
-        if let Some(target) = scan_set_target(after_into, args_offset + into_pos + 4 + (args[into_pos + 4..].len() - after_into.len())) {
-            if !expr_part.is_empty() {
-                return Some(SetAssignment {
-                    target,
-                    operator: SetOperator::Into,
-                    expression: Some(expr_part.to_string()),
-                    expression_span: Some(args_offset..args_offset + into_pos),
-                    operator_span: Some(args_offset + into_pos..args_offset + into_pos + 4),
-                });
-            }
+        if let Some(target) = scan_set_target(
+            after_into,
+            args_offset + into_pos + 4 + (args[into_pos + 4..].len() - after_into.len()),
+        ) && !expr_part.is_empty()
+        {
+            return Some(SetAssignment {
+                target,
+                operator: SetOperator::Into,
+                expression: Some(expr_part.to_string()),
+                expression_span: Some(args_offset..args_offset + into_pos),
+                operator_span: Some(args_offset + into_pos..args_offset + into_pos + 4),
+            });
         }
         // `into` found but no valid target on the right — fall through
         // to standard parsing (might be a false positive match).
@@ -729,7 +735,11 @@ pub(super) fn parse_set_assignment(args: &str, args_offset: usize) -> Option<Set
             return None;
         }
         (SetOperator::Eq, 1)
-    } else if i + 2 < len && bytes[i] == b't' && bytes[i + 1] == b'o' && is_to_keyword_boundary(args, i) {
+    } else if i + 2 < len
+        && bytes[i] == b't'
+        && bytes[i + 1] == b'o'
+        && is_to_keyword_boundary(args, i)
+    {
         // SugarCube `to` keyword
         (SetOperator::To, 2)
     } else {
@@ -856,9 +866,17 @@ fn find_into_keyword(args: &str) -> Option<usize> {
         // safe even if a multi-byte UTF-8 sequence happens to follow.
         if b == b'i' && args[i..].starts_with("into") {
             // Must be preceded by whitespace (or be at start — unlikely for `into`)
-            let preceded_by_ws = i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' || bytes[i - 1] == b'\n' || bytes[i - 1] == b'\r';
+            let preceded_by_ws = i == 0
+                || bytes[i - 1] == b' '
+                || bytes[i - 1] == b'\t'
+                || bytes[i - 1] == b'\n'
+                || bytes[i - 1] == b'\r';
             // Must be followed by whitespace or end-of-args
-            let followed_by_ws = i + 4 >= len || bytes[i + 4] == b' ' || bytes[i + 4] == b'\t' || bytes[i + 4] == b'\n' || bytes[i + 4] == b'\r';
+            let followed_by_ws = i + 4 >= len
+                || bytes[i + 4] == b' '
+                || bytes[i + 4] == b'\t'
+                || bytes[i + 4] == b'\n'
+                || bytes[i + 4] == b'\r';
             if preceded_by_ws && followed_by_ws {
                 return Some(i);
             }
@@ -1062,25 +1080,27 @@ fn parse_raw_body(text: &str, macro_name: &str, offset: usize) -> (Vec<AstNode>,
         // starts with '<' (a single-byte ASCII char), it can only begin
         // at a char boundary. If we're inside a multi-byte char, its
         // leading byte is not '<', so we can safely skip.
-        if text.as_bytes()[search_from] == b'<' {
-            if text[search_from..].starts_with(&close_tag)
-                || text[search_from..].starts_with(&close_tag_alt)
-            {
-                let body_content = &text[..search_from];
-                let mut children = Vec::new();
-                if !body_content.is_empty() {
-                    children.push(AstNode::Text {
-                        content: body_content.to_string(),
-                        var_refs: Vec::new(),
-                        span: offset..offset + search_from,
-                        is_prose,
-                    });
-                }
-                return (children, Some(search_from));
+        if text.as_bytes()[search_from] == b'<'
+            && (text[search_from..].starts_with(&close_tag)
+                || text[search_from..].starts_with(&close_tag_alt))
+        {
+            let body_content = &text[..search_from];
+            let mut children = Vec::new();
+            if !body_content.is_empty() {
+                children.push(AstNode::Text {
+                    content: body_content.to_string(),
+                    var_refs: Vec::new(),
+                    span: offset..offset + search_from,
+                    is_prose,
+                });
             }
+            return (children, Some(search_from));
         }
         // Advance by full UTF-8 character to stay on char boundaries.
-        search_from += text[search_from..].chars().next().map_or(1, |c| c.len_utf8());
+        search_from += text[search_from..]
+            .chars()
+            .next()
+            .map_or(1, |c| c.len_utf8());
     }
 
     // Unclosed — the rest is raw body
@@ -1122,8 +1142,8 @@ pub(super) fn parse_structured_args(
     args: &str,
     args_offset: usize,
 ) -> Option<Vec<StructuredMacroArg>> {
-    use crate::sugarcube::macros::find_macro;
     use crate::sugarcube::ast::{ParsedArgKind, StructuredMacroArg};
+    use crate::sugarcube::macros::find_macro;
     use crate::types::MacroArgKind;
 
     // Look up the macro in the catalog
@@ -1149,7 +1169,9 @@ pub(super) fn parse_structured_args(
         // Find the catalog arg def for this position.
         // If we have more tokens than declared args, use the last declared arg
         // (some macros like <<actions>> accept variable numbers of the same arg type).
-        let arg_def = arg_defs.iter().find(|a| a.position == token_idx)
+        let arg_def = arg_defs
+            .iter()
+            .find(|a| a.position == token_idx)
             .or_else(|| arg_defs.last());
 
         let kind = if let Some(def) = arg_def {
@@ -1158,7 +1180,9 @@ pub(super) fn parse_structured_args(
                 ParsedArgKind::PassageRef
             } else if def.is_selector {
                 ParsedArgKind::Selector
-            } else if def.is_variable && (token.is_variable_ref() || token.is_quoted_variable_name()) {
+            } else if def.is_variable
+                && (token.is_variable_ref() || token.is_quoted_variable_name())
+            {
                 // SugarCube form macros (checkbox, radiobutton, textbox, etc.)
                 // take the receiver variable as a QUOTED name string (e.g.,
                 // "$color"). Recognize both unquoted `$var` and quoted `"$var"`
@@ -1181,8 +1205,8 @@ pub(super) fn parse_structured_args(
                             if def.position == 0 && !def.is_passage_ref && !def.is_selector {
                                 // Check if there's a passage_ref arg later — if so,
                                 // this first arg is a display label
-                                let has_passage_ref_later = arg_defs.iter()
-                                    .any(|a| a.is_passage_ref && a.position > 0);
+                                let has_passage_ref_later =
+                                    arg_defs.iter().any(|a| a.is_passage_ref && a.position > 0);
                                 if has_passage_ref_later {
                                     ParsedArgKind::Label
                                 } else {
@@ -1287,7 +1311,10 @@ struct ArgToken {
 
 impl ArgToken {
     fn is_string_like(&self) -> bool {
-        matches!(self.kind, ArgTokenKind::QuotedString | ArgTokenKind::BareName)
+        matches!(
+            self.kind,
+            ArgTokenKind::QuotedString | ArgTokenKind::BareName
+        )
     }
 
     fn is_variable_ref(&self) -> bool {
@@ -1413,9 +1440,7 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
     let mut i = 0usize;
 
     // Helper: advance by full UTF-8 character
-    let advance = |pos: usize| -> usize {
-        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
-    };
+    let advance = |pos: usize| -> usize { args[pos..].chars().next().map_or(1, |c| c.len_utf8()) };
 
     while i < len {
         // Skip whitespace and commas (arg separators)
@@ -1508,11 +1533,10 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
                 }
                 if bytes[i] == open {
                     depth += 1;
-                } else if bytes[i] == b')' && open == b'(' {
-                    depth -= 1;
-                } else if bytes[i] == b']' && open == b'[' {
-                    depth -= 1;
-                } else if bytes[i] == b'}' && open == b'{' {
+                } else if (bytes[i] == b')' && open == b'(')
+                    || (bytes[i] == b']' && open == b'[')
+                    || (bytes[i] == b'}' && open == b'{')
+                {
                     depth -= 1;
                 }
                 // Advance by full UTF-8 character to avoid mid-char slicing.
@@ -1522,9 +1546,35 @@ fn scan_arg_tokens(args: &str, args_offset: usize) -> Vec<ArgToken> {
         }
 
         // Operator characters: skip (these are JS operators that oxc handles)
-        if b == b'=' || b == b'+' || b == b'-' || b == b'*' || b == b'/' || b == b'%' || b == b'!' || b == b'<' || b == b'>' || b == b'&' || b == b'|' || b == b'?' || b == b':' {
+        if b == b'='
+            || b == b'+'
+            || b == b'-'
+            || b == b'*'
+            || b == b'/'
+            || b == b'%'
+            || b == b'!'
+            || b == b'<'
+            || b == b'>'
+            || b == b'&'
+            || b == b'|'
+            || b == b'?'
+            || b == b':'
+        {
             // Skip to next space or end of operator sequence
-            while i < len && !bytes[i].is_ascii_whitespace() && bytes[i] != b',' && bytes[i] != b'"' && bytes[i] != b'\'' && bytes[i] != b'(' && bytes[i] != b')' && bytes[i] != b'[' && bytes[i] != b']' && bytes[i] != b'{' && bytes[i] != b'}' && bytes[i] != b'$' && bytes[i] != b'_' {
+            while i < len
+                && !bytes[i].is_ascii_whitespace()
+                && bytes[i] != b','
+                && bytes[i] != b'"'
+                && bytes[i] != b'\''
+                && bytes[i] != b'('
+                && bytes[i] != b')'
+                && bytes[i] != b'['
+                && bytes[i] != b']'
+                && bytes[i] != b'{'
+                && bytes[i] != b'}'
+                && bytes[i] != b'$'
+                && bytes[i] != b'_'
+            {
                 // Advance by full UTF-8 character to avoid mid-char slicing.
                 i += advance(i);
             }
@@ -1593,14 +1643,14 @@ fn is_bare_passage_name_candidate(s: &str) -> bool {
     // Filter out common JS/SugarCube keywords that appear as bare identifiers
     // in macro args but are NOT passage names
     match s {
-        "to" | "is" | "isnot" | "eq" | "neq" | "gt" | "gte" | "lt" | "lte"
-        | "and" | "or" | "not" | "true" | "false" | "null" | "undefined"
-        | "new" | "typeof" | "instanceof" | "in" | "of" | "delete"
-        | "var" | "let" | "const" | "function" | "return" | "if" | "else"
-        | "for" | "while" | "do" | "switch" | "case" | "default" | "break"
-        | "continue" | "try" | "catch" | "finally" | "throw" | "class"
-        | "extends" | "import" | "export" | "from" | "as" | "this"
-        | "void" | "with" | "yield" | "async" | "await" => false,
+        "to" | "is" | "isnot" | "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "and" | "or"
+        | "not" | "true" | "false" | "null" | "undefined" | "new" | "typeof" | "instanceof"
+        | "in" | "of" | "delete" | "var" | "let" | "const" | "function" | "return" | "if"
+        | "else" | "for" | "while" | "do" | "switch" | "case" | "default" | "break"
+        | "continue" | "try" | "catch" | "finally" | "throw" | "class" | "extends" | "import"
+        | "export" | "from" | "as" | "this" | "void" | "with" | "yield" | "async" | "await" => {
+            false
+        }
         _ => {
             // Must start with a letter (for passage names/keywords) OR a
             // digit (for numeric literals like 100, 0.5). Sigils ($, _) are
@@ -1618,13 +1668,15 @@ fn is_bare_passage_name_candidate(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sugarcube::ast::{AstNode, ParseMode, ExprKind, SetOperator, LinkSource, ParsedArgKind};
+    use crate::sugarcube::ast::{
+        AstNode, ExprKind, LinkSource, ParseMode, ParsedArgKind, SetOperator,
+    };
     use crate::sugarcube::parser::parse_passage_body;
 
     #[test]
     fn parse_inline_macro() {
         let ast = parse_passage_body("<<set $hp to 100>>", 0, ParseMode::Normal);
-        assert!(ast.var_ops.len() >= 1);
+        assert!(!ast.var_ops.is_empty());
         assert_eq!(ast.var_ops[0].name, "$hp");
         assert!(ast.var_ops[0].is_write);
     }
@@ -1634,7 +1686,7 @@ mod tests {
         let ast = parse_passage_body("<<if $alive>>You live!<</if>>", 0, ParseMode::Normal);
         // Should have: Text("You live!") inside the if block
         let macros = collect_macros(&ast.nodes);
-        assert!(macros.len() >= 1);
+        assert!(!macros.is_empty());
         match macros[0] {
             AstNode::Macro { name, children, .. } => {
                 assert_eq!(name, "if");
@@ -1657,27 +1709,50 @@ mod tests {
         let ast = parse_passage_body(input, 0, ParseMode::Normal);
 
         // There should be exactly 1 top-level node: the outer <<if>>
-        assert_eq!(ast.nodes.len(), 1, "Expected 1 top-level node, got {}", ast.nodes.len());
+        assert_eq!(
+            ast.nodes.len(),
+            1,
+            "Expected 1 top-level node, got {}",
+            ast.nodes.len()
+        );
 
         // Verify the outer <<if>> macro
         let outer_if = &ast.nodes[0];
         match outer_if {
-            AstNode::Macro { name, args, children, close_span, .. } => {
+            AstNode::Macro {
+                name,
+                args,
+                children,
+                close_span,
+                ..
+            } => {
                 assert_eq!(name, "if");
                 assert_eq!(args.trim(), "_parts.length > 0");
-                assert!(close_span.is_some(), "Outer <<if>> should be properly closed");
-                let ch = children.as_ref().expect("Outer <<if>> should have children");
+                assert!(
+                    close_span.is_some(),
+                    "Outer <<if>> should be properly closed"
+                );
+                let ch = children
+                    .as_ref()
+                    .expect("Outer <<if>> should have children");
 
                 // Verify the inner <<if>> exists in children
-                let inner_if = ch.iter().find(|n| matches!(n, AstNode::Macro { name, .. } if name == "if"));
+                let inner_if = ch
+                    .iter()
+                    .find(|n| matches!(n, AstNode::Macro { name, .. } if name == "if"));
                 assert!(inner_if.is_some(), "Should find inner <<if>> macro");
 
                 // Verify <<else>> is a child (inline macro, no children)
-                let else_macro = ch.iter().find(|n| matches!(n, AstNode::Macro { name, .. } if name == "else"));
+                let else_macro = ch
+                    .iter()
+                    .find(|n| matches!(n, AstNode::Macro { name, .. } if name == "else"));
                 assert!(else_macro.is_some(), "Should find <<else>> macro as child");
                 if let Some(AstNode::Macro { name, children, .. }) = else_macro {
                     assert_eq!(name, "else");
-                    assert!(children.is_none(), "<<else>> should NOT have children (inline clause marker)");
+                    assert!(
+                        children.is_none(),
+                        "<<else>> should NOT have children (inline clause marker)"
+                    );
                 }
 
                 // Verify the <<=>> expression doesn't include >> in its content
@@ -1707,23 +1782,42 @@ mod tests {
 
         assert_eq!(ast.nodes.len(), 1, "Expected 1 top-level node");
         match &ast.nodes[0] {
-            AstNode::Macro { name, args, children, close_span, .. } => {
+            AstNode::Macro {
+                name,
+                args,
+                children,
+                close_span,
+                ..
+            } => {
                 assert_eq!(name, "if");
                 assert_eq!(args.trim(), "$x gt 5");
                 assert!(close_span.is_some(), "<<if>> should be properly closed");
                 let ch = children.as_ref().unwrap();
 
                 // Find <<elseif>> — should be inline (no children)
-                let elseif = ch.iter().find(|n| matches!(n, AstNode::Macro { name, .. } if name == "elseif"));
+                let elseif = ch
+                    .iter()
+                    .find(|n| matches!(n, AstNode::Macro { name, .. } if name == "elseif"));
                 assert!(elseif.is_some(), "Should find <<elseif>> as child");
-                if let Some(AstNode::Macro { name, args, children, .. }) = elseif {
+                if let Some(AstNode::Macro {
+                    name,
+                    args,
+                    children,
+                    ..
+                }) = elseif
+                {
                     assert_eq!(name, "elseif");
                     assert_eq!(args.trim(), "$x gt 3");
-                    assert!(children.is_none(), "<<elseif>> should NOT have children (inline clause marker)");
+                    assert!(
+                        children.is_none(),
+                        "<<elseif>> should NOT have children (inline clause marker)"
+                    );
                 }
 
                 // Find <<else>> — should be inline (no children)
-                let else_node = ch.iter().find(|n| matches!(n, AstNode::Macro { name, .. } if name == "else"));
+                let else_node = ch
+                    .iter()
+                    .find(|n| matches!(n, AstNode::Macro { name, .. } if name == "else"));
                 assert!(else_node.is_some(), "Should find <<else>> as child");
             }
             other => panic!("Expected Macro node, got {:?}", other),
@@ -1747,9 +1841,11 @@ mod tests {
         let ast = parse_passage_body("<<if $alive>>never closed", 0, ParseMode::Normal);
         // Should not panic, should produce an AST with the unclosed block
         let macros = collect_macros(&ast.nodes);
-        assert!(macros.len() >= 1);
+        assert!(!macros.is_empty());
         match macros[0] {
-            AstNode::Macro { name, close_span, .. } => {
+            AstNode::Macro {
+                name, close_span, ..
+            } => {
                 assert_eq!(name, "if");
                 assert!(close_span.is_none()); // Unclosed
             }
@@ -1760,7 +1856,15 @@ mod tests {
     #[test]
     fn expression_macro() {
         let ast = parse_passage_body("<<= $hp>>", 0, ParseMode::Normal);
-        let has_expr = ast.nodes.iter().any(|n| matches!(n, AstNode::Expression { kind: ExprKind::Print, .. }));
+        let has_expr = ast.nodes.iter().any(|n| {
+            matches!(
+                n,
+                AstNode::Expression {
+                    kind: ExprKind::Print,
+                    ..
+                }
+            )
+        });
         assert!(has_expr);
     }
 
@@ -1774,7 +1878,12 @@ mod tests {
         match &ast.nodes[0] {
             AstNode::Expression { content, kind, .. } => {
                 assert_eq!(*kind, ExprKind::Print);
-                assert_eq!(content.trim(), "1 + 2", "Content should be '1 + 2', got '{:?}'", content);
+                assert_eq!(
+                    content.trim(),
+                    "1 + 2",
+                    "Content should be '1 + 2', got '{:?}'",
+                    content
+                );
             }
             other => panic!("Expected Expression node, got {:?}", other),
         }
@@ -1806,10 +1915,18 @@ mod tests {
     #[test]
     fn set_macro_to_keyword() {
         let ast = parse_passage_body("<<set $hp to 100>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(macros.len(), 1);
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.target.name, "$hp");
@@ -1820,10 +1937,18 @@ mod tests {
     #[test]
     fn set_macro_eq_operator() {
         let ast = parse_passage_body("<<set $hp = 100>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.operator, SetOperator::Eq);
         assert_eq!(sa.expression.as_deref(), Some("100"));
@@ -1832,19 +1957,35 @@ mod tests {
     #[test]
     fn set_macro_compound_operators() {
         let ast = parse_passage_body("<<set $hp += 10>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.operator, SetOperator::PlusEq);
         assert_eq!(sa.expression.as_deref(), Some("10"));
 
         let ast = parse_passage_body("<<set $hp -= 5>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.operator, SetOperator::MinusEq);
         assert_eq!(sa.expression.as_deref(), Some("5"));
@@ -1853,20 +1994,36 @@ mod tests {
     #[test]
     fn set_macro_postfix() {
         let ast = parse_passage_body("<<set $hp++>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.target.name, "$hp");
         assert_eq!(sa.operator, SetOperator::PostfixPlus);
         assert!(sa.expression.is_none());
 
         let ast = parse_passage_body("<<set $hp-->>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         assert!(!macros.is_empty(), "Expected to find a 'set' macro");
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.operator, SetOperator::PostfixMinus);
@@ -1878,10 +2035,18 @@ mod tests {
         // <<set $arr.push("item")>> is NOT a simple assignment —
         // set_assignment should be None, and the whole args go to oxc
         let ast = parse_passage_body(r#"<<set $arr.push("item")>>"#, 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(macros.len(), 1);
         assert!(macros[0].is_none()); // Not a simple assignment
     }
@@ -1890,10 +2055,18 @@ mod tests {
     fn set_macro_complex_expression() {
         // The RHS expression can contain other variables
         let ast = parse_passage_body("<<set $hp to $gold + 10>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.target.name, "$hp");
         assert_eq!(sa.operator, SetOperator::To);
@@ -1934,10 +2107,18 @@ mod tests {
     #[test]
     fn set_macro_temp_variable() {
         let ast = parse_passage_body("<<set _i to 0>>", 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.target.name, "_i");
         assert!(sa.target.is_temporary);
@@ -1951,7 +2132,11 @@ mod tests {
     #[test]
     fn goto_macro_extracts_link() {
         let ast = parse_passage_body(r#"<<goto "Forest">>"#, 0, ParseMode::Normal);
-        let goto_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Goto).collect();
+        let goto_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Goto)
+            .collect();
         assert_eq!(goto_links.len(), 1);
         assert_eq!(goto_links[0].target, "Forest");
         assert_eq!(goto_links[0].source, LinkSource::Goto);
@@ -1961,7 +2146,11 @@ mod tests {
     #[test]
     fn include_macro_extracts_link() {
         let ast = parse_passage_body(r#"<<include "Header">>"#, 0, ParseMode::Normal);
-        let include_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Include).collect();
+        let include_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Include)
+            .collect();
         assert_eq!(include_links.len(), 1);
         assert_eq!(include_links[0].target, "Header");
         assert_eq!(include_links[0].source, LinkSource::Include);
@@ -1970,15 +2159,27 @@ mod tests {
     #[test]
     fn button_macro_extracts_link() {
         let ast = parse_passage_body(r#"<<button "Enter cave" "Cave">>"#, 0, ParseMode::Normal);
-        let nav_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::NavigationMacro).collect();
+        let nav_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::NavigationMacro)
+            .collect();
         assert_eq!(nav_links.len(), 1);
         assert_eq!(nav_links[0].target, "Cave");
     }
 
     #[test]
     fn actions_macro_extracts_multiple_links() {
-        let ast = parse_passage_body(r#"<<actions "Forest" "Cave" "Village">>"#, 0, ParseMode::Normal);
-        let action_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Actions).collect();
+        let ast = parse_passage_body(
+            r#"<<actions "Forest" "Cave" "Village">>"#,
+            0,
+            ParseMode::Normal,
+        );
+        let action_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Actions)
+            .collect();
         assert_eq!(action_links.len(), 3);
         assert_eq!(action_links[0].target, "Forest");
         assert_eq!(action_links[1].target, "Cave");
@@ -1988,7 +2189,11 @@ mod tests {
     #[test]
     fn goto_dynamic_variable() {
         let ast = parse_passage_body("<<goto $dest>>", 0, ParseMode::Normal);
-        let goto_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Goto).collect();
+        let goto_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Goto)
+            .collect();
         assert_eq!(goto_links.len(), 1);
         assert!(goto_links[0].is_dynamic);
         assert_eq!(goto_links[0].target, "$dest");
@@ -1999,22 +2204,39 @@ mod tests {
         // <<return "Town">> — "Town" is display text, not a passage name.
         // With one arg, the target is dynamic (browser history).
         let ast = parse_passage_body(r#"<<return "Town">>"#, 0, ParseMode::Normal);
-        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        let ret_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Return)
+            .collect();
         assert_eq!(ret_links.len(), 1);
         assert_eq!(ret_links[0].display.as_deref(), Some("Town"));
-        assert!(ret_links[0].is_dynamic, "<<return>> with one arg should be dynamic");
-        assert!(ret_links[0].target.is_empty(), "<<return>> with one arg should have no fixed target");
+        assert!(
+            ret_links[0].is_dynamic,
+            "<<return>> with one arg should be dynamic"
+        );
+        assert!(
+            ret_links[0].target.is_empty(),
+            "<<return>> with one arg should have no fixed target"
+        );
     }
 
     #[test]
     fn return_macro_two_args() {
         // <<return "Go back" "Town">> — display text + specific passage
         let ast = parse_passage_body(r#"<<return "Go back" "Town">>"#, 0, ParseMode::Normal);
-        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        let ret_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Return)
+            .collect();
         assert_eq!(ret_links.len(), 1);
         assert_eq!(ret_links[0].display.as_deref(), Some("Go back"));
         assert_eq!(ret_links[0].target, "Town");
-        assert!(!ret_links[0].is_dynamic, "<<return>> with two args should have a fixed target");
+        assert!(
+            !ret_links[0].is_dynamic,
+            "<<return>> with two args should have a fixed target"
+        );
     }
 
     #[test]
@@ -2022,31 +2244,56 @@ mod tests {
         // <<back "Start">> — "Start" is display text, not a passage name.
         // With one arg, the target is dynamic (browser history).
         let ast = parse_passage_body(r#"<<back "Start">>"#, 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         assert_eq!(back_links.len(), 1);
         assert_eq!(back_links[0].display.as_deref(), Some("Start"));
-        assert!(back_links[0].is_dynamic, "<<back>> with one arg should be dynamic");
-        assert!(back_links[0].target.is_empty(), "<<back>> with one arg should have no fixed target");
+        assert!(
+            back_links[0].is_dynamic,
+            "<<back>> with one arg should be dynamic"
+        );
+        assert!(
+            back_links[0].target.is_empty(),
+            "<<back>> with one arg should have no fixed target"
+        );
     }
 
     #[test]
     fn back_macro_two_args() {
         // <<back "Flee" "Forest">> — display text + specific passage
         let ast = parse_passage_body(r#"<<back "Flee" "Forest">>"#, 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         assert_eq!(back_links.len(), 1);
         assert_eq!(back_links[0].display.as_deref(), Some("Flee"));
         assert_eq!(back_links[0].target, "Forest");
-        assert!(!back_links[0].is_dynamic, "<<back>> with two args should have a fixed target");
+        assert!(
+            !back_links[0].is_dynamic,
+            "<<back>> with two args should have a fixed target"
+        );
     }
 
     #[test]
     fn back_macro_no_args() {
         // <<back>> — no args, fully dynamic (previous passage)
         let ast = parse_passage_body("<<back>>", 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         // With no args at all, there's no string arg to extract — no link
-        assert_eq!(back_links.len(), 0, "<<back>> with no args produces no extractable link");
+        assert_eq!(
+            back_links.len(),
+            0,
+            "<<back>> with no args produces no extractable link"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2060,14 +2307,22 @@ mod tests {
         // the comment and truncate the args.
         let input = r#"<<set $x = [1, /* >> */ 2, 3]>>"#;
         let ast = parse_passage_body(input, 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(macros.len(), 1);
         // The args should contain the full expression including the
         // commented-out >> and the 2, 3 after it.
-        assert!(macros[0].contains("2, 3"), "Args should contain '2, 3' after the block comment, got: {:?}", macros[0]);
+        assert!(
+            macros[0].contains("2, 3"),
+            "Args should contain '2, 3' after the block comment, got: {:?}",
+            macros[0]
+        );
     }
 
     #[test]
@@ -2075,12 +2330,20 @@ mod tests {
         // A >> inside a // comment must NOT close the macro.
         let input = "<<set $x = [1, // >> close\n2]>>";
         let ast = parse_passage_body(input, 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro { name, args, .. } if name == "set" => Some(args.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(macros.len(), 1);
-        assert!(macros[0].contains("2]"), "Args should contain '2]' after the line comment, got: {:?}", macros[0]);
+        assert!(
+            macros[0].contains("2]"),
+            "Args should contain '2]' after the line comment, got: {:?}",
+            macros[0]
+        );
     }
 
     #[test]
@@ -2096,18 +2359,34 @@ mod tests {
   }
 ]>>"#;
         let ast = parse_passage_body(input, 0, ParseMode::Normal);
-        let macros: Vec<_> = ast.nodes.iter().filter_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => Some(set_assignment.clone()),
-            _ => None,
-        }).collect();
+        let macros: Vec<_> = ast
+            .nodes
+            .iter()
+            .filter_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => Some(set_assignment.clone()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(macros.len(), 1);
         let sa = macros[0].as_ref().unwrap();
         assert_eq!(sa.target.name, "$arr");
         assert_eq!(sa.operator, SetOperator::Eq);
         // The expression should contain the full array literal with comments
         let expr = sa.expression.as_ref().unwrap();
-        assert!(expr.contains("id: \"base\""), "Expression should contain 'id: \"base\"', got: {:?}", expr);
-        assert!(expr.contains("value: 42"), "Expression should contain 'value: 42', got: {:?}", expr);
+        assert!(
+            expr.contains("id: \"base\""),
+            "Expression should contain 'id: \"base\"', got: {:?}",
+            expr
+        );
+        assert!(
+            expr.contains("value: 42"),
+            "Expression should contain 'value: 42', got: {:?}",
+            expr
+        );
     }
 
     #[test]
@@ -2119,8 +2398,16 @@ mod tests {
             AstNode::Expression { content, kind, .. } => {
                 assert_eq!(*kind, ExprKind::Print);
                 // The content should include the full expression
-                assert!(content.contains("1 +"), "Content should contain '1 +', got: {:?}", content);
-                assert!(content.contains("2"), "Content should contain '2', got: {:?}", content);
+                assert!(
+                    content.contains("1 +"),
+                    "Content should contain '1 +', got: {:?}",
+                    content
+                );
+                assert!(
+                    content.contains("2"),
+                    "Content should contain '2', got: {:?}",
+                    content
+                );
             }
             other => panic!("Expected Expression node, got {:?}", other),
         }
@@ -2134,7 +2421,11 @@ mod tests {
         match &ast.nodes[0] {
             AstNode::Expression { content, kind, .. } => {
                 assert_eq!(*kind, ExprKind::Print);
-                assert!(content.contains("2"), "Content should contain '2' after line comment, got: {:?}", content);
+                assert!(
+                    content.contains("2"),
+                    "Content should contain '2' after line comment, got: {:?}",
+                    content
+                );
             }
             other => panic!("Expected Expression node, got {:?}", other),
         }
@@ -2144,12 +2435,22 @@ mod tests {
 
     #[test]
     fn parse_capture_target() {
-        let ast = parse_passage_body("<<capture $target>>Captured!<</capture>>", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "<<capture $target>>Captured!<</capture>>",
+            0,
+            ParseMode::Normal,
+        );
         let macros = collect_macros(&ast.nodes);
         assert!(!macros.is_empty(), "Should have at least one macro");
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture"))
+        {
             Some(AstNode::Macro { capture_target, .. }) => {
-                assert!(capture_target.is_some(), "<<capture>> should have capture_target");
+                assert!(
+                    capture_target.is_some(),
+                    "<<capture>> should have capture_target"
+                );
                 let ct = capture_target.as_ref().unwrap();
                 assert_eq!(ct.name, "$target");
                 assert!(ct.is_write, "Capture target should be marked as write");
@@ -2161,9 +2462,16 @@ mod tests {
 
     #[test]
     fn parse_capture_temp_var() {
-        let ast = parse_passage_body("<<capture _temp>>Captured!<</capture>>", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "<<capture _temp>>Captured!<</capture>>",
+            0,
+            ParseMode::Normal,
+        );
         let macros = collect_macros(&ast.nodes);
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture"))
+        {
             Some(AstNode::Macro { capture_target, .. }) => {
                 assert!(capture_target.is_some());
                 let ct = capture_target.as_ref().unwrap();
@@ -2178,16 +2486,25 @@ mod tests {
     fn parse_for_loop_simplified() {
         let ast = parse_passage_body("<<for _i, $items>>Item<</for>>", 0, ParseMode::Normal);
         let macros = collect_macros(&ast.nodes);
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for"))
+        {
             Some(AstNode::Macro { for_loop_vars, .. }) => {
-                assert!(for_loop_vars.is_some(), "<<for _i, $items>> should have for_loop_vars");
+                assert!(
+                    for_loop_vars.is_some(),
+                    "<<for _i, $items>> should have for_loop_vars"
+                );
                 let fl = for_loop_vars.as_ref().unwrap();
                 assert_eq!(fl.index_var.name, "_i");
                 assert_eq!(fl.iterated_var.name, "$items");
                 assert!(fl.index_var.is_temporary, "Index var should be temporary");
                 assert!(fl.index_var.is_write, "Index var should be write");
                 assert!(!fl.iterated_var.is_write, "Iterated var should be read");
-                assert!(!fl.iterated_var.is_temporary, "$items should not be temporary");
+                assert!(
+                    !fl.iterated_var.is_temporary,
+                    "$items should not be temporary"
+                );
             }
             _ => panic!("Expected <<for>> macro"),
         }
@@ -2195,12 +2512,21 @@ mod tests {
 
     #[test]
     fn parse_for_loop_c_style_no_for_loop_vars() {
-        let ast = parse_passage_body("<<for _i to 0; _i lt 10; _i++>>Loop<</for>>", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "<<for _i to 0; _i lt 10; _i++>>Loop<</for>>",
+            0,
+            ParseMode::Normal,
+        );
         let macros = collect_macros(&ast.nodes);
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for"))
+        {
             Some(AstNode::Macro { for_loop_vars, .. }) => {
-                assert!(for_loop_vars.is_none(),
-                    "C-style <<for>> should NOT have for_loop_vars");
+                assert!(
+                    for_loop_vars.is_none(),
+                    "C-style <<for>> should NOT have for_loop_vars"
+                );
             }
             _ => panic!("Expected <<for>> macro"),
         }
@@ -2208,9 +2534,16 @@ mod tests {
 
     #[test]
     fn parse_for_loop_with_property_path() {
-        let ast = parse_passage_body("<<for _item, $player.inventory>>Item<</for>>", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "<<for _item, $player.inventory>>Item<</for>>",
+            0,
+            ParseMode::Normal,
+        );
         let macros = collect_macros(&ast.nodes);
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "for"))
+        {
             Some(AstNode::Macro { for_loop_vars, .. }) => {
                 assert!(for_loop_vars.is_some());
                 let fl = for_loop_vars.as_ref().unwrap();
@@ -2223,9 +2556,16 @@ mod tests {
 
     #[test]
     fn parse_capture_with_property_path() {
-        let ast = parse_passage_body("<<capture $target.name>>Captured!<</capture>>", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "<<capture $target.name>>Captured!<</capture>>",
+            0,
+            ParseMode::Normal,
+        );
         let macros = collect_macros(&ast.nodes);
-        match macros.iter().find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture")) {
+        match macros
+            .iter()
+            .find(|m| matches!(m, AstNode::Macro { name, .. } if name == "capture"))
+        {
             Some(AstNode::Macro { capture_target, .. }) => {
                 assert!(capture_target.is_some());
                 let ct = capture_target.as_ref().unwrap();
@@ -2243,10 +2583,18 @@ mod tests {
     #[test]
     fn structured_args_goto_quoted_passage() {
         let ast = parse_passage_body(r#"<<goto "Cave">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "goto" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "goto" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2257,10 +2605,18 @@ mod tests {
     #[test]
     fn structured_args_include_quoted_passage() {
         let ast = parse_passage_body(r#"<<include "Header">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "include" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "include" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2271,10 +2627,18 @@ mod tests {
     #[test]
     fn structured_args_link_label_and_passage() {
         let ast = parse_passage_body(r#"<<link "Talk" "Shop">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "link" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "link" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 2);
@@ -2287,10 +2651,18 @@ mod tests {
     #[test]
     fn structured_args_button_label_and_passage() {
         let ast = parse_passage_body(r#"<<button "Enter cave" "Cave">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "button" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "button" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 2);
@@ -2303,10 +2675,18 @@ mod tests {
     #[test]
     fn structured_args_goto_variable_target() {
         let ast = parse_passage_body("<<goto $dest>>", 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "goto" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "goto" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2316,11 +2696,23 @@ mod tests {
 
     #[test]
     fn structured_args_actions_multiple_passages() {
-        let ast = parse_passage_body(r#"<<actions "Forest" "Cave" "Village">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "actions" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let ast = parse_passage_body(
+            r#"<<actions "Forest" "Cave" "Village">>"#,
+            0,
+            ParseMode::Normal,
+        );
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "actions" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 3);
@@ -2337,16 +2729,27 @@ mod tests {
         // <<set>> has declared args (Expression kind), so structured extraction
         // does run, but the extracted tokens are Expression kind (not PassageRef)
         let ast = parse_passage_body("<<set $hp to 100>>", 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "set" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "set" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         // <<set>> has Expression args — the structured extraction may produce
         // tokens, but they should be VariableRef/Expression, not PassageRef
         if let Some(args) = macro_node {
             for arg in &args {
-                assert!(!matches!(arg.kind, ParsedArgKind::PassageRef | ParsedArgKind::Label | ParsedArgKind::Selector));
+                assert!(!matches!(
+                    arg.kind,
+                    ParsedArgKind::PassageRef | ParsedArgKind::Label | ParsedArgKind::Selector
+                ));
             }
         }
         // Either no structured args, or args that aren't passage refs — both OK
@@ -2357,10 +2760,18 @@ mod tests {
         // <<if>> has args: None in catalog (undeclared JS expression args),
         // so no structured extraction — it falls through to oxc
         let ast = parse_passage_body("<<if $hp gte 50>>", 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "if" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "if" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         assert!(macro_node.is_none());
     }
@@ -2369,10 +2780,18 @@ mod tests {
     fn structured_args_goto_bare_name() {
         // <<goto Forest>> — bare name should be extracted as a PassageRef
         let ast = parse_passage_body("<<goto Forest>>", 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "goto" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "goto" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2384,10 +2803,18 @@ mod tests {
     fn structured_args_remove_selector() {
         // <<remove "#hp-bar">> — selector argument
         let ast = parse_passage_body("<<remove \"#hp-bar\">>", 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "remove" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "remove" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2399,10 +2826,18 @@ mod tests {
     fn structured_args_display_deprecated_passage_ref() {
         // <<display>> is deprecated but still has a passage ref arg
         let ast = parse_passage_body(r#"<<display "OldPassage">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "display" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "display" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2414,10 +2849,18 @@ mod tests {
     fn structured_args_timed_speed_string() {
         // <<timed "2s">> — generic string (speed value), not a passage ref
         let ast = parse_passage_body(r#"<<timed "2s">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "timed" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "timed" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2430,10 +2873,18 @@ mod tests {
     fn structured_args_link_single_arg_label() {
         // <<link "Talk">> — single string arg is both label and target
         let ast = parse_passage_body(r#"<<link "Talk">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "link" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "link" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args.len(), 1);
@@ -2450,10 +2901,18 @@ mod tests {
         //   args start at position 6 (after "<<goto ")
         //   opening quote at position 6, "Cave" content at 7..11, closing quote at 11
         let ast = parse_passage_body(r#"<<goto "Cave">>"#, 0, ParseMode::Normal);
-        let macro_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, structured_args, .. } if name == "goto" => Some(structured_args.clone()),
-            _ => None,
-        }).unwrap();
+        let macro_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    structured_args,
+                    ..
+                } if name == "goto" => Some(structured_args.clone()),
+                _ => None,
+            })
+            .unwrap();
 
         let args = macro_node.unwrap();
         assert_eq!(args[0].value, "Cave");
@@ -2468,10 +2927,18 @@ mod tests {
     fn set_into_assignment() {
         // <<set 100 into $hp>> — reverse-assignment form
         let ast = parse_passage_body("<<set 100 into $hp>>", 0, ParseMode::Normal);
-        let sa = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
-            _ => None,
-        }).expect("should find <<set>> with set_assignment");
+        let sa = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => set_assignment.clone(),
+                _ => None,
+            })
+            .expect("should find <<set>> with set_assignment");
 
         assert_eq!(sa.target.name, "$hp");
         assert_eq!(sa.operator, SetOperator::Into);
@@ -2486,22 +2953,40 @@ mod tests {
         // we must not accidentally parse it as `into`.
         let ast = parse_passage_body("<<set $x intogether $y>>", 0, ParseMode::Normal);
         let sa = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
+            AstNode::Macro {
+                name,
+                set_assignment,
+                ..
+            } if name == "set" => set_assignment.clone(),
             _ => None,
         });
         // Should NOT parse as Into — `intogether` is not a keyword boundary
-        assert!(sa.is_none() || sa.as_ref().map(|s| s.operator != SetOperator::Into).unwrap_or(true),
-            "intogether should not be parsed as 'into' keyword");
+        assert!(
+            sa.is_none()
+                || sa
+                    .as_ref()
+                    .map(|s| s.operator != SetOperator::Into)
+                    .unwrap_or(true),
+            "intogether should not be parsed as 'into' keyword"
+        );
     }
 
     #[test]
     fn set_into_with_expression() {
         // <<set $base + $bonus into $total>> — complex expression on the left
         let ast = parse_passage_body("<<set $base + $bonus into $total>>", 0, ParseMode::Normal);
-        let sa = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Macro { name, set_assignment, .. } if name == "set" => set_assignment.clone(),
-            _ => None,
-        }).expect("should find <<set>> with set_assignment");
+        let sa = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    set_assignment,
+                    ..
+                } if name == "set" => set_assignment.clone(),
+                _ => None,
+            })
+            .expect("should find <<set>> with set_assignment");
 
         assert_eq!(sa.target.name, "$total");
         assert_eq!(sa.operator, SetOperator::Into);

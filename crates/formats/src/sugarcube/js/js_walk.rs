@@ -26,8 +26,9 @@ use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 
 use crate::sugarcube::ast::{
-    AnalyzedVarOp, CommentKind, CommentSpan, FunctionCallInfo, FunctionDefInfo, JsAnalysis, KeywordSpan, LiteralKind, LiteralSpan, MacroAddInfo,
-    NamespaceSpan, OperatorKind, OperatorSpan, PropertySpan, TemplateAddInfo,
+    AnalyzedVarOp, CommentKind, CommentSpan, FunctionCallInfo, FunctionDefInfo, JsAnalysis,
+    KeywordSpan, LiteralKind, LiteralSpan, MacroAddInfo, NamespaceSpan, OperatorKind, OperatorSpan,
+    PropertySpan, TemplateAddInfo,
 };
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
@@ -119,11 +120,8 @@ fn walk_statement(
         Statement::FunctionDeclaration(func) => {
             push_keyword(analysis, "function", func.span.start as usize, preprocessed);
             if let Some(id) = &func.id {
-                let (name, name_offset) = demangle_function_name(
-                    id.name.as_str(),
-                    id.span.start as usize,
-                    preprocessed,
-                );
+                let (name, name_offset) =
+                    demangle_function_name(id.name.as_str(), id.span.start as usize, preprocessed);
                 let param_count = Some(func.params.items.len());
                 analysis.function_defs.push(FunctionDefInfo {
                     name,
@@ -158,9 +156,11 @@ fn walk_statement(
                 // the $var / _var mechanism).
                 if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
                     let name = binding_name.name.as_str();
-                    if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
+                    if !name.starts_with("State_variables_")
+                        && !name.starts_with("State_temporary_")
+                    {
                         let span = preprocessed.map_range_to_original(
-                            binding_name.span.start as usize..binding_name.span.end as usize
+                            binding_name.span.start as usize..binding_name.span.end as usize,
                         );
                         analysis.js_var_def_spans.push(span);
                     }
@@ -170,7 +170,9 @@ fn walk_statement(
                     match init {
                         oxc_ast::ast::Expression::FunctionExpression(func_expr) => {
                             // var myFunc = function() {...} — name from the var binding
-                            if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
+                            if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) =
+                                &decl.id
+                            {
                                 let (name, name_offset) = demangle_function_name(
                                     binding_name.name.as_str(),
                                     binding_name.span.start as usize,
@@ -185,7 +187,9 @@ fn walk_statement(
                             }
                         }
                         oxc_ast::ast::Expression::ArrowFunctionExpression(_arrow) => {
-                            if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) = &decl.id {
+                            if let oxc_ast::ast::BindingPattern::BindingIdentifier(binding_name) =
+                                &decl.id
+                            {
                                 let (name, name_offset) = demangle_function_name(
                                     binding_name.name.as_str(),
                                     binding_name.span.start as usize,
@@ -222,7 +226,12 @@ fn walk_statement(
             walk_statement(&for_stmt.body, preprocessed, analysis);
         }
         Statement::WhileStatement(while_stmt) => {
-            push_keyword(analysis, "while", while_stmt.span.start as usize, preprocessed);
+            push_keyword(
+                analysis,
+                "while",
+                while_stmt.span.start as usize,
+                preprocessed,
+            );
             walk_statement(&while_stmt.body, preprocessed, analysis);
         }
         Statement::ReturnStatement(ret) => {
@@ -252,7 +261,12 @@ fn walk_statement(
 
 /// Push a JS keyword span onto `analysis.keyword_spans`, mapping the start
 /// position through the preprocessor's substitution table.
-fn push_keyword(analysis: &mut JsAnalysis, kw: &'static str, start_offset: usize, preprocessed: &super::js_preprocess::PreprocessedJs) {
+fn push_keyword(
+    analysis: &mut JsAnalysis,
+    kw: &'static str,
+    start_offset: usize,
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+) {
     let mapped_start = preprocessed.map_to_original(start_offset);
     let mapped_end = preprocessed.map_to_original(start_offset + kw.len());
     analysis.keyword_spans.push(KeywordSpan {
@@ -272,7 +286,7 @@ fn emit_param_tokens(
             let name = binding_name.name.as_str();
             if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
                 let span = preprocessed.map_range_to_original(
-                    binding_name.span.start as usize..binding_name.span.end as usize
+                    binding_name.span.start as usize..binding_name.span.end as usize,
                 );
                 analysis.js_var_def_spans.push(span);
             }
@@ -314,7 +328,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                    segment_construct_spans: Vec::new(),
                 });
             }
             // Check for SugarCube.State.variables.x READ pattern
@@ -340,7 +354,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                    segment_construct_spans: Vec::new(),
                 });
             }
             // Check for State.variables pattern (intermediate — just recurse)
@@ -386,7 +400,7 @@ fn walk_expression(
             };
             if !object_is_sc_global {
                 let prop_span = preprocessed.map_range_to_original(
-                    member.property.span.start as usize..member.property.span.end as usize
+                    member.property.span.start as usize..member.property.span.end as usize,
                 );
                 analysis.js_property_spans.push(prop_span);
             }
@@ -415,7 +429,7 @@ fn walk_expression(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                    segment_construct_spans: Vec::new(),
                 });
             }
             walk_expression(&member.object, preprocessed, analysis);
@@ -427,16 +441,16 @@ fn walk_expression(
             // call target (`_myHelper()`), the preprocessor has already replaced
             // it with `State_temporary_myHelper`. We need to emit a FunctionCallInfo
             // instead of letting the recursive walk create a Variable var_op.
-            if let Expr::Identifier(id) = &call.callee {
-                if let Some(call_info) = try_classify_as_function_call(id, preprocessed, analysis) {
-                    analysis.function_calls.push(call_info);
-                    // Skip the normal recursive walk into the callee — we've
-                    // already handled it as a function call. Just walk args.
-                    for arg in &call.arguments {
-                        walk_argument(arg, preprocessed, analysis);
-                    }
-                    return;
+            if let Expr::Identifier(id) = &call.callee
+                && let Some(call_info) = try_classify_as_function_call(id, preprocessed, analysis)
+            {
+                analysis.function_calls.push(call_info);
+                // Skip the normal recursive walk into the callee — we've
+                // already handled it as a function call. Just walk args.
+                for arg in &call.arguments {
+                    walk_argument(arg, preprocessed, analysis);
                 }
+                return;
             }
             // Check for Macro.add("name", ...) pattern
             if let Expr::StaticMemberExpression(member) = &call.callee
@@ -522,7 +536,7 @@ fn walk_expression(
             // ── Detect method calls: expr.method(...) ──────────────────
             if let Expr::StaticMemberExpression(member) = &call.callee {
                 let prop_span = preprocessed.map_range_to_original(
-                    member.property.span.start as usize..member.property.span.end as usize
+                    member.property.span.start as usize..member.property.span.end as usize,
                 );
                 analysis.js_method_spans.push(prop_span);
                 walk_expression(&member.object, preprocessed, analysis);
@@ -535,7 +549,7 @@ fn walk_expression(
         }
         Expr::AssignmentExpression(assign) => {
             // Emit operator span for the assignment operator.
-            emit_assignment_operator(&assign, preprocessed, analysis);
+            emit_assignment_operator(assign, preprocessed, analysis);
             // Check for variable writes on the assignment target.
             // `check_assignment_for_var_writes` handles both block-literal
             // RHS (decomposes into leaf writes) and scalar RHS (single
@@ -547,9 +561,8 @@ fn walk_expression(
             check_identifier_for_substituted_var(id, false, preprocessed, analysis);
             let name = id.name.as_str();
             if !name.starts_with("State_variables_") && !name.starts_with("State_temporary_") {
-                let span = preprocessed.map_range_to_original(
-                    id.span.start as usize..id.span.end as usize
-                );
+                let span = preprocessed
+                    .map_range_to_original(id.span.start as usize..id.span.end as usize);
                 if is_js_global(name) {
                     analysis.js_global_spans.push(span);
                 } else if is_sugarcube_global(name) {
@@ -565,7 +578,7 @@ fn walk_expression(
         }
         Expr::BinaryExpression(bin) => {
             // Emit operator span for the binary operator.
-            emit_binary_operator(&bin, preprocessed, analysis);
+            emit_binary_operator(bin, preprocessed, analysis);
             // For keyword binary operators (in, instanceof), also emit a Keyword span.
             let kw = match bin.operator {
                 oxc_ast::ast::BinaryOperator::In => Some("in"),
@@ -585,7 +598,7 @@ fn walk_expression(
         }
         Expr::LogicalExpression(logic) => {
             // Emit operator span for the logical operator.
-            emit_logical_operator(&logic, preprocessed, analysis);
+            emit_logical_operator(logic, preprocessed, analysis);
             walk_expression(&logic.left, preprocessed, analysis);
             walk_expression(&logic.right, preprocessed, analysis);
         }
@@ -604,7 +617,7 @@ fn walk_expression(
         }
         Expr::UnaryExpression(unary) => {
             // Emit operator span for unary operators (!, -, +, typeof, etc.)
-            emit_unary_operator(&unary, preprocessed, analysis);
+            emit_unary_operator(unary, preprocessed, analysis);
             let kw = match unary.operator {
                 oxc_ast::ast::UnaryOperator::Typeof => Some("typeof"),
                 oxc_ast::ast::UnaryOperator::Void => Some("void"),
@@ -618,7 +631,7 @@ fn walk_expression(
         }
         Expr::UpdateExpression(update) => {
             // Emit operator span for update operators (++, --)
-            emit_update_operator(&update, preprocessed, analysis);
+            emit_update_operator(update, preprocessed, analysis);
             // UpdateExpression.argument is a SimpleAssignmentTarget, not an Expression.
             // Walk it for any variable references inside.
             walk_assignment_target_like(&update.argument, preprocessed, analysis);
@@ -634,28 +647,121 @@ fn walk_expression(
             use oxc_ast::ast::ArrayExpressionElement;
             for elem in &arr.elements {
                 match elem {
-                    ArrayExpressionElement::SpreadElement(spread) => { walk_expression(&spread.argument, preprocessed, analysis); }
+                    ArrayExpressionElement::SpreadElement(spread) => {
+                        walk_expression(&spread.argument, preprocessed, analysis);
+                    }
                     ArrayExpressionElement::Elision(_) => {}
-                    ArrayExpressionElement::NumericLiteral(n) => { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Number, span: s }); }
-                    ArrayExpressionElement::StringLiteral(s) => { let sp = preprocessed.map_range_to_original(s.span.start as usize..s.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::String, span: sp }); }
-                    ArrayExpressionElement::BooleanLiteral(b) => { let s = preprocessed.map_range_to_original(b.span.start as usize..b.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Boolean, span: s }); }
-                    ArrayExpressionElement::NullLiteral(n) => { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Null, span: s }); }
-                    ArrayExpressionElement::Identifier(id) => { check_identifier_for_substituted_var(id, false, preprocessed, analysis); }
-                    ArrayExpressionElement::ObjectExpression(obj) => { for prop in &obj.properties { if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop { walk_expression(&p.value, preprocessed, analysis); } } }
-                    ArrayExpressionElement::ArrayExpression(inner) => {
-                        for e in &inner.elements {
-                            if let ArrayExpressionElement::NumericLiteral(n) = e { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Number, span: s }); }
-                            else if let ArrayExpressionElement::StringLiteral(s) = e { let sp = preprocessed.map_range_to_original(s.span.start as usize..s.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::String, span: sp }); }
-                            else if let ArrayExpressionElement::BooleanLiteral(b) = e { let s = preprocessed.map_range_to_original(b.span.start as usize..b.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Boolean, span: s }); }
-                            else if let ArrayExpressionElement::NullLiteral(n) = e { let s = preprocessed.map_range_to_original(n.span.start as usize..n.span.end as usize); analysis.literal_spans.push(LiteralSpan { kind: LiteralKind::Null, span: s }); }
-                            else if let ArrayExpressionElement::Identifier(id) = e { check_identifier_for_substituted_var(id, false, preprocessed, analysis); }
-                            else if let ArrayExpressionElement::ObjectExpression(obj) = e { for prop in &obj.properties { if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop { walk_expression(&p.value, preprocessed, analysis); } } }
+                    ArrayExpressionElement::NumericLiteral(n) => {
+                        let s = preprocessed
+                            .map_range_to_original(n.span.start as usize..n.span.end as usize);
+                        analysis.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::Number,
+                            span: s,
+                        });
+                    }
+                    ArrayExpressionElement::StringLiteral(s) => {
+                        let sp = preprocessed
+                            .map_range_to_original(s.span.start as usize..s.span.end as usize);
+                        analysis.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::String,
+                            span: sp,
+                        });
+                    }
+                    ArrayExpressionElement::BooleanLiteral(b) => {
+                        let s = preprocessed
+                            .map_range_to_original(b.span.start as usize..b.span.end as usize);
+                        analysis.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::Boolean,
+                            span: s,
+                        });
+                    }
+                    ArrayExpressionElement::NullLiteral(n) => {
+                        let s = preprocessed
+                            .map_range_to_original(n.span.start as usize..n.span.end as usize);
+                        analysis.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::Null,
+                            span: s,
+                        });
+                    }
+                    ArrayExpressionElement::Identifier(id) => {
+                        check_identifier_for_substituted_var(id, false, preprocessed, analysis);
+                    }
+                    ArrayExpressionElement::ObjectExpression(obj) => {
+                        for prop in &obj.properties {
+                            if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+                                walk_expression(&p.value, preprocessed, analysis);
+                            }
                         }
                     }
-                    ArrayExpressionElement::BinaryExpression(bin) => { walk_expression(&bin.left, preprocessed, analysis); walk_expression(&bin.right, preprocessed, analysis); }
-                    ArrayExpressionElement::LogicalExpression(l) => { walk_expression(&l.left, preprocessed, analysis); walk_expression(&l.right, preprocessed, analysis); }
-                    ArrayExpressionElement::CallExpression(c) => { walk_expression(&c.callee, preprocessed, analysis); for a in &c.arguments { walk_argument(a, preprocessed, analysis); } }
-                    ArrayExpressionElement::ParenthesizedExpression(pe) => { walk_expression(&pe.expression, preprocessed, analysis); }
+                    ArrayExpressionElement::ArrayExpression(inner) => {
+                        for e in &inner.elements {
+                            if let ArrayExpressionElement::NumericLiteral(n) = e {
+                                let s = preprocessed.map_range_to_original(
+                                    n.span.start as usize..n.span.end as usize,
+                                );
+                                analysis.literal_spans.push(LiteralSpan {
+                                    kind: LiteralKind::Number,
+                                    span: s,
+                                });
+                            } else if let ArrayExpressionElement::StringLiteral(s) = e {
+                                let sp = preprocessed.map_range_to_original(
+                                    s.span.start as usize..s.span.end as usize,
+                                );
+                                analysis.literal_spans.push(LiteralSpan {
+                                    kind: LiteralKind::String,
+                                    span: sp,
+                                });
+                            } else if let ArrayExpressionElement::BooleanLiteral(b) = e {
+                                let s = preprocessed.map_range_to_original(
+                                    b.span.start as usize..b.span.end as usize,
+                                );
+                                analysis.literal_spans.push(LiteralSpan {
+                                    kind: LiteralKind::Boolean,
+                                    span: s,
+                                });
+                            } else if let ArrayExpressionElement::NullLiteral(n) = e {
+                                let s = preprocessed.map_range_to_original(
+                                    n.span.start as usize..n.span.end as usize,
+                                );
+                                analysis.literal_spans.push(LiteralSpan {
+                                    kind: LiteralKind::Null,
+                                    span: s,
+                                });
+                            } else if let ArrayExpressionElement::Identifier(id) = e {
+                                check_identifier_for_substituted_var(
+                                    id,
+                                    false,
+                                    preprocessed,
+                                    analysis,
+                                );
+                            } else if let ArrayExpressionElement::ObjectExpression(obj) = e {
+                                for prop in &obj.properties {
+                                    if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) =
+                                        prop
+                                    {
+                                        walk_expression(&p.value, preprocessed, analysis);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ArrayExpressionElement::BinaryExpression(bin) => {
+                        walk_expression(&bin.left, preprocessed, analysis);
+                        walk_expression(&bin.right, preprocessed, analysis);
+                    }
+                    ArrayExpressionElement::LogicalExpression(l) => {
+                        walk_expression(&l.left, preprocessed, analysis);
+                        walk_expression(&l.right, preprocessed, analysis);
+                    }
+                    ArrayExpressionElement::CallExpression(c) => {
+                        walk_expression(&c.callee, preprocessed, analysis);
+                        for a in &c.arguments {
+                            walk_argument(a, preprocessed, analysis);
+                        }
+                    }
+                    ArrayExpressionElement::ParenthesizedExpression(pe) => {
+                        walk_expression(&pe.expression, preprocessed, analysis);
+                    }
                     _ => {}
                 }
             }
@@ -669,53 +775,47 @@ fn walk_expression(
         }
         // ── Literal expressions: emit literal spans ──────────────────
         Expr::StringLiteral(str_lit) => {
-            let span = preprocessed.map_range_to_original(
-                str_lit.span.start as usize..str_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(str_lit.span.start as usize..str_lit.span.end as usize);
             analysis.literal_spans.push(LiteralSpan {
                 kind: LiteralKind::String,
                 span,
             });
         }
         Expr::NumericLiteral(num_lit) => {
-            let span = preprocessed.map_range_to_original(
-                num_lit.span.start as usize..num_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(num_lit.span.start as usize..num_lit.span.end as usize);
             analysis.literal_spans.push(LiteralSpan {
                 kind: LiteralKind::Number,
                 span,
             });
         }
         Expr::BooleanLiteral(bool_lit) => {
-            let span = preprocessed.map_range_to_original(
-                bool_lit.span.start as usize..bool_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(bool_lit.span.start as usize..bool_lit.span.end as usize);
             analysis.literal_spans.push(LiteralSpan {
                 kind: LiteralKind::Boolean,
                 span,
             });
         }
         Expr::NullLiteral(null_lit) => {
-            let span = preprocessed.map_range_to_original(
-                null_lit.span.start as usize..null_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(null_lit.span.start as usize..null_lit.span.end as usize);
             analysis.literal_spans.push(LiteralSpan {
                 kind: LiteralKind::Null,
                 span,
             });
         }
         Expr::RegExpLiteral(regex_lit) => {
-            let span = preprocessed.map_range_to_original(
-                regex_lit.span.start as usize..regex_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(regex_lit.span.start as usize..regex_lit.span.end as usize);
             analysis.regex_spans.push(span);
         }
         Expr::TemplateLiteral(tmpl) => {
             // Template literals with no expressions are effectively strings
             if tmpl.expressions.is_empty() && tmpl.quasis.len() == 1 {
-                let span = preprocessed.map_range_to_original(
-                    tmpl.span.start as usize..tmpl.span.end as usize
-                );
+                let span = preprocessed
+                    .map_range_to_original(tmpl.span.start as usize..tmpl.span.end as usize);
                 analysis.literal_spans.push(LiteralSpan {
                     kind: LiteralKind::String,
                     span,
@@ -726,7 +826,7 @@ fn walk_expression(
                 for quasi in &tmpl.quasis {
                     if !quasi.value.raw.is_empty() {
                         let span = preprocessed.map_range_to_original(
-                            quasi.span.start as usize..quasi.span.end as usize
+                            quasi.span.start as usize..quasi.span.end as usize,
                         );
                         analysis.literal_spans.push(LiteralSpan {
                             kind: LiteralKind::String,
@@ -740,7 +840,12 @@ fn walk_expression(
             }
         }
         Expr::FunctionExpression(func_expr) => {
-            push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
+            push_keyword(
+                analysis,
+                "function",
+                func_expr.span.start as usize,
+                preprocessed,
+            );
             emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
@@ -787,12 +892,22 @@ fn walk_expression(
         }
         Expr::AwaitExpression(await_expr) => {
             // `await expr` — emit `await` keyword, walk the argument.
-            push_keyword(analysis, "await", await_expr.span.start as usize, preprocessed);
+            push_keyword(
+                analysis,
+                "await",
+                await_expr.span.start as usize,
+                preprocessed,
+            );
             walk_expression(&await_expr.argument, preprocessed, analysis);
         }
         Expr::YieldExpression(yield_expr) => {
             // `yield expr` — emit `yield` keyword, walk the argument if present.
-            push_keyword(analysis, "yield", yield_expr.span.start as usize, preprocessed);
+            push_keyword(
+                analysis,
+                "yield",
+                yield_expr.span.start as usize,
+                preprocessed,
+            );
             if let Some(arg) = &yield_expr.argument {
                 walk_expression(arg, preprocessed, analysis);
             }
@@ -884,7 +999,7 @@ fn walk_assignment_target_like(
                     property_path: String::new(),
                     segment_spans: vec![span],
                     construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                    segment_construct_spans: Vec::new(),
                 });
             }
         }
@@ -994,6 +1109,7 @@ fn check_assignment_for_var_writes(
 /// `prefix` is the dot-path prefix up to this point (e.g., "n1" for `$a.n1`).
 /// `parent_segments` is the per-segment token spans (for nav).
 /// `parent_construct_spans` is the per-segment construct spans (for propagation).
+#[allow(clippy::too_many_arguments)]
 fn decompose_object_write(
     obj: &oxc_ast::ast::ObjectExpression<'_>,
     var_name: &str,
@@ -1008,15 +1124,9 @@ fn decompose_object_write(
     for prop in &obj.properties {
         if let oxc_ast::ast::ObjectPropertyKind::ObjectProperty(p) = prop {
             let key_str = match &p.key {
-                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => {
-                    Some(id.name.to_string())
-                }
-                oxc_ast::ast::PropertyKey::StringLiteral(s) => {
-                    Some(s.value.to_string())
-                }
-                oxc_ast::ast::PropertyKey::NumericLiteral(n) => {
-                    Some(n.value.to_string())
-                }
+                oxc_ast::ast::PropertyKey::StaticIdentifier(id) => Some(id.name.to_string()),
+                oxc_ast::ast::PropertyKey::StringLiteral(s) => Some(s.value.to_string()),
+                oxc_ast::ast::PropertyKey::NumericLiteral(n) => Some(n.value.to_string()),
                 _ => None,
             };
 
@@ -1097,6 +1207,7 @@ fn decompose_object_write(
 ///
 /// Array elements are identified by their numeric index (0, 1, 2, ...).
 /// Each element's construct span = the element's value expression span.
+#[allow(clippy::too_many_arguments)]
 fn decompose_array_write(
     arr: &oxc_ast::ast::ArrayExpression<'_>,
     var_name: &str,
@@ -1133,9 +1244,15 @@ fn decompose_array_write(
                 segment_construct_spans.push(elem_range.clone());
 
                 decompose_object_write(
-                    obj, var_name, is_temporary, _target_span,
-                    path, segment_spans, segment_construct_spans,
-                    preprocessed, analysis,
+                    obj,
+                    var_name,
+                    is_temporary,
+                    _target_span,
+                    path,
+                    segment_spans,
+                    segment_construct_spans,
+                    preprocessed,
+                    analysis,
                 );
             }
             ArrayExpressionElement::ArrayExpression(inner_arr) => {
@@ -1156,13 +1273,18 @@ fn decompose_array_write(
                 segment_construct_spans.push(elem_range.clone());
 
                 decompose_array_write(
-                    inner_arr, var_name, is_temporary, _target_span,
-                    path, segment_spans, segment_construct_spans,
-                    preprocessed, analysis,
+                    inner_arr,
+                    var_name,
+                    is_temporary,
+                    _target_span,
+                    path,
+                    segment_spans,
+                    segment_construct_spans,
+                    preprocessed,
+                    analysis,
                 );
             }
-            ArrayExpressionElement::SpreadElement(_)
-            | ArrayExpressionElement::Elision(_) => {
+            ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => {
                 // Skip — spread elements and elisions don't produce writes.
                 continue;
             }
@@ -1218,18 +1340,27 @@ fn extract_var_info_from_assignment_target(
             {
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
-                Some((format!("${}", member.property.name.as_str()), false, original_start..original_end))
-            }
-            else if let oxc_ast::ast::Expression::StaticMemberExpression(state_access) = &member.object
+                Some((
+                    format!("${}", member.property.name.as_str()),
+                    false,
+                    original_start..original_end,
+                ))
+            } else if let oxc_ast::ast::Expression::StaticMemberExpression(state_access) =
+                &member.object
                 && state_access.property.name == "variables"
-                && let oxc_ast::ast::Expression::StaticMemberExpression(sc_state) = &state_access.object
+                && let oxc_ast::ast::Expression::StaticMemberExpression(sc_state) =
+                    &state_access.object
                 && sc_state.property.name == "State"
                 && let oxc_ast::ast::Expression::Identifier(id) = &sc_state.object
                 && id.name == "SugarCube"
             {
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
-                Some((format!("${}", member.property.name.as_str()), false, original_start..original_end))
+                Some((
+                    format!("${}", member.property.name.as_str()),
+                    false,
+                    original_start..original_end,
+                ))
             } else {
                 None
             }
@@ -1243,7 +1374,11 @@ fn extract_var_info_from_assignment_target(
             {
                 let original_start = preprocessed.map_to_original(member.span.start as usize);
                 let original_end = preprocessed.map_to_original(member.span.end as usize);
-                Some((format!("${}", str_lit.value.as_str()), false, original_start..original_end))
+                Some((
+                    format!("${}", str_lit.value.as_str()),
+                    false,
+                    original_start..original_end,
+                ))
             } else {
                 None
             }
@@ -1253,7 +1388,11 @@ fn extract_var_info_from_assignment_target(
                 let (base_name, _) = split_substituted_var(var_part);
                 let original_start = preprocessed.map_to_original(id.span.start as usize);
                 let original_end = preprocessed.map_to_original(id.span.end as usize);
-                Some((format!("${}", base_name), false, original_start..original_end))
+                Some((
+                    format!("${}", base_name),
+                    false,
+                    original_start..original_end,
+                ))
             } else if let Some(var_part) = id.name.as_str().strip_prefix("State_temporary_") {
                 let original_start = preprocessed.map_to_original(id.span.start as usize);
                 let original_end = preprocessed.map_to_original(id.span.end as usize);
@@ -1310,12 +1449,16 @@ fn check_identifier_for_substituted_var(
         analysis.var_ops.push(AnalyzedVarOp {
             name: var_name,
             is_temporary: false,
-            access_kind: if is_write { VarAccessKind::Write } else { VarAccessKind::Read },
+            access_kind: if is_write {
+                VarAccessKind::Write
+            } else {
+                VarAccessKind::Read
+            },
             span,
             property_path: property_path.to_string(),
             segment_spans,
             construct_span: None,
-                            segment_construct_spans: Vec::new(),
+            segment_construct_spans: Vec::new(),
         });
     }
 
@@ -1329,12 +1472,16 @@ fn check_identifier_for_substituted_var(
         analysis.var_ops.push(AnalyzedVarOp {
             name: var_name,
             is_temporary: true,
-            access_kind: if is_write { VarAccessKind::Write } else { VarAccessKind::Read },
+            access_kind: if is_write {
+                VarAccessKind::Write
+            } else {
+                VarAccessKind::Read
+            },
             span,
             property_path: String::new(),
             segment_spans,
             construct_span: None,
-                            segment_construct_spans: Vec::new(),
+            segment_construct_spans: Vec::new(),
         });
     }
 }
@@ -1503,11 +1650,17 @@ fn emit_substituted_var_method_call(
     // Last segment → FunctionCallInfo (emits Function token).
     let (var_op_segments, method_segment) = if all_segments.len() > 1 {
         let split_pos = all_segments.len() - 1;
-        (all_segments[..split_pos].to_vec(), all_segments[split_pos].clone())
+        (
+            all_segments[..split_pos].to_vec(),
+            all_segments[split_pos].clone(),
+        )
     } else {
         // Only one segment (shouldn't happen for method calls, but handle
         // gracefully) — use it for the Function token, emit no var_op.
-        (Vec::new(), all_segments.first().cloned().unwrap_or(full_span.clone()))
+        (
+            Vec::new(),
+            all_segments.first().cloned().unwrap_or(full_span.clone()),
+        )
     };
 
     // Emit Variable token for the root + Property tokens for intermediate
@@ -1553,9 +1706,7 @@ fn emit_substituted_var_method_call(
 fn extract_string_from_arg(arg: &oxc_ast::ast::Argument<'_>) -> Option<String> {
     use oxc_ast::ast::Argument as Arg;
     match arg {
-        Arg::StringLiteral(str_lit) => {
-            Some(str_lit.value.to_string())
-        }
+        Arg::StringLiteral(str_lit) => Some(str_lit.value.to_string()),
         Arg::TemplateLiteral(tmpl) => {
             if tmpl.expressions.is_empty() && tmpl.quasis.len() == 1 {
                 Some(tmpl.quasis[0].value.raw.to_string())
@@ -1695,7 +1846,12 @@ fn walk_argument(
             walk_expression(&pe.expression, preprocessed, analysis);
         }
         Arg::FunctionExpression(func_expr) => {
-            push_keyword(analysis, "function", func_expr.span.start as usize, preprocessed);
+            push_keyword(
+                analysis,
+                "function",
+                func_expr.span.start as usize,
+                preprocessed,
+            );
             emit_param_tokens(&func_expr.params, preprocessed, analysis);
             walk_function_body(&func_expr.body, preprocessed, analysis);
         }
@@ -1724,9 +1880,8 @@ fn walk_argument(
             }
         }
         Arg::RegExpLiteral(regex_lit) => {
-            let span = preprocessed.map_range_to_original(
-                regex_lit.span.start as usize..regex_lit.span.end as usize
-            );
+            let span = preprocessed
+                .map_range_to_original(regex_lit.span.start as usize..regex_lit.span.end as usize);
             analysis.regex_spans.push(span);
         }
         _ => {}
@@ -1850,7 +2005,7 @@ fn extract_substitution_operators(
             let orig_text = &sub.original_text;
             let orig_base = sub.original_range.start + preprocessed.origin_offset;
             // Find the sigil position within original_text (after the keyword)
-            if let Some(sigil_rel) = orig_text[kw_len..].find(|c| c == '$' || c == '_') {
+            if let Some(sigil_rel) = orig_text[kw_len..].find(['$', '_']) {
                 let var_start_rel = kw_len + sigil_rel;
                 let var_start = orig_base + var_start_rel;
                 let var_end = orig_base + orig_text.len();
@@ -1860,7 +2015,8 @@ fn extract_substitution_operators(
                 let var_text = &orig_text[var_start_rel..];
                 let is_temp = var_text.starts_with('_');
                 // Name is sigil + identifier (no dot-path)
-                let var_name: String = var_text.chars()
+                let var_name: String = var_text
+                    .chars()
                     .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
                     .collect();
                 // Property path is everything after the first identifier
@@ -1894,26 +2050,35 @@ fn extract_substitution_operators(
     }
 }
 
-
-
-fn extract_comments(preprocessed: &super::js_preprocess::PreprocessedJs, analysis: &mut JsAnalysis) {
+fn extract_comments(
+    preprocessed: &super::js_preprocess::PreprocessedJs,
+    analysis: &mut JsAnalysis,
+) {
     let src = preprocessed.source.as_bytes();
     let len = src.len();
     let mut i = 0usize;
-    let regex_spans: Vec<_> = analysis.regex_spans.iter().cloned().collect();
+    let regex_spans: Vec<_> = analysis.regex_spans.to_vec();
     let is_in_regex = |preprocessed_pos: usize| -> bool {
-        let orig_pos = preprocessed.map_to_original(preprocessed_pos + preprocessed.wrapping_offset);
-        regex_spans.iter().any(|r| orig_pos >= r.start && orig_pos < r.end)
+        let orig_pos =
+            preprocessed.map_to_original(preprocessed_pos + preprocessed.wrapping_offset);
+        regex_spans
+            .iter()
+            .any(|r| orig_pos >= r.start && orig_pos < r.end)
     };
     while i < len {
         let b = src[i];
         if is_in_regex(i) {
             let orig_pos = preprocessed.map_to_original(i + preprocessed.wrapping_offset);
-            if let Some(r) = regex_spans.iter().find(|r| orig_pos >= r.start && orig_pos < r.end) {
+            if let Some(r) = regex_spans
+                .iter()
+                .find(|r| orig_pos >= r.start && orig_pos < r.end)
+            {
                 let mut j = i;
                 while j < len {
                     let orig_j = preprocessed.map_to_original(j + preprocessed.wrapping_offset);
-                    if orig_j >= r.end { break; }
+                    if orig_j >= r.end {
+                        break;
+                    }
                     j += 1;
                 }
                 i = j;
@@ -1921,26 +2086,56 @@ fn extract_comments(preprocessed: &super::js_preprocess::PreprocessedJs, analysi
             }
         }
         if b == b'"' || b == b'\'' || b == b'`' {
-            let q = b; i += 1;
-            while i < len { if src[i] == b'\\' { i += 2; continue; } if src[i] == q { i += 1; break; } i += 1; }
+            let q = b;
+            i += 1;
+            while i < len {
+                if src[i] == b'\\' {
+                    i += 2;
+                    continue;
+                } else if src[i] == q {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
             continue;
         }
         if b == b'/' && i + 1 < len && src[i + 1] == b'*' {
-            let start = i; i += 2;
-            while i + 1 < len { if src[i] == b'*' && src[i + 1] == b'/' { i += 2; break; } i += 1; }
+            let start = i;
+            i += 2;
+            while i + 1 < len {
+                if src[i] == b'*' && src[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
             let end = i.min(len);
             let os = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
             let oe = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
-            if oe > os { analysis.comment_spans.push(CommentSpan { kind: CommentKind::CStyle, span: os..oe }); }
+            if oe > os {
+                analysis.comment_spans.push(CommentSpan {
+                    kind: CommentKind::CStyle,
+                    span: os..oe,
+                });
+            }
             continue;
         }
         if b == b'/' && i + 1 < len && src[i + 1] == b'/' {
-            let start = i; i += 2;
-            while i < len && src[i] != b'\n' { i += 1; }
+            let start = i;
+            i += 2;
+            while i < len && src[i] != b'\n' {
+                i += 1;
+            }
             let end = i;
             let os = preprocessed.map_to_original(start + preprocessed.wrapping_offset);
             let oe = preprocessed.map_to_original(end + preprocessed.wrapping_offset);
-            if oe > os { analysis.comment_spans.push(CommentSpan { kind: CommentKind::JsLine, span: os..oe }); }
+            if oe > os {
+                analysis.comment_spans.push(CommentSpan {
+                    kind: CommentKind::JsLine,
+                    span: os..oe,
+                });
+            }
             continue;
         }
         i += 1;
@@ -1984,11 +2179,7 @@ fn emit_binary_operator(
         | BinaryOperator::ShiftRightZeroFill => OperatorKind::Other,
     };
 
-    let span = compute_operator_span_between(
-        bin.left.span(),
-        bin.right.span(),
-        preprocessed,
-    );
+    let span = compute_operator_span_between(bin.left.span(), bin.right.span(), preprocessed);
 
     // Only emit if this operator wasn't already captured by the substitution
     // table (which handles SugarCube keyword operators like `eq`, `gt`, etc.)
@@ -2005,11 +2196,7 @@ fn emit_logical_operator(
 ) {
     let kind = OperatorKind::Logical;
 
-    let span = compute_operator_span_between(
-        logic.left.span(),
-        logic.right.span(),
-        preprocessed,
-    );
+    let span = compute_operator_span_between(logic.left.span(), logic.right.span(), preprocessed);
 
     // Only emit if not already covered by substitution (e.g., `and` → `&&`)
     if !is_covered_by_substitution(span.clone(), preprocessed) {
@@ -2044,11 +2231,7 @@ fn emit_assignment_operator(
         | AssignmentOperator::LogicalNullish => OperatorKind::CompoundAssign,
     };
 
-    let span = compute_operator_span_between(
-        assign.left.span(),
-        assign.right.span(),
-        preprocessed,
-    );
+    let span = compute_operator_span_between(assign.left.span(), assign.right.span(), preprocessed);
 
     // Only emit if not already covered by substitution (e.g., `to` → `=`)
     if !is_covered_by_substitution(span.clone(), preprocessed) {
@@ -2184,24 +2367,75 @@ fn is_sugarcube_global(name: &str) -> bool {
 }
 
 fn is_js_global(name: &str) -> bool {
-    matches!(name,
-        "document" | "window" | "console" | "navigator" | "location" |
-        "history" | "screen" | "localStorage" | "sessionStorage" |
-        "Array" | "Object" | "Math" | "JSON" | "Number" | "String" |
-        "Boolean" | "Date" | "RegExp" | "Error" | "TypeError" |
-        "RangeError" | "ReferenceError" | "SyntaxError" | "URIError" |
-        "Promise" | "Set" | "Map" | "WeakMap" | "WeakSet" | "Symbol" |
-        "Proxy" | "Reflect" | "Intl" | "BigInt" | "BigInt64Array" |
-        "BigUint64Array" | "Float32Array" | "Float64Array" |
-        "Int8Array" | "Int16Array" | "Int32Array" |
-        "Uint8Array" | "Uint8ClampedArray" | "Uint16Array" | "Uint32Array" |
-        "ArrayBuffer" | "SharedArrayBuffer" | "DataView" |
-        "encodeURI" | "decodeURI" | "encodeURIComponent" | "decodeURIComponent" |
-        "parseInt" | "parseFloat" | "isNaN" | "isFinite" |
-        "eval" | "undefined" | "NaN" | "Infinity" |
-        "setTimeout" | "setInterval" | "clearTimeout" | "clearInterval" |
-        "requestAnimationFrame" | "cancelAnimationFrame" |
-        "queueMicrotask"
+    matches!(
+        name,
+        "document"
+            | "window"
+            | "console"
+            | "navigator"
+            | "location"
+            | "history"
+            | "screen"
+            | "localStorage"
+            | "sessionStorage"
+            | "Array"
+            | "Object"
+            | "Math"
+            | "JSON"
+            | "Number"
+            | "String"
+            | "Boolean"
+            | "Date"
+            | "RegExp"
+            | "Error"
+            | "TypeError"
+            | "RangeError"
+            | "ReferenceError"
+            | "SyntaxError"
+            | "URIError"
+            | "Promise"
+            | "Set"
+            | "Map"
+            | "WeakMap"
+            | "WeakSet"
+            | "Symbol"
+            | "Proxy"
+            | "Reflect"
+            | "Intl"
+            | "BigInt"
+            | "BigInt64Array"
+            | "BigUint64Array"
+            | "Float32Array"
+            | "Float64Array"
+            | "Int8Array"
+            | "Int16Array"
+            | "Int32Array"
+            | "Uint8Array"
+            | "Uint8ClampedArray"
+            | "Uint16Array"
+            | "Uint32Array"
+            | "ArrayBuffer"
+            | "SharedArrayBuffer"
+            | "DataView"
+            | "encodeURI"
+            | "decodeURI"
+            | "encodeURIComponent"
+            | "decodeURIComponent"
+            | "parseInt"
+            | "parseFloat"
+            | "isNaN"
+            | "isFinite"
+            | "eval"
+            | "undefined"
+            | "NaN"
+            | "Infinity"
+            | "setTimeout"
+            | "setInterval"
+            | "clearTimeout"
+            | "clearInterval"
+            | "requestAnimationFrame"
+            | "cancelAnimationFrame"
+            | "queueMicrotask"
     )
 }
 
@@ -2257,9 +2491,7 @@ fn emit_namespace_for_member_expr(
             // SugarCube.State.variables.x chain that's already handled by
             // var_ops. Emitting Namespace("SugarCube") + Property("State")
             // would overlap with the Variable token for the entire chain.
-            if global_name == "SugarCube"
-                && member.property.name == "State"
-            {
+            if global_name == "SugarCube" && member.property.name == "State" {
                 return;
             }
             // Skip SugarCube.Macro and SugarCube.Template — they're prefixes
@@ -2270,11 +2502,10 @@ fn emit_namespace_for_member_expr(
                 return;
             }
 
-            let ns_span = preprocessed.map_range_to_original(
-                id.span.start as usize..id.span.end as usize
-            );
+            let ns_span =
+                preprocessed.map_range_to_original(id.span.start as usize..id.span.end as usize);
             let prop_span = preprocessed.map_range_to_original(
-                member.property.span.start as usize..member.property.span.end as usize
+                member.property.span.start as usize..member.property.span.end as usize,
             );
 
             analysis.namespace_spans.push(NamespaceSpan {
@@ -2302,7 +2533,7 @@ fn emit_namespace_for_member_expr(
 mod tests {
     use super::*;
     use crate::sugarcube::js_preprocess;
-    use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
+    use knot_core::oxc::{ParseMode as JsParseMode, parse_js};
 
     /// Helper: parse JS and walk as script passage, returning the analysis.
     fn walk_script(source: &str) -> JsAnalysis {
@@ -2313,14 +2544,18 @@ mod tests {
             wrapping_offset: 0,
         };
         let outcome = parse_js(source, JsParseMode::Module);
-        outcome.with_program(|program| walk_script_passage(program, &preprocessed)).unwrap_or_default()
+        outcome
+            .with_program(|program| walk_script_passage(program, &preprocessed))
+            .unwrap_or_default()
     }
 
     /// Helper: parse JS and walk as inline expression, returning the analysis.
     fn walk_inline(source: &str) -> JsAnalysis {
         let preprocessed = js_preprocess::preprocess_for_oxc(source, true);
         let outcome = parse_js(&preprocessed.source, JsParseMode::Expression);
-        outcome.with_program(|program| walk_inline_js(program, &preprocessed)).unwrap_or_default()
+        outcome
+            .with_program(|program| walk_inline_js(program, &preprocessed))
+            .unwrap_or_default()
     }
 
     #[test]
@@ -2355,7 +2590,11 @@ mod tests {
     #[test]
     fn walk_inline_substituted_var() {
         let analysis = walk_inline("$hp + $gold");
-        assert!(analysis.var_ops.len() >= 2, "Expected at least 2 var_ops, got {}", analysis.var_ops.len());
+        assert!(
+            analysis.var_ops.len() >= 2,
+            "Expected at least 2 var_ops, got {}",
+            analysis.var_ops.len()
+        );
         let names: Vec<&str> = analysis.var_ops.iter().map(|op| op.name.as_str()).collect();
         assert!(names.contains(&"$hp"), "Expected $hp in var_ops");
         assert!(names.contains(&"$gold"), "Expected $gold in var_ops");
@@ -2370,7 +2609,9 @@ mod tests {
     #[test]
     fn walk_inline_string_literal() {
         let analysis = walk_inline(r#"$name = "hello""#);
-        let strings: Vec<_> = analysis.literal_spans.iter()
+        let strings: Vec<_> = analysis
+            .literal_spans
+            .iter()
             .filter(|l| l.kind == LiteralKind::String)
             .collect();
         assert!(!strings.is_empty(), "Expected at least one String literal");
@@ -2379,7 +2620,9 @@ mod tests {
     #[test]
     fn walk_inline_number_literal() {
         let analysis = walk_inline("$hp = 100");
-        let numbers: Vec<_> = analysis.literal_spans.iter()
+        let numbers: Vec<_> = analysis
+            .literal_spans
+            .iter()
             .filter(|l| l.kind == LiteralKind::Number)
             .collect();
         assert!(!numbers.is_empty(), "Expected at least one Number literal");
@@ -2388,45 +2631,70 @@ mod tests {
     #[test]
     fn walk_inline_boolean_literal() {
         let analysis = walk_inline("$alive = true");
-        let booleans: Vec<_> = analysis.literal_spans.iter()
+        let booleans: Vec<_> = analysis
+            .literal_spans
+            .iter()
             .filter(|l| l.kind == LiteralKind::Boolean)
             .collect();
-        assert!(!booleans.is_empty(), "Expected at least one Boolean literal");
+        assert!(
+            !booleans.is_empty(),
+            "Expected at least one Boolean literal"
+        );
     }
 
     #[test]
     fn walk_inline_sugarcube_comparison_operator() {
         let analysis = walk_inline("$hp gte 50");
-        let comparisons: Vec<_> = analysis.operator_spans.iter()
+        let comparisons: Vec<_> = analysis
+            .operator_spans
+            .iter()
             .filter(|op| op.kind == OperatorKind::Comparison)
             .collect();
-        assert!(!comparisons.is_empty(), "Expected at least one Comparison operator (gte)");
+        assert!(
+            !comparisons.is_empty(),
+            "Expected at least one Comparison operator (gte)"
+        );
     }
 
     #[test]
     fn walk_inline_sugarcube_logical_operator() {
         let analysis = walk_inline("$alive and $awake");
-        let logicals: Vec<_> = analysis.operator_spans.iter()
+        let logicals: Vec<_> = analysis
+            .operator_spans
+            .iter()
             .filter(|op| op.kind == OperatorKind::Logical)
             .collect();
-        assert!(!logicals.is_empty(), "Expected at least one Logical operator (and)");
+        assert!(
+            !logicals.is_empty(),
+            "Expected at least one Logical operator (and)"
+        );
     }
 
     #[test]
     fn walk_inline_sugarcube_assignment_operator() {
         let analysis = walk_inline("$hp to 100");
-        let assignments: Vec<_> = analysis.operator_spans.iter()
+        let assignments: Vec<_> = analysis
+            .operator_spans
+            .iter()
             .filter(|op| op.kind == OperatorKind::Assignment)
             .collect();
-        assert!(!assignments.is_empty(), "Expected at least one Assignment operator (to)");
+        assert!(
+            !assignments.is_empty(),
+            "Expected at least one Assignment operator (to)"
+        );
     }
 
     #[test]
     fn walk_inline_js_arithmetic_operator() {
         let analysis = walk_inline("$hp + 10");
-        let arithmetic: Vec<_> = analysis.operator_spans.iter()
+        let arithmetic: Vec<_> = analysis
+            .operator_spans
+            .iter()
             .filter(|op| op.kind == OperatorKind::Arithmetic)
             .collect();
-        assert!(!arithmetic.is_empty(), "Expected at least one Arithmetic operator (+)");
+        assert!(
+            !arithmetic.is_empty(),
+            "Expected at least one Arithmetic operator (+)"
+        );
     }
 }

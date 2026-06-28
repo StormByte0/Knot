@@ -37,7 +37,8 @@ async fn main() {
         .truncate(true) // Fresh log each session
         .open(&log_path);
 
-    let directive = "knot_server=debug".parse::<tracing_subscriber::filter::Directive>()
+    let directive = "knot_server=debug"
+        .parse::<tracing_subscriber::filter::Directive>()
         .unwrap_or_else(|e| {
             eprintln!("Invalid tracing directive: {e}");
             // "info" is guaranteed to parse as a valid directive — this fallback
@@ -45,14 +46,13 @@ async fn main() {
             tracing_subscriber::filter::LevelFilter::INFO.into()
         });
 
-    let env_filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive(directive);
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env().add_directive(directive);
 
     match log_file {
         Ok(file) => {
             // Write to both stderr and the log file using layered subscribers
-            use tracing_subscriber::layer::SubscriberExt;
             use tracing_subscriber::Layer;
+            use tracing_subscriber::layer::SubscriberExt;
             let stderr_layer = tracing_subscriber::fmt::layer()
                 .with_writer(std::io::stderr)
                 .with_ansi(false)

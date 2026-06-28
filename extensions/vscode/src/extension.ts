@@ -13,6 +13,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as vscodeLanguageClient from 'vscode-languageclient';
 import { StoryMapPanelManager } from './storyMapProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
@@ -29,11 +30,22 @@ import { registerTaskProvider } from './taskProvider';
 import { handleServerFailure, resetCrashCount } from './crashRecovery';
 import { createStatusBarItems } from './statusBarItems';
 
-// The LanguageClient class is only available at runtime from the node entry.
-// We use require() to access it since the typings don't export it.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const VLCModule = require('vscode-languageclient');
-const LanguageClientCtor: typeof VLCModule.LanguageClient = VLCModule.LanguageClient;
+// `LanguageClient` is exported at runtime from the package's node entry
+// (lib/node/main.js), but the `typings` field in its package.json points
+// to lib/common/api.d.ts, which doesn't re-export it. We use a typed
+// accessor on the namespace import so both TypeScript and the runtime
+// are satisfied without falling back to `require()`.
+type LanguageClientCtor = new (
+    id: string,
+    name: string,
+    serverOptions: object,
+    clientOptions: object,
+) => unknown;
+const LanguageClient = (
+    vscodeLanguageClient as unknown as {
+        LanguageClient: LanguageClientCtor;
+    }
+).LanguageClient;
 
 // ---------------------------------------------------------------------------
 // Module-level state (owned by this file, passed to sub-modules)
@@ -210,7 +222,7 @@ export async function activate(context: vscode.ExtensionContext) {
         },
     };
 
-    client = new LanguageClientCtor(
+    client = new LanguageClient(
         'knot',
         'Knot Language Server',
         serverOptions,

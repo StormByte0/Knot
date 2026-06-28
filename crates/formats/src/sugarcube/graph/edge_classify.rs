@@ -3,8 +3,8 @@
 //! This module contains the fallback edge classification logic used when
 //! `edge_type_hint` is not set at extraction time.
 
-use knot_core::passage::{Block, Passage};
 use crate::sugarcube::parser;
+use knot_core::passage::{Block, Passage};
 
 /// Classify the edge type for a link from a SugarCube source passage.
 ///
@@ -37,7 +37,8 @@ pub fn classify_edge_impl(
             let bare_sole_match = parser::is_bare_passage_name(trimmed) && trimmed == target;
 
             // Check for bare args after string args (e.g., <<link "Display" Forest>>)
-            let bare_after_strings = parser::extract_bare_args_after_strings(args, string_args.len());
+            let bare_after_strings =
+                parser::extract_bare_args_after_strings(args, string_args.len());
             let bare_after_match = bare_after_strings.iter().any(|a| a == target);
 
             let args_match = string_match || bare_sole_match || bare_after_match;

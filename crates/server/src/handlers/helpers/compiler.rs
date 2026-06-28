@@ -50,22 +50,21 @@ pub(crate) fn which_compiler() -> Option<PathBuf> {
     let locator = if cfg!(windows) { "where" } else { "which" };
 
     for name in candidates {
-        if let Ok(output) = std::process::Command::new(locator)
-            .arg(name)
-            .output()
-            && output.status.success() {
-                // `where` on Windows may return multiple lines; take the first.
-                let path_str = String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                let path = PathBuf::from(&path_str);
-                if path.exists() {
-                    return Some(path);
-                }
+        if let Ok(output) = std::process::Command::new(locator).arg(name).output()
+            && output.status.success()
+        {
+            // `where` on Windows may return multiple lines; take the first.
+            let path_str = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let path = PathBuf::from(&path_str);
+            if path.exists() {
+                return Some(path);
             }
+        }
     }
 
     // Fallback: try direct execution — if the binary is on PATH,
@@ -152,21 +151,14 @@ mod tests {
     #[test]
     fn test_resolve_with_configured_path_existing() {
         let temp = tempfile::tempdir().unwrap();
-        let result = resolve_storyformats_dir(
-            Some(temp.path()),
-            None,
-            None,
-        );
+        let result = resolve_storyformats_dir(Some(temp.path()), None, None);
         assert_eq!(result, Some(temp.path().to_path_buf()));
     }
 
     #[test]
     fn test_resolve_with_configured_path_nonexistent_falls_through() {
-        let result = resolve_storyformats_dir(
-            Some(Path::new("/nonexistent/path/abc123")),
-            None,
-            None,
-        );
+        let result =
+            resolve_storyformats_dir(Some(Path::new("/nonexistent/path/abc123")), None, None);
         assert_eq!(result, None);
     }
 
@@ -179,12 +171,11 @@ mod tests {
         let local = workspace.path().join("storyformats");
         std::fs::create_dir_all(&local).unwrap();
 
-        let result = resolve_storyformats_dir(
-            None,
-            Some(workspace.path()),
-            None,
+        let result = resolve_storyformats_dir(None, Some(workspace.path()), None);
+        assert_eq!(
+            result, None,
+            "Should NOT resolve from project-local storyformats/"
         );
-        assert_eq!(result, None, "Should NOT resolve from project-local storyformats/");
     }
 
     #[test]
@@ -195,21 +186,16 @@ mod tests {
         let sibling = tweego_dir.path().join("storyformats");
         std::fs::create_dir_all(&sibling).unwrap();
 
-        let result = resolve_storyformats_dir(
-            None,
-            None,
-            Some(&tweego_bin),
+        let result = resolve_storyformats_dir(None, None, Some(&tweego_bin));
+        assert_eq!(
+            result, None,
+            "Should NOT resolve from tweego binary sibling"
         );
-        assert_eq!(result, None, "Should NOT resolve from tweego binary sibling");
     }
 
     #[test]
     fn test_resolve_returns_none_when_nothing_matches() {
-        let result = resolve_storyformats_dir(
-            None,
-            None,
-            None,
-        );
+        let result = resolve_storyformats_dir(None, None, None);
         assert_eq!(result, None);
     }
 }

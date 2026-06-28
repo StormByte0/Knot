@@ -18,9 +18,8 @@ use super::classifiers::{label_then_passage_macros, passage_arg_macro_names};
 // HashMap or scan the full catalog — called per-token in the token builder
 // and per-macro in the tree builder.
 
-static MACRO_INDEX: LazyLock<HashMap<&'static str, &'static MacroDef>> = LazyLock::new(|| {
-    builtin_macros().iter().map(|m| (m.name, m)).collect()
-});
+static MACRO_INDEX: LazyLock<HashMap<&'static str, &'static MacroDef>> =
+    LazyLock::new(|| builtin_macros().iter().map(|m| (m.name, m)).collect());
 
 static DEPRECATED_MACROS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
     builtin_macros()
@@ -33,21 +32,21 @@ static DEPRECATED_MACROS: LazyLock<HashMap<&'static str, &'static str>> = LazyLo
         .collect()
 });
 
-static KNOWN_MACRO_NAMES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    builtin_macros().iter().map(|m| m.name).collect()
-});
+static KNOWN_MACRO_NAMES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| builtin_macros().iter().map(|m| m.name).collect());
 
-static STRUCTURAL_CONSTRAINTS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> = LazyLock::new(|| {
-    let mut map: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
-    map.insert("elseif", ["if", "elseif"].into_iter().collect());
-    map.insert("else", ["if"].into_iter().collect());
-    map.insert("break", ["for"].into_iter().collect());
-    map.insert("continue", ["for"].into_iter().collect());
-    map.insert("case", ["switch"].into_iter().collect());
-    map.insert("default", ["switch"].into_iter().collect());
-    map.insert("stop", ["timed", "repeat"].into_iter().collect());
-    map
-});
+static STRUCTURAL_CONSTRAINTS: LazyLock<HashMap<&'static str, HashSet<&'static str>>> =
+    LazyLock::new(|| {
+        let mut map: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+        map.insert("elseif", ["if", "elseif"].into_iter().collect());
+        map.insert("else", ["if"].into_iter().collect());
+        map.insert("break", ["for"].into_iter().collect());
+        map.insert("continue", ["for"].into_iter().collect());
+        map.insert("case", ["switch"].into_iter().collect());
+        map.insert("default", ["switch"].into_iter().collect());
+        map.insert("stop", ["timed", "repeat"].into_iter().collect());
+        map
+    });
 
 /// Built-in SugarCube macro signatures (legacy compat layer).
 ///
@@ -59,12 +58,7 @@ pub fn sugarcube_macro_signatures() -> Vec<MacroSignature> {
             let signature = m
                 .args
                 .as_ref()
-                .map(|args| {
-                    args.iter()
-                        .map(|a| a.label)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
+                .map(|args| args.iter().map(|a| a.label).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default();
 
             MacroSignature {

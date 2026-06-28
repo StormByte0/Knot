@@ -47,14 +47,19 @@ pub(crate) async fn completion(
     let position = params.text_document_position.position;
 
     // Determine the trigger character as a single char (if any)
-    let trigger = params.context.as_ref()
+    let trigger = params
+        .context
+        .as_ref()
         .and_then(|ctx| ctx.trigger_character.clone())
         .and_then(|s| s.chars().next());
 
     let text = match inner.open_documents.get(&uri) {
         Some(t) => t,
         None => {
-            tracing::warn!("completion: document not found in open_documents cache: {}", uri);
+            tracing::warn!(
+                "completion: document not found in open_documents cache: {}",
+                uri
+            );
             return Ok(None);
         }
     };
@@ -77,7 +82,11 @@ pub(crate) async fn completion(
 
     tracing::info!(
         "completion: uri={}, pos={}:{}, trigger={:?}, format={:?}, plugin={}",
-        uri, position.line, position.character, trigger, format,
+        uri,
+        position.line,
+        position.character,
+        trigger,
+        format,
         if plugin.is_some() { "Some" } else { "None" }
     );
 
@@ -109,10 +118,7 @@ pub(crate) async fn completion(
     }
 
     // ── Map FormatCompletionItem → lsp_types::CompletionItem ──────────
-    let items: Vec<CompletionItem> = format_items
-        .into_iter()
-        .map(|fi| map_completion_item(fi))
-        .collect();
+    let items: Vec<CompletionItem> = format_items.into_iter().map(map_completion_item).collect();
 
     Ok(Some(CompletionResponse::Array(items)))
 }
@@ -143,21 +149,42 @@ pub(crate) async fn completion_resolve(
                     // embedded in the completion data payload.
                     let macro_name = data.get("macro_name").and_then(|v| v.as_str());
                     let context_header = match macro_name {
-                        Some("goto") => format!("**{}** — Navigation target for <<goto>>\n\n", name),
+                        Some("goto") => {
+                            format!("**{}** — Navigation target for <<goto>>\n\n", name)
+                        }
                         Some("include") | Some("display") => {
-                            format!("**{}** — Included passage for <<{}>>\n\n", name, macro_name.unwrap())
+                            format!(
+                                "**{}** — Included passage for <<{}>>\n\n",
+                                name,
+                                macro_name.unwrap()
+                            )
                         }
                         Some("link") | Some("button") | Some("click") => {
-                            format!("**{}** — Link target for <<{}>>\n\n", name, macro_name.unwrap())
+                            format!(
+                                "**{}** — Link target for <<{}>>\n\n",
+                                name,
+                                macro_name.unwrap()
+                            )
                         }
-                        Some("linkappend") | Some("linkprepend") | Some("linkreplace") | Some("linkrepeat") => {
-                            format!("**{}** — Link target for <<{}>>\n\n", name, macro_name.unwrap())
+                        Some("linkappend") | Some("linkprepend") | Some("linkreplace")
+                        | Some("linkrepeat") => {
+                            format!(
+                                "**{}** — Link target for <<{}>>\n\n",
+                                name,
+                                macro_name.unwrap()
+                            )
                         }
-                        Some("actions") => format!("**{}** — Choice passage for <<actions>>\n\n", name),
+                        Some("actions") => {
+                            format!("**{}** — Choice passage for <<actions>>\n\n", name)
+                        }
                         Some("back") => format!("**{}** — Return passage for <<back>>\n\n", name),
-                        Some("return") => format!("**{}** — Return passage for <<return>>\n\n", name),
-                        Some(other) => format!("**{}** — Passage target for <<{}>>\n\n", name, other),
-                        None => format!("**{}**\n\n", name),  // Link context, no macro
+                        Some("return") => {
+                            format!("**{}** — Return passage for <<return>>\n\n", name)
+                        }
+                        Some(other) => {
+                            format!("**{}** — Passage target for <<{}>>\n\n", name, other)
+                        }
+                        None => format!("**{}**\n\n", name), // Link context, no macro
                     };
 
                     let doc_markdown = format!(
@@ -166,7 +193,11 @@ pub(crate) async fn completion_resolve(
                         doc.uri.as_str(),
                         links_count,
                         incoming,
-                        if passage.tags.is_empty() { "none".to_string() } else { passage.tags.join(", ") }
+                        if passage.tags.is_empty() {
+                            "none".to_string()
+                        } else {
+                            passage.tags.join(", ")
+                        }
                     );
                     return Ok(CompletionItem {
                         documentation: Some(Documentation::MarkupContent(MarkupContent {
@@ -178,10 +209,20 @@ pub(crate) async fn completion_resolve(
                 }
             }
             "variable" => {
-                let is_temp = data.get("is_temp").and_then(|v| v.as_bool()).unwrap_or(false);
-                let inferred_kind = data.get("inferred_kind").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let child_count = data.get("child_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let child_names: Vec<&str> = data.get("child_names")
+                let is_temp = data
+                    .get("is_temp")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let inferred_kind = data
+                    .get("inferred_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let child_count = data
+                    .get("child_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let child_names: Vec<&str> = data
+                    .get("child_names")
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
@@ -189,11 +230,17 @@ pub(crate) async fn completion_resolve(
                 let format_desc = plugin
                     .and_then(|p| {
                         let sigils = p.variable_sigils();
-                        sigils.iter().find(|s| (s.sigil == '_') == is_temp)
+                        sigils
+                            .iter()
+                            .find(|s| (s.sigil == '_') == is_temp)
                             .map(|s| s.description)
                             .or_else(|| sigils.first().map(|s| s.description))
                     })
-                    .unwrap_or(if is_temp { "temporary variable" } else { "variable" });
+                    .unwrap_or(if is_temp {
+                        "temporary variable"
+                    } else {
+                        "variable"
+                    });
 
                 // Build context-aware header based on structural kind
                 let kind_header = match inferred_kind {
@@ -206,7 +253,10 @@ pub(crate) async fn completion_resolve(
                         format!("**{}** — Object {{ {} }}\n\n", name, preview)
                     }
                     "array" => {
-                        format!("**{}** — Array ({} element properties)\n\n", name, child_count)
+                        format!(
+                            "**{}** — Array ({} element properties)\n\n",
+                            name, child_count
+                        )
                     }
                     "scalar" => {
                         format!("**{}** — Scalar\n\n", name)
@@ -222,21 +272,17 @@ pub(crate) async fn completion_resolve(
                     "Persists across passages (`State.variables.*`)"
                 };
 
-                let mut doc_markdown = format!(
-                    "{}{} — {}",
-                    kind_header, format_desc, scope_note,
-                );
+                let mut doc_markdown = format!("{}{} — {}", kind_header, format_desc, scope_note,);
 
                 // Add child properties section for objects/arrays
                 if !child_names.is_empty() && inferred_kind != "scalar" {
-                    let props_list: Vec<String> = child_names.iter()
+                    let props_list: Vec<String> = child_names
+                        .iter()
                         .take(10)
                         .map(|n| format!("- `{}.{} `", name, n))
                         .collect();
-                    doc_markdown.push_str(&format!(
-                        "\n\n**Properties:**\n{}",
-                        props_list.join("\n"),
-                    ));
+                    doc_markdown
+                        .push_str(&format!("\n\n**Properties:**\n{}", props_list.join("\n"),));
                     if (child_count as usize) > 10 {
                         doc_markdown.push_str(&format!("\n- … and {} more", child_count - 10));
                     }
@@ -252,10 +298,22 @@ pub(crate) async fn completion_resolve(
             }
             "variable_property" => {
                 // Dot-notation property completion (e.g., $player.name)
-                let parent_path = data.get("parent_path").and_then(|v| v.as_str()).unwrap_or("");
-                let property = data.get("property").and_then(|v| v.as_str()).unwrap_or(name);
-                let inferred_kind = data.get("inferred_kind").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let is_method = data.get("is_method").and_then(|v| v.as_bool()).unwrap_or(false);
+                let parent_path = data
+                    .get("parent_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let property = data
+                    .get("property")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(name);
+                let inferred_kind = data
+                    .get("inferred_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let is_method = data
+                    .get("is_method")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 let kind_label = match inferred_kind {
                     "object" => "Object property",
@@ -268,10 +326,13 @@ pub(crate) async fn completion_resolve(
 
                 let doc_markdown = format!(
                     "**{}.{} ** — {}{} of `{}`\n\nAccessed via `{}.{} `",
-                    parent_path, property,
-                    kind_label, method_tag,
                     parent_path,
-                    parent_path, property,
+                    property,
+                    kind_label,
+                    method_tag,
+                    parent_path,
+                    parent_path,
+                    property,
                 );
 
                 return Ok(CompletionItem {
@@ -292,35 +353,35 @@ pub(crate) async fn completion_resolve(
                             plugin.format_macro_label(mdef.name),
                             mdef.description
                         );
-                        if mdef.deprecated {
-                            if let Some(msg) = mdef.deprecation_message {
-                                doc_markdown.push_str(&format!("\n\n**Deprecated**: {}", msg));
-                            }
+                        if mdef.deprecated
+                            && let Some(msg) = mdef.deprecation_message
+                        {
+                            doc_markdown.push_str(&format!("\n\n**Deprecated**: {}", msg));
                         }
                         if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
                             doc_markdown.push_str(&format!("\n\n{}", note));
                         }
-                        if let Some(args) = mdef.args {
-                            if !args.is_empty() {
-                                doc_markdown.push_str("\n\n**Parameters:**\n");
-                                for arg in args {
-                                    let req = if arg.is_required { " (required)" } else { "" };
-                                    let kind_str = match arg.kind {
-                                        knot_formats::types::MacroArgKind::Expression => "expr",
-                                        knot_formats::types::MacroArgKind::String => "string",
-                                        knot_formats::types::MacroArgKind::Selector => "selector",
-                                        knot_formats::types::MacroArgKind::Variable => "variable",
-                                        knot_formats::types::MacroArgKind::Keyword => "keyword",
-                                        knot_formats::types::MacroArgKind::Link => "link",
-                                        knot_formats::types::MacroArgKind::Image => "image",
-                                        knot_formats::types::MacroArgKind::Number => "number",
-                                    };
-                                    let flags = if arg.is_passage_ref { " passage" } else { "" };
-                                    doc_markdown.push_str(&format!(
-                                        "- `{}{}`: {}{}\n",
-                                        arg.label, req, kind_str, flags
-                                    ));
-                                }
+                        if let Some(args) = mdef.args
+                            && !args.is_empty()
+                        {
+                            doc_markdown.push_str("\n\n**Parameters:**\n");
+                            for arg in args {
+                                let req = if arg.is_required { " (required)" } else { "" };
+                                let kind_str = match arg.kind {
+                                    knot_formats::types::MacroArgKind::Expression => "expr",
+                                    knot_formats::types::MacroArgKind::String => "string",
+                                    knot_formats::types::MacroArgKind::Selector => "selector",
+                                    knot_formats::types::MacroArgKind::Variable => "variable",
+                                    knot_formats::types::MacroArgKind::Keyword => "keyword",
+                                    knot_formats::types::MacroArgKind::Link => "link",
+                                    knot_formats::types::MacroArgKind::Image => "image",
+                                    knot_formats::types::MacroArgKind::Number => "number",
+                                };
+                                let flags = if arg.is_passage_ref { " passage" } else { "" };
+                                doc_markdown.push_str(&format!(
+                                    "- `{}{}`: {}{}\n",
+                                    arg.label, req, kind_str, flags
+                                ));
                             }
                         }
                         return Ok(CompletionItem {
@@ -335,25 +396,28 @@ pub(crate) async fn completion_resolve(
                     // Builtin not found — try custom macro registry
                     if let Some(detail) = plugin.find_custom_macro_detail(name) {
                         let type_label = if detail.is_widget {
-                            if detail.is_container { "Container widget" } else { "Widget" }
+                            if detail.is_container {
+                                "Container widget"
+                            } else {
+                                "Widget"
+                            }
                         } else {
                             "Custom macro"
                         };
-                        let mut doc_markdown = format!(
-                            "**{}** `{}`\n\n{} macro",
-                            type_label,
-                            name,
-                            type_label
-                        );
+                        let mut doc_markdown =
+                            format!("**{}** `{}`\n\n{} macro", type_label, name, type_label);
                         if let Some(desc) = &detail.description {
                             doc_markdown.push_str(&format!(" — {}", desc));
                         }
-                        doc_markdown.push_str(&format!("\n\n**Defined in:** {}", detail.defined_in));
+                        doc_markdown
+                            .push_str(&format!("\n\n**Defined in:** {}", detail.defined_in));
                         if let Some(n) = detail.arg_count {
                             doc_markdown.push_str(&format!("\n\n**Arguments:** {}", n));
                         }
                         if detail.is_container {
-                            doc_markdown.push_str("\n\nHas access to `_contents` via `<<include _contents>>`");
+                            doc_markdown.push_str(
+                                "\n\nHas access to `_contents` via `<<include _contents>>`",
+                            );
                         }
                         return Ok(CompletionItem {
                             documentation: Some(Documentation::MarkupContent(MarkupContent {
@@ -399,7 +463,8 @@ fn map_completion_item(fi: knot_formats::types::FormatCompletionItem) -> Complet
                     Position::new(te.end_line, te.end_character),
                 ),
                 te.new_text,
-            ).into()
+            )
+            .into()
         }),
         deprecated: if fi.deprecated { Some(true) } else { None },
         preselect: if fi.preselect { Some(true) } else { None },

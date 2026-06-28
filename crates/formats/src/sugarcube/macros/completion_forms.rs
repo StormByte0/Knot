@@ -28,76 +28,76 @@ use crate::types::MacroCompletionForm;
 pub fn macro_completion_forms(name: &str) -> Option<&'static [MacroCompletionForm]> {
     match name {
         // ── Links / interaction (1-arg vs 2-arg vs 3-arg) ──
-        "link" => Some(&LINK_FORMS),
-        "button" => Some(&BUTTON_FORMS),
-        "click" => Some(&CLICK_FORMS), // deprecated but still offer forms
+        "link" => Some(LINK_FORMS),
+        "button" => Some(BUTTON_FORMS),
+        "click" => Some(CLICK_FORMS), // deprecated but still offer forms
 
         // ── Link modifiers (always block: 1-arg vs 2-arg) ──
-        "linkappend" => Some(&LINKAPPEND_FORMS),
-        "linkprepend" => Some(&LINKPREPEND_FORMS),
-        "linkreplace" => Some(&LINKREPLACE_FORMS),
+        "linkappend" => Some(LINKAPPEND_FORMS),
+        "linkprepend" => Some(LINKPREPEND_FORMS),
+        "linkreplace" => Some(LINKREPLACE_FORMS),
 
         // ── Control flow ──
-        "for" => Some(&FOR_FORMS),
-        "if" => Some(&IF_FORMS),
-        "switch" => Some(&SWITCH_FORMS),
+        "for" => Some(FOR_FORMS),
+        "if" => Some(IF_FORMS),
+        "switch" => Some(SWITCH_FORMS),
 
         // ── Variables ──
-        "set" => Some(&SET_FORMS),
-        "capture" => Some(&CAPTURE_FORMS),
+        "set" => Some(SET_FORMS),
+        "capture" => Some(CAPTURE_FORMS),
 
         // ── Output (block) ──
-        "do" => Some(&DO_FORMS),
+        "do" => Some(DO_FORMS),
 
         // ── DOM ──
-        "append" => Some(&APPEND_FORMS),
-        "prepend" => Some(&PREPEND_FORMS),
-        "replace" => Some(&REPLACE_FORMS),
+        "append" => Some(APPEND_FORMS),
+        "prepend" => Some(PREPEND_FORMS),
+        "replace" => Some(REPLACE_FORMS),
 
         // ── Navigation ──
-        "goto" => Some(&GOTO_FORMS),
-        "include" => Some(&INCLUDE_FORMS),
-        "back" => Some(&BACK_FORMS),
-        "return" => Some(&RETURN_FORMS),
+        "goto" => Some(GOTO_FORMS),
+        "include" => Some(INCLUDE_FORMS),
+        "back" => Some(BACK_FORMS),
+        "return" => Some(RETURN_FORMS),
 
         // ── Form inputs ──
-        "checkbox" => Some(&CHECKBOX_FORMS),
-        "textbox" => Some(&TEXTBOX_FORMS),
-        "textarea" => Some(&TEXTAREA_FORMS),
-        "radiobutton" => Some(&RADIOBUTTON_FORMS),
-        "numberbox" => Some(&NUMBERBOX_FORMS),
-        "listbox" => Some(&LISTBOX_FORMS),
-        "cycle" => Some(&CYCLE_FORMS),
+        "checkbox" => Some(CHECKBOX_FORMS),
+        "textbox" => Some(TEXTBOX_FORMS),
+        "textarea" => Some(TEXTAREA_FORMS),
+        "radiobutton" => Some(RADIOBUTTON_FORMS),
+        "numberbox" => Some(NUMBERBOX_FORMS),
+        "listbox" => Some(LISTBOX_FORMS),
+        "cycle" => Some(CYCLE_FORMS),
 
         // ── Timing ──
-        "timed" => Some(&TIMED_FORMS),
-        "repeat" => Some(&REPEAT_FORMS),
+        "timed" => Some(TIMED_FORMS),
+        "repeat" => Some(REPEAT_FORMS),
 
         // ── Audio ──
-        "audio" => Some(&AUDIO_FORMS),
-        "cacheaudio" => Some(&CACHEAUDIO_FORMS),
-        "masteraudio" => Some(&MASTERAUDIO_FORMS),
-        "playlist" => Some(&PLAYLIST_FORMS),
-        "createplaylist" => Some(&CREATEPLAYLIST_FORMS),
-        "createaudiogroup" => Some(&CREATEAUDIOGROUP_FORMS),
+        "audio" => Some(AUDIO_FORMS),
+        "cacheaudio" => Some(CACHEAUDIO_FORMS),
+        "masteraudio" => Some(MASTERAUDIO_FORMS),
+        "playlist" => Some(PLAYLIST_FORMS),
+        "createplaylist" => Some(CREATEPLAYLIST_FORMS),
+        "createaudiogroup" => Some(CREATEAUDIOGROUP_FORMS),
 
         // ── Output (inline) ──
-        "print" => Some(&PRINT_FORMS),
-        "=" => Some(&PRINT_ALIAS_FORMS),
-        "-" => Some(&PRINT_TRIM_FORMS),
-        "type" => Some(&TYPE_FORMS),
-        "redo" => Some(&REDO_FORMS),
-        "silent" => Some(&SILENT_FORMS),
-        "css" => Some(&CSS_FORMS),
+        "print" => Some(PRINT_FORMS),
+        "=" => Some(PRINT_ALIAS_FORMS),
+        "-" => Some(PRINT_TRIM_FORMS),
+        "type" => Some(TYPE_FORMS),
+        "redo" => Some(REDO_FORMS),
+        "silent" => Some(SILENT_FORMS),
+        "css" => Some(CSS_FORMS),
 
         // ── Sub-macros ──
-        "option" => Some(&OPTION_FORMS),
-        "optionsfrom" => Some(&OPTIONSFROM_FORMS),
-        "track" => Some(&TRACK_FORMS),
-        "next" => Some(&NEXT_FORMS),
+        "option" => Some(OPTION_FORMS),
+        "optionsfrom" => Some(OPTIONSFROM_FORMS),
+        "track" => Some(TRACK_FORMS),
+        "next" => Some(NEXT_FORMS),
 
         // ── Widgets / scripting ──
-        "widget" => Some(&WIDGET_FORMS),
+        "widget" => Some(WIDGET_FORMS),
 
         _ => None,
     }
@@ -341,14 +341,12 @@ static SET_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static CAPTURE_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<capture $var>>…<</capture>>",
-        detail: "Capture link interaction into variable",
-        snippet: r#"capture ${1:\$var}>>\n$2\n<</capture>>"#,
-        sort_priority: 0,
-    },
-];
+static CAPTURE_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<capture $var>>…<</capture>>",
+    detail: "Capture link interaction into variable",
+    snippet: r#"capture ${1:\$var}>>\n$2\n<</capture>>"#,
+    sort_priority: 0,
+}];
 
 // ── DOM ───────────────────────────────────────────────────────────────
 
@@ -399,14 +397,12 @@ static REPLACE_FORMS: &[MacroCompletionForm] = &[
 
 // ── Navigation ────────────────────────────────────────────────────────
 
-static GOTO_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<goto "passage">>"#,
-        detail: "Navigate to named passage",
-        snippet: r#"goto "${1:passage}">>"#,
-        sort_priority: 0,
-    },
-];
+static GOTO_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<goto "passage">>"#,
+    detail: "Navigate to named passage",
+    snippet: r#"goto "${1:passage}">>"#,
+    sort_priority: 0,
+}];
 
 static INCLUDE_FORMS: &[MacroCompletionForm] = &[
     MacroCompletionForm {
@@ -459,14 +455,12 @@ static TIMED_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static REPEAT_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<repeat 2s>>…<</repeat>>",
-        detail: "Repeat content at interval",
-        snippet: r#"repeat ${1:2s}>>\n$2\n<</repeat>>"#,
-        sort_priority: 0,
-    },
-];
+static REPEAT_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<repeat 2s>>…<</repeat>>",
+    detail: "Repeat content at interval",
+    snippet: r#"repeat ${1:2s}>>\n$2\n<</repeat>>"#,
+    sort_priority: 0,
+}];
 
 // ── Widgets ───────────────────────────────────────────────────────────
 
@@ -487,14 +481,12 @@ static WIDGET_FORMS: &[MacroCompletionForm] = &[
 
 // ── Do/Redo ──────────────────────────────────────────────────────────
 
-static DO_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<do>>…<</do>>",
-        detail: "Create a re-renderable output block (v2.37.0+)",
-        snippet: r#"do>>\n$1\n<</do>>"#,
-        sort_priority: 0,
-    },
-];
+static DO_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<do>>…<</do>>",
+    detail: "Create a re-renderable output block (v2.37.0+)",
+    snippet: r#"do>>\n$1\n<</do>>"#,
+    sort_priority: 0,
+}];
 
 // ── Navigation: back/return ──────────────────────────────────────────
 
@@ -572,14 +564,12 @@ static TEXTAREA_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static RADIOBUTTON_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<radiobutton "$var" "value">>"#,
-        detail: "Radio button bound to variable with value",
-        snippet: r#"radiobutton "${1:\$var}" "${2:value}">>"#,
-        sort_priority: 0,
-    },
-];
+static RADIOBUTTON_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<radiobutton "$var" "value">>"#,
+    detail: "Radio button bound to variable with value",
+    snippet: r#"radiobutton "${1:\$var}" "${2:value}">>"#,
+    sort_priority: 0,
+}];
 
 static NUMBERBOX_FORMS: &[MacroCompletionForm] = &[
     MacroCompletionForm {
@@ -596,23 +586,19 @@ static NUMBERBOX_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static LISTBOX_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<listbox "$var">>…<</listbox>>"#,
-        detail: "Select dropdown bound to variable",
-        snippet: r#"listbox "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</listbox>>"#,
-        sort_priority: 0,
-    },
-];
+static LISTBOX_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<listbox "$var">>…<</listbox>>"#,
+    detail: "Select dropdown bound to variable",
+    snippet: r#"listbox "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</listbox>>"#,
+    sort_priority: 0,
+}];
 
-static CYCLE_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<cycle "$var">>…<</cycle>>"#,
-        detail: "Cycling selector bound to variable",
-        snippet: r#"cycle "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</cycle>>"#,
-        sort_priority: 0,
-    },
-];
+static CYCLE_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<cycle "$var">>…<</cycle>>"#,
+    detail: "Cycling selector bound to variable",
+    snippet: r#"cycle "${1:\$var}">>\n<<option "${2:display}" "${3:value}">>\n<</cycle>>"#,
+    sort_priority: 0,
+}];
 
 // ── Audio ────────────────────────────────────────────────────────────
 
@@ -661,14 +647,12 @@ static AUDIO_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static CACHEAUDIO_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<cacheaudio "track" "source.mp3">>"#,
-        detail: "Cache an audio track with source URL(s)",
-        snippet: r#"cacheaudio "${1:track}" "${2:source}">>"#,
-        sort_priority: 0,
-    },
-];
+static CACHEAUDIO_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<cacheaudio "track" "source.mp3">>"#,
+    detail: "Cache an audio track with source URL(s)",
+    snippet: r#"cacheaudio "${1:track}" "${2:source}">>"#,
+    sort_priority: 0,
+}];
 
 static MASTERAUDIO_FORMS: &[MacroCompletionForm] = &[
     MacroCompletionForm {
@@ -712,52 +696,42 @@ static PLAYLIST_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static CREATEPLAYLIST_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<createplaylist "list">>…<<track>>…<</createplaylist>>"#,
-        detail: "Define a playlist with tracks",
-        snippet: r#"createplaylist "${1:list}">>\n<<track "${2:track}">>\n<</createplaylist>>"#,
-        sort_priority: 0,
-    },
-];
+static CREATEPLAYLIST_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<createplaylist "list">>…<<track>>…<</createplaylist>>"#,
+    detail: "Define a playlist with tracks",
+    snippet: r#"createplaylist "${1:list}">>\n<<track "${2:track}">>\n<</createplaylist>>"#,
+    sort_priority: 0,
+}];
 
-static CREATEAUDIOGROUP_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<createaudiogroup ":group">>…<<track>>…<</createaudiogroup>>"#,
-        detail: "Define an audio group with tracks",
-        snippet: r#"createaudiogroup "${1::group}">>\n<<track "${2:track}">>\n<</createaudiogroup>>"#,
-        sort_priority: 0,
-    },
-];
+static CREATEAUDIOGROUP_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<createaudiogroup ":group">>…<<track>>…<</createaudiogroup>>"#,
+    detail: "Define an audio group with tracks",
+    snippet: r#"createaudiogroup "${1::group}">>\n<<track "${2:track}">>\n<</createaudiogroup>>"#,
+    sort_priority: 0,
+}];
 
 // ── Output macros ───────────────────────────────────────────────────────
 
-static PRINT_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<print expression>>"#,
-        detail: "Output the result of an expression",
-        snippet: r#"print ${1:expression}>>"#,
-        sort_priority: 0,
-    },
-];
+static PRINT_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<print expression>>"#,
+    detail: "Output the result of an expression",
+    snippet: r#"print ${1:expression}>>"#,
+    sort_priority: 0,
+}];
 
-static PRINT_ALIAS_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<= expression>>"#,
-        detail: "Shorthand for <<print>> — output expression result",
-        snippet: r#"= ${1:expression}>>"#,
-        sort_priority: 0,
-    },
-];
+static PRINT_ALIAS_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<= expression>>"#,
+    detail: "Shorthand for <<print>> — output expression result",
+    snippet: r#"= ${1:expression}>>"#,
+    sort_priority: 0,
+}];
 
-static PRINT_TRIM_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<- expression>>"#,
-        detail: "Like <<print>> but with trimmed (leading/trailing whitespace removed) output",
-        snippet: r#"- ${1:expression}>>"#,
-        sort_priority: 0,
-    },
-];
+static PRINT_TRIM_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<- expression>>"#,
+    detail: "Like <<print>> but with trimmed (leading/trailing whitespace removed) output",
+    snippet: r#"- ${1:expression}>>"#,
+    sort_priority: 0,
+}];
 
 static TYPE_FORMS: &[MacroCompletionForm] = &[
     MacroCompletionForm {
@@ -786,67 +760,53 @@ static TYPE_FORMS: &[MacroCompletionForm] = &[
     },
 ];
 
-static REDO_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<redo>>",
-        detail: "Trigger re-render of the nearest <<do>> block (v2.37.0+)",
-        snippet: "redo>>",
-        sort_priority: 0,
-    },
-];
+static REDO_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<redo>>",
+    detail: "Trigger re-render of the nearest <<do>> block (v2.37.0+)",
+    snippet: "redo>>",
+    sort_priority: 0,
+}];
 
-static SILENT_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<silent>>…<</silent>>",
-        detail: "Execute content silently (no output rendered)",
-        snippet: r#"silent>>\n$1\n<</silent>>"#,
-        sort_priority: 0,
-    },
-];
+static SILENT_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<silent>>…<</silent>>",
+    detail: "Execute content silently (no output rendered)",
+    snippet: r#"silent>>\n$1\n<</silent>>"#,
+    sort_priority: 0,
+}];
 
-static CSS_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: "<<css>>…<</css>>",
-        detail: "Output CSS stylesheet content",
-        snippet: r#"css>>\n$1\n<</css>>"#,
-        sort_priority: 0,
-    },
-];
+static CSS_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: "<<css>>…<</css>>",
+    detail: "Output CSS stylesheet content",
+    snippet: r#"css>>\n$1\n<</css>>"#,
+    sort_priority: 0,
+}];
 
 // ── Audio sub-macros ────────────────────────────────────────────────────
 
-static OPTION_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<option "display" "value">>"#,
-        detail: "Add an option to <<listbox>> or <<cycle>>",
-        snippet: r#"option "${1:display}" "${2:value}">>"#,
-        sort_priority: 0,
-    },
-];
+static OPTION_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<option "display" "value">>"#,
+    detail: "Add an option to <<listbox>> or <<cycle>>",
+    snippet: r#"option "${1:display}" "${2:value}">>"#,
+    sort_priority: 0,
+}];
 
-static OPTIONSFROM_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<optionsfrom $collection>>"#,
-        detail: "Generate options from a collection for <<listbox>> or <<cycle>>",
-        snippet: r#"optionsfrom ${1:\$collection}>>"#,
-        sort_priority: 0,
-    },
-];
+static OPTIONSFROM_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<optionsfrom $collection>>"#,
+    detail: "Generate options from a collection for <<listbox>> or <<cycle>>",
+    snippet: r#"optionsfrom ${1:\$collection}>>"#,
+    sort_priority: 0,
+}];
 
-static TRACK_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<track "track">>"#,
-        detail: "Add a track to <<createaudiogroup>> or <<createplaylist>>",
-        snippet: r#"track "${1:track}">>"#,
-        sort_priority: 0,
-    },
-];
+static TRACK_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<track "track">>"#,
+    detail: "Add a track to <<createaudiogroup>> or <<createplaylist>>",
+    snippet: r#"track "${1:track}">>"#,
+    sort_priority: 0,
+}];
 
-static NEXT_FORMS: &[MacroCompletionForm] = &[
-    MacroCompletionForm {
-        label: r#"<<next 2s>>"#,
-        detail: "Chain a delayed section inside <<timed>>",
-        snippet: r#"next ${1:2s}>>"#,
-        sort_priority: 0,
-    },
-];
+static NEXT_FORMS: &[MacroCompletionForm] = &[MacroCompletionForm {
+    label: r#"<<next 2s>>"#,
+    detail: "Chain a delayed section inside <<timed>>",
+    snippet: r#"next ${1:2s}>>"#,
+    sort_priority: 0,
+}];

@@ -20,7 +20,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/profile: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
         }
@@ -67,7 +68,9 @@ impl ServerState {
                     .body
                     .iter()
                     .map(|block| match block {
-                        knot_core::passage::Block::Text { content, .. } => content.split_whitespace().count() as u32,
+                        knot_core::passage::Block::Text { content, .. } => {
+                            content.split_whitespace().count() as u32
+                        }
                         _ => 0,
                     })
                     .sum();
@@ -128,9 +131,17 @@ impl ServerState {
             .map(|(tag, (count, total_words, total_out))| KnotTagStat {
                 tag,
                 passage_count: count,
-                avg_word_count: if count > 0 { total_words as f64 / count as f64 } else { 0.0 },
+                avg_word_count: if count > 0 {
+                    total_words as f64 / count as f64
+                } else {
+                    0.0
+                },
                 total_word_count: total_words,
-                avg_out_links: if count > 0 { total_out as f64 / count as f64 } else { 0.0 },
+                avg_out_links: if count > 0 {
+                    total_out as f64 / count as f64
+                } else {
+                    0.0
+                },
             })
             .collect();
 
@@ -155,7 +166,12 @@ impl ServerState {
         };
 
         let max_word_count = passage_word_counts.iter().max().copied().unwrap_or(0);
-        let min_word_count = passage_word_counts.iter().filter(|&&w| w > 0).min().copied().unwrap_or(0);
+        let min_word_count = passage_word_counts
+            .iter()
+            .filter(|&&w| w > 0)
+            .min()
+            .copied()
+            .unwrap_or(0);
 
         let avg_out_links = if !passage_out_links.is_empty() {
             let sum: u32 = passage_out_links.iter().sum();
@@ -180,20 +196,31 @@ impl ServerState {
 
         // Graph analysis (use format-delegated variable diagnostics)
         let diagnostics = helpers::analyze_with_format_vars(workspace, &inner.format_registry);
-        let unreachable_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::UnreachablePassage)).count() as u32;
-        let broken_link_count = diagnostics.iter().filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::BrokenLink)).count() as u32;
+        let unreachable_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::UnreachablePassage))
+            .count() as u32;
+        let broken_link_count = diagnostics
+            .iter()
+            .filter(|d| matches!(d.kind, knot_core::graph::DiagnosticKind::BrokenLink))
+            .count() as u32;
         // Compute game loop count from the graph
         let game_loop_count = workspace.graph.game_loop_count(&var_writes_for_loops) as u32;
-        let variable_issue_count: u32 = diagnostics.iter().filter(|d| matches!(
-            d.kind,
-            knot_core::graph::DiagnosticKind::UninitializedVariable
-            | knot_core::graph::DiagnosticKind::UnusedVariable
-            | knot_core::graph::DiagnosticKind::RedundantWrite
-            | knot_core::graph::DiagnosticKind::VariableAvailabilityHint
-            | knot_core::graph::DiagnosticKind::UnusedVariableHint
-            | knot_core::graph::DiagnosticKind::RedundantWriteHint
-            | knot_core::graph::DiagnosticKind::UnknownPropertyHint
-        )).count() as u32;
+        let variable_issue_count: u32 = diagnostics
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind,
+                    knot_core::graph::DiagnosticKind::UninitializedVariable
+                        | knot_core::graph::DiagnosticKind::UnusedVariable
+                        | knot_core::graph::DiagnosticKind::RedundantWrite
+                        | knot_core::graph::DiagnosticKind::VariableAvailabilityHint
+                        | knot_core::graph::DiagnosticKind::UnusedVariableHint
+                        | knot_core::graph::DiagnosticKind::RedundantWriteHint
+                        | knot_core::graph::DiagnosticKind::UnknownPropertyHint
+                )
+            })
+            .count() as u32;
 
         let total_links = workspace.graph.edge_count() as u32;
         let graph_passage_count = workspace.graph.passage_count() as u32;
@@ -231,7 +258,10 @@ impl ServerState {
         }
 
         let format = workspace.resolve_format();
-        let format_version = workspace.metadata.as_ref().and_then(|m| m.format_version.clone());
+        let format_version = workspace
+            .metadata
+            .as_ref()
+            .and_then(|m| m.format_version.clone());
         let has_story_data = workspace.metadata.is_some();
         let ifid = workspace.metadata.as_ref().and_then(|m| m.ifid.clone());
 
@@ -243,7 +273,11 @@ impl ServerState {
                 p.body.first().and_then(|block| match block {
                     Block::Text { content, .. } => {
                         let trimmed = content.trim();
-                        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
                     }
                     _ => None,
                 })

@@ -5,27 +5,31 @@
 //! engine and produce consistent results for shared features like broken link
 //! detection, unreachable passage detection, and variable analysis.
 
+use crate::plugin::{FormatPluginMut, FormatRegistry, SemanticToken};
+use knot_core::AnalysisEngine;
 use knot_core::document::Document;
 use knot_core::editing::graph_surgery;
-use knot_core::graph::{DiagnosticKind, PassageEdge, PassageNode, PassageGraph};
+use knot_core::graph::{DiagnosticKind, PassageEdge, PassageGraph, PassageNode};
 use knot_core::passage::StoryFormat;
 use knot_core::workspace::{StoryMetadata, Workspace};
-use knot_core::AnalysisEngine;
-use crate::plugin::{FormatRegistry, FormatPluginMut, SemanticToken};
 use url::Url;
 
 /// Flatten `ParseResult::token_groups` into a single `Vec<SemanticToken>` with
 /// document-absolute byte offsets. This is a convenience for tests that need
 /// to iterate over all tokens without dealing with per-passage grouping.
 fn flatten_token_groups(result: &crate::plugin::ParseResult) -> Vec<SemanticToken> {
-    result.token_groups.iter().flat_map(|g| {
-        g.tokens.iter().map(|t| SemanticToken {
-            start: t.start + g.passage_offset,
-            length: t.length,
-            token_type: t.token_type.clone(),
-            modifier: t.modifier,
+    result
+        .token_groups
+        .iter()
+        .flat_map(|g| {
+            g.tokens.iter().map(|t| SemanticToken {
+                start: t.start + g.passage_offset,
+                length: t.length,
+                token_type: t.token_type,
+                modifier: t.modifier,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 /// Parse a document using the format plugin system and insert it into the workspace.
@@ -136,7 +140,11 @@ fn workspace_with_metadata(format: StoryFormat, start: &str) -> Workspace {
 fn registry_contains_all_formats() {
     let registry = FormatRegistry::with_defaults();
     let formats = registry.formats();
-    assert_eq!(formats.len(), 5, "Should have 5 format plugins (Core + 4 story formats)");
+    assert_eq!(
+        formats.len(),
+        5,
+        "Should have 5 format plugins (Core + 4 story formats)"
+    );
     assert!(formats.contains(&StoryFormat::Core));
     assert!(formats.contains(&StoryFormat::SugarCube));
     assert!(formats.contains(&StoryFormat::Harlowe));
@@ -147,7 +155,10 @@ fn registry_contains_all_formats() {
 #[test]
 fn registry_default_includes_core() {
     let registry = FormatRegistry::default();
-    assert!(registry.get(&StoryFormat::Core).is_some(), "Core plugin should be registered");
+    assert!(
+        registry.get(&StoryFormat::Core).is_some(),
+        "Core plugin should be registered"
+    );
     assert!(registry.get(&StoryFormat::SugarCube).is_some());
 }
 
@@ -158,25 +169,39 @@ fn registry_default_includes_core() {
 #[test]
 fn core_parse_passages_and_links() {
     let mut registry = FormatRegistry::with_defaults();
-    let plugin = registry.get_mut(&StoryFormat::Core).expect("Core plugin should be registered");
+    let plugin = registry
+        .get_mut(&StoryFormat::Core)
+        .expect("Core plugin should be registered");
 
     let src = ":: StoryData\n{\"ifid\":\"TEST-IFID\"}\n:: Start\nYou are at the start. [[Forest]]\n:: Forest\nYou are in the forest.\n";
     let result = plugin.parse_mut(&Url::parse("file:///project/story.tw").unwrap(), src);
 
     // Core should parse passages
-    assert!(result.passages.len() >= 2, "Core should parse at least 2 passages");
+    assert!(
+        result.passages.len() >= 2,
+        "Core should parse at least 2 passages"
+    );
 
     // Core should extract links
     let start_passage = result.passages.iter().find(|p| p.name == "Start");
     assert!(start_passage.is_some(), "Should find Start passage");
     let start = start_passage.unwrap();
-    assert!(start.links.iter().any(|l| l.target == "Forest"), "Start should link to Forest");
+    assert!(
+        start.links.iter().any(|l| l.target == "Forest"),
+        "Start should link to Forest"
+    );
 
     // Core should NOT provide macros
-    assert!(plugin.builtin_macros().is_empty(), "Core should have no macros");
+    assert!(
+        plugin.builtin_macros().is_empty(),
+        "Core should have no macros"
+    );
 
     // Core should NOT provide variable sigils
-    assert!(plugin.variable_sigils().is_empty(), "Core should have no variable sigils");
+    assert!(
+        plugin.variable_sigils().is_empty(),
+        "Core should have no variable sigils"
+    );
 }
 
 // ===========================================================================
@@ -196,13 +221,21 @@ fn sugarcube_parse_and_analyze() {
     let diagnostics = AnalysisEngine::analyze(&ws);
 
     // Should have no broken links (Forest exists)
-    let broken: Vec<_> = diagnostics.iter().filter(|d| d.kind == DiagnosticKind::BrokenLink).collect();
+    let broken: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::BrokenLink)
+        .collect();
     assert!(broken.is_empty(), "SugarCube: no broken links expected");
 
     // Should have $gold as a written variable
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
-    assert!(start_passage.vars.iter().any(|v| v.name == "$gold" && v.kind == knot_core::VarKind::Init));
+    assert!(
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "$gold" && v.kind == knot_core::VarKind::Init)
+    );
 }
 
 // ===========================================================================
@@ -222,7 +255,10 @@ fn harlowe_parse_and_analyze() {
     let diagnostics = AnalysisEngine::analyze(&ws);
 
     // Should have no broken links
-    let broken: Vec<_> = diagnostics.iter().filter(|d| d.kind == DiagnosticKind::BrokenLink).collect();
+    let broken: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::BrokenLink)
+        .collect();
     assert!(broken.is_empty(), "Harlowe: no broken links expected");
 
     // Should detect variable $health
@@ -245,7 +281,9 @@ fn harlowe_broken_link_detection() {
 
     // Cave passage doesn't exist — should detect broken link
     assert!(
-        diagnostics.iter().any(|d| d.kind == DiagnosticKind::BrokenLink && d.message.contains("Cave")),
+        diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::BrokenLink && d.message.contains("Cave")),
         "Harlowe: should detect broken link to Cave"
     );
 }
@@ -267,18 +305,27 @@ fn chapbook_parse_and_analyze() {
     let diagnostics = AnalysisEngine::analyze(&ws);
 
     // Should have no broken links (Cave exists)
-    let broken: Vec<_> = diagnostics.iter().filter(|d| d.kind == DiagnosticKind::BrokenLink).collect();
+    let broken: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::BrokenLink)
+        .collect();
     assert!(broken.is_empty(), "Chapbook: no broken links expected");
 
     // Should detect state.visited write and state.gold read
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "state.visited" && v.kind == knot_core::VarKind::Init),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "state.visited" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect state.visited write"
     );
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "state.gold" && v.kind == knot_core::VarKind::Read),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "state.gold" && v.kind == knot_core::VarKind::Read),
         "Chapbook: should detect state.gold read"
     );
 }
@@ -295,11 +342,17 @@ fn chapbook_modify_block() {
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "modify.gold" && v.kind == knot_core::VarKind::Init),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "modify.gold" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect modify.gold write"
     );
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "modify.name" && v.kind == knot_core::VarKind::Init),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "modify.name" && v.kind == knot_core::VarKind::Init),
         "Chapbook: should detect modify.name write"
     );
 }
@@ -321,18 +374,27 @@ fn snowman_parse_and_analyze() {
     let diagnostics = AnalysisEngine::analyze(&ws);
 
     // Should have no broken links (Cave exists)
-    let broken: Vec<_> = diagnostics.iter().filter(|d| d.kind == DiagnosticKind::BrokenLink).collect();
+    let broken: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::BrokenLink)
+        .collect();
     assert!(broken.is_empty(), "Snowman: no broken links expected");
 
     // Should detect s.gold write and s.gold read
     let doc = ws.get_document(&uri).unwrap();
     let start_passage = doc.find_passage("Start").unwrap();
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Init),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Init),
         "Snowman: should detect gold write"
     );
     assert!(
-        start_passage.vars.iter().any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Read),
+        start_passage
+            .vars
+            .iter()
+            .any(|v| v.name == "gold" && v.kind == knot_core::VarKind::Read),
         "Snowman: should detect gold read"
     );
 }
@@ -351,13 +413,17 @@ fn snowman_broken_link_and_unreachable() {
 
     // Should detect broken link to MissingPassage
     assert!(
-        diagnostics.iter().any(|d| d.kind == DiagnosticKind::BrokenLink),
+        diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::BrokenLink),
         "Snowman: should detect broken link"
     );
 
     // Should detect Orphan as unreachable
     assert!(
-        diagnostics.iter().any(|d| d.kind == DiagnosticKind::UnreachablePassage && d.passage_name == "Orphan"),
+        diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::UnreachablePassage && d.passage_name == "Orphan"),
         "Snowman: should detect Orphan as unreachable"
     );
 }
@@ -371,15 +437,30 @@ fn all_formats_parse_passage_headers() {
     let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nHello world.\n:: Forest\nA forest.\n";
 
-    for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
+    for format in &[
+        StoryFormat::SugarCube,
+        StoryFormat::Harlowe,
+        StoryFormat::Chapbook,
+        StoryFormat::Snowman,
+    ] {
         let plugin = registry.get_mut(format).unwrap();
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert_eq!(
-            result.passages.len(), 2,
-            "{:?}: should parse 2 passages from simple source", format
+            result.passages.len(),
+            2,
+            "{:?}: should parse 2 passages from simple source",
+            format
         );
-        assert_eq!(result.passages[0].name, "Start", "{:?}: first passage should be 'Start'", format);
-        assert_eq!(result.passages[1].name, "Forest", "{:?}: second passage should be 'Forest'", format);
+        assert_eq!(
+            result.passages[0].name, "Start",
+            "{:?}: first passage should be 'Start'",
+            format
+        );
+        assert_eq!(
+            result.passages[1].name, "Forest",
+            "{:?}: second passage should be 'Forest'",
+            format
+        );
     }
 }
 
@@ -388,16 +469,24 @@ fn all_formats_extract_simple_links() {
     let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nGo to [[Forest]].\n:: Forest\nTrees.\n";
 
-    for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
+    for format in &[
+        StoryFormat::SugarCube,
+        StoryFormat::Harlowe,
+        StoryFormat::Chapbook,
+        StoryFormat::Snowman,
+    ] {
         let plugin = registry.get_mut(format).unwrap();
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert_eq!(
-            result.passages[0].links.len(), 1,
-            "{:?}: should extract 1 link from Start", format
+            result.passages[0].links.len(),
+            1,
+            "{:?}: should extract 1 link from Start",
+            format
         );
         assert_eq!(
             result.passages[0].links[0].target, "Forest",
-            "{:?}: link target should be 'Forest'", format
+            "{:?}: link target should be 'Forest'",
+            format
         );
     }
 }
@@ -406,12 +495,18 @@ fn all_formats_extract_simple_links() {
 fn all_formats_handle_empty_input() {
     let mut registry = FormatRegistry::with_defaults();
 
-    for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
+    for format in &[
+        StoryFormat::SugarCube,
+        StoryFormat::Harlowe,
+        StoryFormat::Chapbook,
+        StoryFormat::Snowman,
+    ] {
         let plugin = registry.get_mut(format).unwrap();
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), "");
         assert!(
             result.passages.is_empty(),
-            "{:?}: empty input should produce no passages", format
+            "{:?}: empty input should produce no passages",
+            format
         );
     }
 }
@@ -421,12 +516,18 @@ fn all_formats_produce_semantic_tokens() {
     let mut registry = FormatRegistry::with_defaults();
     let src = ":: Start\nHello [[World]].\n:: World\nDone.\n";
 
-    for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
+    for format in &[
+        StoryFormat::SugarCube,
+        StoryFormat::Harlowe,
+        StoryFormat::Chapbook,
+        StoryFormat::Snowman,
+    ] {
         let plugin = registry.get_mut(format).unwrap();
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
         assert!(
             !flatten_token_groups(&result).is_empty(),
-            "{:?}: should produce semantic tokens", format
+            "{:?}: should produce semantic tokens",
+            format
         );
     }
 }
@@ -435,16 +536,30 @@ fn all_formats_produce_semantic_tokens() {
 fn all_formats_define_special_passages() {
     let mut registry = FormatRegistry::with_defaults();
 
-    for format in &[StoryFormat::SugarCube, StoryFormat::Harlowe, StoryFormat::Chapbook, StoryFormat::Snowman] {
+    for format in &[
+        StoryFormat::SugarCube,
+        StoryFormat::Harlowe,
+        StoryFormat::Chapbook,
+        StoryFormat::Snowman,
+    ] {
         let plugin = registry.get_mut(format).unwrap();
         let specials = plugin.special_passages();
         assert!(
             !specials.is_empty(),
-            "{:?}: should define at least one special passage", format
+            "{:?}: should define at least one special passage",
+            format
         );
         // All formats should recognize StoryData and StoryTitle as special
-        assert!(plugin.is_special_passage("StoryData"), "{:?}: StoryData should be special", format);
-        assert!(plugin.is_special_passage("StoryTitle"), "{:?}: StoryTitle should be special", format);
+        assert!(
+            plugin.is_special_passage("StoryData"),
+            "{:?}: StoryData should be special",
+            format
+        );
+        assert!(
+            plugin.is_special_passage("StoryTitle"),
+            "{:?}: StoryTitle should be special",
+            format
+        );
     }
 }
 
@@ -461,7 +576,13 @@ fn graph_surgery_with_sugarcube_parse() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
+    graph_surgery(
+        &mut graph,
+        &[],
+        &result.passages,
+        "file:///project/story.tw",
+        &[],
+    );
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Forest"));
@@ -477,7 +598,13 @@ fn graph_surgery_with_harlowe_parse() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
+    graph_surgery(
+        &mut graph,
+        &[],
+        &result.passages,
+        "file:///project/story.tw",
+        &[],
+    );
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));
@@ -493,7 +620,13 @@ fn graph_surgery_with_chapbook_parse() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
+    graph_surgery(
+        &mut graph,
+        &[],
+        &result.passages,
+        "file:///project/story.tw",
+        &[],
+    );
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));
@@ -508,7 +641,13 @@ fn graph_surgery_with_snowman_parse() {
     let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
     let mut graph = PassageGraph::new();
-    graph_surgery(&mut graph, &[], &result.passages, "file:///project/story.tw", &[]);
+    graph_surgery(
+        &mut graph,
+        &[],
+        &result.passages,
+        "file:///project/story.tw",
+        &[],
+    );
 
     assert!(graph.contains_passage("Start"));
     assert!(graph.contains_passage("Cave"));
@@ -591,11 +730,14 @@ fn sugarcube_header_token_positions_simple() {
 
     // :: prefix should be at byte 0 → LSP (0, 0)
     // Note: "Start" is a core special passage, so it uses SpecialPassageHeader
-    let header_tok = flatten_token_groups(&result).into_iter().find(|t| 
-        t.token_type == crate::plugin::SemanticTokenType::PassageHeader 
-        || t.token_type == crate::plugin::SemanticTokenType::SpecialPassageHeader
+    let header_tok = flatten_token_groups(&result).into_iter().find(|t| {
+        t.token_type == crate::plugin::SemanticTokenType::PassageHeader
+            || t.token_type == crate::plugin::SemanticTokenType::SpecialPassageHeader
+    });
+    assert!(
+        header_tok.is_some(),
+        "Should have PassageHeader or SpecialPassageHeader token"
     );
-    assert!(header_tok.is_some(), "Should have PassageHeader or SpecialPassageHeader token");
     let ht = header_tok.unwrap();
     assert_eq!(ht.start, 0, ":: prefix should start at byte 0");
     assert_eq!(ht.length, 2, ":: prefix should be 2 bytes");
@@ -605,11 +747,14 @@ fn sugarcube_header_token_positions_simple() {
 
     // Passage name "Start" should be at byte 3 → LSP (0, 3)
     // Note: "Start" is a core special passage, so it uses SpecialPassage
-    let name_tok = flatten_token_groups(&result).into_iter().find(|t| 
-        t.token_type == crate::plugin::SemanticTokenType::PassageName 
-        || t.token_type == crate::plugin::SemanticTokenType::SpecialPassage
+    let name_tok = flatten_token_groups(&result).into_iter().find(|t| {
+        t.token_type == crate::plugin::SemanticTokenType::PassageName
+            || t.token_type == crate::plugin::SemanticTokenType::SpecialPassage
+    });
+    assert!(
+        name_tok.is_some(),
+        "Should have PassageName or SpecialPassage token"
     );
-    assert!(name_tok.is_some(), "Should have PassageName or SpecialPassage token");
     let nt = name_tok.unwrap();
     assert_eq!(nt.start, 3, "Name 'Start' should start at byte 3");
     assert_eq!(nt.length, 5, "Name 'Start' should be 5 bytes");
@@ -630,7 +775,10 @@ fn sugarcube_header_token_positions_with_tags() {
     for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
-        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+        eprintln!(
+            "  type={:?} start={} len={} text={:?} -> LSP({}, {})",
+            tok.token_type, tok.start, tok.length, tok_text, line, char
+        );
     }
 
     // :: Forest [dark scary]
@@ -639,7 +787,9 @@ fn sugarcube_header_token_positions_with_tags() {
     // [ is at byte 10, "dark" starts at byte 11, "scary" starts at byte 16
 
     // Name "Forest" at byte 3 → LSP (0, 3)
-    let name_tok = flatten_token_groups(&result).into_iter().find(|t| t.token_type == crate::plugin::SemanticTokenType::PassageName);
+    let name_tok = flatten_token_groups(&result)
+        .into_iter()
+        .find(|t| t.token_type == crate::plugin::SemanticTokenType::PassageName);
     assert!(name_tok.is_some(), "Should have PassageName token");
     let nt = name_tok.unwrap();
     assert_eq!(nt.start, 3, "Name 'Forest' should start at byte 3");
@@ -647,7 +797,10 @@ fn sugarcube_header_token_positions_with_tags() {
     assert_eq!(char, 3, "Name 'Forest' should start at char 3");
 
     // Tags should be present
-    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
+    let tag_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag)
+        .collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens");
 
     if tag_toks.len() >= 2 {
@@ -659,7 +812,11 @@ fn sugarcube_header_token_positions_with_tags() {
         // "scary" should be at byte 16 → LSP (0, 16)
         let (line, char) = byte_offset_to_position(src, tag_toks[1].start);
         assert_eq!(line, 0, "Tag 'scary' should be on line 0");
-        assert_eq!(char, 16, "Tag 'scary' should start at char 16, got {}", char);
+        assert_eq!(
+            char, 16,
+            "Tag 'scary' should start at char 16, got {}",
+            char
+        );
     }
 }
 
@@ -674,7 +831,10 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
     for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
-        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+        eprintln!(
+            "  type={:?} start={} len={} text={:?} -> LSP({}, {})",
+            tok.token_type, tok.start, tok.length, tok_text, line, char
+        );
     }
 
     // :: Forest [dark scary] {"position":"100,200"}
@@ -682,15 +842,25 @@ fn sugarcube_header_token_positions_with_tags_and_metadata() {
     //           1111111111222222222233333333
     // [ is at byte 10, "dark" at byte 11, "scary" at byte 16
 
-    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag).collect();
-    assert!(!tag_toks.is_empty(), "Should have Tag tokens even with metadata");
+    let tag_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Tag)
+        .collect();
+    assert!(
+        !tag_toks.is_empty(),
+        "Should have Tag tokens even with metadata"
+    );
 
     if tag_toks.len() >= 2 {
         let (_line, char) = byte_offset_to_position(src, tag_toks[0].start);
         assert_eq!(char, 11, "Tag 'dark' should start at char 11, got {}", char);
 
         let (_line, char) = byte_offset_to_position(src, tag_toks[1].start);
-        assert_eq!(char, 16, "Tag 'scary' should start at char 16, got {}", char);
+        assert_eq!(
+            char, 16,
+            "Tag 'scary' should start at char 16, got {}",
+            char
+        );
     }
 }
 
@@ -705,7 +875,10 @@ fn sugarcube_body_token_positions() {
     for tok in flatten_token_groups(&result) {
         let (line, char) = byte_offset_to_position(src, tok.start);
         let tok_text = &src[tok.start.min(src.len())..(tok.start + tok.length).min(src.len())];
-        eprintln!("  type={:?} start={} len={} text={:?} -> LSP({}, {})", tok.token_type, tok.start, tok.length, tok_text, line, char);
+        eprintln!(
+            "  type={:?} start={} len={} text={:?} -> LSP({}, {})",
+            tok.token_type, tok.start, tok.length, tok_text, line, char
+        );
     }
 
     // Body starts at byte 9 (after ":: Start\n")
@@ -713,7 +886,10 @@ fn sugarcube_body_token_positions() {
     // "set" name starts at byte 11 (after <<)
     // Expected: macro "set" at LSP (1, 2)
 
-    let macro_toks: Vec<_> = flatten_token_groups(&result).into_iter().filter(|t| t.token_type == crate::plugin::SemanticTokenType::Macro).collect();
+    let macro_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
+        .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Macro)
+        .collect();
     assert!(!macro_toks.is_empty(), "Should have Macro tokens");
 
     let set_macro = macro_toks.iter().find(|t| {
@@ -732,52 +908,93 @@ fn sugarcube_body_token_positions() {
 fn test_semantic_token_positions_header() {
     use crate::plugin::SemanticTokenType;
     use crate::sugarcube::SugarCubePlugin;
-    
+
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start [tag] {\"position\":\"100,200\"}\n<<set $x to 5>>\n:: End\n";
-    
+
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
-    
+
     // Debug: print all tokens with their positions
     for (i, tok) in flatten_token_groups(&result).into_iter().enumerate() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
-        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}", 
-                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+        eprintln!(
+            "  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
+            i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier
+        );
     }
-    
+
     // Verify header tokens for ":: Start [tag]"
     // Byte positions in the text:
     // 0: ':', 1: ':', 2: ' ', 3: 'S', 4: 't', 5: 'a', 6: 'r', 7: 't',
     // 8: ' ', 9: '[', 10: 't', 11: 'a', 12: 'g', 13: ']'
-    
+
     // The :: prefix should be at byte 0, length 2
-    let prefix_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
-        .filter(|t| matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader))
+    let prefix_tokens: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.token_type,
+                SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader
+            )
+        })
         .collect();
-    assert!(!prefix_tokens.is_empty(), "Should have at least one passage header prefix token");
+    assert!(
+        !prefix_tokens.is_empty(),
+        "Should have at least one passage header prefix token"
+    );
     let first_prefix = &prefix_tokens[0];
-    assert_eq!(first_prefix.start, 0, ":: prefix should start at byte 0, got {}", first_prefix.start);
+    assert_eq!(
+        first_prefix.start, 0,
+        ":: prefix should start at byte 0, got {}",
+        first_prefix.start
+    );
     assert_eq!(first_prefix.length, 2, ":: prefix should have length 2");
-    
+
     // The passage name "Start" should be at byte 3, length 5
-    let name_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
-        .filter(|t| matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage))
+    let name_tokens: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.token_type,
+                SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage
+            )
+        })
         .collect();
-    assert!(!name_tokens.is_empty(), "Should have at least one passage name token");
+    assert!(
+        !name_tokens.is_empty(),
+        "Should have at least one passage name token"
+    );
     let first_name = &name_tokens[0];
-    assert_eq!(first_name.start, 3, "Passage name should start at byte 3, got {}", first_name.start);
-    assert_eq!(first_name.length, 5, "Passage name should have length 5, got {}", first_name.length);
-    
+    assert_eq!(
+        first_name.start, 3,
+        "Passage name should start at byte 3, got {}",
+        first_name.start
+    );
+    assert_eq!(
+        first_name.length, 5,
+        "Passage name should have length 5, got {}",
+        first_name.length
+    );
+
     // The tag "tag" should be at byte 10, length 3
-    let tag_tokens: Vec<_> = flatten_token_groups(&result).into_iter()
+    let tag_tokens: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
         .filter(|t| matches!(t.token_type, SemanticTokenType::Tag))
         .collect();
     assert!(!tag_tokens.is_empty(), "Should have at least one tag token");
     let first_tag = &tag_tokens[0];
-    assert_eq!(first_tag.start, 10, "Tag should start at byte 10, got {}", first_tag.start);
-    assert_eq!(first_tag.length, 3, "Tag should have length 3, got {}", first_tag.length);
+    assert_eq!(
+        first_tag.start, 10,
+        "Tag should start at byte 10, got {}",
+        first_tag.start
+    );
+    assert_eq!(
+        first_tag.length, 3,
+        "Tag should have length 3, got {}",
+        first_tag.length
+    );
 }
 
 #[test]
@@ -798,36 +1015,57 @@ fn sugarcube_no_space_after_colons_token_positions() {
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
         let (line, char) = byte_offset_to_position(text, tok.start);
-        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' -> LSP({}, {})",
-                 i, tok.token_type, tok.start, tok.length, tok_text, line, char);
+        eprintln!(
+            "  token {:2}: type={:?} start={} len={} text='{}' -> LSP({}, {})",
+            i, tok.token_type, tok.start, tok.length, tok_text, line, char
+        );
     }
 
     // ::Start {"position":"420,60"}
     // 0123456789012345678901234567890
     // :: at bytes 0-1, Start at bytes 2-6
 
-    let prefix_tok = flatten_token_groups(&result).into_iter().find(|t|
-        matches!(t.token_type, SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader)
-    );
+    let prefix_tok = flatten_token_groups(&result).into_iter().find(|t| {
+        matches!(
+            t.token_type,
+            SemanticTokenType::PassageHeader | SemanticTokenType::SpecialPassageHeader
+        )
+    });
     assert!(prefix_tok.is_some(), "Should have header prefix token");
     let pt = prefix_tok.unwrap();
-    assert_eq!(pt.start, 0, ":: prefix should start at byte 0, got {}", pt.start);
+    assert_eq!(
+        pt.start, 0,
+        ":: prefix should start at byte 0, got {}",
+        pt.start
+    );
     assert_eq!(pt.length, 2, ":: prefix should be 2 bytes");
 
-    let name_tok = flatten_token_groups(&result).into_iter().find(|t|
-        matches!(t.token_type, SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage)
-    );
+    let name_tok = flatten_token_groups(&result).into_iter().find(|t| {
+        matches!(
+            t.token_type,
+            SemanticTokenType::PassageName | SemanticTokenType::SpecialPassage
+        )
+    });
     assert!(name_tok.is_some(), "Should have passage name token");
     let nt = name_tok.unwrap();
-    assert_eq!(nt.start, 2, "Name 'Start' should start at byte 2 (no space after ::), got {}", nt.start);
+    assert_eq!(
+        nt.start, 2,
+        "Name 'Start' should start at byte 2 (no space after ::), got {}",
+        nt.start
+    );
     assert_eq!(nt.length, 5, "Name 'Start' should be 5 bytes");
 
     let (line, char) = byte_offset_to_position(text, nt.start);
     assert_eq!(line, 0, "Name should be on line 0");
-    assert_eq!(char, 2, "Name should start at char 2 (no space after ::), got {}", char);
+    assert_eq!(
+        char, 2,
+        "Name should start at char 2 (no space after ::), got {}",
+        char
+    );
 
     // Body tokens: macro "setSceneLoc" should be at the right position
-    let macro_toks: Vec<_> = flatten_token_groups(&result).into_iter()
+    let macro_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Macro)
         .collect();
     assert!(!macro_toks.is_empty(), "Should have Macro tokens in body");
@@ -839,16 +1077,23 @@ fn sugarcube_no_space_after_colons_token_positions() {
     assert!(set_scene.is_some(), "Should find 'setSceneLoc' macro token");
     let sm = set_scene.unwrap();
     let (line, char) = byte_offset_to_position(text, sm.start);
-    eprintln!("  setSceneLoc macro at byte {} -> LSP({}, {})", sm.start, line, char);
+    eprintln!(
+        "  setSceneLoc macro at byte {} -> LSP({}, {})",
+        sm.start, line, char
+    );
     assert_eq!(line, 1, "Macro should be on line 1");
-    assert_eq!(char, 2, "Macro 'setSceneLoc' should start at char 2 on line 1, got {}", char);
+    assert_eq!(
+        char, 2,
+        "Macro 'setSceneLoc' should start at char 2 on line 1, got {}",
+        char
+    );
 }
 
 #[test]
 fn sugarcube_script_tag_token_positions() {
     // Regression test: Passages tagged [script] should have Tag tokens
     // with the TwineCore modifier.
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -860,12 +1105,15 @@ fn sugarcube_script_tag_token_positions() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
-        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
-                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+        eprintln!(
+            "  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
+            i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier
+        );
     }
 
     // Should have a Tag token for "script"
-    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter()
+    let tag_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Tag)
         .collect();
     assert!(!tag_toks.is_empty(), "Should have Tag tokens for [script]");
@@ -877,16 +1125,23 @@ fn sugarcube_script_tag_token_positions() {
     assert!(script_tag.is_some(), "Should find 'script' tag token");
     let st = script_tag.unwrap();
     // ::MyScript [script] — ::(0-1) MyScript(2-9) ' '(10) [(11) script(12-17) ](18)
-    assert_eq!(st.start, 12, "'script' tag should start at byte 12, got {}", st.start);
+    assert_eq!(
+        st.start, 12,
+        "'script' tag should start at byte 12, got {}",
+        st.start
+    );
     assert_eq!(st.length, 6, "'script' tag should be 6 bytes");
-    assert_eq!(st.modifier, Some(SemanticTokenModifier::TwineCore),
-               "'script' tag should have TwineCore modifier");
+    assert_eq!(
+        st.modifier,
+        Some(SemanticTokenModifier::TwineCore),
+        "'script' tag should have TwineCore modifier"
+    );
 }
 
 #[test]
 fn sugarcube_stylesheet_tag_token_positions() {
     // Regression test: Passages tagged [stylesheet] should have Tag tokens.
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -898,23 +1153,35 @@ fn sugarcube_stylesheet_tag_token_positions() {
         let safe_start = tok.start.min(text.len());
         let safe_end = (tok.start + tok.length).min(text.len());
         let tok_text = &text[safe_start..safe_end];
-        eprintln!("  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
-                 i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier);
+        eprintln!(
+            "  token {:2}: type={:?} start={} len={} text='{}' modifier={:?}",
+            i, tok.token_type, tok.start, tok.length, tok_text, tok.modifier
+        );
     }
 
-    let tag_toks: Vec<_> = flatten_token_groups(&result).into_iter()
+    let tag_toks: Vec<_> = flatten_token_groups(&result)
+        .into_iter()
         .filter(|t| t.token_type == SemanticTokenType::Tag)
         .collect();
-    assert!(!tag_toks.is_empty(), "Should have Tag tokens for [stylesheet]");
+    assert!(
+        !tag_toks.is_empty(),
+        "Should have Tag tokens for [stylesheet]"
+    );
 
     let stylesheet_tag = tag_toks.iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         tok_text == "stylesheet"
     });
-    assert!(stylesheet_tag.is_some(), "Should find 'stylesheet' tag token");
+    assert!(
+        stylesheet_tag.is_some(),
+        "Should find 'stylesheet' tag token"
+    );
     let st = stylesheet_tag.unwrap();
-    assert_eq!(st.modifier, Some(SemanticTokenModifier::TwineCore),
-               "'stylesheet' tag should have TwineCore modifier");
+    assert_eq!(
+        st.modifier,
+        Some(SemanticTokenModifier::TwineCore),
+        "'stylesheet' tag should have TwineCore modifier"
+    );
 }
 
 // ===========================================================================
@@ -938,10 +1205,16 @@ fn sugarcube_js_validation_invalid_run_produces_diagnostic() {
     let src = ":: Start\n<<run invalid{{{>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let js_diags: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
-    assert!(!js_diags.is_empty(), "Invalid JS in <<run>> should produce a JS diagnostic");
+    assert!(
+        !js_diags.is_empty(),
+        "Invalid JS in <<run>> should produce a JS diagnostic"
+    );
 }
 
 #[test]
@@ -949,10 +1222,17 @@ fn sugarcube_js_validation_valid_set_no_diagnostic() {
     let src = ":: Start\n<<set $hp to 100>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let js_diags: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
-    assert!(js_diags.is_empty(), "Valid <<set>> should produce no JS diagnostics, got: {:?}", js_diags);
+    assert!(
+        js_diags.is_empty(),
+        "Valid <<set>> should produce no JS diagnostics, got: {:?}",
+        js_diags
+    );
 }
 
 #[test]
@@ -961,10 +1241,17 @@ fn sugarcube_js_validation_valid_print_expression() {
     let src = ":: Start\n<<print $gold>>\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let js_diags: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
-    assert!(js_diags.is_empty(), "Valid <<print>> should produce no JS diagnostics, got: {:?}", js_diags);
+    assert!(
+        js_diags.is_empty(),
+        "Valid <<print>> should produce no JS diagnostics, got: {:?}",
+        js_diags
+    );
 }
 
 #[test]
@@ -972,10 +1259,16 @@ fn sugarcube_js_validation_stylesheet_no_js_diagnostics() {
     let src = ":: Styles [stylesheet]\nbody { color: red; }\n";
     let (.., pr) = sc_parse(src);
 
-    let js_diags: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let js_diags: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-js")
         .collect();
-    assert!(js_diags.is_empty(), "Stylesheet passage should not produce JS diagnostics");
+    assert!(
+        js_diags.is_empty(),
+        "Stylesheet passage should not produce JS diagnostics"
+    );
 }
 
 // ── Phase E: find_macro_at_position + scan_line_for_macro_events ──────────
@@ -1020,7 +1313,10 @@ fn sugarcube_find_macro_at_position_unclosed() {
 
     let result = plugin.find_macro_at_position(line, 4);
     assert!(result.is_some(), "Should find unclosed macro");
-    assert!(result.unwrap().is_unclosed, "Macro should be flagged as unclosed");
+    assert!(
+        result.unwrap().is_unclosed,
+        "Macro should be flagged as unclosed"
+    );
 }
 
 #[test]
@@ -1053,7 +1349,10 @@ fn sugarcube_scan_line_for_macro_events_else_modifier() {
     let events = plugin.scan_line_for_macro_events(line, 5);
     // Modifiers (else, elseif, case, default) are NOT folding events —
     // they're subdivision points within a block, not nested blocks.
-    assert!(events.is_empty(), "<<else>> should NOT produce a folding event");
+    assert!(
+        events.is_empty(),
+        "<<else>> should NOT produce a folding event"
+    );
 }
 
 #[test]
@@ -1062,7 +1361,10 @@ fn sugarcube_scan_line_for_macro_events_inline_not_folded() {
     let line = "<<set $x to 5>>";
 
     let events = plugin.scan_line_for_macro_events(line, 0);
-    assert!(events.is_empty(), "<<set>> is not a block macro, should not produce folding event");
+    assert!(
+        events.is_empty(),
+        "<<set>> is not a block macro, should not produce folding event"
+    );
 }
 
 // ── Phase F: build_var_string_map + resolve_dynamic_navigation_links ──────
@@ -1079,9 +1381,15 @@ fn sugarcube_build_var_string_map_extracts_literals() {
     let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
-    assert!(var_map.contains_key("$dest"), "Should find $dest in var string map");
+    assert!(
+        var_map.contains_key("$dest"),
+        "Should find $dest in var string map"
+    );
     let values = var_map.get("$dest").unwrap();
-    assert!(values.contains(&"Forest".to_string()), "Should find 'Forest' as a value for $dest");
+    assert!(
+        values.contains(&"Forest".to_string()),
+        "Should find 'Forest' as a value for $dest"
+    );
 }
 
 #[test]
@@ -1096,9 +1404,15 @@ fn sugarcube_build_var_string_map_single_quoted() {
     let plugin = registry.get_mut(&StoryFormat::SugarCube).unwrap();
     let var_map = plugin.build_var_string_map(&ws);
 
-    assert!(var_map.contains_key("$dest"), "Should find $dest with single-quoted value");
+    assert!(
+        var_map.contains_key("$dest"),
+        "Should find $dest with single-quoted value"
+    );
     let values = var_map.get("$dest").unwrap();
-    assert!(values.contains(&"Cave".to_string()), "Should find 'Cave' value");
+    assert!(
+        values.contains(&"Cave".to_string()),
+        "Should find 'Cave' value"
+    );
 }
 
 #[test]
@@ -1117,9 +1431,19 @@ fn sugarcube_resolve_dynamic_navigation_goto() {
     let start_passage = doc.find_passage("Start").unwrap();
     let resolved = plugin.resolve_dynamic_navigation_links(start_passage, &var_map);
 
-    assert!(!resolved.is_empty(), "Should resolve dynamic navigation links");
-    assert_eq!(resolved[0].target, "Forest", "Should resolve $dest to 'Forest'");
-    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should produce Navigation edge");
+    assert!(
+        !resolved.is_empty(),
+        "Should resolve dynamic navigation links"
+    );
+    assert_eq!(
+        resolved[0].target, "Forest",
+        "Should resolve $dest to 'Forest'"
+    );
+    assert_eq!(
+        resolved[0].edge_type_hint,
+        Some(knot_core::graph::EdgeType::Navigation),
+        "<<goto>> should produce Navigation edge"
+    );
 }
 
 #[test]
@@ -1139,7 +1463,10 @@ fn sugarcube_resolve_dynamic_navigation_include() {
     let resolved = plugin.resolve_dynamic_navigation_links(start_passage, &var_map);
 
     assert!(!resolved.is_empty(), "Should resolve <<include $dest>>");
-    assert_eq!(resolved[0].edge_type_hint, Some(knot_core::graph::EdgeType::Include));
+    assert_eq!(
+        resolved[0].edge_type_hint,
+        Some(knot_core::graph::EdgeType::Include)
+    );
 }
 
 // ── Edge classification ────────────────────────────────────────────────────
@@ -1154,7 +1481,11 @@ fn sugarcube_classify_edge_goto_is_jump() {
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
-    assert_eq!(edge, Some(knot_core::graph::EdgeType::Navigation), "<<goto>> should classify as Jump");
+    assert_eq!(
+        edge,
+        Some(knot_core::graph::EdgeType::Navigation),
+        "<<goto>> should classify as Jump"
+    );
 }
 
 #[test]
@@ -1167,7 +1498,11 @@ fn sugarcube_classify_edge_include_is_include() {
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Sidebar");
-    assert_eq!(edge, Some(knot_core::graph::EdgeType::Include), "<<include>> should classify as Include");
+    assert_eq!(
+        edge,
+        Some(knot_core::graph::EdgeType::Include),
+        "<<include>> should classify as Include"
+    );
 }
 
 #[test]
@@ -1180,7 +1515,11 @@ fn sugarcube_classify_edge_link_is_navigation() {
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
-    assert_eq!(edge, Some(knot_core::graph::EdgeType::Navigation), "<<link>> should classify as Navigation");
+    assert_eq!(
+        edge,
+        Some(knot_core::graph::EdgeType::Navigation),
+        "<<link>> should classify as Navigation"
+    );
 }
 
 #[test]
@@ -1193,7 +1532,10 @@ fn sugarcube_classify_edge_no_macro_is_none() {
     let start = result.passages.iter().find(|p| p.name == "Start").unwrap();
 
     let edge = plugin.classify_edge(start, None, "Forest");
-    assert_eq!(edge, None, "Plain [[link]] should not produce special edge classification");
+    assert_eq!(
+        edge, None,
+        "Plain [[link]] should not produce special edge classification"
+    );
 }
 
 // ── Registry population after parse ────────────────────────────────────────
@@ -1206,7 +1548,10 @@ fn sugarcube_variable_tree_populated_after_parse() {
     assert!(pr.passages.len() >= 2, "Should parse at least 2 passages");
 
     let names = plugin.workspace_variable_names();
-    assert!(names.contains("$gold"), "Variable tree should contain $gold");
+    assert!(
+        names.contains("$gold"),
+        "Variable tree should contain $gold"
+    );
     assert!(names.contains("$hp"), "Variable tree should contain $hp");
 }
 
@@ -1222,12 +1567,19 @@ fn sugarcube_variable_tree_property_tracking() {
 
 #[test]
 fn sugarcube_custom_macros_widget_registration() {
-    let src = ":: MyWidgets [widget]\n<<widget myWidget>>Hello<</widget>>\n:: Start\n<<myWidget>>\n";
+    let src =
+        ":: MyWidgets [widget]\n<<widget myWidget>>Hello<</widget>>\n:: Start\n<<myWidget>>\n";
     let (plugin, _) = sc_parse(src);
 
-    assert!(plugin.is_custom_macro("myWidget"), "Widget should be registered as custom macro");
+    assert!(
+        plugin.is_custom_macro("myWidget"),
+        "Widget should be registered as custom macro"
+    );
     let names = plugin.custom_macro_names();
-    assert!(names.contains(&"myWidget".to_string()), "custom_macro_names() should include 'myWidget'");
+    assert!(
+        names.contains(&"myWidget".to_string()),
+        "custom_macro_names() should include 'myWidget'"
+    );
 }
 
 #[test]
@@ -1239,11 +1591,20 @@ fn sugarcube_build_variable_tree_returns_nodes() {
         &Workspace::new(Url::parse("file:///project/").unwrap()),
         &crate::plugin::NoSourceText,
     );
-    assert!(!tree.is_empty(), "Variable tree should not be empty after parsing");
+    assert!(
+        !tree.is_empty(),
+        "Variable tree should not be empty after parsing"
+    );
 
     let gold_node = tree.iter().find(|n| n.name == "$gold");
     assert!(gold_node.is_some(), "Should find $gold in variable tree");
-    assert!(gold_node.unwrap().written_in.iter().any(|w| w.passage_name == "Start"));
+    assert!(
+        gold_node
+            .unwrap()
+            .written_in
+            .iter()
+            .any(|w| w.passage_name == "Start")
+    );
 }
 
 // ── Phase G: extract_passage_variable_refs + property maps ────────────────
@@ -1258,10 +1619,16 @@ fn sugarcube_extract_passage_variable_refs() {
         &crate::plugin::NoSourceText,
         "Start",
     );
-    assert!(!refs.is_empty(), "Should find variable refs for Start passage");
+    assert!(
+        !refs.is_empty(),
+        "Should find variable refs for Start passage"
+    );
 
     let gold_refs: Vec<_> = refs.iter().filter(|r| r.variable_name == "$gold").collect();
-    assert!(!gold_refs.is_empty(), "Should find $gold refs in Start passage");
+    assert!(
+        !gold_refs.is_empty(),
+        "Should find $gold refs in Start passage"
+    );
 }
 
 #[test]
@@ -1280,12 +1647,32 @@ fn sugarcube_extract_passage_temp_variables_basic() {
 
     assert_eq!(temps.len(), 1, "Should find exactly one temp var in Start");
     let t = &temps[0];
-    assert_eq!(t.name, "_counter", "Temp var name should include the `_` sigil");
-    assert_eq!(t.write_count, 1, "Should have exactly 1 write (got {})", t.write_count);
-    assert_eq!(t.read_count, 1, "Should have exactly 1 read (got {})", t.read_count);
-    assert!(t.refs.iter().any(|r| r.is_write), "Refs should include at least one write");
-    assert!(t.refs.iter().any(|r| !r.is_write), "Refs should include at least one read");
-    assert!(t.refs.iter().all(|r| r.passage_name == "Start"), "All refs should be filed under Start");
+    assert_eq!(
+        t.name, "_counter",
+        "Temp var name should include the `_` sigil"
+    );
+    assert_eq!(
+        t.write_count, 1,
+        "Should have exactly 1 write (got {})",
+        t.write_count
+    );
+    assert_eq!(
+        t.read_count, 1,
+        "Should have exactly 1 read (got {})",
+        t.read_count
+    );
+    assert!(
+        t.refs.iter().any(|r| r.is_write),
+        "Refs should include at least one write"
+    );
+    assert!(
+        t.refs.iter().any(|r| !r.is_write),
+        "Refs should include at least one read"
+    );
+    assert!(
+        t.refs.iter().all(|r| r.passage_name == "Start"),
+        "All refs should be filed under Start"
+    );
 }
 
 #[test]
@@ -1312,11 +1699,27 @@ fn sugarcube_extract_passage_temp_variables_isolated_per_passage() {
     assert_eq!(start_temps[0].name, "_counter");
     assert_eq!(forest_temps[0].name, "_counter");
     // Each passage should only see its own write — no leakage.
-    assert_eq!(start_temps[0].write_count, 1, "Start should have exactly 1 write");
-    assert_eq!(forest_temps[0].write_count, 1, "Forest should have exactly 1 write");
+    assert_eq!(
+        start_temps[0].write_count, 1,
+        "Start should have exactly 1 write"
+    );
+    assert_eq!(
+        forest_temps[0].write_count, 1,
+        "Forest should have exactly 1 write"
+    );
     // And refs should be filed under the correct passage name.
-    assert!(start_temps[0].refs.iter().all(|r| r.passage_name == "Start"));
-    assert!(forest_temps[0].refs.iter().all(|r| r.passage_name == "Forest"));
+    assert!(
+        start_temps[0]
+            .refs
+            .iter()
+            .all(|r| r.passage_name == "Start")
+    );
+    assert!(
+        forest_temps[0]
+            .refs
+            .iter()
+            .all(|r| r.passage_name == "Forest")
+    );
 
     // A passage with no temps at all should return an empty Vec, not a
     // Vec with leaked entries from another passage.
@@ -1325,7 +1728,10 @@ fn sugarcube_extract_passage_temp_variables_isolated_per_passage() {
         &crate::plugin::NoSourceText,
         "Nonexistent",
     );
-    assert!(other.is_empty(), "Missing passage should yield no temp vars");
+    assert!(
+        other.is_empty(),
+        "Missing passage should yield no temp vars"
+    );
 }
 
 #[test]
@@ -1342,17 +1748,36 @@ fn sugarcube_extract_passage_temp_variables_property_paths() {
         "Start",
     );
 
-    assert_eq!(temps.len(), 1, "Should group property accesses under one root temp");
+    assert_eq!(
+        temps.len(),
+        1,
+        "Should group property accesses under one root temp"
+    );
     assert_eq!(temps[0].name, "_obj");
     // Writes: _obj = {}, _obj.name = "Bob" → 2 writes.
     // Reads:  _obj.name in text         → 1 read.
-    assert!(temps[0].write_count >= 2, "Should count property writes (got {})", temps[0].write_count);
-    assert!(temps[0].read_count >= 1, "Should count property reads (got {})", temps[0].read_count);
+    assert!(
+        temps[0].write_count >= 2,
+        "Should count property writes (got {})",
+        temps[0].write_count
+    );
+    assert!(
+        temps[0].read_count >= 1,
+        "Should count property reads (got {})",
+        temps[0].read_count
+    );
     // At least one ref should carry the `_obj.name` dot-path.
     assert!(
-        temps[0].refs.iter().any(|r| r.variable_name.contains("_obj.name")),
+        temps[0]
+            .refs
+            .iter()
+            .any(|r| r.variable_name.contains("_obj.name")),
         "Refs should preserve full property path; got {:?}",
-        temps[0].refs.iter().map(|r| &r.variable_name).collect::<Vec<_>>()
+        temps[0]
+            .refs
+            .iter()
+            .map(|r| &r.variable_name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1371,7 +1796,12 @@ fn sugarcube_propagation_model_simple_scalar_no_duplication() {
     );
 
     let writes: Vec<_> = refs.iter().filter(|r| r.is_write).collect();
-    assert_eq!(writes.len(), 1, "Simple scalar assignment should produce exactly 1 write, got {}", writes.len());
+    assert_eq!(
+        writes.len(),
+        1,
+        "Simple scalar assignment should produce exactly 1 write, got {}",
+        writes.len()
+    );
 }
 
 #[test]
@@ -1390,22 +1820,40 @@ fn sugarcube_propagation_model_object_literal_focus_level() {
     );
 
     // $a.name should have 1 direct write
-    let a_name_writes: Vec<_> = refs.iter()
+    let a_name_writes: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$a.name" && r.is_write)
         .collect();
-    assert_eq!(a_name_writes.len(), 1, "$a.name should have 1 write, got {}", a_name_writes.len());
+    assert_eq!(
+        a_name_writes.len(),
+        1,
+        "$a.name should have 1 write, got {}",
+        a_name_writes.len()
+    );
 
     // $a.weight should have 1 direct write
-    let a_weight_writes: Vec<_> = refs.iter()
+    let a_weight_writes: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$a.weight" && r.is_write)
         .collect();
-    assert_eq!(a_weight_writes.len(), 1, "$a.weight should have 1 write, got {}", a_weight_writes.len());
+    assert_eq!(
+        a_weight_writes.len(),
+        1,
+        "$a.weight should have 1 write, got {}",
+        a_weight_writes.len()
+    );
 
     // $a (root) should have 1 propagated write (one per operation, not per child)
-    let a_writes: Vec<_> = refs.iter()
+    let a_writes: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$a" && r.is_write)
         .collect();
-    assert_eq!(a_writes.len(), 1, "$a should have 1 write (one per operation), got {}", a_writes.len());
+    assert_eq!(
+        a_writes.len(),
+        1,
+        "$a should have 1 write (one per operation), got {}",
+        a_writes.len()
+    );
 }
 
 #[test]
@@ -1430,18 +1878,30 @@ fn sugarcube_propagation_model_array_literal_decomposition() {
     // Each array element should have 1 direct write
     for i in 0..3 {
         let name = format!("$arr.{}", i);
-        let writes: Vec<_> = refs.iter()
+        let writes: Vec<_> = refs
+            .iter()
             .filter(|r| r.variable_name == name && r.is_write)
             .collect();
-        assert_eq!(writes.len(), 1, "{} should have 1 write, got {}", name, writes.len());
+        assert_eq!(
+            writes.len(),
+            1,
+            "{} should have 1 write, got {}",
+            name,
+            writes.len()
+        );
     }
 
     // $arr (root) should have propagated writes (at least 1, ideally 3).
     // The exact count depends on span dedup behavior for scalar elements.
-    let arr_writes: Vec<_> = refs.iter()
+    let arr_writes: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$arr" && r.is_write)
         .collect();
-    assert!(arr_writes.len() >= 1, "$arr should have at least 1 propagated write, got {}", arr_writes.len());
+    assert!(
+        !arr_writes.is_empty(),
+        "$arr should have at least 1 propagated write, got {}",
+        arr_writes.len()
+    );
 }
 
 #[test]
@@ -1460,32 +1920,52 @@ fn sugarcube_propagation_model_nested_object_in_array() {
     );
 
     // Leaf writes
-    let d0_label: Vec<_> = refs.iter()
+    let d0_label: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$days.0.label" && r.is_write)
         .collect();
     assert_eq!(d0_label.len(), 1, "$days.0.label should have 1 write");
 
-    let d1_label: Vec<_> = refs.iter()
+    let d1_label: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$days.1.label" && r.is_write)
         .collect();
     assert_eq!(d1_label.len(), 1, "$days.1.label should have 1 write");
 
     // Array elements (1 propagated write each, from their label child)
-    let d0: Vec<_> = refs.iter()
+    let d0: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$days.0" && r.is_write)
         .collect();
-    assert_eq!(d0.len(), 1, "$days.0 should have 1 propagated write, got {}", d0.len());
+    assert_eq!(
+        d0.len(),
+        1,
+        "$days.0 should have 1 propagated write, got {}",
+        d0.len()
+    );
 
-    let d1: Vec<_> = refs.iter()
+    let d1: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$days.1" && r.is_write)
         .collect();
-    assert_eq!(d1.len(), 1, "$days.1 should have 1 propagated write, got {}", d1.len());
+    assert_eq!(
+        d1.len(),
+        1,
+        "$days.1 should have 1 propagated write, got {}",
+        d1.len()
+    );
 
     // Root (1 propagated write — one per operation, not per child)
-    let days: Vec<_> = refs.iter()
+    let days: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$days" && r.is_write)
         .collect();
-    assert_eq!(days.len(), 1, "$days should have 1 write (one per operation), got {}", days.len());
+    assert_eq!(
+        days.len(),
+        1,
+        "$days should have 1 write (one per operation), got {}",
+        days.len()
+    );
 }
 
 #[test]
@@ -1506,37 +1986,57 @@ fn sugarcube_propagation_model_multi_item_object() {
     // $ITEMS should have 1 propagated write (one per operation, not per child).
     // The 3 items are visible as children in the tree — the root just shows
     // "assigned once here" with the full assignment span.
-    let items_writes: Vec<_> = refs.iter()
+    let items_writes: Vec<_> = refs
+        .iter()
         .filter(|r| r.variable_name == "$ITEMS" && r.is_write)
         .collect();
-    assert_eq!(items_writes.len(), 1, "$ITEMS should have 1 write (one per operation), got {}", items_writes.len());
+    assert_eq!(
+        items_writes.len(),
+        1,
+        "$ITEMS should have 1 write (one per operation), got {}",
+        items_writes.len()
+    );
 
     // Each item should have 1 propagated write (one per operation, not per child)
     for item in &["item-a", "item-b", "item-c"] {
         let name = format!("$ITEMS.{}", item);
-        let writes: Vec<_> = refs.iter()
+        let writes: Vec<_> = refs
+            .iter()
             .filter(|r| r.variable_name == name && r.is_write)
             .collect();
-        assert_eq!(writes.len(), 1, "{} should have 1 write (one per operation), got {}", name, writes.len());
+        assert_eq!(
+            writes.len(),
+            1,
+            "{} should have 1 write (one per operation), got {}",
+            name,
+            writes.len()
+        );
     }
 
     // Each leaf should have 1 direct write
     for item in &["item-a", "item-b", "item-c"] {
         for prop in &["name", "value"] {
             let name = format!("$ITEMS.{}.{}", item, prop);
-            let writes: Vec<_> = refs.iter()
+            let writes: Vec<_> = refs
+                .iter()
                 .filter(|r| r.variable_name == name && r.is_write)
                 .collect();
-            assert_eq!(writes.len(), 1, "{} should have 1 write, got {}", name, writes.len());
+            assert_eq!(
+                writes.len(),
+                1,
+                "{} should have 1 write, got {}",
+                name,
+                writes.len()
+            );
         }
     }
 }
 
 #[test]
 fn sugarcube_span_offset_verification() {
+    use crate::plugin::SourceTextProvider;
     use std::collections::HashMap;
     use url::Url;
-    use crate::plugin::SourceTextProvider;
 
     // Simple source text provider for testing
     struct TestSourceText(HashMap<String, String>);
@@ -1564,14 +2064,18 @@ fn sugarcube_span_offset_verification() {
     for r in &refs {
         if let Some(span) = &r.span {
             let span_text = &src[span.start..span.end];
-            eprintln!("  {} span={}..{} => {:?}", r.variable_name, span.start, span.end, span_text);
+            eprintln!(
+                "  {} span={}..{} => {:?}",
+                r.variable_name, span.start, span.end, span_text
+            );
         } else {
             eprintln!("  {} (no span)", r.variable_name);
         }
     }
 
     // Find $a.name write and verify its span text
-    let a_name = refs.iter()
+    let a_name = refs
+        .iter()
         .find(|r| r.variable_name == "$a.name" && r.is_write)
         .expect("Should find $a.name write");
     let span = a_name.span.clone().expect("Should have span");
@@ -1583,7 +2087,8 @@ fn sugarcube_span_offset_verification() {
     );
 
     // Find $a (root) write and verify its span covers the full assignment
-    let a_root = refs.iter()
+    let a_root = refs
+        .iter()
         .find(|r| r.variable_name == "$a" && r.is_write)
         .expect("Should find $a write");
     let span = a_root.span.clone().expect("Should have span");
@@ -1600,17 +2105,29 @@ fn sugarcube_build_shape_aware_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.hp to 100>>\n";
     let (plugin, _) = sc_parse(src);
 
-    let map = plugin.build_shape_aware_property_map(
-        &Workspace::new(Url::parse("file:///project/").unwrap()),
-    );
+    let map = plugin
+        .build_shape_aware_property_map(&Workspace::new(Url::parse("file:///project/").unwrap()));
     assert!(!map.is_empty(), "Property map should not be empty");
 
     let player_entry = map.get("$player");
-    assert!(player_entry.is_some(), "Should find $player in property map");
+    assert!(
+        player_entry.is_some(),
+        "Should find $player in property map"
+    );
     let entry = player_entry.unwrap();
-    assert_eq!(entry.kind, crate::types::PropertyKind::Object, "$player should be Object kind");
-    assert!(entry.children.contains(&"name".to_string()), "$player should have 'name' child");
-    assert!(entry.children.contains(&"hp".to_string()), "$player should have 'hp' child");
+    assert_eq!(
+        entry.kind,
+        crate::types::PropertyKind::Object,
+        "$player should be Object kind"
+    );
+    assert!(
+        entry.children.contains(&"name".to_string()),
+        "$player should have 'name' child"
+    );
+    assert!(
+        entry.children.contains(&"hp".to_string()),
+        "$player should have 'hp' child"
+    );
 }
 
 #[test]
@@ -1618,10 +2135,12 @@ fn sugarcube_build_state_variable_registry() {
     let src = ":: Start\n<<set $gold to 10>>\n:: Forest\n<<set $hp to 100>>\n";
     let (plugin, _) = sc_parse(src);
 
-    let reg = plugin.build_state_variable_registry(
-        &Workspace::new(Url::parse("file:///project/").unwrap()),
+    let reg = plugin
+        .build_state_variable_registry(&Workspace::new(Url::parse("file:///project/").unwrap()));
+    assert!(
+        !reg.is_empty(),
+        "State variable registry should not be empty"
     );
-    assert!(!reg.is_empty(), "State variable registry should not be empty");
 
     let gold = reg.get("$gold");
     assert!(gold.is_some(), "Should find $gold in registry");
@@ -1644,7 +2163,10 @@ fn sugarcube_incremental_reparse_updates_registries() {
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();
-    assert!(names.contains("$silver"), "After re-parse, $silver should be tracked");
+    assert!(
+        names.contains("$silver"),
+        "After re-parse, $silver should be tracked"
+    );
 }
 
 #[test]
@@ -1656,7 +2178,10 @@ fn sugarcube_incremental_reparse_keeps_other_passages() {
     assert!(result.is_some());
 
     let names = plugin.workspace_variable_names();
-    assert!(names.contains("$hp"), "Re-parsing Start should not remove $hp from Forest");
+    assert!(
+        names.contains("$hp"),
+        "Re-parsing Start should not remove $hp from Forest"
+    );
     assert!(names.contains("$silver"), "$silver should be added");
 }
 
@@ -1668,10 +2193,19 @@ fn sugarcube_two_pass_script_before_normal() {
     let (plugin, pr) = sc_parse(src);
 
     let names = plugin.workspace_variable_names();
-    assert!(names.contains("$hp"), "State.variables.hp in [script] should register $hp");
+    assert!(
+        names.contains("$hp"),
+        "State.variables.hp in [script] should register $hp"
+    );
 
-    assert!(pr.passages.iter().any(|p| p.name == "Init"), "Script passage should be parsed");
-    assert!(pr.passages.iter().any(|p| p.name == "Start"), "Normal passage should be parsed");
+    assert!(
+        pr.passages.iter().any(|p| p.name == "Init"),
+        "Script passage should be parsed"
+    );
+    assert!(
+        pr.passages.iter().any(|p| p.name == "Start"),
+        "Normal passage should be parsed"
+    );
 }
 
 #[test]
@@ -1679,7 +2213,10 @@ fn sugarcube_script_passage_macro_add() {
     let src = ":: Scripts [script]\nMacro.add(\"customGreet\", {});\n:: Start\nHello.\n";
     let (plugin, _) = sc_parse(src);
 
-    assert!(plugin.is_custom_macro("customGreet"), "Macro.add in [script] should register custom macro");
+    assert!(
+        plugin.is_custom_macro("customGreet"),
+        "Macro.add in [script] should register custom macro"
+    );
 }
 
 #[test]
@@ -1702,10 +2239,14 @@ Hello.
 "#;
     let (plugin, _) = sc_parse(src);
 
-    assert!(plugin.is_custom_macro("addTime"),
-        "Macro.add('addTime') inside registerMacros() should be registered");
-    assert!(plugin.is_custom_macro("setContext"),
-        "Macro.add('setContext') inside registerMacros() should be registered");
+    assert!(
+        plugin.is_custom_macro("addTime"),
+        "Macro.add('addTime') inside registerMacros() should be registered"
+    );
+    assert!(
+        plugin.is_custom_macro("setContext"),
+        "Macro.add('setContext') inside registerMacros() should be registered"
+    );
 }
 
 #[test]
@@ -1727,10 +2268,14 @@ Hello.
 "#;
     let (plugin, _) = sc_parse(src);
 
-    assert!(plugin.is_custom_macro("iifeMacro"),
-        "Macro.add('iifeMacro') inside IIFE body should be registered");
-    assert!(plugin.is_custom_macro("callbackMacro"),
-        "Macro.add('callbackMacro') inside :storyready callback should be registered");
+    assert!(
+        plugin.is_custom_macro("iifeMacro"),
+        "Macro.add('iifeMacro') inside IIFE body should be registered"
+    );
+    assert!(
+        plugin.is_custom_macro("callbackMacro"),
+        "Macro.add('callbackMacro') inside :storyready callback should be registered"
+    );
 }
 
 // ── Parse diagnostics ─────────────────────────────────────────────────────
@@ -1740,10 +2285,16 @@ fn sugarcube_unclosed_block_macro_diagnostic() {
     let src = ":: Start\n<<if $x>>unclosed\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let unclosed: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
-    assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
+    assert!(
+        !unclosed.is_empty(),
+        "Unclosed <<if>> should produce sc-unclosed diagnostic"
+    );
 }
 
 #[test]
@@ -1754,10 +2305,17 @@ fn sugarcube_nested_block_macros_no_false_unclosed() {
     let src = ":: Start\n<<if $x>>inner<<for _i to 0>><</for>><</if>>\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let unclosed: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
-    assert!(unclosed.is_empty(), "Properly nested different block macros should not produce unclosed diagnostics, got: {:?}", unclosed);
+    assert!(
+        unclosed.is_empty(),
+        "Properly nested different block macros should not produce unclosed diagnostics, got: {:?}",
+        unclosed
+    );
 }
 
 #[test]
@@ -1766,10 +2324,16 @@ fn sugarcube_parse_error_diagnostic() {
     let src = ":: Start\n<<if $x>>no close tag\n";
     let (.., pr) = sc_parse(src);
 
-    let unclosed: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let unclosed: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-unclosed")
         .collect();
-    assert!(!unclosed.is_empty(), "Unclosed <<if>> should produce sc-unclosed diagnostic");
+    assert!(
+        !unclosed.is_empty(),
+        "Unclosed <<if>> should produce sc-unclosed diagnostic"
+    );
 }
 
 // ── Edge cases ────────────────────────────────────────────────────────────
@@ -1779,7 +2343,10 @@ fn sugarcube_crlf_handling() {
     let src = ":: Start\r\n<<set $gold to 10>>\r\n:: Forest\r\nTrees.\r\n";
     let (.., pr) = sc_parse(src);
 
-    assert!(pr.passages.len() >= 2, "Should parse passages with CRLF line endings");
+    assert!(
+        pr.passages.len() >= 2,
+        "Should parse passages with CRLF line endings"
+    );
 }
 
 #[test]
@@ -1787,7 +2354,10 @@ fn sugarcube_empty_passage_body() {
     let src = ":: Start\n\n:: Forest\n\n";
     let (.., pr) = sc_parse(src);
 
-    assert!(pr.passages.len() >= 2, "Empty passages should still be parsed");
+    assert!(
+        pr.passages.len() >= 2,
+        "Empty passages should still be parsed"
+    );
 }
 
 #[test]
@@ -1795,8 +2365,14 @@ fn sugarcube_widget_tag_registration() {
     let src = ":: MyWidgets [widget]\n<<widget greet>>Hello!<</widget>>\n<<widget farewell>>Bye!<</widget>>\n";
     let (plugin, _) = sc_parse(src);
 
-    assert!(plugin.is_custom_macro("greet"), "Widget 'greet' should be registered");
-    assert!(plugin.is_custom_macro("farewell"), "Widget 'farewell' should be registered");
+    assert!(
+        plugin.is_custom_macro("greet"),
+        "Widget 'greet' should be registered"
+    );
+    assert!(
+        plugin.is_custom_macro("farewell"),
+        "Widget 'farewell' should be registered"
+    );
 }
 
 #[test]
@@ -1807,7 +2383,10 @@ fn sugarcube_find_custom_macro_definition() {
     let def = plugin.find_custom_macro("greet");
     assert!(def.is_some(), "Should find 'greet' custom macro definition");
     let (passage, _uri, _offset) = def.unwrap();
-    assert_eq!(passage, "MyWidgets", "Widget should be defined in MyWidgets passage");
+    assert_eq!(
+        passage, "MyWidgets",
+        "Widget should be defined in MyWidgets passage"
+    );
 }
 
 #[test]
@@ -1815,11 +2394,13 @@ fn sugarcube_build_object_property_map() {
     let src = ":: Start\n<<set $player.name to \"Alice\">><<set $player.level to 5>>\n";
     let (plugin, _) = sc_parse(src);
 
-    let map = plugin.build_object_property_map(
-        &Workspace::new(Url::parse("file:///project/").unwrap()),
-    );
+    let map =
+        plugin.build_object_property_map(&Workspace::new(Url::parse("file:///project/").unwrap()));
     assert!(!map.is_empty(), "Property map should not be empty");
-    assert!(map.contains_key("$player"), "Should find $player in property map");
+    assert!(
+        map.contains_key("$player"),
+        "Should find $player in property map"
+    );
     let props = map.get("$player").unwrap();
     assert!(props.contains("name"), "Should track 'name' property");
     assert!(props.contains("level"), "Should track 'level' property");
@@ -1830,12 +2411,14 @@ fn sugarcube_special_passage_seeding() {
     let src = ":: StoryInit\n<<set $gold to 100>><<set $hp to 50>>\n:: Start\nYou have $gold.\n";
     let (plugin, _) = sc_parse(src);
 
-    let reg = plugin.build_state_variable_registry(
-        &Workspace::new(Url::parse("file:///project/").unwrap()),
-    );
+    let reg = plugin
+        .build_state_variable_registry(&Workspace::new(Url::parse("file:///project/").unwrap()));
     let gold = reg.get("$gold");
     assert!(gold.is_some(), "Should find $gold in registry");
-    assert!(gold.unwrap().seeded_by_special, "$gold from StoryInit should be seeded");
+    assert!(
+        gold.unwrap().seeded_by_special,
+        "$gold from StoryInit should be seeded"
+    );
 }
 
 #[test]
@@ -1844,7 +2427,10 @@ fn sugarcube_temporary_variable_tracking() {
     let (plugin, _) = sc_parse(src);
 
     let names = plugin.workspace_variable_names();
-    assert!(names.contains("_i"), "Temporary variable _i should be tracked");
+    assert!(
+        names.contains("_i"),
+        "Temporary variable _i should be tracked"
+    );
 }
 
 #[test]
@@ -1852,15 +2438,26 @@ fn sugarcube_block_comment_parsing() {
     let src = ":: Start\n/% comment %/ visible text\n";
     let (.., pr) = sc_parse(src);
 
-    let parse_errors: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let parse_errors: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-parse")
         .collect();
-    assert!(parse_errors.is_empty(), "Block comment should not produce parse errors, got: {:?}", parse_errors);
+    assert!(
+        parse_errors.is_empty(),
+        "Block comment should not produce parse errors, got: {:?}",
+        parse_errors
+    );
 
-    let comment_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
+    let comment_toks: Vec<_> = flatten_token_groups(&pr)
+        .into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
         .collect();
-    assert!(!comment_toks.is_empty(), "Should produce comment semantic token");
+    assert!(
+        !comment_toks.is_empty(),
+        "Should produce comment semantic token"
+    );
 }
 
 #[test]
@@ -1868,10 +2465,14 @@ fn sugarcube_html_comment_parsing() {
     let src = ":: Start\n<!-- HTML comment --> visible\n";
     let (.., pr) = sc_parse(src);
 
-    let comment_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
+    let comment_toks: Vec<_> = flatten_token_groups(&pr)
+        .into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Comment)
         .collect();
-    assert!(!comment_toks.is_empty(), "HTML comment should produce comment semantic token");
+    assert!(
+        !comment_toks.is_empty(),
+        "HTML comment should produce comment semantic token"
+    );
 }
 
 #[test]
@@ -1882,8 +2483,12 @@ fn sugarcube_link_with_pipe_syntax() {
     let start = pr.passages.iter().find(|p| p.name == "Start");
     assert!(start.is_some());
     let s = start.unwrap();
-    assert!(s.links.iter().any(|l| l.target == "Forest" && l.display_text.as_deref() == Some("Go to Forest")),
-            "Should parse pipe-syntax link with display text");
+    assert!(
+        s.links
+            .iter()
+            .any(|l| l.target == "Forest" && l.display_text.as_deref() == Some("Go to Forest")),
+        "Should parse pipe-syntax link with display text"
+    );
 }
 
 #[test]
@@ -1893,8 +2498,10 @@ fn sugarcube_link_with_arrow_syntax() {
 
     let start = pr.passages.iter().find(|p| p.name == "Start");
     assert!(start.is_some());
-    assert!(start.unwrap().links.iter().any(|l| l.target == "Forest"),
-            "Should parse arrow-syntax link");
+    assert!(
+        start.unwrap().links.iter().any(|l| l.target == "Forest"),
+        "Should parse arrow-syntax link"
+    );
 }
 
 #[test]
@@ -1902,15 +2509,26 @@ fn sugarcube_expression_macros() {
     let src = ":: Start\n<<=>>$gold>> coins.\n";
     let (.., pr) = sc_parse(src);
 
-    let parse_errors: Vec<_> = pr.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let parse_errors: Vec<_> = pr
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code == "sc-parse")
         .collect();
-    assert!(parse_errors.is_empty(), "Expression macro <<=>>$gold>> should parse cleanly, got: {:?}", parse_errors);
+    assert!(
+        parse_errors.is_empty(),
+        "Expression macro <<=>>$gold>> should parse cleanly, got: {:?}",
+        parse_errors
+    );
 
-    let var_toks: Vec<_> = flatten_token_groups(&pr).into_iter()
+    let var_toks: Vec<_> = flatten_token_groups(&pr)
+        .into_iter()
         .filter(|t| t.token_type == crate::plugin::SemanticTokenType::Variable)
         .collect();
-    assert!(!var_toks.is_empty(), "Should produce variable token for $gold in expression");
+    assert!(
+        !var_toks.is_empty(),
+        "Should produce variable token for $gold in expression"
+    );
 }
 
 #[test]
@@ -1989,7 +2607,10 @@ fn did_open_storydata_before_indexing() {
 
     // Step 2: parse with Core plugin
     let (doc, parse_result) = parse_with_format_plugin_sim(&mut registry, &uri, src, format);
-    assert!(parse_result.passages.len() >= 2, "Core should parse at least 2 passages");
+    assert!(
+        parse_result.passages.len() >= 2,
+        "Core should parse at least 2 passages"
+    );
 
     // Step 3: insert document
     workspace.insert_document(doc);
@@ -2054,12 +2675,14 @@ The forest is dark.
     // Phase 1: Workspace indexing — parse both files
     {
         let format = workspace.resolve_format();
-        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
+        let (doc, _pr) =
+            parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
         workspace.insert_document(doc);
     }
     {
         let format = workspace.resolve_format();
-        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &start_uri, start_text, format);
+        let (doc, _pr) =
+            parse_with_format_plugin_sim(&mut registry, &start_uri, start_text, format);
         workspace.insert_document(doc);
     }
 
@@ -2079,7 +2702,8 @@ The forest is dark.
     // which calls registry.remove_file(uri) + re-populate
     {
         let format = workspace.resolve_format();
-        let (doc, _pr) = parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
+        let (doc, _pr) =
+            parse_with_format_plugin_sim(&mut registry, &special_uri, special_text, format);
         workspace.insert_document(doc);
     }
 
@@ -2096,17 +2720,25 @@ The forest is dark.
         let seeds = plugin.special_passage_seed_variables(&workspace);
 
         // Verify StoryInit variables are seeded
-        assert!(seeds.contains("$gold") || state_vars.values().any(|v| v.seeded_by_special),
-                "StoryInit write variables should be seeded");
+        assert!(
+            seeds.contains("$gold") || state_vars.values().any(|v| v.seeded_by_special),
+            "StoryInit write variables should be seeded"
+        );
     }
 
     // Phase 3: Verify variable tree is consistent after re-parse
     {
         let plugin = registry.get(&StoryFormat::SugarCube).unwrap();
         let var_names = plugin.workspace_variable_names();
-        assert!(var_names.contains("$gold"), "$gold should exist after re-parse");
+        assert!(
+            var_names.contains("$gold"),
+            "$gold should exist after re-parse"
+        );
         assert!(var_names.contains("$hp"), "$hp should exist after re-parse");
-        assert!(var_names.contains("$player"), "$player should exist after re-parse");
+        assert!(
+            var_names.contains("$player"),
+            "$player should exist after re-parse"
+        );
     }
 }
 
@@ -2121,14 +2753,23 @@ fn sugarcube_storydata_has_no_body_blocks_but_is_findable() {
     let result = plugin.parse_mut(&Url::parse("file:///test.tw").unwrap(), src);
 
     let story_data = result.passages.iter().find(|p| p.name == "StoryData");
-    assert!(story_data.is_some(), "SugarCube should find StoryData passage");
+    assert!(
+        story_data.is_some(),
+        "SugarCube should find StoryData passage"
+    );
 
     let sd = story_data.unwrap();
     // SugarCube uses Minimal mode for StoryData — body blocks are empty
-    assert!(sd.body.is_empty(), "SugarCube StoryData should have empty body (Minimal mode)");
+    assert!(
+        sd.body.is_empty(),
+        "SugarCube StoryData should have empty body (Minimal mode)"
+    );
     assert!(sd.is_special, "StoryData should be marked as special");
     assert!(sd.is_metadata(), "StoryData should be marked as metadata");
-    assert!(sd.special_def.is_some(), "StoryData should have special_def");
+    assert!(
+        sd.special_def.is_some(),
+        "StoryData should have special_def"
+    );
 }
 
 /// Test that StoryData passage parsed with Core HAS body blocks.
@@ -2145,7 +2786,10 @@ fn core_storydata_has_body_blocks() {
 
     let sd = story_data.unwrap();
     // Core plugin creates body blocks for all passages including StoryData
-    assert!(!sd.body.is_empty(), "Core StoryData should have body blocks");
+    assert!(
+        !sd.body.is_empty(),
+        "Core StoryData should have body blocks"
+    );
     assert!(sd.is_special, "StoryData should be marked as special");
 }
 
@@ -2165,9 +2809,8 @@ fn parse_with_format_plugin_sim(
     };
 
     if let Some(plugin) = plugin {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plugin.parse_mut(uri, text)
-        }));
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.parse_mut(uri, text)));
 
         match result {
             Ok(parse_result) => {
@@ -2183,7 +2826,10 @@ fn parse_with_format_plugin_sim(
                 } else {
                     "unknown panic".to_string()
                 };
-                panic!("Format plugin {:?} panicked while parsing {}: {}", format, uri, panic_msg);
+                panic!(
+                    "Format plugin {:?} panicked while parsing {}: {}",
+                    format, uri, panic_msg
+                );
             }
         }
     } else {
@@ -2199,12 +2845,8 @@ fn parse_with_format_plugin_sim(
 }
 
 /// Helper: full graph rebuild (same as server's rebuild_graph).
-fn rebuild_graph_full(
-    workspace: &mut Workspace,
-    registry: &FormatRegistry,
-    format: StoryFormat,
-) {
-    use knot_core::graph::{PassageEdge, PassageNode, EdgeType};
+fn rebuild_graph_full(workspace: &mut Workspace, registry: &FormatRegistry, format: StoryFormat) {
+    use knot_core::graph::{EdgeType, PassageEdge, PassageNode};
     use knot_core::passage::PassageCategory;
 
     let plugin = registry.get(&format);
@@ -2213,7 +2855,17 @@ fn rebuild_graph_full(
         .unwrap_or_default();
 
     // Collect passage info
-    let info: Vec<(String, String, bool, bool, Option<knot_core::passage::SpecialPassageLayer>, PassageCategory, Option<knot_core::passage::SpecialPassageBehavior>, Vec<(Option<String>, String, Option<EdgeType>)>)> = workspace
+    #[allow(clippy::type_complexity)]
+    let info: Vec<(
+        String,
+        String,
+        bool,
+        bool,
+        Option<knot_core::passage::SpecialPassageLayer>,
+        PassageCategory,
+        Option<knot_core::passage::SpecialPassageBehavior>,
+        Vec<(Option<String>, String, Option<EdgeType>)>,
+    )> = workspace
         .documents()
         .flat_map(|doc| {
             doc.passages.iter().map(|p| {
@@ -2236,7 +2888,7 @@ fn rebuild_graph_full(
                     doc.uri.to_string(),
                     p.is_special,
                     p.is_metadata(),
-                    p.special_def.as_ref().map(|d| d.layer.clone()),
+                    p.special_def.as_ref().map(|d| d.layer),
                     p.category(),
                     p.special_def.as_ref().map(|d| d.behavior.clone()),
                     edges,
@@ -2254,7 +2906,7 @@ fn rebuild_graph_full(
             is_special: *is_special,
             is_metadata: *is_metadata,
             is_placeholder: false,
-            layer: layer.clone(),
+            layer: *layer,
             category: *category,
             behavior: behavior.clone(),
         };
@@ -2299,7 +2951,7 @@ fn sugarcube_deprecated_macro_token_modifier() {
     // visually stable (always the base `macro` color + strikethrough if
     // deprecated), while the delimiters around it shift color to show
     // nesting depth. Both signals are visible simultaneously.
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2313,11 +2965,17 @@ fn sugarcube_deprecated_macro_token_modifier() {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "click"
     });
-    assert!(click_name_tok.is_some(), "Should have a Macro name token for 'click'");
+    assert!(
+        click_name_tok.is_some(),
+        "Should have a Macro name token for 'click'"
+    );
     let name_tok = click_name_tok.unwrap();
-    assert_eq!(name_tok.modifier, Some(SemanticTokenModifier::Deprecated),
+    assert_eq!(
+        name_tok.modifier,
+        Some(SemanticTokenModifier::Deprecated),
         "Deprecated block macro 'click' NAME should have Deprecated modifier (for strikethrough), got {:?}",
-        name_tok.modifier);
+        name_tok.modifier
+    );
 
     // Find a delimiter token for <<click>> — top-level block macro at depth 0
     // → delimiter gets None (base color). The `<<` delimiter is 2 bytes before
@@ -2325,11 +2983,16 @@ fn sugarcube_deprecated_macro_token_modifier() {
     let click_open_delim = all_tokens.iter().find(|t| {
         t.token_type == SemanticTokenType::MacroDelimiter && t.start + 2 == name_tok.start
     });
-    assert!(click_open_delim.is_some(), "Should find `<<` delimiter immediately before 'click' name");
+    assert!(
+        click_open_delim.is_some(),
+        "Should find `<<` delimiter immediately before 'click' name"
+    );
     let delim_tok = click_open_delim.unwrap();
-    assert!(delim_tok.modifier.is_none(),
+    assert!(
+        delim_tok.modifier.is_none(),
         "Deprecated block macro 'click' DELIMITER at top level (depth 0) should have NO modifier (base color), got {:?}",
-        delim_tok.modifier);
+        delim_tok.modifier
+    );
 }
 
 #[test]
@@ -2341,7 +3004,7 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
     //
     // Note: if <<link>> is used as a block macro (<<link "x">>...<</link>>),
     // it WOULD get a BlockDepth1 modifier — that's expected and correct.
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2354,8 +3017,11 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
     });
     assert!(link_tok.is_some(), "Should have a Macro token for 'link'");
     let tok = link_tok.unwrap();
-    assert_ne!(tok.modifier, Some(SemanticTokenModifier::Deprecated),
-        "Non-deprecated macro 'link' should NOT have Deprecated modifier");
+    assert_ne!(
+        tok.modifier,
+        Some(SemanticTokenModifier::Deprecated),
+        "Non-deprecated macro 'link' should NOT have Deprecated modifier"
+    );
 }
 
 #[test]
@@ -2368,17 +3034,27 @@ fn sugarcube_deprecated_macro_diagnostic() {
     let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let dep_diag = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).find(|d| d.code == "sc-deprecated");
-    assert!(dep_diag.is_some(), "Should have a deprecation diagnostic for <<click>>");
+    let dep_diag = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-deprecated");
+    assert!(
+        dep_diag.is_some(),
+        "Should have a deprecation diagnostic for <<click>>"
+    );
     let diag = dep_diag.unwrap();
     assert_eq!(diag.severity, FormatDiagnosticSeverity::Hint);
-    assert!(diag.message.contains("<<link>>"), "Deprecation message should suggest <<link>>");
+    assert!(
+        diag.message.contains("<<link>>"),
+        "Deprecation message should suggest <<link>>"
+    );
 }
 
 #[test]
 fn sugarcube_display_deprecated_diagnostic() {
     // <<display>> is deprecated — should get both Deprecated modifier and diagnostic
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2390,19 +3066,35 @@ fn sugarcube_display_deprecated_diagnostic() {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
         t.token_type == SemanticTokenType::Macro && tok_text == "display"
     });
-    assert!(display_tok.is_some(), "Should have a Macro token for 'display'");
-    assert_eq!(display_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated));
+    assert!(
+        display_tok.is_some(),
+        "Should have a Macro token for 'display'"
+    );
+    assert_eq!(
+        display_tok.unwrap().modifier,
+        Some(SemanticTokenModifier::Deprecated)
+    );
 
     // Check diagnostic
-    let dep_diag = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).find(|d| d.code == "sc-deprecated");
-    assert!(dep_diag.is_some(), "Should have deprecation diagnostic for <<display>>");
-    assert!(dep_diag.unwrap().message.contains("<<include>>"), "Should suggest <<include>>");
+    let dep_diag = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-deprecated");
+    assert!(
+        dep_diag.is_some(),
+        "Should have deprecation diagnostic for <<display>>"
+    );
+    assert!(
+        dep_diag.unwrap().message.contains("<<include>>"),
+        "Should suggest <<include>>"
+    );
 }
 
 #[test]
 fn sugarcube_set_not_deprecated() {
     // <<set>> is NOT deprecated — no Deprecated modifier, no deprecation diagnostic
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2414,11 +3106,22 @@ fn sugarcube_set_not_deprecated() {
         t.token_type == SemanticTokenType::Macro && tok_text == "set"
     });
     assert!(set_tok.is_some(), "Should have a Macro token for 'set'");
-    assert_ne!(set_tok.unwrap().modifier, Some(SemanticTokenModifier::Deprecated),
-        "<<set>> should NOT have Deprecated modifier");
+    assert_ne!(
+        set_tok.unwrap().modifier,
+        Some(SemanticTokenModifier::Deprecated),
+        "<<set>> should NOT have Deprecated modifier"
+    );
 
-    let dep_diags: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter()).filter(|d| d.code == "sc-deprecated").collect();
-    assert!(dep_diags.is_empty(), "Should have no deprecation diagnostics for <<set>>");
+    let dep_diags: Vec<_> = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .filter(|d| d.code == "sc-deprecated")
+        .collect();
+    assert!(
+        dep_diags.is_empty(),
+        "Should have no deprecation diagnostics for <<set>>"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2429,7 +3132,7 @@ fn sugarcube_set_not_deprecated() {
 fn sugarcube_capture_target_variable_definition_token() {
     // <<capture $target>> should emit a Variable token with Definition modifier
     // on the capture target variable ($target)
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2443,8 +3146,10 @@ fn sugarcube_capture_target_variable_definition_token() {
             && tok_text == "$target"
             && t.modifier == Some(SemanticTokenModifier::Definition)
     });
-    assert!(target_tok.is_some(),
-        "<<capture $target>> should emit Variable+Definition token for $target");
+    assert!(
+        target_tok.is_some(),
+        "<<capture $target>> should emit Variable+Definition token for $target"
+    );
 }
 
 #[test]
@@ -2452,7 +3157,7 @@ fn sugarcube_for_loop_vars_tokens() {
     // <<for _i, $items>> should emit:
     //   - Variable+Definition for _i (the loop index, a write target)
     //   - Variable (no modifier) for $items (the iterated collection, a read)
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2466,25 +3171,27 @@ fn sugarcube_for_loop_vars_tokens() {
             && tok_text == "_i"
             && t.modifier == Some(SemanticTokenModifier::Definition)
     });
-    assert!(index_tok.is_some(),
-        "<<for _i, $items>> should emit Variable+Definition token for _i");
+    assert!(
+        index_tok.is_some(),
+        "<<for _i, $items>> should emit Variable+Definition token for _i"
+    );
 
     // Check $items token: Variable with no modifier
     let iter_tok = flatten_token_groups(&result).into_iter().find(|t| {
         let tok_text = &text[t.start.min(text.len())..(t.start + t.length).min(text.len())];
-        t.token_type == SemanticTokenType::Variable
-            && tok_text == "$items"
-            && t.modifier.is_none()
+        t.token_type == SemanticTokenType::Variable && tok_text == "$items" && t.modifier.is_none()
     });
-    assert!(iter_tok.is_some(),
-        "<<for _i, $items>> should emit Variable token (no modifier) for $items");
+    assert!(
+        iter_tok.is_some(),
+        "<<for _i, $items>> should emit Variable token (no modifier) for $items"
+    );
 }
 
 #[test]
 fn sugarcube_for_c_style_no_phase5_tokens() {
     // C-style <<for _i to 0; _i lt 10; _i++>> should NOT emit Phase 5
     // for_loop_vars tokens (it falls through to JS annotation pass).
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2501,14 +3208,16 @@ fn sugarcube_for_c_style_no_phase5_tokens() {
             && tok_text == "_i"
             && t.modifier == Some(SemanticTokenModifier::Definition)
     });
-    assert!(index_def_tok.is_none(),
-        "C-style <<for>> should NOT emit Variable+Definition for _i from for_loop_vars");
+    assert!(
+        index_def_tok.is_none(),
+        "C-style <<for>> should NOT emit Variable+Definition for _i from for_loop_vars"
+    );
 }
 
 #[test]
 fn sugarcube_widget_definition_name_token() {
     // <<widget myHelper>> should emit a Function+Definition token for "myHelper"
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2522,14 +3231,16 @@ fn sugarcube_widget_definition_name_token() {
             && tok_text == "myHelper"
             && t.modifier == Some(SemanticTokenModifier::Definition)
     });
-    assert!(def_tok.is_some(),
-        "<<widget myHelper>> should emit Function+Definition token for 'myHelper'");
+    assert!(
+        def_tok.is_some(),
+        "<<widget myHelper>> should emit Function+Definition token for 'myHelper'"
+    );
 }
 
 #[test]
 fn sugarcube_capture_temp_variable_token() {
     // <<capture _temp>> should emit a Variable+Definition token for _temp
-    use crate::plugin::{SemanticTokenType, SemanticTokenModifier};
+    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
 
     let mut plugin = SugarCubePlugin::new();
@@ -2542,8 +3253,10 @@ fn sugarcube_capture_temp_variable_token() {
             && tok_text == "_temp"
             && t.modifier == Some(SemanticTokenModifier::Definition)
     });
-    assert!(temp_tok.is_some(),
-        "<<capture _temp>> should emit Variable+Definition token for _temp");
+    assert!(
+        temp_tok.is_some(),
+        "<<capture _temp>> should emit Variable+Definition token for _temp"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2555,37 +3268,46 @@ fn sugarcube_link_requires_close_tag() {
     // <<link "Go" "Room">> without close tag SHOULD produce an error.
     // Since <<link>> is a Container macro, it always requires <</link>>.
     use crate::sugarcube::SugarCubePlugin;
-    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<link \"Go\" \"Room\">>After\n:: Room\nHello\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Unclosed <<link>> should produce an unclosed-block diagnostic
-    let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let unclosed: Vec<_> = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
-    assert!(!unclosed.is_empty(),
+    assert!(
+        !unclosed.is_empty(),
         "<<link>> without close tag should produce an unclosed-block error, got: {:?}",
-        unclosed);
+        unclosed
+    );
 }
 
 #[test]
 fn sugarcube_link_block_with_close_tag() {
     // <<link "Go">>Clicked!<</link>> — block form with close tag
     use crate::sugarcube::SugarCubePlugin;
-    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<link \"Go\">>Clicked!<</link>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
     // Block form should not produce errors
-    let errors: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let errors: Vec<_> = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.code != "sc-deprecated")
         .collect();
-    assert!(errors.is_empty(),
-        "Block <<link>> with close tag should not produce errors, got: {:?}", errors);
+    assert!(
+        errors.is_empty(),
+        "Block <<link>> with close tag should not produce errors, got: {:?}",
+        errors
+    );
 }
 
 #[test]
@@ -2593,16 +3315,20 @@ fn sugarcube_button_requires_close_tag() {
     // <<button "Go" "Room">> without close tag SHOULD produce an error.
     // Since <<button>> is a Container macro, it always requires <</button>>.
     use crate::sugarcube::SugarCubePlugin;
-    
 
     let mut plugin = SugarCubePlugin::new();
     let text = ":: Start\n<<button \"Go\" \"Room\">>After\n:: Room\nHello\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
-    let unclosed: Vec<_> = result.diagnostic_groups.iter().flat_map(|g| g.diagnostics.iter())
+    let unclosed: Vec<_> = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
         .filter(|d| d.message.contains("nclose") || d.message.contains("block"))
         .collect();
-    assert!(!unclosed.is_empty(),
+    assert!(
+        !unclosed.is_empty(),
         "<<button>> without close tag should produce an unclosed-block error, got: {:?}",
-        unclosed);
+        unclosed
+    );
 }

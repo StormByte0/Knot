@@ -25,7 +25,7 @@ use crate::sugarcube::ast::{AnalyzedVarOp, AstNode, JsAnalysis, PassageAst};
 use crate::sugarcube::js::js_preprocess;
 use crate::sugarcube::js::js_walk;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
-use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
+use knot_core::oxc::{ParseMode as JsParseMode, parse_js};
 use oxc_span::GetSpan;
 
 /// Annotate AST nodes with JS analysis results (Phase 2).
@@ -68,11 +68,7 @@ pub fn annotate_js(
 ///
 /// `sugarcube_syntax` controls whether the SugarCube preprocessor runs.
 /// See [`annotate_js`] for details.
-fn annotate_script_passage(
-    passage_ast: &mut PassageAst,
-    body_text: &str,
-    sugarcube_syntax: bool,
-) {
+fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str, sugarcube_syntax: bool) {
     if body_text.trim().is_empty() {
         return;
     }
@@ -92,9 +88,9 @@ fn annotate_script_passage(
     // a sea of approximate tokens from a fallback scanner. The diagnostic
     // from js_validate still shows the error location.
     let outcome = parse_js(&preprocessed.source, JsParseMode::Module);
-    if let Some(analysis) = outcome.with_program(|program| {
-        js_walk::walk_script_passage(program, &preprocessed)
-    }) {
+    if let Some(analysis) =
+        outcome.with_program(|program| js_walk::walk_script_passage(program, &preprocessed))
+    {
         passage_ast.script_js_analysis = Some(analysis);
     }
 }
@@ -156,7 +152,11 @@ fn annotate_inline_js(
 
                 // For all other macros, determine if they contain JS that needs annotation
                 let snippet = collect_macro_js_snippet(
-                    name, args, open_span.clone(), set_assignment.as_ref(), known_macro_names,
+                    name,
+                    args,
+                    open_span.clone(),
+                    set_assignment.as_ref(),
+                    known_macro_names,
                 );
 
                 if let Some((source, body_offset, is_block)) = snippet {
@@ -194,82 +194,63 @@ fn annotate_inline_js(
                 // so without this, scalar-assigned variables get NO variable
                 // token — inconsistent with block-assigned variables which
                 // get tokens via leaf write decomposition.
-                if name.eq_ignore_ascii_case("set") {
-                    if let Some(sa) = set_assignment {
-                        if let Some(expr) = &sa.expression {
-                            let trimmed = expr.trim();
-                            if trimmed.starts_with('{') || trimmed.starts_with('[') {
-                                let expr_span = sa.expression_span.as_ref().cloned()
-                                    .unwrap_or_else(|| sa.target.span.clone());
+                if name.eq_ignore_ascii_case("set")
+                    && let Some(sa) = set_assignment
+                {
+                    if let Some(expr) = &sa.expression {
+                        let trimmed = expr.trim();
+                        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                            let expr_span = sa
+                                .expression_span
+                                .as_ref()
+                                .cloned()
+                                .unwrap_or_else(|| sa.target.span.clone());
 
-                                let leading_ws = expr.len() - expr.trim_start().len();
-                                let expr_body_offset = sa.expression_span.as_ref()
-                                    .map(|s| s.start + leading_ws)
-                                    .unwrap_or(sa.target.span.start);
+                            let leading_ws = expr.len() - expr.trim_start().len();
+                            let expr_body_offset = sa
+                                .expression_span
+                                .as_ref()
+                                .map(|s| s.start + leading_ws)
+                                .unwrap_or(sa.target.span.start);
 
-                                // Compute the full assignment construct span
-                                // (target + `to` + RHS). Used as the root
-                                // construct span for propagation.
-                                let assign_span = {
-                                    let start = sa.target.span.start;
-                                    let end = expr_span.end;
-                                    start..end
-                                };
+                            // Compute the full assignment construct span
+                            // (target + `to` + RHS). Used as the root
+                            // construct span for propagation.
+                            let assign_span = {
+                                let start = sa.target.span.start;
+                                let end = expr_span.end;
+                                start..end
+                            };
 
-                                let target_seg_spans = compute_target_segment_spans(
-                                    &sa.target.name,
-                                    &sa.target.property_path,
-                                    &sa.target.span,
-                                );
+                            let target_seg_spans = compute_target_segment_spans(
+                                &sa.target.name,
+                                &sa.target.property_path,
+                                &sa.target.span,
+                            );
 
-                                // Decompose the block literal into leaf writes.
-                                let leaf_writes = decompose_block_literal_for_set(
-                                    trimmed,
-                                    expr_body_offset,
-                                    &sa.target.name,
-                                    sa.target.is_temporary,
-                                    &sa.target.property_path,
-                                    &target_seg_spans,
-                                    assign_span,
-                                );
+                            // Decompose the block literal into leaf writes.
+                            let leaf_writes = decompose_block_literal_for_set(
+                                trimmed,
+                                expr_body_offset,
+                                &sa.target.name,
+                                sa.target.is_temporary,
+                                &sa.target.property_path,
+                                &target_seg_spans,
+                                assign_span,
+                            );
 
-                                if !leaf_writes.is_empty() {
-                                    let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
-                                    for op in leaf_writes {
-                                        analysis.var_ops.push(op);
-                                    }
-                                } else {
-                                    // Empty block literal (e.g., `<<set $x to []>>`
-                                    // or `<<set $x to {}>>`) — no leaf writes to
-                                    // decompose. Emit a direct Write on the root
-                                    // so the variable still gets a token, matching
-                                    // the behavior for scalar assignments and
-                                    // non-empty block assignments.
-                                    let target_span = sa.target.span.clone();
-                                    let segment_spans = compute_target_segment_spans(
-                                        &sa.target.name,
-                                        &sa.target.property_path,
-                                        &target_span,
-                                    );
-                                    let var_name = sa.target.name.clone();
-                                    let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
-                                    analysis.var_ops.push(AnalyzedVarOp {
-                                        name: var_name,
-                                        is_temporary: sa.target.is_temporary,
-                                        access_kind: VarAccessKind::Write,
-                                        span: target_span.clone(),
-                                        property_path: sa.target.property_path.clone(),
-                                        segment_spans,
-                                        construct_span: Some(target_span.clone()),
-                                        segment_construct_spans: vec![target_span],
-                                    });
+                            if !leaf_writes.is_empty() {
+                                let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                                for op in leaf_writes {
+                                    analysis.var_ops.push(op);
                                 }
                             } else {
-                                // Scalar RHS — emit a direct Write var_op on
-                                // the target variable. This ensures every
-                                // `<<set $var to <scalar>>>` produces a
-                                // Variable+Definition token, matching the
-                                // behavior for block-literal assignments.
+                                // Empty block literal (e.g., `<<set $x to []>>`
+                                // or `<<set $x to {}>>`) — no leaf writes to
+                                // decompose. Emit a direct Write on the root
+                                // so the variable still gets a token, matching
+                                // the behavior for scalar assignments and
+                                // non-empty block assignments.
                                 let target_span = sa.target.span.clone();
                                 let segment_spans = compute_target_segment_spans(
                                     &sa.target.name,
@@ -290,12 +271,11 @@ fn annotate_inline_js(
                                 });
                             }
                         } else {
-                            // Postfix ++ / -- (expression is None).
-                            // Emit a Write var_op on the target variable so it
-                            // gets a Variable(Definition) token. Without this,
-                            // `<<set $a++>>` produces the `++` Operator token
-                            // but NO Variable token for `$a` — the variable
-                            // appears uncolored.
+                            // Scalar RHS — emit a direct Write var_op on
+                            // the target variable. This ensures every
+                            // `<<set $var to <scalar>>>` produces a
+                            // Variable+Definition token, matching the
+                            // behavior for block-literal assignments.
                             let target_span = sa.target.span.clone();
                             let segment_spans = compute_target_segment_spans(
                                 &sa.target.name,
@@ -315,6 +295,31 @@ fn annotate_inline_js(
                                 segment_construct_spans: vec![target_span],
                             });
                         }
+                    } else {
+                        // Postfix ++ / -- (expression is None).
+                        // Emit a Write var_op on the target variable so it
+                        // gets a Variable(Definition) token. Without this,
+                        // `<<set $a++>>` produces the `++` Operator token
+                        // but NO Variable token for `$a` — the variable
+                        // appears uncolored.
+                        let target_span = sa.target.span.clone();
+                        let segment_spans = compute_target_segment_spans(
+                            &sa.target.name,
+                            &sa.target.property_path,
+                            &target_span,
+                        );
+                        let var_name = sa.target.name.clone();
+                        let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                        analysis.var_ops.push(AnalyzedVarOp {
+                            name: var_name,
+                            is_temporary: sa.target.is_temporary,
+                            access_kind: VarAccessKind::Write,
+                            span: target_span.clone(),
+                            property_path: sa.target.property_path.clone(),
+                            segment_spans,
+                            construct_span: Some(target_span.clone()),
+                            segment_construct_spans: vec![target_span],
+                        });
                     }
                 }
 
@@ -326,34 +331,35 @@ fn annotate_inline_js(
                 //
                 // This covers: `to`, `into`, `=`, `+=`, `-=`, `*=`, `/=`,
                 // `%=`, `++` (postfix), `--` (postfix).
-                if name.eq_ignore_ascii_case("set") {
-                    if let Some(sa) = set_assignment {
-                        if let Some(op_span) = &sa.operator_span {
-                            let kind = match sa.operator {
-                                crate::sugarcube::ast::SetOperator::To
-                                | crate::sugarcube::ast::SetOperator::Into
-                                | crate::sugarcube::ast::SetOperator::Eq => {
-                                    crate::sugarcube::ast::OperatorKind::Assignment
-                                }
-                                crate::sugarcube::ast::SetOperator::PlusEq
-                                | crate::sugarcube::ast::SetOperator::MinusEq
-                                | crate::sugarcube::ast::SetOperator::StarEq
-                                | crate::sugarcube::ast::SetOperator::SlashEq
-                                | crate::sugarcube::ast::SetOperator::PercentEq => {
-                                    crate::sugarcube::ast::OperatorKind::CompoundAssign
-                                }
-                                crate::sugarcube::ast::SetOperator::PostfixPlus
-                                | crate::sugarcube::ast::SetOperator::PostfixMinus => {
-                                    crate::sugarcube::ast::OperatorKind::Arithmetic
-                                }
-                            };
-                            let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
-                            analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
-                                kind,
-                                span: op_span.clone(),
-                            });
+                if name.eq_ignore_ascii_case("set")
+                    && let Some(sa) = set_assignment
+                    && let Some(op_span) = &sa.operator_span
+                {
+                    let kind = match sa.operator {
+                        crate::sugarcube::ast::SetOperator::To
+                        | crate::sugarcube::ast::SetOperator::Into
+                        | crate::sugarcube::ast::SetOperator::Eq => {
+                            crate::sugarcube::ast::OperatorKind::Assignment
                         }
-                    }
+                        crate::sugarcube::ast::SetOperator::PlusEq
+                        | crate::sugarcube::ast::SetOperator::MinusEq
+                        | crate::sugarcube::ast::SetOperator::StarEq
+                        | crate::sugarcube::ast::SetOperator::SlashEq
+                        | crate::sugarcube::ast::SetOperator::PercentEq => {
+                            crate::sugarcube::ast::OperatorKind::CompoundAssign
+                        }
+                        crate::sugarcube::ast::SetOperator::PostfixPlus
+                        | crate::sugarcube::ast::SetOperator::PostfixMinus => {
+                            crate::sugarcube::ast::OperatorKind::Arithmetic
+                        }
+                    };
+                    let analysis = js_analysis.get_or_insert_with(JsAnalysis::default);
+                    analysis
+                        .operator_spans
+                        .push(crate::sugarcube::ast::OperatorSpan {
+                            kind,
+                            span: op_span.clone(),
+                        });
                 }
 
                 // Recurse into children
@@ -422,7 +428,9 @@ fn collect_macro_js_snippet(
                 let trimmed = expr.trim();
                 if !trimmed.is_empty() {
                     let leading_ws = expr.len() - expr.trim_start().len();
-                    let expr_body_offset = sa.expression_span.as_ref()
+                    let expr_body_offset = sa
+                        .expression_span
+                        .as_ref()
                         .map(|s| s.start + leading_ws)
                         .unwrap_or(open_span.start);
                     Some((trimmed.to_string(), expr_body_offset, false))
@@ -451,9 +459,7 @@ fn collect_macro_js_snippet(
         } else {
             None
         }
-    } else if (args.contains('$') || args.contains('_'))
-        && !known_macro_names.contains(name)
-    {
+    } else if (args.contains('$') || args.contains('_')) && !known_macro_names.contains(name) {
         // Fallback: unknown macros whose args contain $var/_var may contain
         // JS expressions. But ONLY for macros not in the known set — custom
         // widgets like <<statblock "Strength" $stats.strength>> use
@@ -519,15 +525,16 @@ fn annotate_for_macro_args(
     // SugarCube keyword operators that can appear in <<for>> args.
     // Sorted by length (longest first) to ensure longest-match.
     const FOR_KEYWORDS: &[&str] = &[
-        "isnot", "ndef", "from",
-        "and", "ndef", "gte", "lte", "neq", "def",
-        "eq", "gt", "is", "lt", "or", "to",
-        "not",
+        "isnot", "ndef", "from", "and", "ndef", "gte", "lte", "neq", "def", "eq", "gt", "is", "lt",
+        "or", "to", "not",
     ];
 
     // Symbolic operator chars that can appear in C-style <<for>>.
     fn is_sym_op_char(b: u8) -> bool {
-        matches!(b, b'+' | b'-' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'*' | b'/' | b'%')
+        matches!(
+            b,
+            b'+' | b'-' | b'=' | b'<' | b'>' | b'!' | b'&' | b'|' | b'*' | b'/' | b'%'
+        )
     }
 
     fn is_ident_char(b: u8) -> bool {
@@ -555,7 +562,8 @@ fn annotate_for_macro_args(
                     if args[i..].starts_with(kw) {
                         // Word boundary after: next char must NOT be an ident char
                         let after_pos = i + kw.len();
-                        let word_boundary_after = after_pos >= len || !is_ident_char(bytes[after_pos]);
+                        let word_boundary_after =
+                            after_pos >= len || !is_ident_char(bytes[after_pos]);
                         if word_boundary_after {
                             matched = Some(kw);
                             break;
@@ -575,10 +583,9 @@ fn annotate_for_macro_args(
                         _ => unreachable!(),
                     };
                     let span = (args_offset + i)..(args_offset + i + kw.len());
-                    analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
-                        kind,
-                        span,
-                    });
+                    analysis
+                        .operator_spans
+                        .push(crate::sugarcube::ast::OperatorSpan { kind, span });
                     i += kw.len();
                     continue;
                 }
@@ -598,10 +605,12 @@ fn annotate_for_macro_args(
                 i += 1;
             }
             let span = (args_offset + start)..(args_offset + i);
-            analysis.literal_spans.push(crate::sugarcube::ast::LiteralSpan {
-                kind: crate::sugarcube::ast::LiteralKind::Number,
-                span,
-            });
+            analysis
+                .literal_spans
+                .push(crate::sugarcube::ast::LiteralSpan {
+                    kind: crate::sugarcube::ast::LiteralKind::Number,
+                    span,
+                });
             continue;
         }
 
@@ -623,19 +632,16 @@ fn annotate_for_macro_args(
                     crate::sugarcube::ast::OperatorKind::Comparison
                 }
                 "&&" | "||" | "!" => crate::sugarcube::ast::OperatorKind::Logical,
-                "+" | "-" | "*" | "/" | "%" => {
-                    crate::sugarcube::ast::OperatorKind::Arithmetic
-                }
+                "+" | "-" | "*" | "/" | "%" => crate::sugarcube::ast::OperatorKind::Arithmetic,
                 _ => {
                     // Unknown symbolic sequence — skip without emitting
                     continue;
                 }
             };
             let span = (args_offset + start)..(args_offset + i);
-            analysis.operator_spans.push(crate::sugarcube::ast::OperatorSpan {
-                kind,
-                span,
-            });
+            analysis
+                .operator_spans
+                .push(crate::sugarcube::ast::OperatorSpan { kind, span });
             continue;
         }
 
@@ -672,13 +678,15 @@ fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAna
     //
     // If oxc panics (unrecoverable error), return empty analysis — no tokens.
     // The diagnostic from js_validate still shows the error location.
-    outcome.with_program(|program| {
-        if is_block {
-            js_walk::walk_script_passage(program, &shifted)
-        } else {
-            js_walk::walk_inline_js(program, &shifted)
-        }
-    }).unwrap_or_default()
+    outcome
+        .with_program(|program| {
+            if is_block {
+                js_walk::walk_script_passage(program, &shifted)
+            } else {
+                js_walk::walk_inline_js(program, &shifted)
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// Decompose a block literal (object or array) into leaf writes for a
@@ -740,6 +748,7 @@ fn decompose_block_literal_for_set(
 }
 
 /// Recursively decompose an oxc ObjectExpression into leaf writes.
+#[allow(clippy::too_many_arguments)]
 fn decompose_object_expr_for_set(
     obj: &oxc_ast::ast::ObjectExpression<'_>,
     var_name: &str,
@@ -786,16 +795,26 @@ fn decompose_object_expr_for_set(
             match &p.value {
                 Expression::ObjectExpression(inner) => {
                     decompose_object_expr_for_set(
-                        inner, var_name, is_temporary, &path,
-                        segment_spans, segment_construct_spans,
-                        preprocessed, result,
+                        inner,
+                        var_name,
+                        is_temporary,
+                        &path,
+                        segment_spans,
+                        segment_construct_spans,
+                        preprocessed,
+                        result,
                     );
                 }
                 Expression::ArrayExpression(inner) => {
                     decompose_array_expr_for_set(
-                        inner, var_name, is_temporary, &path,
-                        segment_spans, segment_construct_spans,
-                        preprocessed, result,
+                        inner,
+                        var_name,
+                        is_temporary,
+                        &path,
+                        segment_spans,
+                        segment_construct_spans,
+                        preprocessed,
+                        result,
                     );
                 }
                 _ => {
@@ -816,6 +835,7 @@ fn decompose_object_expr_for_set(
 }
 
 /// Recursively decompose an oxc ArrayExpression into leaf writes.
+#[allow(clippy::too_many_arguments)]
 fn decompose_array_expr_for_set(
     arr: &oxc_ast::ast::ArrayExpression<'_>,
     var_name: &str,
@@ -849,8 +869,14 @@ fn decompose_array_expr_for_set(
                 let mut scs = parent_construct_spans.clone();
                 scs.push(elem_range.clone());
                 decompose_object_expr_for_set(
-                    obj, var_name, is_temporary, &path,
-                    ss, scs, preprocessed, result,
+                    obj,
+                    var_name,
+                    is_temporary,
+                    &path,
+                    ss,
+                    scs,
+                    preprocessed,
+                    result,
                 );
             }
             ArrayExpressionElement::ArrayExpression(inner) => {
@@ -864,8 +890,14 @@ fn decompose_array_expr_for_set(
                 let mut scs = parent_construct_spans.clone();
                 scs.push(elem_range.clone());
                 decompose_array_expr_for_set(
-                    inner, var_name, is_temporary, &path,
-                    ss, scs, preprocessed, result,
+                    inner,
+                    var_name,
+                    is_temporary,
+                    &path,
+                    ss,
+                    scs,
+                    preprocessed,
+                    result,
                 );
             }
             ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => {
@@ -898,6 +930,7 @@ fn decompose_array_expr_for_set(
 /// Recursively decompose an oxc expression into leaf writes.
 /// Delegates to `decompose_object_expr_for_set` or `decompose_array_expr_for_set`
 /// based on the expression type.
+#[allow(clippy::too_many_arguments)]
 fn decompose_expr_for_set(
     expr: &oxc_ast::ast::Expression<'_>,
     var_name: &str,
@@ -915,23 +948,38 @@ fn decompose_expr_for_set(
         Expression::ParenthesizedExpression(pe) => {
             // Unwrap parens — the inner expression is what matters.
             decompose_expr_for_set(
-                &pe.expression, var_name, is_temporary, prefix,
-                parent_segments, parent_construct_spans,
-                preprocessed, result,
+                &pe.expression,
+                var_name,
+                is_temporary,
+                prefix,
+                parent_segments,
+                parent_construct_spans,
+                preprocessed,
+                result,
             );
         }
         Expression::ObjectExpression(obj) => {
             decompose_object_expr_for_set(
-                obj, var_name, is_temporary, prefix,
-                parent_segments, parent_construct_spans,
-                preprocessed, result,
+                obj,
+                var_name,
+                is_temporary,
+                prefix,
+                parent_segments,
+                parent_construct_spans,
+                preprocessed,
+                result,
             );
         }
         Expression::ArrayExpression(arr) => {
             decompose_array_expr_for_set(
-                arr, var_name, is_temporary, prefix,
-                parent_segments, parent_construct_spans,
-                preprocessed, result,
+                arr,
+                var_name,
+                is_temporary,
+                prefix,
+                parent_segments,
+                parent_construct_spans,
+                preprocessed,
+                result,
             );
         }
         _ => {
@@ -955,7 +1003,6 @@ fn decompose_expr_for_set(
         }
     }
 }
-
 
 /// Compute segment spans from a target's name, property_path, and overall span.
 pub fn compute_target_segment_spans(
@@ -990,7 +1037,7 @@ pub fn compute_target_segment_spans(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
     use crate::plugin::{FormatPluginMut, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
     use url::Url;
@@ -1021,10 +1068,16 @@ mod tests {
         // only saw `"Alex"` (not the full assignment).
         let src = ":: Start\n<<set $playerName to \"Alex\">>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(!var_tokens.is_empty(),
-            "scalar <<set>> should emit a Variable token for the target, got: {:?}", var_tokens);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$playerName"),
-            "Variable token should cover $playerName, got: {:?}", var_tokens);
+        assert!(
+            !var_tokens.is_empty(),
+            "scalar <<set>> should emit a Variable token for the target, got: {:?}",
+            var_tokens
+        );
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$playerName"),
+            "Variable token should cover $playerName, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1032,8 +1085,11 @@ mod tests {
         // `<<set $playerLevel to 1>>` — scalar RHS (number).
         let src = ":: Start\n<<set $playerLevel to 1>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$playerLevel"),
-            "Variable token should cover $playerLevel, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$playerLevel"),
+            "Variable token should cover $playerLevel, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1043,8 +1099,13 @@ mod tests {
         // empty vec (no leaf writes), so no token was emitted.
         let src = ":: Start\n<<set $visitedRooms to []>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$visitedRooms"),
-            "empty array <<set>> should emit a Variable token for the target, got: {:?}", var_tokens);
+        assert!(
+            var_tokens
+                .iter()
+                .any(|(_, _, text)| text == "$visitedRooms"),
+            "empty array <<set>> should emit a Variable token for the target, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1052,8 +1113,11 @@ mod tests {
         // `<<set $empty to {}>>` — empty object RHS.
         let src = ":: Start\n<<set $empty to {}>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$empty"),
-            "empty object <<set>> should emit a Variable token, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$empty"),
+            "empty object <<set>> should emit a Variable token, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1063,8 +1127,11 @@ mod tests {
         // the fix didn't break it.
         let src = ":: Start\n<<set $inventory to [\"Lantern\", \"Rope\"]>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$inventory"),
-            "non-empty array <<set>> should emit a Variable token, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$inventory"),
+            "non-empty array <<set>> should emit a Variable token, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1072,8 +1139,11 @@ mod tests {
         // `<<set $stats to { strength: 10 }>>` — non-empty object.
         let src = ":: Start\n<<set $stats to { strength: 10 }>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$stats"),
-            "non-empty object <<set>> should emit a Variable token, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$stats"),
+            "non-empty object <<set>> should emit a Variable token, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1083,8 +1153,11 @@ mod tests {
         // emit a direct Write token.
         let src = ":: Start\n<<set $npcs to new Map([[\"bard\", { name: \"Lila\" }]])>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
-            "new-expression <<set>> should emit a Variable token, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
+            "new-expression <<set>> should emit a Variable token, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1092,8 +1165,11 @@ mod tests {
         // `<<set _count to 0>>` — temporary variable, scalar RHS.
         let src = ":: Start\n<<set _count to 0>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "_count"),
-            "temp var <<set>> should emit a Variable token, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "_count"),
+            "temp var <<set>> should emit a Variable token, got: {:?}",
+            var_tokens
+        );
     }
 
     #[test]
@@ -1115,9 +1191,24 @@ mod tests {
 ";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
         let names: Vec<&str> = var_tokens.iter().map(|(_, _, t)| t.as_str()).collect();
-        for expected in &["$playerName", "$playerLevel", "$playerHP", "$playerMaxHP", "$playerGold", "$inventory", "$stats", "$flags", "$visitedRooms", "$questLog"] {
-            assert!(names.contains(expected),
-                "Variable token missing for {}: got {:?}", expected, names);
+        for expected in &[
+            "$playerName",
+            "$playerLevel",
+            "$playerHP",
+            "$playerMaxHP",
+            "$playerGold",
+            "$inventory",
+            "$stats",
+            "$flags",
+            "$visitedRooms",
+            "$questLog",
+        ] {
+            assert!(
+                names.contains(expected),
+                "Variable token missing for {}: got {:?}",
+                expected,
+                names
+            );
         }
     }
 
@@ -1131,11 +1222,17 @@ mod tests {
         // `??` is a LogicalExpression in oxc, handled by `emit_logical_operator`.
         let src = ":: Start\n<<= $playerClass ?? \"Undecided\">>\n";
         let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
-        assert!(!op_tokens.is_empty(),
-            "?? should get an Operator token, got: {:?}", op_tokens);
+        assert!(
+            !op_tokens.is_empty(),
+            "?? should get an Operator token, got: {:?}",
+            op_tokens
+        );
         // Verify the token text contains `??`
-        assert!(op_tokens.iter().any(|(_, _, text)| text.contains("??")),
-            "Operator token should contain '??', got: {:?}", op_tokens);
+        assert!(
+            op_tokens.iter().any(|(_, _, text)| text.contains("??")),
+            "Operator token should contain '??', got: {:?}",
+            op_tokens
+        );
     }
 
     #[test]
@@ -1143,8 +1240,11 @@ mod tests {
         // `<<set _counter to (_counter ?? 0) + 1>>` — from testbed 26-misc.twee:12
         let src = ":: Start\n<<set _counter to (_counter ?? 0) + 1>>\n";
         let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
-        assert!(op_tokens.iter().any(|(_, _, text)| text.contains("??")),
-            "?? in <<set>> should get an Operator token, got: {:?}", op_tokens);
+        assert!(
+            op_tokens.iter().any(|(_, _, text)| text.contains("??")),
+            "?? in <<set>> should get an Operator token, got: {:?}",
+            op_tokens
+        );
     }
 
     #[test]
@@ -1153,8 +1253,11 @@ mod tests {
         // that get substituted to `&&` and `||`. They should get Operator tokens.
         let src = ":: Start\n<<if $x and $y or $z>><</if>>\n";
         let op_tokens = tokens_of_type(src, SemanticTokenType::Operator);
-        assert!(op_tokens.len() >= 2,
-            "and + or should produce 2+ Operator tokens, got: {:?}", op_tokens);
+        assert!(
+            op_tokens.len() >= 2,
+            "and + or should produce 2+ Operator tokens, got: {:?}",
+            op_tokens
+        );
     }
 
     #[test]
@@ -1164,8 +1267,11 @@ mod tests {
         // in oxc. The operands ($npcs, .mood) should still get tokens.
         let src = ":: Start\n<<set _mood to $npcs.get(\"fisherman\")?.mood ?? 0>>\n";
         let var_tokens = tokens_of_type(src, SemanticTokenType::Variable);
-        assert!(var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
-            "$npcs should get a Variable token even with optional chaining, got: {:?}", var_tokens);
+        assert!(
+            var_tokens.iter().any(|(_, _, text)| text == "$npcs"),
+            "$npcs should get a Variable token even with optional chaining, got: {:?}",
+            var_tokens
+        );
     }
 
     // ── Dead-end / link extraction tests ────────────────────────────────
@@ -1180,22 +1286,27 @@ mod tests {
         // in passage_build.rs, causing false dead-end diagnostics.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = ":: SomePassage\nYou are here.\n<<return \"Go back\">>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
 
         // Find the passage and check its links
-        let passage = result.passages.iter()
+        let passage = result
+            .passages
+            .iter()
             .find(|p| p.name == "SomePassage")
             .expect("SomePassage should exist");
-        assert!(!passage.links.is_empty(),
-            "Passage with <<return>> should have at least 1 link (for dead-end detection), got 0 links");
+        assert!(
+            !passage.links.is_empty(),
+            "Passage with <<return>> should have at least 1 link (for dead-end detection), got 0 links"
+        );
         // The link should have an empty target (dynamic navigation)
-        assert!(passage.links.iter().any(|l| l.target.is_empty()),
+        assert!(
+            passage.links.iter().any(|l| l.target.is_empty()),
             "<<return>> link should have empty target (history-based nav), got: {:?}",
-            passage.links.iter().map(|l| &l.target).collect::<Vec<_>>());
+            passage.links.iter().map(|l| &l.target).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1203,17 +1314,20 @@ mod tests {
         // Same as return — <<back "Display">> produces a link with empty target.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = ":: SomePassage\n<<back \"Go back\">>\n";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
 
-        let passage = result.passages.iter()
+        let passage = result
+            .passages
+            .iter()
             .find(|p| p.name == "SomePassage")
             .expect("SomePassage should exist");
-        assert!(!passage.links.is_empty(),
-            "Passage with <<back>> should have at least 1 link, got 0");
+        assert!(
+            !passage.links.is_empty(),
+            "Passage with <<back>> should have at least 1 link, got 0"
+        );
     }
 
     #[test]
@@ -1224,7 +1338,6 @@ mod tests {
         // sees it as having outgoing navigation.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = "\
@@ -1240,13 +1353,20 @@ You are in the north.
 
         // The "North" passage has <<return>> as its only outgoing navigation.
         // It should NOT produce a DeadEndPassage diagnostic.
-        let dead_end_diags: Vec<_> = result.diagnostic_groups.iter()
+        let dead_end_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "dead-end" || d.message.contains("dead end"))
             .collect();
-        assert!(dead_end_diags.is_empty(),
+        assert!(
+            dead_end_diags.is_empty(),
             "Passage with <<return>> should NOT be flagged as dead end, got: {:?}",
-            dead_end_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+            dead_end_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1257,7 +1377,6 @@ You are in the north.
         // flagged as a dead-end.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = "\
@@ -1271,13 +1390,20 @@ You are in the north.
 ";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
 
-        let dead_end_diags: Vec<_> = result.diagnostic_groups.iter()
+        let dead_end_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "dead-end" || d.message.contains("dead end"))
             .collect();
-        assert!(dead_end_diags.is_empty(),
+        assert!(
+            dead_end_diags.is_empty(),
             "Passage with zero-arg <<return>> should NOT be flagged as dead end, got: {:?}",
-            dead_end_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+            dead_end_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1288,7 +1414,6 @@ You are in the north.
         // <<link "Display" "Passage">> (two args) creates a PassageRef.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = "\
@@ -1300,9 +1425,12 @@ You are in the north.
         // Check that no passage has a macro_arg_ref with target "Forest"
         for passage in &result.passages {
             for arg_ref in &passage.macro_arg_refs {
-                assert_ne!(arg_ref.target, "Forest",
+                assert_ne!(
+                    arg_ref.target, "Forest",
                     "Single-arg <<link \"Forest\">> should NOT create a MacroArgRef with target \"Forest\". \
-                     The arg is a click handler label, not a passage target. Got: {:?}", arg_ref);
+                     The arg is a click handler label, not a passage target. Got: {:?}",
+                    arg_ref
+                );
             }
         }
     }
@@ -1314,7 +1442,6 @@ You are in the north.
         // text, not a passage target.
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         let src = "\
@@ -1325,9 +1452,12 @@ You are in the north.
 
         for passage in &result.passages {
             for arg_ref in &passage.macro_arg_refs {
-                assert_ne!(arg_ref.target, "Return to start",
+                assert_ne!(
+                    arg_ref.target, "Return to start",
                     "<<return \"Return to start\">> should NOT create a MacroArgRef with the label as target. \
-                     Got: {:?}", arg_ref);
+                     Got: {:?}",
+                    arg_ref
+                );
             }
         }
     }
@@ -1346,7 +1476,6 @@ You are in the north.
         //   - 2 args = link text + passage name (navigation)
         use crate::plugin::FormatPluginMut;
         use crate::sugarcube::SugarCubePlugin;
-        use url::Url;
 
         let mut plugin = SugarCubePlugin::new();
         // Note: NO passage named "Forest" exists in this story.
@@ -1356,13 +1485,17 @@ You are in the north.
 ";
         let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), src);
 
-        let broken_diags: Vec<_> = result.diagnostic_groups.iter()
+        let broken_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
             .flat_map(|g| g.diagnostics.iter())
             .filter(|d| d.code == "broken-link" || d.message.contains("not found"))
             .collect();
-        assert!(broken_diags.is_empty(),
+        assert!(
+            broken_diags.is_empty(),
             "Single-arg <<link \"Forest\">> should NOT produce broken-link diagnostics. \
              Got: {:?}",
-            broken_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+            broken_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 }

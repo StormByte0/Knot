@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::types::MacroArgKind;
 use super::catalog::builtin_macros;
+use crate::types::MacroArgKind;
 
 /// Macro names that can have a body (Container macros).
 ///
@@ -33,21 +33,31 @@ pub fn folding_modifier_names() -> HashSet<&'static str> {
     // All SubMacros — they're structural siblings of their parent block,
     // not nested children. They should render at the parent's depth level.
     [
-        "else", "elseif",           // inside <<if>>
-        "case", "default",          // inside <<switch>>
-        "break", "continue",        // inside <<for>>
-        "next",                     // inside <<for>> (SugarCube 2.x)
-        "option", "optionsfrom",    // inside <<listbox>>/<<dropdown>>
-        "stop",                     // inside <<timed>>/<<repeat>>
-        "track",                    // inside <<playlist>>
-    ].into_iter().collect()
+        "else",
+        "elseif", // inside <<if>>
+        "case",
+        "default", // inside <<switch>>
+        "break",
+        "continue", // inside <<for>>
+        "next",     // inside <<for>> (SugarCube 2.x)
+        "option",
+        "optionsfrom", // inside <<listbox>>/<<dropdown>>
+        "stop",        // inside <<timed>>/<<repeat>>
+        "track",       // inside <<playlist>>
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// Macros whose arguments include a passage-name reference.
 pub fn passage_arg_macro_names() -> HashSet<&'static str> {
     builtin_macros()
         .iter()
-        .filter(|m| m.args.as_ref().is_some_and(|args| args.iter().any(|a| a.is_passage_ref)))
+        .filter(|m| {
+            m.args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|a| a.is_passage_ref))
+        })
         .map(|m| m.name)
         .collect()
 }
@@ -57,10 +67,9 @@ pub fn label_then_passage_macros() -> HashSet<&'static str> {
     builtin_macros()
         .iter()
         .filter(|m| {
-            m.args.as_ref().is_some_and(|args| {
-                args.iter()
-                    .any(|a| a.is_passage_ref && a.position > 0)
-            })
+            m.args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|a| a.is_passage_ref && a.position > 0))
         })
         .map(|m| m.name)
         .collect()
@@ -110,7 +119,11 @@ pub fn macro_parent_constraints() -> HashMap<&'static str, HashSet<&'static str>
 pub fn dynamic_navigation_macros() -> HashSet<&'static str> {
     let mut set = builtin_macros()
         .iter()
-        .filter(|m| m.args.as_ref().is_some_and(|args| args.iter().any(|a| a.is_passage_ref)))
+        .filter(|m| {
+            m.args
+                .as_ref()
+                .is_some_and(|args| args.iter().any(|a| a.is_passage_ref))
+        })
         .map(|m| m.name)
         .collect::<HashSet<_>>();
     // back and return navigate dynamically but have no passage arg in the catalog

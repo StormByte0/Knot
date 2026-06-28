@@ -12,7 +12,10 @@ pub(crate) async fn code_action(
     // Short-circuit if the server is shutting down — the transport stream
     // may already be destroyed, so any attempt to write a response would
     // trigger "Cannot call write after a stream was destroyed".
-    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         return Ok(None);
     }
 
@@ -21,7 +24,8 @@ pub(crate) async fn code_action(
     // Resolve the startup passage name from the format plugin
     let format = inner.workspace.resolve_format();
     let plugin = inner.format_registry.get(&format);
-    let startup_passage_name = plugin.as_ref()
+    let startup_passage_name = plugin
+        .as_ref()
         .and_then(|p| {
             p.all_special_passages()
                 .into_iter()
@@ -33,7 +37,8 @@ pub(crate) async fn code_action(
         })
         .unwrap_or_else(|| "Startup".to_string());
 
-    let sigils: Vec<char> = plugin.as_ref()
+    let sigils: Vec<char> = plugin
+        .as_ref()
         .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
         .unwrap_or_default();
 
@@ -104,7 +109,9 @@ pub(crate) async fn code_action(
                         title: format!("Initialize {} in {}", var_name, startup_passage_name),
                         kind: Some(CodeActionKind::QUICKFIX),
                         diagnostics: Some(vec![diag.clone()]),
-                        edit: Some(helpers::initialize_var_in_story_init_edit(&inner, &var_name)),
+                        edit: Some(helpers::initialize_var_in_story_init_edit(
+                            &inner, &var_name,
+                        )),
                         is_preferred: Some(true),
                         ..Default::default()
                     }));

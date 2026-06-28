@@ -3,10 +3,10 @@
 //! None of these functions access plugin state; they are pure conversions
 //! from the SugarCube AST representation to the core `Passage` type.
 
-use knot_core::passage::{Block, MacroArgRef, MacroInvocation, Passage, VarKind, VarOp};
 use crate::sugarcube::ast::{self, PassageAst};
 use crate::sugarcube::classifier::ClassifiedPassage;
 use crate::sugarcube::parser::predicates::is_assignment_macro;
+use knot_core::passage::{Block, MacroArgRef, MacroInvocation, Passage, VarKind, VarOp};
 
 /// Convert a `LinkSource` to the corresponding `EdgeType` hint.
 ///
@@ -30,15 +30,22 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) 
                 if !content.is_empty() {
                     blocks.push(Block::Text {
                         content: content.clone(),
-                        span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                        span: body_offset_in_passage + span.start
+                            ..body_offset_in_passage + span.end,
                     });
                 }
             }
-            ast::AstNode::Macro { name, args, full_span, .. } => {
+            ast::AstNode::Macro {
+                name,
+                args,
+                full_span,
+                ..
+            } => {
                 blocks.push(Block::Macro {
                     name: name.clone(),
                     args: args.clone(),
-                    span: body_offset_in_passage + full_span.start..body_offset_in_passage + full_span.end,
+                    span: body_offset_in_passage + full_span.start
+                        ..body_offset_in_passage + full_span.end,
                 });
             }
             ast::AstNode::Expression { content, span, .. } => {
@@ -130,7 +137,8 @@ pub fn build_passage(
     // for `name.len()` bytes. `name_start` is document-absolute, so subtract
     // `passage_head` to make it passage-relative.
     passage.header_name_span = Some(
-        (cp.header.name_start - passage_head)..(cp.header.name_start - passage_head + cp.header.name.len())
+        (cp.header.name_start - passage_head)
+            ..(cp.header.name_start - passage_head + cp.header.name.len()),
     );
 
     // Build body blocks from AST (shift spans by body_offset_in_passage)
@@ -150,26 +158,37 @@ pub fn build_passage(
     // The graph builder (in `helpers/graph.rs`) skips links with empty
     // targets when adding edges — this prevents false "BrokenLink"
     // diagnostics for dynamic navigation.
-    passage.links = passage_ast.links.iter()
+    passage.links = passage_ast
+        .links
+        .iter()
         .map(|link_info| {
             let edge_type_hint = link_source_to_edge_type(link_info.source);
             knot_core::passage::Link {
                 display_text: link_info.display.clone(),
                 target: link_info.target.clone(),
-                span: body_offset_in_passage + link_info.span.start..body_offset_in_passage + link_info.span.end,
+                span: body_offset_in_passage + link_info.span.start
+                    ..body_offset_in_passage + link_info.span.end,
                 edge_type_hint,
             }
-        }).collect();
+        })
+        .collect();
 
     // Build var ops from AST (shift spans by body_offset_in_passage)
-    passage.vars = passage_ast.var_ops.iter().map(|var_op| {
-        VarOp {
+    passage.vars = passage_ast
+        .var_ops
+        .iter()
+        .map(|var_op| VarOp {
             name: var_op.name.clone(),
-            kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
-            span: body_offset_in_passage + var_op.span.start..body_offset_in_passage + var_op.span.end,
+            kind: if var_op.is_write {
+                VarKind::Init
+            } else {
+                VarKind::Read
+            },
+            span: body_offset_in_passage + var_op.span.start
+                ..body_offset_in_passage + var_op.span.end,
             is_temporary: var_op.is_temporary,
-        }
-    }).collect();
+        })
+        .collect();
 
     // Build macro arg refs from AST (passage-ref args with individual spans
     // for layered hover). Only `PassageRef` args are stored — other arg
@@ -211,7 +230,10 @@ pub fn build_passage(
 /// - `AstNode::Expression { var_refs }` (fallback when js_analysis is None)
 ///
 /// Falls back to the SugarCube parser's `var_ops` when no js_analysis is available.
-pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset_in_passage: usize) -> Vec<VarOp> {
+pub fn build_vars_from_unified_ast(
+    passage_ast: &PassageAst,
+    body_offset_in_passage: usize,
+) -> Vec<VarOp> {
     let mut vars = Vec::new();
 
     // For script passages, collect from script_js_analysis
@@ -219,7 +241,11 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset_in_pass
         for op in &analysis.var_ops {
             vars.push(VarOp {
                 name: op.name.clone(),
-                kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
+                kind: if op.access_kind.is_write() {
+                    VarKind::Init
+                } else {
+                    VarKind::Read
+                },
                 span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
                 is_temporary: op.is_temporary,
             });
@@ -234,8 +260,13 @@ pub fn build_vars_from_unified_ast(passage_ast: &PassageAst, body_offset_in_pass
         for var_op in &passage_ast.var_ops {
             vars.push(VarOp {
                 name: var_op.name.clone(),
-                kind: if var_op.is_write { VarKind::Init } else { VarKind::Read },
-                span: body_offset_in_passage + var_op.span.start..body_offset_in_passage + var_op.span.end,
+                kind: if var_op.is_write {
+                    VarKind::Init
+                } else {
+                    VarKind::Read
+                },
+                span: body_offset_in_passage + var_op.span.start
+                    ..body_offset_in_passage + var_op.span.end,
                 is_temporary: var_op.is_temporary,
             });
         }
@@ -291,7 +322,10 @@ fn narrow_link_spans(links: &mut [knot_core::passage::Link], arg_refs: &[MacroAr
 /// - The macro's `open_span` as `macro_open_span` (shifted)
 ///
 /// Recurses into block macro children.
-pub fn build_macro_arg_refs(nodes: &[ast::AstNode], body_offset_in_passage: usize) -> Vec<MacroArgRef> {
+pub fn build_macro_arg_refs(
+    nodes: &[ast::AstNode],
+    body_offset_in_passage: usize,
+) -> Vec<MacroArgRef> {
     let mut refs = Vec::new();
     collect_macro_arg_refs(nodes, &mut refs, body_offset_in_passage);
     refs
@@ -303,13 +337,20 @@ pub fn build_macro_arg_refs(nodes: &[ast::AstNode], body_offset_in_passage: usiz
 /// args), this records **every** parsed macro — `<<set>>`, `<<if>>`,
 /// `<<print>>`, `<<link>>`, etc. — so hover can resolve any macro via span
 /// lookup instead of line-scanning.
-pub fn build_macro_invocations(nodes: &[ast::AstNode], body_offset_in_passage: usize) -> Vec<MacroInvocation> {
+pub fn build_macro_invocations(
+    nodes: &[ast::AstNode],
+    body_offset_in_passage: usize,
+) -> Vec<MacroInvocation> {
     let mut invs = Vec::new();
     collect_macro_invocations(nodes, &mut invs, body_offset_in_passage);
     invs
 }
 
-fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocation>, body_offset_in_passage: usize) {
+fn collect_macro_invocations(
+    nodes: &[ast::AstNode],
+    invs: &mut Vec<MacroInvocation>,
+    body_offset_in_passage: usize,
+) {
     for node in nodes {
         match node {
             ast::AstNode::Macro {
@@ -322,8 +363,10 @@ fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocat
                 let has_body = children.is_some();
                 invs.push(MacroInvocation {
                     name: name.clone(),
-                    name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
-                    open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
+                    name_span: body_offset_in_passage + name_span.start
+                        ..body_offset_in_passage + name_span.end,
+                    open_span: body_offset_in_passage + open_span.start
+                        ..body_offset_in_passage + open_span.end,
                     has_body,
                 });
                 // Recurse into block macro children
@@ -345,8 +388,10 @@ fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocat
                 };
                 invs.push(MacroInvocation {
                     name: name.to_string(),
-                    name_span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
-                    open_span: body_offset_in_passage + span.start..body_offset_in_passage + span.end,
+                    name_span: body_offset_in_passage + span.start
+                        ..body_offset_in_passage + span.end,
+                    open_span: body_offset_in_passage + span.start
+                        ..body_offset_in_passage + span.end,
                     has_body: false,
                 });
             }
@@ -355,7 +400,11 @@ fn collect_macro_invocations(nodes: &[ast::AstNode], invs: &mut Vec<MacroInvocat
     }
 }
 
-fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, body_offset_in_passage: usize) {
+fn collect_macro_arg_refs(
+    nodes: &[ast::AstNode],
+    refs: &mut Vec<MacroArgRef>,
+    body_offset_in_passage: usize,
+) {
     for node in nodes {
         if let ast::AstNode::Macro {
             name,
@@ -364,7 +413,8 @@ fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, b
             children,
             structured_args,
             ..
-        } = node {
+        } = node
+        {
             // `children: Some(_)` means the macro has a body (block variant with
             // close tag). `None` means inline (no body, no close tag). Container
             // macros like <<link>> always have children; Inline macros never do.
@@ -391,10 +441,13 @@ fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, b
                     if is_passage_ref {
                         refs.push(MacroArgRef {
                             target: sarg.value.clone(),
-                            span: body_offset_in_passage + sarg.span.start..body_offset_in_passage + sarg.span.end,
+                            span: body_offset_in_passage + sarg.span.start
+                                ..body_offset_in_passage + sarg.span.end,
                             macro_name: name.clone(),
-                            macro_name_span: body_offset_in_passage + name_span.start..body_offset_in_passage + name_span.end,
-                            macro_open_span: body_offset_in_passage + open_span.start..body_offset_in_passage + open_span.end,
+                            macro_name_span: body_offset_in_passage + name_span.start
+                                ..body_offset_in_passage + name_span.end,
+                            macro_open_span: body_offset_in_passage + open_span.start
+                                ..body_offset_in_passage + open_span.end,
                             has_body,
                         });
                     }
@@ -408,7 +461,11 @@ fn collect_macro_arg_refs(nodes: &[ast::AstNode], refs: &mut Vec<MacroArgRef>, b
     }
 }
 
-fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_offset_in_passage: usize) {
+fn collect_vars_from_nodes(
+    nodes: &[ast::AstNode],
+    vars: &mut Vec<VarOp>,
+    body_offset_in_passage: usize,
+) {
     for node in nodes {
         match node {
             ast::AstNode::Text { var_refs, .. } => {
@@ -416,12 +473,20 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                     vars.push(VarOp {
                         name: vr.name.clone(),
                         kind: VarKind::Read,
-                        span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
+                        span: body_offset_in_passage + vr.span.start
+                            ..body_offset_in_passage + vr.span.end,
                         is_temporary: vr.is_temporary,
                     });
                 }
             }
-            ast::AstNode::Macro { js_analysis, var_refs, children, set_assignment, name, .. } => {
+            ast::AstNode::Macro {
+                js_analysis,
+                var_refs,
+                children,
+                set_assignment,
+                name,
+                ..
+            } => {
                 // Determine whether to use js_analysis or fall back to var_refs
                 let has_js_analysis = js_analysis.as_ref().is_some_and(|a| !a.var_ops.is_empty());
 
@@ -431,8 +496,13 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                         for op in &analysis.var_ops {
                             vars.push(VarOp {
                                 name: op.name.clone(),
-                                kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
-                                span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
+                                kind: if op.access_kind.is_write() {
+                                    VarKind::Init
+                                } else {
+                                    VarKind::Read
+                                },
+                                span: body_offset_in_passage + op.span.start
+                                    ..body_offset_in_passage + op.span.end,
                                 is_temporary: op.is_temporary,
                             });
                         }
@@ -451,7 +521,8 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                             vars.push(VarOp {
                                 name: sa.target.name.clone(),
                                 kind: VarKind::Init,
-                                span: body_offset_in_passage + sa.target.span.start..body_offset_in_passage + sa.target.span.end,
+                                span: body_offset_in_passage + sa.target.span.start
+                                    ..body_offset_in_passage + sa.target.span.end,
                                 is_temporary: sa.target.is_temporary,
                             });
                         }
@@ -463,22 +534,28 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                     for vr in var_refs {
                         vars.push(VarOp {
                             name: vr.name.clone(),
-                            kind: if vr.is_write || is_assignment { VarKind::Init } else { VarKind::Read },
-                            span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
+                            kind: if vr.is_write || is_assignment {
+                                VarKind::Init
+                            } else {
+                                VarKind::Read
+                            },
+                            span: body_offset_in_passage + vr.span.start
+                                ..body_offset_in_passage + vr.span.end,
                             is_temporary: vr.is_temporary,
                         });
                     }
                     // Emit set_assignment target if present (not covered by var_refs)
                     if let Some(sa) = set_assignment {
                         // Check if the target is already in vars from var_refs
-                        let already_emitted = vars.iter().any(|v| {
-                            v.name == sa.target.name && v.kind == VarKind::Init
-                        });
+                        let already_emitted = vars
+                            .iter()
+                            .any(|v| v.name == sa.target.name && v.kind == VarKind::Init);
                         if !already_emitted {
                             vars.push(VarOp {
                                 name: sa.target.name.clone(),
                                 kind: VarKind::Init,
-                                span: body_offset_in_passage + sa.target.span.start..body_offset_in_passage + sa.target.span.end,
+                                span: body_offset_in_passage + sa.target.span.start
+                                    ..body_offset_in_passage + sa.target.span.end,
                                 is_temporary: sa.target.is_temporary,
                             });
                         }
@@ -488,15 +565,24 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                     collect_vars_from_nodes(ch, vars, body_offset_in_passage);
                 }
             }
-            ast::AstNode::Expression { js_analysis, var_refs, .. } => {
+            ast::AstNode::Expression {
+                js_analysis,
+                var_refs,
+                ..
+            } => {
                 let has_js_analysis = js_analysis.as_ref().is_some_and(|a| !a.var_ops.is_empty());
                 if has_js_analysis {
                     if let Some(analysis) = js_analysis {
                         for op in &analysis.var_ops {
                             vars.push(VarOp {
                                 name: op.name.clone(),
-                                kind: if op.access_kind.is_write() { VarKind::Init } else { VarKind::Read },
-                                span: body_offset_in_passage + op.span.start..body_offset_in_passage + op.span.end,
+                                kind: if op.access_kind.is_write() {
+                                    VarKind::Init
+                                } else {
+                                    VarKind::Read
+                                },
+                                span: body_offset_in_passage + op.span.start
+                                    ..body_offset_in_passage + op.span.end,
                                 is_temporary: op.is_temporary,
                             });
                         }
@@ -506,7 +592,8 @@ fn collect_vars_from_nodes(nodes: &[ast::AstNode], vars: &mut Vec<VarOp>, body_o
                         vars.push(VarOp {
                             name: vr.name.clone(),
                             kind: VarKind::Read,
-                            span: body_offset_in_passage + vr.span.start..body_offset_in_passage + vr.span.end,
+                            span: body_offset_in_passage + vr.span.start
+                                ..body_offset_in_passage + vr.span.end,
                             is_temporary: vr.is_temporary,
                         });
                     }
@@ -540,13 +627,22 @@ mod tests {
             invs.len(),
             invs,
         );
-        assert_eq!(invs[0].name, "=", "Print expression should map to name \"=\"");
-        assert_eq!(invs[0].has_body, false, "expression macros never have a body");
+        assert_eq!(
+            invs[0].name, "=",
+            "Print expression should map to name \"=\""
+        );
+        assert!(!invs[0].has_body, "expression macros never have a body");
         // The name_span should cover the entire `<<= _parts>>` construct.
-        assert_eq!(invs[0].name_span, 0..src.len(),
-            "name_span should cover the full expression");
-        assert_eq!(invs[0].open_span, 0..src.len(),
-            "open_span should cover the full expression (expression macros have no separate name region)");
+        assert_eq!(
+            invs[0].name_span,
+            0..src.len(),
+            "name_span should cover the full expression"
+        );
+        assert_eq!(
+            invs[0].open_span,
+            0..src.len(),
+            "open_span should cover the full expression (expression macros have no separate name region)"
+        );
     }
 
     /// `<<->>` (Silent expression) must produce a `MacroInvocation` with
@@ -558,7 +654,10 @@ mod tests {
         let invs = build_macro_invocations(&ast.nodes, 0);
 
         assert_eq!(invs.len(), 1, "expected 1 macro invocation for `<<->>`");
-        assert_eq!(invs[0].name, "-", "Silent expression should map to name \"-\"");
+        assert_eq!(
+            invs[0].name, "-",
+            "Silent expression should map to name \"-\""
+        );
         assert_eq!(invs[0].name_span, 0..src.len());
     }
 
@@ -571,8 +670,14 @@ mod tests {
         let invs = build_macro_invocations(&ast.nodes, 0);
 
         let names: Vec<&str> = invs.iter().map(|i| i.name.as_str()).collect();
-        assert!(names.contains(&"if"), "expected `if` macro in invocations: {names:?}");
-        assert!(names.contains(&"="), "expected `=` (Print) macro in invocations: {names:?}");
+        assert!(
+            names.contains(&"if"),
+            "expected `if` macro in invocations: {names:?}"
+        );
+        assert!(
+            names.contains(&"="),
+            "expected `=` (Print) macro in invocations: {names:?}"
+        );
     }
 
     /// Variable spans inside `<<=>>` must point at the actual variable
@@ -609,13 +714,21 @@ mod tests {
         }
 
         // We expect exactly one variable: `$x` at bytes 4..6.
-        assert_eq!(var_spans.len(), 1,
-            "expected 1 var op, got {}: {:#?}", var_spans.len(), var_spans);
+        assert_eq!(
+            var_spans.len(),
+            1,
+            "expected 1 var op, got {}: {:#?}",
+            var_spans.len(),
+            var_spans
+        );
         assert_eq!(var_spans[0].0, "$x", "var name");
-        assert_eq!(var_spans[0].1, 4..6,
+        assert_eq!(
+            var_spans[0].1,
+            4..6,
             "var span should be 4..6 (the `$x` chars), got {:?} — \
              if this is 0..2 or similar, the JS annotation offset bug is back",
-            var_spans[0].1);
+            var_spans[0].1
+        );
     }
 
     /// Same regression test but for `<<->>` (Silent expression) and with a
@@ -635,8 +748,11 @@ mod tests {
 
         assert_eq!(var_spans.len(), 1, "expected 1 var op: {:#?}", var_spans);
         assert_eq!(var_spans[0].0, "_foo", "var name");
-        assert_eq!(var_spans[0].1, 4..8,
+        assert_eq!(
+            var_spans[0].1,
+            4..8,
             "var span should be 4..8 (the `_foo` chars), got {:?}",
-            var_spans[0].1);
+            var_spans[0].1
+        );
     }
 }

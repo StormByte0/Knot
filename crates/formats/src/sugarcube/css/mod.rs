@@ -7,8 +7,8 @@
 //! `CssAnalysis`. The mapping table below is preserved so a future CSS crate
 //! can be plugged in at the `knot-core` level with no changes here.
 
-use knot_core::css::{self, CssTokenKind, CssParseOutcome};
-use crate::plugin::{SemanticToken, SemanticTokenType, FormatDiagnostic, FormatDiagnosticSeverity};
+use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenType};
+use knot_core::css::{self, CssParseOutcome, CssTokenKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct CssAnalysis {
@@ -59,5 +59,8 @@ pub fn css_outcome_to_analysis(outcome: &CssParseOutcome, body_offset: usize) ->
         });
     }
 
-    CssAnalysis { tokens, diagnostics }
+    CssAnalysis {
+        tokens,
+        diagnostics,
+    }
 }

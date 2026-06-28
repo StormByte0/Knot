@@ -32,8 +32,8 @@
 pub mod parser;
 pub mod types;
 
-pub use types::{JsDiagnostic, JsDiagnosticSeverity, ParseMode, JsParseOutcome};
 pub use parser::parse_js;
+pub use types::{JsDiagnostic, JsDiagnosticSeverity, JsParseOutcome, ParseMode};
 
 // Re-export oxc types that formats need for AST walking.
 // This way formats only depend on knot-core, not on oxc crates directly.

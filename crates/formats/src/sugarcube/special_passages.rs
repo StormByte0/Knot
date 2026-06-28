@@ -97,7 +97,6 @@ pub(crate) fn name_matched_special_passages() -> Vec<SpecialPassageDef> {
             layer: SpecialPassageLayer::StoryFormat,
             scaffold: None,
         },
-
         // ── Chrome interceptor passages ────────────────────────────────
         // PassageHeader and PassageFooter are rendering interceptors: they
         // are prepended/appended to every rendered passage body. They wrap
@@ -254,7 +253,6 @@ pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
             layer: SpecialPassageLayer::StoryFormat,
             scaffold: None,
         },
-
         // NOTE: [nobr] is NOT listed here because it is a rendering hint,
         // not a special passage classification. Passages tagged [nobr] are
         // normal navigable passages — the tag only strips line breaks from
@@ -266,4 +264,3 @@ pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
         // be handled as a passage property, not as a special passage category.
     ]
 }
-

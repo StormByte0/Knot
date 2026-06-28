@@ -113,7 +113,12 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
 ///   - `display_span`: covers the tooltip text (if any)
 ///   - `target_span`: covers the passage name (if link-part present)
 ///   - `setter_span`: None (single-bracket form has no setter)
-pub(super) fn parse_image_link(text: &str, i: &mut usize, offset: usize, img_start: usize) -> AstNode {
+pub(super) fn parse_image_link(
+    text: &str,
+    i: &mut usize,
+    offset: usize,
+    img_start: usize,
+) -> AstNode {
     let bytes = text.as_bytes();
     let len = bytes.len();
 
@@ -230,13 +235,13 @@ pub(super) fn parse_image_link(text: &str, i: &mut usize, offset: usize, img_sta
 /// and `]]`, with no brackets). The caller is responsible for shifting them
 /// to body-relative offsets.
 type ParsedLink = (
-    Option<String>,            // display
-    String,                    // target
-    LinkKind,                  // kind
-    Option<String>,            // setter_var
-    Option<String>,            // image_url
+    Option<String>,                 // display
+    String,                         // target
+    LinkKind,                       // kind
+    Option<String>,                 // setter_var
+    Option<String>,                 // image_url
     Option<std::ops::Range<usize>>, // display_span (relative to content)
-    std::ops::Range<usize>,    // target_span (relative to content)
+    std::ops::Range<usize>,         // target_span (relative to content)
     Option<std::ops::Range<usize>>, // setter_span (relative to content)
 );
 
@@ -266,7 +271,10 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
             // `remaining` (the post-image part) starts.
             let remaining_offset = leading_ws + "img[".len() + url_end;
             // Skip leading ] and [ characters
-            let skip = after_url.bytes().take_while(|&b| b == b']' || b == b'[').count();
+            let skip = after_url
+                .bytes()
+                .take_while(|&b| b == b']' || b == b'[')
+                .count();
             let remaining = &after_url[skip..];
             if !remaining.is_empty() {
                 let (display, target, _kind, display_sub, target_sub) =
@@ -295,10 +303,8 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         let before_bracket = &trimmed[..bracket_pos];
         let after_bracket = &trimmed[bracket_pos + 2..];
         // Strip trailing ] from before_bracket and leading [ from after_bracket
-        let trailing_strip = before_bracket.len()
-            - before_bracket.trim_end_matches(']').len();
-        let leading_strip = after_bracket.len()
-            - after_bracket.trim_start_matches('[').len();
+        let trailing_strip = before_bracket.len() - before_bracket.trim_end_matches(']').len();
+        let leading_strip = after_bracket.len() - after_bracket.trim_start_matches('[').len();
         let inner_before = &before_bracket[..before_bracket.len() - trailing_strip];
         let inner_after = &after_bracket[leading_strip..];
 
@@ -307,8 +313,7 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         // Shift display/target sub-spans by `leading_ws` (offset of `trimmed`
         // within `content`).
         let abs_target_span = (leading_ws + target_sub.start)..(leading_ws + target_sub.end);
-        let abs_display_span = display_sub
-            .map(|d| (leading_ws + d.start)..(leading_ws + d.end));
+        let abs_display_span = display_sub.map(|d| (leading_ws + d.start)..(leading_ws + d.end));
         // Setter span: from the start of `inner_after` to the end of `content`
         // (within `trimmed`). `inner_after` starts at offset `bracket_pos + 2 +
         // leading_strip` within `trimmed`, so within `content` it's `leading_ws
@@ -316,15 +321,21 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         let setter_start_in_content = leading_ws + bracket_pos + 2 + leading_strip;
         // `inner_after` may have trailing whitespace before `]]` — keep the
         // setter span tight to the actual expression by trimming the end.
-        let setter_end_in_content = leading_ws + bracket_pos + 2 + leading_strip
-            + inner_after.trim_end().len();
+        let setter_end_in_content =
+            leading_ws + bracket_pos + 2 + leading_strip + inner_after.trim_end().len();
         let setter_span = if setter_end_in_content > setter_start_in_content {
             Some(setter_start_in_content..setter_end_in_content)
         } else {
             None
         };
         let setter_var = if inner_after.starts_with('$') || inner_after.starts_with('_') {
-            Some(inner_after.split_whitespace().next().unwrap_or(inner_after).to_string())
+            Some(
+                inner_after
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(inner_after)
+                    .to_string(),
+            )
         } else {
             None
         };
@@ -348,8 +359,8 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         let display_end = leading_ws + pipe_pos;
         // Target starts after `|`, then skip leading whitespace.
         let target_pre_trim = pipe_pos + 1;
-        let target_ws = trimmed[target_pre_trim..].len()
-            - trimmed[target_pre_trim..].trim_start().len();
+        let target_ws =
+            trimmed[target_pre_trim..].len() - trimmed[target_pre_trim..].trim_start().len();
         let target_start = leading_ws + target_pre_trim + target_ws;
         let target_end = target_start + target_str.len();
         return (
@@ -371,8 +382,8 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         let display_start = leading_ws;
         let display_end = leading_ws + arrow_pos;
         let target_pre_trim = arrow_pos + 2;
-        let target_ws = trimmed[target_pre_trim..].len()
-            - trimmed[target_pre_trim..].trim_start().len();
+        let target_ws =
+            trimmed[target_pre_trim..].len() - trimmed[target_pre_trim..].trim_start().len();
         let target_start = leading_ws + target_pre_trim + target_ws;
         let target_end = target_start + target_str.len();
         return (
@@ -393,8 +404,7 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
         let display_str = trimmed[arrow_pos + 2..].to_string();
         // Target = trimmed[..arrow_pos], trimmed on the right.
         let target_pre_trim = 0;
-        let target_ws_right = trimmed[..arrow_pos].len()
-            - trimmed[..arrow_pos].trim_end().len();
+        let target_ws_right = trimmed[..arrow_pos].len() - trimmed[..arrow_pos].trim_end().len();
         let target_start = leading_ws + target_pre_trim;
         let target_end = leading_ws + arrow_pos - target_ws_right;
         let display_start = leading_ws + arrow_pos + 2;
@@ -431,7 +441,13 @@ pub(super) fn parse_link_content(content: &str) -> ParsedLink {
 /// to the start of `content`.
 fn parse_link_display_target_with_spans(
     content: &str,
-) -> (Option<String>, String, LinkKind, Option<std::ops::Range<usize>>, std::ops::Range<usize>) {
+) -> (
+    Option<String>,
+    String,
+    LinkKind,
+    Option<std::ops::Range<usize>>,
+    std::ops::Range<usize>,
+) {
     let leading_ws = content.len() - content.trim_start().len();
     let trimmed = &content[leading_ws..];
 
@@ -441,8 +457,8 @@ fn parse_link_display_target_with_spans(
         let display_start = leading_ws;
         let display_end = leading_ws + pipe_pos;
         let target_pre_trim = pipe_pos + 1;
-        let target_ws = trimmed[target_pre_trim..].len()
-            - trimmed[target_pre_trim..].trim_start().len();
+        let target_ws =
+            trimmed[target_pre_trim..].len() - trimmed[target_pre_trim..].trim_start().len();
         let target_start = leading_ws + target_pre_trim + target_ws;
         let target_end = target_start + target_str.len();
         return (
@@ -460,8 +476,8 @@ fn parse_link_display_target_with_spans(
         let display_start = leading_ws;
         let display_end = leading_ws + arrow_pos;
         let target_pre_trim = arrow_pos + 2;
-        let target_ws = trimmed[target_pre_trim..].len()
-            - trimmed[target_pre_trim..].trim_start().len();
+        let target_ws =
+            trimmed[target_pre_trim..].len() - trimmed[target_pre_trim..].trim_start().len();
         let target_start = leading_ws + target_pre_trim + target_ws;
         let target_end = target_start + target_str.len();
         return (
@@ -476,8 +492,7 @@ fn parse_link_display_target_with_spans(
     if let Some(arrow_pos) = trimmed.rfind("<-") {
         let target_str = trimmed[..arrow_pos].trim().to_string();
         let display_str = trimmed[arrow_pos + 2..].to_string();
-        let target_ws_right = trimmed[..arrow_pos].len()
-            - trimmed[..arrow_pos].trim_end().len();
+        let target_ws_right = trimmed[..arrow_pos].len() - trimmed[..arrow_pos].trim_end().len();
         let target_start = leading_ws;
         let target_end = leading_ws + arrow_pos - target_ws_right;
         let display_start = leading_ws + arrow_pos + 2;
@@ -517,14 +532,14 @@ mod tests {
     #[test]
     fn parse_simple_link() {
         let ast = parse_passage_body("Go [[Forest]]", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1);
+        assert!(!ast.links.is_empty());
         assert_eq!(ast.links[0].target, "Forest");
     }
 
     #[test]
     fn parse_pipe_link() {
         let ast = parse_passage_body("Go [[dark forest|Forest]]", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1);
+        assert!(!ast.links.is_empty());
         assert_eq!(ast.links[0].target, "Forest");
         assert_eq!(ast.links[0].display.as_deref(), Some("dark forest"));
     }
@@ -532,21 +547,21 @@ mod tests {
     #[test]
     fn parse_arrow_link() {
         let ast = parse_passage_body("Go [[dark forest->Forest]]", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1);
+        assert!(!ast.links.is_empty());
         assert_eq!(ast.links[0].target, "Forest");
     }
 
     #[test]
     fn parse_left_arrow_link() {
         let ast = parse_passage_body("Go [[Forest<-dark forest]]", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1);
+        assert!(!ast.links.is_empty());
         assert_eq!(ast.links[0].target, "Forest");
     }
 
     #[test]
     fn setter_link() {
         let ast = parse_passage_body("[[target][$var to 5]]", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1);
+        assert!(!ast.links.is_empty());
         assert_eq!(ast.links[0].target, "target");
     }
 
@@ -562,7 +577,11 @@ mod tests {
         // target, producing false "BrokenLink: Link target 'Forest' not
         // found" diagnostics for click-handler usage.
         let ast = parse_passage_body(r#"<<link "Forest">>"#, 0, ParseMode::Normal);
-        let nav_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::NavigationMacro).collect();
+        let nav_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::NavigationMacro)
+            .collect();
         assert_eq!(nav_links.len(), 1);
         assert_eq!(nav_links[0].display.as_deref(), Some("Forest"));
         assert_eq!(nav_links[0].target, ""); // no fixed target — click handler
@@ -572,7 +591,11 @@ mod tests {
     #[test]
     fn link_macro_two_args() {
         let ast = parse_passage_body(r#"<<link "Go to forest" "Forest">>"#, 0, ParseMode::Normal);
-        let nav_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::NavigationMacro).collect();
+        let nav_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::NavigationMacro)
+            .collect();
         assert_eq!(nav_links.len(), 1);
         assert_eq!(nav_links[0].display.as_deref(), Some("Go to forest"));
         assert_eq!(nav_links[0].target, "Forest");
@@ -581,18 +604,37 @@ mod tests {
     #[test]
     fn image_link_simple() {
         // [[img[http://example.com/pic.jpg][Forest]]
-        let ast = parse_passage_body("[[img[http://example.com/pic.jpg][Forest]]", 0, ParseMode::Normal);
+        let ast = parse_passage_body(
+            "[[img[http://example.com/pic.jpg][Forest]]",
+            0,
+            ParseMode::Normal,
+        );
         // Find the link node in the AST
-        let link_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
-            _ => None,
-        }).expect("should find an Image link");
+        let link_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
+                _ => None,
+            })
+            .expect("should find an Image link");
         match &link_node {
-            AstNode::Link { target, image_url, kind, .. } => {
+            AstNode::Link {
+                target,
+                image_url,
+                kind,
+                ..
+            } => {
                 assert_eq!(*kind, LinkKind::Image);
-                assert_eq!(target, "Forest", "image link target should be the passage name");
-                assert_eq!(image_url.as_deref(), Some("http://example.com/pic.jpg"),
-                    "image_url should contain the URL");
+                assert_eq!(
+                    target, "Forest",
+                    "image link target should be the passage name"
+                );
+                assert_eq!(
+                    image_url.as_deref(),
+                    Some("http://example.com/pic.jpg"),
+                    "image_url should contain the URL"
+                );
             }
             _ => panic!("Expected Link node"),
         }
@@ -601,13 +643,27 @@ mod tests {
     #[test]
     fn image_link_with_display() {
         // [[img[http://example.com/pic.jpg][Dark Forest|Forest]]
-        let ast = parse_passage_body("[[img[http://example.com/pic.jpg][Dark Forest|Forest]]", 0, ParseMode::Normal);
-        let link_node = ast.nodes.iter().find_map(|n| match n {
-            AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
-            _ => None,
-        }).expect("should find an Image link");
+        let ast = parse_passage_body(
+            "[[img[http://example.com/pic.jpg][Dark Forest|Forest]]",
+            0,
+            ParseMode::Normal,
+        );
+        let link_node = ast
+            .nodes
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Link { kind, .. } if *kind == LinkKind::Image => Some(n.clone()),
+                _ => None,
+            })
+            .expect("should find an Image link");
         match &link_node {
-            AstNode::Link { display, target, image_url, kind, .. } => {
+            AstNode::Link {
+                display,
+                target,
+                image_url,
+                kind,
+                ..
+            } => {
                 assert_eq!(*kind, LinkKind::Image);
                 assert_eq!(target, "Forest");
                 assert_eq!(display.as_deref(), Some("Dark Forest"));
@@ -630,8 +686,12 @@ mod tests {
     fn link_with_multibyte_utf8_content_correct() {
         // Link with em dash should parse correctly, not just not-panic
         let ast = parse_passage_body("Go [[a—b]] there", 0, ParseMode::Normal);
-        assert!(ast.links.len() >= 1, "should find a link");
+        assert!(!ast.links.is_empty(), "should find a link");
         // The target should include the em dash
-        assert!(ast.links[0].target.contains("—"), "target should contain em dash, got: {:?}", ast.links[0].target);
+        assert!(
+            ast.links[0].target.contains("—"),
+            "target should contain em dash, got: {:?}",
+            ast.links[0].target
+        );
     }
 }

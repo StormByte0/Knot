@@ -25,7 +25,10 @@ pub(crate) fn find_link_ranges_for_target(
         for passage in &doc.passages {
             for link in &passage.links {
                 if link.target.trim() == target {
-                    ranges.push(byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
+                    ranges.push(byte_range_to_lsp_range(
+                        text,
+                        &passage.abs_range(&link.span),
+                    ));
                 }
             }
         }
@@ -51,8 +54,14 @@ pub(crate) fn find_link_ranges_for_target(
                 };
                 if link_target.trim() == target {
                     ranges.push(Range {
-                        start: Position { line: line_idx as u32, character: super::position::utf16_len_up_to(line, content_start) },
-                        end: Position { line: line_idx as u32, character: super::position::utf16_len_up_to(line, content_end) },
+                        start: Position {
+                            line: line_idx as u32,
+                            character: super::position::utf16_len_up_to(line, content_start),
+                        },
+                        end: Position {
+                            line: line_idx as u32,
+                            character: super::position::utf16_len_up_to(line, content_end),
+                        },
                     });
                 }
                 search_from = abs_start + rel_end + 2;

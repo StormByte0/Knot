@@ -19,10 +19,7 @@ use crate::sugarcube::macros;
 /// This is used by hover, completion, and signature-help handlers to
 /// detect which macro the cursor is inside without hardcoding `<<>>`
 /// detection logic.
-pub fn find_macro_at_position_impl(
-    line: &str,
-    byte_pos: usize,
-) -> Option<MacroAtPosition> {
+pub fn find_macro_at_position_impl(line: &str, byte_pos: usize) -> Option<MacroAtPosition> {
     let bytes = line.as_bytes();
     let len = bytes.len();
     let mut i = 0usize;
@@ -46,7 +43,9 @@ pub fn find_macro_at_position_impl(
 
             // Extract the macro name
             let name_start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+            {
                 i += 1;
             }
             let name_end = i;
@@ -128,10 +127,7 @@ pub fn find_macro_at_position_impl(
 ///
 /// Also detects modifier macros (`<<elseif>>`, `<<else>>`) which create
 /// subdivision points within a block macro's folding range.
-pub fn scan_line_for_macro_events_impl(
-    line: &str,
-    line_idx: u32,
-) -> Vec<MacroBlockEvent> {
+pub fn scan_line_for_macro_events_impl(line: &str, line_idx: u32) -> Vec<MacroBlockEvent> {
     let mut events = Vec::new();
     let bytes = line.as_bytes();
     let len = bytes.len();
@@ -160,7 +156,9 @@ pub fn scan_line_for_macro_events_impl(
 
             // Extract the macro name
             let name_start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-') {
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+            {
                 i += 1;
             }
             let name_end = i;

@@ -22,14 +22,14 @@
 //!
 //! 3. `walk_script_js()` — Kept temporarily for backward compat during migration.
 
+use super::SugarCubeRegistry;
+use super::variable_tree::VarAccessKind;
 use crate::sugarcube::ast::{self, AnalyzedVarOp, SetOperator};
 use crate::sugarcube::classifier::ClassifiedPassage;
 use crate::sugarcube::js::js_annotate::compute_target_segment_spans;
 use crate::sugarcube::parser::predicates::is_assignment_macro;
 use crate::sugarcube::registries::function_registry::FunctionKind;
 use crate::sugarcube::registries::template_registry::TemplateKind;
-use super::variable_tree::VarAccessKind;
-use super::SugarCubeRegistry;
 
 /// Map a `SetOperator` from the AST to the appropriate `VarAccessKind`.
 fn set_operator_to_access_kind(op: &SetOperator) -> VarAccessKind {
@@ -119,7 +119,10 @@ pub fn populate_registries_from_unified_ast(
 
         // Mark variables as seeded if this is a special passage
         if cp.special_def.as_ref().is_some_and(|d| {
-            matches!(d.behavior, knot_core::passage::SpecialPassageBehavior::Startup)
+            matches!(
+                d.behavior,
+                knot_core::passage::SpecialPassageBehavior::Startup
+            )
         }) {
             for (op, _) in &all_var_ops {
                 if op.access_kind.is_write() {
@@ -196,18 +199,15 @@ pub fn populate_registries_from_unified_ast(
 fn collect_var_ops_from_nodes(
     nodes: &[ast::AstNode],
     result: &mut Vec<(AnalyzedVarOp, Option<VarAccessKind>)>,
-    cp: &ClassifiedPassage,
+    _cp: &ClassifiedPassage,
     _file_uri: &str,
 ) {
     for node in nodes {
         match node {
             ast::AstNode::Text { var_refs, .. } => {
                 for vr in var_refs {
-                    let segment_spans = compute_target_segment_spans(
-                        &vr.name,
-                        &vr.property_path,
-                        &vr.span,
-                    );
+                    let segment_spans =
+                        compute_target_segment_spans(&vr.name, &vr.property_path, &vr.span);
 
                     result.push((
                         AnalyzedVarOp {
@@ -241,7 +241,12 @@ fn collect_var_ops_from_nodes(
                     // Use oxc-derived var_ops (more accurate read/write classification)
                     if let Some(analysis) = js_analysis {
                         for op in &analysis.var_ops {
-                            let kind_override = determine_macro_override(name, op, set_assignment.as_ref(), capture_target.as_ref());
+                            let kind_override = determine_macro_override(
+                                name,
+                                op,
+                                set_assignment.as_ref(),
+                                capture_target.as_ref(),
+                            );
                             result.push((op.clone(), kind_override));
                         }
                     }
@@ -260,16 +265,13 @@ fn collect_var_ops_from_nodes(
                     let sa_target_name = set_assignment.as_ref().map(|sa| sa.target.name.as_str());
                     for vr in var_refs {
                         // Skip the set_assignment target — Path B emits it.
-                        if let Some(target) = sa_target_name {
-                            if vr.name == target {
-                                continue;
-                            }
+                        if let Some(target) = sa_target_name
+                            && vr.name == target
+                        {
+                            continue;
                         }
-                        let segment_spans = compute_target_segment_spans(
-                            &vr.name,
-                            &vr.property_path,
-                            &vr.span,
-                        );
+                        let segment_spans =
+                            compute_target_segment_spans(&vr.name, &vr.property_path, &vr.span);
                         let kind = if vr.is_write || is_assignment {
                             VarAccessKind::Write
                         } else {
@@ -284,7 +286,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: vr.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                                segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -311,10 +313,10 @@ fn collect_var_ops_from_nodes(
                     // Path B is redundant — either the direct write already
                     // exists, or leaf writes will propagate up to the root.
                     let js_analysis_covers_target = js_analysis.as_ref().is_some_and(|analysis| {
-                        analysis.var_ops.iter().any(|op| {
-                            op.name == sa.target.name
-                                && op.access_kind.is_write()
-                        })
+                        analysis
+                            .var_ops
+                            .iter()
+                            .any(|op| op.name == sa.target.name && op.access_kind.is_write())
                     });
 
                     if !js_analysis_covers_target {
@@ -361,17 +363,15 @@ fn collect_var_ops_from_nodes(
                 if let Some(ct) = capture_target {
                     // Only emit if not already covered by js_analysis
                     let already_covered = js_analysis.as_ref().is_some_and(|analysis| {
-                        analysis.var_ops.iter().any(|op| {
-                            op.name == ct.name && op.access_kind.is_write()
-                        })
+                        analysis
+                            .var_ops
+                            .iter()
+                            .any(|op| op.name == ct.name && op.access_kind.is_write())
                     });
 
                     if !already_covered {
-                        let segment_spans = compute_target_segment_spans(
-                            &ct.name,
-                            &ct.property_path,
-                            &ct.span,
-                        );
+                        let segment_spans =
+                            compute_target_segment_spans(&ct.name, &ct.property_path, &ct.span);
 
                         result.push((
                             AnalyzedVarOp {
@@ -382,7 +382,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: ct.property_path.clone(),
                                 segment_spans,
                                 construct_span: Some(full_span.clone()),
-                            segment_construct_spans: Vec::new(),
+                                segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -395,9 +395,10 @@ fn collect_var_ops_from_nodes(
                 if let Some(fl) = for_loop_vars {
                     // Emit index var as Write (it receives each element during iteration)
                     let index_covered = js_analysis.as_ref().is_some_and(|analysis| {
-                        analysis.var_ops.iter().any(|op| {
-                            op.name == fl.index_var.name && op.access_kind.is_write()
-                        })
+                        analysis
+                            .var_ops
+                            .iter()
+                            .any(|op| op.name == fl.index_var.name && op.access_kind.is_write())
                     });
 
                     if !index_covered {
@@ -416,7 +417,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: fl.index_var.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                                segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -424,9 +425,10 @@ fn collect_var_ops_from_nodes(
 
                     // Emit iterated var as Read
                     let iter_covered = js_analysis.as_ref().is_some_and(|analysis| {
-                        analysis.var_ops.iter().any(|op| {
-                            op.name == fl.iterated_var.name
-                        })
+                        analysis
+                            .var_ops
+                            .iter()
+                            .any(|op| op.name == fl.iterated_var.name)
                     });
 
                     if !iter_covered {
@@ -445,7 +447,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: fl.iterated_var.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                                segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -454,10 +456,14 @@ fn collect_var_ops_from_nodes(
 
                 // Recurse into children
                 if let Some(ch) = children {
-                    collect_var_ops_from_nodes(ch, result, cp, _file_uri);
+                    collect_var_ops_from_nodes(ch, result, _cp, _file_uri);
                 }
             }
-            ast::AstNode::Expression { js_analysis, var_refs, .. } => {
+            ast::AstNode::Expression {
+                js_analysis,
+                var_refs,
+                ..
+            } => {
                 let has_js_analysis = js_analysis.as_ref().is_some_and(|a| !a.var_ops.is_empty());
                 if has_js_analysis {
                     if let Some(analysis) = js_analysis {
@@ -468,11 +474,8 @@ fn collect_var_ops_from_nodes(
                 } else {
                     // Fall back to var_refs
                     for vr in var_refs {
-                        let segment_spans = compute_target_segment_spans(
-                            &vr.name,
-                            &vr.property_path,
-                            &vr.span,
-                        );
+                        let segment_spans =
+                            compute_target_segment_spans(&vr.name, &vr.property_path, &vr.span);
                         result.push((
                             AnalyzedVarOp {
                                 name: vr.name.clone(),
@@ -482,7 +485,7 @@ fn collect_var_ops_from_nodes(
                                 property_path: vr.property_path.clone(),
                                 segment_spans,
                                 construct_span: None,
-                            segment_construct_spans: Vec::new(),
+                                segment_construct_spans: Vec::new(),
                             },
                             None,
                         ));
@@ -505,29 +508,26 @@ fn determine_macro_override(
     if macro_name.eq_ignore_ascii_case("capture") {
         // If capture_target is available, use it for precise matching.
         // Otherwise fall back to the heuristic of upgrading any write to Capture.
-        let is_capture_target = capture_target.map_or(false, |ct| {
-            ct.name == op.name && ct.span.start == op.span.start
-        });
+        let is_capture_target =
+            capture_target.is_some_and(|ct| ct.name == op.name && ct.span.start == op.span.start);
 
         if is_capture_target || (capture_target.is_none() && op.access_kind.is_write()) {
             return Some(VarAccessKind::Capture);
         }
     }
 
-    if macro_name.eq_ignore_ascii_case("unset") {
-        if op.access_kind.is_write() {
-            return Some(VarAccessKind::Unset);
-        }
+    if macro_name.eq_ignore_ascii_case("unset") && op.access_kind.is_write() {
+        return Some(VarAccessKind::Unset);
     }
 
-    if macro_name.eq_ignore_ascii_case("set") {
-        if let Some(sa) = set_assignment {
-            if op.name == sa.target.name && op.span.start == sa.target.span.start {
-                let kind = set_operator_to_access_kind(&sa.operator);
-                if op.access_kind != kind {
-                    return Some(kind);
-                }
-            }
+    if macro_name.eq_ignore_ascii_case("set")
+        && let Some(sa) = set_assignment
+        && op.name == sa.target.name
+        && op.span.start == sa.target.span.start
+    {
+        let kind = set_operator_to_access_kind(&sa.operator);
+        if op.access_kind != kind {
+            return Some(kind);
         }
     }
 
@@ -579,7 +579,7 @@ fn register_definitions_from_nodes(
                         // SugarCube syntax: <<widget "name" container>>
                         // The word "container" must appear after the name token,
                         // outside of any quoted string.
-                        let is_container = detect_widget_container_keyword(&args);
+                        let is_container = detect_widget_container_keyword(args);
                         // Map the boolean to BodyRequirement: container widgets
                         // require a close tag (Required), non-container widgets
                         // are inline (Never).
@@ -589,7 +589,9 @@ fn register_definitions_from_nodes(
                             crate::types::BodyRequirement::Never
                         };
                         // Extract arg_count from _args[N] / $args[N] references in the widget body
-                        let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
+                        let arg_count = children
+                            .as_ref()
+                            .and_then(|ch| extract_widget_arg_count(ch));
                         // definition_name_span and open_span are body-relative
                         // (0 = body start). Add body_offset_in_passage to convert
                         // to passage-relative (0 = `::` head).
@@ -651,51 +653,57 @@ fn register_definitions_from_nodes(
                 // Recurse into children
                 if let Some(ch) = children {
                     register_definitions_from_nodes(
-                        ch, passage_name, file_uri, body_offset_in_passage,
-                        macro_reg, func_reg, template_reg,
+                        ch,
+                        passage_name,
+                        file_uri,
+                        body_offset_in_passage,
+                        macro_reg,
+                        func_reg,
+                        template_reg,
                     );
                 }
             }
-            ast::AstNode::Expression { js_analysis, .. } => {
+            ast::AstNode::Expression {
+                js_analysis: Some(analysis),
+                ..
+            } => {
                 // Same body-relative → passage-relative conversion as the Macro
                 // branch above. Expression macros (<<=>>, <<->>) can contain
                 // Macro.add() / function definitions in rare cases (e.g.,
                 // <<= Macro.add("x", {}) >>).
-                if let Some(analysis) = js_analysis {
-                    for macro_add in &analysis.macro_adds {
-                        macro_reg.register_macro_add(
-                            &macro_add.name,
-                            passage_name,
-                            file_uri,
-                            macro_add.name_offset + body_offset_in_passage,
-                            None,
-                            macro_add.body,
-                        );
-                    }
-                    for template_add in &analysis.template_adds {
-                        let kind = if template_add.is_string {
-                            TemplateKind::String
-                        } else {
-                            TemplateKind::Function
-                        };
-                        template_reg.register_template(
-                            &template_add.name,
-                            kind,
-                            passage_name,
-                            file_uri,
-                            template_add.name_offset + body_offset_in_passage,
-                        );
-                    }
-                    for func_def in &analysis.function_defs {
-                        func_reg.register_function(
-                            &func_def.name,
-                            FunctionKind::Declaration,
-                            passage_name,
-                            file_uri,
-                            func_def.name_offset + body_offset_in_passage,
-                            func_def.param_count,
-                        );
-                    }
+                for macro_add in &analysis.macro_adds {
+                    macro_reg.register_macro_add(
+                        &macro_add.name,
+                        passage_name,
+                        file_uri,
+                        macro_add.name_offset + body_offset_in_passage,
+                        None,
+                        macro_add.body,
+                    );
+                }
+                for template_add in &analysis.template_adds {
+                    let kind = if template_add.is_string {
+                        TemplateKind::String
+                    } else {
+                        TemplateKind::Function
+                    };
+                    template_reg.register_template(
+                        &template_add.name,
+                        kind,
+                        passage_name,
+                        file_uri,
+                        template_add.name_offset + body_offset_in_passage,
+                    );
+                }
+                for func_def in &analysis.function_defs {
+                    func_reg.register_function(
+                        &func_def.name,
+                        FunctionKind::Declaration,
+                        passage_name,
+                        file_uri,
+                        func_def.name_offset + body_offset_in_passage,
+                        func_def.param_count,
+                    );
                 }
             }
             _ => {}
@@ -718,7 +726,13 @@ pub fn populate_registries_from_ast(
     file_uri: &str,
     body_offset_in_passage: usize,
 ) {
-    populate_registries_from_unified_ast(registry, passage_ast, cp, file_uri, body_offset_in_passage);
+    populate_registries_from_unified_ast(
+        registry,
+        passage_ast,
+        cp,
+        file_uri,
+        body_offset_in_passage,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -736,9 +750,9 @@ pub fn walk_script_js(
     cp: &ClassifiedPassage,
     file_uri: &str,
 ) {
-    use knot_core::oxc::{parse_js, ParseMode as JsParseMode};
     use crate::sugarcube::js::js_preprocess;
     use crate::sugarcube::js::js_walk;
+    use knot_core::oxc::{ParseMode as JsParseMode, parse_js};
 
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text, true);
 
@@ -767,43 +781,42 @@ pub fn walk_script_js(
         }
 
         // Record definitions
-                let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
-                for macro_add in &analysis.macro_adds {
-                    macro_reg.register_macro_add(
-                        &macro_add.name,
-                        &cp.header.name,
-                        file_uri,
-                        macro_add.name_offset,
-                        None,
-                        macro_add.body,
-                    );
-                }
-                for template_add in &analysis.template_adds {
-                    let kind = if template_add.is_string {
-                        TemplateKind::String
-                    } else {
-                        TemplateKind::Function
-                    };
-                    template_reg.register_template(
-                        &template_add.name,
-                        kind,
-                        &cp.header.name,
-                        file_uri,
-                        template_add.name_offset,
-                    );
-                }
-                for func_def in &analysis.function_defs {
-                    func_reg.register_function(
-                        &func_def.name,
-                        FunctionKind::Declaration,
-                        &cp.header.name,
-                        file_uri,
-                        func_def.name_offset,
-                        func_def.param_count,
-                    );
-                }
+        let (macro_reg, func_reg, template_reg) = registry.definition_registries_mut();
+        for macro_add in &analysis.macro_adds {
+            macro_reg.register_macro_add(
+                &macro_add.name,
+                &cp.header.name,
+                file_uri,
+                macro_add.name_offset,
+                None,
+                macro_add.body,
+            );
+        }
+        for template_add in &analysis.template_adds {
+            let kind = if template_add.is_string {
+                TemplateKind::String
+            } else {
+                TemplateKind::Function
+            };
+            template_reg.register_template(
+                &template_add.name,
+                kind,
+                &cp.header.name,
+                file_uri,
+                template_add.name_offset,
+            );
+        }
+        for func_def in &analysis.function_defs {
+            func_reg.register_function(
+                &func_def.name,
+                FunctionKind::Declaration,
+                &cp.header.name,
+                file_uri,
+                func_def.name_offset,
+                func_def.param_count,
+            );
+        }
         // Return () from the closure
-        ()
     }) {
         // AST was available and walked — registries populated
     }
@@ -931,22 +944,26 @@ fn scan_for_args_index(text: &str, max_index: &mut Option<usize>) {
 
     while i < len {
         // Look for _args[ or $args[
-        if (bytes[i] == b'_' || bytes[i] == b'$') && i + 5 < len {
-            if &text[i + 1..i + 5] == "args" && text.as_bytes()[i + 5] == b'[' {
-                // Found _args[ or $args[ — extract the index
-                let bracket_start = i + 6;
-                let mut bracket_end = bracket_start;
-                while bracket_end < len && bytes[bracket_end].is_ascii_digit() {
-                    bracket_end += 1;
-                }
-                if bracket_end > bracket_start && bracket_end < len && bytes[bracket_end] == b']' {
-                    if let Ok(idx) = text[bracket_start..bracket_end].parse::<usize>() {
-                        *max_index = Some(max_index.map_or(idx, |mi| mi.max(idx)));
-                    }
-                }
-                i = bracket_end + 1;
-                continue;
+        if (bytes[i] == b'_' || bytes[i] == b'$')
+            && i + 5 < len
+            && &text[i + 1..i + 5] == "args"
+            && text.as_bytes()[i + 5] == b'['
+        {
+            // Found _args[ or $args[ — extract the index
+            let bracket_start = i + 6;
+            let mut bracket_end = bracket_start;
+            while bracket_end < len && bytes[bracket_end].is_ascii_digit() {
+                bracket_end += 1;
             }
+            if bracket_end > bracket_start
+                && bracket_end < len
+                && bytes[bracket_end] == b']'
+                && let Ok(idx) = text[bracket_start..bracket_end].parse::<usize>()
+            {
+                *max_index = Some(max_index.map_or(idx, |mi| mi.max(idx)));
+            }
+            i = bracket_end + 1;
+            continue;
         }
         i += 1;
     }
@@ -965,7 +982,13 @@ mod tests {
         let mut ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
 
         // Phase 2: JS annotation (sugarcube_syntax = true for Twee passages)
-        js_annotate::annotate_js(&mut ast, body, false, true, &std::collections::HashSet::new());
+        js_annotate::annotate_js(
+            &mut ast,
+            body,
+            false,
+            true,
+            &std::collections::HashSet::new(),
+        );
 
         let mut registry = SugarCubeRegistry::new();
 
@@ -991,7 +1014,10 @@ mod tests {
         // Verify $ITEMS exists with a READ access
         let vtree = registry.variables();
         let items_var = vtree.get_variable("$ITEMS");
-        assert!(items_var.is_some(), "$ITEMS should be in registry from State.variables.ITEMS detection");
+        assert!(
+            items_var.is_some(),
+            "$ITEMS should be in registry from State.variables.ITEMS detection"
+        );
         if let Some((_, node)) = items_var {
             let reads: Vec<_> = node.meta.refs.iter().filter(|a| a.is_read()).collect();
             assert!(!reads.is_empty(), "$ITEMS should have at least one READ");
@@ -1054,9 +1080,15 @@ mod tests {
 
         // Find the widget macro node
         if let Some(ast::AstNode::Macro { children, .. }) = ast.nodes.first() {
-            let arg_count = children.as_ref().and_then(|ch| extract_widget_arg_count(ch));
+            let arg_count = children
+                .as_ref()
+                .and_then(|ch| extract_widget_arg_count(ch));
             // _args[0] and _args[1] means 2 args
-            assert_eq!(arg_count, Some(2), "Expected arg_count=2 from _args[0] and _args[1]");
+            assert_eq!(
+                arg_count,
+                Some(2),
+                "Expected arg_count=2 from _args[0] and _args[1]"
+            );
         } else {
             panic!("Expected a Macro node as the first AST node");
         }

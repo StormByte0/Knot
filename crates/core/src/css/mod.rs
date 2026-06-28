@@ -13,8 +13,8 @@
 //! The types in [`types`] are kept stable so a future CSS crate can plug
 //! in without breaking downstream callers.
 
-pub mod types;
 pub mod parser;
+pub mod types;
 
-pub use types::{CssToken, CssTokenKind, CssDiagnostic, CssParseOutcome};
 pub use parser::parse_css;
+pub use types::{CssDiagnostic, CssParseOutcome, CssToken, CssTokenKind};

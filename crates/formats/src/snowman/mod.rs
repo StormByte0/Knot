@@ -12,14 +12,13 @@
 //! - **Block model**: Text, Macro (`<% %>`), Expression (`<%= %>`), Incomplete
 
 use knot_core::passage::{
-    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
-    StoryFormat, VarKind, VarOp,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef,
+    SpecialPassageLayer, StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
-
 
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
@@ -37,30 +36,15 @@ use crate::types::BodyRequirement;
 #[derive(Debug, Clone)]
 enum TemplateSegment {
     /// Plain text content.
-    Text {
-        content: String,
-        span: Range<usize>,
-    },
+    Text { content: String, span: Range<usize> },
     /// Script block: `<% code %>`
-    Script {
-        code: String,
-        span: Range<usize>,
-    },
+    Script { code: String, span: Range<usize> },
     /// Expression output: `<%= expr %>`
-    Expression {
-        expr: String,
-        span: Range<usize>,
-    },
+    Expression { expr: String, span: Range<usize> },
     /// Unescaped expression output: `<%- expr %>`
-    UnescapedExpression {
-        expr: String,
-        span: Range<usize>,
-    },
+    UnescapedExpression { expr: String, span: Range<usize> },
     /// Incomplete (unclosed) block: `<%` without `%>` or `[[` without `]]`
-    Incomplete {
-        content: String,
-        span: Range<usize>,
-    },
+    Incomplete { content: String, span: Range<usize> },
 }
 
 // ---------------------------------------------------------------------------
@@ -68,26 +52,35 @@ enum TemplateSegment {
 // ---------------------------------------------------------------------------
 
 /// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
+static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
+});
 /// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
+static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
+});
 /// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
+static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
+});
 /// Regex for Snowman state variable reads: `s.variableName`
-static RE_VAR_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR_READ"));
+static RE_VAR_READ: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR_READ")
+});
 /// Regex for Snowman state variable writes: `s.variableName =`
-static RE_VAR_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_VAR_WRITE"));
+static RE_VAR_WRITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_VAR_WRITE")
+});
 /// Regex for window.story.state variable reads: `window.story.state.variableName`
-static RE_WSS_VAR_READ: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_WSS_VAR_READ"));
+static RE_WSS_VAR_READ: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)")
+        .expect("invalid regex for RE_WSS_VAR_READ")
+});
 /// Regex for window.story.state variable writes: `window.story.state.variableName =`
-static RE_WSS_VAR_WRITE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_WSS_VAR_WRITE"));
+static RE_WSS_VAR_WRITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=")
+        .expect("invalid regex for RE_WSS_VAR_WRITE")
+});
 /// Detect passage header lines: starts with `::` followed by at least one
 /// non-whitespace character. Actual parsing done by unified parser.
 static RE_HEADER_DETECT: LazyLock<Regex> =
@@ -95,9 +88,14 @@ static RE_HEADER_DETECT: LazyLock<Regex> =
 /// Regex for ERB expression tag opening: `<%= `
 static RE_EXPR_TAG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<%=\s*").expect("invalid regex for RE_EXPR_TAG"));
-/// Regex for ERB code tag opening: `<% ` (not `<%=`)
+/// Regex for ERB code tag opening: `<%` (not `<%=`).
+///
+/// Rust's `regex` crate does not support lookahead, so we match `<%`
+/// and let the caller skip matches that are actually `<%=` (handled by
+/// `RE_EXPR_TAG`). Whitespace after `<%` is also trimmed by the caller
+/// rather than via `\s*` here.
 static RE_CODE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<%(?!=)\s*").expect("invalid regex for RE_CODE_TAG"));
+    LazyLock::new(|| Regex::new(r"<%").expect("invalid regex for RE_CODE_TAG"));
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -141,7 +139,13 @@ impl SnowmanPlugin {
             }
 
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
-            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") {
+                2
+            } else if line_end < text.len() {
+                1
+            } else {
+                0
+            };
             byte_offset = line_end + newline_len;
         }
 
@@ -157,7 +161,13 @@ impl SnowmanPlugin {
             };
 
             // Body starts after the header line + its trailing newline (CRLF = 2, LF = 1)
-            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") { 2 } else if line_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") {
+                2
+            } else if line_end < text.len() {
+                1
+            } else {
+                0
+            };
             let body_start = line_end + newline_len;
 
             // Body ends at the start of the next header, or end of text.
@@ -375,8 +385,12 @@ impl SnowmanPlugin {
         // Arrow links.
         for caps in RE_LINK_ARROW.captures_iter(body) {
             let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else { continue };
-            let Some(target_match) = caps.get(2) else { continue };
+            let Some(display_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(target_match) = caps.get(2) else {
+                continue;
+            };
             let display = display_match.as_str().trim().to_string();
             let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
@@ -394,8 +408,12 @@ impl SnowmanPlugin {
         // Pipe links.
         for caps in RE_LINK_PIPE.captures_iter(body) {
             let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else { continue };
-            let Some(target_match) = caps.get(2) else { continue };
+            let Some(display_match) = caps.get(1) else {
+                continue;
+            };
+            let Some(target_match) = caps.get(2) else {
+                continue;
+            };
             let display = display_match.as_str().trim().to_string();
             let target = target_match.as_str().trim().to_string();
             // Filter: skip targets containing "::" — JS namespace accessor
@@ -427,7 +445,9 @@ impl SnowmanPlugin {
                 .iter()
                 .any(|s| span.start >= s.start && span.end <= s.end);
             if !overlaps {
-                let Some(target_match) = caps.get(1) else { continue };
+                let Some(target_match) = caps.get(1) else {
+                    continue;
+                };
                 let target = target_match.as_str().trim().to_string();
                 // Filter: skip targets containing "::" — JS namespace accessor
                 if target.contains("::") {
@@ -461,7 +481,9 @@ impl SnowmanPlugin {
         // Detect writes via s.varName =
         for caps in RE_VAR_WRITE.captures_iter(body) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(var_name_match) = caps.get(1) else { continue };
+            let Some(var_name_match) = caps.get(1) else {
+                continue;
+            };
             let var_name = var_name_match.as_str();
             let prefix = format!("s.{}", var_name);
             let var_start = body_offset + full.start();
@@ -478,7 +500,9 @@ impl SnowmanPlugin {
         // Detect writes via window.story.state.varName =
         for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(var_name_match) = caps.get(1) else { continue };
+            let Some(var_name_match) = caps.get(1) else {
+                continue;
+            };
             let var_name = var_name_match.as_str();
             let prefix = format!("window.story.state.{}", var_name);
             let var_start = body_offset + full.start();
@@ -501,7 +525,9 @@ impl SnowmanPlugin {
                 .iter()
                 .any(|s| var_start >= s.start && var_end <= s.end);
             if !is_write {
-                let Some(var_name_match) = caps.get(1) else { continue };
+                let Some(var_name_match) = caps.get(1) else {
+                    continue;
+                };
                 let var_name = var_name_match.as_str();
                 vars.push(VarOp {
                     name: var_name.to_string(),
@@ -521,7 +547,9 @@ impl SnowmanPlugin {
                 .iter()
                 .any(|s| var_start >= s.start && var_end <= s.end);
             if !is_write {
-                let Some(var_name_match) = caps.get(1) else { continue };
+                let Some(var_name_match) = caps.get(1) else {
+                    continue;
+                };
                 let var_name = var_name_match.as_str();
                 vars.push(VarOp {
                     name: var_name.to_string(),
@@ -585,12 +613,12 @@ impl SnowmanPlugin {
             if i + 1 < len && bytes[i] == b'<' && bytes[i + 1] == b'%' {
                 let open_pos = i;
                 // Skip the modifier character if present (= or -)
-                let content_start =
-                    if i + 2 < len && (bytes[i + 2] == b'=' || bytes[i + 2] == b'-') {
-                        i + 3
-                    } else {
-                        i + 2
-                    };
+                let content_start = if i + 2 < len && (bytes[i + 2] == b'=' || bytes[i + 2] == b'-')
+                {
+                    i + 3
+                } else {
+                    i + 2
+                };
 
                 // Find closing `%>`
                 let mut found_close = false;
@@ -708,7 +736,9 @@ impl SnowmanPlugin {
         // Variable write tokens (s.varName =)
         for caps in RE_VAR_WRITE.captures_iter(body) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(var_name_match) = caps.get(1) else { continue };
+            let Some(var_name_match) = caps.get(1) else {
+                continue;
+            };
             let var_name = var_name_match.as_str();
             let prefix = format!("s.{}", var_name);
             let start = body_offset + full.start();
@@ -725,7 +755,9 @@ impl SnowmanPlugin {
         // Variable write tokens (window.story.state.varName =)
         for caps in RE_WSS_VAR_WRITE.captures_iter(body) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(var_name_match) = caps.get(1) else { continue };
+            let Some(var_name_match) = caps.get(1) else {
+                continue;
+            };
             let var_name = var_name_match.as_str();
             let prefix = format!("window.story.state.{}", var_name);
             let start = body_offset + full.start();
@@ -905,7 +937,13 @@ impl FormatPluginMut for SnowmanPlugin {
                 .find('\n')
                 .map(|i| header.header_start + i)
                 .unwrap_or(text.len());
-            let newline_len = if text.get(header_line_end..header_line_end + 2) == Some("\r\n") { 2 } else if header_line_end < text.len() { 1 } else { 0 };
+            let newline_len = if text.get(header_line_end..header_line_end + 2) == Some("\r\n") {
+                2
+            } else if header_line_end < text.len() {
+                1
+            } else {
+                0
+            };
             let body_offset = header_line_end + newline_len;
 
             let special_def = self.classify_passage(&header.name, &header.tags);
@@ -924,7 +962,10 @@ impl FormatPluginMut for SnowmanPlugin {
                     def.clone(),
                 )
             } else {
-                Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
+                Passage::new(
+                    header.name.clone(),
+                    header.header_start..body_offset + body.len(),
+                )
             };
 
             passage.tags = header.tags.clone();
@@ -946,7 +987,11 @@ impl FormatPluginMut for SnowmanPlugin {
                     header.name.len(),
                     layer,
                 ));
-                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(
+                    header,
+                    passage_head,
+                    self,
+                ));
             } else {
                 // extract_* use document-absolute body_offset
                 passage.links = self.extract_links(body, body_offset);
@@ -955,7 +1000,10 @@ impl FormatPluginMut for SnowmanPlugin {
                 passage.body = self.build_blocks(&segments);
 
                 let is_special_for_tokens = crate::core_specials::is_special_for_tokens(
-                    self, &header.name, &header.tags, special_def.as_ref(),
+                    self,
+                    &header.name,
+                    &header.tags,
+                    special_def.as_ref(),
                 );
                 if is_special_for_tokens {
                     let layer = crate::core_specials::layer_from_special_def(special_def.as_ref());
@@ -979,7 +1027,11 @@ impl FormatPluginMut for SnowmanPlugin {
                         modifier: None,
                     });
                 }
-                passage_tokens.extend(crate::core_specials::build_tag_tokens(header, passage_head, self));
+                passage_tokens.extend(crate::core_specials::build_tag_tokens(
+                    header,
+                    passage_head,
+                    self,
+                ));
                 // body_tokens returns document-absolute offsets; convert to passage-relative
                 for mut tok in self.body_tokens(body, body_offset) {
                     tok.start -= passage_head;
@@ -1014,7 +1066,10 @@ impl FormatPluginMut for SnowmanPlugin {
         let var_diag_groups = Self::check_undefined_vars(&passages);
         // Merge undefined-var diagnostics into existing per-passage groups
         for vg in var_diag_groups {
-            if let Some(existing) = diagnostic_groups.iter_mut().find(|g| g.passage_name == vg.passage_name) {
+            if let Some(existing) = diagnostic_groups
+                .iter_mut()
+                .find(|g| g.passage_name == vg.passage_name)
+            {
                 existing.diagnostics.extend(vg.diagnostics);
             } else {
                 diagnostic_groups.push(vg);
@@ -1029,7 +1084,13 @@ impl FormatPluginMut for SnowmanPlugin {
         }
     }
 
-    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
+    fn parse_passage_mut(
+        &mut self,
+        passage_name: &str,
+        passage_tags: &[String],
+        passage_text: &str,
+        _file_uri: &str,
+    ) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -1169,35 +1230,54 @@ impl FormatPlugin for SnowmanPlugin {
         }
 
         // Check for <% ... %> (code block)
-        if let Some(m) = RE_CODE_TAG.find(line) {
+        // Iterate over all `<%` matches and skip any that are actually `<%=`
+        // (handled by RE_EXPR_TAG above). This replaces the original
+        // `(?!=)` lookahead that Rust's `regex` crate does not support.
+        for m in RE_CODE_TAG.find_iter(line) {
             let start = m.start();
-            if byte_pos >= start {
-                if let Some(end_offset) = line[start..].find("%>") {
-                    let end = start + end_offset + 2;
-                    if byte_pos <= end {
-                        let content = &line[m.end()..start + end_offset];
-                        let name = content.split_whitespace().next().unwrap_or("script");
-                        let name_start = m.end();
-                        let name_end = name_start + name.len();
-                        return Some(MacroAtPosition {
-                            name: name.to_string(),
-                            full_range: start..end,
-                            name_range: name_start..name_end,
-                            is_unclosed: false,
-                        });
-                    }
-                } else if byte_pos >= start {
-                    let content = &line[m.end()..];
+            // Skip `<%=` — expression tags are handled by RE_EXPR_TAG above.
+            if line.as_bytes().get(start + 2) == Some(&b'=') {
+                continue;
+            }
+            if byte_pos < start {
+                // Cursor is before this match; no point checking later ones.
+                break;
+            }
+            // `m.end() == start + 2` (just `<%`). Trim leading whitespace
+            // from the content the way the original `\s*` would have.
+            let raw_after_open = &line[m.end()..];
+            let leading_ws = raw_after_open
+                .char_indices()
+                .take_while(|(_, c)| c.is_whitespace())
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            let content_start = m.end() + leading_ws;
+            if let Some(end_offset) = line[start..].find("%>") {
+                let end = start + end_offset + 2;
+                if byte_pos <= end {
+                    let content = &line[content_start..start + end_offset];
                     let name = content.split_whitespace().next().unwrap_or("script");
-                    let name_start = m.end();
+                    let name_start = content_start;
                     let name_end = name_start + name.len();
                     return Some(MacroAtPosition {
                         name: name.to_string(),
-                        full_range: start..line.len(),
+                        full_range: start..end,
                         name_range: name_start..name_end,
-                        is_unclosed: true,
+                        is_unclosed: false,
                     });
                 }
+            } else {
+                let content = &line[content_start..];
+                let name = content.split_whitespace().next().unwrap_or("script");
+                let name_start = content_start;
+                let name_end = name_start + name.len();
+                return Some(MacroAtPosition {
+                    name: name.to_string(),
+                    full_range: start..line.len(),
+                    name_range: name_start..name_end,
+                    is_unclosed: true,
+                });
             }
         }
 
@@ -1282,11 +1362,13 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect s.gold write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Read),
             "Should detect s.gold read"
         );
     }
@@ -1321,7 +1403,8 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Read),
             "Should detect s.gold as read in <%= %> block"
         );
 
@@ -1346,7 +1429,8 @@ mod tests {
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect s.gold as write in <% %> block"
         );
 
@@ -1374,7 +1458,8 @@ mod tests {
         // Check variable read
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Read),
             "Should detect s.gold as read in <%- %> block"
         );
 
@@ -1384,7 +1469,11 @@ mod tests {
             .iter()
             .filter(|b| matches!(b, Block::Expression { .. }))
             .collect();
-        assert_eq!(expr_blocks.len(), 1, "Should have one Expression block for <%- %>");
+        assert_eq!(
+            expr_blocks.len(),
+            1,
+            "Should have one Expression block for <%- %>"
+        );
         if let Block::Expression { content, .. } = expr_blocks[0] {
             assert!(
                 content.contains("s.gold"),
@@ -1436,8 +1525,14 @@ mod tests {
         let body = &result.passages[0].body;
 
         // Should have: Text, Macro, Expression, Text
-        let text_count = body.iter().filter(|b| matches!(b, Block::Text { .. })).count();
-        let macro_count = body.iter().filter(|b| matches!(b, Block::Macro { .. })).count();
+        let text_count = body
+            .iter()
+            .filter(|b| matches!(b, Block::Text { .. }))
+            .count();
+        let macro_count = body
+            .iter()
+            .filter(|b| matches!(b, Block::Macro { .. }))
+            .count();
         let expr_count = body
             .iter()
             .filter(|b| matches!(b, Block::Expression { .. }))
@@ -1454,11 +1549,13 @@ mod tests {
         // Variable operations
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "name" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "name" && v.kind == VarKind::Init),
             "Should detect s.name write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "name" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "name" && v.kind == VarKind::Read),
             "Should detect s.name read"
         );
     }
@@ -1471,7 +1568,8 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Read),
             "Should detect s.gold as read even in plain text context"
         );
     }
@@ -1484,11 +1582,13 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "health" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "health" && v.kind == VarKind::Init),
             "Should detect s.health write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "mana" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "mana" && v.kind == VarKind::Init),
             "Should detect s.mana write"
         );
     }
@@ -1503,21 +1603,25 @@ mod tests {
 
         // Writes
         assert!(
-            vars.iter().any(|v| v.name == "x" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "x" && v.kind == VarKind::Init),
             "Should detect s.x write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "y" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "y" && v.kind == VarKind::Init),
             "Should detect s.y write"
         );
 
         // Reads
         assert!(
-            vars.iter().any(|v| v.name == "x" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "x" && v.kind == VarKind::Read),
             "Should detect s.x read"
         );
         assert!(
-            vars.iter().any(|v| v.name == "y" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "y" && v.kind == VarKind::Read),
             "Should detect s.y read"
         );
     }
@@ -1595,11 +1699,13 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Init),
             "Should detect window.story.state.gold write"
         );
         assert!(
-            vars.iter().any(|v| v.name == "gold" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "gold" && v.kind == VarKind::Read),
             "Should detect window.story.state.gold read"
         );
     }
@@ -1645,15 +1751,17 @@ mod tests {
     #[test]
     fn parse_passage_tagged_header() {
         let mut plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "TopBar",
-            &["header".to_string()],
-            "Header content\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("TopBar", &["header".to_string()], "Header content\n", "");
         let p = result.expect("tagged [header] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'header' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [header]"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
@@ -1661,15 +1769,17 @@ mod tests {
     #[test]
     fn parse_passage_tagged_footer() {
         let mut plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "BottomBar",
-            &["footer".to_string()],
-            "Footer content\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("BottomBar", &["footer".to_string()], "Footer content\n", "");
         let p = result.expect("tagged [footer] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'footer' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [footer]"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }
@@ -1677,14 +1787,12 @@ mod tests {
     #[test]
     fn parse_passage_name_matched_passage_header() {
         let mut plugin = SnowmanPlugin::new();
-        let result = plugin.parse_passage_mut(
-            "PassageHeader",
-            &[],
-            "Header content\n",
-            "",
-        );
+        let result = plugin.parse_passage_mut("PassageHeader", &[], "Header content\n", "");
         let p = result.expect("PassageHeader (name-matched) should be classified as special");
-        assert!(p.is_special, "PassageHeader should be special via name matching");
+        assert!(
+            p.is_special,
+            "PassageHeader should be special via name matching"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Chrome));
     }

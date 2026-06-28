@@ -1,7 +1,10 @@
 //! Lifecycle handlers: initialize, initialized, shutdown.
 
 use crate::handlers::helpers;
-use crate::lsp_ext::{KnotClientReadyParams, KnotClientReadyResponse, KnotFormatSwitchCompleteParams, KnotFormatSwitchCompleteResponse};
+use crate::lsp_ext::{
+    KnotClientReadyParams, KnotClientReadyResponse, KnotFormatSwitchCompleteParams,
+    KnotFormatSwitchCompleteResponse,
+};
 use crate::state::ServerState;
 use knot_formats::plugin as fmt_plugin;
 use lsp_types::*;
@@ -14,7 +17,9 @@ pub(crate) async fn initialize(
     tracing::info!("initialize");
 
     // Reset the shutdown guard — we're starting fresh
-    state.shutting_down.store(false, std::sync::atomic::Ordering::SeqCst);
+    state
+        .shutting_down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
     // Update workspace root URI if provided
     if let Some(root_uri) = params.root_uri {
@@ -34,15 +39,24 @@ pub(crate) async fn initialize(
             let path = std::path::PathBuf::from(path_str);
             let mut inner = state.inner.write().await;
             inner.global_storage_path = Some(path);
-            tracing::info!("Extension global storage path: {:?}", inner.global_storage_path);
+            tracing::info!(
+                "Extension global storage path: {:?}",
+                inner.global_storage_path
+            );
         }
 
         // Read VS Code indexing settings (merged with knot.json below)
-        let vc_exclude: Vec<String> = opts.get("indexingExclude")
+        let vc_exclude: Vec<String> = opts
+            .get("indexingExclude")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let vc_max_files: Option<usize> = opts.get("indexingMaxFiles")
+        let vc_max_files: Option<usize> = opts
+            .get("indexingMaxFiles")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
 
@@ -58,14 +72,15 @@ pub(crate) async fn initialize(
             }
             // maxFiles is only set if not already configured in knot.json
             // (knot.json takes priority for project-specific limits).
-            if let Some(max) = vc_max_files {
-                if inner.workspace.config.max_files.is_none() {
-                    inner.workspace.config.max_files = Some(max);
-                }
+            if let Some(max) = vc_max_files
+                && inner.workspace.config.max_files.is_none()
+            {
+                inner.workspace.config.max_files = Some(max);
             }
             tracing::info!(
                 "Indexing settings from VS Code: exclude={:?}, max_files={:?}",
-                vc_exclude, vc_max_files
+                vc_exclude,
+                vc_max_files
             );
         }
     }
@@ -139,16 +154,11 @@ pub(crate) async fn initialize(
             retrigger_characters: None,
             work_done_progress_options: Default::default(),
         }),
-        code_action_provider: Some(CodeActionProviderCapability::Options(
-            CodeActionOptions {
-                code_action_kinds: Some(vec![
-                    CodeActionKind::QUICKFIX,
-                    CodeActionKind::REFACTOR,
-                ]),
-                work_done_progress_options: Default::default(),
-                resolve_provider: Some(false),
-            },
-        )),
+        code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
+            code_action_kinds: Some(vec![CodeActionKind::QUICKFIX, CodeActionKind::REFACTOR]),
+            work_done_progress_options: Default::default(),
+            resolve_provider: Some(false),
+        })),
         code_lens_provider: Some(CodeLensOptions {
             resolve_provider: Some(false),
         }),
@@ -168,25 +178,23 @@ pub(crate) async fn initialize(
         linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(true)),
         call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
         diagnostic_provider: None,
-        semantic_tokens_provider: Some(
-            SemanticTokensServerCapabilities::SemanticTokensOptions(
-                SemanticTokensOptions {
-                    work_done_progress_options: Default::default(),
-                    legend: SemanticTokensLegend {
-                        token_types: fmt_plugin::SemanticTokenType::all_types()
-                            .iter()
-                            .map(|t| lsp_types::SemanticTokenType::new(t.lsp_name()))
-                            .collect(),
-                        token_modifiers: fmt_plugin::SemanticTokenModifier::all_modifiers()
-                            .iter()
-                            .map(|m| lsp_types::SemanticTokenModifier::new(m.lsp_name()))
-                            .collect(),
-                    },
-                    range: Some(false),
-                    full: Some(SemanticTokensFullOptions::Bool(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                work_done_progress_options: Default::default(),
+                legend: SemanticTokensLegend {
+                    token_types: fmt_plugin::SemanticTokenType::all_types()
+                        .iter()
+                        .map(|t| lsp_types::SemanticTokenType::new(t.lsp_name()))
+                        .collect(),
+                    token_modifiers: fmt_plugin::SemanticTokenModifier::all_modifiers()
+                        .iter()
+                        .map(|m| lsp_types::SemanticTokenModifier::new(m.lsp_name()))
+                        .collect(),
                 },
-            ),
-        ),
+                range: Some(false),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+            },
+        )),
         workspace: Some(WorkspaceServerCapabilities {
             workspace_folders: None,
             file_operations: None,
@@ -203,18 +211,20 @@ pub(crate) async fn initialize(
     })
 }
 
-pub(crate) async fn initialized(
-    state: &ServerState,
-    _params: InitializedParams,
-) {
+pub(crate) async fn initialized(state: &ServerState, _params: InitializedParams) {
     tracing::info!("Language server initialized");
 
-    state.client
-        .log_message(MessageType::INFO, "Knot Language Server initialized — waiting for clientReady…")
+    state
+        .client
+        .log_message(
+            MessageType::INFO,
+            "Knot Language Server initialized — waiting for clientReady…",
+        )
         .await;
 
     // Register for configuration change notifications
-    state.client
+    state
+        .client
         .register_capability(vec![Registration {
             id: "knot-didChangeConfiguration".to_string(),
             method: "workspace/didChangeConfiguration".to_string(),
@@ -254,7 +264,10 @@ pub(crate) async fn initialized(
         if let Err(e) = helpers::index_workspace(&inner, &client).await {
             tracing::error!("Workspace indexing failed: {}", e);
             client
-                .log_message(MessageType::ERROR, format!("Workspace indexing failed: {}", e))
+                .log_message(
+                    MessageType::ERROR,
+                    format!("Workspace indexing failed: {}", e),
+                )
                 .await;
         } else {
             client
@@ -264,13 +277,13 @@ pub(crate) async fn initialized(
     });
 }
 
-pub(crate) async fn shutdown(
-    state: &ServerState,
-) -> Result<(), tower_lsp::jsonrpc::Error> {
+pub(crate) async fn shutdown(state: &ServerState) -> Result<(), tower_lsp::jsonrpc::Error> {
     tracing::info!("Language server shutting down");
     // Signal in-flight handlers to short-circuit so they don't try to
     // write to a transport stream that is about to be destroyed.
-    state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+    state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 
@@ -299,12 +312,15 @@ async fn register_file_watchers(client: &tower_lsp::Client) {
     let registrations = vec![Registration {
         id: "knot-watch-twee-files".to_string(),
         method: "workspace/didChangeWatchedFiles".to_string(),
-        register_options: Some(serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-            watchers,
-        }).unwrap_or_else(|e| {
-            tracing::warn!("Failed to serialize DidChangeWatchedFilesRegistrationOptions: {e}");
-            serde_json::Value::Null
-        })),
+        register_options: Some(
+            serde_json::to_value(DidChangeWatchedFilesRegistrationOptions { watchers })
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        "Failed to serialize DidChangeWatchedFilesRegistrationOptions: {e}"
+                    );
+                    serde_json::Value::Null
+                }),
+        ),
     }];
 
     if let Err(e) = client.register_capability(registrations).await {
@@ -351,7 +367,8 @@ impl ServerState {
     ) -> Result<KnotFormatSwitchCompleteResponse, tower_lsp::jsonrpc::Error> {
         tracing::info!(
             "knot/formatSwitchComplete received — workspace_uri={}, switched_count={}",
-            params.workspace_uri, params.switched_count
+            params.workspace_uri,
+            params.switched_count
         );
         // Send ONE unified refresh now that the cascade is complete
         self.schedule_semantic_token_refresh().await;

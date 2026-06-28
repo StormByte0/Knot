@@ -16,11 +16,21 @@ use crate::types::ImplicitPassagePattern;
 /// Script/stylesheet passages are identified by [script]/[stylesheet] tags.
 pub fn special_passage_names() -> HashSet<&'static str> {
     [
-        "StoryInit", "StoryCaption", "StoryBanner", "StorySubtitle",
-        "StoryAuthor", "StoryMenu", "StoryDisplayTitle", "StoryShare",
+        "StoryInit",
+        "StoryCaption",
+        "StoryBanner",
+        "StorySubtitle",
+        "StoryAuthor",
+        "StoryMenu",
+        "StoryDisplayTitle",
+        "StoryShare",
         "StoryInterface",
-        "PassageDone", "PassageHeader", "PassageFooter", "PassageReady",
-        "StoryTitle", "StoryData",
+        "PassageDone",
+        "PassageHeader",
+        "PassageFooter",
+        "PassageReady",
+        "StoryTitle",
+        "StoryData",
     ]
     .into_iter()
     .collect()
@@ -31,9 +41,7 @@ pub fn special_passage_names() -> HashSet<&'static str> {
 /// Only includes metadata passages (StoryData, StoryTitle) since they are
 /// data containers. Script/stylesheet passages are detected via tags, not names.
 pub fn system_passage_names() -> HashSet<&'static str> {
-    ["StoryData", "StoryTitle"]
-        .into_iter()
-        .collect()
+    ["StoryData", "StoryTitle"].into_iter().collect()
 }
 
 /// Patterns that detect passage references in raw text / HTML / JS.

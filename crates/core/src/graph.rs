@@ -138,10 +138,11 @@ pub struct SpecialPassageBundle {
 /// enum that distinguishes navigation, call, include, jump, upstream
 /// lifecycle, and broken edges. The story map uses this to render edges
 /// with distinct visual styles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EdgeType {
     /// A navigation link: `[[Target]]`, `<<link>>`, `<<button>>`, `<<goto>>`.
     /// Any edge where the player navigates (or is redirected) to another passage.
+    #[default]
     Navigation,
     /// An upstream lifecycle edge (not a user-navigable link).
     /// Connects special passages in execution order
@@ -154,12 +155,6 @@ pub enum EdgeType {
     /// Internal diagnostic state — restored to the original type when the
     /// target is created.
     Broken,
-}
-
-impl Default for EdgeType {
-    fn default() -> Self {
-        EdgeType::Navigation
-    }
 }
 
 /// Edge data representing a link between passages.
@@ -354,9 +349,7 @@ impl PassageGraph {
         let already_exists = self
             .graph
             .edges_connecting(from_idx, to_idx)
-            .any(|existing| {
-                existing.weight().display_text == edge.display_text
-            });
+            .any(|existing| existing.weight().display_text == edge.display_text);
 
         if !already_exists {
             self.graph.add_edge(from_idx, to_idx, edge);
@@ -417,7 +410,9 @@ impl PassageGraph {
         if !node.is_special {
             return;
         }
-        self.special_bundle.all_special_names.insert(node.name.clone());
+        self.special_bundle
+            .all_special_names
+            .insert(node.name.clone());
         if let Some(ref behavior) = node.behavior {
             match behavior {
                 SpecialPassageBehavior::ScriptInjection => {
@@ -430,10 +425,14 @@ impl PassageGraph {
                     self.special_bundle.chrome.push(node.name.clone());
                 }
                 SpecialPassageBehavior::ChromeInterceptor => {
-                    self.special_bundle.chrome_interceptor.push(node.name.clone());
+                    self.special_bundle
+                        .chrome_interceptor
+                        .push(node.name.clone());
                 }
                 SpecialPassageBehavior::StructureTemplate => {
-                    self.special_bundle.structure_template.push(node.name.clone());
+                    self.special_bundle
+                        .structure_template
+                        .push(node.name.clone());
                 }
                 SpecialPassageBehavior::Metadata => {
                     self.special_bundle.metadata.push(node.name.clone());
@@ -532,14 +531,14 @@ impl PassageGraph {
 
             // Skip broken link diagnostics for ScriptInjection and
             // StyleInjection source passages.
-            if let Some(ref behavior) = source.behavior {
-                if matches!(
+            if let Some(ref behavior) = source.behavior
+                && matches!(
                     behavior,
                     SpecialPassageBehavior::ScriptInjection
                         | SpecialPassageBehavior::StyleInjection
-                ) {
-                    continue;
-                }
+                )
+            {
+                continue;
             }
 
             // Skip targets containing "::".
@@ -551,10 +550,7 @@ impl PassageGraph {
                 passage_name: source.name.clone(),
                 file_uri: source.file_uri.clone(),
                 kind: DiagnosticKind::BrokenLink,
-                message: format!(
-                    "Link target '{}' not found in workspace",
-                    target.name
-                ),
+                message: format!("Link target '{}' not found in workspace", target.name),
             });
         }
         diagnostics
@@ -604,10 +600,8 @@ impl PassageGraph {
                     .graph
                     .neighbors_directed(idx, petgraph::Direction::Outgoing)
                     .any(|neighbor| !self.graph[neighbor].is_special);
-                if has_user_refs {
-                    if reachable.insert(idx) {
-                        queue.push_back(idx);
-                    }
+                if has_user_refs && reachable.insert(idx) {
+                    queue.push_back(idx);
                 }
             }
         }
@@ -661,8 +655,6 @@ impl PassageGraph {
         diagnostics
     }
 
-
-
     /// Export the graph as a serializable structure for the Story Map webview.
     ///
     /// The `passage_tags` map provides tag data for each passage name (collected
@@ -692,6 +684,7 @@ impl PassageGraph {
     /// This is the preferred export method. It includes all data from
     /// `export_graph_with_metadata` plus per-node variable summaries
     /// and game loop detection results.
+    #[allow(clippy::too_many_arguments)]
     pub fn export_graph_with_metadata_and_vars(
         &self,
         passage_tags: &std::collections::HashMap<String, Vec<String>>,
@@ -753,7 +746,11 @@ impl PassageGraph {
         // Detect game loops for export (SCCs with mutation)
         let game_loops = self.detect_game_loops_for_export(var_writes);
 
-        GraphExport { nodes, edges, game_loops }
+        GraphExport {
+            nodes,
+            edges,
+            game_loops,
+        }
     }
 
     /// Detect game loops (strongly connected components) and return them
@@ -831,7 +828,10 @@ impl PassageGraph {
     /// the same SCC analysis as `detect_game_loops_for_export` but only
     /// returns the count, avoiding the overhead of building full
     /// `GameLoopExport` structs.
-    pub fn game_loop_count(&self, var_writes: &std::collections::HashMap<String, Vec<String>>) -> usize {
+    pub fn game_loop_count(
+        &self,
+        var_writes: &std::collections::HashMap<String, Vec<String>>,
+    ) -> usize {
         self.detect_game_loops_for_export(var_writes).len()
     }
 
@@ -884,12 +884,17 @@ impl PassageGraph {
     }
 
     /// Get a mutable reference to an edge's weight by edge ID.
-    pub fn edge_weight_mut(&mut self, edge: petgraph::graph::EdgeIndex) -> Option<&mut PassageEdge> {
+    pub fn edge_weight_mut(
+        &mut self,
+        edge: petgraph::graph::EdgeIndex,
+    ) -> Option<&mut PassageEdge> {
         self.graph.edge_weight_mut(edge)
     }
 
     /// Return an iterator over all edge references in the graph.
-    pub fn edge_references(&self) -> impl Iterator<Item = petgraph::graph::EdgeReference<'_, PassageEdge>> {
+    pub fn edge_references(
+        &self,
+    ) -> impl Iterator<Item = petgraph::graph::EdgeReference<'_, PassageEdge>> {
         self.graph.edge_references()
     }
 
@@ -900,9 +905,7 @@ impl PassageGraph {
 
     /// Get the passage node data for a given name.
     pub fn get_passage(&self, name: &str) -> Option<&PassageNode> {
-        self.name_to_idx
-            .get(name)
-            .map(|&idx| &self.graph[idx])
+        self.name_to_idx.get(name).map(|&idx| &self.graph[idx])
     }
 
     /// Get the names of all passages this passage links to (outgoing neighbors).
@@ -1008,8 +1011,7 @@ impl PassageGraph {
                 } else if edge.edge_type == EdgeType::Broken {
                     // Target now exists — restore the original type if we
                     // saved one. Otherwise fall back to Navigation.
-                    edge.edge_type = edge.pre_broken_type
-                        .unwrap_or(EdgeType::Navigation);
+                    edge.edge_type = edge.pre_broken_type.unwrap_or(EdgeType::Navigation);
                     edge.pre_broken_type = None;
                 }
                 // All other edge types (Upstream, Call, Include, Jump) are

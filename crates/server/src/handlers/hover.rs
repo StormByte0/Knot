@@ -86,24 +86,24 @@ pub(crate) async fn hover(
     //    and return immediately. When it returns `None`, we fall through
     //    to the built-in handlers below (which will be removed once all
     //    formats implement `provide_hover`).
-    if let Some(plugin) = plugin {
-        if let Some(fmt_hover) = plugin.provide_hover(
-            text,
-            &inner.workspace,
-            &uri,
-            byte_offset,
-            &token_groups,
-        ) {
-            let range = fmt_hover.range.map(|r| helpers::byte_range_to_lsp_range(text, &r));
-            info!("hover: provide_hover returned Some ({} chars)", fmt_hover.contents.len());
-            return Ok(Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: fmt_hover.contents,
-                }),
-                range,
-            }));
-        }
+    if let Some(plugin) = plugin
+        && let Some(fmt_hover) =
+            plugin.provide_hover(text, &inner.workspace, &uri, byte_offset, &token_groups)
+    {
+        let range = fmt_hover
+            .range
+            .map(|r| helpers::byte_range_to_lsp_range(text, &r));
+        info!(
+            "hover: provide_hover returned Some ({} chars)",
+            fmt_hover.contents.len()
+        );
+        return Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: fmt_hover.contents,
+            }),
+            range,
+        }));
     }
 
     // Find the passage containing the cursor by checking passage.span containment.
@@ -117,56 +117,55 @@ pub(crate) async fn hover(
     //    line, always show passage info. This prevents global object names
     //    (e.g., "Story" in "Story Stylesheet [stylesheet]") from matching
     //    the global hover before the passage hover gets a chance.
-    if let Some(passage) = current_passage {
-        if let Some(hover) =
-            try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
-        {
-            return Ok(Some(hover));
-        }
+    if let Some(passage) = current_passage
+        && let Some(hover) = try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
+    {
+        return Ok(Some(hover));
     }
     // Fallback: if span-based passage lookup didn't find a passage (e.g., the
     // cursor is on a header line but the passage span hasn't been updated yet,
     // or the format only spans the header line), try the line-based check.
-    if current_passage.is_none() {
-        if let Some(passage_name) = helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
-            && let Some((_, passage)) = inner.workspace.find_passage(&passage_name)
-        {
-            if let Some(hover) =
-                try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
-            {
-                return Ok(Some(hover));
-            }
-        }
+    if current_passage.is_none()
+        && let Some(passage_name) =
+            helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
+        && let Some((_, passage)) = inner.workspace.find_passage(&passage_name)
+        && let Some(hover) = try_passage_header_hover(text, byte_offset, passage, &inner.workspace)
+    {
+        return Ok(Some(hover));
     }
 
     // 2. Try macro arg ref hover (inner layer) — if the cursor is on a
     //    PassageRef arg inside a macro, show passage info for the target.
     //    This takes priority over the outer macro hover (step 5).
     if let Some(plugin) = plugin {
-        if let Some(hover) = try_macro_arg_ref_hover(text, byte_offset, doc, &inner.workspace, plugin) {
+        if let Some(hover) =
+            try_macro_arg_ref_hover(text, byte_offset, doc, &inner.workspace, plugin)
+        {
             return Ok(Some(hover));
         }
     } else {
         // No plugin available — fall back to workspace-only hover (no macro label).
         // This path is rarely hit; preserving previous behavior for safety.
         #[allow(deprecated)]
-        if let Some(hover) = try_macro_arg_ref_hover_no_plugin(text, byte_offset, doc, &inner.workspace) {
+        if let Some(hover) =
+            try_macro_arg_ref_hover_no_plugin(text, byte_offset, doc, &inner.workspace)
+        {
             return Ok(Some(hover));
         }
     }
 
     // 3. Try variable hover — use span data from the workspace index.
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_variable_hover(
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_variable_hover(
             text,
             byte_offset,
             doc,
             &inner.workspace,
             plugin,
             &token_groups,
-        ) {
-            return Ok(Some(hover));
-        }
+        )
+    {
+        return Ok(Some(hover));
     }
 
     // 3b. Try operator hover — cursor on a SugarCube operator like `gt`,
@@ -177,10 +176,10 @@ pub(crate) async fn hover(
     //     cursor — operators are valid only inside macro expressions, not
     //     in prose or link text. This prevents `to` in "Jump to combat"
     //     from triggering an operator hover.
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_operator_hover(text, byte_offset, plugin, &token_groups) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_operator_hover(text, byte_offset, plugin, &token_groups)
+    {
+        return Ok(Some(hover));
     }
 
     // 4. Try link hover — use span data from the workspace index.
@@ -192,28 +191,28 @@ pub(crate) async fn hover(
     //     `Function` semantic tokens as function hover (the token builder
     //     emits Function tokens for `?name` patterns). Filters to known
     //     templates via `plugin.find_template()`.
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_template_hover(text, byte_offset, plugin, &token_groups) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_template_hover(text, byte_offset, plugin, &token_groups)
+    {
+        return Ok(Some(hover));
     }
 
     // 4c. Try function hover — cursor on a JS function call (e.g., `myFunc()`
     //     inside `<<run>>`). Uses semantic tokens for detection. Only fires
     //     when the function has meaningful info (definition location + params).
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_function_hover(text, byte_offset, plugin, &token_groups) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_function_hover(text, byte_offset, plugin, &token_groups)
+    {
+        return Ok(Some(hover));
     }
 
     // 4c. Try property hover — cursor on `.prop` in `$var.prop`. Only fires
     //     when there are siblings to discover (the value of property hover is
     //     seeing what other properties exist on the parent object).
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_property_hover(text, byte_offset, plugin, &token_groups, doc) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_property_hover(text, byte_offset, plugin, &token_groups, doc)
+    {
+        return Ok(Some(hover));
     }
 
     // 5. Try macro hover — span-based, using macro_arg_refs.
@@ -225,17 +224,17 @@ pub(crate) async fn hover(
     //     the close tag belongs to. Close tags don't have span data in
     //     `macro_invocations` (which tracks open tags only), so we detect
     //     via line-scanning for the `<</` pattern.
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_close_tag_hover(text, byte_offset, plugin) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_close_tag_hover(text, byte_offset, plugin)
+    {
+        return Ok(Some(hover));
     }
 
     // 5b. Try macro hover — fires only when cursor is ON the macro name.
-    if let Some(plugin) = plugin {
-        if let Some(hover) = try_macro_hover(text, byte_offset, doc, plugin) {
-            return Ok(Some(hover));
-        }
+    if let Some(plugin) = plugin
+        && let Some(hover) = try_macro_hover(text, byte_offset, doc, plugin)
+    {
+        return Ok(Some(hover));
     }
 
     // 5c. Try block-level markup hover — cursor on `!`, `*`, `#`, `>`,
@@ -351,19 +350,25 @@ fn build_passage_target_hover_text_impl(
     // Show workspace-relative path instead of full file:// URI.
     // Authors don't want to see "file:///D:/codeWS/twine/..." — just
     // "src/passages/newtest.twee" or similar.
-    let display_path = workspace.root_uri
+    let display_path = workspace
+        .root_uri
         .to_file_path()
         .ok()
         .and_then(|root| {
             // target_doc.uri is a file:// URL — convert to path
             target_doc.uri.to_file_path().ok().and_then(|doc_path| {
-                doc_path.strip_prefix(&root).ok().map(|p| p.display().to_string())
+                doc_path
+                    .strip_prefix(&root)
+                    .ok()
+                    .map(|p| p.display().to_string())
             })
         })
         .unwrap_or_else(|| {
             // Fallback: show just the filename
-            target_doc.uri.path_segments()
-                .and_then(|s| s.last())
+            target_doc
+                .uri
+                .path_segments()
+                .and_then(|mut s| s.next_back())
                 .unwrap_or("unknown")
                 .to_string()
         });
@@ -451,12 +456,8 @@ fn try_passage_header_hover(
                     "Structure Template"
                 }
                 knot_core::passage::SpecialPassageBehavior::Metadata => "Metadata",
-                knot_core::passage::SpecialPassageBehavior::ScriptInjection => {
-                    "Script Injection"
-                }
-                knot_core::passage::SpecialPassageBehavior::StyleInjection => {
-                    "Style Injection"
-                }
+                knot_core::passage::SpecialPassageBehavior::ScriptInjection => "Script Injection",
+                knot_core::passage::SpecialPassageBehavior::StyleInjection => "Style Injection",
                 knot_core::passage::SpecialPassageBehavior::Custom(s) => s,
             };
             let layer = match &def.layer {
@@ -533,7 +534,10 @@ fn try_macro_arg_ref_hover(
 
                 if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
                     let mut hover_text = build_passage_target_hover_text_compact(
-                        target, target_doc, target_passage, workspace,
+                        target,
+                        target_doc,
+                        target_passage,
+                        workspace,
                     );
 
                     // Show which macro this arg belongs to.
@@ -544,7 +548,8 @@ fn try_macro_arg_ref_hover(
                         plugin.format_macro_label(&arg_ref.macro_name)
                     ));
 
-                    let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
+                    let hover_range =
+                        helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
 
                     return Some(Hover {
                         contents: HoverContents::Markup(MarkupContent {
@@ -555,15 +560,13 @@ fn try_macro_arg_ref_hover(
                     });
                 } else {
                     // Broken ref — passage doesn't exist
-                    let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
+                    let hover_range =
+                        helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
 
                     return Some(Hover {
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
-                            value: format!(
-                                "**Broken link** — passage `{}` does not exist",
-                                target
-                            ),
+                            value: format!("**Broken link** — passage `{}` does not exist", target),
                         }),
                         range: Some(hover_range),
                     });
@@ -596,11 +599,13 @@ fn try_macro_arg_ref_hover_no_plugin(
                 }
                 if let Some((target_doc, target_passage)) = workspace.find_passage(target) {
                     let hover_text = build_passage_target_hover_text_compact(
-                        target, target_doc, target_passage, workspace,
+                        target,
+                        target_doc,
+                        target_passage,
+                        workspace,
                     );
-                    let hover_range = helpers::byte_range_to_lsp_range(
-                        text, &passage.abs_range(&arg_ref.span),
-                    );
+                    let hover_range =
+                        helpers::byte_range_to_lsp_range(text, &passage.abs_range(&arg_ref.span));
                     return Some(Hover {
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
@@ -637,15 +642,23 @@ fn try_close_tag_hover(
     let mut tag_start = None;
     let mut search = byte_pos;
     while search >= 2 {
-        if search + 0 <= bytes.len() && search >= 3
-            && bytes[search - 3] == b'<' && bytes[search - 2] == b'<' && bytes[search - 1] == b'/'
+        if search <= bytes.len()
+            && search >= 3
+            && bytes[search - 3] == b'<'
+            && bytes[search - 2] == b'<'
+            && bytes[search - 1] == b'/'
         {
             tag_start = Some(search - 3);
             break;
         }
         search -= 1;
         // Don't walk past a `>>` (we'd be in a different tag).
-        if search < bytes.len() && search >= 1 && bytes[search - 1] == b'>' && search >= 2 && bytes[search - 2] == b'>' {
+        if search < bytes.len()
+            && search >= 1
+            && bytes[search - 1] == b'>'
+            && search >= 2
+            && bytes[search - 2] == b'>'
+        {
             return None;
         }
     }
@@ -709,8 +722,14 @@ fn try_close_tag_hover(
             value: hover_text,
         }),
         range: Some(Range {
-            start: Position { line: line_idx as u32, character: utf16_start },
-            end: Position { line: line_idx as u32, character: utf16_end },
+            start: Position {
+                line: line_idx as u32,
+                character: utf16_start,
+            },
+            end: Position {
+                line: line_idx as u32,
+                character: utf16_end,
+            },
         }),
     })
 }
@@ -773,8 +792,8 @@ fn try_macro_hover(
             // name_span == open_span (the full expression construct), so
             // `on_name` is the only case that fires — which is correct.
             let on_name = passage.span_contains_abs_offset(&inv.name_span, byte_offset);
-            let in_open_tag = !on_name
-                && passage.span_contains_abs_offset(&inv.open_span, byte_offset);
+            let in_open_tag =
+                !on_name && passage.span_contains_abs_offset(&inv.open_span, byte_offset);
             if !on_name && !in_open_tag {
                 continue;
             }
@@ -795,9 +814,9 @@ fn try_macro_hover(
                 // Container violation check: if this macro requires a parent
                 // (e.g., `<<else>>` must be inside `<<if>>`), find the
                 // enclosing macro at the cursor and verify it's allowed.
-                if let Some(violation) = check_container_violation(
-                    mdef, passage, byte_offset, plugin,
-                ) {
+                if let Some(violation) =
+                    check_container_violation(mdef, passage, byte_offset, plugin)
+                {
                     hover_text.push_str(&format!("\n\n**Container violation**: {}", violation));
                 }
 
@@ -927,10 +946,10 @@ fn build_custom_macro_hover_text(
     if detail.is_container {
         text.push_str("\n\n*Container* — has a body between open and close tags.");
     }
-    if let Some(ref desc) = detail.description {
-        if !desc.is_empty() {
-            text.push_str(&format!("\n\n{}", desc));
-        }
+    if let Some(ref desc) = detail.description
+        && !desc.is_empty()
+    {
+        text.push_str(&format!("\n\n{}", desc));
     }
     text
 }
@@ -943,7 +962,9 @@ fn build_custom_macro_hover_text(
 /// expression — variables, literals, or function calls").
 fn describe_macro_arg_kind(kind: &MacroArgKind, is_passage_ref: bool) -> String {
     let base = match kind {
-        MacroArgKind::Expression => "a SugarCube expression — variables, literals, or function calls",
+        MacroArgKind::Expression => {
+            "a SugarCube expression — variables, literals, or function calls"
+        }
         MacroArgKind::String => "a quoted string literal",
         MacroArgKind::Selector => "a CSS selector",
         MacroArgKind::Variable => "a variable reference ($var or _var)",
@@ -983,10 +1004,10 @@ fn build_macro_hover_text(
     hover_text.push_str(&format!("\n\n{}", mdef.description));
 
     // Add deprecation warning
-    if mdef.deprecated {
-        if let Some(msg) = mdef.deprecation_message {
-            hover_text.push_str(&format!("\n\n**Deprecated**: {}", msg));
-        }
+    if mdef.deprecated
+        && let Some(msg) = mdef.deprecation_message
+    {
+        hover_text.push_str(&format!("\n\n**Deprecated**: {}", msg));
     }
 
     // Close-tag hint for container macros (those that require a body and a
@@ -1001,21 +1022,18 @@ fn build_macro_hover_text(
 
     // Add parameter info — render with human-readable kind descriptions
     // so users understand what to write, not just the type name.
-    if let Some(args) = mdef.args {
-        if !args.is_empty() {
-            hover_text.push_str("\n\n**Parameters:**\n");
-            for arg in args {
-                let req = if arg.is_required {
-                    " (required)"
-                } else {
-                    " (optional)"
-                };
-                let kind_desc = describe_macro_arg_kind(&arg.kind, arg.is_passage_ref);
-                hover_text.push_str(&format!(
-                    "- `{}{}`: {}\n",
-                    arg.label, req, kind_desc
-                ));
-            }
+    if let Some(args) = mdef.args
+        && !args.is_empty()
+    {
+        hover_text.push_str("\n\n**Parameters:**\n");
+        for arg in args {
+            let req = if arg.is_required {
+                " (required)"
+            } else {
+                " (optional)"
+            };
+            let kind_desc = describe_macro_arg_kind(&arg.kind, arg.is_passage_ref);
+            hover_text.push_str(&format!("- `{}{}`: {}\n", arg.label, req, kind_desc));
         }
     }
 
@@ -1144,9 +1162,7 @@ fn try_variable_hover(
                         .map(|s| s.sigil)
                         .unwrap_or('v')
                 });
-                let sigil_desc = plugin
-                    .describe_variable_sigil(sigil)
-                    .unwrap_or("variable");
+                let sigil_desc = plugin.describe_variable_sigil(sigil).unwrap_or("variable");
 
                 let var_type = plugin
                     .resolve_variable_sigil(sigil)
@@ -1182,7 +1198,8 @@ fn try_variable_hover(
                 // with `Read` kind are overwhelmingly prose references (code
                 // reads go through `<<run>>`/`<<set>>` which have JS analysis).
                 // So we skip the gate for persistent read-only vars.
-                let is_persistent_read = !is_temporary && matches!(var.kind, knot_core::passage::VarKind::Read);
+                let is_persistent_read =
+                    !is_temporary && matches!(var.kind, knot_core::passage::VarKind::Read);
                 if !is_persistent_read
                     && relevant_diagnostics.is_empty()
                     && write_locations.len() <= 1
@@ -1211,7 +1228,8 @@ fn try_variable_hover(
                 }
 
                 // Convert the variable's byte span to an LSP Range.
-                let hover_range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&var.span));
+                let hover_range =
+                    helpers::byte_range_to_lsp_range(text, &passage.abs_range(&var.span));
 
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -1236,9 +1254,7 @@ fn try_variable_hover(
         let is_temporary = sigil == '_';
 
         // Determine the sigil description from the plugin (format-agnostic).
-        let sigil_desc = plugin
-            .describe_variable_sigil(sigil)
-            .unwrap_or("variable");
+        let sigil_desc = plugin.describe_variable_sigil(sigil).unwrap_or("variable");
         let var_type = plugin
             .resolve_variable_sigil(sigil)
             .map(|s| s.to_string())
@@ -1315,10 +1331,7 @@ fn try_variable_hover(
 /// the pattern is inside a context where `$` / `_` isn't a variable sigil
 /// (e.g., `_` in the middle of a word like `snake_case`, or `$` at end of
 /// text without a following identifier).
-fn scan_variable_at_cursor(
-    text: &str,
-    byte_offset: usize,
-) -> Option<(char, String, usize, usize)> {
+fn scan_variable_at_cursor(text: &str, byte_offset: usize) -> Option<(char, String, usize, usize)> {
     let bytes = text.as_bytes();
     let len = bytes.len();
     if byte_offset > len {
@@ -1338,12 +1351,11 @@ fn scan_variable_at_cursor(
             // `_` is only a temp-var sigil at a word boundary (not inside
             // `snake_case` etc.).
             let prev_is_word = byte_offset > 0
-                && bytes.get(byte_offset - 1).copied().map_or(false, is_word_char);
-            if prev_is_word {
-                None
-            } else {
-                Some('_')
-            }
+                && bytes
+                    .get(byte_offset - 1)
+                    .copied()
+                    .is_some_and(is_word_char);
+            if prev_is_word { None } else { Some('_') }
         }
         _ => None,
     };
@@ -1359,12 +1371,12 @@ fn scan_variable_at_cursor(
             let b = bytes[name_end];
             if is_ident_char(b) {
                 name_end += 1;
-            } else if b == b'.' && name_end + 1 < len
+            } else if b == b'.'
+                && name_end + 1 < len
                 && (is_ident_start(bytes[name_end + 1]) || bytes[name_end + 1] == b'_')
             {
                 name_end += 1; // consume `.`
-                while name_end < len
-                    && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
+                while name_end < len && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
                 {
                     name_end += 1;
                 }
@@ -1407,7 +1419,8 @@ fn scan_variable_at_cursor(
         // Now check if there's a `.` before probe, and another segment, and so on.
         // Walk back through segments separated by `.`.
         let mut name_start = probe;
-        while name_start > 0 && bytes[name_start - 1] == b'.'
+        while name_start > 0
+            && bytes[name_start - 1] == b'.'
             && name_start >= 2
             && (is_ident_char(bytes[name_start - 2]) || bytes[name_start - 2] == b'-')
         {
@@ -1429,8 +1442,8 @@ fn scan_variable_at_cursor(
             b'$' => '$',
             b'_' => {
                 // `_` is only a sigil at a word boundary.
-                let prev_is_word = name_start >= 2
-                    && bytes.get(name_start - 2).copied().map_or(false, is_word_char);
+                let prev_is_word =
+                    name_start >= 2 && bytes.get(name_start - 2).copied().is_some_and(is_word_char);
                 if prev_is_word {
                     return None;
                 }
@@ -1450,12 +1463,12 @@ fn scan_variable_at_cursor(
             let b = bytes[name_end];
             if is_ident_char(b) {
                 name_end += 1;
-            } else if b == b'.' && name_end + 1 < len
+            } else if b == b'.'
+                && name_end + 1 < len
                 && (is_ident_start(bytes[name_end + 1]) || bytes[name_end + 1] == b'_')
             {
                 name_end += 1;
-                while name_end < len
-                    && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
+                while name_end < len && (is_ident_char(bytes[name_end]) || bytes[name_end] == b'-')
                 {
                     name_end += 1;
                 }
@@ -1508,11 +1521,15 @@ fn try_operator_hover(
         for token in &group.tokens {
             let abs_start = token.start + group_offset;
             let abs_end = abs_start + token.length;
-            if byte_offset >= abs_start && byte_offset < abs_end {
-                if matches!(token.token_type, knot_formats::plugin::SemanticTokenType::Operator) {
-                    has_operator_token = true;
-                    break;
-                }
+            if byte_offset >= abs_start
+                && byte_offset < abs_end
+                && matches!(
+                    token.token_type,
+                    knot_formats::plugin::SemanticTokenType::Operator
+                )
+            {
+                has_operator_token = true;
+                break;
             }
         }
         if has_operator_token {
@@ -1551,7 +1568,10 @@ fn try_operator_hover(
     /// These are the characters that make up JS symbolic operators:
     /// `&`, `|`, `!`, `=`, `<`, `>`, `+`, `-`, `*`, `/`, `%`.
     fn is_operator_char(b: u8) -> bool {
-        matches!(b, b'&' | b'|' | b'!' | b'=' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%')
+        matches!(
+            b,
+            b'&' | b'|' | b'!' | b'=' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%'
+        )
     }
 
     let cursor_byte = if byte_pos < bytes.len() {
@@ -1617,8 +1637,14 @@ fn try_operator_hover(
             value: hover_text,
         }),
         range: Some(Range {
-            start: Position { line: line_idx as u32, character: utf16_start },
-            end: Position { line: line_idx as u32, character: utf16_end },
+            start: Position {
+                line: line_idx as u32,
+                character: utf16_start,
+            },
+            end: Position {
+                line: line_idx as u32,
+                character: utf16_end,
+            },
         }),
     })
 }
@@ -1648,10 +1674,7 @@ fn try_operator_hover(
 ///    re-parse).
 /// 3. It's consistent with `try_operator_hover` and `try_global_hover`,
 ///    which also use line-based scanning for simple patterns.
-fn try_block_markup_hover(
-    text: &str,
-    byte_offset: usize,
-) -> Option<Hover> {
+fn try_block_markup_hover(text: &str, byte_offset: usize) -> Option<Hover> {
     let line_info = helpers::byte_offset_to_position(text, byte_offset);
     let line_idx = line_info.line as usize;
     let line = text.lines().nth(line_idx)?;
@@ -1673,8 +1696,8 @@ fn try_block_markup_hover(
     // Skip this when the line starts with `{{{` at column 0 AND the cursor
     // is within the first 3 bytes — that case is handled by the column-0
     // check below (which distinguishes Code Block vs Inline Code).
-    let is_col0_triple_brace = bytes.len() >= 3
-        && bytes[0] == b'{' && bytes[1] == b'{' && bytes[2] == b'{';
+    let is_col0_triple_brace =
+        bytes.len() >= 3 && bytes[0] == b'{' && bytes[1] == b'{' && bytes[2] == b'{';
     if !(is_col0_triple_brace && byte_pos < 3) {
         let scan_start = byte_pos.saturating_sub(2);
         for start in scan_start..=byte_pos {
@@ -1726,7 +1749,12 @@ fn try_block_markup_hover(
         }
         let level = end;
         let html_tag = match level {
-            1 => "h1", 2 => "h2", 3 => "h3", 4 => "h4", 5 => "h5", _ => "h6",
+            1 => "h1",
+            2 => "h2",
+            3 => "h3",
+            4 => "h4",
+            5 => "h5",
+            _ => "h6",
         };
         let heading_desc = match level {
             1 => "level 1 heading — main section title (largest)",
@@ -1736,7 +1764,15 @@ fn try_block_markup_hover(
             5 => "level 5 heading — small heading",
             _ => "level 6 heading — smallest heading",
         };
-        (end, format!("**`{}` Heading** (`{}` tag)\n\n{}", "!".repeat(level), html_tag, heading_desc))
+        (
+            end,
+            format!(
+                "**`{}` Heading** (`{}` tag)\n\n{}",
+                "!".repeat(level),
+                html_tag,
+                heading_desc
+            ),
+        )
     } else if first == b'*' {
         // Unordered list item: `*`, `**`, `***`, etc.
         let mut end = 0;
@@ -1750,8 +1786,19 @@ fn try_block_markup_hover(
             return None;
         }
         let depth = end;
-        let depth_desc = if depth == 1 { "top level".to_string() } else { format!("nested (depth {})", depth) };
-        (end, format!("**`{}` Unordered List Item**\n\nCreates a `<li>` in a `<ul>`. {}", "*".repeat(depth), depth_desc))
+        let depth_desc = if depth == 1 {
+            "top level".to_string()
+        } else {
+            format!("nested (depth {})", depth)
+        };
+        (
+            end,
+            format!(
+                "**`{}` Unordered List Item**\n\nCreates a `<li>` in a `<ul>`. {}",
+                "*".repeat(depth),
+                depth_desc
+            ),
+        )
     } else if first == b'#' {
         // Ordered list item: `#`, `##`, `###`, etc.
         let mut end = 0;
@@ -1765,8 +1812,19 @@ fn try_block_markup_hover(
             return None;
         }
         let depth = end;
-        let depth_desc = if depth == 1 { "top level".to_string() } else { format!("nested (depth {})", depth) };
-        (end, format!("**`{}` Ordered List Item**\n\nCreates a `<li>` in an `<ol>`. {}", "#".repeat(depth), depth_desc))
+        let depth_desc = if depth == 1 {
+            "top level".to_string()
+        } else {
+            format!("nested (depth {})", depth)
+        };
+        (
+            end,
+            format!(
+                "**`{}` Ordered List Item**\n\nCreates a `<li>` in an `<ol>`. {}",
+                "#".repeat(depth),
+                depth_desc
+            ),
+        )
     } else if first == b'>' {
         // Line-style blockquote: `>`, `>>`, `>>>`, etc.
         // Note: `<<<` (block-style blockquote) also starts with `<`, but we
@@ -1782,8 +1840,19 @@ fn try_block_markup_hover(
             return None;
         }
         let depth = end;
-        let depth_desc = if depth == 1 { "single level".to_string() } else { format!("nested (depth {})", depth) };
-        (end, format!("**`{}` Blockquote**\n\nCreates a `<blockquote>`. {}", ">".repeat(depth), depth_desc))
+        let depth_desc = if depth == 1 {
+            "single level".to_string()
+        } else {
+            format!("nested (depth {})", depth)
+        };
+        (
+            end,
+            format!(
+                "**`{}` Blockquote**\n\nCreates a `<blockquote>`. {}",
+                ">".repeat(depth),
+                depth_desc
+            ),
+        )
     } else if first == b'-' {
         // Horizontal rule: `----` (4+ dashes) alone on a line.
         // Also handles `<<<` block-style blockquote — wait, `<<<` starts with
@@ -1852,8 +1921,14 @@ fn try_block_markup_hover(
             value: hover_text,
         }),
         range: Some(Range {
-            start: Position { line: line_idx as u32, character: utf16_start },
-            end: Position { line: line_idx as u32, character: utf16_end },
+            start: Position {
+                line: line_idx as u32,
+                character: utf16_start,
+            },
+            end: Position {
+                line: line_idx as u32,
+                character: utf16_end,
+            },
         }),
     })
 }
@@ -2002,9 +2077,7 @@ fn try_link_hover(
                 // We scan for `|` but NOT inside string literals or nested
                 // brackets — though SugarCube link syntax doesn't support
                 // those, a simple find is sufficient.
-                let pipe_pos = link_text[2..]
-                    .find('|')
-                    .map(|pos| 2 + pos);
+                let pipe_pos = link_text[2..].find('|').map(|pos| 2 + pos);
 
                 if let Some(pipe_rel) = pipe_pos {
                     // `[[label|target]]` — pipe syntax.
@@ -2023,9 +2096,13 @@ fn try_link_hover(
                         let hover_text = if label_text.trim().is_empty() {
                             "**Link display text** (empty — the target passage name will be used as display text)".to_string()
                         } else {
-                            format!("**Link display text**\n\n`{}`\n\nLinks to passage `{}`", label_text, target)
+                            format!(
+                                "**Link display text**\n\n`{}`\n\nLinks to passage `{}`",
+                                label_text, target
+                            )
                         };
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &(label_start..label_end));
+                        let hover_range =
+                            helpers::byte_range_to_lsp_range(text, &(label_start..label_end));
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
@@ -2040,7 +2117,10 @@ fn try_link_hover(
                                 let hover_text = build_passage_target_hover_text(
                                     target, doc, passage, workspace,
                                 );
-                                let hover_range = helpers::byte_range_to_lsp_range(text, &(target_start..target_end));
+                                let hover_range = helpers::byte_range_to_lsp_range(
+                                    text,
+                                    &(target_start..target_end),
+                                );
                                 return Some(Hover {
                                     contents: HoverContents::Markup(MarkupContent {
                                         kind: MarkupKind::Markdown,
@@ -2050,7 +2130,10 @@ fn try_link_hover(
                                 });
                             } else {
                                 // Broken link — passage doesn't exist
-                                let hover_range = helpers::byte_range_to_lsp_range(text, &(target_start..target_end));
+                                let hover_range = helpers::byte_range_to_lsp_range(
+                                    text,
+                                    &(target_start..target_end),
+                                );
                                 return Some(Hover {
                                     contents: HoverContents::Markup(MarkupContent {
                                         kind: MarkupKind::Markdown,
@@ -2072,9 +2155,8 @@ fn try_link_hover(
                 // show passage info for the target with the full link span.
                 if !target.is_empty() {
                     if let Some((doc, passage)) = workspace.find_passage(target) {
-                        let hover_text = build_passage_target_hover_text(
-                            target, doc, passage, workspace,
-                        );
+                        let hover_text =
+                            build_passage_target_hover_text(target, doc, passage, workspace);
                         let hover_range = helpers::byte_range_to_lsp_range(text, &abs_link_span);
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
@@ -2140,8 +2222,8 @@ fn try_template_hover(
             let abs_end = abs_start + token.length;
             // Accept cursor on the name OR on the `?` immediately before.
             let on_name = byte_offset >= abs_start && byte_offset < abs_end;
-            let on_q = byte_offset + 1 == abs_start
-                && text.as_bytes().get(byte_offset) == Some(&b'?');
+            let on_q =
+                byte_offset + 1 == abs_start && text.as_bytes().get(byte_offset) == Some(&b'?');
             if on_name || on_q {
                 let name = &text[abs_start..abs_end];
                 // Check if this is a known template. `Function` tokens are
@@ -2218,7 +2300,10 @@ fn scan_template_at_cursor(text: &str, byte_offset: usize) -> Option<(usize, usi
         // The `?` must NOT be preceded by a word char (mimic grammar's
         // `(?<!\w)` — prevents matching `obj?.prop` optional chaining).
         let preceded_by_word = byte_offset > 0
-            && bytes.get(byte_offset - 1).copied().map_or(false, is_word_char);
+            && bytes
+                .get(byte_offset - 1)
+                .copied()
+                .is_some_and(is_word_char);
         if preceded_by_word {
             return None;
         }
@@ -2235,8 +2320,9 @@ fn scan_template_at_cursor(text: &str, byte_offset: usize) -> Option<(usize, usi
     }
 
     // Case 2: cursor is ON the name (or just past it). Scan backward for `?`.
-    if byte_offset < len && (is_name_char(bytes[byte_offset])
-        || (byte_offset > 0 && is_name_char(bytes[byte_offset - 1])))
+    if byte_offset < len
+        && (is_name_char(bytes[byte_offset])
+            || (byte_offset > 0 && is_name_char(bytes[byte_offset - 1])))
     {
         // Walk backward to find the `?`.
         let mut probe = byte_offset;
@@ -2249,8 +2335,7 @@ fn scan_template_at_cursor(text: &str, byte_offset: usize) -> Option<(usize, usi
         }
         let q_pos = probe - 1;
         // `?` must NOT be preceded by a word char.
-        let preceded_by_word = q_pos > 0
-            && bytes.get(q_pos - 1).copied().map_or(false, is_word_char);
+        let preceded_by_word = q_pos > 0 && bytes.get(q_pos - 1).copied().is_some_and(is_word_char);
         if preceded_by_word {
             return None;
         }
@@ -2306,7 +2391,8 @@ fn try_function_hover(
                             "**{}** `Function` ({} params)\n\nDefined in `:: {}`",
                             name, param_count, info.defined_in
                         );
-                        let hover_range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                        let hover_range =
+                            helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
                         return Some(Hover {
                             contents: HoverContents::Markup(MarkupContent {
                                 kind: MarkupKind::Markdown,
@@ -2395,7 +2481,10 @@ fn try_property_hover(
     // to find the enclosing `$var` or `_var` VarOp span in the document.
     // This gives us the parent variable name for the "of `$player`" label.
     let doc = doc?;
-    let enclosing_passage = doc.passages.iter().find(|p| p.contains_abs_offset(byte_offset))?;
+    let enclosing_passage = doc
+        .passages
+        .iter()
+        .find(|p| p.contains_abs_offset(byte_offset))?;
     let mut parent_var_name: Option<String> = None;
     let mut parent_kind: Option<knot_formats::types::PropertyKind> = None;
     for var in &enclosing_passage.vars {
@@ -2411,11 +2500,16 @@ fn try_property_hover(
             // there's no other identifier between var.end and prop_start
             // except dots.
             let between = &text[abs_var_span.end..prop_start];
-            if between.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+            if between
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            {
                 parent_var_name = Some(var.name.clone());
                 // Query the plugin for the parent's kind.
                 let passage_name = Some(enclosing_passage.name.as_str());
-                if let Some(kind) = plugin.variable_kind_at_path_for_passage(&var.name, passage_name) {
+                if let Some(kind) =
+                    plugin.variable_kind_at_path_for_passage(&var.name, passage_name)
+                {
                     parent_kind = Some(kind);
                 }
             }
@@ -2452,7 +2546,11 @@ fn try_property_hover(
     );
     let preview: Vec<&str> = siblings.iter().take(8).map(|s| s.as_str()).collect();
     let suffix = if siblings.len() > 8 { ", …" } else { "" };
-    hover_text.push_str(&format!("\n\n**Siblings:** {}{}", preview.join(", "), suffix));
+    hover_text.push_str(&format!(
+        "\n\n**Siblings:** {}{}",
+        preview.join(", "),
+        suffix
+    ));
 
     let hover_range = helpers::byte_range_to_lsp_range(text, &(prop_start..prop_end));
     Some(Hover {
@@ -2538,7 +2636,7 @@ fn compute_passage_header_range(text: &str, position: Position) -> Option<Range>
 mod expr_macro_hover_tests {
     use super::*;
     use knot_formats::sugarcube::SugarCubePlugin;
-    
+
     use knot_formats::FormatPluginMut;
     use url::Url;
 
@@ -2549,7 +2647,8 @@ mod expr_macro_hover_tests {
         let mut plugin = SugarCubePlugin::new();
         let uri = Url::parse("file:///project/story.tw").unwrap();
         let parse_result = plugin.parse_mut(&uri, src);
-        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        let mut doc =
+            knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
         for passage in parse_result.passages {
             doc.passages.push(passage);
         }
@@ -2569,8 +2668,11 @@ mod expr_macro_hover_tests {
         assert!(hover.is_some(), "hover on `<<=` should fire, got None");
         if let Some(h) = hover {
             if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("`<<=>>`"),
-                    "hover text should mention `<<=>>`: got {}", m.value);
+                assert!(
+                    m.value.contains("`<<=>>`"),
+                    "hover text should mention `<<=>>`: got {}",
+                    m.value
+                );
             } else {
                 panic!("expected markup hover, got {:?}", h.contents);
             }
@@ -2586,7 +2688,10 @@ mod expr_macro_hover_tests {
         let (doc, plugin) = parse(src);
         let body_offset = ":: Init\n".len() + 2; // on `=` (after `<<`)
         let hover = try_macro_hover(src, body_offset, Some(&doc), &plugin);
-        assert!(hover.is_some(), "hover on `=` of `<<=` should fire, got None");
+        assert!(
+            hover.is_some(),
+            "hover on `=` of `<<=` should fire, got None"
+        );
     }
 
     /// Cursor on `_parts` (inside the expression) should ALSO return the
@@ -2601,7 +2706,10 @@ mod expr_macro_hover_tests {
         // Cursor on `_` of `_parts`.
         let body_offset = ":: Init\n".len() + 4; // `<<= ` is 4 chars
         let hover = try_macro_hover(src, body_offset, Some(&doc), &plugin);
-        assert!(hover.is_some(), "try_macro_hover should fire for cursor inside expression span");
+        assert!(
+            hover.is_some(),
+            "try_macro_hover should fire for cursor inside expression span"
+        );
     }
 
     /// End-to-end check: simulate the full layering for cursor on `<<=`. The
@@ -2619,9 +2727,11 @@ mod expr_macro_hover_tests {
         let body_offset = ":: Init\n".len(); // cursor on `<<`
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
         let hover = try_variable_hover(src, body_offset, Some(&doc), &ws, &plugin, &[]);
-        assert!(hover.is_none(),
+        assert!(
+            hover.is_none(),
             "variable hover must NOT fire when cursor is on `<<` of `<<=>>`, got: {:?}",
-            hover);
+            hover
+        );
     }
 
     /// Reproduce the user's exact reported scenario: a passage with multiple
@@ -2643,15 +2753,21 @@ mod expr_macro_hover_tests {
         let line0_end = src.find('\n').unwrap() + 1; // end of header line + \n
         let cursor_on_open_bracket = line0_end; // first `<`
         let hover = try_macro_hover(src, cursor_on_open_bracket, Some(&doc), &plugin);
-        assert!(hover.is_some(),
+        assert!(
+            hover.is_some(),
             "cursor on `<<` of `<<run>>` should fire macro hover, got None. \
              cursor byte_offset={}, line0_end={}",
-            cursor_on_open_bracket, line0_end);
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("`<<run>>`"),
-                    "hover text should mention `<<run>>`: got {}", m.value);
-            }
+            cursor_on_open_bracket,
+            line0_end
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("`<<run>>`"),
+                "hover text should mention `<<run>>`: got {}",
+                m.value
+            );
         }
     }
 
@@ -2670,13 +2786,18 @@ mod expr_macro_hover_tests {
         let ws = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
         let hover = try_variable_hover(src, cursor_on_dollar, Some(&doc), &ws, &plugin, &[]);
         // Variable hover SHOULD fire — the cursor is on `$arr`, a variable.
-        assert!(hover.is_some(),
-            "cursor on $arr inside <<run>> should fire variable hover, got None");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("$arr"),
-                    "hover text should mention $arr: got {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "cursor on $arr inside <<run>> should fire variable hover, got None"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("$arr"),
+                "hover text should mention $arr: got {}",
+                m.value
+            );
         }
     }
 
@@ -2706,12 +2827,18 @@ mod expr_macro_hover_tests {
         // Cursor on the second `>` of `>>`.
         let close_offset = src.len() - 1;
         let hover = try_macro_hover(src, close_offset, Some(&doc), &plugin);
-        assert!(hover.is_some(), "hover on `>>` of `<<run>>` should fire, got None");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("`<<run>>`"),
-                    "hover text should mention `<<run>>`: got {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `>>` of `<<run>>` should fire, got None"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("`<<run>>`"),
+                "hover text should mention `<<run>>`: got {}",
+                m.value
+            );
         }
     }
 
@@ -2726,12 +2853,23 @@ mod expr_macro_hover_tests {
         // `:: Init\n` is 8 chars, `<<` is 2 chars (offsets 8,9), `r` is at offset 10.
         let on_u_offset = ":: Init\n<<r".len(); // 11
         let hover = try_macro_hover(src, on_u_offset, Some(&doc), &plugin);
-        assert!(hover.is_some(), "hover on `u` of `run` should fire, got None");
+        assert!(
+            hover.is_some(),
+            "hover on `u` of `run` should fire, got None"
+        );
         if let Some(h) = hover {
             // Range should cover just `run` (3 chars at offsets 10..13).
             if let Some(range) = h.range {
-                assert_eq!(range.start.character, 2, "hover range start char: got {}", range.start.character);
-                assert_eq!(range.end.character, 5, "hover range end char: got {}", range.end.character);
+                assert_eq!(
+                    range.start.character, 2,
+                    "hover range start char: got {}",
+                    range.start.character
+                );
+                assert_eq!(
+                    range.end.character, 5,
+                    "hover range end char: got {}",
+                    range.end.character
+                );
                 assert_eq!(range.start.line, 1, "hover range start line");
             }
         }
@@ -2742,7 +2880,7 @@ mod expr_macro_hover_tests {
 mod prose_hover_tests {
     use super::*;
     use knot_formats::sugarcube::SugarCubePlugin;
-    
+
     use knot_formats::FormatPluginMut;
     use url::Url;
 
@@ -2753,7 +2891,8 @@ mod prose_hover_tests {
         let mut plugin = SugarCubePlugin::new();
         let uri = Url::parse("file:///project/story.tw").unwrap();
         let parse_result = plugin.parse_mut(&uri, src);
-        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        let mut doc =
+            knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
         for passage in parse_result.passages {
             doc.passages.push(passage);
         }
@@ -2774,13 +2913,18 @@ mod prose_hover_tests {
         // Cursor on `g` of `$gold` (offset = ":: Start\nYou have $".len() = 18).
         let cursor_offset = ":: Start\nYou have $".len();
         let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
-        assert!(hover.is_some(),
-            "hover on prose `$gold` should fire via text-scan fallback, got None");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("$gold"),
-                    "hover text should mention `$gold`: got {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on prose `$gold` should fire via text-scan fallback, got None"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("$gold"),
+                "hover text should mention `$gold`: got {}",
+                m.value
+            );
         }
     }
 
@@ -2798,21 +2942,31 @@ mod prose_hover_tests {
         // Cursor on `n` of `.name` (offset = ":: Start\nYou have $player.".len() = 24).
         let cursor_offset = ":: Start\nYou have $player.".len();
         let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
-        assert!(hover.is_some(),
-            "hover on prose `$player.name` should fire, got None");
+        assert!(
+            hover.is_some(),
+            "hover on prose `$player.name` should fire, got None"
+        );
         if let Some(h) = hover {
             if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("$player"),
-                    "hover text should mention `$player`: got {}", m.value);
+                assert!(
+                    m.value.contains("$player"),
+                    "hover text should mention `$player`: got {}",
+                    m.value
+                );
             }
             // Hover range should cover the full `$player.name` span.
             if let Some(range) = h.range {
                 // The span starts at `$` and ends after `name` (12 chars total).
-                assert_eq!(range.start.character, 9,
-                    "hover range start should be at `$` (char 9): got {}", range.start.character);
-                assert!(range.end.character >= 21,
+                assert_eq!(
+                    range.start.character, 9,
+                    "hover range start should be at `$` (char 9): got {}",
+                    range.start.character
+                );
+                assert!(
+                    range.end.character >= 21,
                     "hover range end should be at end of `$player.name` (char 21+): got {}",
-                    range.end.character);
+                    range.end.character
+                );
             }
         }
     }
@@ -2826,7 +2980,10 @@ mod prose_hover_tests {
         // Cursor on `$` (offset = 9).
         let cursor_offset = src.find("$player").unwrap();
         let result = scan_variable_at_cursor(src, cursor_offset);
-        assert!(result.is_some(), "scan should find `$player.name` at cursor on `$`");
+        assert!(
+            result.is_some(),
+            "scan should find `$player.name` at cursor on `$`"
+        );
         let (sigil, name, start, end) = result.unwrap();
         assert_eq!(sigil, '$');
         assert_eq!(name, "player.name");
@@ -2842,7 +2999,10 @@ mod prose_hover_tests {
         // Cursor on `o` of `$gold` (offset = 11).
         let cursor_offset = src.find("$gold").unwrap() + 2;
         let result = scan_variable_at_cursor(src, cursor_offset);
-        assert!(result.is_some(), "scan should find `$gold` at cursor on `o`");
+        assert!(
+            result.is_some(),
+            "scan should find `$gold` at cursor on `o`"
+        );
         let (sigil, name, start, end) = result.unwrap();
         assert_eq!(sigil, '$');
         assert_eq!(name, "gold");
@@ -2857,8 +3017,11 @@ mod prose_hover_tests {
         // Cursor on `_` in `snake_case`.
         let cursor_offset = src.find("snake_case").unwrap() + 5;
         let result = scan_variable_at_cursor(src, cursor_offset);
-        assert!(result.is_none(),
-            "scan must NOT match `_` in `snake_case`: got {:?}", result);
+        assert!(
+            result.is_none(),
+            "scan must NOT match `_` in `snake_case`: got {:?}",
+            result
+        );
     }
 
     /// Direct unit test for `scan_variable_at_cursor`: cursor on `_temp`
@@ -2869,7 +3032,10 @@ mod prose_hover_tests {
         // Cursor on `t` of `_temp`.
         let cursor_offset = src.find("_temp").unwrap() + 1;
         let result = scan_variable_at_cursor(src, cursor_offset);
-        assert!(result.is_some(), "scan should find `_temp` at cursor on `t`");
+        assert!(
+            result.is_some(),
+            "scan should find `_temp` at cursor on `t`"
+        );
         let (sigil, name, start, end) = result.unwrap();
         assert_eq!(sigil, '_');
         assert_eq!(name, "temp");
@@ -2886,9 +3052,11 @@ mod prose_hover_tests {
         // Cursor on `_` in `snake_case` (offset = ":: Start\nUse snake".len() = 16).
         let cursor_offset = ":: Start\nUse snake".len();
         let hover = try_variable_hover(src, cursor_offset, Some(&doc), &ws, &plugin, &[]);
-        assert!(hover.is_none(),
+        assert!(
+            hover.is_none(),
             "hover must NOT fire on `_` in `snake_case` (not a temp var): got {:?}",
-            hover);
+            hover
+        );
     }
 
     /// Hovering on `?template` in prose should fire the template hover via
@@ -2905,18 +3073,28 @@ mod prose_hover_tests {
         let cursor_offset = src.find("?greeting").unwrap() + 1;
         let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();
         let hover = try_template_hover(src, cursor_offset, &plugin, &token_groups);
-        assert!(hover.is_some(),
-            "hover on prose `?greeting` should fire via text-scan fallback, got None");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("`?greeting`"),
-                    "hover text should contain `?greeting`: got {}", m.value);
-                assert!(m.value.contains("Template"),
-                    "hover text should mention 'Template': got {}", m.value);
-                assert!(!m.value.contains("Defined in"),
-                    "hover text should NOT contain 'Defined in' (user wants minimal hover): got {}",
-                    m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on prose `?greeting` should fire via text-scan fallback, got None"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("`?greeting`"),
+                "hover text should contain `?greeting`: got {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("Template"),
+                "hover text should mention 'Template': got {}",
+                m.value
+            );
+            assert!(
+                !m.value.contains("Defined in"),
+                "hover text should NOT contain 'Defined in' (user wants minimal hover): got {}",
+                m.value
+            );
         }
     }
 
@@ -2930,8 +3108,10 @@ mod prose_hover_tests {
         let cursor_offset = src.find("?greeting").unwrap();
         let token_groups: Vec<knot_formats::plugin::PassageTokenGroup> = Vec::new();
         let hover = try_template_hover(src, cursor_offset, &plugin, &token_groups);
-        assert!(hover.is_some(),
-            "hover on `?` of `?greeting` should fire (extended range), got None");
+        assert!(
+            hover.is_some(),
+            "hover on `?` of `?greeting` should fire (extended range), got None"
+        );
     }
 
     /// `scan_template_at_cursor` should NOT match `?.` (JS optional chaining).
@@ -2943,9 +3123,11 @@ mod prose_hover_tests {
         // Cursor on `?` of `obj?.prop`.
         let cursor_offset = src.find("obj?.prop").unwrap() + 3;
         let result = scan_template_at_cursor(src, cursor_offset);
-        assert!(result.is_none(),
+        assert!(
+            result.is_none(),
             "scan_template_at_cursor must NOT match JS optional chaining `obj?.prop`: got {:?}",
-            result);
+            result
+        );
     }
 
     /// `scan_template_at_cursor` should NOT match a JS ternary
@@ -2956,9 +3138,11 @@ mod prose_hover_tests {
         // Cursor on `?` of the ternary.
         let cursor_offset = src.find("? \"yes\"").unwrap();
         let result = scan_template_at_cursor(src, cursor_offset);
-        assert!(result.is_none(),
+        assert!(
+            result.is_none(),
             "scan_template_at_cursor must NOT match JS ternary `cond ? value : other`: got {:?}",
-            result);
+            result
+        );
     }
 }
 
@@ -2968,7 +3152,8 @@ mod block_markup_hover_tests {
 
     /// Helper: find the byte offset of the first occurrence of `needle` in `src`.
     fn cursor_on(src: &str, needle: &str) -> usize {
-        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found in src", needle))
+        src.find(needle)
+            .unwrap_or_else(|| panic!("needle {:?} not found in src", needle))
     }
 
     #[test]
@@ -2978,12 +3163,24 @@ mod block_markup_hover_tests {
         let offset = cursor_on(src, "!Title");
         let hover = try_block_markup_hover(src, offset);
         assert!(hover.is_some(), "hover on `!` heading marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Heading"), "hover text should mention Heading: {}", m.value);
-                assert!(m.value.contains("h1"), "hover text should mention h1 tag: {}", m.value);
-                assert!(m.value.contains("level 1"), "hover text should mention level 1: {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Heading"),
+                "hover text should mention Heading: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("h1"),
+                "hover text should mention h1 tag: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("level 1"),
+                "hover text should mention level 1: {}",
+                m.value
+            );
         }
     }
 
@@ -2994,11 +3191,19 @@ mod block_markup_hover_tests {
         let offset = cursor_on(src, "!!Subsection") + 1; // 2nd `!`
         let hover = try_block_markup_hover(src, offset);
         assert!(hover.is_some(), "hover on `!!` heading marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("level 2"), "hover text should mention level 2: {}", m.value);
-                assert!(m.value.contains("h2"), "hover text should mention h2 tag: {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("level 2"),
+                "hover text should mention level 2: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("h2"),
+                "hover text should mention h2 tag: {}",
+                m.value
+            );
         }
     }
 
@@ -3009,10 +3214,14 @@ mod block_markup_hover_tests {
         let offset = cursor_on(src, "!!!Sub") + 2; // 3rd `!`
         let hover = try_block_markup_hover(src, offset);
         assert!(hover.is_some(), "hover on `!!!` heading marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("level 3"), "hover text should mention level 3: {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("level 3"),
+                "hover text should mention level 3: {}",
+                m.value
+            );
         }
     }
 
@@ -3023,11 +3232,19 @@ mod block_markup_hover_tests {
         let offset = cursor_on(src, "* item");
         let hover = try_block_markup_hover(src, offset);
         assert!(hover.is_some(), "hover on `*` list marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Unordered List"), "hover text should mention Unordered List: {}", m.value);
-                assert!(m.value.contains("<ul>"), "hover text should mention <ul>: {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Unordered List"),
+                "hover text should mention Unordered List: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("<ul>"),
+                "hover text should mention <ul>: {}",
+                m.value
+            );
         }
     }
 
@@ -3037,11 +3254,18 @@ mod block_markup_hover_tests {
         let src = ":: Start\n** nested item\n";
         let offset = cursor_on(src, "** nested") + 1;
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `**` nested list marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("depth 2"), "hover text should mention depth 2: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `**` nested list marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("depth 2"),
+                "hover text should mention depth 2: {}",
+                m.value
+            );
         }
     }
 
@@ -3051,12 +3275,23 @@ mod block_markup_hover_tests {
         let src = ":: Start\n# first\n";
         let offset = cursor_on(src, "# first");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `#` ordered list marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Ordered List"), "hover text should mention Ordered List: {}", m.value);
-                assert!(m.value.contains("<ol>"), "hover text should mention <ol>: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `#` ordered list marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Ordered List"),
+                "hover text should mention Ordered List: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("<ol>"),
+                "hover text should mention <ol>: {}",
+                m.value
+            );
         }
     }
 
@@ -3066,12 +3301,23 @@ mod block_markup_hover_tests {
         let src = ":: Start\n> quoted text\n";
         let offset = cursor_on(src, "> quoted");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `>` blockquote marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Blockquote"), "hover text should mention Blockquote: {}", m.value);
-                assert!(m.value.contains("<blockquote>"), "hover text should mention <blockquote>: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `>` blockquote marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Blockquote"),
+                "hover text should mention Blockquote: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("<blockquote>"),
+                "hover text should mention <blockquote>: {}",
+                m.value
+            );
         }
     }
 
@@ -3081,12 +3327,23 @@ mod block_markup_hover_tests {
         let src = ":: Start\n----\n";
         let offset = cursor_on(src, "----");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `----` horizontal rule should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Horizontal Rule"), "hover text should mention Horizontal Rule: {}", m.value);
-                assert!(m.value.contains("<hr>"), "hover text should mention <hr>: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `----` horizontal rule should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Horizontal Rule"),
+                "hover text should mention Horizontal Rule: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("<hr>"),
+                "hover text should mention <hr>: {}",
+                m.value
+            );
         }
     }
 
@@ -3096,7 +3353,10 @@ mod block_markup_hover_tests {
         let src = ":: Start\n---\n";
         let offset = cursor_on(src, "---");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_none(), "hover on `---` (3 dashes) should NOT fire (needs 4+)");
+        assert!(
+            hover.is_none(),
+            "hover on `---` (3 dashes) should NOT fire (needs 4+)"
+        );
     }
 
     #[test]
@@ -3105,11 +3365,18 @@ mod block_markup_hover_tests {
         let src = ":: Start\n<<<\nquoted\n<<<\n";
         let offset = cursor_on(src, "<<<\n");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `<<<` block blockquote should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Block Blockquote"), "hover text should mention Block Blockquote: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `<<<` block blockquote should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Block Blockquote"),
+                "hover text should mention Block Blockquote: {}",
+                m.value
+            );
         }
     }
 
@@ -3119,12 +3386,23 @@ mod block_markup_hover_tests {
         let src = ":: Start\n{{{\ncode here\n}}}\n";
         let offset = cursor_on(src, "{{{");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `{{{{` code block marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Code Block"), "hover text should mention Code Block: {}", m.value);
-                assert!(m.value.contains("NOT processed"), "hover text should mention raw content: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `{{{{` code block marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Code Block"),
+                "hover text should mention Code Block: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("NOT processed"),
+                "hover text should mention raw content: {}",
+                m.value
+            );
         }
     }
 
@@ -3134,11 +3412,18 @@ mod block_markup_hover_tests {
         let src = ":: Start\nSome {{{inline code}} here.\n";
         let offset = cursor_on(src, "{{{inline");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `{{{{` inline code marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Inline Code"), "hover text should mention Inline Code: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `{{{{` inline code marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Inline Code"),
+                "hover text should mention Inline Code: {}",
+                m.value
+            );
         }
     }
 
@@ -3149,8 +3434,10 @@ mod block_markup_hover_tests {
         let src = ":: Start\n!Title\n";
         let offset = cursor_on(src, "Title");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_none(),
-            "hover on heading content (not marker) should NOT fire block markup hover");
+        assert!(
+            hover.is_none(),
+            "hover on heading content (not marker) should NOT fire block markup hover"
+        );
     }
 
     #[test]
@@ -3159,8 +3446,10 @@ mod block_markup_hover_tests {
         let src = ":: Start\nHello!\n";
         let offset = cursor_on(src, "!");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_none(),
-            "hover on mid-line `!` should NOT fire (heading requires column 0)");
+        assert!(
+            hover.is_none(),
+            "hover on mid-line `!` should NOT fire (heading requires column 0)"
+        );
     }
 
     #[test]
@@ -3169,8 +3458,10 @@ mod block_markup_hover_tests {
         let src = ":: Start\na * b\n";
         let offset = cursor_on(src, "*");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_none(),
-            "hover on mid-line `*` should NOT fire (list marker requires column 0)");
+        assert!(
+            hover.is_none(),
+            "hover on mid-line `*` should NOT fire (list marker requires column 0)"
+        );
     }
 
     #[test]
@@ -3179,12 +3470,23 @@ mod block_markup_hover_tests {
         let src = ":: Start\n!!!!!!Tiny heading\n";
         let offset = cursor_on(src, "!!!!!!");
         let hover = try_block_markup_hover(src, offset);
-        assert!(hover.is_some(), "hover on `!!!!!!` h6 heading marker should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("level 6"), "hover text should mention level 6: {}", m.value);
-                assert!(m.value.contains("h6"), "hover text should mention h6 tag: {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "hover on `!!!!!!` h6 heading marker should fire"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("level 6"),
+                "hover text should mention level 6: {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("h6"),
+                "hover text should mention h6 tag: {}",
+                m.value
+            );
         }
     }
 
@@ -3199,8 +3501,11 @@ mod block_markup_hover_tests {
             assert_eq!(range.start.line, 1);
             assert_eq!(range.start.character, 0);
             assert_eq!(range.end.line, 1);
-            assert_eq!(range.end.character, 2,
-                "range should cover 2 `!` characters, got end char {}", range.end.character);
+            assert_eq!(
+                range.end.character, 2,
+                "range should cover 2 `!` characters, got end char {}",
+                range.end.character
+            );
         }
     }
 }
@@ -3208,12 +3513,18 @@ mod block_markup_hover_tests {
 #[cfg(test)]
 mod operator_hover_scoping_tests {
     use super::*;
-    use knot_formats::sugarcube::SugarCubePlugin;
     use knot_formats::FormatPluginMut;
+    use knot_formats::sugarcube::SugarCubePlugin;
     use url::Url;
 
     /// Helper: parse a source and return (text, token_groups, plugin).
-    fn parse(src: &str) -> (String, Vec<knot_formats::plugin::PassageTokenGroup>, SugarCubePlugin) {
+    fn parse(
+        src: &str,
+    ) -> (
+        String,
+        Vec<knot_formats::plugin::PassageTokenGroup>,
+        SugarCubePlugin,
+    ) {
         let mut plugin = SugarCubePlugin::new();
         let uri = Url::parse("file:///test.tw").unwrap();
         let result = plugin.parse_mut(&uri, src);
@@ -3222,7 +3533,8 @@ mod operator_hover_scoping_tests {
 
     /// Helper: find byte offset of `needle` in `src`.
     fn cursor_on(src: &str, needle: &str) -> usize {
-        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found", needle))
+        src.find(needle)
+            .unwrap_or_else(|| panic!("needle {:?} not found", needle))
     }
 
     #[test]
@@ -3232,8 +3544,10 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "to 5");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_some(),
-            "hover on `to` inside <<set>> should fire (it's a real operator)");
+        assert!(
+            hover.is_some(),
+            "hover on `to` inside <<set>> should fire (it's a real operator)"
+        );
     }
 
     #[test]
@@ -3244,8 +3558,10 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "to combat");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_none(),
-            "hover on `to` in link display text should NOT fire — it's prose, not an operator");
+        assert!(
+            hover.is_none(),
+            "hover on `to` in link display text should NOT fire — it's prose, not an operator"
+        );
     }
 
     #[test]
@@ -3255,8 +3571,10 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "to the");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_none(),
-            "hover on `to` in prose should NOT fire — it's not an operator context");
+        assert!(
+            hover.is_none(),
+            "hover on `to` in prose should NOT fire — it's not an operator context"
+        );
     }
 
     #[test]
@@ -3266,8 +3584,10 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "to forest");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_none(),
-            "hover on `to` inside a string literal should NOT fire");
+        assert!(
+            hover.is_none(),
+            "hover on `to` inside a string literal should NOT fire"
+        );
     }
 
     #[test]
@@ -3277,8 +3597,10 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "gt 0");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_some(),
-            "hover on `gt` inside <<if>> should fire (it's a real operator)");
+        assert!(
+            hover.is_some(),
+            "hover on `gt` inside <<if>> should fire (it's a real operator)"
+        );
     }
 
     #[test]
@@ -3288,23 +3610,26 @@ mod operator_hover_scoping_tests {
         let (text, token_groups, plugin) = parse(src);
         let offset = cursor_on(&text, "and I");
         let hover = try_operator_hover(&text, offset, &plugin, &token_groups);
-        assert!(hover.is_none(),
-            "hover on `and` in prose should NOT fire — it's not an operator context");
+        assert!(
+            hover.is_none(),
+            "hover on `and` in prose should NOT fire — it's not an operator context"
+        );
     }
 }
 
 #[cfg(test)]
 mod arg_ref_hover_tests {
     use super::*;
-    use knot_formats::sugarcube::SugarCubePlugin;
     use knot_formats::FormatPluginMut;
+    use knot_formats::sugarcube::SugarCubePlugin;
     use url::Url;
 
     fn parse(src: &str) -> (knot_core::Document, SugarCubePlugin, knot_core::Workspace) {
         let mut plugin = SugarCubePlugin::new();
         let uri = Url::parse("file:///project/story.tw").unwrap();
         let parse_result = plugin.parse_mut(&uri, src);
-        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        let mut doc =
+            knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
         for passage in parse_result.passages {
             doc.passages.push(passage);
         }
@@ -3326,21 +3651,56 @@ mod arg_ref_hover_tests {
         // Cursor on "Shop" inside <<link "Talk" "Shop">>
         let shop_offset = src.find("\"Shop\"").map(|o| o + 1).unwrap(); // +1 to skip opening quote
         let hover = try_macro_arg_ref_hover(src, shop_offset, Some(&doc), &ws, &plugin);
-        assert!(hover.is_some(), "arg ref hover should fire for \"Shop\" in <<link>>");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                // Compact form should include:
-                assert!(m.value.contains("**Shop**"), "should show passage name: got {}", m.value);
-                assert!(m.value.contains("Tags:"), "should show Tags field: got {}", m.value);
-                assert!(m.value.contains("Referenced by"), "should show reference count: got {}", m.value);
-                // Compact form should NOT include:
-                assert!(!m.value.contains("Links out:"), "compact form should NOT show Links out: got {}", m.value);
-                assert!(!m.value.contains("Variables written:"), "compact form should NOT show Variables written: got {}", m.value);
-                assert!(!m.value.contains("Variables read:"), "compact form should NOT show Variables read: got {}", m.value);
-                assert!(!m.value.contains(".twee"), "compact form should NOT show file path: got {}", m.value);
-                // Should mention which macro references it
-                assert!(m.value.contains("Referenced by"), "should show referencing macro: got {}", m.value);
-            }
+        assert!(
+            hover.is_some(),
+            "arg ref hover should fire for \"Shop\" in <<link>>"
+        );
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            // Compact form should include:
+            assert!(
+                m.value.contains("**Shop**"),
+                "should show passage name: got {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("Tags:"),
+                "should show Tags field: got {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("Referenced by"),
+                "should show reference count: got {}",
+                m.value
+            );
+            // Compact form should NOT include:
+            assert!(
+                !m.value.contains("Links out:"),
+                "compact form should NOT show Links out: got {}",
+                m.value
+            );
+            assert!(
+                !m.value.contains("Variables written:"),
+                "compact form should NOT show Variables written: got {}",
+                m.value
+            );
+            assert!(
+                !m.value.contains("Variables read:"),
+                "compact form should NOT show Variables read: got {}",
+                m.value
+            );
+            assert!(
+                !m.value.contains(".twee"),
+                "compact form should NOT show file path: got {}",
+                m.value
+            );
+            // Should mention which macro references it
+            assert!(
+                m.value.contains("Referenced by"),
+                "should show referencing macro: got {}",
+                m.value
+            );
         }
     }
 
@@ -3349,19 +3709,31 @@ mod arg_ref_hover_tests {
     #[test]
     fn link_hover_shows_full_form() {
         let src = ":: Start\nYou are here.\n:: Shop\nWelcome to the shop.\n:: Hub\nGo [[Shop]] now";
-        let (doc, plugin, ws) = parse(src);
+        let (doc, _plugin, ws) = parse(src);
         // Cursor on "Shop" inside [[Shop]]
         let shop_offset = src.find("[[Shop]]").map(|o| o + 2).unwrap(); // +2 to skip [[
         let hover = try_link_hover(src, shop_offset, Some(&doc), &ws);
         assert!(hover.is_some(), "link hover should fire for [[Shop]]");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                // Full form should include:
-                assert!(m.value.contains("**Shop**"), "should show passage name: got {}", m.value);
-                assert!(m.value.contains("Links out:"), "full form should show Links out: got {}", m.value);
-                // File path is shown in full form (workspace-relative)
-                assert!(m.value.contains("story.tw") || m.value.contains("unknown"), "full form should show file path: got {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            // Full form should include:
+            assert!(
+                m.value.contains("**Shop**"),
+                "should show passage name: got {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("Links out:"),
+                "full form should show Links out: got {}",
+                m.value
+            );
+            // File path is shown in full form (workspace-relative)
+            assert!(
+                m.value.contains("story.tw") || m.value.contains("unknown"),
+                "full form should show file path: got {}",
+                m.value
+            );
         }
     }
 }
@@ -3369,8 +3741,8 @@ mod arg_ref_hover_tests {
 #[cfg(test)]
 mod link_hover_tests {
     use super::*;
-    use knot_formats::sugarcube::SugarCubePlugin;
     use knot_formats::FormatPluginMut;
+    use knot_formats::sugarcube::SugarCubePlugin;
     use url::Url;
 
     /// Helper: parse source with multiple passages into a Document + Workspace.
@@ -3378,7 +3750,8 @@ mod link_hover_tests {
         let mut plugin = SugarCubePlugin::new();
         let uri = Url::parse("file:///test.tw").unwrap();
         let result = plugin.parse_mut(&uri, src);
-        let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        let mut doc =
+            knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
         for passage in result.passages {
             doc.passages.push(passage);
         }
@@ -3388,7 +3761,8 @@ mod link_hover_tests {
 
     /// Helper: find byte offset of needle in src.
     fn cursor_on(src: &str, needle: &str) -> usize {
-        src.find(needle).unwrap_or_else(|| panic!("needle {:?} not found", needle))
+        src.find(needle)
+            .unwrap_or_else(|| panic!("needle {:?} not found", needle))
     }
 
     #[test]
@@ -3404,13 +3778,19 @@ mod link_hover_tests {
         let offset = cursor_on(&text, "Go to forest");
         let hover = try_link_hover(&text, offset, Some(&doc), &ws);
         assert!(hover.is_some(), "hover on label should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Link display text"),
-                    "label hover should mention 'Link display text': {}", m.value);
-                assert!(m.value.contains("Go to forest"),
-                    "label hover should contain the label text: {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Link display text"),
+                "label hover should mention 'Link display text': {}",
+                m.value
+            );
+            assert!(
+                m.value.contains("Go to forest"),
+                "label hover should contain the label text: {}",
+                m.value
+            );
         }
     }
 
@@ -3426,11 +3806,14 @@ mod link_hover_tests {
         let offset = cursor_on(&text, "|Forest") + 1; // skip the pipe
         let hover = try_link_hover(&text, offset, Some(&doc), &ws);
         assert!(hover.is_some(), "hover on target should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(!m.value.contains("Link display text"),
-                    "target hover should NOT mention 'Link display text': {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                !m.value.contains("Link display text"),
+                "target hover should NOT mention 'Link display text': {}",
+                m.value
+            );
         }
     }
 
@@ -3459,9 +3842,12 @@ mod link_hover_tests {
             // The range should cover "Go to forest" (12 chars) on line 1.
             assert_eq!(range.start.line, 1);
             assert_eq!(range.end.line, 1);
-            assert_eq!(range.end.character - range.start.character, 12,
+            assert_eq!(
+                range.end.character - range.start.character,
+                12,
                 "label range should cover 'Go to forest' (12 chars), got {}",
-                range.end.character - range.start.character);
+                range.end.character - range.start.character
+            );
         }
     }
 
@@ -3479,9 +3865,12 @@ mod link_hover_tests {
             // The range should cover "Forest" (6 chars) on line 1.
             assert_eq!(range.start.line, 1);
             assert_eq!(range.end.line, 1);
-            assert_eq!(range.end.character - range.start.character, 6,
+            assert_eq!(
+                range.end.character - range.start.character,
+                6,
                 "target range should cover 'Forest' (6 chars), got {}",
-                range.end.character - range.start.character);
+                range.end.character - range.start.character
+            );
         }
     }
 
@@ -3495,11 +3884,14 @@ mod link_hover_tests {
         let offset = cursor_on(&text, "|MissingPassage") + 1;
         let hover = try_link_hover(&text, offset, Some(&doc), &ws);
         assert!(hover.is_some(), "hover on broken target should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("Broken link"),
-                    "broken target hover should mention 'Broken link': {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("Broken link"),
+                "broken target hover should mention 'Broken link': {}",
+                m.value
+            );
         }
     }
 
@@ -3514,12 +3906,14 @@ mod link_hover_tests {
         let offset = cursor_on(&text, "[[|") + 2; // on the `|`
         let hover = try_link_hover(&text, offset, Some(&doc), &ws);
         assert!(hover.is_some(), "hover on empty label should fire");
-        if let Some(h) = hover {
-            if let HoverContents::Markup(m) = h.contents {
-                assert!(m.value.contains("empty"),
-                    "empty label hover should mention 'empty': {}", m.value);
-            }
+        if let Some(h) = hover
+            && let HoverContents::Markup(m) = h.contents
+        {
+            assert!(
+                m.value.contains("empty"),
+                "empty label hover should mention 'empty': {}",
+                m.value
+            );
         }
     }
 }
-

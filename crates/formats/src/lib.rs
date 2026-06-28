@@ -28,26 +28,27 @@
 //! query the active format plugin through `FormatRegistry::get()`. This ensures
 //! that story formats can be hotswapped based on workspace configuration.
 
-pub mod plugin;
-pub mod types;
-pub mod header;
-pub mod core_specials;
-pub mod twine_core;
-pub mod sugarcube;
-pub mod harlowe;
 pub mod chapbook;
-pub mod snowman;
+pub mod core_specials;
 pub mod format_meta;
+pub mod harlowe;
+pub mod header;
+pub mod plugin;
+pub mod snowman;
+pub mod sugarcube;
+pub mod twine_core;
+pub mod types;
 
-pub use plugin::{FormatPlugin, FormatPluginMut, ParseResult, SemanticToken, FormatDiagnostic, SourceTextProvider, NoSourceText, MacroAtPosition, MacroBlockEvent};
 pub use format_meta::{FormatMeta, InstalledFormat, parse_format_js, scan_storyformats_dir};
+pub use plugin::{
+    FormatDiagnostic, FormatPlugin, FormatPluginMut, MacroAtPosition, MacroBlockEvent,
+    NoSourceText, ParseResult, SemanticToken, SourceTextProvider,
+};
 pub use types::{
-    MacroDef, MacroArgDef, MacroArgKind, MacroCategory, GlobalDef, GlobalProperty, MacroSignature,
-    ImplicitPassagePattern, VariableSigilInfo, OperatorNormalization, VarStringMapResult,
-    ResolvedNavLink,
-    PropertyKind, PropertyMapEntry,
-    PassageVarRef, PassageTempVarSummary,
-    CompletionContext,
+    CompletionContext, GlobalDef, GlobalProperty, ImplicitPassagePattern, MacroArgDef,
+    MacroArgKind, MacroCategory, MacroDef, MacroSignature, OperatorNormalization,
+    PassageTempVarSummary, PassageVarRef, PropertyKind, PropertyMapEntry, ResolvedNavLink,
+    VarStringMapResult, VariableSigilInfo,
 };
 // Workspace re-exports temporarily removed during ver_3 rewrite.
 // These types will be re-introduced when the workspace module is rebuilt.

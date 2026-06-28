@@ -187,7 +187,11 @@ pub enum Block {
     /// Plain text content.
     Text { content: String, span: Range<usize> },
     /// A macro invocation (format-specific).
-    Macro { name: String, args: String, span: Range<usize> },
+    Macro {
+        name: String,
+        args: String,
+        span: Range<usize>,
+    },
     /// An inline expression.
     Expression { content: String, span: Range<usize> },
     /// A heading or section divider.
@@ -217,7 +221,7 @@ pub enum Block {
 ///   The core never hardcodes format-specific names or tags.
 ///
 /// - **UserDefined**: User-created special passages (reserved for future use).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SpecialPassageLayer {
     /// Twee 3 specification / Twine compiler constructs.
     /// Name-matched: StoryTitle, StoryData, Start.
@@ -230,15 +234,10 @@ pub enum SpecialPassageLayer {
     /// Format-specific special passages and tags (StoryInit, PassageHeader,
     /// [init], [widget] for SugarCube; [header], [footer], [startup]
     /// for Harlowe). Defined by the active format plugin.
+    #[default]
     StoryFormat,
     /// User-defined special passages declared in `.vscode/knot.json`.
     UserDefined,
-}
-
-impl Default for SpecialPassageLayer {
-    fn default() -> Self {
-        SpecialPassageLayer::StoryFormat
-    }
 }
 
 /// The classification category of a passage within the priority hierarchy.
@@ -303,7 +302,7 @@ impl Default for SpecialPassageLayer {
 /// - **Semantic tokens**: The category determines the token type
 ///   (SpecialPassageHeader vs PassageHeader) and layer modifier
 ///   (TwineCore, StoryFormat).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum PassageCategory {
     /// Core metadata passages: StoryData, StoryTitle.
     /// Name-matched, TwineCore layer, Metadata behavior.
@@ -327,13 +326,8 @@ pub enum PassageCategory {
     /// Regular user-defined passage. No special definition matched.
     /// Tags were checked before this classification, so no special
     /// passages are missed.
+    #[default]
     Regular,
-}
-
-impl Default for PassageCategory {
-    fn default() -> Self {
-        PassageCategory::Regular
-    }
 }
 
 /// Behavior definition for a special passage.
@@ -427,21 +421,16 @@ pub enum SpecialPassageBehavior {
 /// PassageHeader by NAME, while Harlowe matches [header] by TAG. Both achieve
 /// the same functional result (content prepended to every passage) but through
 /// different mechanisms. The classification system must handle both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MatchStrategy {
     /// Match by exact passage name (case-sensitive for SugarCube).
     /// Examples: StoryTitle, StoryData, StoryInit, PassageHeader.
+    #[default]
     Name,
     /// Match by passage tag (case-insensitive, per Twee 3 spec).
     /// Examples: script, stylesheet, init, widget, header, footer.
     /// Multiple passages can match the same tag.
     Tag,
-}
-
-impl Default for MatchStrategy {
-    fn default() -> Self {
-        MatchStrategy::Name
-    }
 }
 
 /// Definition of a special passage.
@@ -544,7 +533,10 @@ impl SpecialPassageDef {
             return None; // Must have either name or tag
         };
 
-        let name = user.name.clone().unwrap_or_else(|| user.tag.clone().unwrap_or_default());
+        let name = user
+            .name
+            .clone()
+            .unwrap_or_else(|| user.tag.clone().unwrap_or_default());
         let behavior = match user.behavior.to_lowercase().as_str() {
             "startup" => SpecialPassageBehavior::Startup,
             "chrome" => SpecialPassageBehavior::Chrome,
@@ -653,7 +645,8 @@ pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
     "format": "",
     "format-version": "",
     "start": "Start"
-}"#.into(),
+}"#
+                .into(),
             }),
         },
         SpecialPassageDef {
@@ -670,7 +663,6 @@ pub fn twine_core_special_passages() -> Vec<SpecialPassageDef> {
                 default_content: String::new(),
             }),
         },
-
         // ── Tag-matched code passages ──────────────────────────────────────
         // The Twee 3 spec defines "script" and "stylesheet" as SPECIAL TAGS,
         // not special passage names. Any passage with [script] contains JS;
@@ -983,12 +975,16 @@ impl Passage {
     /// Temporary variables (those with `is_temporary: true`) are excluded
     /// because they do not survive passage transitions.
     pub fn persistent_variable_inits(&self) -> impl Iterator<Item = &VarOp> {
-        self.vars.iter().filter(|v| v.kind == VarKind::Init && !v.is_temporary)
+        self.vars
+            .iter()
+            .filter(|v| v.kind == VarKind::Init && !v.is_temporary)
     }
 
     /// Returns all persistent (non-temporary) variable read operations.
     pub fn persistent_variable_reads(&self) -> impl Iterator<Item = &VarOp> {
-        self.vars.iter().filter(|v| v.kind == VarKind::Read && !v.is_temporary)
+        self.vars
+            .iter()
+            .filter(|v| v.kind == VarKind::Read && !v.is_temporary)
     }
 
     /// Returns all variable operations sorted by source position (span start).
@@ -1073,9 +1069,9 @@ impl Passage {
         }
         // Fallback for unclassified passages. Both "stylesheet" and "style"
         // are core Twee tags that mark CSS passages.
-        self.tags.iter().any(|t| {
-            t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style")
-        })
+        self.tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style"))
     }
 
     /// Whether this passage is an interface passage (contains HTML).
@@ -1113,9 +1109,11 @@ impl Passage {
             Some(def) => {
                 match (&def.layer, &def.match_strategy, &def.behavior) {
                     // Core metadata: StoryData, StoryTitle
-                    (SpecialPassageLayer::TwineCore, MatchStrategy::Name, SpecialPassageBehavior::Metadata) => {
-                        PassageCategory::CoreMetadata
-                    }
+                    (
+                        SpecialPassageLayer::TwineCore,
+                        MatchStrategy::Name,
+                        SpecialPassageBehavior::Metadata,
+                    ) => PassageCategory::CoreMetadata,
                     // Core name-matched (non-metadata): Start
                     (SpecialPassageLayer::TwineCore, MatchStrategy::Name, _) => {
                         PassageCategory::CoreNamed
@@ -1160,8 +1158,13 @@ mod tests {
     fn test_style_tag_classified_as_style_injection() {
         // Verify that the "style" tag is in the core special passages
         let core = twine_core_special_passages();
-        let style_def = core.iter().find(|d| d.name == "style" && d.match_strategy == MatchStrategy::Tag);
-        assert!(style_def.is_some(), "[style] tag should be in twine_core_special_passages()");
+        let style_def = core
+            .iter()
+            .find(|d| d.name == "style" && d.match_strategy == MatchStrategy::Tag);
+        assert!(
+            style_def.is_some(),
+            "[style] tag should be in twine_core_special_passages()"
+        );
         let def = style_def.unwrap();
         assert_eq!(def.behavior, SpecialPassageBehavior::StyleInjection);
         assert_eq!(def.layer, SpecialPassageLayer::TwineCore);
@@ -1170,9 +1173,17 @@ mod tests {
     #[test]
     fn test_stylesheet_tag_classified_as_style_injection() {
         let core = twine_core_special_passages();
-        let def = core.iter().find(|d| d.name == "stylesheet" && d.match_strategy == MatchStrategy::Tag);
-        assert!(def.is_some(), "[stylesheet] tag should be in twine_core_special_passages()");
-        assert_eq!(def.unwrap().behavior, SpecialPassageBehavior::StyleInjection);
+        let def = core
+            .iter()
+            .find(|d| d.name == "stylesheet" && d.match_strategy == MatchStrategy::Tag);
+        assert!(
+            def.is_some(),
+            "[stylesheet] tag should be in twine_core_special_passages()"
+        );
+        assert_eq!(
+            def.unwrap().behavior,
+            SpecialPassageBehavior::StyleInjection
+        );
     }
 
     #[test]
@@ -1190,7 +1201,10 @@ mod tests {
         };
         let mut passage = Passage::new_special("MyCSS".into(), 0..100, def);
         passage.tags = vec!["style".into()];
-        assert!(passage.is_stylesheet_passage(), "Passage with [style] tag should be stylesheet");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Passage with [style] tag should be stylesheet"
+        );
     }
 
     #[test]
@@ -1207,7 +1221,10 @@ mod tests {
         };
         let mut passage = Passage::new_special("MyCSS".into(), 0..100, def);
         passage.tags = vec!["stylesheet".into()];
-        assert!(passage.is_stylesheet_passage(), "Passage with [stylesheet] tag should be stylesheet");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Passage with [stylesheet] tag should be stylesheet"
+        );
     }
 
     #[test]
@@ -1215,24 +1232,36 @@ mod tests {
         // When special_def is None (unclassified), fallback should recognize "style"
         let mut passage = Passage::new("MyCSS".into(), 0..100);
         passage.tags = vec!["style".into()];
-        assert!(passage.is_stylesheet_passage(), "Fallback should recognize [style] tag");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Fallback should recognize [style] tag"
+        );
     }
 
     #[test]
     fn test_is_stylesheet_passage_fallback_stylesheet_tag() {
         let mut passage = Passage::new("MyCSS".into(), 0..100);
         passage.tags = vec!["stylesheet".into()];
-        assert!(passage.is_stylesheet_passage(), "Fallback should recognize [stylesheet] tag");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Fallback should recognize [stylesheet] tag"
+        );
     }
 
     #[test]
     fn test_is_stylesheet_passage_fallback_case_insensitive() {
         let mut passage = Passage::new("MyCSS".into(), 0..100);
         passage.tags = vec!["STYLE".into()];
-        assert!(passage.is_stylesheet_passage(), "Fallback should be case-insensitive for [STYLE] tag");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Fallback should be case-insensitive for [STYLE] tag"
+        );
 
         passage.tags = vec!["StyleSheet".into()];
-        assert!(passage.is_stylesheet_passage(), "Fallback should be case-insensitive for [StyleSheet] tag");
+        assert!(
+            passage.is_stylesheet_passage(),
+            "Fallback should be case-insensitive for [StyleSheet] tag"
+        );
     }
 
     #[test]
@@ -1249,24 +1278,40 @@ mod tests {
         };
         let mut passage = Passage::new_special("MyJS".into(), 0..100, def);
         passage.tags = vec!["script".into()];
-        assert!(passage.is_script_passage(), "Passage with [script] tag should be script");
+        assert!(
+            passage.is_script_passage(),
+            "Passage with [script] tag should be script"
+        );
     }
 
     #[test]
     fn test_normal_passage_not_stylesheet() {
         let passage = Passage::new("Forest".into(), 0..100);
-        assert!(!passage.is_stylesheet_passage(), "Normal passage should not be stylesheet");
-        assert!(!passage.is_script_passage(), "Normal passage should not be script");
+        assert!(
+            !passage.is_stylesheet_passage(),
+            "Normal passage should not be stylesheet"
+        );
+        assert!(
+            !passage.is_script_passage(),
+            "Normal passage should not be script"
+        );
     }
 
     #[test]
     fn test_style_and_stylesheet_are_distinct_entries() {
         // Both "style" and "stylesheet" should exist as separate entries
         let core = twine_core_special_passages();
-        let style_count = core.iter()
-            .filter(|d| d.match_strategy == MatchStrategy::Tag && d.behavior == SpecialPassageBehavior::StyleInjection)
+        let style_count = core
+            .iter()
+            .filter(|d| {
+                d.match_strategy == MatchStrategy::Tag
+                    && d.behavior == SpecialPassageBehavior::StyleInjection
+            })
             .count();
-        assert_eq!(style_count, 2, "Should have both [style] and [stylesheet] tag entries");
+        assert_eq!(
+            style_count, 2,
+            "Should have both [style] and [stylesheet] tag entries"
+        );
     }
 
     // ── PassageCategory tests ──────────────────────────────────────────

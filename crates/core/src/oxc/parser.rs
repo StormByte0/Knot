@@ -180,32 +180,53 @@ mod tests {
     #[test]
     fn test_parse_valid_expression() {
         let result = parse_js("1 + 2 * 3", ParseMode::Expression);
-        assert!(result.is_clean(), "Expected no diagnostics for valid expression, got: {:?}", result.diagnostics);
+        assert!(
+            result.is_clean(),
+            "Expected no diagnostics for valid expression, got: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
     fn test_parse_valid_module() {
-        let result = parse_js("var x = 1;\nfunction hello() { return x; }", ParseMode::Module);
-        assert!(result.is_clean(), "Expected no diagnostics for valid module, got: {:?}", result.diagnostics);
+        let result = parse_js(
+            "var x = 1;\nfunction hello() { return x; }",
+            ParseMode::Module,
+        );
+        assert!(
+            result.is_clean(),
+            "Expected no diagnostics for valid module, got: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
     fn test_parse_invalid_js() {
         let result = parse_js("function (", ParseMode::Expression);
-        assert!(!result.diagnostics.is_empty(), "Expected at least one diagnostic for invalid JS");
+        assert!(
+            !result.diagnostics.is_empty(),
+            "Expected at least one diagnostic for invalid JS"
+        );
     }
 
     #[test]
     fn test_parse_valid_statement_list() {
         let result = parse_js("let x = 1; let y = 2;", ParseMode::StatementList);
-        assert!(result.is_clean(), "Expected no diagnostics for valid statements, got: {:?}", result.diagnostics);
+        assert!(
+            result.is_clean(),
+            "Expected no diagnostics for valid statements, got: {:?}",
+            result.diagnostics
+        );
     }
 
     #[test]
     fn test_with_program_walks_ast() {
         let result = parse_js("var x = 42;", ParseMode::Module);
         let body_len = result.with_program(|program| program.body.len());
-        assert!(body_len.unwrap_or(0) > 0, "Expected at least one statement in AST");
+        assert!(
+            body_len.unwrap_or(0) > 0,
+            "Expected at least one statement in AST"
+        );
     }
 
     #[test]
@@ -214,10 +235,16 @@ mod tests {
         // to continue parsing. This test verifies that we can still get an AST
         // even when there are errors. We use a construct that oxc can recover
         // from (unclosed brace followed by valid code on the next line).
-        let result = parse_js("function foo() {\n  return 42;\n}\nvar x = 1;", ParseMode::Module);
+        let result = parse_js(
+            "function foo() {\n  return 42;\n}\nvar x = 1;",
+            ParseMode::Module,
+        );
         // This should parse cleanly (no errors) — just verifying the API works
         assert!(result.has_ast(), "Expected AST to be available");
         let body_len = result.with_program(|program| program.body.len());
-        assert!(body_len.unwrap_or(0) > 0, "Expected at least one statement in AST");
+        assert!(
+            body_len.unwrap_or(0) > 0,
+            "Expected at least one statement in AST"
+        );
     }
 }

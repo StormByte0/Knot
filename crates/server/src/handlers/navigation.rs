@@ -87,14 +87,14 @@ pub(crate) fn resolve_target_at_cursor(
     let byte_offset = helpers::position_to_byte_offset(text, position);
 
     // ── 1. Passage link / header ──────────────────────────────────────────
-    if let Some(name) = helpers::find_passage_at_position_span_based(
-        text, &inner.workspace, uri, position,
-    ) {
+    if let Some(name) =
+        helpers::find_passage_at_position_span_based(text, &inner.workspace, uri, position)
+    {
         return Some(ReferenceTarget::Passage { name });
     }
-    if let Some(name) = helpers::find_link_target_at_position_span_based(
-        text, &inner.workspace, uri, position,
-    ) {
+    if let Some(name) =
+        helpers::find_link_target_at_position_span_based(text, &inner.workspace, uri, position)
+    {
         return Some(ReferenceTarget::Passage { name });
     }
 
@@ -113,7 +113,9 @@ pub(crate) fn resolve_target_at_cursor(
                     break;
                 }
                 if plugin.is_custom_macro(&inv.name) {
-                    return Some(ReferenceTarget::CustomMacro { name: inv.name.clone() });
+                    return Some(ReferenceTarget::CustomMacro {
+                        name: inv.name.clone(),
+                    });
                 }
                 break;
             }
@@ -135,7 +137,9 @@ pub(crate) fn resolve_target_at_cursor(
             if byte_offset >= abs_start && byte_offset < abs_end {
                 let name = &text[abs_start..abs_end];
                 if plugin.find_function(name).is_some() {
-                    return Some(ReferenceTarget::Function { name: name.to_string() });
+                    return Some(ReferenceTarget::Function {
+                        name: name.to_string(),
+                    });
                 }
             }
         }
@@ -143,10 +147,10 @@ pub(crate) fn resolve_target_at_cursor(
     // Step B: text-scan fallback for plain JS function calls (the JS walker
     // only emits Function semantic tokens for preprocessed SugarCube variable
     // calls, not for regular JS identifiers).
-    if let Some(name) = identifier_at_offset(text, byte_offset) {
-        if plugin.find_function(&name).is_some() {
-            return Some(ReferenceTarget::Function { name });
-        }
+    if let Some(name) = identifier_at_offset(text, byte_offset)
+        && plugin.find_function(&name).is_some()
+    {
+        return Some(ReferenceTarget::Function { name });
     }
 
     // ── 4. Template invocation (?name) ────────────────────────────────────
@@ -156,10 +160,10 @@ pub(crate) fn resolve_target_at_cursor(
     // the cursor is on an identifier that's immediately preceded by `?`.
     // The `?` is part of the invocation but NOT part of the name (the name
     // is what `Template.add("name", ...)` registered).
-    if let Some(name) = template_name_at_offset(text, byte_offset) {
-        if plugin.find_template(&name).is_some() {
-            return Some(ReferenceTarget::Template { name });
-        }
+    if let Some(name) = template_name_at_offset(text, byte_offset)
+        && plugin.find_template(&name).is_some()
+    {
+        return Some(ReferenceTarget::Template { name });
     }
 
     None
@@ -290,14 +294,12 @@ fn goto_definition_inner(
             let text = inner.open_documents.get(uri)?;
             let byte_offset = helpers::position_to_byte_offset(text, position);
             let token_groups = inner.semantic_tokens.get(uri).cloned().unwrap_or_default();
-            if let Some(loc) = lookup_function_definition(
-                text, byte_offset, token_groups, plugin, inner,
-            ) {
+            if let Some(loc) =
+                lookup_function_definition(text, byte_offset, token_groups, plugin, inner)
+            {
                 return Some(GotoDefinitionResponse::Scalar(loc));
             }
-            if let Some(loc) = lookup_function_by_text_scan(
-                text, byte_offset, plugin, inner,
-            ) {
+            if let Some(loc) = lookup_function_by_text_scan(text, byte_offset, plugin, inner) {
                 return Some(GotoDefinitionResponse::Scalar(loc));
             }
             None
@@ -330,7 +332,8 @@ fn lookup_custom_macro_definition(
 
     // Convert passage-relative → document-absolute using the passage's
     // `passage_offset` (document-absolute position of the passage head `::`).
-    let abs_offset = if let Some((doc, passage)) = inner.workspace.find_passage(&defined_in_passage) {
+    let abs_offset = if let Some((doc, passage)) = inner.workspace.find_passage(&defined_in_passage)
+    {
         if doc.uri == target_uri {
             passage.abs_offset(passage_rel_offset)
         } else {
@@ -344,7 +347,10 @@ fn lookup_custom_macro_definition(
     };
 
     let range = identifier_range_at_offset(target_text, abs_offset);
-    Some(Location { uri: target_uri, range })
+    Some(Location {
+        uri: target_uri,
+        range,
+    })
 }
 
 /// Look up a template definition and return an LSP `Location`.
@@ -379,7 +385,10 @@ fn lookup_template_definition(
     };
 
     let range = identifier_range_at_offset(target_text, abs_offset);
-    Some(Location { uri: target_uri, range })
+    Some(Location {
+        uri: target_uri,
+        range,
+    })
 }
 
 /// Look up a function definition and return an LSP `Location`.
@@ -416,18 +425,22 @@ fn lookup_function_definition(
                 let target_text = inner.open_documents.get(&target_uri)?;
 
                 // Convert passage-relative → document-absolute.
-                let abs_offset = if let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in) {
-                    if doc.uri == target_uri {
-                        passage.abs_offset(info.defined_at_offset)
+                let abs_offset =
+                    if let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in) {
+                        if doc.uri == target_uri {
+                            passage.abs_offset(info.defined_at_offset)
+                        } else {
+                            info.defined_at_offset
+                        }
                     } else {
                         info.defined_at_offset
-                    }
-                } else {
-                    info.defined_at_offset
-                };
+                    };
 
                 let range = identifier_range_at_offset(target_text, abs_offset);
-                return Some(Location { uri: target_uri, range });
+                return Some(Location {
+                    uri: target_uri,
+                    range,
+                });
             }
         }
     }
@@ -456,9 +469,7 @@ fn lookup_function_by_text_scan(
     // Identifier chars: JS allows `[A-Za-z0-9_$]`. We also include `-` for
     // SugarCube macro names (harmless here since `find_function` won't match
     // macro names).
-    let is_ident = |b: u8| {
-        b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
-    };
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
 
     // Scan backward from cursor to find identifier start.
     let mut start = byte_offset.min(len);
@@ -492,7 +503,10 @@ fn lookup_function_by_text_scan(
     };
 
     let range = identifier_range_at_offset(target_text, abs_offset);
-    Some(Location { uri: target_uri, range })
+    Some(Location {
+        uri: target_uri,
+        range,
+    })
 }
 
 /// Compute the LSP range of the identifier at `offset` in `text`.
@@ -516,9 +530,7 @@ fn identifier_range_at_offset(text: &str, offset: usize) -> Range {
     let bytes = text.as_bytes();
     let len = bytes.len();
 
-    let is_ident = |b: u8| {
-        b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-'
-    };
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b == b'-';
 
     // Start position: if offset isn't on an ident char, scan forward to find
     // the next one. Cap the lookahead so we don't scan into unrelated code.
@@ -572,7 +584,14 @@ pub(crate) async fn goto_implementation(
     // Determine the target passage using span-based resolution
     let target_passage = if let Some(text) = inner.open_documents.get(&uri) {
         helpers::find_passage_at_position_span_based(text, &inner.workspace, &uri, position)
-            .or_else(|| helpers::find_link_target_at_position_span_based(text, &inner.workspace, &uri, position))
+            .or_else(|| {
+                helpers::find_link_target_at_position_span_based(
+                    text,
+                    &inner.workspace,
+                    &uri,
+                    position,
+                )
+            })
     } else {
         None
     };
@@ -593,7 +612,8 @@ pub(crate) async fn goto_implementation(
         for passage in &doc.passages {
             for link in &passage.links {
                 if link.target.trim() == target_name {
-                    let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
+                    let range =
+                        helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                     locations.push(Location {
                         uri: doc.uri.clone(),
                         range,
@@ -696,14 +716,23 @@ fn references_inner(
                                 .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
                             helpers::byte_range_to_lsp_range(text, &(span_start..header_end))
                         };
-                        locations.push(Location { uri: doc.uri.clone(), range });
+                        locations.push(Location {
+                            uri: doc.uri.clone(),
+                            range,
+                        });
                     }
 
                     // Link references
                     for link in &passage.links {
                         if link.target.trim() == *name {
-                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-                            locations.push(Location { uri: doc.uri.clone(), range });
+                            let range = helpers::byte_range_to_lsp_range(
+                                text,
+                                &passage.abs_range(&link.span),
+                            );
+                            locations.push(Location {
+                                uri: doc.uri.clone(),
+                                range,
+                            });
                         }
                     }
                 }
@@ -726,9 +755,13 @@ fn references_inner(
                     for inv in &passage.macro_invocations {
                         if inv.name == *name {
                             let range = helpers::byte_range_to_lsp_range(
-                                text, &passage.abs_range(&inv.name_span),
+                                text,
+                                &passage.abs_range(&inv.name_span),
                             );
-                            locations.push(Location { uri: doc.uri.clone(), range });
+                            locations.push(Location {
+                                uri: doc.uri.clone(),
+                                range,
+                            });
                         }
                     }
                 }
@@ -765,8 +798,12 @@ fn references_inner(
                             }
                             let token_name = &text[abs_start..abs_end];
                             if token_name == name.as_str() {
-                                let range = helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
-                                locations.push(Location { uri: doc.uri.clone(), range });
+                                let range =
+                                    helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
+                                locations.push(Location {
+                                    uri: doc.uri.clone(),
+                                    range,
+                                });
                             }
                         }
                     }
@@ -780,14 +817,17 @@ fn references_inner(
                 // We only emit a location if `plugin.find_function(name)`
                 // confirms the name is a known function (prevents false
                 // positives from random identifiers that happen to match).
-                if let Some(plugin) = plugin {
-                    if plugin.find_function(name).is_some() {
-                        for (offset, ident) in identifiers_in_text(text) {
-                            if ident == name.as_str() {
-                                let end = offset + ident.len();
-                                let range = helpers::byte_range_to_lsp_range(text, &(offset..end));
-                                locations.push(Location { uri: doc.uri.clone(), range });
-                            }
+                if let Some(plugin) = plugin
+                    && plugin.find_function(name).is_some()
+                {
+                    for (offset, ident) in identifiers_in_text(text) {
+                        if ident == name.as_str() {
+                            let end = offset + ident.len();
+                            let range = helpers::byte_range_to_lsp_range(text, &(offset..end));
+                            locations.push(Location {
+                                uri: doc.uri.clone(),
+                                range,
+                            });
                         }
                     }
                 }
@@ -803,23 +843,27 @@ fn references_inner(
             //
             // Gated by `plugin.find_template(name)` to prevent false positives
             // from random `?identifier` occurrences that happen to match.
-            if let Some(plugin) = plugin {
-                if plugin.find_template(name).is_some() {
-                    for doc in inner.workspace.documents() {
-                        let text = match inner.open_documents.get(&doc.uri) {
-                            Some(t) => t,
-                            None => continue,
-                        };
-                        for (q_offset, ident) in template_invocations_in_text(text) {
-                            if ident == name.as_str() {
-                                // The range covers just the name (not the `?`).
-                                // Renaming `?heal` → `?cured` means replacing
-                                // `heal` with `cured`, keeping the `?` prefix.
-                                let name_start = q_offset;
-                                let name_end = q_offset + ident.len();
-                                let range = helpers::byte_range_to_lsp_range(text, &(name_start..name_end));
-                                locations.push(Location { uri: doc.uri.clone(), range });
-                            }
+            if let Some(plugin) = plugin
+                && plugin.find_template(name).is_some()
+            {
+                for doc in inner.workspace.documents() {
+                    let text = match inner.open_documents.get(&doc.uri) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    for (q_offset, ident) in template_invocations_in_text(text) {
+                        if ident == name.as_str() {
+                            // The range covers just the name (not the `?`).
+                            // Renaming `?heal` → `?cured` means replacing
+                            // `heal` with `cured`, keeping the `?` prefix.
+                            let name_start = q_offset;
+                            let name_end = q_offset + ident.len();
+                            let range =
+                                helpers::byte_range_to_lsp_range(text, &(name_start..name_end));
+                            locations.push(Location {
+                                uri: doc.uri.clone(),
+                                range,
+                            });
                         }
                     }
                 }
@@ -834,14 +878,13 @@ fn references_inner(
         // locations when a semantic token and a text-scan match the same
         // offset. Sort by (uri, line, char) and remove consecutive dups.
         locations.sort_by(|a, b| {
-            a.uri.cmp(&b.uri)
+            a.uri
+                .cmp(&b.uri)
                 .then(a.range.start.line.cmp(&b.range.start.line))
                 .then(a.range.start.character.cmp(&b.range.start.character))
         });
         locations.dedup_by(|a, b| {
-            a.uri == b.uri
-                && a.range.start == b.range.start
-                && a.range.end == b.range.end
+            a.uri == b.uri && a.range.start == b.range.start && a.range.end == b.range.end
         });
         Some(locations)
     }
@@ -916,19 +959,16 @@ fn document_highlight_inner(
                 for p in &doc.passages {
                     for v in &p.vars {
                         if v.name == var.name {
-                            let range = helpers::byte_range_to_lsp_range(
-                                text,
-                                &p.abs_range(&v.span),
-                            );
+                            let range =
+                                helpers::byte_range_to_lsp_range(text, &p.abs_range(&v.span));
                             let kind = match v.kind {
-                                knot_core::passage::VarKind::Init => {
-                                    DocumentHighlightKind::WRITE
-                                }
-                                knot_core::passage::VarKind::Read => {
-                                    DocumentHighlightKind::READ
-                                }
+                                knot_core::passage::VarKind::Init => DocumentHighlightKind::WRITE,
+                                knot_core::passage::VarKind::Read => DocumentHighlightKind::READ,
                             };
-                            highlights.push(DocumentHighlight { range, kind: Some(kind) });
+                            highlights.push(DocumentHighlight {
+                                range,
+                                kind: Some(kind),
+                            });
                         }
                     }
                 }
@@ -960,21 +1000,19 @@ fn document_highlight_inner(
         ReferenceTarget::Passage { name } => {
             for passage in &doc.passages {
                 // Header definition
-                if passage.name == *name {
-                    if let Some(range) = passage_header_name_range(text, passage) {
-                        highlights.push(DocumentHighlight {
-                            range,
-                            kind: Some(DocumentHighlightKind::TEXT),
-                        });
-                    }
+                if passage.name == *name
+                    && let Some(range) = passage_header_name_range(text, passage)
+                {
+                    highlights.push(DocumentHighlight {
+                        range,
+                        kind: Some(DocumentHighlightKind::TEXT),
+                    });
                 }
                 // Link references
                 for link in &passage.links {
                     if link.target.trim() == *name {
-                        let range = helpers::byte_range_to_lsp_range(
-                            text,
-                            &passage.abs_range(&link.span),
-                        );
+                        let range =
+                            helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
                         highlights.push(DocumentHighlight {
                             range,
                             kind: Some(DocumentHighlightKind::TEXT),
@@ -1019,10 +1057,8 @@ fn document_highlight_inner(
                         }
                         let token_name = &text[abs_start..abs_end];
                         if token_name == name.as_str() {
-                            let range = helpers::byte_range_to_lsp_range(
-                                text,
-                                &(abs_start..abs_end),
-                            );
+                            let range =
+                                helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end));
                             highlights.push(DocumentHighlight {
                                 range,
                                 kind: Some(DocumentHighlightKind::TEXT),
@@ -1033,41 +1069,35 @@ fn document_highlight_inner(
             }
 
             // Path B: text-scan fallback (same gate as `references_inner`)
-            if let Some(plugin) = plugin {
-                if plugin.find_function(name).is_some() {
-                    for (offset, ident) in identifiers_in_text(text) {
-                        if ident == name.as_str() {
-                            let end = offset + ident.len();
-                            let range = helpers::byte_range_to_lsp_range(
-                                text,
-                                &(offset..end),
-                            );
-                            highlights.push(DocumentHighlight {
-                                range,
-                                kind: Some(DocumentHighlightKind::TEXT),
-                            });
-                        }
+            if let Some(plugin) = plugin
+                && plugin.find_function(name).is_some()
+            {
+                for (offset, ident) in identifiers_in_text(text) {
+                    if ident == name.as_str() {
+                        let end = offset + ident.len();
+                        let range = helpers::byte_range_to_lsp_range(text, &(offset..end));
+                        highlights.push(DocumentHighlight {
+                            range,
+                            kind: Some(DocumentHighlightKind::TEXT),
+                        });
                     }
                 }
             }
         }
 
         ReferenceTarget::Template { name } => {
-            if let Some(plugin) = plugin {
-                if plugin.find_template(name).is_some() {
-                    for (q_offset, ident) in template_invocations_in_text(text) {
-                        if ident == name.as_str() {
-                            let name_start = q_offset;
-                            let name_end = q_offset + ident.len();
-                            let range = helpers::byte_range_to_lsp_range(
-                                text,
-                                &(name_start..name_end),
-                            );
-                            highlights.push(DocumentHighlight {
-                                range,
-                                kind: Some(DocumentHighlightKind::TEXT),
-                            });
-                        }
+            if let Some(plugin) = plugin
+                && plugin.find_template(name).is_some()
+            {
+                for (q_offset, ident) in template_invocations_in_text(text) {
+                    if ident == name.as_str() {
+                        let name_start = q_offset;
+                        let name_end = q_offset + ident.len();
+                        let range = helpers::byte_range_to_lsp_range(text, &(name_start..name_end));
+                        highlights.push(DocumentHighlight {
+                            range,
+                            kind: Some(DocumentHighlightKind::TEXT),
+                        });
                     }
                 }
             }
@@ -1088,10 +1118,7 @@ fn document_highlight_inner(
 /// uses `header_name_span` when available, falls back to scanning the
 /// header line. Extracted as a helper so `document_highlight_inner` can
 /// reuse it without duplicating the fallback logic.
-fn passage_header_name_range(
-    text: &str,
-    passage: &knot_core::passage::Passage,
-) -> Option<Range> {
+fn passage_header_name_range(text: &str, passage: &knot_core::passage::Passage) -> Option<Range> {
     if let Some(ref name_span) = passage.header_name_span {
         Some(helpers::byte_range_to_lsp_range(
             text,
@@ -1103,7 +1130,10 @@ fn passage_header_name_range(
             .find('\n')
             .map(|n| span_start + n)
             .unwrap_or(passage.abs_offset(passage.span.end).min(text.len()));
-        Some(helpers::byte_range_to_lsp_range(text, &(span_start..header_end)))
+        Some(helpers::byte_range_to_lsp_range(
+            text,
+            &(span_start..header_end),
+        ))
     }
 }
 
@@ -1120,9 +1150,7 @@ fn dedup_highlights(highlights: &mut Vec<DocumentHighlight>) {
             .cmp(&b.range.start.line)
             .then(a.range.start.character.cmp(&b.range.start.character))
     });
-    highlights.dedup_by(|a, b| {
-        a.range.start == b.range.start && a.range.end == b.range.end
-    });
+    highlights.dedup_by(|a, b| a.range.start == b.range.start && a.range.end == b.range.end);
 }
 
 /// Confirm that the definition site of a target exists and is reachable.
@@ -1151,20 +1179,28 @@ pub(crate) fn definition_confirmed(
     };
 
     match target {
-        ReferenceTarget::Passage { name } => {
-            inner.workspace.find_passage(name).is_some()
-        }
+        ReferenceTarget::Passage { name } => inner.workspace.find_passage(name).is_some(),
         ReferenceTarget::CustomMacro { name } => {
-            confirm_definition_text(name, plugin.find_custom_macro(name), inner, |t| (t.0, t.1, t.2))
+            confirm_definition_text(name, plugin.find_custom_macro(name), inner, |t| {
+                (t.0, t.1, t.2)
+            })
         }
         ReferenceTarget::Function { name } => {
             confirm_definition_text(name, plugin.find_function(name), inner, |t| {
-                (t.defined_in.clone(), t.file_uri.clone(), t.defined_at_offset)
+                (
+                    t.defined_in.clone(),
+                    t.file_uri.clone(),
+                    t.defined_at_offset,
+                )
             })
         }
         ReferenceTarget::Template { name } => {
             confirm_definition_text(name, plugin.find_template(name), inner, |t| {
-                (t.defined_in.clone(), t.file_uri.clone(), t.defined_at_offset)
+                (
+                    t.defined_in.clone(),
+                    t.file_uri.clone(),
+                    t.defined_at_offset,
+                )
             })
         }
     }
@@ -1190,10 +1226,18 @@ where
     let Some(info) = info else { return false };
     let (defined_in, file_uri, passage_rel_offset) = extract(info);
 
-    let Ok(target_uri) = file_uri.parse::<url::Url>() else { return false };
-    let Some(target_text) = inner.open_documents.get(&target_uri) else { return false };
-    let Some((doc, passage)) = inner.workspace.find_passage(&defined_in) else { return false };
-    if doc.uri != target_uri { return false }
+    let Ok(target_uri) = file_uri.parse::<url::Url>() else {
+        return false;
+    };
+    let Some(target_text) = inner.open_documents.get(&target_uri) else {
+        return false;
+    };
+    let Some((doc, passage)) = inner.workspace.find_passage(&defined_in) else {
+        return false;
+    };
+    if doc.uri != target_uri {
+        return false;
+    }
 
     let abs_offset = passage.abs_offset(passage_rel_offset);
 
@@ -1222,7 +1266,11 @@ where
     }
 
     // Skip a leading hyphen if present (identifiers don't start with `-`).
-    let name_start = if bytes[start] == b'-' && end > start + 1 { start + 1 } else { start };
+    let name_start = if bytes[start] == b'-' && end > start + 1 {
+        start + 1
+    } else {
+        start
+    };
 
     if end > target_text.len() || name_start >= end {
         return false;
@@ -1255,20 +1303,40 @@ pub(crate) fn collect_rename_edits(
     match target {
         ReferenceTarget::Passage { name: old_name } => {
             for doc in inner.workspace.documents() {
-                let Some(text) = inner.open_documents.get(&doc.uri) else { continue };
+                let Some(text) = inner.open_documents.get(&doc.uri) else {
+                    continue;
+                };
                 let mut doc_edits = Vec::new();
 
                 for passage in &doc.passages {
                     if passage.name == *old_name {
-                        let range = passage.header_name_span.as_ref()
-                            .map(|ns| helpers::byte_range_to_lsp_range(text, &passage.abs_range(ns)))
-                            .unwrap_or_else(|| helpers::compute_passage_name_range_fallback(text, &passage.abs_range(&passage.span)));
-                        doc_edits.push(TextEdit { range, new_text: new_name.to_string() });
+                        let range = passage
+                            .header_name_span
+                            .as_ref()
+                            .map(|ns| {
+                                helpers::byte_range_to_lsp_range(text, &passage.abs_range(ns))
+                            })
+                            .unwrap_or_else(|| {
+                                helpers::compute_passage_name_range_fallback(
+                                    text,
+                                    &passage.abs_range(&passage.span),
+                                )
+                            });
+                        doc_edits.push(TextEdit {
+                            range,
+                            new_text: new_name.to_string(),
+                        });
                     }
                     for link in &passage.links {
                         if link.target.trim() == *old_name {
-                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span));
-                            doc_edits.push(TextEdit { range, new_text: new_name.to_string() });
+                            let range = helpers::byte_range_to_lsp_range(
+                                text,
+                                &passage.abs_range(&link.span),
+                            );
+                            doc_edits.push(TextEdit {
+                                range,
+                                new_text: new_name.to_string(),
+                            });
                         }
                     }
                 }
@@ -1282,68 +1350,80 @@ pub(crate) fn collect_rename_edits(
         ReferenceTarget::CustomMacro { name: old_name } => {
             // Definition site: `<<widget oldname>>` or `Macro.add("oldname", ...)`.
             // The definition offset comes from `find_custom_macro()`.
-            if let Some(plugin) = plugin {
-                if let Some((defined_in, file_uri, passage_rel_offset)) = plugin.find_custom_macro(old_name) {
-                    if let Ok(target_uri) = file_uri.parse::<url::Url>() {
-                        if let Some(target_text) = inner.open_documents.get(&target_uri) {
-                            if let Some((doc, passage)) = inner.workspace.find_passage(&defined_in) {
-                                if doc.uri == target_uri {
-                                    let abs_offset = passage.abs_offset(passage_rel_offset);
-                                    let range = identifier_range_at_offset(target_text, abs_offset);
-                                    changes.entry(target_uri.clone()).or_default().push(TextEdit {
-                                        range,
-                                        new_text: new_name.to_string(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(plugin) = plugin
+                && let Some((defined_in, file_uri, passage_rel_offset)) =
+                    plugin.find_custom_macro(old_name)
+                && let Ok(target_uri) = file_uri.parse::<url::Url>()
+                && let Some(target_text) = inner.open_documents.get(&target_uri)
+                && let Some((doc, passage)) = inner.workspace.find_passage(&defined_in)
+                && doc.uri == target_uri
+            {
+                let abs_offset = passage.abs_offset(passage_rel_offset);
+                let range = identifier_range_at_offset(target_text, abs_offset);
+                changes
+                    .entry(target_uri.clone())
+                    .or_default()
+                    .push(TextEdit {
+                        range,
+                        new_text: new_name.to_string(),
+                    });
             }
 
             // Call sites: all `<<oldname>>` invocations across all documents.
             for doc in inner.workspace.documents() {
-                let Some(text) = inner.open_documents.get(&doc.uri) else { continue };
+                let Some(text) = inner.open_documents.get(&doc.uri) else {
+                    continue;
+                };
                 let mut doc_edits = Vec::new();
                 for passage in &doc.passages {
                     for inv in &passage.macro_invocations {
                         if inv.name == *old_name {
-                            let range = helpers::byte_range_to_lsp_range(text, &passage.abs_range(&inv.name_span));
-                            doc_edits.push(TextEdit { range, new_text: new_name.to_string() });
+                            let range = helpers::byte_range_to_lsp_range(
+                                text,
+                                &passage.abs_range(&inv.name_span),
+                            );
+                            doc_edits.push(TextEdit {
+                                range,
+                                new_text: new_name.to_string(),
+                            });
                         }
                     }
                 }
                 if !doc_edits.is_empty() {
-                    changes.entry(doc.uri.clone()).or_default().extend(doc_edits);
+                    changes
+                        .entry(doc.uri.clone())
+                        .or_default()
+                        .extend(doc_edits);
                 }
             }
         }
 
         ReferenceTarget::Function { name: old_name } => {
             // Definition site: `function oldname()` or `var oldname = function()`.
-            if let Some(plugin) = plugin {
-                if let Some(info) = plugin.find_function(old_name) {
-                    if let Ok(target_uri) = info.file_uri.parse::<url::Url>() {
-                        if let Some(target_text) = inner.open_documents.get(&target_uri) {
-                            if let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in) {
-                                if doc.uri == target_uri {
-                                    let abs_offset = passage.abs_offset(info.defined_at_offset);
-                                    let range = identifier_range_at_offset(target_text, abs_offset);
-                                    changes.entry(target_uri.clone()).or_default().push(TextEdit {
-                                        range,
-                                        new_text: new_name.to_string(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(plugin) = plugin
+                && let Some(info) = plugin.find_function(old_name)
+                && let Ok(target_uri) = info.file_uri.parse::<url::Url>()
+                && let Some(target_text) = inner.open_documents.get(&target_uri)
+                && let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in)
+                && doc.uri == target_uri
+            {
+                let abs_offset = passage.abs_offset(info.defined_at_offset);
+                let range = identifier_range_at_offset(target_text, abs_offset);
+                changes
+                    .entry(target_uri.clone())
+                    .or_default()
+                    .push(TextEdit {
+                        range,
+                        new_text: new_name.to_string(),
+                    });
             }
 
             // Call sites: semantic tokens + text-scan fallback (same as references).
             use knot_formats::plugin::SemanticTokenType;
             for doc in inner.workspace.documents() {
-                let Some(text) = inner.open_documents.get(&doc.uri) else { continue };
+                let Some(text) = inner.open_documents.get(&doc.uri) else {
+                    continue;
+                };
                 let mut doc_edits = Vec::new();
 
                 // Path A: semantic tokens
@@ -1351,13 +1431,20 @@ pub(crate) fn collect_rename_edits(
                     for group in token_groups {
                         let group_offset = group.passage_offset;
                         for token in &group.tokens {
-                            if token.token_type != SemanticTokenType::Function { continue }
+                            if token.token_type != SemanticTokenType::Function {
+                                continue;
+                            }
                             let abs_start = token.start + group_offset;
                             let abs_end = abs_start + token.length;
-                            if abs_end > text.len() { continue }
+                            if abs_end > text.len() {
+                                continue;
+                            }
                             if &text[abs_start..abs_end] == old_name.as_str() {
                                 doc_edits.push(TextEdit {
-                                    range: helpers::byte_range_to_lsp_range(text, &(abs_start..abs_end)),
+                                    range: helpers::byte_range_to_lsp_range(
+                                        text,
+                                        &(abs_start..abs_end),
+                                    ),
                                     new_text: new_name.to_string(),
                                 });
                             }
@@ -1366,16 +1453,16 @@ pub(crate) fn collect_rename_edits(
                 }
 
                 // Path B: text-scan fallback
-                if let Some(plugin) = plugin {
-                    if plugin.find_function(old_name).is_some() {
-                        for (offset, ident) in identifiers_in_text(text) {
-                            if ident == old_name.as_str() {
-                                let end = offset + ident.len();
-                                doc_edits.push(TextEdit {
-                                    range: helpers::byte_range_to_lsp_range(text, &(offset..end)),
-                                    new_text: new_name.to_string(),
-                                });
-                            }
+                if let Some(plugin) = plugin
+                    && plugin.find_function(old_name).is_some()
+                {
+                    for (offset, ident) in identifiers_in_text(text) {
+                        if ident == old_name.as_str() {
+                            let end = offset + ident.len();
+                            doc_edits.push(TextEdit {
+                                range: helpers::byte_range_to_lsp_range(text, &(offset..end)),
+                                new_text: new_name.to_string(),
+                            });
                         }
                     }
                 }
@@ -1383,54 +1470,66 @@ pub(crate) fn collect_rename_edits(
                 if !doc_edits.is_empty() {
                     // Dedupe (Path A + B can both match the same offset).
                     doc_edits.sort_by(|a, b| {
-                        a.range.start.line.cmp(&b.range.start.line)
+                        a.range
+                            .start
+                            .line
+                            .cmp(&b.range.start.line)
                             .then(a.range.start.character.cmp(&b.range.start.character))
                     });
-                    doc_edits.dedup_by(|a, b| a.range.start == b.range.start && a.range.end == b.range.end);
-                    changes.entry(doc.uri.clone()).or_default().extend(doc_edits);
+                    doc_edits.dedup_by(|a, b| {
+                        a.range.start == b.range.start && a.range.end == b.range.end
+                    });
+                    changes
+                        .entry(doc.uri.clone())
+                        .or_default()
+                        .extend(doc_edits);
                 }
             }
         }
 
         ReferenceTarget::Template { name: old_name } => {
             // Definition site: `Template.add("oldname", ...)`.
-            if let Some(plugin) = plugin {
-                if let Some(info) = plugin.find_template(old_name) {
-                    if let Ok(target_uri) = info.file_uri.parse::<url::Url>() {
-                        if let Some(target_text) = inner.open_documents.get(&target_uri) {
-                            if let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in) {
-                                if doc.uri == target_uri {
-                                    let abs_offset = passage.abs_offset(info.defined_at_offset);
-                                    let range = identifier_range_at_offset(target_text, abs_offset);
-                                    changes.entry(target_uri.clone()).or_default().push(TextEdit {
-                                        range,
-                                        new_text: new_name.to_string(),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(plugin) = plugin
+                && let Some(info) = plugin.find_template(old_name)
+                && let Ok(target_uri) = info.file_uri.parse::<url::Url>()
+                && let Some(target_text) = inner.open_documents.get(&target_uri)
+                && let Some((doc, passage)) = inner.workspace.find_passage(&info.defined_in)
+                && doc.uri == target_uri
+            {
+                let abs_offset = passage.abs_offset(info.defined_at_offset);
+                let range = identifier_range_at_offset(target_text, abs_offset);
+                changes
+                    .entry(target_uri.clone())
+                    .or_default()
+                    .push(TextEdit {
+                        range,
+                        new_text: new_name.to_string(),
+                    });
             }
 
             // Call sites: all `?oldname` invocations across all documents.
-            if let Some(plugin) = plugin {
-                if plugin.find_template(old_name).is_some() {
-                    for doc in inner.workspace.documents() {
-                        let Some(text) = inner.open_documents.get(&doc.uri) else { continue };
-                        let mut doc_edits = Vec::new();
-                        for (name_offset, ident) in template_invocations_in_text(text) {
-                            if ident == old_name.as_str() {
-                                let end = name_offset + ident.len();
-                                doc_edits.push(TextEdit {
-                                    range: helpers::byte_range_to_lsp_range(text, &(name_offset..end)),
-                                    new_text: new_name.to_string(),
-                                });
-                            }
+            if let Some(plugin) = plugin
+                && plugin.find_template(old_name).is_some()
+            {
+                for doc in inner.workspace.documents() {
+                    let Some(text) = inner.open_documents.get(&doc.uri) else {
+                        continue;
+                    };
+                    let mut doc_edits = Vec::new();
+                    for (name_offset, ident) in template_invocations_in_text(text) {
+                        if ident == old_name.as_str() {
+                            let end = name_offset + ident.len();
+                            doc_edits.push(TextEdit {
+                                range: helpers::byte_range_to_lsp_range(text, &(name_offset..end)),
+                                new_text: new_name.to_string(),
+                            });
                         }
-                        if !doc_edits.is_empty() {
-                            changes.entry(doc.uri.clone()).or_default().extend(doc_edits);
-                        }
+                    }
+                    if !doc_edits.is_empty() {
+                        changes
+                            .entry(doc.uri.clone())
+                            .or_default()
+                            .extend(doc_edits);
                     }
                 }
             }
@@ -1465,14 +1564,25 @@ pub(crate) fn rename_range_at_cursor(
             // existing passage rename in editing.rs.
             if let Some(doc) = inner.workspace.get_document(uri) {
                 for passage in &doc.passages {
-                    if passage.name == *name {
-                        if let Some(ns) = &passage.header_name_span {
-                            return Some((helpers::byte_range_to_lsp_range(text, &passage.abs_range(ns)), name.clone()));
-                        }
+                    if passage.name == *name
+                        && let Some(ns) = &passage.header_name_span
+                    {
+                        return Some((
+                            helpers::byte_range_to_lsp_range(text, &passage.abs_range(ns)),
+                            name.clone(),
+                        ));
                     }
                     for link in &passage.links {
-                        if link.target.trim() == *name && passage.span_contains_abs_offset(&link.span, byte_offset) {
-                            return Some((helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)), name.clone()));
+                        if link.target.trim() == *name
+                            && passage.span_contains_abs_offset(&link.span, byte_offset)
+                        {
+                            return Some((
+                                helpers::byte_range_to_lsp_range(
+                                    text,
+                                    &passage.abs_range(&link.span),
+                                ),
+                                name.clone(),
+                            ));
                         }
                     }
                 }
@@ -1485,8 +1595,16 @@ pub(crate) fn rename_range_at_cursor(
             if let Some(doc) = inner.workspace.get_document(uri) {
                 for passage in &doc.passages {
                     for inv in &passage.macro_invocations {
-                        if inv.name == *name && passage.span_contains_abs_offset(&inv.name_span, byte_offset) {
-                            return Some((helpers::byte_range_to_lsp_range(text, &passage.abs_range(&inv.name_span)), name.clone()));
+                        if inv.name == *name
+                            && passage.span_contains_abs_offset(&inv.name_span, byte_offset)
+                        {
+                            return Some((
+                                helpers::byte_range_to_lsp_range(
+                                    text,
+                                    &passage.abs_range(&inv.name_span),
+                                ),
+                                name.clone(),
+                            ));
                         }
                     }
                 }
@@ -1514,7 +1632,10 @@ pub(crate) fn rename_range_at_cursor(
             while name_end < text.len() && is_ident(bytes[name_end]) {
                 name_end += 1;
             }
-            Some((helpers::byte_range_to_lsp_range(text, &(name_start..name_end)), name.clone()))
+            Some((
+                helpers::byte_range_to_lsp_range(text, &(name_start..name_end)),
+                name.clone(),
+            ))
         }
     }
 }
@@ -1580,12 +1701,9 @@ fn template_invocations_in_text(text: &str) -> impl Iterator<Item = (usize, &str
     })
 }
 
-
-
 #[cfg(test)]
 mod goto_definition_tests {
     use super::*;
-    use knot_formats::plugin::{FormatPlugin, FormatPluginMut};
     use url::Url;
 
     /// Build a ServerStateInner fixture: parse a single twee source file via
@@ -1596,7 +1714,9 @@ mod goto_definition_tests {
         let mut registry = knot_formats::plugin::FormatRegistry::with_defaults();
         let format = knot_core::passage::StoryFormat::SugarCube;
         let parse_result = {
-            let plugin = registry.get_mut(&format).expect("SugarCube plugin must be registered");
+            let plugin = registry
+                .get_mut(&format)
+                .expect("SugarCube plugin must be registered");
             plugin.parse_mut(&uri, src)
         };
 
@@ -1607,7 +1727,8 @@ mod goto_definition_tests {
             // passage in the test fixture, and the registry would return the
             // TwineCore plugin instead of SugarCubePlugin).
             ws.config.format = Some("SugarCube".to_string());
-            let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+            let mut doc =
+                knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
             for passage in parse_result.passages {
                 doc.passages.push(passage);
             }
@@ -1645,15 +1766,18 @@ mod goto_definition_tests {
         // The Widgets passage must be tagged `[widget]` for SugarCube to
         // recognize `<<widget>>` definitions inside it. Widget names are
         // bare identifiers (not quoted) per SugarCube syntax.
-        let src = ":: Widgets [widget]\n<<widget mywidget>>Hello<</widget>>\n\n:: Start\n<<mywidget>>\n";
+        let src =
+            ":: Widgets [widget]\n<<widget mywidget>>Hello<</widget>>\n\n:: Start\n<<mywidget>>\n";
         let (inner, uri) = build_state(src);
 
         // Sanity: the widget is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.is_custom_macro("mywidget"),
+        assert!(
+            plugin.is_custom_macro("mywidget"),
             "widget `mywidget` should be registered. custom_macros: {:?}",
-            plugin.custom_macro_names());
+            plugin.custom_macro_names()
+        );
 
         // Cursor on `mywidget` in `<<mywidget>>` (in :: Start).
         let start_idx = src.find(":: Start").unwrap();
@@ -1668,27 +1792,37 @@ mod goto_definition_tests {
         assert_eq!(loc.uri, uri, "should jump within the same file");
         // Range should cover `mywidget` in the `<<widget mywidget>>` line.
         let widget_line_start = src.find(":: Widgets").unwrap();
-        let widget_name_offset = src[widget_line_start..].find("mywidget").unwrap() + widget_line_start;
+        let widget_name_offset =
+            src[widget_line_start..].find("mywidget").unwrap() + widget_line_start;
         let widget_name_end = widget_name_offset + "mywidget".len();
-        assert_eq!(loc.range.start, helpers::byte_offset_to_position(src, widget_name_offset),
-            "range start should be at the widget name");
-        assert_eq!(loc.range.end, helpers::byte_offset_to_position(src, widget_name_end),
-            "range end should be just past the widget name");
+        assert_eq!(
+            loc.range.start,
+            helpers::byte_offset_to_position(src, widget_name_offset),
+            "range start should be at the widget name"
+        );
+        assert_eq!(
+            loc.range.end,
+            helpers::byte_offset_to_position(src, widget_name_end),
+            "range end should be just past the widget name"
+        );
     }
 
     /// Cursor on a function call inside `<<run>>` should jump to the function
     /// declaration in a `[script]` passage.
     #[test]
     fn goto_def_for_function_in_run() {
-        let src = ":: Scripts [script]\nfunction myFunc() { return 42; }\n\n:: Start\n<<run myFunc()>>\n";
+        let src =
+            ":: Scripts [script]\nfunction myFunc() { return 42; }\n\n:: Start\n<<run myFunc()>>\n";
         let (inner, uri) = build_state(src);
 
         // Sanity: the function is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.find_function("myFunc").is_some(),
+        assert!(
+            plugin.find_function("myFunc").is_some(),
             "function `myFunc` should be registered. functions: {:?}",
-            plugin.function_names());
+            plugin.function_names()
+        );
 
         // Cursor on `myFunc` in `<<run myFunc()>>` (the call site in :: Start).
         let start_idx = src.find(":: Start").unwrap();
@@ -1705,10 +1839,16 @@ mod goto_definition_tests {
         let script_line_start = src.find(":: Scripts").unwrap();
         let func_name_offset = src[script_line_start..].find("myFunc").unwrap() + script_line_start;
         let func_name_end = func_name_offset + "myFunc".len();
-        assert_eq!(loc.range.start, helpers::byte_offset_to_position(src, func_name_offset),
-            "range start should be at the function name");
-        assert_eq!(loc.range.end, helpers::byte_offset_to_position(src, func_name_end),
-            "range end should be just past the function name");
+        assert_eq!(
+            loc.range.start,
+            helpers::byte_offset_to_position(src, func_name_offset),
+            "range start should be at the function name"
+        );
+        assert_eq!(
+            loc.range.end,
+            helpers::byte_offset_to_position(src, func_name_end),
+            "range end should be just past the function name"
+        );
     }
 
     /// Cursor on a builtin macro like `<<if>>` should return None (builtins
@@ -1723,7 +1863,10 @@ mod goto_definition_tests {
         let position = helpers::byte_offset_to_position(src, if_idx);
 
         let result = goto_definition_inner(&inner, &uri, position);
-        assert!(result.is_none(), "builtin macro should not resolve, got: {result:?}");
+        assert!(
+            result.is_none(),
+            "builtin macro should not resolve, got: {result:?}"
+        );
     }
 
     /// `identifier_range_at_offset` should return the range of the identifier
@@ -1759,7 +1902,10 @@ mod goto_definition_tests {
         let name_offset = text.find("link-replace").unwrap();
         let range = identifier_range_at_offset(text, name_offset);
         assert_eq!(range.start.character, name_offset as u32);
-        assert_eq!(range.end.character, (name_offset + "link-replace".len()) as u32);
+        assert_eq!(
+            range.end.character,
+            (name_offset + "link-replace".len()) as u32
+        );
     }
 
     // ── Find References tests ────────────────────────────────────────────
@@ -1776,16 +1922,20 @@ mod goto_definition_tests {
         let inv_idx = src[start_idx..].find("mywidget").unwrap() + start_idx;
         let position = helpers::byte_offset_to_position(src, inv_idx);
 
-        let locations = references_inner(&inner, &uri, position)
-            .expect("expected Some(Vec<Location>)");
+        let locations =
+            references_inner(&inner, &uri, position).expect("expected Some(Vec<Location>)");
 
         // Should find 2 invocation sites: one in :: Start, one in :: Other.
         // (The `<<widget mywidget>>` definition is NOT a `macro_invocations`
         // entry — it's the definition, tracked separately in the registry.
         // `macro_invocations` only tracks call sites.)
-        assert_eq!(locations.len(), 2,
+        assert_eq!(
+            locations.len(),
+            2,
             "should find 2 `<<mywidget>>` call sites, got {}: {:#?}",
-            locations.len(), locations);
+            locations.len(),
+            locations
+        );
 
         // Both locations should be in the same file.
         for loc in &locations {
@@ -1796,8 +1946,12 @@ mod goto_definition_tests {
         for loc in &locations {
             let start_byte = helpers::position_to_byte_offset(src, loc.range.start);
             let end_byte = helpers::position_to_byte_offset(src, loc.range.end);
-            assert_eq!(&src[start_byte..end_byte], "mywidget",
-                "range should cover `mywidget`, got `{}`", &src[start_byte..end_byte]);
+            assert_eq!(
+                &src[start_byte..end_byte],
+                "mywidget",
+                "range should cover `mywidget`, got `{}`",
+                &src[start_byte..end_byte]
+            );
         }
     }
 
@@ -1812,7 +1966,10 @@ mod goto_definition_tests {
         let position = helpers::byte_offset_to_position(src, if_idx);
 
         let result = references_inner(&inner, &uri, position);
-        assert!(result.is_none(), "builtin macro should not resolve, got: {result:?}");
+        assert!(
+            result.is_none(),
+            "builtin macro should not resolve, got: {result:?}"
+        );
     }
 
     /// Shift+F12 on a function call should find all call sites across the
@@ -1827,8 +1984,8 @@ mod goto_definition_tests {
         let call_idx = src[a_idx..].find("myFunc").unwrap() + a_idx;
         let position = helpers::byte_offset_to_position(src, call_idx);
 
-        let locations = references_inner(&inner, &uri, position)
-            .expect("expected Some(Vec<Location>)");
+        let locations =
+            references_inner(&inner, &uri, position).expect("expected Some(Vec<Location>)");
 
         // Should find at least the 2 call sites in :: A and :: B.
         // (The text-scan fallback scans ALL documents, so it'll also find
@@ -1837,9 +1994,12 @@ mod goto_definition_tests {
         // included depending on whether the text-scan matches it — and
         // that's fine, the LSP `include_declaration` flag would control
         // that in a real implementation.)
-        assert!(locations.len() >= 2,
+        assert!(
+            locations.len() >= 2,
             "should find at least 2 `myFunc` call sites, got {}: {:#?}",
-            locations.len(), locations);
+            locations.len(),
+            locations
+        );
 
         // Verify all locations are in the same file.
         for loc in &locations {
@@ -1858,13 +2018,16 @@ mod goto_definition_tests {
         let link_idx = src[a_idx..].find("Target").unwrap() + a_idx;
         let position = helpers::byte_offset_to_position(src, link_idx);
 
-        let locations = references_inner(&inner, &uri, position)
-            .expect("expected Some(Vec<Location>)");
+        let locations =
+            references_inner(&inner, &uri, position).expect("expected Some(Vec<Location>)");
 
         // Should find: 1 header (Target passage) + 2 links (in A and B) = 3.
-        assert!(locations.len() >= 2,
+        assert!(
+            locations.len() >= 2,
             "should find at least 2 link references to Target, got {}: {:#?}",
-            locations.len(), locations);
+            locations.len(),
+            locations
+        );
     }
 
     // ── Rename tests ─────────────────────────────────────────────────────
@@ -1890,11 +2053,20 @@ mod goto_definition_tests {
 
         // collect_rename_edits should produce edits for the definition + 2 call sites.
         let target = resolve_target_at_cursor(&inner, &uri, position).unwrap();
-        assert!(definition_confirmed(&target, &inner), "definition must be confirmed");
+        assert!(
+            definition_confirmed(&target, &inner),
+            "definition must be confirmed"
+        );
         let changes = collect_rename_edits(&target, "renamed", &inner);
         let edits = changes.get(&uri).expect("should have edits for the file");
         // 1 definition + 2 call sites = 3 edits.
-        assert_eq!(edits.len(), 3, "should rename 1 definition + 2 call sites, got {}: {:#?}", edits.len(), edits);
+        assert_eq!(
+            edits.len(),
+            3,
+            "should rename 1 definition + 2 call sites, got {}: {:#?}",
+            edits.len(),
+            edits
+        );
         for edit in edits {
             assert_eq!(edit.new_text, "renamed");
         }
@@ -1916,12 +2088,20 @@ mod goto_definition_tests {
         assert_eq!(placeholder, "myFunc");
 
         let target = resolve_target_at_cursor(&inner, &uri, position).unwrap();
-        assert!(definition_confirmed(&target, &inner), "definition must be confirmed");
+        assert!(
+            definition_confirmed(&target, &inner),
+            "definition must be confirmed"
+        );
         let changes = collect_rename_edits(&target, "newFunc", &inner);
         let edits = changes.get(&uri).expect("should have edits");
         // At least: 1 declaration + 2 call sites = 3 edits. (Text-scan may
         // also find the declaration in :: Scripts, so we check >= 3.)
-        assert!(edits.len() >= 3, "should rename declaration + 2 call sites, got {}: {:#?}", edits.len(), edits);
+        assert!(
+            edits.len() >= 3,
+            "should rename declaration + 2 call sites, got {}: {:#?}",
+            edits.len(),
+            edits
+        );
         for edit in edits {
             assert_eq!(edit.new_text, "newFunc");
         }
@@ -1936,9 +2116,11 @@ mod goto_definition_tests {
         // Debug: confirm the template is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.find_template("pirate").is_some(),
+        assert!(
+            plugin.find_template("pirate").is_some(),
             "template `pirate` should be registered. templates: {:?}",
-            plugin.template_names());
+            plugin.template_names()
+        );
 
         // Cursor on `pirate` in `?pirate` (the invocation in :: Start).
         let start_idx = src.find(":: Start").unwrap();
@@ -1950,13 +2132,21 @@ mod goto_definition_tests {
         assert_eq!(placeholder, "pirate");
 
         let target = resolve_target_at_cursor(&inner, &uri, position).unwrap();
-        assert!(definition_confirmed(&target, &inner), "definition must be confirmed");
+        assert!(
+            definition_confirmed(&target, &inner),
+            "definition must be confirmed"
+        );
         let changes = collect_rename_edits(&target, "captain", &inner);
         let edits = changes.get(&uri).expect("should have edits");
         // 1 definition (Template.add('pirate', ...)) + 1 invocation (?pirate) = 2 edits.
         // The text-scan for `?pirate` finds the invocation; the definition
         // edit comes from `find_template`'s offset.
-        assert!(edits.len() >= 2, "should rename definition + invocation, got {}: {:#?}", edits.len(), edits);
+        assert!(
+            edits.len() >= 2,
+            "should rename definition + invocation, got {}: {:#?}",
+            edits.len(),
+            edits
+        );
         for edit in edits {
             assert_eq!(edit.new_text, "captain");
         }
@@ -1973,7 +2163,10 @@ mod goto_definition_tests {
         let position = helpers::byte_offset_to_position(src, if_idx);
 
         let result = rename_range_at_cursor(&inner, &uri, position);
-        assert!(result.is_none(), "builtin macro should not be renamable, got: {result:?}");
+        assert!(
+            result.is_none(),
+            "builtin macro should not be renamable, got: {result:?}"
+        );
     }
 
     /// Failsafe: if the definition can't be confirmed (passage not in
@@ -1997,8 +2190,10 @@ mod goto_definition_tests {
         let position = helpers::byte_offset_to_position(src, macro_idx);
 
         let result = rename_range_at_cursor(&inner, &uri, position);
-        assert!(result.is_none(),
-            "unknown macro should not be renamable (no definition to confirm), got: {result:?}");
+        assert!(
+            result.is_none(),
+            "unknown macro should not be renamable (no definition to confirm), got: {result:?}"
+        );
     }
 
     /// Passage rename MUST update all references in the current file:
@@ -2030,15 +2225,23 @@ mod goto_definition_tests {
         // 3. The <<goto "OldName">> passage-ref
         // 4. The <<include "OldName">> passage-ref
         // 5. The <<link "Talk" "OldName">> passage-ref
-        let doc_edits = edits.get(&uri).expect("expected edits in the current document");
-        assert!(doc_edits.len() >= 5,
+        let doc_edits = edits
+            .get(&uri)
+            .expect("expected edits in the current document");
+        assert!(
+            doc_edits.len() >= 5,
             "expected at least 5 edits (header + link + goto + include + link macro), got {}: {:#?}",
-            doc_edits.len(), doc_edits);
+            doc_edits.len(),
+            doc_edits
+        );
 
         // Verify every edit's new_text is "NewName".
         for edit in doc_edits {
-            assert_eq!(edit.new_text, "NewName",
-                "all edits should rename to 'NewName', got: {:#?}", doc_edits);
+            assert_eq!(
+                edit.new_text, "NewName",
+                "all edits should rename to 'NewName', got: {:#?}",
+                doc_edits
+            );
         }
     }
 }
@@ -2046,7 +2249,6 @@ mod goto_definition_tests {
 #[cfg(test)]
 mod document_highlight_tests {
     use super::*;
-    use knot_formats::plugin::{FormatPlugin, FormatPluginMut};
     use url::Url;
 
     /// Build a ServerStateInner fixture: parse a single twee source file via
@@ -2058,14 +2260,17 @@ mod document_highlight_tests {
         let mut registry = knot_formats::plugin::FormatRegistry::with_defaults();
         let format = knot_core::passage::StoryFormat::SugarCube;
         let parse_result = {
-            let plugin = registry.get_mut(&format).expect("SugarCube plugin must be registered");
+            let plugin = registry
+                .get_mut(&format)
+                .expect("SugarCube plugin must be registered");
             plugin.parse_mut(&uri, src)
         };
 
         let workspace = {
             let mut ws = knot_core::Workspace::new(Url::parse("file:///project/").unwrap());
             ws.config.format = Some("SugarCube".to_string());
-            let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+            let mut doc =
+                knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
             for passage in parse_result.passages {
                 doc.passages.push(passage);
             }
@@ -2122,10 +2327,18 @@ mod document_highlight_tests {
         // (the prose `$gold` or `<<print $gold>>`).
         let writes = count_kind(&result, DocumentHighlightKind::WRITE);
         let reads = count_kind(&result, DocumentHighlightKind::READ);
-        assert!(writes >= 1, "expected at least 1 Write highlight, got {} (result: {:?})",
-            writes, result);
-        assert!(reads >= 1, "expected at least 1 Read highlight, got {} (result: {:?})",
-            reads, result);
+        assert!(
+            writes >= 1,
+            "expected at least 1 Write highlight, got {} (result: {:?})",
+            writes,
+            result
+        );
+        assert!(
+            reads >= 1,
+            "expected at least 1 Read highlight, got {} (result: {:?})",
+            reads,
+            result
+        );
     }
 
     /// Cursor on a regular word (not a variable, macro, function, template,
@@ -2140,8 +2353,11 @@ mod document_highlight_tests {
         let position = helpers::byte_offset_to_position(src, idx);
 
         let result = document_highlight_inner(&inner, &uri, position);
-        assert!(result.is_none(),
-            "plain word `world` should not produce highlights, got: {:?}", result);
+        assert!(
+            result.is_none(),
+            "plain word `world` should not produce highlights, got: {:?}",
+            result
+        );
     }
 
     // ── Passage highlight tests ───────────────────────────────────────────
@@ -2161,9 +2377,12 @@ mod document_highlight_tests {
             .expect("expected Some(highlights) for cursor on Shop passage header");
 
         // We expect at least 2 highlights: the header + the [[Shop]] link.
-        assert!(result.len() >= 2,
+        assert!(
+            result.len() >= 2,
             "expected at least 2 highlights (header + link), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 
     /// Cursor on a `[[link]]` target should highlight the link AND the
@@ -2180,9 +2399,12 @@ mod document_highlight_tests {
         let result = document_highlight_inner(&inner, &uri, position)
             .expect("expected Some(highlights) for cursor on [[Shop]] link");
 
-        assert!(result.len() >= 2,
+        assert!(
+            result.len() >= 2,
             "expected at least 2 highlights (link + header), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 
     // ── Custom macro highlight tests ──────────────────────────────────────
@@ -2192,14 +2414,17 @@ mod document_highlight_tests {
     /// only tracks invocations, not definitions).
     #[test]
     fn highlight_custom_macro_invocations() {
-        let src = ":: Widgets [widget]\n<<widget greet>>Hi<</widget>>\n:: Start\n<<greet>>\n<<greet>>\n";
+        let src =
+            ":: Widgets [widget]\n<<widget greet>>Hi<</widget>>\n:: Start\n<<greet>>\n<<greet>>\n";
         let (inner, uri) = build_state(src);
 
         // Sanity: the widget is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.is_custom_macro("greet"),
-            "widget `greet` should be registered");
+        assert!(
+            plugin.is_custom_macro("greet"),
+            "widget `greet` should be registered"
+        );
 
         // Cursor on the first `<<greet>>` in :: Start.
         let start_idx = src.find(":: Start").unwrap();
@@ -2212,9 +2437,12 @@ mod document_highlight_tests {
         // We expect 2 highlights (two `<<greet>>` invocations in :: Start).
         // The `<<widget greet>>` definition is NOT in `macro_invocations`,
         // so it won't be highlighted — only the call sites.
-        assert!(result.len() >= 2,
+        assert!(
+            result.len() >= 2,
             "expected at least 2 highlights (two call sites), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 
     // ── Function highlight tests ──────────────────────────────────────────
@@ -2231,8 +2459,10 @@ mod document_highlight_tests {
         // Sanity: the function is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.find_function("myFunc").is_some(),
-            "function `myFunc` should be registered");
+        assert!(
+            plugin.find_function("myFunc").is_some(),
+            "function `myFunc` should be registered"
+        );
 
         // Cursor on `myFunc` in the first `<<run myFunc()>>` line.
         let start_idx = src.find(":: Start").unwrap();
@@ -2247,9 +2477,12 @@ mod document_highlight_tests {
         // included depending on whether the JS walker emits Function tokens
         // for declarations — the text-scan fallback will catch it if tokens
         // don't.
-        assert!(result.len() >= 2,
+        assert!(
+            result.len() >= 2,
             "expected at least 2 highlights (two callsites), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 
     // ── Template highlight tests ──────────────────────────────────────────
@@ -2265,8 +2498,10 @@ mod document_highlight_tests {
         // Sanity: the template is registered.
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format).expect("plugin");
-        assert!(plugin.find_template("greeting").is_some(),
-            "template `greeting` should be registered");
+        assert!(
+            plugin.find_template("greeting").is_some(),
+            "template `greeting` should be registered"
+        );
 
         // Cursor on the first `?greeting` in :: Start.
         let start_idx = src.find(":: Start").unwrap();
@@ -2277,9 +2512,12 @@ mod document_highlight_tests {
             .expect("expected Some(highlights) for cursor on ?greeting");
 
         // We expect 2 highlights (two `?greeting` invocations in Start).
-        assert!(result.len() >= 2,
+        assert!(
+            result.len() >= 2,
             "expected at least 2 highlights (two ?greeting invocations), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 
     // ── Edge case: cross-file isolation ───────────────────────────────────
@@ -2307,13 +2545,17 @@ mod document_highlight_tests {
         let greet_idx = src[a_idx..].find("greet").unwrap() + a_idx;
         let position = helpers::byte_offset_to_position(src, greet_idx);
 
-        let result = document_highlight_inner(&inner, &uri, position)
-            .expect("expected Some(highlights)");
+        let result =
+            document_highlight_inner(&inner, &uri, position).expect("expected Some(highlights)");
 
         // Both `<<greet>>` invocations (in A and B) are in the same file,
         // so both should be highlighted.
-        assert_eq!(result.len(), 2,
+        assert_eq!(
+            result.len(),
+            2,
             "expected exactly 2 highlights (one per <<greet>> in this file), got {}: {:?}",
-            result.len(), result);
+            result.len(),
+            result
+        );
     }
 }

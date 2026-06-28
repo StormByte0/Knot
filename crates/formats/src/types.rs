@@ -245,11 +245,7 @@ pub struct MacroSignature {
 impl MacroSignature {
     /// Return the snippet portion after the macro name (for insertion).
     pub fn insert_snippet(&self) -> &'static str {
-        if self.has_params {
-            " ${1:args}"
-        } else {
-            ""
-        }
+        if self.has_params { " ${1:args}" } else { "" }
     }
 
     /// Return parameter names for signature help.

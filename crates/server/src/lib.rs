@@ -26,7 +26,10 @@ impl KnotServer {
             .custom_method("knot/build", ServerState::knot_build)
             .custom_method("knot/play", ServerState::knot_play)
             .custom_method("knot/variableFlow", ServerState::knot_variable_flow)
-            .custom_method("knot/passageDiagnostics", ServerState::knot_passage_diagnostics)
+            .custom_method(
+                "knot/passageDiagnostics",
+                ServerState::knot_passage_diagnostics,
+            )
             .custom_method("knot/profile", ServerState::knot_profile)
             .custom_method("knot/compilerDetect", ServerState::knot_compiler_detect)
             .custom_method("knot/watchVariables", ServerState::knot_watch_variables)
@@ -34,7 +37,10 @@ impl KnotServer {
             .custom_method("knot/reindexWorkspace", ServerState::knot_reindex_workspace)
             .custom_method("knot/updatePositions", ServerState::knot_update_positions)
             .custom_method("knot/clientReady", ServerState::knot_client_ready)
-            .custom_method("knot/formatSwitchComplete", ServerState::knot_format_switch_complete)
+            .custom_method(
+                "knot/formatSwitchComplete",
+                ServerState::knot_format_switch_complete,
+            )
             .custom_method("knot/formats/list", ServerState::knot_formats_list)
             .custom_method("knot/formats/refresh", ServerState::knot_formats_refresh)
             .finish();

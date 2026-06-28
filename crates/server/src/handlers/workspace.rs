@@ -21,7 +21,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/generateIfid: workspace_uri '{}' doesn't match server root '{}' — proceeding anyway",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
             drop(inner);
@@ -45,7 +46,8 @@ impl ServerState {
             if params.workspace_uri != root.to_string() {
                 tracing::warn!(
                     "knot/reindexWorkspace: workspace_uri '{}' doesn't match server root '{}' — using server root",
-                    params.workspace_uri, root
+                    params.workspace_uri,
+                    root
                 );
             }
             drop(inner);

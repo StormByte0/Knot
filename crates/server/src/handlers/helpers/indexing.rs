@@ -9,7 +9,7 @@ use url::Url;
 
 use super::diagnostics::{analyze_with_format_vars, publish_all_diagnostics};
 use super::graph::rebuild_graph;
-use super::parsing::{extract_and_set_metadata, parse_with_format_plugin, parse_story_data_json};
+use super::parsing::{extract_and_set_metadata, parse_story_data_json, parse_with_format_plugin};
 
 /// Scan the workspace root for all `.tw` / `.twee` files, parse them with
 /// the format plugin, insert into the workspace, build the graph, and run
@@ -176,21 +176,21 @@ pub(crate) async fn index_workspace(
     let mut file_texts: HashMap<Url, String> = HashMap::new();
 
     for file_path in &twee_files {
-        if let Ok(text) = tokio::fs::read_to_string(file_path).await {
-            if let Ok(uri) = Url::from_file_path(file_path) {
-                file_texts.insert(uri.clone(), text.clone());
+        if let Ok(text) = tokio::fs::read_to_string(file_path).await
+            && let Ok(uri) = Url::from_file_path(file_path)
+        {
+            file_texts.insert(uri.clone(), text.clone());
 
-                // Quick scan for StoryData passage in this file
-                if discovered_metadata.is_none() {
-                    if let Some(meta) = quick_scan_story_data(&text) {
-                        tracing::info!(
-                            "StoryData found in {}: format={:?}",
-                            file_path.display(),
-                            meta.format
-                        );
-                        discovered_metadata = Some(meta);
-                    }
-                }
+            // Quick scan for StoryData passage in this file
+            if discovered_metadata.is_none()
+                && let Some(meta) = quick_scan_story_data(&text)
+            {
+                tracing::info!(
+                    "StoryData found in {}: format={:?}",
+                    file_path.display(),
+                    meta.format
+                );
+                discovered_metadata = Some(meta);
             }
         }
     }
@@ -297,11 +297,15 @@ pub(crate) async fn index_workspace(
         );
 
         // Store format diagnostics
-        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
+        inner
+            .format_diagnostics
+            .insert(uri.clone(), parse_result.diagnostic_groups);
 
         // Cache semantic tokens at parse time so semantic_tokens_full
         // never needs to re-parse
-        inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
+        inner
+            .semantic_tokens
+            .insert(uri.clone(), parse_result.token_groups);
 
         // Check for StoryData (may update metadata with start passage, ifid, etc.)
         extract_and_set_metadata(&mut inner.workspace, &doc, &text);
@@ -331,7 +335,11 @@ pub(crate) async fn index_workspace(
     {
         let mut inner_guard = inner.write().await;
         format = inner_guard.workspace.resolve_format();
-        inner_guard.workspace.graph = rebuild_graph(&inner_guard.workspace, &inner_guard.format_registry, format.clone());
+        inner_guard.workspace.graph = rebuild_graph(
+            &inner_guard.workspace,
+            &inner_guard.format_registry,
+            format.clone(),
+        );
         inner_guard.workspace.mark_indexed();
 
         // Notify the client of the detected format so it can switch language IDs.
@@ -342,7 +350,9 @@ pub(crate) async fn index_workspace(
         // language ID — switching them to `twee-sugarcube` would break VS
         // Code's built-in JS language features (IntelliSense, formatting,
         // etc.) and confuse users.
-        doc_uris = inner_guard.open_documents.keys()
+        doc_uris = inner_guard
+            .open_documents
+            .keys()
             .filter(|u| {
                 let is_js = u.path().rsplit('.').next() == Some("js");
                 !is_js
@@ -350,7 +360,8 @@ pub(crate) async fn index_workspace(
             .map(|u| u.to_string())
             .collect();
 
-        diagnostics = analyze_with_format_vars(&inner_guard.workspace, &inner_guard.format_registry);
+        diagnostics =
+            analyze_with_format_vars(&inner_guard.workspace, &inner_guard.format_registry);
         open_docs = inner_guard.open_documents.clone();
         fmt_diags = inner_guard.format_diagnostics.clone();
         config = inner_guard.workspace.config.clone();
@@ -361,10 +372,20 @@ pub(crate) async fn index_workspace(
         let inner_guard = inner.read().await;
         let format = inner_guard.workspace.resolve_format();
         let plugin = inner_guard.format_registry.get(&format);
-        let sigils: Vec<char> = plugin.as_ref()
+        let sigils: Vec<char> = plugin
+            .as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        publish_all_diagnostics(client, &diagnostics, &fmt_diags, &open_docs, &inner_guard.workspace, &config, &sigils).await;
+        publish_all_diagnostics(
+            client,
+            &diagnostics,
+            &fmt_diags,
+            &open_docs,
+            &inner_guard.workspace,
+            &config,
+            &sigils,
+        )
+        .await;
     }
 
     // Always send formatDetected after initial indexing so the client
@@ -496,7 +517,6 @@ pub(crate) async fn send_format_detected(
         .await;
 }
 
-
 /// Send the standard LSP `workspace/semanticTokens/refresh` request.
 ///
 /// This is the official server-to-client request defined in LSP 3.16+
@@ -511,7 +531,10 @@ pub(crate) async fn send_format_detected(
 async fn send_workspace_semantic_token_refresh(client: &tower_lsp::Client) {
     use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;
 
-    match client.send_request::<WorkspaceSemanticTokensRefreshRequest>(()).await {
+    match client
+        .send_request::<WorkspaceSemanticTokensRefreshRequest>(())
+        .await
+    {
         Ok(()) => {
             tracing::debug!("workspace/semanticTokens/refresh accepted by client");
         }
@@ -604,8 +627,10 @@ This passage talks about <<widget>> macros but doesn't define any.
         // tag `widget` should. This prevents false positives where a
         // user has a custom tag named `widgets`.
         let text = ":: Showcase [docs widgets]\n<<hello>>\n";
-        assert!(!has_definition_passages(text),
-            "`widgets` (plural) should not match `widget` tag");
+        assert!(
+            !has_definition_passages(text),
+            "`widgets` (plural) should not match `widget` tag"
+        );
     }
 
     #[test]

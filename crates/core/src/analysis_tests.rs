@@ -5,14 +5,14 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::AnalysisEngine;
+    use crate::document::Document;
     use crate::graph::{DiagnosticKind, EdgeType, PassageEdge, PassageGraph, PassageNode};
     use crate::passage::{
-        Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer, StoryFormat,
-        VarKind, VarOp,
+        Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef,
+        SpecialPassageLayer, StoryFormat, VarKind, VarOp,
     };
-    use crate::document::Document;
     use crate::workspace::{StoryMetadata, Workspace};
-    use crate::AnalysisEngine;
     use url::Url;
 
     /// Helper: create a simple passage with links.
@@ -150,7 +150,8 @@ mod tests {
             Url::parse("file:///project/story.tw").unwrap(),
             StoryFormat::SugarCube,
         );
-        doc.passages.push(make_passage("Start", &["Forest", "Cave"]));
+        doc.passages
+            .push(make_passage("Start", &["Forest", "Cave"]));
         doc.passages.push(make_passage("Forest", &[]));
         doc.passages.push(make_story_data_passage());
 
@@ -201,7 +202,11 @@ mod tests {
             .filter(|d| d.kind == DiagnosticKind::UnreachablePassage)
             .collect();
 
-        assert_eq!(unreachable.len(), 1, "Should detect exactly 1 unreachable passage");
+        assert_eq!(
+            unreachable.len(),
+            1,
+            "Should detect exactly 1 unreachable passage"
+        );
         assert!(unreachable[0].message.contains("Cave"));
     }
 
@@ -237,12 +242,20 @@ mod tests {
         let unreachable = std::collections::HashSet::new();
         let positions = std::collections::HashMap::new();
         let export = workspace.graph.export_graph_with_metadata_and_vars(
-            &tags, &unreachable, &positions, &var_writes, &var_reads,
-            &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+            &tags,
+            &unreachable,
+            &positions,
+            &var_writes,
+            &var_reads,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         );
 
         assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");
-        assert!(!export.game_loops[0].has_mutation, "Game loop should have has_mutation=false");
+        assert!(
+            !export.game_loops[0].has_mutation,
+            "Game loop should have has_mutation=false"
+        );
     }
 
     #[test]
@@ -275,19 +288,28 @@ mod tests {
         rebuild_workspace_graph(&mut workspace);
 
         // Build var_writes from passage data
-        let mut var_writes: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut var_writes: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         var_writes.insert("Forest".to_string(), vec!["$visited".to_string()]);
         let var_reads = std::collections::HashMap::new();
         let tags = std::collections::HashMap::new();
         let unreachable = std::collections::HashSet::new();
         let positions = std::collections::HashMap::new();
         let export = workspace.graph.export_graph_with_metadata_and_vars(
-            &tags, &unreachable, &positions, &var_writes, &var_reads,
-            &std::collections::HashMap::new(), &std::collections::HashMap::new(),
+            &tags,
+            &unreachable,
+            &positions,
+            &var_writes,
+            &var_reads,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         );
 
         assert_eq!(export.game_loops.len(), 1, "Should detect 1 game loop");
-        assert!(export.game_loops[0].has_mutation, "Game loop should have has_mutation=true");
+        assert!(
+            export.game_loops[0].has_mutation,
+            "Game loop should have has_mutation=true"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -315,7 +337,8 @@ mod tests {
             Url::parse("file:///project/story.tw").unwrap(),
             StoryFormat::SugarCube,
         );
-        doc.passages.push(make_passage_with_vars("Start", &[], &["$gold"]));
+        doc.passages
+            .push(make_passage_with_vars("Start", &[], &["$gold"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -329,7 +352,11 @@ mod tests {
             .filter(|d| d.kind == DiagnosticKind::UninitializedVariable)
             .collect();
 
-        assert_eq!(uninit.len(), 1, "Should detect 1 uninitialized variable via fallback");
+        assert_eq!(
+            uninit.len(),
+            1,
+            "Should detect 1 uninitialized variable via fallback"
+        );
         assert!(uninit[0].message.contains("$gold"));
     }
 
@@ -347,7 +374,8 @@ mod tests {
             Url::parse("file:///project/story.tw").unwrap(),
             StoryFormat::SugarCube,
         );
-        doc.passages.push(make_passage_with_vars("Start", &["$gold"], &["$gold"]));
+        doc.passages
+            .push(make_passage_with_vars("Start", &["$gold"], &["$gold"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -382,7 +410,11 @@ mod tests {
 
         let diagnostics = AnalysisEngine::analyze(&workspace);
 
-        assert!(diagnostics.iter().any(|d| d.kind == DiagnosticKind::MissingStoryData));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::MissingStoryData)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -411,7 +443,11 @@ mod tests {
 
         let diagnostics = AnalysisEngine::analyze(&workspace);
 
-        assert!(diagnostics.iter().any(|d| d.kind == DiagnosticKind::MissingStartPassage));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::MissingStartPassage)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -451,9 +487,11 @@ mod tests {
         let diagnostics = AnalysisEngine::analyze(&workspace);
 
         // Cave should be unreachable
-        assert!(diagnostics.iter().any(|d| {
-            d.kind == DiagnosticKind::UnreachablePassage && d.passage_name == "Cave"
-        }));
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.kind == DiagnosticKind::UnreachablePassage && d.passage_name == "Cave"
+            })
+        );
 
         // Forest should NOT be unreachable (linked from Start)
         assert!(!diagnostics.iter().any(|d| {
@@ -473,7 +511,13 @@ mod tests {
 
         // Add initial passage
         let old_passages = vec![make_passage("Start", &["Forest"])];
-        graph_surgery(&mut graph, &[], &old_passages, "file:///project/story.tw", &[]);
+        graph_surgery(
+            &mut graph,
+            &[],
+            &old_passages,
+            "file:///project/story.tw",
+            &[],
+        );
 
         // Verify the passage has the correct file_uri
         let node = graph.get_passage("Start");
@@ -610,7 +654,10 @@ mod tests {
 
         // The edge should no longer be broken
         let broken_count = graph.detect_broken_links().len();
-        assert_eq!(broken_count, 0, "Broken link should be resolved after adding Forest");
+        assert_eq!(
+            broken_count, 0,
+            "Broken link should be resolved after adding Forest"
+        );
     }
 
     #[test]
@@ -669,7 +716,10 @@ mod tests {
         graph.recheck_broken_links();
 
         let broken_count = graph.detect_broken_links().len();
-        assert_eq!(broken_count, 1, "Link should be broken after removing Forest");
+        assert_eq!(
+            broken_count, 1,
+            "Link should be broken after removing Forest"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -694,7 +744,10 @@ mod tests {
         }"#;
         ws.load_config(config).expect("config should load");
 
-        assert_eq!(ws.config.compiler_path, Some(std::path::PathBuf::from("/usr/local/bin/tweego")));
+        assert_eq!(
+            ws.config.compiler_path,
+            Some(std::path::PathBuf::from("/usr/local/bin/tweego"))
+        );
         assert_eq!(ws.config.build.output_dir, "dist");
         assert_eq!(ws.config.build.flags, vec!["--module", "sugarcube-2"]);
         assert_eq!(ws.config.format, Some("Harlowe".to_string()));
@@ -825,19 +878,30 @@ mod tests {
         graph.add_passage(story_init);
         graph.add_passage(story_data);
 
-        graph.add_edge("Start", "Forest", PassageEdge {
-            display_text: Some("Go to forest".to_string()),
-            edge_type: EdgeType::Navigation,
-            pre_broken_type: None,
-        });
-        graph.add_edge("Start", "MissingPassage", PassageEdge {
-            display_text: None,
-            edge_type: EdgeType::Broken,
-            pre_broken_type: None,
-        });
+        graph.add_edge(
+            "Start",
+            "Forest",
+            PassageEdge {
+                display_text: Some("Go to forest".to_string()),
+                edge_type: EdgeType::Navigation,
+                pre_broken_type: None,
+            },
+        );
+        graph.add_edge(
+            "Start",
+            "MissingPassage",
+            PassageEdge {
+                display_text: None,
+                edge_type: EdgeType::Broken,
+                pre_broken_type: None,
+            },
+        );
 
         let mut tags = std::collections::HashMap::new();
-        tags.insert("Start".to_string(), vec!["important".to_string(), "begin".to_string()]);
+        tags.insert(
+            "Start".to_string(),
+            vec!["important".to_string(), "begin".to_string()],
+        );
         tags.insert("Forest".to_string(), vec!["outdoor".to_string()]);
 
         let unreachable = std::collections::HashSet::new();
@@ -874,11 +938,19 @@ mod tests {
         // Verify edges
         assert_eq!(export.edges.len(), 2);
 
-        let broken_edge = export.edges.iter().find(|e| e.edge_type == EdgeType::Broken).unwrap();
+        let broken_edge = export
+            .edges
+            .iter()
+            .find(|e| e.edge_type == EdgeType::Broken)
+            .unwrap();
         assert_eq!(broken_edge.source, "Start");
         assert_eq!(broken_edge.target, "MissingPassage");
 
-        let normal_edge = export.edges.iter().find(|e| e.edge_type == EdgeType::Navigation).unwrap();
+        let normal_edge = export
+            .edges
+            .iter()
+            .find(|e| e.edge_type == EdgeType::Navigation)
+            .unwrap();
         assert_eq!(normal_edge.source, "Start");
         assert_eq!(normal_edge.target, "Forest");
         assert_eq!(normal_edge.display_text, Some("Go to forest".to_string()));
@@ -941,14 +1013,12 @@ mod tests {
             layer: SpecialPassageLayer::StoryFormat,
             scaffold: None,
         });
-        p.vars = vec![
-            VarOp {
-                name: "$initialized".to_string(),
-                kind: VarKind::Init,
-                span: 0..13,
-                is_temporary: false,
-            },
-        ];
+        p.vars = vec![VarOp {
+            name: "$initialized".to_string(),
+            kind: VarKind::Init,
+            span: 0..13,
+            is_temporary: false,
+        }];
         p
     }
 
@@ -969,7 +1039,8 @@ mod tests {
         // StoryInit sets $initialized
         doc.passages.push(make_story_init_passage());
         // Start reads $initialized — should NOT be flagged because StoryInit seeds it
-        doc.passages.push(make_passage_with_vars("Start", &[], &["$initialized"]));
+        doc.passages
+            .push(make_passage_with_vars("Start", &[], &["$initialized"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -1006,10 +1077,21 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &["$gold"], &[]);
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
-        start.links.push(Link { display_text: None, target: "Cave".to_string(), span: 0..4, edge_type_hint: None });
+        start.links.push(Link {
+            display_text: None,
+            target: "Forest".to_string(),
+            span: 0..6,
+            edge_type_hint: None,
+        });
+        start.links.push(Link {
+            display_text: None,
+            target: "Cave".to_string(),
+            span: 0..4,
+            edge_type_hint: None,
+        });
         doc.passages.push(start);
-        doc.passages.push(make_passage_with_vars("Forest", &[], &["$gold"]));
+        doc.passages
+            .push(make_passage_with_vars("Forest", &[], &["$gold"]));
         doc.passages.push(make_passage_with_vars("Cave", &[], &[]));
         doc.passages.push(make_story_data_passage());
 
@@ -1020,7 +1102,9 @@ mod tests {
 
         let uninit: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.kind == DiagnosticKind::UninitializedVariable && d.passage_name == "Forest")
+            .filter(|d| {
+                d.kind == DiagnosticKind::UninitializedVariable && d.passage_name == "Forest"
+            })
             .collect();
 
         assert!(
@@ -1048,20 +1132,37 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &[], &[]);
-        start.links.push(Link { display_text: None, target: "PathA".to_string(), span: 0..5, edge_type_hint: None });
-        start.links.push(Link { display_text: None, target: "PathB".to_string(), span: 0..5, edge_type_hint: None });
+        start.links.push(Link {
+            display_text: None,
+            target: "PathA".to_string(),
+            span: 0..5,
+            edge_type_hint: None,
+        });
+        start.links.push(Link {
+            display_text: None,
+            target: "PathB".to_string(),
+            span: 0..5,
+            edge_type_hint: None,
+        });
         doc.passages.push(start);
         let mut path_a = make_passage_with_vars("PathA", &["$sword"], &[]);
-        path_a.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4, edge_type_hint: None });
+        path_a.links.push(Link {
+            display_text: None,
+            target: "Boss".to_string(),
+            span: 0..4,
+            edge_type_hint: None,
+        });
         doc.passages.push(path_a);
         let mut path_b = make_passage_with_vars("PathB", &["$shield"], &[]);
-        path_b.links.push(Link { display_text: None, target: "Boss".to_string(), span: 0..4, edge_type_hint: None });
+        path_b.links.push(Link {
+            display_text: None,
+            target: "Boss".to_string(),
+            span: 0..4,
+            edge_type_hint: None,
+        });
         doc.passages.push(path_b);
-        doc.passages.push(make_passage_with_vars(
-            "Boss",
-            &[],
-            &["$sword", "$shield"],
-        ));
+        doc.passages
+            .push(make_passage_with_vars("Boss", &[], &["$sword", "$shield"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -1097,7 +1198,8 @@ mod tests {
             StoryFormat::SugarCube,
         );
         // $unused is written but never read anywhere
-        doc.passages.push(make_passage_with_vars("Start", &["$unused"], &["$used"]));
+        doc.passages
+            .push(make_passage_with_vars("Start", &["$unused"], &["$used"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -1160,7 +1262,11 @@ mod tests {
             .filter(|d| d.kind == DiagnosticKind::RedundantWrite)
             .collect();
 
-        assert_eq!(redundant.len(), 1, "Should detect exactly 1 redundant write");
+        assert_eq!(
+            redundant.len(),
+            1,
+            "Should detect exactly 1 redundant write"
+        );
         assert!(redundant[0].message.contains("$gold"));
     }
 
@@ -1239,19 +1345,24 @@ mod tests {
         // Temporary vars should NOT cause cross-passage uninitialized warnings
         let mut start = make_passage_with_temp_vars(
             "Start",
-            &["$gold"],       // persistent write
+            &["$gold"], // persistent write
             &[],
-            &["_temp"],        // temp write
+            &["_temp"], // temp write
             &[],
         );
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
+        start.links.push(Link {
+            display_text: None,
+            target: "Forest".to_string(),
+            span: 0..6,
+            edge_type_hint: None,
+        });
         doc.passages.push(start);
         doc.passages.push(make_passage_with_temp_vars(
             "Forest",
             &[],
-            &["$gold"],        // persistent read — should be fine
+            &["$gold"], // persistent read — should be fine
             &[],
-            &["_temp"],        // temp read — should NOT be cross-passage analyzed
+            &["_temp"], // temp read — should NOT be cross-passage analyzed
         ));
         doc.passages.push(make_story_data_passage());
 
@@ -1263,7 +1374,9 @@ mod tests {
         // $gold should NOT be flagged as uninitialized (written in Start, read in Forest)
         let uninit_gold: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.kind == DiagnosticKind::UninitializedVariable && d.message.contains("$gold"))
+            .filter(|d| {
+                d.kind == DiagnosticKind::UninitializedVariable && d.message.contains("$gold")
+            })
             .collect();
         assert!(uninit_gold.is_empty(), "$gold is initialized in Start");
 
@@ -1271,7 +1384,9 @@ mod tests {
         // (temporary vars are excluded from cross-passage flow analysis)
         let uninit_temp: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.kind == DiagnosticKind::UninitializedVariable && d.message.contains("_temp"))
+            .filter(|d| {
+                d.kind == DiagnosticKind::UninitializedVariable && d.message.contains("_temp")
+            })
             .collect();
         assert!(
             uninit_temp.is_empty(),
@@ -1293,7 +1408,8 @@ mod tests {
             Url::parse("file:///project/story.tw").unwrap(),
             StoryFormat::Harlowe,
         );
-        doc.passages.push(make_passage_with_vars("Start", &["$gold"], &["$gold"]));
+        doc.passages
+            .push(make_passage_with_vars("Start", &["$gold"], &["$gold"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -1325,9 +1441,15 @@ mod tests {
             StoryFormat::SugarCube,
         );
         let mut start = make_passage_with_vars("Start", &["$gold"], &[]);
-        start.links.push(Link { display_text: None, target: "Forest".to_string(), span: 0..6, edge_type_hint: None });
+        start.links.push(Link {
+            display_text: None,
+            target: "Forest".to_string(),
+            span: 0..6,
+            edge_type_hint: None,
+        });
         doc.passages.push(start);
-        doc.passages.push(make_passage_with_vars("Forest", &[], &["$gold"]));
+        doc.passages
+            .push(make_passage_with_vars("Forest", &[], &["$gold"]));
         doc.passages.push(make_story_data_passage());
 
         workspace.insert_document(doc);
@@ -1337,7 +1459,9 @@ mod tests {
 
         let uninit: Vec<_> = diagnostics
             .iter()
-            .filter(|d| d.kind == DiagnosticKind::UninitializedVariable && d.passage_name == "Forest")
+            .filter(|d| {
+                d.kind == DiagnosticKind::UninitializedVariable && d.passage_name == "Forest"
+            })
             .collect();
 
         assert!(

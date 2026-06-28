@@ -38,9 +38,9 @@
 //! parser::parse_passage()     ← processes each in order
 //! ```
 
-use knot_core::passage::{SpecialPassageDef, SpecialPassageBehavior, MatchStrategy};
-use crate::header::TweeHeader;
 use super::special_passages;
+use crate::header::TweeHeader;
+use knot_core::passage::{MatchStrategy, SpecialPassageBehavior, SpecialPassageDef};
 
 // ---------------------------------------------------------------------------
 // ClassifiedPassage
@@ -124,10 +124,7 @@ pub const PROCESSING_METADATA: u8 = 50;
 /// logic directly (tags-first priority), but since we don't have a
 /// FormatPlugin reference here, we implement the same logic locally
 /// using the known special passage definitions.
-pub fn classify_all(
-    raw_passages: &[(TweeHeader, &str)],
-    file_uri: &str,
-) -> Vec<ClassifiedPassage> {
+pub fn classify_all(raw_passages: &[(TweeHeader, &str)], file_uri: &str) -> Vec<ClassifiedPassage> {
     // Collect all applicable definitions
     let core_name_defs = knot_core::passage::twine_core_special_passages();
     let legacy_name_defs = knot_core::passage::legacy_core_special_passages();
@@ -216,18 +213,14 @@ fn classify_passage(
     // Step 3: Core tag-matched ([script], [stylesheet], [style])
     for tag in passage_tags {
         for def in core_name_defs {
-            if def.match_strategy == MatchStrategy::Tag
-                && tag.eq_ignore_ascii_case(&def.name)
-            {
+            if def.match_strategy == MatchStrategy::Tag && tag.eq_ignore_ascii_case(&def.name) {
                 let mut matched = def.clone();
                 matched.name = passage_name.to_string();
                 return (Some(matched), PassageCategory::CoreTagged);
             }
         }
         for def in legacy_name_defs {
-            if def.match_strategy == MatchStrategy::Tag
-                && tag.eq_ignore_ascii_case(&def.name)
-            {
+            if def.match_strategy == MatchStrategy::Tag && tag.eq_ignore_ascii_case(&def.name) {
                 let mut matched = def.clone();
                 matched.name = passage_name.to_string();
                 return (Some(matched), PassageCategory::CoreTagged);
@@ -340,32 +333,50 @@ fn compute_processing_priority(
 
 /// Check if a classified passage is a script passage (should be parsed by oxc).
 pub fn is_script_passage(cp: &ClassifiedPassage) -> bool {
-    matches!(cp.category, PassageCategory::CoreTagged | PassageCategory::CoreLegacy)
-        && cp.special_def.as_ref().is_some_and(|d| {
-            d.name.eq_ignore_ascii_case("script")
-                || d.name == "Story JavaScript"
-        })
-        || cp.header.tags.iter().any(|t| t.eq_ignore_ascii_case("script"))
+    matches!(
+        cp.category,
+        PassageCategory::CoreTagged | PassageCategory::CoreLegacy
+    ) && cp
+        .special_def
+        .as_ref()
+        .is_some_and(|d| d.name.eq_ignore_ascii_case("script") || d.name == "Story JavaScript")
+        || cp
+            .header
+            .tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("script"))
         || cp.header.name == "Story JavaScript"
 }
 
 /// Check if a classified passage is a stylesheet passage (minimal processing).
 pub fn is_stylesheet_passage(cp: &ClassifiedPassage) -> bool {
-    matches!(cp.category, PassageCategory::CoreTagged | PassageCategory::CoreLegacy)
-        && cp.special_def.as_ref().is_some_and(|d| {
-            d.name.eq_ignore_ascii_case("stylesheet")
-                || d.name.eq_ignore_ascii_case("style")
-                || d.name == "Story Stylesheet"
-        })
-        || cp.header.tags.iter().any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style"))
+    matches!(
+        cp.category,
+        PassageCategory::CoreTagged | PassageCategory::CoreLegacy
+    ) && cp.special_def.as_ref().is_some_and(|d| {
+        d.name.eq_ignore_ascii_case("stylesheet")
+            || d.name.eq_ignore_ascii_case("style")
+            || d.name == "Story Stylesheet"
+    }) || cp
+        .header
+        .tags
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("stylesheet") || t.eq_ignore_ascii_case("style"))
         || cp.header.name == "Story Stylesheet"
 }
 
 /// Check if a classified passage is a widget passage.
 pub fn is_widget_passage(cp: &ClassifiedPassage) -> bool {
     matches!(cp.category, PassageCategory::FormatTagged)
-        && cp.special_def.as_ref().is_some_and(|d| d.name.eq_ignore_ascii_case("widget"))
-        || cp.header.tags.iter().any(|t| t.eq_ignore_ascii_case("widget"))
+        && cp
+            .special_def
+            .as_ref()
+            .is_some_and(|d| d.name.eq_ignore_ascii_case("widget"))
+        || cp
+            .header
+            .tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case("widget"))
 }
 
 /// Check if a classified passage is the StoryInterface passage.
@@ -396,7 +407,8 @@ mod tests {
     #[test]
     fn classify_core_name_matched() {
         let (def, cat) = classify_passage(
-            "StoryTitle", &[],
+            "StoryTitle",
+            &[],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -409,7 +421,8 @@ mod tests {
     #[test]
     fn classify_core_tag_script() {
         let (def, cat) = classify_passage(
-            "MyScript", &["script".to_string()],
+            "MyScript",
+            &["script".to_string()],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -422,7 +435,8 @@ mod tests {
     #[test]
     fn classify_format_tag_widget() {
         let (def, cat) = classify_passage(
-            "MyWidget", &["widget".to_string()],
+            "MyWidget",
+            &["widget".to_string()],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -435,7 +449,8 @@ mod tests {
     #[test]
     fn classify_format_name_storyinit() {
         let (def, cat) = classify_passage(
-            "StoryInit", &[],
+            "StoryInit",
+            &[],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -448,7 +463,8 @@ mod tests {
     #[test]
     fn classify_regular_passage() {
         let (def, cat) = classify_passage(
-            "Forest", &["dark".to_string()],
+            "Forest",
+            &["dark".to_string()],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -463,7 +479,8 @@ mod tests {
         // A passage named "StoryInit" but tagged [script] is a SCRIPT passage,
         // not StoryInit. Tags take priority per Twee 3 spec.
         let (def, cat) = classify_passage(
-            "StoryInit", &["script".to_string()],
+            "StoryInit",
+            &["script".to_string()],
             &knot_core::passage::twine_core_special_passages(),
             &knot_core::passage::legacy_core_special_passages(),
             &special_passages::name_matched_special_passages(),
@@ -497,6 +514,6 @@ mod tests {
 
         sort_for_processing(&mut passages);
         assert_eq!(passages[0].header.name, "MyScript"); // Script first
-        assert_eq!(passages[1].header.name, "Forest");  // Normal second
+        assert_eq!(passages[1].header.name, "Forest"); // Normal second
     }
 }

@@ -80,12 +80,10 @@ pub(crate) async fn publish_all_diagnostics(
     use std::collections::HashMap as StdHashMap;
 
     // Group graph diagnostics by file URI
-    let mut by_file: StdHashMap<String, Vec<&knot_core::graph::GraphDiagnostic>> = StdHashMap::new();
+    let mut by_file: StdHashMap<String, Vec<&knot_core::graph::GraphDiagnostic>> =
+        StdHashMap::new();
     for gd in graph_diagnostics {
-        by_file
-            .entry(gd.file_uri.clone())
-            .or_default()
-            .push(gd);
+        by_file.entry(gd.file_uri.clone()).or_default().push(gd);
     }
 
     // Collect all files that should have diagnostics published
@@ -111,9 +109,15 @@ pub(crate) async fn publish_all_diagnostics(
                 let severity = if let Some(custom) = config.diagnostics.get(&diag_key) {
                     match custom {
                         knot_core::workspace::DiagnosticSeverity::Off => continue, // Suppress
-                        knot_core::workspace::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                        knot_core::workspace::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                        knot_core::workspace::DiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+                        knot_core::workspace::DiagnosticSeverity::Error => {
+                            DiagnosticSeverity::ERROR
+                        }
+                        knot_core::workspace::DiagnosticSeverity::Warning => {
+                            DiagnosticSeverity::WARNING
+                        }
+                        knot_core::workspace::DiagnosticSeverity::Info => {
+                            DiagnosticSeverity::INFORMATION
+                        }
                         knot_core::workspace::DiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
                     }
                 } else {
@@ -128,7 +132,12 @@ pub(crate) async fn publish_all_diagnostics(
 
                 // Build related information pointing to source or target passages
                 let related_information = build_related_information_for_push(
-                    open_documents, workspace, &gd.kind, &gd.passage_name, &gd.message, sigils
+                    open_documents,
+                    workspace,
+                    &gd.kind,
+                    &gd.passage_name,
+                    &gd.message,
+                    sigils,
                 );
 
                 lsp_diagnostics.push(Diagnostic {
@@ -154,8 +163,12 @@ pub(crate) async fn publish_all_diagnostics(
 
                     let severity = match fd.severity {
                         fmt_plugin::FormatDiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
-                        fmt_plugin::FormatDiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
-                        fmt_plugin::FormatDiagnosticSeverity::Info => DiagnosticSeverity::INFORMATION,
+                        fmt_plugin::FormatDiagnosticSeverity::Warning => {
+                            DiagnosticSeverity::WARNING
+                        }
+                        fmt_plugin::FormatDiagnosticSeverity::Info => {
+                            DiagnosticSeverity::INFORMATION
+                        }
                         fmt_plugin::FormatDiagnosticSeverity::Hint => DiagnosticSeverity::HINT,
                     };
 
@@ -202,7 +215,7 @@ pub(crate) fn diagnostic_kind_to_severity(kind: &DiagnosticKind) -> DiagnosticSe
         DiagnosticKind::MissingStartLink => DiagnosticSeverity::WARNING,
         // Format-delegated variable diagnostics — all HINTs because
         // SugarCube variables are persistent game state; other formats
-    // have their own persistence models.
+        // have their own persistence models.
         DiagnosticKind::VariableAvailabilityHint => DiagnosticSeverity::HINT,
         DiagnosticKind::UnusedVariableHint => DiagnosticSeverity::HINT,
         DiagnosticKind::RedundantWriteHint => DiagnosticSeverity::HINT,
@@ -243,7 +256,8 @@ pub(crate) fn compute_format_variable_diagnostics(
     };
 
     let state_registry = plugin.build_state_variable_registry(workspace);
-    let var_diagnostics = plugin.compute_variable_diagnostics(workspace, start_passage, &state_registry);
+    let var_diagnostics =
+        plugin.compute_variable_diagnostics(workspace, start_passage, &state_registry);
 
     // Convert format-specific VariableDiagnostic → core FormatVariableDiagnostic
     var_diagnostics
@@ -253,15 +267,9 @@ pub(crate) fn compute_format_variable_diagnostics(
                 VariableDiagnosticKind::VariableAvailabilityHint => {
                     DiagnosticKind::VariableAvailabilityHint
                 }
-                VariableDiagnosticKind::UnusedVariableHint => {
-                    DiagnosticKind::UnusedVariableHint
-                }
-                VariableDiagnosticKind::RedundantWriteHint => {
-                    DiagnosticKind::RedundantWriteHint
-                }
-                VariableDiagnosticKind::UnknownPropertyHint => {
-                    DiagnosticKind::UnknownPropertyHint
-                }
+                VariableDiagnosticKind::UnusedVariableHint => DiagnosticKind::UnusedVariableHint,
+                VariableDiagnosticKind::RedundantWriteHint => DiagnosticKind::RedundantWriteHint,
+                VariableDiagnosticKind::UnknownPropertyHint => DiagnosticKind::UnknownPropertyHint,
             };
             knot_core::FormatVariableDiagnostic {
                 passage_name: vd.passage_name,
@@ -285,7 +293,8 @@ pub(crate) fn analyze_with_format_vars(
 ) -> Vec<knot_core::graph::GraphDiagnostic> {
     let format = workspace.resolve_format();
     let format_var_diags = compute_format_variable_diagnostics(workspace, registry, &format);
-    let mut diagnostics = AnalysisEngine::analyze_with_format_diagnostics(workspace, format_var_diags);
+    let mut diagnostics =
+        AnalysisEngine::analyze_with_format_diagnostics(workspace, format_var_diags);
 
     // Emit UnsupportedFormat diagnostic when the story format is "Core"
     // (meaning no recognized format was detected). This alerts the user
@@ -351,7 +360,12 @@ pub(crate) fn build_related_information_for_push(
         DiagnosticKind::UninitializedVariable => {
             // Point to where the variable is first read
             let var_name = extract_variable_name(_message, sigils);
-            find_variable_read_locations(workspace, passage_name, var_name.as_deref(), open_documents)
+            find_variable_read_locations(
+                workspace,
+                passage_name,
+                var_name.as_deref(),
+                open_documents,
+            )
         }
         _ => None,
     }
@@ -390,7 +404,11 @@ pub(crate) fn find_link_locations(
             }
         }
     }
-    if related.is_empty() { None } else { Some(related) }
+    if related.is_empty() {
+        None
+    } else {
+        Some(related)
+    }
 }
 
 /// Find the definition location of a passage (for unreachable passage related info).
@@ -463,7 +481,11 @@ pub(crate) fn find_all_definition_locations(
             }
         }
     }
-    if related.is_empty() { None } else { Some(related) }
+    if related.is_empty() {
+        None
+    } else {
+        Some(related)
+    }
 }
 
 /// Find locations where a variable is read (for uninitialized variable diagnostics).
@@ -492,15 +514,18 @@ pub(crate) fn find_variable_read_locations(
                 if var.kind != knot_core::passage::VarKind::Read {
                     continue;
                 }
-                if let Some(filter) = variable_name {
-                    if var.name != filter {
-                        continue;
-                    }
+                if let Some(filter) = variable_name
+                    && var.name != filter
+                {
+                    continue;
                 }
 
                 // Use the span-based byte offset to compute an accurate
                 // LSP Position (handles multi-byte characters correctly).
-                let pos = byte_offset_to_position(text, passage.abs_offset(var.span.start).min(text.len()));
+                let pos = byte_offset_to_position(
+                    text,
+                    passage.abs_offset(var.span.start).min(text.len()),
+                );
 
                 related.push(DiagnosticRelatedInformation {
                     location: Location {
@@ -510,13 +535,20 @@ pub(crate) fn find_variable_read_locations(
                             end: pos,
                         },
                     },
-                    message: format!("Variable {} is read in passage '{}'", var.name, passage.name),
+                    message: format!(
+                        "Variable {} is read in passage '{}'",
+                        var.name, passage.name
+                    ),
                 });
             }
         }
     }
 
-    if related.is_empty() { None } else { Some(related) }
+    if related.is_empty() {
+        None
+    } else {
+        Some(related)
+    }
 }
 
 // ===========================================================================

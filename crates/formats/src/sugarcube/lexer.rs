@@ -59,7 +59,11 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
             header_line = &header_line[..header_line.len() - 1];
         }
         // Adjust header_end to exclude the \r for correct body_offset
-        let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
+        let adjusted_header_end = if trailing_cr {
+            header_end - 1
+        } else {
+            header_end
+        };
         let parsed = header::parse_twee_header(header_line, header_start);
 
         // Body starts after the header line (skip trailing newline).

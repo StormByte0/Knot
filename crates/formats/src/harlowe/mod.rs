@@ -14,19 +14,19 @@
 //! - Complete special passage registry including tagged header/footer
 
 use knot_core::passage::{
-    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef, SpecialPassageLayer,
-    StoryFormat, VarKind, VarOp,
+    Block, Link, MatchStrategy, Passage, SpecialPassageBehavior, SpecialPassageDef,
+    SpecialPassageLayer, StoryFormat, VarKind, VarOp,
 };
 use regex::Regex;
 use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
-
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
-    PassageDiagnosticGroup, PassageTokenGroup, SemanticToken, SemanticTokenModifier, SemanticTokenType,
+    PassageDiagnosticGroup, PassageTokenGroup, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType,
 };
 use crate::types::BodyRequirement;
 
@@ -54,52 +54,68 @@ enum TweeToken {
 // ---------------------------------------------------------------------------
 
 /// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE"));
+static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
+});
 /// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW"));
+static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
+});
 /// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE"));
+static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
+});
 /// Regex for Harlowe link changer: `(link:"text")[[Target]]`
-static RE_LINK_CHANGER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#).expect("invalid regex for RE_LINK_CHANGER"));
+static RE_LINK_CHANGER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#)
+        .expect("invalid regex for RE_LINK_CHANGER")
+});
 /// Regex for Harlowe (set: $var to ...) variable write.
-static RE_SET_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").expect("invalid regex for RE_SET_VAR"));
+static RE_SET_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(set:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+to\b").expect("invalid regex for RE_SET_VAR")
+});
 /// Regex for Harlowe (put: ... into $var) variable write.
-static RE_PUT_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").expect("invalid regex for RE_PUT_VAR"));
+static RE_PUT_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(put:[^)]*into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+        .expect("invalid regex for RE_PUT_VAR")
+});
 /// Regex for Harlowe (move: $var into $other) variable operation.
 static RE_MOVE_VAR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\(move:\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
         .expect("invalid regex for RE_MOVE_VAR")
 });
 /// Regex for Harlowe (unpack: ... into $var) variable write.
-static RE_UNPACK_VAR: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)").expect("invalid regex for RE_UNPACK_VAR"));
+static RE_UNPACK_VAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(unpack:.*?into\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)")
+        .expect("invalid regex for RE_UNPACK_VAR")
+});
 /// Regex for all $variable references.
 static RE_VAR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR"));
 /// Regex for Harlowe macros: (name: ...)
-static RE_MACRO: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)" ).expect("invalid regex for RE_MACRO"));
+static RE_MACRO: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*:)").expect("invalid regex for RE_MACRO")
+});
 /// Regex for named hooks: [hookname]
-static RE_NAMED_HOOK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").expect("invalid regex for RE_NAMED_HOOK"));
+static RE_NAMED_HOOK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([A-Za-z_][A-Za-z0-9_-]*)\]").expect("invalid regex for RE_NAMED_HOOK")
+});
 /// Regex for hook attachment: [text]<changer|
-static RE_HOOK_ATTACH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|").expect("invalid regex for RE_HOOK_ATTACH"));
+static RE_HOOK_ATTACH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\[([^\]]*?)\]<([A-Za-z_][A-Za-z0-9_]*)\|")
+        .expect("invalid regex for RE_HOOK_ATTACH")
+});
 /// Regex for hook reference: |changer>[text]
-static RE_HOOK_REF: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").expect("invalid regex for RE_HOOK_REF"));
+static RE_HOOK_REF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\|([A-Za-z_][A-Za-z0-9_]*)>\[([^\]]*?)\]").expect("invalid regex for RE_HOOK_REF")
+});
 /// Regex for collapsing whitespace markup: {text}
 static RE_COLLAPSE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{([^}]*)\}").expect("invalid regex for RE_COLLAPSE"));
 /// Regex for macro call detection in body (syntax handler dispatch).
-static RE_MACRO_CALL_IN_BODY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*):").expect("invalid regex for RE_MACRO_CALL_IN_BODY"));
+static RE_MACRO_CALL_IN_BODY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\(([A-Za-z_][A-Za-z0-9_]*):").expect("invalid regex for RE_MACRO_CALL_IN_BODY")
+});
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -158,7 +174,11 @@ impl HarlowePlugin {
             if trailing_cr {
                 header_line = &header_line[..header_line.len() - 1];
             }
-            let adjusted_header_end = if trailing_cr { header_end - 1 } else { header_end };
+            let adjusted_header_end = if trailing_cr {
+                header_end - 1
+            } else {
+                header_end
+            };
             let parsed = header::parse_twee_header(header_line, header_start);
 
             // Body starts after the header line (skip trailing newline).
@@ -177,7 +197,6 @@ impl HarlowePlugin {
 
         results
     }
-
 
     // -----------------------------------------------------------------------
     // Pass 2: Body analysis
@@ -848,9 +867,15 @@ impl HarlowePlugin {
         let mut tokens = Vec::new();
 
         let (prefix_type, name_type) = if is_special {
-            (SemanticTokenType::SpecialPassageHeader, SemanticTokenType::SpecialPassage)
+            (
+                SemanticTokenType::SpecialPassageHeader,
+                SemanticTokenType::SpecialPassage,
+            )
         } else {
-            (SemanticTokenType::PassageHeader, SemanticTokenType::PassageName)
+            (
+                SemanticTokenType::PassageHeader,
+                SemanticTokenType::PassageName,
+            )
         };
 
         // The `::` prefix is always 2 bytes.
@@ -956,14 +981,15 @@ impl HarlowePlugin {
         }
 
         if paren_depth > 0
-            && let Some(pos) = paren_open {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
-                    message: "Unclosed parenthetical command — missing `)`".into(),
-                    severity: FormatDiagnosticSeverity::Warning,
-                    code: "hl-unclosed-command".into(),
-                });
-            }
+            && let Some(pos) = paren_open
+        {
+            diagnostics.push(FormatDiagnostic {
+                range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
+                message: "Unclosed parenthetical command — missing `)`".into(),
+                severity: FormatDiagnosticSeverity::Warning,
+                code: "hl-unclosed-command".into(),
+            });
+        }
 
         // Check for broken link syntax: `[[` without closing `]]`
         let mut link_depth = 0i32;
@@ -996,14 +1022,15 @@ impl HarlowePlugin {
         }
 
         if link_depth > 0
-            && let Some(pos) = link_open {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 2,
-                    message: "Unclosed link `[[` — missing `]]`".into(),
-                    severity: FormatDiagnosticSeverity::Warning,
-                    code: "hl-broken-link".into(),
-                });
-            }
+            && let Some(pos) = link_open
+        {
+            diagnostics.push(FormatDiagnostic {
+                range: body_offset_in_passage + pos..body_offset_in_passage + pos + 2,
+                message: "Unclosed link `[[` — missing `]]`".into(),
+                severity: FormatDiagnosticSeverity::Warning,
+                code: "hl-broken-link".into(),
+            });
+        }
 
         // Check for unclosed hook syntax: `[` without `]` (excluding `[[` and `]]`)
         let mut hook_depth = 0i32;
@@ -1040,14 +1067,15 @@ impl HarlowePlugin {
         }
 
         if hook_depth > 0
-            && let Some(pos) = hook_open {
-                diagnostics.push(FormatDiagnostic {
-                    range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
-                    message: "Unclosed hook `[` — missing `]`".into(),
-                    severity: FormatDiagnosticSeverity::Warning,
-                    code: "hl-unclosed-hook".into(),
-                });
-            }
+            && let Some(pos) = hook_open
+        {
+            diagnostics.push(FormatDiagnostic {
+                range: body_offset_in_passage + pos..body_offset_in_passage + pos + 1,
+                message: "Unclosed hook `[` — missing `]`".into(),
+                severity: FormatDiagnosticSeverity::Warning,
+                code: "hl-unclosed-hook".into(),
+            });
+        }
 
         // Check for mismatched changer syntax: [text]<name| without matching |name>[text]
         // Collect all changer names from [text]<name| patterns
@@ -1133,7 +1161,6 @@ impl HarlowePlugin {
             },
         ]
     }
-
 }
 
 impl FormatPluginMut for HarlowePlugin {
@@ -1173,7 +1200,10 @@ impl FormatPluginMut for HarlowePlugin {
                     def.clone(),
                 )
             } else {
-                Passage::new(header.name.clone(), header.header_start..body_offset + body.len())
+                Passage::new(
+                    header.name.clone(),
+                    header.header_start..body_offset + body.len(),
+                )
             };
 
             passage.tags = header.tags.clone();
@@ -1242,7 +1272,13 @@ impl FormatPluginMut for HarlowePlugin {
         }
     }
 
-    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, _file_uri: &str) -> Option<Passage> {
+    fn parse_passage_mut(
+        &mut self,
+        passage_name: &str,
+        passage_tags: &[String],
+        passage_text: &str,
+        _file_uri: &str,
+    ) -> Option<Passage> {
         let special_def = self.classify_passage(passage_name, passage_tags);
 
         let mut passage = if let Some(def) = special_def {
@@ -1353,8 +1389,12 @@ impl FormatPlugin for HarlowePlugin {
         // Harlowe uses (name:args) syntax.
         // Scan for opening ( followed by identifier: pattern.
         for caps in RE_MACRO_CALL_IN_BODY.captures_iter(line) {
-            let Some(full_match) = caps.get(0) else { continue };
-            let Some(name_match) = caps.get(1) else { continue };
+            let Some(full_match) = caps.get(0) else {
+                continue;
+            };
+            let Some(name_match) = caps.get(1) else {
+                continue;
+            };
 
             // Find the closing ) for this macro — scan forward from the opening (
             let open_paren = full_match.start();
@@ -1364,7 +1404,10 @@ impl FormatPlugin for HarlowePlugin {
             // Simple approach: find closing paren. Harlowe macros can be
             // nested, but for position detection we just need the first
             // matching close paren.
-            let close_paren = line[open_paren..].find(')').map(|p| open_paren + p + 1).unwrap_or(line.len());
+            let close_paren = line[open_paren..]
+                .find(')')
+                .map(|p| open_paren + p + 1)
+                .unwrap_or(line.len());
 
             if byte_pos >= open_paren && byte_pos <= close_paren {
                 return Some(MacroAtPosition {
@@ -1459,21 +1502,39 @@ mod tests {
         // Tag-matched passages: NOT detected by name alone — they require tags.
         // "startup", "header", "footer" are TAG-based in Harlowe, not name-based.
         // Use classify_passage() to detect them with tags.
-        assert!(!plugin.is_special_passage("startup"),
-            "startup is tag-matched, not name-matched");
-        assert!(!plugin.is_special_passage("header"),
-            "header is tag-matched, not name-matched");
-        assert!(!plugin.is_special_passage("footer"),
-            "footer is tag-matched, not name-matched");
+        assert!(
+            !plugin.is_special_passage("startup"),
+            "startup is tag-matched, not name-matched"
+        );
+        assert!(
+            !plugin.is_special_passage("header"),
+            "header is tag-matched, not name-matched"
+        );
+        assert!(
+            !plugin.is_special_passage("footer"),
+            "footer is tag-matched, not name-matched"
+        );
 
         // Verify tag-matched detection works via classify_passage
         let startup_def = plugin.classify_passage("Init", &["startup".to_string()]);
-        assert!(startup_def.is_some(), "startup tag should classify via classify_passage");
-        assert!(matches!(startup_def.unwrap().behavior, SpecialPassageBehavior::Startup));
+        assert!(
+            startup_def.is_some(),
+            "startup tag should classify via classify_passage"
+        );
+        assert!(matches!(
+            startup_def.unwrap().behavior,
+            SpecialPassageBehavior::Startup
+        ));
 
         let header_def = plugin.classify_passage("Nav", &["header".to_string()]);
-        assert!(header_def.is_some(), "header tag should classify via classify_passage");
-        assert!(matches!(header_def.unwrap().behavior, SpecialPassageBehavior::ChromeInterceptor));
+        assert!(
+            header_def.is_some(),
+            "header tag should classify via classify_passage"
+        );
+        assert!(matches!(
+            header_def.unwrap().behavior,
+            SpecialPassageBehavior::ChromeInterceptor
+        ));
     }
 
     #[test]
@@ -1492,8 +1553,14 @@ mod tests {
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "$gold" && v.kind == VarKind::Read));
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$gold" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$gold" && v.kind == VarKind::Read)
+        );
     }
 
     #[test]
@@ -1504,8 +1571,14 @@ mod tests {
 
         assert_eq!(result.passages.len(), 1);
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Read));
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$score" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$score" && v.kind == VarKind::Read)
+        );
     }
 
     #[test]
@@ -1515,8 +1588,15 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Read));
-        assert!(!vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Init));
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$health" && v.kind == VarKind::Read)
+        );
+        assert!(
+            !vars
+                .iter()
+                .any(|v| v.name == "$health" && v.kind == VarKind::Init)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1594,12 +1674,14 @@ mod tests {
         let vars = &result.passages[0].vars;
         // $source should be a read (move reads from it)
         assert!(
-            vars.iter().any(|v| v.name == "$source" && v.kind == VarKind::Read),
+            vars.iter()
+                .any(|v| v.name == "$source" && v.kind == VarKind::Read),
             "Should detect $source as a read in (move:)"
         );
         // $dest should be a write (move writes to it)
         assert!(
-            vars.iter().any(|v| v.name == "$dest" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "$dest" && v.kind == VarKind::Init),
             "Should detect $dest as a write in (move:)"
         );
     }
@@ -1612,7 +1694,8 @@ mod tests {
 
         let vars = &result.passages[0].vars;
         assert!(
-            vars.iter().any(|v| v.name == "$result" && v.kind == VarKind::Init),
+            vars.iter()
+                .any(|v| v.name == "$result" && v.kind == VarKind::Init),
             "Should detect $result as a write in (unpack:)"
         );
     }
@@ -1644,7 +1727,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| &g.diagnostics).any(|d| d.code == "hl-broken-link"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| &g.diagnostics)
+                .any(|d| d.code == "hl-broken-link"),
             "Should detect unclosed link syntax"
         );
     }
@@ -1656,7 +1743,11 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         assert!(
-            result.diagnostic_groups.iter().flat_map(|g| &g.diagnostics).any(|d| d.code == "hl-unclosed-hook"),
+            result
+                .diagnostic_groups
+                .iter()
+                .flat_map(|g| &g.diagnostics)
+                .any(|d| d.code == "hl-unclosed-hook"),
             "Should detect unclosed hook syntax"
         );
     }
@@ -1772,11 +1863,26 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let vars = &result.passages[0].vars;
-        assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "$name" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "$score" && v.kind == VarKind::Init));
-        assert!(vars.iter().any(|v| v.name == "$health" && v.kind == VarKind::Read));
-        assert!(vars.iter().any(|v| v.name == "$name" && v.kind == VarKind::Read));
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$health" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$name" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$score" && v.kind == VarKind::Init)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$health" && v.kind == VarKind::Read)
+        );
+        assert!(
+            vars.iter()
+                .any(|v| v.name == "$name" && v.kind == VarKind::Read)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1791,7 +1897,10 @@ mod tests {
 
         let passage = &result.passages[0];
         assert!(
-            passage.body.iter().any(|b| matches!(b, Block::Macro { name, .. } if name == "set")),
+            passage
+                .body
+                .iter()
+                .any(|b| matches!(b, Block::Macro { name, .. } if name == "set")),
             "Should have a Macro block for (set:)"
         );
         assert!(
@@ -1808,7 +1917,10 @@ mod tests {
 
         let passage = &result.passages[0];
         assert!(
-            passage.body.iter().any(|b| matches!(b, Block::Expression { .. })),
+            passage
+                .body
+                .iter()
+                .any(|b| matches!(b, Block::Expression { .. })),
             "Should have an Expression block for [hookname]"
         );
     }
@@ -1861,17 +1973,22 @@ mod tests {
     #[test]
     fn parse_passage_tagged_header() {
         let mut plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage_mut(
-            "Nav",
-            &["header".to_string()],
-            "Some header content\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("Nav", &["header".to_string()], "Some header content\n", "");
         let p = result.expect("tagged [header] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'header' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [header]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'header' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [header]"
+        );
         let def = p.special_def.as_ref().unwrap();
-        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+        assert!(matches!(
+            def.behavior,
+            SpecialPassageBehavior::ChromeInterceptor
+        ));
     }
 
     #[test]
@@ -1884,41 +2001,53 @@ mod tests {
             "",
         );
         let p = result.expect("tagged [footer] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'footer' should be special via classify_passage");
-        assert!(p.special_def.is_some(), "special_def should be populated for tagged [footer]");
+        assert!(
+            p.is_special,
+            "Passage tagged 'footer' should be special via classify_passage"
+        );
+        assert!(
+            p.special_def.is_some(),
+            "special_def should be populated for tagged [footer]"
+        );
         let def = p.special_def.as_ref().unwrap();
-        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+        assert!(matches!(
+            def.behavior,
+            SpecialPassageBehavior::ChromeInterceptor
+        ));
     }
 
     #[test]
     fn parse_passage_tagged_startup() {
         let mut plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage_mut(
-            "Init",
-            &["startup".to_string()],
-            "(set: $x to 1)\n",
-            "",
-        );
+        let result =
+            plugin.parse_passage_mut("Init", &["startup".to_string()], "(set: $x to 1)\n", "");
         let p = result.expect("tagged [startup] passage should be classified as special");
-        assert!(p.is_special, "Passage tagged 'startup' should be special via classify_passage");
+        assert!(
+            p.is_special,
+            "Passage tagged 'startup' should be special via classify_passage"
+        );
         let def = p.special_def.as_ref().unwrap();
         assert!(matches!(def.behavior, SpecialPassageBehavior::Startup));
-        assert!(def.contributes_variables, "startup passages should contribute variables");
+        assert!(
+            def.contributes_variables,
+            "startup passages should contribute variables"
+        );
     }
 
     #[test]
     fn parse_passage_name_matched_passage_header() {
         let mut plugin = HarlowePlugin::new();
-        let result = plugin.parse_passage_mut(
-            "PassageHeader",
-            &[],
-            "Header content\n",
-            "",
-        );
+        let result = plugin.parse_passage_mut("PassageHeader", &[], "Header content\n", "");
         let p = result.expect("PassageHeader (name-matched) should be classified as special");
-        assert!(p.is_special, "PassageHeader should be special via name matching");
+        assert!(
+            p.is_special,
+            "PassageHeader should be special via name matching"
+        );
         let def = p.special_def.as_ref().unwrap();
-        assert!(matches!(def.behavior, SpecialPassageBehavior::ChromeInterceptor));
+        assert!(matches!(
+            def.behavior,
+            SpecialPassageBehavior::ChromeInterceptor
+        ));
     }
 
     #[test]
@@ -1928,10 +2057,15 @@ mod tests {
         // be classified by its TAG (startup) first per the Twee 3 spec,
         // not by its name (PassageHeader).
         let def = plugin.classify_passage("PassageHeader", &["startup".to_string()]);
-        assert!(def.is_some(), "Should classify PassageHeader with [startup] tag");
+        assert!(
+            def.is_some(),
+            "Should classify PassageHeader with [startup] tag"
+        );
         let d = def.unwrap();
-        assert!(matches!(d.behavior, SpecialPassageBehavior::Startup),
-            "Tag-matched startup should take priority over name-matched PassageHeader");
+        assert!(
+            matches!(d.behavior, SpecialPassageBehavior::Startup),
+            "Tag-matched startup should take priority over name-matched PassageHeader"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1945,6 +2079,10 @@ mod tests {
         let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
 
         let links = &result.passages[0].links;
-        assert!(links.iter().any(|l| l.target == "Forest" && l.display_text == Some("Click me".into())));
+        assert!(
+            links
+                .iter()
+                .any(|l| l.target == "Forest" && l.display_text == Some("Click me".into()))
+        );
     }
 }

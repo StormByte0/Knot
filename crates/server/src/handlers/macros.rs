@@ -54,8 +54,8 @@
 //! `dynamic_navigation_macros()`, etc. No format-specific data is imported
 //! directly.
 
-use knot_formats::types::{BodyRequirement, MacroCategory, MacroDef};
 use knot_formats::plugin::FormatPlugin;
+use knot_formats::types::{BodyRequirement, MacroCategory, MacroDef};
 
 // ---------------------------------------------------------------------------
 // MacroKind — the unified classification enum
@@ -148,18 +148,19 @@ impl std::fmt::Display for MacroKind {
 /// * `name` - The bare macro name (e.g., "if", "set", "=")
 /// * `mdef` - The macro definition from the format plugin catalog
 /// * `plugin` - The format plugin (for body_macro_names, etc.)
-pub fn classify(
-    name: &str,
-    mdef: &MacroDef,
-    plugin: &dyn FormatPlugin,
-) -> MacroKind {
+pub fn classify(name: &str, mdef: &MacroDef, plugin: &dyn FormatPlugin) -> MacroKind {
     // 1. Modifier check — structural modifiers like else, elseif, case, default
     if plugin.folding_modifier_names().contains(name) {
         return MacroKind::Modifier;
     }
 
     // 2. Keyword check — non-alphabetic operator macros like =, -
-    if !name.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false) {
+    if !name
+        .chars()
+        .next()
+        .map(|c| c.is_alphabetic())
+        .unwrap_or(false)
+    {
         return MacroKind::Keyword;
     }
 
@@ -199,10 +200,7 @@ pub fn classify(
 /// Classify a macro by name only, looking it up in the format plugin catalog.
 ///
 /// Returns `None` if the macro name is not found in the catalog.
-pub fn classify_by_name(
-    name: &str,
-    plugin: &dyn FormatPlugin,
-) -> Option<MacroKind> {
+pub fn classify_by_name(name: &str, plugin: &dyn FormatPlugin) -> Option<MacroKind> {
     let mdef = plugin.find_macro(name)?;
     Some(classify(name, mdef, plugin))
 }
@@ -219,8 +217,7 @@ pub fn classify_by_name(
 /// modifier so that themes can highlight them distinctly from regular
 /// macros.
 pub fn is_control_flow(kind: MacroKind) -> bool {
-    matches!(kind, MacroKind::ControlFlow | MacroKind::Modifier)
-        || kind == MacroKind::Block // Block macros in Control/Navigation categories
+    matches!(kind, MacroKind::ControlFlow | MacroKind::Modifier) || kind == MacroKind::Block // Block macros in Control/Navigation categories
 }
 
 /// Determine whether a macro should use the `Keyword` semantic token type
@@ -317,21 +314,21 @@ pub fn hover_header(kind: MacroKind, format_label: &str) -> String {
 /// - Modifier: "Must appear inside a parent block macro."
 /// - ControlFlow: "Alters the execution flow of the story."
 /// - Identifier: "Defines a new identifier accessible in the story."
-pub fn hover_kind_note(kind: MacroKind, macro_name: &str, plugin: &dyn FormatPlugin) -> Option<String> {
+pub fn hover_kind_note(
+    kind: MacroKind,
+    macro_name: &str,
+    plugin: &dyn FormatPlugin,
+) -> Option<String> {
     match kind {
         MacroKind::Block => Some(format!(
             "Opens a closeable body section. Close with `{}`.",
             plugin.format_close_macro_label(macro_name)
         )),
-        MacroKind::Modifier => Some(
-            "Must appear inside a parent block macro.".to_string()
-        ),
-        MacroKind::ControlFlow => Some(
-            "Alters the execution flow of the story.".to_string()
-        ),
-        MacroKind::Identifier => Some(
-            "Defines a new identifier accessible in the story.".to_string()
-        ),
+        MacroKind::Modifier => Some("Must appear inside a parent block macro.".to_string()),
+        MacroKind::ControlFlow => Some("Alters the execution flow of the story.".to_string()),
+        MacroKind::Identifier => {
+            Some("Defines a new identifier accessible in the story.".to_string())
+        }
         MacroKind::Keyword | MacroKind::Statement => None,
     }
 }
@@ -347,11 +344,7 @@ pub fn hover_kind_note(kind: MacroKind, macro_name: &str, plugin: &dyn FormatPlu
 /// This delegates to the format plugin's `dynamic_navigation_macros()` and
 /// `passage_arg_macro_names()` sets, plus checks the Navigation and Links
 /// categories.
-pub fn is_navigation_macro(
-    name: &str,
-    mdef: &MacroDef,
-    plugin: &dyn FormatPlugin,
-) -> bool {
+pub fn is_navigation_macro(name: &str, mdef: &MacroDef, plugin: &dyn FormatPlugin) -> bool {
     // Dynamic navigation macros (variable-arg versions of goto, link, etc.)
     if plugin.dynamic_navigation_macros().contains(name) {
         return true;
@@ -363,7 +356,10 @@ pub fn is_navigation_macro(
     }
 
     // Navigation and Links categories
-    matches!(mdef.category, MacroCategory::Navigation | MacroCategory::Links)
+    matches!(
+        mdef.category,
+        MacroCategory::Navigation | MacroCategory::Links
+    )
 }
 
 /// Determine whether a macro's navigation is "dynamic" (resolved at runtime
@@ -371,9 +367,6 @@ pub fn is_navigation_macro(
 ///
 /// Dynamic navigation macros like `<<goto $target>>` need special handling
 /// in the passage graph — they produce conditional/virtual edges.
-pub fn is_dynamic_navigation(
-    name: &str,
-    plugin: &dyn FormatPlugin,
-) -> bool {
+pub fn is_dynamic_navigation(name: &str, plugin: &dyn FormatPlugin) -> bool {
     plugin.dynamic_navigation_macros().contains(name)
 }

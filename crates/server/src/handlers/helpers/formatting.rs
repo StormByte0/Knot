@@ -20,26 +20,39 @@ pub(crate) fn format_twee_text(text: &str) -> Vec<TextEdit> {
         if trimmed_end.len() != line.len() {
             edits.push(TextEdit {
                 range: Range {
-                    start: Position { line: i as u32, character: utf16_len(trimmed_end) },
-                    end: Position { line: i as u32, character: utf16_len(line) },
+                    start: Position {
+                        line: i as u32,
+                        character: utf16_len(trimmed_end),
+                    },
+                    end: Position {
+                        line: i as u32,
+                        character: utf16_len(line),
+                    },
                 },
                 new_text: String::new(),
             });
         }
 
         // Normalize passage header spacing: ensure exactly one space after "::"
-        if let Some(rest) = line.strip_prefix("::") {
-            if rest.starts_with(|c: char| c != ' ' && c != '[' && c != '\t') && !rest.is_empty() {
-                // Missing space after "::", add one.
-                // "::" is always 2 UTF-16 code units (ASCII), so character=2 is correct.
-                edits.push(TextEdit {
-                    range: Range {
-                        start: Position { line: i as u32, character: 2 },
-                        end: Position { line: i as u32, character: 2 },
+        if let Some(rest) = line.strip_prefix("::")
+            && rest.starts_with(|c: char| c != ' ' && c != '[' && c != '\t')
+            && !rest.is_empty()
+        {
+            // Missing space after "::", add one.
+            // "::" is always 2 UTF-16 code units (ASCII), so character=2 is correct.
+            edits.push(TextEdit {
+                range: Range {
+                    start: Position {
+                        line: i as u32,
+                        character: 2,
                     },
-                    new_text: " ".to_string(),
-                });
-            }
+                    end: Position {
+                        line: i as u32,
+                        character: 2,
+                    },
+                },
+                new_text: " ".to_string(),
+            });
         }
     }
 
@@ -70,8 +83,14 @@ pub(crate) fn format_twee_text(text: &str) -> Vec<TextEdit> {
         let last_line_utf16_len = lines.last().map(|l| utf16_len(l)).unwrap_or(0);
         vec![TextEdit {
             range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: line_count.saturating_sub(1), character: last_line_utf16_len },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: line_count.saturating_sub(1),
+                    character: last_line_utf16_len,
+                },
             },
             new_text: formatted_text,
         }]

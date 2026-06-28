@@ -8,7 +8,10 @@ use url::Url;
 
 pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentParams) {
     // Short-circuit if the server is shutting down
-    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         return;
     }
 
@@ -37,16 +40,22 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     let stale_keys: Vec<Url> = {
         let canonical_path = uri.to_file_path().ok();
         match canonical_path {
-            Some(path) => inner.open_documents.keys()
+            Some(path) => inner
+                .open_documents
+                .keys()
                 .filter(|k| **k != uri)
-                .filter(|k| k.to_file_path().map_or(false, |p| p == path))
+                .filter(|k| k.to_file_path().is_ok_and(|p| p == path))
                 .cloned()
                 .collect(),
             None => Vec::new(),
         }
     };
     for key in &stale_keys {
-        tracing::debug!("Removing stale URI-equivalent entry: {} (canonical: {})", key, uri);
+        tracing::debug!(
+            "Removing stale URI-equivalent entry: {} (canonical: {})",
+            key,
+            uri
+        );
         inner.open_documents.remove(key);
         inner.format_diagnostics.remove(key);
         inner.semantic_tokens.remove(key);
@@ -69,7 +78,9 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
     // flash/transition. By deferring ALL parsing to the indexing
     // pipeline, we avoid the Core → SugarCube token mismatch entirely.
     if indexing_in_progress {
-        tracing::debug!("did_open: deferring parse — workspace indexing in progress (format not yet resolved)");
+        tracing::debug!(
+            "did_open: deferring parse — workspace indexing in progress (format not yet resolved)"
+        );
         drop(inner);
         return;
     }
@@ -81,15 +92,16 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format, version);
 
     // Store format diagnostics for this document
-    inner.format_diagnostics.insert(
-        uri.clone(),
-        parse_result.diagnostic_groups.clone(),
-    );
+    inner
+        .format_diagnostics
+        .insert(uri.clone(), parse_result.diagnostic_groups.clone());
 
     // Cache semantic tokens at parse time so semantic_tokens_full
     // never needs to re-parse (critical for avoiding deadlock with
     // FormatPluginMut in Phase 4).
-    inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups.clone());
+    inner
+        .semantic_tokens
+        .insert(uri.clone(), parse_result.token_groups.clone());
 
     // Insert the parsed document into the workspace.
     //
@@ -106,7 +118,7 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         passage_count = inner.workspace.get_document(&uri)
             .map(|d| d.passages.len()).unwrap_or(0),
         passages = ?inner.workspace.get_document(&uri)
-            .map(|d| d.passages.iter().map(|p| format!("{}(links={},vars={},special={})", 
+            .map(|d| d.passages.iter().map(|p| format!("{}(links={},vars={},special={})",
                 p.name, p.links.len(), p.vars.len(), p.is_special)).collect::<Vec<_>>())
             .unwrap_or_default(),
         "did_open: passages defined"
@@ -156,7 +168,11 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
                 } else {
                     "unknown panic".to_string()
                 };
-                tracing::error!("did_open: analyze_with_format_vars panicked for {}: {}", uri, msg);
+                tracing::error!(
+                    "did_open: analyze_with_format_vars panicked for {}: {}",
+                    uri,
+                    msg
+                );
                 Vec::new() // Return empty diagnostics rather than crashing
             }
         };
@@ -170,10 +186,20 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
         let inner = state.inner.read().await;
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format);
-        let sigils: Vec<char> = plugin.as_ref()
+        let sigils: Vec<char> = plugin
+            .as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(
+            &state.client,
+            &diagnostics,
+            &fmt_diags,
+            &open_docs,
+            &inner.workspace,
+            &config,
+            &sigils,
+        )
+        .await;
     }
 
     // Schedule a debounced semantic token refresh. Format is frozen
@@ -183,7 +209,10 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
 
 pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumentParams) {
     // Short-circuit if the server is shutting down
-    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         return;
     }
 
@@ -215,29 +244,48 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
 
     // Parse with format plugin
     let format = inner.workspace.resolve_format();
-    let (doc, parse_result) =
-        helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), version);
-
-    // Update format diagnostics
-    inner.format_diagnostics.insert(
-        uri.clone(),
-        parse_result.diagnostic_groups.clone(),
+    let (doc, parse_result) = helpers::parse_with_format_plugin(
+        &mut inner.format_registry,
+        &uri,
+        &text,
+        format.clone(),
+        version,
     );
 
+    // Update format diagnostics
+    inner
+        .format_diagnostics
+        .insert(uri.clone(), parse_result.diagnostic_groups.clone());
+
     // Cache semantic tokens at parse time
-    inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups.clone());
+    inner
+        .semantic_tokens
+        .insert(uri.clone(), parse_result.token_groups.clone());
 
     // Compute dynamic navigation edges for the new passages
     // Include the edge_type_hint from ResolvedNavLink so that dynamic
     // navigation edges preserve their semantic type (Jump, Include, etc.)
     // through graph_surgery instead of defaulting to Navigation.
-    let extra_edges: Vec<(String, Option<String>, String, Option<knot_core::graph::EdgeType>)> = if let Some(plug) = inner.format_registry.get(&format) {
+    let extra_edges: Vec<(
+        String,
+        Option<String>,
+        String,
+        Option<knot_core::graph::EdgeType>,
+    )> = if let Some(plug) = inner.format_registry.get(&format) {
         let var_string_map = plug.build_var_string_map(&inner.workspace);
-        doc.passages.iter()
+        doc.passages
+            .iter()
             .flat_map(|p| {
                 plug.resolve_dynamic_navigation_links(p, &var_string_map)
                     .into_iter()
-                    .map(|link| (p.name.clone(), link.display_text, link.target, link.edge_type_hint))
+                    .map(|link| {
+                        (
+                            p.name.clone(),
+                            link.display_text,
+                            link.target,
+                            link.edge_type_hint,
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -249,11 +297,9 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // insert + graph_surgery + recheck_broken_links + rebuild_upstream_edges.
     // NOTE: apply_document_update does NOT extract StoryData metadata —
     // format identification belongs to the indexing pipeline only.
-    let update_result = inner.workspace.apply_document_update(
-        &uri,
-        doc,
-        &extra_edges,
-    );
+    let update_result = inner
+        .workspace
+        .apply_document_update(&uri, doc, &extra_edges);
     tracing::trace!(
         "apply_document_update: added={:?} removed={:?} modified={:?}, graph nodes={} edges={}",
         update_result.surgery_result.added,
@@ -276,7 +322,8 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
     // ── Phase 2: read-lock — analysis (read-only) ──────────────────
     let (diagnostics, open_docs, fmt_diags, config) = {
         let inner = state.inner.read().await;
-        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        let diagnostics =
+            helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
         tracing::trace!(
             file = %uri,
             diagnostic_count = diagnostics.len(),
@@ -290,9 +337,7 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         // Log passage count summary (not full list — that was too noisy and
         // produced huge debug output on every keystroke)
         {
-            let total_passages: usize = inner.workspace.documents()
-                .map(|d| d.passages.len())
-                .sum();
+            let total_passages: usize = inner.workspace.documents().map(|d| d.passages.len()).sum();
             let total_docs = inner.workspace.document_count();
             tracing::debug!(
                 total_documents = total_docs,
@@ -312,16 +357,25 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         let inner = state.inner.read().await;
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format);
-        let sigils: Vec<char> = plugin.as_ref()
+        let sigils: Vec<char> = plugin
+            .as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(
+            &state.client,
+            &diagnostics,
+            &fmt_diags,
+            &open_docs,
+            &inner.workspace,
+            &config,
+            &sigils,
+        )
+        .await;
     }
 
     // Schedule a debounced semantic token refresh. Format is frozen
     // after indexing — no format switch cascades are possible.
     state.schedule_semantic_token_refresh().await;
-
 }
 
 pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentParams) {
@@ -340,7 +394,8 @@ pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentP
     drop(inner);
 
     // Clear diagnostics for the closed file.
-    state.client
+    state
+        .client
         .publish_diagnostics(uri, Vec::new(), None)
         .await;
 }
@@ -349,7 +404,10 @@ pub(crate) async fn did_save(_state: &ServerState, params: DidSaveTextDocumentPa
     tracing::info!("did_save: {}", params.text_document.uri);
 }
 
-pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidChangeConfigurationParams) {
+pub(crate) async fn did_change_configuration(
+    state: &ServerState,
+    _params: DidChangeConfigurationParams,
+) {
     tracing::info!("did_change_configuration");
 
     // Re-read .vscode/knot.json in case it was changed externally
@@ -405,19 +463,24 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
     let mut inner = state.inner.write().await;
     for (i, (diag_key, _)) in diag_keys.iter().enumerate() {
         if let Some(value) = config_values.get(i)
-            && let Some(severity_str) = value.as_str() {
-                let severity = match severity_str {
-                    "error" => Some(knot_core::workspace::DiagnosticSeverity::Error),
-                    "warning" => Some(knot_core::workspace::DiagnosticSeverity::Warning),
-                    "info" => Some(knot_core::workspace::DiagnosticSeverity::Info),
-                    "hint" => Some(knot_core::workspace::DiagnosticSeverity::Hint),
-                    "off" => Some(knot_core::workspace::DiagnosticSeverity::Off),
-                    _ => None,
-                };
-                if let Some(sev) = severity {
-                    inner.workspace.config.diagnostics.insert(diag_key.to_string(), sev);
-                }
+            && let Some(severity_str) = value.as_str()
+        {
+            let severity = match severity_str {
+                "error" => Some(knot_core::workspace::DiagnosticSeverity::Error),
+                "warning" => Some(knot_core::workspace::DiagnosticSeverity::Warning),
+                "info" => Some(knot_core::workspace::DiagnosticSeverity::Info),
+                "hint" => Some(knot_core::workspace::DiagnosticSeverity::Hint),
+                "off" => Some(knot_core::workspace::DiagnosticSeverity::Off),
+                _ => None,
+            };
+            if let Some(sev) = severity {
+                inner
+                    .workspace
+                    .config
+                    .diagnostics
+                    .insert(diag_key.to_string(), sev);
             }
+        }
     }
 
     // Re-run analysis and publish diagnostics with updated config
@@ -426,7 +489,8 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
 
     let (diagnostics, open_docs, fmt_diags, config) = {
         let inner = state.inner.read().await;
-        let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+        let diagnostics =
+            helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
         let open_docs = inner.open_documents.clone();
         let fmt_diags = inner.format_diagnostics.clone();
         let config = inner.workspace.config.clone();
@@ -437,14 +501,27 @@ pub(crate) async fn did_change_configuration(state: &ServerState, _params: DidCh
         let inner = state.inner.read().await;
         let format = inner.workspace.resolve_format();
         let plugin = inner.format_registry.get(&format);
-        let sigils: Vec<char> = plugin.as_ref()
+        let sigils: Vec<char> = plugin
+            .as_ref()
             .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
             .unwrap_or_default();
-        helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
+        helpers::publish_all_diagnostics(
+            &state.client,
+            &diagnostics,
+            &fmt_diags,
+            &open_docs,
+            &inner.workspace,
+            &config,
+            &sigils,
+        )
+        .await;
     }
 }
 
-pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidChangeWatchedFilesParams) {
+pub(crate) async fn did_change_watched_files(
+    state: &ServerState,
+    params: DidChangeWatchedFilesParams,
+) {
     tracing::info!("did_change_watched_files: {} events", params.changes.len());
 
     for event in params.changes {
@@ -472,52 +549,78 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 tracing::info!("File created: {}", uri);
                 // Read and index the new file
                 if let Ok(path) = uri.to_file_path()
-                    && let Ok(text) = std::fs::read_to_string(&path) {
-                        let mut inner = state.inner.write().await;
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    let mut inner = state.inner.write().await;
 
+                    let format = inner.workspace.resolve_format();
+                    let (doc, parse_result) = helpers::parse_with_format_plugin(
+                        &mut inner.format_registry,
+                        &uri,
+                        &text,
+                        format.clone(),
+                        0,
+                    );
+
+                    inner.open_documents.insert(uri.clone(), text.clone());
+                    inner
+                        .format_diagnostics
+                        .insert(uri.clone(), parse_result.diagnostic_groups);
+                    inner
+                        .semantic_tokens
+                        .insert(uri.clone(), parse_result.token_groups);
+
+                    // StoryData parsing is a core-only operation (see: Format Isolation).
+                    inner.workspace.insert_document(doc);
+
+                    // Format is frozen after indexing — no dynamic format switches.
+                    // Just rebuild the graph with the current (frozen) format.
+                    let format_after = inner.workspace.resolve_format();
+                    inner.workspace.graph = helpers::rebuild_graph(
+                        &inner.workspace,
+                        &inner.format_registry,
+                        format_after.clone(),
+                    );
+
+                    // Release write lock before analysis
+                    drop(inner);
+
+                    // Read-lock phase: analysis (read-only)
+                    let (diagnostics, open_docs, fmt_diags, config) = {
+                        let inner = state.inner.read().await;
+                        let diagnostics = helpers::analyze_with_format_vars(
+                            &inner.workspace,
+                            &inner.format_registry,
+                        );
+                        let open_docs = inner.open_documents.clone();
+                        let fmt_diags = inner.format_diagnostics.clone();
+                        let config = inner.workspace.config.clone();
+                        (diagnostics, open_docs, fmt_diags, config)
+                    };
+
+                    {
+                        let inner = state.inner.read().await;
                         let format = inner.workspace.resolve_format();
-                        let (doc, parse_result) =
-                            helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
-
-                        inner.open_documents.insert(uri.clone(), text.clone());
-                        inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
-                        inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
-
-                        // StoryData parsing is a core-only operation (see: Format Isolation).
-                        inner.workspace.insert_document(doc);
-
-                        // Format is frozen after indexing — no dynamic format switches.
-                        // Just rebuild the graph with the current (frozen) format.
-                        let format_after = inner.workspace.resolve_format();
-                        inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
-
-                        // Release write lock before analysis
-                        drop(inner);
-
-                        // Read-lock phase: analysis (read-only)
-                        let (diagnostics, open_docs, fmt_diags, config) = {
-                            let inner = state.inner.read().await;
-                            let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-                            let open_docs = inner.open_documents.clone();
-                            let fmt_diags = inner.format_diagnostics.clone();
-                            let config = inner.workspace.config.clone();
-                            (diagnostics, open_docs, fmt_diags, config)
-                        };
-
-                        {
-                            let inner = state.inner.read().await;
-                            let format = inner.workspace.resolve_format();
-                            let plugin = inner.format_registry.get(&format);
-                            let sigils: Vec<char> = plugin.as_ref()
-                                .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
-                                .unwrap_or_default();
-                            helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
-                        }
-
-                        // Schedule debounced semantic token refresh
-                        state.schedule_semantic_token_refresh().await;
-
+                        let plugin = inner.format_registry.get(&format);
+                        let sigils: Vec<char> = plugin
+                            .as_ref()
+                            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                            .unwrap_or_default();
+                        helpers::publish_all_diagnostics(
+                            &state.client,
+                            &diagnostics,
+                            &fmt_diags,
+                            &open_docs,
+                            &inner.workspace,
+                            &config,
+                            &sigils,
+                        )
+                        .await;
                     }
+
+                    // Schedule debounced semantic token refresh
+                    state.schedule_semantic_token_refresh().await;
+                }
             }
             FileChangeType::DELETED => {
                 tracing::info!("File deleted: {}", uri);
@@ -532,7 +635,7 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // until a full workspace re-parse.
                 let format = inner.workspace.resolve_format();
                 if let Some(plug) = inner.format_registry.get_mut(&format) {
-                    plug.remove_file_from_registries(&uri.to_string());
+                    plug.remove_file_from_registries(uri.as_ref());
                 }
 
                 inner.workspace.remove_document_and_update_graph(&uri);
@@ -553,7 +656,8 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 // Read-lock phase: analysis (read-only)
                 let (diagnostics, open_docs, fmt_diags, config) = {
                     let inner = state.inner.read().await;
-                    let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
+                    let diagnostics =
+                        helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                     let open_docs = inner.open_documents.clone();
                     let fmt_diags = inner.format_diagnostics.clone();
                     let config = inner.workspace.config.clone();
@@ -564,10 +668,20 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                     let inner = state.inner.read().await;
                     let format = inner.workspace.resolve_format();
                     let plugin = inner.format_registry.get(&format);
-                    let sigils: Vec<char> = plugin.as_ref()
+                    let sigils: Vec<char> = plugin
+                        .as_ref()
                         .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
                         .unwrap_or_default();
-                    helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
+                    helpers::publish_all_diagnostics(
+                        &state.client,
+                        &diagnostics,
+                        &fmt_diags,
+                        &open_docs,
+                        &inner.workspace,
+                        &config,
+                        &sigils,
+                    )
+                    .await;
                 }
 
                 // Schedule debounced semantic token refresh for remaining
@@ -575,10 +689,10 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
                 state.schedule_semantic_token_refresh().await;
 
                 // Clear diagnostics for the deleted file
-                state.client
+                state
+                    .client
                     .publish_diagnostics(uri, Vec::new(), None)
                     .await;
-
             }
             FileChangeType::CHANGED => {
                 tracing::info!("File changed on disk: {}", uri);
@@ -592,50 +706,76 @@ pub(crate) async fn did_change_watched_files(state: &ServerState, params: DidCha
 
                 if !is_editor_open
                     && let Ok(path) = uri.to_file_path()
-                        && let Ok(text) = std::fs::read_to_string(&path) {
-                            let mut inner = state.inner.write().await;
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    let mut inner = state.inner.write().await;
 
-                            let format = inner.workspace.resolve_format();
-                            let (doc, parse_result) =
-                                helpers::parse_with_format_plugin(&mut inner.format_registry, &uri, &text, format.clone(), 0);
+                    let format = inner.workspace.resolve_format();
+                    let (doc, parse_result) = helpers::parse_with_format_plugin(
+                        &mut inner.format_registry,
+                        &uri,
+                        &text,
+                        format.clone(),
+                        0,
+                    );
 
-                            inner.open_documents.insert(uri.clone(), text.clone());
-                            inner.format_diagnostics.insert(uri.clone(), parse_result.diagnostic_groups);
-                            inner.semantic_tokens.insert(uri.clone(), parse_result.token_groups);
+                    inner.open_documents.insert(uri.clone(), text.clone());
+                    inner
+                        .format_diagnostics
+                        .insert(uri.clone(), parse_result.diagnostic_groups);
+                    inner
+                        .semantic_tokens
+                        .insert(uri.clone(), parse_result.token_groups);
 
-                            // StoryData parsing is a core-only operation (see: Format Isolation).
-                            inner.workspace.insert_document(doc);
+                    // StoryData parsing is a core-only operation (see: Format Isolation).
+                    inner.workspace.insert_document(doc);
 
-                            let format_after = inner.workspace.resolve_format();
-                            inner.workspace.graph = helpers::rebuild_graph(&inner.workspace, &inner.format_registry, format_after.clone());
+                    let format_after = inner.workspace.resolve_format();
+                    inner.workspace.graph = helpers::rebuild_graph(
+                        &inner.workspace,
+                        &inner.format_registry,
+                        format_after.clone(),
+                    );
 
-                            // Release write lock before analysis
-                            drop(inner);
+                    // Release write lock before analysis
+                    drop(inner);
 
-                            // Read-lock phase: analysis (read-only)
-                            let (diagnostics, open_docs, fmt_diags, config) = {
-                                let inner = state.inner.read().await;
-                                let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
-                                let open_docs = inner.open_documents.clone();
-                                let fmt_diags = inner.format_diagnostics.clone();
-                                let config = inner.workspace.config.clone();
-                                (diagnostics, open_docs, fmt_diags, config)
-                            };
+                    // Read-lock phase: analysis (read-only)
+                    let (diagnostics, open_docs, fmt_diags, config) = {
+                        let inner = state.inner.read().await;
+                        let diagnostics = helpers::analyze_with_format_vars(
+                            &inner.workspace,
+                            &inner.format_registry,
+                        );
+                        let open_docs = inner.open_documents.clone();
+                        let fmt_diags = inner.format_diagnostics.clone();
+                        let config = inner.workspace.config.clone();
+                        (diagnostics, open_docs, fmt_diags, config)
+                    };
 
-                            {
-                                let inner = state.inner.read().await;
-                                let format = inner.workspace.resolve_format();
-                                let plugin = inner.format_registry.get(&format);
-                                let sigils: Vec<char> = plugin.as_ref()
-                                    .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
-                                    .unwrap_or_default();
-                                helpers::publish_all_diagnostics(&state.client, &diagnostics, &fmt_diags, &open_docs, &inner.workspace, &config, &sigils).await;
-                            }
+                    {
+                        let inner = state.inner.read().await;
+                        let format = inner.workspace.resolve_format();
+                        let plugin = inner.format_registry.get(&format);
+                        let sigils: Vec<char> = plugin
+                            .as_ref()
+                            .map(|p| p.variable_sigils().iter().map(|s| s.sigil).collect())
+                            .unwrap_or_default();
+                        helpers::publish_all_diagnostics(
+                            &state.client,
+                            &diagnostics,
+                            &fmt_diags,
+                            &open_docs,
+                            &inner.workspace,
+                            &config,
+                            &sigils,
+                        )
+                        .await;
+                    }
 
-                            // Schedule debounced semantic token refresh
-                            state.schedule_semantic_token_refresh().await;
-
-                        }
+                    // Schedule debounced semantic token refresh
+                    state.schedule_semantic_token_refresh().await;
+                }
             }
             _ => {}
         }
@@ -667,7 +807,9 @@ fn apply_document_changes(
     // We need the current text to convert LSP positions to byte offsets.
     // The current text comes from the rope snapshot (if available) or
     // the open_documents cache.
-    let has_snapshot = inner.workspace.get_document(uri)
+    let has_snapshot = inner
+        .workspace
+        .get_document(uri)
         .map(|d| d.snapshot.is_some())
         .unwrap_or(false);
 
@@ -723,7 +865,8 @@ fn apply_document_changes(
                     // Update evolving_text to reflect this change so that
                     // subsequent position conversions are correct
                     let mut new_text = String::with_capacity(
-                        evolving_text.len() - (byte_range.end - byte_range.start) + change.text.len()
+                        evolving_text.len() - (byte_range.end - byte_range.start)
+                            + change.text.len(),
                     );
                     new_text.push_str(&evolving_text[..byte_range.start]);
                     new_text.push_str(&change.text);

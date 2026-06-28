@@ -4,9 +4,9 @@
 //! information: passage links (from `[[ ]]` and navigation macros), variable
 //! operations (reads and writes), and `data-passage` attribute references.
 
-use crate::sugarcube::ast::*;
-use super::predicates::is_assignment_macro;
 use super::comment::strip_comments;
+use super::predicates::is_assignment_macro;
+use crate::sugarcube::ast::*;
 
 // ---------------------------------------------------------------------------
 // Link extraction
@@ -135,7 +135,10 @@ fn extract_macro_passage_refs(
     open_span: std::ops::Range<usize>,
 ) -> Vec<LinkInfo> {
     // Find the matching LinkSource for this macro
-    let source = match NAVIGATION_MACROS.iter().find(|(name, _)| name.eq_ignore_ascii_case(macro_name)) {
+    let source = match NAVIGATION_MACROS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(macro_name))
+    {
         Some((_, src)) => *src,
         None => return Vec::new(), // Not a navigation macro
     };
@@ -326,11 +329,16 @@ pub fn is_bare_passage_name(s: &str) -> bool {
     }
     // Must not contain operators or special characters
     let bytes = s.as_bytes();
-    if bytes.iter().any(|&b| b == b'=' || b == b'+' || b == b'-' || b == b'(' || b == b')') {
+    if bytes
+        .iter()
+        .any(|&b| b == b'=' || b == b'+' || b == b'-' || b == b'(' || b == b')')
+    {
         return false;
     }
     // Must look like an identifier (alphanumeric, hyphens, underscores)
-    bytes.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    bytes
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Extract bare (unquoted) tokens that appear after the quoted string args.
@@ -345,9 +353,7 @@ pub fn extract_bare_args_after_strings(args: &str, num_string_args: usize) -> Ve
     let mut strings_found = 0usize;
 
     // Helper: advance by full UTF-8 character
-    let advance = |pos: usize| -> usize {
-        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
-    };
+    let advance = |pos: usize| -> usize { args[pos..].chars().next().map_or(1, |c| c.len_utf8()) };
 
     // Skip past the quoted string args
     while i < len && strings_found < num_string_args {
@@ -428,9 +434,7 @@ pub fn extract_string_args(args: &str) -> Vec<String> {
     let mut i = 0usize;
 
     // Helper: advance by full UTF-8 character
-    let advance = |pos: usize| -> usize {
-        args[pos..].chars().next().map_or(1, |c| c.len_utf8())
-    };
+    let advance = |pos: usize| -> usize { args[pos..].chars().next().map_or(1, |c| c.len_utf8()) };
 
     while i < len {
         // Skip whitespace
@@ -568,11 +572,7 @@ pub(super) fn extract_var_ops_from_ast(nodes: &[AstNode]) -> Vec<VarOpInfo> {
     ops
 }
 
-fn extract_var_ops_recursive(
-    nodes: &[AstNode],
-    ops: &mut Vec<VarOpInfo>,
-    _in_assignment: bool,
-) {
+fn extract_var_ops_recursive(nodes: &[AstNode], ops: &mut Vec<VarOpInfo>, _in_assignment: bool) {
     for node in nodes {
         match node {
             AstNode::Text { var_refs, .. } => {
@@ -716,11 +716,21 @@ mod tests {
         // Must NOT produce a link with target "Back" (which would cause
         // a false BrokenLink diagnostic if no passage named "Back" exists).
         let ast = parse_passage_body(r#"<<back "Back">>"#, 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         assert_eq!(back_links.len(), 1);
         assert_eq!(back_links[0].display.as_deref(), Some("Back"));
-        assert!(back_links[0].target.is_empty(), "<<back>> with one quoted arg should have no fixed target");
-        assert!(back_links[0].is_dynamic, "<<back>> with one arg should be dynamic");
+        assert!(
+            back_links[0].target.is_empty(),
+            "<<back>> with one quoted arg should have no fixed target"
+        );
+        assert!(
+            back_links[0].is_dynamic,
+            "<<back>> with one arg should be dynamic"
+        );
     }
 
     #[test]
@@ -729,20 +739,37 @@ mod tests {
         // SugarCube treats the single arg as display text for history navigation.
         // Must NOT produce a link with target "Back".
         let ast = parse_passage_body("<<back Back>>", 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         assert_eq!(back_links.len(), 1);
         assert_eq!(back_links[0].display.as_deref(), Some("Back"));
-        assert!(back_links[0].target.is_empty(), "<<back>> with one unquoted arg should have no fixed target");
-        assert!(back_links[0].is_dynamic, "<<back>> with one arg should be dynamic");
+        assert!(
+            back_links[0].target.is_empty(),
+            "<<back>> with one unquoted arg should have no fixed target"
+        );
+        assert!(
+            back_links[0].is_dynamic,
+            "<<back>> with one arg should be dynamic"
+        );
     }
 
     #[test]
     fn return_quoted_single_arg_no_broken_link() {
         // <<return "Town">> — display text only, history-based navigation
         let ast = parse_passage_body(r#"<<return "Town">>"#, 0, ParseMode::Normal);
-        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        let ret_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Return)
+            .collect();
         assert_eq!(ret_links.len(), 1);
-        assert!(ret_links[0].target.is_empty(), "<<return>> with one arg should have no fixed target");
+        assert!(
+            ret_links[0].target.is_empty(),
+            "<<return>> with one arg should have no fixed target"
+        );
         assert!(ret_links[0].is_dynamic);
     }
 
@@ -750,9 +777,16 @@ mod tests {
     fn return_unquoted_single_arg_no_broken_link() {
         // <<return Town>> — unquoted bare name, display text only
         let ast = parse_passage_body("<<return Town>>", 0, ParseMode::Normal);
-        let ret_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Return).collect();
+        let ret_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Return)
+            .collect();
         assert_eq!(ret_links.len(), 1);
-        assert!(ret_links[0].target.is_empty(), "<<return>> with one unquoted arg should have no fixed target");
+        assert!(
+            ret_links[0].target.is_empty(),
+            "<<return>> with one unquoted arg should have no fixed target"
+        );
         assert!(ret_links[0].is_dynamic);
     }
 
@@ -760,11 +794,18 @@ mod tests {
     fn back_two_args_has_fixed_target() {
         // <<back "Flee" "Forest">> — display text + specific passage target
         let ast = parse_passage_body(r#"<<back "Flee" "Forest">>"#, 0, ParseMode::Normal);
-        let back_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Back).collect();
+        let back_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Back)
+            .collect();
         assert_eq!(back_links.len(), 1);
         assert_eq!(back_links[0].display.as_deref(), Some("Flee"));
         assert_eq!(back_links[0].target, "Forest");
-        assert!(!back_links[0].is_dynamic, "<<back>> with two args should have a fixed target");
+        assert!(
+            !back_links[0].is_dynamic,
+            "<<back>> with two args should have a fixed target"
+        );
     }
 
     #[test]
@@ -772,7 +813,11 @@ mod tests {
         // <<goto Forest>> — bare name IS a passage target for <<goto>>
         // (unlike <<back>>/<<return>> where single arg is display text)
         let ast = parse_passage_body("<<goto Forest>>", 0, ParseMode::Normal);
-        let goto_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Goto).collect();
+        let goto_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Goto)
+            .collect();
         assert_eq!(goto_links.len(), 1);
         assert_eq!(goto_links[0].target, "Forest");
         assert!(!goto_links[0].is_dynamic);
@@ -782,7 +827,11 @@ mod tests {
     fn include_bare_name_is_passage_target() {
         // <<include Header>> — bare name is passage target for <<include>>
         let ast = parse_passage_body("<<include Header>>", 0, ParseMode::Normal);
-        let inc_links: Vec<_> = ast.links.iter().filter(|l| l.source == LinkSource::Include).collect();
+        let inc_links: Vec<_> = ast
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Include)
+            .collect();
         assert_eq!(inc_links.len(), 1);
         assert_eq!(inc_links[0].target, "Header");
         assert!(!inc_links[0].is_dynamic);

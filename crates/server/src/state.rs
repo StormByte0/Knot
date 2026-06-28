@@ -3,13 +3,15 @@
 //! The server state holds all mutable workspace data behind an async RwLock
 //! so that LSP handlers can concurrently read or exclusively write the state.
 
-use knot_core::editing::DebounceTimer;
 use knot_core::Workspace;
-use knot_formats::plugin::{FormatRegistry, PassageDiagnosticGroup, PassageTokenGroup, SourceTextProvider};
+use knot_core::editing::DebounceTimer;
 use knot_formats::format_meta::InstalledFormat;
+use knot_formats::plugin::{
+    FormatRegistry, PassageDiagnosticGroup, PassageTokenGroup, SourceTextProvider,
+};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Notify, RwLock};
 use tower_lsp::Client;
@@ -195,9 +197,11 @@ impl ServerState {
     /// at a time. Subsequent calls within 150ms are coalesced. This
     /// prevents the O(N²) token request flood during format switch cascades.
     pub async fn schedule_semantic_token_refresh(&self) {
-        if self.semantic_refresh_pending.compare_exchange(
-            false, true, Ordering::Relaxed, Ordering::Relaxed
-        ).is_err() {
+        if self
+            .semantic_refresh_pending
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
             return; // refresh already pending
         }
 
@@ -208,7 +212,9 @@ impl ServerState {
             tokio::time::sleep(Duration::from_millis(150)).await;
             pending.store(false, Ordering::Relaxed);
             use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;
-            let _ = client.send_request::<WorkspaceSemanticTokensRefreshRequest>(()).await;
+            let _ = client
+                .send_request::<WorkspaceSemanticTokensRefreshRequest>(())
+                .await;
         });
     }
 }

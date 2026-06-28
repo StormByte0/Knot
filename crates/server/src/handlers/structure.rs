@@ -27,7 +27,9 @@ pub(crate) async fn folding_range(
 
             // End of passage: start of next passage or end of document
             let passage_end_offset = if i + 1 < passages.len() {
-                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
+                passages[i + 1]
+                    .abs_offset(passages[i + 1].span.start)
+                    .min(text.len())
             } else {
                 text.len()
             };
@@ -84,7 +86,6 @@ pub(crate) async fn folding_range(
                 }
             }
         }
-
     }
 
     if ranges.is_empty() {
@@ -99,7 +100,10 @@ pub(crate) async fn document_link(
     params: DocumentLinkParams,
 ) -> Result<Option<Vec<DocumentLink>>, tower_lsp::jsonrpc::Error> {
     // Short-circuit if the server is shutting down
-    if state.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
         return Ok(None);
     }
 
@@ -120,15 +124,15 @@ pub(crate) async fn document_link(
     for passage in &doc.passages {
         for link in &passage.links {
             let target = link.target.trim();
-            if !target.is_empty() {
-                if let Some(target_uri) = inner.workspace.find_passage_file_uri(target) {
-                    links.push(DocumentLink {
-                        range: helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)),
-                        target: Some(target_uri),
-                        tooltip: Some(format!("Go to {}", target)),
-                        data: None,
-                    });
-                }
+            if !target.is_empty()
+                && let Some(target_uri) = inner.workspace.find_passage_file_uri(target)
+            {
+                links.push(DocumentLink {
+                    range: helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)),
+                    target: Some(target_uri),
+                    tooltip: Some(format!("Go to {}", target)),
+                    data: None,
+                });
             }
         }
     }
@@ -169,7 +173,8 @@ pub(crate) async fn selection_range(
                     // Found the link containing the cursor.
                     // Extract the link content to find the target portion.
                     let abs_link_span = passage.abs_range(&link.span);
-                    let link_text = &text[abs_link_span.start.min(text.len())..abs_link_span.end.min(text.len())];
+                    let link_text = &text
+                        [abs_link_span.start.min(text.len())..abs_link_span.end.min(text.len())];
                     let content = &link_text[2..link_text.len().saturating_sub(2)];
 
                     // Compute the target range within the link
@@ -189,7 +194,10 @@ pub(crate) async fn selection_range(
                     ));
 
                     // Full link range (entire [[...]])
-                    range_chain.push(helpers::byte_range_to_lsp_range(text, &passage.abs_range(&link.span)));
+                    range_chain.push(helpers::byte_range_to_lsp_range(
+                        text,
+                        &passage.abs_range(&link.span),
+                    ));
 
                     break 'link_search;
                 }
@@ -200,7 +208,9 @@ pub(crate) async fn selection_range(
         for (i, passage) in passages.iter().enumerate() {
             let span_start = passage.abs_offset(passage.span.start).min(text.len());
             let effective_end = if i + 1 < passages.len() {
-                passages[i + 1].abs_offset(passages[i + 1].span.start).min(text.len())
+                passages[i + 1]
+                    .abs_offset(passages[i + 1].span.start)
+                    .min(text.len())
             } else {
                 text.len()
             };
@@ -211,7 +221,8 @@ pub(crate) async fn selection_range(
                     .map(|n| span_start + n)
                     .unwrap_or(effective_end);
 
-                let body_start_pos = helpers::byte_offset_to_position(text, (header_end + 1).min(text.len()));
+                let body_start_pos =
+                    helpers::byte_offset_to_position(text, (header_end + 1).min(text.len()));
                 let body_end_pos = helpers::byte_offset_to_position(text, effective_end);
                 let header_start_pos = helpers::byte_offset_to_position(text, span_start);
 
@@ -232,17 +243,24 @@ pub(crate) async fn selection_range(
         }
 
         // Build the linked SelectionRange list (innermost first)
-        let sel_range = range_chain.into_iter().rev().fold(None::<SelectionRange>, |parent, range| {
-            Some(SelectionRange {
-                range,
-                parent: parent.map(Box::new),
-            })
-        });
+        let sel_range =
+            range_chain
+                .into_iter()
+                .rev()
+                .fold(None::<SelectionRange>, |parent, range| {
+                    Some(SelectionRange {
+                        range,
+                        parent: parent.map(Box::new),
+                    })
+                });
 
         results.push(sel_range.unwrap_or(SelectionRange {
             range: Range {
                 start: *position,
-                end: Position { line: position.line, character: position.character + 1 },
+                end: Position {
+                    line: position.line,
+                    character: position.character + 1,
+                },
             },
             parent: None,
         }));
@@ -275,30 +293,20 @@ fn signature_help_inner(
     let plugin = inner.format_registry.get(&format);
 
     // Only provide signature help for formats with macro catalogs
-    let Some(plugin) = plugin else {
-        return None;
-    };
+    let plugin = plugin?;
     if plugin.builtin_macros().is_empty() {
         return None;
     }
 
-    let Some(text) = inner.open_documents.get(uri) else {
-        return None;
-    };
+    let text = inner.open_documents.get(uri)?;
 
-    let line_text = match text.lines().nth(position.line as usize) {
-        Some(l) => l,
-        None => return None,
-    };
+    let line_text = text.lines().nth(position.line as usize)?;
 
     // Convert UTF-16 position to byte offset for the format plugin
     let byte_pos = helpers::utf16_to_byte_offset(line_text, position.character as usize);
 
     // Delegate macro detection to the format plugin
-    let macro_info = match plugin.find_macro_at_position(line_text, byte_pos) {
-        Some(info) => info,
-        None => return None,
-    };
+    let macro_info = plugin.find_macro_at_position(line_text, byte_pos)?;
 
     if let Some(mdef) = plugin.find_macro(&macro_info.name) {
         // Count commas after the macro name to determine active parameter
@@ -306,10 +314,12 @@ fn signature_help_inner(
         let active_param = after_name.matches(',').count() as u32;
 
         let params_list: Vec<ParameterInformation> = if let Some(args) = mdef.args {
-            args.iter().map(|a| ParameterInformation {
-                label: ParameterLabel::Simple(a.label.to_string()),
-                documentation: None,
-            }).collect()
+            args.iter()
+                .map(|a| ParameterInformation {
+                    label: ParameterLabel::Simple(a.label.to_string()),
+                    documentation: None,
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -372,14 +382,21 @@ fn signature_help_inner(
 
         // Synthesize placeholder params from arg_count.
         let labels: Vec<String> = (0..n).map(|i| format!("arg{}", i + 1)).collect();
-        let params_list: Vec<ParameterInformation> = labels.iter().map(|l| ParameterInformation {
-            label: ParameterLabel::Simple(l.clone()),
-            documentation: None,
-        }).collect();
+        let params_list: Vec<ParameterInformation> = labels
+            .iter()
+            .map(|l| ParameterInformation {
+                label: ParameterLabel::Simple(l.clone()),
+                documentation: None,
+            })
+            .collect();
         let sig_str = labels.join(", ");
 
         let type_label = if detail.is_widget {
-            if detail.is_container { "Container widget" } else { "Widget" }
+            if detail.is_container {
+                "Container widget"
+            } else {
+                "Widget"
+            }
         } else {
             "Custom macro"
         };
@@ -412,7 +429,6 @@ fn signature_help_inner(
 #[cfg(test)]
 mod signature_help_tests {
     use super::*;
-    use knot_formats::plugin::{FormatPlugin, FormatPluginMut};
     use url::Url;
 
     /// Build a ServerStateInner fixture: parse a single twee source file via
@@ -423,14 +439,17 @@ mod signature_help_tests {
         let mut registry = knot_formats::plugin::FormatRegistry::with_defaults();
         let format = knot_core::passage::StoryFormat::SugarCube;
         let parse_result = {
-            let plugin = registry.get_mut(&format).expect("SugarCube plugin must be registered");
+            let plugin = registry
+                .get_mut(&format)
+                .expect("SugarCube plugin must be registered");
             plugin.parse_mut(&uri, src)
         };
 
         let workspace = {
             let mut ws = knot_core::Workspace::new(Url::parse("file:///project/").unwrap());
             ws.config.format = Some("SugarCube".to_string());
-            let mut doc = knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+            let mut doc =
+                knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
             for passage in parse_result.passages {
                 doc.passages.push(passage);
             }
@@ -474,11 +493,17 @@ mod signature_help_tests {
         let src = ":: Start\n<<link \"Talk\" \"Shop\">>\n";
         // Line 1, char 3 is on `i` of `link` (<< = chars 0-1, link = chars 2-5).
         let help = get_signature_help(src, 1, 3);
-        assert!(help.is_some(), "signature help should fire for builtin <<link>>");
+        assert!(
+            help.is_some(),
+            "signature help should fire for builtin <<link>>"
+        );
         let help = help.unwrap();
         assert_eq!(help.signatures.len(), 1);
-        assert!(help.signatures[0].label.contains("link"),
-            "signature label should contain 'link': got {}", help.signatures[0].label);
+        assert!(
+            help.signatures[0].label.contains("link"),
+            "signature label should contain 'link': got {}",
+            help.signatures[0].label
+        );
     }
 
     /// Custom widget with known arg_count: `<<mywidget>>` invoked after a
@@ -491,25 +516,45 @@ mod signature_help_tests {
         // Line 3 is `<<mywidget "a", "b">>`. `<<` = chars 0-1, `mywidget` = chars 2-9.
         // Char 5 is on `i` of `mywidget`.
         let help = get_signature_help(src, 3, 5);
-        assert!(help.is_some(), "signature help should fire for custom widget <<mywidget>>");
+        assert!(
+            help.is_some(),
+            "signature help should fire for custom widget <<mywidget>>"
+        );
         let help = help.unwrap();
         assert_eq!(help.signatures.len(), 1);
         let sig = &help.signatures[0];
-        assert!(sig.label.contains("mywidget"),
-            "signature label should contain 'mywidget': got {}", sig.label);
+        assert!(
+            sig.label.contains("mywidget"),
+            "signature label should contain 'mywidget': got {}",
+            sig.label
+        );
         // Should have 2 params (arg1, arg2) since the widget body uses _args[0] and _args[1].
         assert!(sig.parameters.is_some(), "should have parameters");
         let params = sig.parameters.as_ref().unwrap();
-        assert_eq!(params.len(), 2, "should have 2 params (arg1, arg2): got {:?}", params);
+        assert_eq!(
+            params.len(),
+            2,
+            "should have 2 params (arg1, arg2): got {:?}",
+            params
+        );
         // The label should include the param names.
-        assert!(sig.label.contains("arg1"),
-            "signature label should contain 'arg1': got {}", sig.label);
-        assert!(sig.label.contains("arg2"),
-            "signature label should contain 'arg2': got {}", sig.label);
+        assert!(
+            sig.label.contains("arg1"),
+            "signature label should contain 'arg1': got {}",
+            sig.label
+        );
+        assert!(
+            sig.label.contains("arg2"),
+            "signature label should contain 'arg2': got {}",
+            sig.label
+        );
         // Documentation should mention "Widget".
         if let Some(Documentation::MarkupContent(m)) = &sig.documentation {
-            assert!(m.value.contains("Widget"),
-                "doc should mention 'Widget': got {}", m.value);
+            assert!(
+                m.value.contains("Widget"),
+                "doc should mention 'Widget': got {}",
+                m.value
+            );
         }
     }
 
@@ -518,12 +563,16 @@ mod signature_help_tests {
     /// show in a popup when we don't know the arity.
     #[test]
     fn signature_help_returns_none_for_custom_widget_without_arg_count() {
-        let src = ":: Widgets [widget]\n<<widget simple>>Hello world<</widget>>\n:: Start\n<<simple>>\n";
+        let src =
+            ":: Widgets [widget]\n<<widget simple>>Hello world<</widget>>\n:: Start\n<<simple>>\n";
         // Line 3 is `<<simple>>`. `<<` = chars 0-1, `simple` = chars 2-7.
         // Char 4 is on `m` of `simple`.
         let help = get_signature_help(src, 3, 4);
-        assert!(help.is_none(),
-            "signature help should NOT fire for argless widget (arg_count=None): got {:?}", help);
+        assert!(
+            help.is_none(),
+            "signature help should NOT fire for argless widget (arg_count=None): got {:?}",
+            help
+        );
     }
 
     /// Macro.add() custom macro: arg_count is always None (the JS walker
@@ -534,8 +583,11 @@ mod signature_help_tests {
         // Line 3 is `<<mymacro "hello">>`. `<<` = chars 0-1, `mymacro` = chars 2-8.
         // Char 4 is on `m` of `mymacro`.
         let help = get_signature_help(src, 3, 4);
-        assert!(help.is_none(),
-            "signature help should NOT fire for Macro.add() custom macro (arg_count=None): got {:?}", help);
+        assert!(
+            help.is_none(),
+            "signature help should NOT fire for Macro.add() custom macro (arg_count=None): got {:?}",
+            help
+        );
     }
 
     /// Cursor NOT on a macro: signature help should return None.
@@ -543,7 +595,10 @@ mod signature_help_tests {
     fn signature_help_returns_none_for_plain_text() {
         let src = ":: Start\nHello world.\n";
         let help = get_signature_help(src, 1, 3);
-        assert!(help.is_none(),
-            "signature help should NOT fire for plain text: got {:?}", help);
+        assert!(
+            help.is_none(),
+            "signature help should NOT fire for plain text: got {:?}",
+            help
+        );
     }
 }

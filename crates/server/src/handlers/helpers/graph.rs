@@ -1,8 +1,10 @@
 //! Passage graph rebuild, implicit special edge construction, and graph metrics.
 
-use knot_core::graph::{PassageEdge, PassageNode};
-use knot_core::passage::{PassageCategory, SpecialPassageBehavior, SpecialPassageLayer, StoryFormat};
 use knot_core::Workspace;
+use knot_core::graph::{PassageEdge, PassageNode};
+use knot_core::passage::{
+    PassageCategory, SpecialPassageBehavior, SpecialPassageLayer, StoryFormat,
+};
 use knot_formats::plugin as fmt_plugin;
 
 /// Rebuild the passage graph from all workspace documents.
@@ -30,15 +32,24 @@ pub(crate) fn rebuild_graph(
         .unwrap_or_default();
 
     // ── Step 2: Collect passage info ────────────────────────────────────
-    let info: Vec<(String, String, bool, bool, Option<SpecialPassageLayer>, PassageCategory, Option<SpecialPassageBehavior>, Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)>)> = workspace
+    let info: Vec<(
+        String,
+        String,
+        bool,
+        bool,
+        Option<SpecialPassageLayer>,
+        PassageCategory,
+        Option<SpecialPassageBehavior>,
+        Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)>,
+    )> = workspace
         .documents()
         .flat_map(|doc| {
             doc.passages.iter().map(|p| {
-                let mut edges: Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)> = p
-                    .links
-                    .iter()
-                    .map(|l| (l.display_text.clone(), l.target.clone(), l.edge_type_hint))
-                    .collect();
+                let mut edges: Vec<(Option<String>, String, Option<knot_core::graph::EdgeType>)> =
+                    p.links
+                        .iter()
+                        .map(|l| (l.display_text.clone(), l.target.clone(), l.edge_type_hint))
+                        .collect();
 
                 // ── Dynamic variable resolution for navigation macros ────
                 // Delegate to the format plugin so that format-specific
@@ -57,7 +68,7 @@ pub(crate) fn rebuild_graph(
                     doc.uri.to_string(),
                     p.is_special,
                     p.is_metadata(),
-                    p.special_def.as_ref().map(|d| d.layer.clone()),
+                    p.special_def.as_ref().map(|d| d.layer),
                     p.category(),
                     p.special_def.as_ref().map(|d| d.behavior.clone()),
                     edges,
@@ -75,7 +86,7 @@ pub(crate) fn rebuild_graph(
             is_special: *is_special,
             is_metadata: *is_metadata,
             is_placeholder: false,
-            layer: layer.clone(),
+            layer: *layer,
             category: *category,
             behavior: behavior.clone(),
         };
@@ -114,8 +125,7 @@ pub(crate) fn rebuild_graph(
                 let would_be_type = if let Some(hint_type) = hint {
                     *hint_type
                 } else if let Some(plug) = plugin.as_ref() {
-                    let source_passage = workspace.find_passage(source)
-                        .map(|(_, p)| p.clone());
+                    let source_passage = workspace.find_passage(source).map(|(_, p)| p.clone());
                     if let Some(sp) = source_passage {
                         plug.classify_edge(&sp, display_text.as_deref(), target)
                             .unwrap_or(knot_core::graph::EdgeType::Navigation)
@@ -134,10 +144,10 @@ pub(crate) fn rebuild_graph(
                 // Fall back to classify_edge() for cases where the hint
                 // wasn't set during extraction (e.g., [[links]] that might
                 // be widget invocations, or dynamic variable links).
-                let source_passage = workspace.find_passage(source)
-                    .map(|(_, p)| p.clone());
+                let source_passage = workspace.find_passage(source).map(|(_, p)| p.clone());
                 if let Some(sp) = source_passage {
-                    let classified = plug.classify_edge(&sp, display_text.as_deref(), target)
+                    let classified = plug
+                        .classify_edge(&sp, display_text.as_deref(), target)
                         .unwrap_or(knot_core::graph::EdgeType::Navigation);
                     (classified, None)
                 } else {
@@ -226,15 +236,23 @@ pub(crate) fn add_implicit_special_edges(
     // so its variables and side effects are available when StoryInit executes.
     for script_name in &script_injection {
         for startup_name in &startup {
-            let already_exists = graph.outgoing_neighbors(script_name)
+            let already_exists = graph
+                .outgoing_neighbors(script_name)
                 .iter()
                 .any(|n| n == startup_name);
             if !already_exists {
-                graph.add_edge(script_name, startup_name, PassageEdge {
-                    display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                    edge_type: knot_core::graph::EdgeType::Upstream,
-                    pre_broken_type: None,
-                });
+                graph.add_edge(
+                    script_name,
+                    startup_name,
+                    PassageEdge {
+                        display_text: Some(format!(
+                            "(upstream: {} → {})",
+                            script_name, startup_name
+                        )),
+                        edge_type: knot_core::graph::EdgeType::Upstream,
+                        pre_broken_type: None,
+                    },
+                );
             }
         }
     }
@@ -252,15 +270,23 @@ pub(crate) fn add_implicit_special_edges(
         if graph.contains_passage(start_passage_name) {
             let bridge_source = &startup[0];
 
-            let already_exists = graph.outgoing_neighbors(bridge_source)
+            let already_exists = graph
+                .outgoing_neighbors(bridge_source)
                 .iter()
                 .any(|n| n == start_passage_name);
             if !already_exists {
-                graph.add_edge(bridge_source, start_passage_name, PassageEdge {
-                    display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
-                    edge_type: knot_core::graph::EdgeType::Upstream,
-                    pre_broken_type: None,
-                });
+                graph.add_edge(
+                    bridge_source,
+                    start_passage_name,
+                    PassageEdge {
+                        display_text: Some(format!(
+                            "(upstream: {} → {})",
+                            bridge_source, start_passage_name
+                        )),
+                        edge_type: knot_core::graph::EdgeType::Upstream,
+                        pre_broken_type: None,
+                    },
+                );
             }
         }
     }

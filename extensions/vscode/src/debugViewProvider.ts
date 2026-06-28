@@ -142,7 +142,7 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Generate the HTML for the webview. */
-    private _getHtmlForWebview(webview: vscode.Webview): string {
+    private _getHtmlForWebview(_webview: vscode.Webview): string {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>

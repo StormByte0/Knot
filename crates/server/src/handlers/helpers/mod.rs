@@ -16,7 +16,7 @@ mod position;
 mod uri;
 
 pub(crate) use code_actions::*;
-pub(crate) use compiler::{which_compiler, detect_compiler_version, resolve_storyformats_dir};
+pub(crate) use compiler::{detect_compiler_version, resolve_storyformats_dir, which_compiler};
 pub(crate) use diagnostics::*;
 pub(crate) use formatting::*;
 pub(crate) use graph::*;
@@ -39,22 +39,70 @@ mod tests {
 
     #[test]
     fn test_diagnostic_severity_defaults() {
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::BrokenLink), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnreachablePassage), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UninitializedVariable), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnusedVariable), DiagnosticSeverity::HINT);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::RedundantWrite), DiagnosticSeverity::HINT);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::DuplicateStoryData), DiagnosticSeverity::ERROR);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::MissingStoryData), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::MissingStartPassage), DiagnosticSeverity::ERROR);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::UnsupportedFormat), DiagnosticSeverity::ERROR);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::DuplicatePassageName), DiagnosticSeverity::ERROR);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::EmptyPassage), DiagnosticSeverity::HINT);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::DeadEndPassage), DiagnosticSeverity::INFORMATION);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::InvalidPassageName), DiagnosticSeverity::WARNING);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::ComplexPassage), DiagnosticSeverity::HINT);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::LargePassage), DiagnosticSeverity::HINT);
-        assert_eq!(diagnostic_kind_to_severity(&DiagnosticKind::MissingStartLink), DiagnosticSeverity::WARNING);
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::BrokenLink),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::UnreachablePassage),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::UninitializedVariable),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::UnusedVariable),
+            DiagnosticSeverity::HINT
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::RedundantWrite),
+            DiagnosticSeverity::HINT
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::DuplicateStoryData),
+            DiagnosticSeverity::ERROR
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::MissingStoryData),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::MissingStartPassage),
+            DiagnosticSeverity::ERROR
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::UnsupportedFormat),
+            DiagnosticSeverity::ERROR
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::DuplicatePassageName),
+            DiagnosticSeverity::ERROR
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::EmptyPassage),
+            DiagnosticSeverity::HINT
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::DeadEndPassage),
+            DiagnosticSeverity::INFORMATION
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::InvalidPassageName),
+            DiagnosticSeverity::WARNING
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::ComplexPassage),
+            DiagnosticSeverity::HINT
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::LargePassage),
+            DiagnosticSeverity::HINT
+        );
+        assert_eq!(
+            diagnostic_kind_to_severity(&DiagnosticKind::MissingStartLink),
+            DiagnosticSeverity::WARNING
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -116,40 +164,59 @@ mod tests {
     #[test]
     fn test_update_position_new_json() {
         let result = update_passage_position_in_header(":: Start", 100.0, 200.0);
-        assert!(result.contains("{\"position\":\"100,200\"}"), "Result: {}", result);
+        assert!(
+            result.contains("{\"position\":\"100,200\"}"),
+            "Result: {}",
+            result
+        );
     }
 
     #[test]
     fn test_update_position_replace_existing() {
-        let result = update_passage_position_in_header(
-            ":: Start {\"position\":\"50,75\"}", 100.0, 200.0,
+        let result =
+            update_passage_position_in_header(":: Start {\"position\":\"50,75\"}", 100.0, 200.0);
+        assert!(
+            result.contains("\"position\":\"100,200\""),
+            "Result: {}",
+            result
         );
-        assert!(result.contains("\"position\":\"100,200\""), "Result: {}", result);
     }
 
     #[test]
     fn test_update_position_preserves_other_metadata() {
         let result = update_passage_position_in_header(
-            ":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}", 100.0, 200.0,
+            ":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}",
+            100.0,
+            200.0,
         );
-        assert!(result.contains("\"position\":\"100,200\""), "Result: {}", result);
+        assert!(
+            result.contains("\"position\":\"100,200\""),
+            "Result: {}",
+            result
+        );
         assert!(result.contains("\"ifid\":\"ABC\""), "Result: {}", result);
     }
 
     #[test]
     fn test_update_position_with_tags() {
-        let result = update_passage_position_in_header(
-            ":: Start [important]", 100.0, 200.0,
-        );
+        let result = update_passage_position_in_header(":: Start [important]", 100.0, 200.0);
         assert!(result.contains("[important]"), "Result: {}", result);
-        assert!(result.contains("{\"position\":\"100,200\"}"), "Result: {}", result);
+        assert!(
+            result.contains("{\"position\":\"100,200\"}"),
+            "Result: {}",
+            result
+        );
     }
 
     #[test]
     fn test_update_position_decimal() {
         let result = update_passage_position_in_header(":: Start", 100.5, 200.75);
         // format_coord uses .2 precision for non-integer values
-        assert!(result.contains("{\"position\":\"100.50,200.75\"}"), "Result: {}", result);
+        assert!(
+            result.contains("{\"position\":\"100.50,200.75\"}"),
+            "Result: {}",
+            result
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -180,17 +247,35 @@ mod tests {
         let text = ":: Start\nHello\n:: Middle\nWorld\n:: End\nBye";
         // Line 0 is passage header "Start" — returns the passage name
         assert_eq!(
-            find_passage_at_position(text, Position { line: 0, character: 3 }),
+            find_passage_at_position(
+                text,
+                Position {
+                    line: 0,
+                    character: 3
+                }
+            ),
             Some("Start".to_string())
         );
         // Line 1 is body (not a :: header) — returns None
         assert_eq!(
-            find_passage_at_position(text, Position { line: 1, character: 0 }),
+            find_passage_at_position(
+                text,
+                Position {
+                    line: 1,
+                    character: 0
+                }
+            ),
             None
         );
         // Line 2 is passage header "Middle"
         assert_eq!(
-            find_passage_at_position(text, Position { line: 2, character: 3 }),
+            find_passage_at_position(
+                text,
+                Position {
+                    line: 2,
+                    character: 3
+                }
+            ),
             Some("Middle".to_string())
         );
     }
@@ -199,7 +284,13 @@ mod tests {
     fn test_find_passage_at_position_no_passage() {
         let text = "Just some text without passage headers";
         assert_eq!(
-            find_passage_at_position(text, Position { line: 0, character: 0 }),
+            find_passage_at_position(
+                text,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
             None
         );
     }
@@ -212,21 +303,39 @@ mod tests {
     fn test_find_link_target_simple() {
         let text = ":: Start\nGo to [[Castle]] for adventure";
         // "Castle" link is at approximately character 6 on line 1
-        let result = find_link_target_at_position(text, Position { line: 1, character: 10 });
+        let result = find_link_target_at_position(
+            text,
+            Position {
+                line: 1,
+                character: 10,
+            },
+        );
         assert_eq!(result, Some("Castle".to_string()));
     }
 
     #[test]
     fn test_find_link_target_arrow() {
         let text = ":: Start\n[[Go to Castle->Castle]]";
-        let result = find_link_target_at_position(text, Position { line: 1, character: 5 });
+        let result = find_link_target_at_position(
+            text,
+            Position {
+                line: 1,
+                character: 5,
+            },
+        );
         assert_eq!(result, Some("Castle".to_string()));
     }
 
     #[test]
     fn test_find_link_target_pipe() {
         let text = ":: Start\n[[Visit|Castle]]";
-        let result = find_link_target_at_position(text, Position { line: 1, character: 5 });
+        let result = find_link_target_at_position(
+            text,
+            Position {
+                line: 1,
+                character: 5,
+            },
+        );
         assert_eq!(result, Some("Castle".to_string()));
     }
 
@@ -256,8 +365,14 @@ mod tests {
 
     #[test]
     fn test_extract_quoted_name() {
-        assert_eq!(extract_quoted_name("Link to 'Castle' not found"), Some("Castle".to_string()));
-        assert_eq!(extract_quoted_name("Link to \"Castle\" not found"), Some("Castle".to_string()));
+        assert_eq!(
+            extract_quoted_name("Link to 'Castle' not found"),
+            Some("Castle".to_string())
+        );
+        assert_eq!(
+            extract_quoted_name("Link to \"Castle\" not found"),
+            Some("Castle".to_string())
+        );
         assert_eq!(extract_quoted_name("No quotes here"), None);
     }
 
@@ -333,13 +448,24 @@ mod tests {
         use knot_core::passage::StoryFormat;
 
         let registry = knot_formats::plugin::FormatRegistry::with_defaults();
-        let plugin = registry.get(&StoryFormat::SugarCube).expect("SugarCube plugin");
+        let plugin = registry
+            .get(&StoryFormat::SugarCube)
+            .expect("SugarCube plugin");
         let macros = plugin.builtin_macros();
-        assert!(!macros.is_empty(), "SugarCube plugin should have builtin macros");
+        assert!(
+            !macros.is_empty(),
+            "SugarCube plugin should have builtin macros"
+        );
         // Spot-check a few well-known macros
-        assert!(macros.iter().any(|m| m.name == "set"), "should have <<set>>");
+        assert!(
+            macros.iter().any(|m| m.name == "set"),
+            "should have <<set>>"
+        );
         assert!(macros.iter().any(|m| m.name == "if"), "should have <<if>>");
-        assert!(macros.iter().any(|m| m.name == "goto"), "should have <<goto>>");
+        assert!(
+            macros.iter().any(|m| m.name == "goto"),
+            "should have <<goto>>"
+        );
     }
 
     #[test]
@@ -347,16 +473,32 @@ mod tests {
         use knot_core::passage::StoryFormat;
 
         let registry = knot_formats::plugin::FormatRegistry::with_defaults();
-        let plugin = registry.get(&StoryFormat::SugarCube).expect("SugarCube plugin");
+        let plugin = registry
+            .get(&StoryFormat::SugarCube)
+            .expect("SugarCube plugin");
 
         let set_macro = plugin.find_macro("set").expect("should find <<set>>");
-        assert!(!set_macro.args.is_none() || set_macro.args.as_ref().map(|a| a.is_empty()).unwrap_or(true) == false,
-            "<<set>> should have args");
+        assert!(
+            set_macro.args.is_some()
+                || !set_macro
+                    .args
+                    .as_ref()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(true),
+            "<<set>> should have args"
+        );
 
         let else_macro = plugin.find_macro("else").expect("should find <<else>>");
         // <<else>> is a bare macro with no arguments
-        assert!(else_macro.args.is_none() || else_macro.args.as_ref().map(|a| a.is_empty()).unwrap_or(true),
-            "<<else>> should have no args");
+        assert!(
+            else_macro.args.is_none()
+                || else_macro
+                    .args
+                    .as_ref()
+                    .map(|a| a.is_empty())
+                    .unwrap_or(true),
+            "<<else>> should have no args"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 //! Variable scanning for `$var` and `_var` references.
 
-use crate::sugarcube::ast::*;
 use super::predicates::{is_ident_char, is_ident_start};
+use crate::sugarcube::ast::*;
 
 /// Scan a variable reference starting at position `start`.
 ///
@@ -107,8 +107,8 @@ pub(in crate::sugarcube) fn scan_inline_vars(text: &str, offset: usize) -> Vec<V
             i = end;
         } else if bytes[i] == b'_' && i + 1 < len && is_ident_start(bytes[i + 1]) {
             // _var: only match at word boundary (not inside a word)
-            let is_word_boundary = i == 0
-                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let is_word_boundary =
+                i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
             if is_word_boundary {
                 let (var_ref, end) = scan_variable(text, i, true);
                 // Verify it's a valid temporary variable (not just an underscore in text)

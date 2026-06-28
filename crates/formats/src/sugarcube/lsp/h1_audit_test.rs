@@ -27,7 +27,7 @@ fn h1_testbed_audit() {
     let mut entries: Vec<_> = std::fs::read_dir(testbed_dir)
         .expect("read testbed dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |x| x == "twee"))
+        .filter(|e| e.path().extension().is_some_and(|x| x == "twee"))
         .collect();
     entries.sort_by_key(|e| e.path());
 
@@ -81,7 +81,11 @@ fn h1_testbed_audit() {
             // Build tokens to check for crashes
             let mut tokens = Vec::new();
             crate::sugarcube::lsp::token_builder::build_semantic_tokens(
-                &ast.nodes, &mut tokens, 0, &HashSet::new(), body,
+                &ast.nodes,
+                &mut tokens,
+                0,
+                &HashSet::new(),
+                body,
             );
             total_tokens += tokens.len();
         }

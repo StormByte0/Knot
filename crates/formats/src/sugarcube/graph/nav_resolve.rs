@@ -3,10 +3,10 @@
 //! This module builds a map of variable → string literal values and resolves
 //! dynamic navigation macros like `<<goto $dest>>` into concrete passage names.
 
-use std::collections::HashMap;
-use knot_core::passage::{Block, Passage};
-use crate::types::ResolvedNavLink;
 use crate::sugarcube::registries::variable_tree::VariableTree;
+use crate::types::ResolvedNavLink;
+use knot_core::passage::{Block, Passage};
+use std::collections::HashMap;
 
 /// Build a map of variable name → set of known string literal values.
 ///
@@ -55,7 +55,9 @@ pub fn extract_set_string_literal(args: &str) -> Option<(String, String)> {
     let trimmed = args.trim();
 
     // Find the variable name (must start with $ or _)
-    let var_end = trimmed.find(|c: char| c.is_whitespace()).unwrap_or(trimmed.len());
+    let var_end = trimmed
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(trimmed.len());
     if var_end == 0 {
         return None;
     }
@@ -76,7 +78,9 @@ pub fn extract_set_string_literal(args: &str) -> Option<(String, String)> {
 
     // Extract string literal
     if (after_assign.starts_with('"') && after_assign.ends_with('"') && after_assign.len() >= 2)
-        || (after_assign.starts_with('\'') && after_assign.ends_with('\'') && after_assign.len() >= 2)
+        || (after_assign.starts_with('\'')
+            && after_assign.ends_with('\'')
+            && after_assign.len() >= 2)
     {
         let string_val = &after_assign[1..after_assign.len() - 1];
         Some((var_name.to_string(), string_val.to_string()))

@@ -208,8 +208,22 @@ mod tests {
     #[test]
     fn remove_file() {
         let mut registry = FunctionRegistry::new();
-        registry.register_function("a", FunctionKind::Declaration, "S1", "file:///a.tw", 0, None);
-        registry.register_function("b", FunctionKind::Declaration, "S2", "file:///b.tw", 0, None);
+        registry.register_function(
+            "a",
+            FunctionKind::Declaration,
+            "S1",
+            "file:///a.tw",
+            0,
+            None,
+        );
+        registry.register_function(
+            "b",
+            FunctionKind::Declaration,
+            "S2",
+            "file:///b.tw",
+            0,
+            None,
+        );
 
         registry.remove_file("file:///a.tw");
         assert!(!registry.contains("a"));

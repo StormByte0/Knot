@@ -8,11 +8,14 @@
 //! line numbers and spans. This module converts them to **document-absolute**
 //! line numbers at the output boundary using the `PassagePositionMap`.
 
-use std::collections::{HashMap, HashSet};
-use knot_core::Workspace;
+use super::variable_tree::{NO_NODE, NodeId, PassagePositionMap, VarArena, VariableTree};
 use crate::plugin::SourceTextProvider;
-use crate::types::{PassageVarRef, PassageTempVarSummary, PropertyKind, PropertyMapEntry, StateVariable, VarAccessKind as TypesVarAccessKind};
-use super::variable_tree::{VariableTree, PassagePositionMap, NodeId, VarArena, NO_NODE};
+use crate::types::{
+    PassageTempVarSummary, PassageVarRef, PropertyKind, PropertyMapEntry, StateVariable,
+    VarAccessKind as TypesVarAccessKind,
+};
+use knot_core::Workspace;
+use std::collections::{HashMap, HashSet};
 
 /// Extract variable references for a specific passage from the variable tree.
 ///
@@ -33,7 +36,14 @@ pub fn extract_passage_variable_refs_impl(
 
     for (var_name, var_id) in var_tree.iter() {
         // Walk the tree to collect all accesses (root + children) for this passage
-        collect_refs_from_arena_node(var_tree.arena(), var_id, &var_name, passage_name, passage_positions, &mut refs);
+        collect_refs_from_arena_node(
+            var_tree.arena(),
+            var_id,
+            &var_name,
+            passage_name,
+            passage_positions,
+            &mut refs,
+        );
     }
 
     refs
@@ -88,7 +98,8 @@ pub fn extract_passage_temp_variables_impl(
         // Sort refs by line for display, then by variable name so property
         // accesses on the same line stay in a deterministic order.
         refs.sort_by(|a, b| {
-            a.line.cmp(&b.line)
+            a.line
+                .cmp(&b.line)
                 .then_with(|| a.variable_name.cmp(&b.variable_name))
         });
 
@@ -142,7 +153,9 @@ fn collect_refs_from_arena_node(
         // Convert passage-relative span → document-absolute span
         let abs_span = passage_positions
             .get(&(access.file_uri.clone(), access.passage_name.clone()))
-            .map(|pos| access.span.start + pos.body_start_offset..access.span.end + pos.body_start_offset);
+            .map(|pos| {
+                access.span.start + pos.body_start_offset..access.span.end + pos.body_start_offset
+            });
 
         refs.push(PassageVarRef {
             variable_name: full_name.to_string(),
@@ -164,7 +177,14 @@ fn collect_refs_from_arena_node(
         if child.parent != NO_NODE {
             let child_name = child.name.clone();
             let child_full_name = format!("{}.{}", full_name, child_name);
-            collect_refs_from_arena_node(arena, child_id, &child_full_name, passage_name, passage_positions, refs);
+            collect_refs_from_arena_node(
+                arena,
+                child_id,
+                &child_full_name,
+                passage_name,
+                passage_positions,
+                refs,
+            );
         }
         child_id = child.next_sibling;
     }
@@ -182,7 +202,8 @@ pub fn build_shape_aware_property_map_impl(
 
     for (var_name, var_id) in var_tree.iter() {
         let arena = var_tree.arena();
-        let properties: Vec<String> = arena.children_of(var_id)
+        let properties: Vec<String> = arena
+            .children_of(var_id)
             .map(|child_id| arena.get(child_id).name.clone())
             .collect();
 
@@ -220,7 +241,10 @@ pub fn infer_property_kind(properties: &[String]) -> PropertyKind {
         return PropertyKind::Unknown;
     }
 
-    if properties.iter().any(|p| p == "length" || p == "push" || p == "pop") {
+    if properties
+        .iter()
+        .any(|p| p == "length" || p == "push" || p == "pop")
+    {
         return PropertyKind::Array;
     }
 
@@ -253,7 +277,10 @@ pub fn build_state_variable_registry_impl(
             format!("${}", var_name)
         };
 
-        let base_name = if let Some(stripped) = var_name.strip_prefix('$').or_else(|| var_name.strip_prefix('_')) {
+        let base_name = if let Some(stripped) = var_name
+            .strip_prefix('$')
+            .or_else(|| var_name.strip_prefix('_'))
+        {
             stripped.to_string()
         } else {
             var_name.clone()
@@ -263,20 +290,29 @@ pub fn build_state_variable_registry_impl(
         let mut read_locations = Vec::new();
 
         // Collect locations from the root node (direct + propagated)
-        collect_locations_from_arena_node(arena, var_id, passage_positions, &mut write_locations, &mut read_locations);
+        collect_locations_from_arena_node(
+            arena,
+            var_id,
+            passage_positions,
+            &mut write_locations,
+            &mut read_locations,
+        );
 
         // Collect property paths from child nodes
         let known_properties = collect_all_property_paths_from_arena_node(arena, var_id);
 
-        registry.insert(var_name.clone(), StateVariable {
-            base_name,
-            dollar_name,
-            known_properties,
-            write_locations,
-            read_locations,
-            first_available: None,
-            seeded_by_special: node.meta.seeded_by_special,
-        });
+        registry.insert(
+            var_name.clone(),
+            StateVariable {
+                base_name,
+                dollar_name,
+                known_properties,
+                write_locations,
+                read_locations,
+                first_available: None,
+                seeded_by_special: node.meta.seeded_by_special,
+            },
+        );
     }
 
     registry
@@ -302,9 +338,13 @@ fn collect_locations_from_arena_node(
     for access in &node.meta.refs {
         let kind = if access.propagated {
             if access.is_write() {
-                TypesVarAccessKind::PropertyWrite { path: String::new() }
+                TypesVarAccessKind::PropertyWrite {
+                    path: String::new(),
+                }
             } else {
-                TypesVarAccessKind::PropertyRead { path: String::new() }
+                TypesVarAccessKind::PropertyRead {
+                    path: String::new(),
+                }
             }
         } else if access.is_write() {
             TypesVarAccessKind::Assign
@@ -314,7 +354,9 @@ fn collect_locations_from_arena_node(
 
         let abs_span = passage_positions
             .get(&(access.file_uri.clone(), access.passage_name.clone()))
-            .map(|pos| pos.body_start_offset + access.span.start..pos.body_start_offset + access.span.end)
+            .map(|pos| {
+                pos.body_start_offset + access.span.start..pos.body_start_offset + access.span.end
+            })
             .unwrap_or_else(|| access.span.clone());
 
         let location = crate::types::VarLocation {
@@ -342,7 +384,13 @@ fn collect_locations_from_arena_node(
         // clears first_child/next_sibling, this is a no-op for properly
         // freed nodes, but provides defense-in-depth.
         if child.parent != NO_NODE {
-            collect_locations_from_arena_node(arena, child_id, passage_positions, write_locations, read_locations);
+            collect_locations_from_arena_node(
+                arena,
+                child_id,
+                passage_positions,
+                write_locations,
+                read_locations,
+            );
         }
         child_id = child.next_sibling;
     }
@@ -352,8 +400,12 @@ fn collect_locations_from_arena_node(
 ///
 /// Uses `try_get` instead of `get` for defense-in-depth against stale
 /// pointers in the child chain.
-fn collect_all_property_paths_from_arena_node(arena: &VarArena, node_id: NodeId) -> HashSet<String> {
-    arena.children_of(node_id)
+fn collect_all_property_paths_from_arena_node(
+    arena: &VarArena,
+    node_id: NodeId,
+) -> HashSet<String> {
+    arena
+        .children_of(node_id)
         .filter_map(|child_id| arena.try_get(child_id).map(|n| n.name.clone()))
         .collect()
 }

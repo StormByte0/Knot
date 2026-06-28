@@ -235,7 +235,7 @@ mod tests {
         let mut snapshot = DocumentSnapshot {
             uri: url::Url::parse("file:///test.tw").unwrap(),
             version: 1,
-            rope: Rope::from_str("Hello — World"),  // — is 3 bytes in UTF-8
+            rope: Rope::from_str("Hello — World"), // — is 3 bytes in UTF-8
             passage_names: vec![],
         };
 
@@ -253,7 +253,7 @@ mod tests {
         let mut snapshot = DocumentSnapshot {
             uri: url::Url::parse("file:///test.tw").unwrap(),
             version: 1,
-            rope: Rope::from_str("日本語テスト"),  // CJK characters (3 bytes each)
+            rope: Rope::from_str("日本語テスト"), // CJK characters (3 bytes each)
             passage_names: vec![],
         };
 
@@ -269,7 +269,7 @@ mod tests {
         let mut snapshot = DocumentSnapshot {
             uri: url::Url::parse("file:///test.tw").unwrap(),
             version: 1,
-            rope: Rope::from_str("a—b"),  // 1 + 3 + 1 = 5 bytes, 3 chars
+            rope: Rope::from_str("a—b"), // 1 + 3 + 1 = 5 bytes, 3 chars
             passage_names: vec![],
         };
 
@@ -285,7 +285,7 @@ mod tests {
         let mut snapshot = DocumentSnapshot {
             uri: url::Url::parse("file:///test.tw").unwrap(),
             version: 1,
-            rope: Rope::from_str("Hello 🌍 World"),  // 🌍 is 4 bytes
+            rope: Rope::from_str("Hello 🌍 World"), // 🌍 is 4 bytes
             passage_names: vec![],
         };
 

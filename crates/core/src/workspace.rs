@@ -11,7 +11,7 @@
 //! - Project configuration loading
 
 use crate::document::Document;
-use crate::editing::{graph_surgery, UpdateResult};
+use crate::editing::{UpdateResult, graph_surgery};
 use crate::graph::{DiagnosticKind, EdgeType, GraphDiagnostic, PassageEdge, PassageGraph};
 use crate::passage::{Block, Passage, StoryFormat};
 use serde::Deserialize;
@@ -60,8 +60,7 @@ fn default_true() -> bool {
 
 /// Knot-specific workspace configuration.
 /// Loaded from `.vscode/knot.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KnotConfig {
     /// Path to the Tweego compiler binary.
     #[serde(default)]
@@ -117,7 +116,6 @@ pub struct KnotConfig {
     #[serde(default)]
     pub special_passages: Vec<UserSpecialPassageDef>,
 }
-
 
 /// Build configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,17 +266,20 @@ impl Workspace {
         // have been applied at the entry point.
         let incoming_path = doc.uri.to_file_path().ok();
         if let Some(ref path) = incoming_path {
-            let equiv_keys: Vec<Url> = self.documents.keys()
+            let equiv_keys: Vec<Url> = self
+                .documents
+                .keys()
                 .filter(|existing_uri| {
                     **existing_uri != doc.uri && // Different serialization
-                    existing_uri.to_file_path().map_or(false, |p| p == *path)
+                    existing_uri.to_file_path().is_ok_and(|p| p == *path)
                 })
                 .cloned()
                 .collect();
             for key in equiv_keys {
                 tracing::warn!(
                     "Removing URI-equivalent document: {} (canonical: {})",
-                    key, doc.uri
+                    key,
+                    doc.uri
                 );
                 self.documents.remove(&key);
             }
@@ -365,8 +366,8 @@ impl Workspace {
         }
 
         // Parse the JSON body
-        let data: StoryDataJson =
-            serde_json::from_str(&body_text).map_err(|e| format!("Failed to parse StoryData JSON: {}", e))?;
+        let data: StoryDataJson = serde_json::from_str(&body_text)
+            .map_err(|e| format!("Failed to parse StoryData JSON: {}", e))?;
 
         // Resolve the story format from the parsed format string
         let format = self.resolve_format_from_storydata(data.format.as_deref());
@@ -407,9 +408,10 @@ impl Workspace {
     pub fn resolve_format(&self) -> StoryFormat {
         // Priority 1: knot.json configuration (explicit override)
         if let Some(format_str) = &self.config.format
-            && let Ok(format) = StoryFormat::from_str(format_str) {
-                return format;
-            }
+            && let Ok(format) = StoryFormat::from_str(format_str)
+        {
+            return format;
+        }
 
         // Priority 2: StoryData passage
         if let Some(metadata) = &self.metadata {
@@ -428,7 +430,12 @@ impl Workspace {
         let story_data_count: usize = self
             .documents
             .values()
-            .map(|doc| doc.passages.iter().filter(|p| p.name == "StoryData").count())
+            .map(|doc| {
+                doc.passages
+                    .iter()
+                    .filter(|p| p.name == "StoryData")
+                    .count()
+            })
             .sum();
 
         if story_data_count == 0 {
@@ -452,17 +459,18 @@ impl Workspace {
 
         // Validate start passage exists
         if let Some(metadata) = &self.metadata
-            && self.find_passage(&metadata.start_passage).is_none() {
-                diagnostics.push(GraphDiagnostic {
-                    passage_name: "StoryData".to_string(),
-                    file_uri: self.root_uri.to_string(),
-                    kind: DiagnosticKind::MissingStartPassage,
-                    message: format!(
-                        "Start passage '{}' not found in workspace",
-                        metadata.start_passage
-                    ),
-                });
-            }
+            && self.find_passage(&metadata.start_passage).is_none()
+        {
+            diagnostics.push(GraphDiagnostic {
+                passage_name: "StoryData".to_string(),
+                file_uri: self.root_uri.to_string(),
+                kind: DiagnosticKind::MissingStartPassage,
+                message: format!(
+                    "Start passage '{}' not found in workspace",
+                    metadata.start_passage
+                ),
+            });
+        }
 
         diagnostics
     }
@@ -496,8 +504,8 @@ impl Workspace {
     /// If the file doesn't exist or is invalid, the existing default config
     /// is retained and an optional warning is logged.
     pub fn load_config(&mut self, config_text: &str) -> Result<(), String> {
-        let config: KnotConfig =
-            serde_json::from_str(config_text).map_err(|e| format!("Failed to parse knot.json: {}", e))?;
+        let config: KnotConfig = serde_json::from_str(config_text)
+            .map_err(|e| format!("Failed to parse knot.json: {}", e))?;
         self.config = config;
         Ok(())
     }
@@ -562,7 +570,8 @@ impl Workspace {
         let format_before = self.metadata.as_ref().map(|m| m.format.clone());
 
         // 1. Capture old passages for graph surgery
-        let old_passages: Vec<Passage> = self.get_document(uri)
+        let old_passages: Vec<Passage> = self
+            .get_document(uri)
             .map(|d| d.passages.clone())
             .unwrap_or_default();
 
@@ -631,7 +640,8 @@ impl Workspace {
         let script_injection = graph.special_bundle.script_injection.clone();
         let startup = graph.special_bundle.startup.clone();
 
-        let start_passage_name: String = self.metadata
+        let start_passage_name: String = self
+            .metadata
             .as_ref()
             .map(|m| m.start_passage.clone())
             .unwrap_or_else(|| "Start".into());
@@ -639,33 +649,46 @@ impl Workspace {
         // Upstream edge: ScriptInjection → Startup
         for script_name in &script_injection {
             for startup_name in &startup {
-                let exists = graph.outgoing_neighbors(script_name)
+                let exists = graph
+                    .outgoing_neighbors(script_name)
                     .iter()
                     .any(|n| n == startup_name);
                 if !exists {
-                    graph.add_edge(script_name, startup_name, PassageEdge {
-                        display_text: Some(format!("(upstream: {} → {})", script_name, startup_name)),
-                        edge_type: EdgeType::Upstream,
-                        pre_broken_type: None,
-                    });
+                    graph.add_edge(
+                        script_name,
+                        startup_name,
+                        PassageEdge {
+                            display_text: Some(format!(
+                                "(upstream: {} → {})",
+                                script_name, startup_name
+                            )),
+                            edge_type: EdgeType::Upstream,
+                            pre_broken_type: None,
+                        },
+                    );
                 }
             }
         }
 
         // Bridge edge: Startup → Start passage
-        if !startup.is_empty() {
-            if graph.contains_passage(&start_passage_name) {
-                let bridge_source = &startup[0];
-                let exists = graph.outgoing_neighbors(bridge_source)
-                    .iter()
-                    .any(|n| *n == start_passage_name);
-                if !exists {
-                    graph.add_edge(bridge_source, &start_passage_name, PassageEdge {
-                        display_text: Some(format!("(upstream: {} → {})", bridge_source, start_passage_name)),
+        if !startup.is_empty() && graph.contains_passage(&start_passage_name) {
+            let bridge_source = &startup[0];
+            let exists = graph
+                .outgoing_neighbors(bridge_source)
+                .contains(&start_passage_name);
+            if !exists {
+                graph.add_edge(
+                    bridge_source,
+                    &start_passage_name,
+                    PassageEdge {
+                        display_text: Some(format!(
+                            "(upstream: {} → {})",
+                            bridge_source, start_passage_name
+                        )),
                         edge_type: EdgeType::Upstream,
                         pre_broken_type: None,
-                    });
-                }
+                    },
+                );
             }
         }
     }
@@ -784,9 +807,11 @@ mod tests {
 
         let result = ws.parse_story_data();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("No StoryData passage found in workspace"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("No StoryData passage found in workspace")
+        );
     }
 
     #[test]
@@ -795,7 +820,11 @@ mod tests {
         let mut ws = workspace_with_story_data(json);
         let result = ws.parse_story_data();
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Failed to parse StoryData JSON"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Failed to parse StoryData JSON")
+        );
     }
 
     #[test]

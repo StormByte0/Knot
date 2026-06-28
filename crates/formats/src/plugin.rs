@@ -19,9 +19,7 @@
 //! query the active format plugin instead of hardcoding format-specific logic.
 
 use crate::types::*;
-use knot_core::passage::{
-    Passage, PassageCategory, SpecialPassageDef, StoryFormat,
-};
+use knot_core::passage::{Passage, PassageCategory, SpecialPassageDef, StoryFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use url::Url;
@@ -310,42 +308,42 @@ impl SemanticTokenType {
     pub fn all_types() -> &'static [SemanticTokenType] {
         // ── Passage structure ───────────────────────────────────────
         &[
-            Self::PassageHeader,       // 0
-            Self::PassageName,         // 1
-            Self::Link,                // 2
-            Self::PassageRef,          // 3
-            Self::SpecialPassageHeader,// 4
-            Self::SpecialPassage,      // 5
-            Self::Tag,                 // 6
+            Self::PassageHeader,        // 0
+            Self::PassageName,          // 1
+            Self::Link,                 // 2
+            Self::PassageRef,           // 3
+            Self::SpecialPassageHeader, // 4
+            Self::SpecialPassage,       // 5
+            Self::Tag,                  // 6
             // ── Code constructs ─────────────────────────────────────
-            Self::Macro,               // 7
-            Self::Function,            // 8
-            Self::Variable,            // 9
-            Self::Keyword,             // 10
-            Self::Boolean,             // 11
-            Self::Number,              // 12
-            Self::String,              // 13
-            Self::Comment,             // 14
-            Self::Operator,            // 15
+            Self::Macro,    // 7
+            Self::Function, // 8
+            Self::Variable, // 9
+            Self::Keyword,  // 10
+            Self::Boolean,  // 11
+            Self::Number,   // 12
+            Self::String,   // 13
+            Self::Comment,  // 14
+            Self::Operator, // 15
             // ── Object model ────────────────────────────────────────
-            Self::Namespace,           // 16
-            Self::Property,            // 17
+            Self::Namespace, // 16
+            Self::Property,  // 17
             // ── Narrative content ───────────────────────────────────
-            Self::Prose,               // 18
-            Self::InlineStyle,         // 19
-            Self::TextFormat,          // 20
+            Self::Prose,       // 18
+            Self::InlineStyle, // 19
+            Self::TextFormat,  // 20
             // ── Punctuation ────────────────────────────────────────
-            Self::MacroDelimiter,      // 21
+            Self::MacroDelimiter, // 21
             // ── Block-level markup (Phase 1+, plan.md §AD-4) ────────
             // Appended at end to preserve existing indices 0..=21.
-            Self::Heading,             // 22
-            Self::HorizontalRule,      // 23
-            Self::ListMarker,          // 24
-            Self::Blockquote,          // 25
-            Self::BlockquoteBlock,     // 26
-            Self::Table,               // 27
-            Self::CodeBlock,           // 28
-            Self::InlineCode,          // 29
+            Self::Heading,         // 22
+            Self::HorizontalRule,  // 23
+            Self::ListMarker,      // 24
+            Self::Blockquote,      // 25
+            Self::BlockquoteBlock, // 26
+            Self::Table,           // 27
+            Self::CodeBlock,       // 28
+            Self::InlineCode,      // 29
         ]
     }
 
@@ -355,37 +353,37 @@ impl SemanticTokenType {
     /// color rules (e.g. `entity.name.function.macro.twee`).
     pub fn lsp_name(&self) -> &'static str {
         match self {
-            Self::PassageHeader       => "passageHeader",
-            Self::PassageName         => "passageName",
-            Self::Link                => "link",
-            Self::PassageRef          => "passageRef",
+            Self::PassageHeader => "passageHeader",
+            Self::PassageName => "passageName",
+            Self::Link => "link",
+            Self::PassageRef => "passageRef",
             Self::SpecialPassageHeader => "specialPassageHeader",
-            Self::SpecialPassage      => "specialPassage",
-            Self::Tag                 => "tag",
-            Self::Macro               => "macro",
-            Self::Function            => "function",
-            Self::Variable            => "variable",
-            Self::Keyword             => "keyword",
-            Self::Boolean             => "boolean",
-            Self::Number              => "number",
-            Self::String              => "string",
-            Self::Comment             => "comment",
-            Self::Operator            => "operator",
-            Self::Namespace           => "namespace",
-            Self::Property            => "property",
-            Self::Prose               => "prose",
-            Self::InlineStyle         => "inlineStyle",
-            Self::TextFormat          => "textFormat",
-            Self::MacroDelimiter      => "macroDelimiter",
+            Self::SpecialPassage => "specialPassage",
+            Self::Tag => "tag",
+            Self::Macro => "macro",
+            Self::Function => "function",
+            Self::Variable => "variable",
+            Self::Keyword => "keyword",
+            Self::Boolean => "boolean",
+            Self::Number => "number",
+            Self::String => "string",
+            Self::Comment => "comment",
+            Self::Operator => "operator",
+            Self::Namespace => "namespace",
+            Self::Property => "property",
+            Self::Prose => "prose",
+            Self::InlineStyle => "inlineStyle",
+            Self::TextFormat => "textFormat",
+            Self::MacroDelimiter => "macroDelimiter",
             // ── Block-level markup (Phase 1+, plan.md §AD-4) ────────
-            Self::Heading             => "heading",
-            Self::HorizontalRule      => "horizontalRule",
-            Self::ListMarker          => "listMarker",
-            Self::Blockquote          => "blockquote",
-            Self::BlockquoteBlock     => "blockquoteBlock",
-            Self::Table               => "table",
-            Self::CodeBlock           => "codeBlock",
-            Self::InlineCode          => "inlineCode",
+            Self::Heading => "heading",
+            Self::HorizontalRule => "horizontalRule",
+            Self::ListMarker => "listMarker",
+            Self::Blockquote => "blockquote",
+            Self::BlockquoteBlock => "blockquoteBlock",
+            Self::Table => "table",
+            Self::CodeBlock => "codeBlock",
+            Self::InlineCode => "inlineCode",
         }
     }
 
@@ -433,24 +431,24 @@ impl SemanticTokenModifier {
     /// use names that VS Code themes can match.
     pub fn lsp_name(&self) -> &'static str {
         match self {
-            Self::Definition   => "definition",
-            Self::ReadOnly     => "readonly",
-            Self::Deprecated   => "deprecated",
-            Self::ControlFlow  => "controlFlow",
-            Self::TwineCore    => "static",
-            Self::StoryFormat  => "async",
-            Self::UserDefined  => "modification",
-            Self::BlockDepth1  => "blockDepth1",
-            Self::BlockDepth2  => "blockDepth2",
-            Self::BlockDepth3  => "blockDepth3",
-            Self::BlockDepth4  => "blockDepth4",
-            Self::BlockDepth5  => "blockDepth5",
-            Self::BlockDepth6  => "blockDepth6",
-            Self::Bold          => "bold",
-            Self::Underline     => "underline",
+            Self::Definition => "definition",
+            Self::ReadOnly => "readonly",
+            Self::Deprecated => "deprecated",
+            Self::ControlFlow => "controlFlow",
+            Self::TwineCore => "static",
+            Self::StoryFormat => "async",
+            Self::UserDefined => "modification",
+            Self::BlockDepth1 => "blockDepth1",
+            Self::BlockDepth2 => "blockDepth2",
+            Self::BlockDepth3 => "blockDepth3",
+            Self::BlockDepth4 => "blockDepth4",
+            Self::BlockDepth5 => "blockDepth5",
+            Self::BlockDepth6 => "blockDepth6",
+            Self::Bold => "bold",
+            Self::Underline => "underline",
             Self::Strikethrough => "strikethrough",
-            Self::Subscript     => "subscript",
-            Self::Superscript   => "superscript",
+            Self::Subscript => "subscript",
+            Self::Superscript => "superscript",
         }
     }
 
@@ -632,7 +630,7 @@ pub struct MacroBlockEvent {
 /// Handlers must always query these methods through the active format plugin
 /// obtained from `FormatRegistry::get()`. Never import format-specific data
 /// directly from a format module.
-
+///
 /// Detail information about a custom macro, returned by
 /// [`FormatPlugin::find_custom_macro_detail()`] for completion resolve.
 #[derive(Debug, Clone)]
@@ -695,7 +693,9 @@ pub trait FormatPlugin: Send + Sync {
     /// passage matches a TAG-matched definition, use
     /// `classify_passage()` or check `tag_matched_special_passages()`.
     fn is_special_passage(&self, name: &str) -> bool {
-        self.all_name_matched_passages().iter().any(|d| d.name == name)
+        self.all_name_matched_passages()
+            .iter()
+            .any(|d| d.name == name)
     }
 
     /// Returns ALL name-matched special passage definitions applicable to
@@ -769,7 +769,11 @@ pub trait FormatPlugin: Send + Sync {
         for def in &all_defs {
             if def.match_strategy == knot_core::passage::MatchStrategy::Name
                 && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::TwineCore | knot_core::passage::SpecialPassageLayer::LegacyCore)
+                && matches!(
+                    def.layer,
+                    knot_core::passage::SpecialPassageLayer::TwineCore
+                        | knot_core::passage::SpecialPassageLayer::LegacyCore
+                )
             {
                 return Some(def.clone());
             }
@@ -783,7 +787,11 @@ pub trait FormatPlugin: Send + Sync {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
                     && tag.eq_ignore_ascii_case(&def.name)
-                    && matches!(def.layer, knot_core::passage::SpecialPassageLayer::TwineCore | knot_core::passage::SpecialPassageLayer::LegacyCore)
+                    && matches!(
+                        def.layer,
+                        knot_core::passage::SpecialPassageLayer::TwineCore
+                            | knot_core::passage::SpecialPassageLayer::LegacyCore
+                    )
                 {
                     let mut matched = def.clone();
                     matched.name = passage_name.to_string();
@@ -810,7 +818,10 @@ pub trait FormatPlugin: Send + Sync {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
                     && tag.eq_ignore_ascii_case(&def.name)
-                    && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+                    && matches!(
+                        def.layer,
+                        knot_core::passage::SpecialPassageLayer::StoryFormat
+                    )
                 {
                     let mut matched = def.clone();
                     matched.name = passage_name.to_string();
@@ -826,7 +837,10 @@ pub trait FormatPlugin: Send + Sync {
         for def in &all_defs {
             if def.match_strategy == knot_core::passage::MatchStrategy::Name
                 && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+                && matches!(
+                    def.layer,
+                    knot_core::passage::SpecialPassageLayer::StoryFormat
+                )
             {
                 return Some(def.clone());
             }
@@ -866,11 +880,21 @@ pub trait FormatPlugin: Send + Sync {
         for def in &all_defs {
             if def.match_strategy == knot_core::passage::MatchStrategy::Name
                 && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::TwineCore | knot_core::passage::SpecialPassageLayer::LegacyCore)
+                && matches!(
+                    def.layer,
+                    knot_core::passage::SpecialPassageLayer::TwineCore
+                        | knot_core::passage::SpecialPassageLayer::LegacyCore
+                )
             {
-                let category = if matches!(def.behavior, knot_core::passage::SpecialPassageBehavior::Metadata) {
+                let category = if matches!(
+                    def.behavior,
+                    knot_core::passage::SpecialPassageBehavior::Metadata
+                ) {
                     PassageCategory::CoreMetadata
-                } else if matches!(def.layer, knot_core::passage::SpecialPassageLayer::LegacyCore) {
+                } else if matches!(
+                    def.layer,
+                    knot_core::passage::SpecialPassageLayer::LegacyCore
+                ) {
                     PassageCategory::CoreLegacy
                 } else {
                     PassageCategory::CoreNamed
@@ -884,7 +908,11 @@ pub trait FormatPlugin: Send + Sync {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
                     && tag.eq_ignore_ascii_case(&def.name)
-                    && matches!(def.layer, knot_core::passage::SpecialPassageLayer::TwineCore | knot_core::passage::SpecialPassageLayer::LegacyCore)
+                    && matches!(
+                        def.layer,
+                        knot_core::passage::SpecialPassageLayer::TwineCore
+                            | knot_core::passage::SpecialPassageLayer::LegacyCore
+                    )
                 {
                     let mut matched = def.clone();
                     matched.name = passage_name.to_string();
@@ -901,7 +929,10 @@ pub trait FormatPlugin: Send + Sync {
             for def in &all_defs {
                 if def.match_strategy == knot_core::passage::MatchStrategy::Tag
                     && tag.eq_ignore_ascii_case(&def.name)
-                    && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+                    && matches!(
+                        def.layer,
+                        knot_core::passage::SpecialPassageLayer::StoryFormat
+                    )
                 {
                     let mut matched = def.clone();
                     matched.name = passage_name.to_string();
@@ -915,7 +946,10 @@ pub trait FormatPlugin: Send + Sync {
         for def in &all_defs {
             if def.match_strategy == knot_core::passage::MatchStrategy::Name
                 && def.name == passage_name
-                && matches!(def.layer, knot_core::passage::SpecialPassageLayer::StoryFormat)
+                && matches!(
+                    def.layer,
+                    knot_core::passage::SpecialPassageLayer::StoryFormat
+                )
             {
                 return (Some(def.clone()), PassageCategory::FormatNamed);
             }
@@ -1102,11 +1136,7 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// The default implementation returns `None` (no macro detection),
     /// which is appropriate for formats that don't have macros.
-    fn find_macro_at_position(
-        &self,
-        _line: &str,
-        _byte_pos: usize,
-    ) -> Option<MacroAtPosition> {
+    fn find_macro_at_position(&self, _line: &str, _byte_pos: usize) -> Option<MacroAtPosition> {
         None
     }
 
@@ -1124,11 +1154,7 @@ pub trait FormatPlugin: Send + Sync {
     /// - Snowman:   no block macro structure
     ///
     /// The default implementation returns an empty vector.
-    fn scan_line_for_macro_events(
-        &self,
-        _line: &str,
-        _line_idx: u32,
-    ) -> Vec<MacroBlockEvent> {
+    fn scan_line_for_macro_events(&self, _line: &str, _line_idx: u32) -> Vec<MacroBlockEvent> {
         Vec::new()
     }
 
@@ -1190,10 +1216,7 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// - SugarCube: detects `<</` prefix and extracts the partial name
     /// - Harlowe:   not applicable (no close tags)
-    fn detect_close_tag_context(
-        &self,
-        _before_cursor: &str,
-    ) -> Option<String> {
+    fn detect_close_tag_context(&self, _before_cursor: &str) -> Option<String> {
         None
     }
 
@@ -1302,7 +1325,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// The default implementation returns an empty map. SugarCube overrides
     /// this to scan `<<set $var to "literal">>` patterns.
-    fn build_var_string_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, Vec<String>> {
+    fn build_var_string_map(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> HashMap<String, Vec<String>> {
         HashMap::new()
     }
 
@@ -1440,7 +1466,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// Used for dot-notation completion (e.g., `$item.` → suggest "sword", "shield").
     /// The default implementation returns an empty map.
-    fn build_object_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, HashSet<String>> {
+    fn build_object_property_map(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> HashMap<String, HashSet<String>> {
         HashMap::new()
     }
 
@@ -1456,7 +1485,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// The default implementation returns an empty map (no shape-aware completion).
     /// Format plugins that support dot-notation completion should override this.
-    fn build_shape_aware_property_map(&self, _workspace: &knot_core::Workspace) -> HashMap<String, crate::types::PropertyMapEntry> {
+    fn build_shape_aware_property_map(
+        &self,
+        _workspace: &knot_core::Workspace,
+    ) -> HashMap<String, crate::types::PropertyMapEntry> {
         HashMap::new()
     }
 
@@ -1519,10 +1551,7 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// The default implementation uses `build_state_variable_registry()` and
     /// filters for variables where `seeded_by_special` is true.
-    fn special_passage_seed_variables(
-        &self,
-        workspace: &knot_core::Workspace,
-    ) -> HashSet<String> {
+    fn special_passage_seed_variables(&self, workspace: &knot_core::Workspace) -> HashSet<String> {
         self.build_state_variable_registry(workspace)
             .into_iter()
             .filter(|(_, sv)| sv.seeded_by_special)
@@ -1684,7 +1713,10 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// Returns an empty Vec if the path doesn't exist in the tree or
     /// the format doesn't have a variable tree.
-    fn variable_children_with_kind(&self, _path: &str) -> Vec<(String, crate::types::PropertyKind)> {
+    fn variable_children_with_kind(
+        &self,
+        _path: &str,
+    ) -> Vec<(String, crate::types::PropertyKind)> {
         Vec::new()
     }
 
@@ -1767,10 +1799,7 @@ pub trait FormatPlugin: Send + Sync {
     ///
     /// Returns `(defined_in, file_uri, is_widget, is_container, arg_count, description)`
     /// if found, or `None`. The default returns `None`.
-    fn find_custom_macro_detail(
-        &self,
-        _name: &str,
-    ) -> Option<CustomMacroDetail> {
+    fn find_custom_macro_detail(&self, _name: &str) -> Option<CustomMacroDetail> {
         None
     }
 
@@ -1860,6 +1889,7 @@ pub trait FormatPlugin: Send + Sync {
     /// The default returns `CompletionContext::Other`, which causes the
     /// handler to offer default completions (passage names). Format plugins
     /// that support interactive completion MUST override this.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_completion_context(
         &self,
         _text: &str,
@@ -1908,6 +1938,7 @@ pub trait FormatPlugin: Send + Sync {
     /// 6. Macro open context (`<<`) → macro completions (builtins + custom)
     /// 7. Link context (`[[`) → passage name completions
     /// 8. No trigger / default → workspace symbols
+    #[allow(clippy::too_many_arguments)]
     fn provide_completions(
         &self,
         _text: &str,
@@ -1952,7 +1983,6 @@ pub trait FormatPlugin: Send + Sync {
     // -----------------------------------------------------------------------
     // Registry lifecycle (optional — incremental re-parse support)
     // -----------------------------------------------------------------------
-
 }
 
 // ===========================================================================
@@ -1988,7 +2018,13 @@ pub trait FormatPluginMut: FormatPlugin {
 
     /// Re-parse a single passage incrementally.
     /// The plugin MUST call `registry.remove_passage(name, uri)` before populating.
-    fn parse_passage_mut(&mut self, passage_name: &str, passage_tags: &[String], passage_text: &str, file_uri: &str) -> Option<Passage>;
+    fn parse_passage_mut(
+        &mut self,
+        passage_name: &str,
+        passage_tags: &[String],
+        passage_text: &str,
+        file_uri: &str,
+    ) -> Option<Passage>;
 
     /// Remove all registry entries for a file.
     fn remove_file_from_registries(&mut self, file_uri: &str);

@@ -103,10 +103,7 @@ impl LanguageServer for ServerState {
         completion::completion_resolve(self, params).await
     }
 
-    async fn hover(
-        &self,
-        params: HoverParams,
-    ) -> Result<Option<Hover>, tower_lsp::jsonrpc::Error> {
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>, tower_lsp::jsonrpc::Error> {
         hover::hover(self, params).await
     }
 

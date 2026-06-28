@@ -186,13 +186,8 @@ impl AnalysisEngine {
             &passage_data,
             &flow_states,
         ));
-        diagnostics.extend(Self::detect_unused_variables(
-            &passage_data,
-            &flow_states,
-        ));
-        diagnostics.extend(Self::detect_redundant_writes(
-            &passage_data,
-        ));
+        diagnostics.extend(Self::detect_unused_variables(&passage_data, &flow_states));
+        diagnostics.extend(Self::detect_redundant_writes(&passage_data));
 
         diagnostics
     }
@@ -207,7 +202,9 @@ impl AnalysisEngine {
                 if passage.is_metadata() {
                     continue;
                 }
-                let entry = seen.entry(passage.name.clone()).or_insert_with(|| (doc.uri.to_string(), 0));
+                let entry = seen
+                    .entry(passage.name.clone())
+                    .or_insert_with(|| (doc.uri.to_string(), 0));
                 entry.1 += 1;
             }
         }
@@ -239,14 +236,12 @@ impl AnalysisEngine {
                     continue;
                 }
                 // Check if the passage body is empty or contains only whitespace
-                let has_content = passage.body.iter().any(|block| {
-                    match block {
-                        Block::Text { content, .. } => !content.trim().is_empty(),
-                        Block::Macro { .. } => true,
-                        Block::Expression { .. } => true,
-                        Block::Heading { .. } => true,
-                        Block::Incomplete { .. } => false,
-                    }
+                let has_content = passage.body.iter().any(|block| match block {
+                    Block::Text { content, .. } => !content.trim().is_empty(),
+                    Block::Macro { .. } => true,
+                    Block::Expression { .. } => true,
+                    Block::Heading { .. } => true,
+                    Block::Incomplete { .. } => false,
                 });
 
                 if !has_content {
@@ -254,10 +249,7 @@ impl AnalysisEngine {
                         passage_name: passage.name.clone(),
                         file_uri: doc.uri.to_string(),
                         kind: DiagnosticKind::EmptyPassage,
-                        message: format!(
-                            "Passage '{}' has no content",
-                            passage.name
-                        ),
+                        message: format!("Passage '{}' has no content", passage.name),
                     });
                 }
             }
@@ -273,23 +265,22 @@ impl AnalysisEngine {
     /// <<include>>) are excluded — they're content fragments rendered by
     /// other passages, not narrative destinations that need outgoing links.
     fn detect_dead_end_passages(workspace: &Workspace) -> Vec<GraphDiagnostic> {
-        use petgraph::visit::EdgeRef;
         use crate::graph::EdgeType;
+        use petgraph::visit::EdgeRef;
         let mut diagnostics = Vec::new();
 
         // Collect passages that are targets of Include edges — these are
         // content fragments (like UIOutfitLabel included by StoryInterface)
         // and should not be flagged as dead-end.
-        let mut include_targets: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut include_targets: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for edge_ref in workspace.graph.edge_references() {
             let edge = edge_ref.weight();
             let is_include = edge.edge_type == EdgeType::Include
                 || (edge.edge_type == EdgeType::Broken
                     && edge.pre_broken_type == Some(EdgeType::Include));
-            if is_include {
-                if let Some(target_name) = workspace.graph.node_name(edge_ref.target()) {
-                    include_targets.insert(target_name.to_string());
-                }
+            if is_include && let Some(target_name) = workspace.graph.node_name(edge_ref.target()) {
+                include_targets.insert(target_name.to_string());
             }
         }
 
@@ -482,19 +473,16 @@ impl AnalysisEngine {
         let mut diagnostics = Vec::new();
 
         // Find the start passage
-        let start_doc = workspace.documents().find(|doc| {
-            doc.passages.iter().any(|p| p.name == start_passage)
-        });
+        let start_doc = workspace
+            .documents()
+            .find(|doc| doc.passages.iter().any(|p| p.name == start_passage));
 
         let Some(start_doc) = start_doc else {
             // Missing start passage is already detected elsewhere
             return diagnostics;
         };
 
-        let start_passage_data = start_doc
-            .passages
-            .iter()
-            .find(|p| p.name == start_passage);
+        let start_passage_data = start_doc.passages.iter().find(|p| p.name == start_passage);
 
         let Some(start_p) = start_passage_data else {
             return diagnostics;
@@ -504,8 +492,7 @@ impl AnalysisEngine {
             return diagnostics;
         }
 
-        let has_outgoing = !start_p.links.is_empty()
-            || workspace.graph.has_outgoing(start_passage);
+        let has_outgoing = !start_p.links.is_empty() || workspace.graph.has_outgoing(start_passage);
 
         if !has_outgoing {
             diagnostics.push(GraphDiagnostic {
@@ -636,11 +623,12 @@ impl AnalysisEngine {
 
         // Process the start passage to compute its exit state
         if let Some(data) = passage_data.get(start_passage)
-            && let Some(state) = flow_states.get_mut(start_passage) {
-                let mut exit = state.entry.clone();
-                Self::process_passage_vars(data, &mut exit);
-                state.exit = exit;
-            }
+            && let Some(state) = flow_states.get_mut(start_passage)
+        {
+            let mut exit = state.entry.clone();
+            Self::process_passage_vars(data, &mut exit);
+            state.exit = exit;
+        }
 
         // Worklist: start with all successors of the start passage
         let mut worklist: VecDeque<String> = VecDeque::new();
@@ -693,10 +681,8 @@ impl AnalysisEngine {
                         match &intersection {
                             None => intersection = Some(pred_state.exit.clone()),
                             Some(current) => {
-                                let new_intersect: InitSet = current
-                                    .intersection(&pred_state.exit)
-                                    .cloned()
-                                    .collect();
+                                let new_intersect: InitSet =
+                                    current.intersection(&pred_state.exit).cloned().collect();
                                 intersection = Some(new_intersect);
                             }
                         }
@@ -862,10 +848,7 @@ impl AnalysisEngine {
                         passage_name: passage_name.clone(),
                         file_uri: file_uri.clone(),
                         kind: DiagnosticKind::UnusedVariable,
-                        message: format!(
-                            "Variable '{}' is written but never read",
-                            var_name
-                        ),
+                        message: format!("Variable '{}' is written but never read", var_name),
                     });
                 }
             }
