@@ -235,7 +235,7 @@ Knot is under active development. See [ROADMAP.md](../../ROADMAP.md) for long-te
 
 Knot is a passion project built by a solo developer. If Knot makes your interactive fiction workflow better, consider supporting its continued development on **Patreon**:
 
-**[Become a Patron →](https://www.patreon.com/cw/StormByte0)**
+**[Become a Patron →](https://patreon.com/StormByte0)**
 
 Patreon support directly funds:
 - Completing the Harlowe, Chapbook, and Snowman format plugins
@@ -251,13 +251,13 @@ Tiers and benefits are being set up — check the Patreon page for the latest. E
 
 ### Author
 
-- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://www.patreon.com/cw/StormByte0)
+- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://patreon.com/StormByte0)
 
 ### Patrons
 
 Knot is funded by its community of Patreon supporters. Patrons will be listed here by tier once the support program launches.
 
-*Become a patron to see your name here — [patreon.com/cw/StormByte0](https://www.patreon.com/cw/StormByte0)*
+*Become a patron to see your name here — [patreon.com/cw/StormByte0](https://patreon.com/StormByte0)*
 
 ### Built With
 
@@ -280,6 +280,6 @@ This project is licensed under the **Knot Source-Available License**. You are fr
 
 - **Repository:** [https://github.com/StormByte0/Knot](https://github.com/StormByte0/Knot)
 - **Issues:** [https://github.com/StormByte0/Knot/issues](https://github.com/StormByte0/Knot/issues)
-- **Patreon:** [https://www.patreon.com/cw/StormByte0](https://www.patreon.com/cw/StormByte0)
+- **Patreon:** [https://patreon.com/StormByte0](https://patreon.com/StormByte0)
 - **Tweego:** [https://www.motoslave.net/tweego/](https://www.motoslave.net/tweego/)
-- **Twine:** [https://tweecode.com](https://tweecode.com)
+- **Twine:** [https://twinery.org/](https://twinery.org/)
