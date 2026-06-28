@@ -108,17 +108,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Binary bootstrap system: platform-specific `knot-server` resolution with fallback to TextMate
 - TextMate grammar for Twee syntax highlighting (`syntaxes/twee.tmLanguage.json`)
 - Language configuration for bracket matching, comment toggling, and word patterns
-- 9 commands: openStoryMap, build, play, playFromPassage, restartServer, reindexWorkspace, detectCompiler, openPassageByName, toggleAutoRebuild
+- 14 commands: openStoryMap, build, play, playFromPassage, toggleWatch, restartServer, reindexWorkspace, detectCompiler, configureStoryFormats, openManagedStorage, openTweegoFolder, openPassageByName, openSettings, initProject
 - 4 keybindings: F5 (Play), Shift+F5 (Play from Passage), F6 (Build), Ctrl+Shift+M (Story Map)
+- **Status Bar Cluster** — Five items: Story Map, Build, Watch (toggle auto-rebuild on save), Play (open in browser), Settings
+- **Watch Toggle** — Background save watcher for `.tw`/`.twee`/`.js`/`.css`/`.html` files with build output logging
+- **Play** — Opens compiled HTML in the default system browser; builds first if Watch is off, opens existing HTML if Watch is on
 - **Decorations API** — Gutter badges on passage headers, faded unreachable passages, wavy red underlines on broken links
 - **Language Status API** — Native status indicator with periodic refresh showing format, passage count, broken/unreachable counts
-- **Task Provider** — `knot/build` and `knot/watch` tasks using Pseudoterminal
+- **Task Provider** — `knot/build` task using Pseudoterminal
 - **Story Map Webview** — Cytoscape.js graph with 4 layouts (dagre, breadthfirst, cose, circle), search/filter, click-to-navigate, color-coded nodes
-- **Play Mode** — In-editor story preview with auto-rebuild, passage history sidebar, debug panel, keyboard navigation (Alt+R/B/←/→/G), format-aware passage tracking
 - **Debug View** — Passage inspection with trace, step-over, breakpoints, variable watch, diagnostics listing
 - **Profile View** — Workspace statistics dashboard with graph health, variable stats, link distribution, complexity metrics, structural balance, tag analysis
 - Crash recovery: auto-retry up to 3 times with 2s delay, restart/disable dialog on max retries
-- 13 configurable diagnostic severity settings
+- 10 configurable diagnostic severity settings
 - Editor defaults for Twee files: word wrap, tab size 4, format on save, bracket pair colorization
 
 #### CI/CD
@@ -136,5 +138,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### SugarCube Macro Table
 - 30 built-in SugarCube macro signatures with parameter descriptions
 - Used by signature help and completion providers
+
+#### Build Pipeline
+- **Source/format separation** — workspace is purely game files; story formats live in the extension-managed folder. No more `format.js` getting bundled as a passage.
+- **StoryTitle-derived output filename** — compiled HTML is named after the `StoryTitle` passage (sanitized), matching Twine GUI behavior. Falls back to `index.html`.
+- **Build stats logging** — Tweego's `-l` flag is always passed; passage and word counts are parsed and logged as `Knot: Build stats — N passages, N words`.
+- **Build flags setting** — `knot.build.flags` array for additional Tweego command-line flags, merged with `.vscode/knot.json` flags.
+- **Auto-download** — Tweego and story formats are downloaded automatically on first build. No manual setup required.
+- **Versioned format cache** — story formats cached per version in `<globalStorage>/storyformats/<id>@<version>/`.
+
+### Changed
+
+#### Settings Reorganization
+- Dropped the redundant "Knot — " prefix from all section titles
+- Reordered sections for progressive disclosure: Build → Diagnostics → Indexing → Status & Paths → Advanced
+- "General" section renamed to "Advanced" and demoted to the bottom
+- Read-only managed paths gathered into the "Status & Paths" section
+- All setting descriptions rewritten for clarity (action-first phrasing, trimmed verbose explanations)
+
+#### Settings Renamed
+- `knot.tweegoPath` → `knot.build.tweegoPath` (namespace consistency)
+- `knot.storyformats.path` → `knot.build.storyformatsPath` (same)
+- One-time migration shim copies old values forward on activation
+
+#### Source Directory Resolution
+- Workspace root is always the source directory — no more `src/` auto-detection
+- `knot.build.sourceDir` still works as an explicit override
+- Source directory validation rejects toolchain directories (contains a tweego binary)
+
+#### Story Formats Resolution
+- Project-local `<workspace>/storyformats/` is no longer supported
+- Story formats resolve from: user setting → versioned managed cache → error with download hint
+- Log messages renamed from "TWEEGO_PATH" to "story formats search path" for clarity
+
+### Fixed
+
+#### Cross-Platform Path Handling
+- Fixed hardcoded `\\storyformats\\` backslashes in error messages — now uses `PathBuf::join().display()` for correct separators on all platforms
+- Fixed string-based path normalization in the indexing exclude-pattern matcher — now uses `PathBuf::strip_prefix` instead of string manipulation
 
 [2.0.0]: https://github.com/StormByte0/Knot/releases/tag/v2.0.0
