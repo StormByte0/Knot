@@ -1,0 +1,207 @@
+# Release — runs on tag push (v*)
+# Builds platform-specific VSIX packages and creates a draft GitHub Release.
+# The release is NOT published to the marketplace automatically — download
+# the VSIX files from the release, review them, then run `vsce publish`
+# manually when ready.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────
+  # Build the webview once — it produces platform-independent static
+  # assets (JS/CSS) that are identical across all targets.
+  # ─────────────────────────────────────────────────────────────────────
+  build-webview:
+    name: Build webview (shared)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: extensions/vscode/webview/package-lock.json
+
+      - name: Install webview dependencies
+        run: npm ci
+        working-directory: extensions/vscode/webview
+
+      - name: Build webview
+        run: npm run build
+        working-directory: extensions/vscode/webview
+
+      - name: Upload webview assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: webview-assets
+          path: extensions/vscode/media/storymap/
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Build platform-specific VSIX packages.
+  # Each job downloads the shared webview assets, builds the Rust server
+  # for its target, compiles the extension TS, and packages a VSIX.
+  # ─────────────────────────────────────────────────────────────────────
+  build-platform:
+    name: Build ${{ matrix.target }}
+    needs: build-webview
+    strategy:
+      fail-fast: false  # let all platforms finish even if one fails
+      matrix:
+        include:
+          - target: win32-x64
+            runner: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            binary: knot-server.exe
+          - target: darwin-arm64
+            runner: macos-14
+            rust-target: aarch64-apple-darwin
+            binary: knot-server
+          - target: darwin-x64
+            runner: macos-13
+            rust-target: x86_64-apple-darwin
+            binary: knot-server
+          - target: linux-x64
+            runner: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            binary: knot-server
+          - target: linux-arm64
+            runner: ubuntu-latest
+            rust-target: aarch64-unknown-linux-gnu
+            binary: knot-server
+            cross: true
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download webview assets
+        uses: actions/download-artifact@v4
+        with:
+          name: webview-assets
+          path: extensions/vscode/media/storymap/
+
+      # ── Rust setup ───────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust-target }}
+
+      # ── Cross-compilation setup (linux-arm64 only) ───────────────────
+      - name: Install cross toolchain (linux-arm64 only)
+        if: matrix.cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross linker (linux-arm64 only)
+        if: matrix.cross
+        run: |
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      # ── Build Rust server ─────────────────────────────────────────────
+      - name: Build Rust server (release)
+        run: cargo build --release --target ${{ matrix.rust-target }}
+
+      - name: Copy binary to extension bin/
+        shell: bash
+        run: |
+          mkdir -p extensions/vscode/bin
+          cp "target/${{ matrix.rust-target }}/release/${{ matrix.binary }}" \
+             "extensions/vscode/bin/${{ matrix.binary }}"
+
+      # ── Extension setup ───────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: extensions/vscode/package-lock.json
+
+      - name: Install extension dependencies
+        run: npm ci
+        working-directory: extensions/vscode
+
+      - name: Compile TypeScript
+        run: npm run compile
+        working-directory: extensions/vscode
+
+      # ── Package VSIX ──────────────────────────────────────────────────
+      - name: Package VSIX
+        run: npx vsce package --target ${{ matrix.target }} --allow-missing-repository
+        working-directory: extensions/vscode
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: extensions/vscode/*.vsix
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Create a draft GitHub Release with all VSIX files attached.
+  # ─────────────────────────────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: build-platform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all VSIX files
+        uses: actions/download-artifact@v4
+        with:
+          pattern: vsix-*
+          merge-multiple: true
+          path: vsix-files
+
+      - name: List VSIX files
+        run: ls -la vsix-files/
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: vsix-files/*.vsix
+          body: |
+            ## Knot ${{ github.ref_name }}
+
+            ### Platform-specific VSIX packages
+
+            Download the file matching your platform and install with:
+            ```
+            code --install-extension <filename>.vsix
+            ```
+
+            | File | Platform |
+            |---|---|
+            | `*.win32-x64.vsix` | Windows x64 |
+            | `*.darwin-arm64.vsix` | macOS ARM (Apple Silicon) |
+            | `*.darwin-x64.vsix` | macOS x64 (Intel) |
+            | `*.linux-x64.vsix` | Linux x64 |
+            | `*.linux-arm64.vsix` | Linux ARM64 |
+
+            ### Publishing to Marketplace
+
+            This is a draft release. To publish to the VS Code Marketplace:
+            1. Download the VSIX files
+            2. Review them
+            3. Run: `vsce publish --packagePath <filename>.vsix`
