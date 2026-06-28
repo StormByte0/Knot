@@ -153,25 +153,7 @@ variables, and history).
 
 ---
 
-## 7. Format Override
-
-**Use case**: Testing a project against a different story format without
-editing StoryData (e.g. a SugarCube project testing Chapbook compatibility).
-
-**Proposed setting**: `knot.build.formatOverride` (string, default empty)
-- When set, server passes `-f <id>` to tweego, overriding StoryData's format
-- When empty, tweego uses StoryData's format (current behavior)
-
-**Dependencies**:
-- Server-side: add `format_override` field to `KnotBuildParams` and
-  `BuildConfig`, pass as `-f` flag when set
-- Extension-side: add setting to `contributes.configuration`
-
-**Effort**: Small (2 hours). Minimal server work.
-
----
-
-## 8. Module Bundling (`-m` flag)
+## 7. Module Bundling (`-m` flag)
 
 **Use case**: Bundling assets (CSS, JS, fonts, images) from outside the
 workspace source tree — e.g. a shared `~/twine-assets/` directory used
@@ -189,7 +171,7 @@ across multiple projects.
 
 ---
 
-## 9. Custom `<head>` Content (`--head` flag)
+## 8. Custom `<head>` Content (`--head` flag)
 
 **Use case**: Injecting analytics tags, third-party SDK snippets, or meta
 tags that don't belong in a stylesheet/script passage.
@@ -209,17 +191,19 @@ tags that don't belong in a stylesheet/script passage.
 
 ## Priority Guidance
 
-**Ship next** (quick wins, high value):
+**Ship next** (priority #1, blocks smooth onboarding):
+- #2 Project Initialization Skeleton (onboarding — this is the top priority)
+
+**Ship after** (quick wins, high value):
 - #1 Decompile HTML → Twee (migration use case is critical for adoption)
 - #5 Twine Archive Export (backup/migration)
 - #6 Test Mode (debugging aid)
-- #7 Format Override (testing aid)
-
-**Ship after** (medium effort, high value):
-- #2 Project Initialization Skeleton (onboarding)
-- #8 Module Bundling
-- #9 Custom `<head>` Content
+- #7 Module Bundling
+- #8 Custom `<head>` Content
 
 **Ship last** (large effort, plan carefully):
 - #3 Send Passage to New File
 - #4 Passage Organization (bulk operations)
+
+**Not planned** (removed from roadmap):
+- ~~Format Override~~ — not currently planned for implementation.

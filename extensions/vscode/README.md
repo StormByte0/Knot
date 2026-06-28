@@ -4,13 +4,13 @@ A next-generation integrated development environment for Twine and Twee interact
 
 The core language server is written in Rust for high-performance parsing, incremental graph recomputation, and low-latency response times. It communicates with VS Code through the Language Server Protocol.
 
-> **⚠️ Under active development.** Knot is pre-release software. Currently, only **SugarCube 2** has full language features (macro catalog, JS-aware variable tracking, special passages). Parsers for Harlowe, Chapbook, and Snowman exist as stubs and are planned for future releases. Expect breaking changes and rough edges until v2.0.0 ships.
+> **⚠️ Under active development.** Knot is pre-release software. Only **SugarCube 2** currently has full language features (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** have placeholder/skeleton implementations only — the `FormatPlugin` trait is implemented but the parsers are not yet production quality and link extraction is not functional. The build pipeline works for all formats (it delegates to Tweego, which is format-agnostic). See the [Supported Story Formats](#supported-story-formats) matrix below. Expect breaking changes and rough edges until v2.0.0 ships.
 
 ---
 
 ## Key Features
 
-- **Graph-native architecture** — your story is a directed graph, not a pile of files. The Story Map visualizes passage relationships and highlights structural issues.
+- **Graph-based architecture** — your story is modeled as a directed graph of passages connected by links. The Story Map visualizes passage relationships and highlights structural issues.
 - **Real-time diagnostics** — broken links, unreachable passages, uninitialized variables, duplicate passage names, dead ends, and more — updated as you type.
 - **SugarCube-focused analysis** — full macro catalog, JS-aware variable tracking, and special passage support for SugarCube 2. Other formats are planned.
 - **Incremental analysis** — only affected passages are re-parsed after each keystroke. Large projects stay responsive.
@@ -52,9 +52,11 @@ The `StoryData` passage tells Knot (and Tweego) which story format to use. The `
 
 ### 3. Build and Play
 
-Click **Build** in the status bar (or press `F6`) to compile your project into an HTML file. The first build will prompt Knot to download Tweego and the required story format — this happens automatically, no manual setup needed.
+Click **Build** in the status bar to compile your project into an HTML file. The first build will prompt Knot to download Tweego and the required story format — this happens automatically, no manual setup needed.
 
-Click **Play** (or press `F5`) to open the compiled story in your default browser. If Watch is off, Play builds first; if Watch is on, Play just opens the already-fresh HTML.
+Click **Play** to open the compiled story in your default browser. If Watch is off, Play builds first; if Watch is on, Play just opens the already-fresh HTML.
+
+> **Note on keyboard shortcuts:** F5 (Play), F6 (Build), Ctrl+Shift+M (Story Map), and Shift+F5 (Play from Passage) are declared in `package.json` but are scoped to only fire when a `.twee` file is the active editor. In practice these shortcuts may conflict with VS Code defaults; the status bar buttons and Command Palette (`Ctrl+Shift+P`) are the reliable ways to trigger these actions.
 
 ### 4. Enable Watch (Optional)
 
@@ -64,7 +66,7 @@ This is the recommended workflow for active development: turn Watch on, open Pla
 
 ### 5. Explore the Story Map
 
-Click **Story Map** in the status bar (or press `Ctrl+Shift+M`) to open an interactive graph of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. The map updates in real time as you edit.
+Click **Story Map** in the status bar to open an interactive graph of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. The map updates in real time as you edit.
 
 ---
 
@@ -72,13 +74,15 @@ Click **Story Map** in the status bar (or press `Ctrl+Shift+M`) to open an inter
 
 Knot adds five items to the left side of the status bar:
 
-| Item | Icon | Action | Shortcut |
-|---|---|---|---|
-| Story Map | $(compass) | Open the graph visualization | `Ctrl+Shift+M` |
-| Build | $(tools) | Compile the project with Tweego | `F6` |
-| Watch | $(eye) / $(eye-closed) | Toggle auto-rebuild on save | — |
-| Play | $(play) | Open compiled HTML in browser | `F5` |
-| Settings | $(gear) | Open Knot settings | — |
+| Item | Icon | Action |
+|---|---|---|
+| Story Map | $(compass) | Open the graph visualization |
+| Build | $(tools) | Compile the project with Tweego |
+| Watch | $(eye) / $(eye-closed) | Toggle auto-rebuild on save |
+| Play | $(play) | Open compiled HTML in browser |
+| Settings | $(gear) | Open Knot settings |
+
+> **Keyboard shortcuts** (F5, F6, Ctrl+Shift+M, Shift+F5) are declared in `package.json` but may not reliably trigger due to VS Code default keybinding conflicts. Use the status bar buttons or Command Palette instead.
 
 ---
 
@@ -184,16 +188,18 @@ Build output appears in the "Knot Build" output channel (`View → Output → Kn
 
 ## Supported Story Formats
 
-Knot currently targets **SugarCube 2** as its primary format with full language features. Parsers for the other three major Twine formats exist as stubs and are planned for future releases.
+Knot currently has **SugarCube 2** as its only production-quality format plugin with full language features. The other three Twine formats (Harlowe, Chapbook, Snowman) have placeholder/skeleton implementations — the `FormatPlugin` trait is implemented for each, but the parsers have not been completed to production quality and link extraction is not yet functional. The build pipeline works for all formats because it delegates to Tweego, which is format-agnostic.
 
-| Format | Status | Language Features |
-|---|---|---|
-| **SugarCube 2** | ✅ Fully supported | Full macro catalog, JS-aware variable tracking, special passages, completion, hover, diagnostics |
-| **Harlowe 3** | 🔧 Planned | Stub parser only — no language features yet |
-| **Chapbook 1** | 🔧 Planned | Stub parser only — no language features yet |
-| **Snowman 2** | 🔧 Planned | Stub parser only — no language features yet |
+| Format | Status | What works | What doesn't (yet) |
+|---|---|---|---|
+| **SugarCube 2** | ✅ Full support | Full macro catalog (~120 builtins), JS-aware variable tracking via oxc, special passages, completion, hover, diagnostics, Story Map, build pipeline | — |
+| **Harlowe 3** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, macro catalog, variable tracking, completion, hover |
+| **Chapbook 1** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, macro catalog, variable tracking, completion, hover |
+| **Snowman 2** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, ERB template detection, macro catalog, variable tracking, completion, hover |
 
-Knot auto-detects the format from your `StoryData` passage. If you're writing a SugarCube story, all language features activate automatically. For other formats, you'll get basic syntax highlighting and build support, but no deep analysis until those plugins are completed.
+Knot auto-detects the format from your `StoryData` passage. For non-SugarCube formats, the Language Status indicator in the lower-right of the editor will show a `◐` marker indicating the format is not yet fully supported. If you're writing a SugarCube story, all language features activate automatically.
+
+Bringing Harlowe, Chapbook, and Snowman to full parity is planned — see [ROADMAP.md](../../ROADMAP.md) for details.
 
 ---
 
@@ -233,17 +239,18 @@ Knot is under active development. See [ROADMAP.md](../../ROADMAP.md) for long-te
 
 ## Support the Project
 
-Knot is a passion project built by a solo developer. If Knot makes your interactive fiction workflow better, consider supporting its continued development on **Patreon**:
+Knot is a passion project. If Knot makes your interactive fiction workflow better, consider supporting its continued development on **Patreon** or **Ko-fi**:
 
-**[Become a Patron →](https://patreon.com/StormByte0)**
+- **[Become a Patron →](https://patreon.com/StormByte0)**
+- **[Buy a coffee on Ko-fi →](https://ko-fi.com/stormbyte0)**
 
-Patreon support directly funds:
+Support funds:
 - Completing the Harlowe, Chapbook, and Snowman format plugins
-- Building the planned features in [PLANNED_FEATURES.md](../../PLANNED_FEATURES.md) (decompile, project initialization, passage organization, and more)
+- Building the planned features in [PLANNED_FEATURES.md](../../PLANNED_FEATURES.md) (project initialization, decompile, passage organization, and more)
 - Ongoing maintenance, bug fixes, and Twine/SugarCube version tracking
 - Keeping Knot free to use for everyone, including commercial Twine authors
 
-Tiers and benefits are being set up — check the Patreon page for the latest. Every supporter gets listed in the Credits below.
+Patreon tiers and benefits are being set up — check the Patreon page for the latest. Every supporter gets listed in the Credits below.
 
 ---
 
@@ -251,13 +258,13 @@ Tiers and benefits are being set up — check the Patreon page for the latest. E
 
 ### Author
 
-- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://patreon.com/StormByte0)
+- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://patreon.com/StormByte0) · [Ko-fi](https://ko-fi.com/stormbyte0)
 
 ### Patrons
 
-Knot is funded by its community of Patreon supporters. Patrons will be listed here by tier once the support program launches.
+Knot is funded by its community of supporters. Patrons will be listed here once the support program launches.
 
-*Become a patron to see your name here — [patreon.com/cw/StormByte0](https://patreon.com/StormByte0)*
+*Become a patron to see your name here — [patreon.com/StormByte0](https://patreon.com/StormByte0)*
 
 ### Built With
 
@@ -281,5 +288,6 @@ This project is licensed under the **Knot Source-Available License**. You are fr
 - **Repository:** [https://github.com/StormByte0/Knot](https://github.com/StormByte0/Knot)
 - **Issues:** [https://github.com/StormByte0/Knot/issues](https://github.com/StormByte0/Knot/issues)
 - **Patreon:** [https://patreon.com/StormByte0](https://patreon.com/StormByte0)
+- **Ko-fi:** [https://ko-fi.com/stormbyte0](https://ko-fi.com/stormbyte0)
 - **Tweego:** [https://www.motoslave.net/tweego/](https://www.motoslave.net/tweego/)
 - **Twine:** [https://twinery.org/](https://twinery.org/)

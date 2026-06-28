@@ -9,11 +9,11 @@ who want to understand the system under the hood.
 ## Overview
 
 Knot is a language server and VS Code extension for Twine/Twee interactive
-fiction projects. The core insight is that a Twine story is not a pile of
-text files — it is a **directed graph** of passages connected by links.
-Knot models the project as a graph from the ground up, which enables
-structural analysis (broken links, unreachable passages, dead ends, game
-loops) that file-by-file tooling cannot provide.
+fiction projects. The project is modeled as a directed graph of passages
+connected by links, which enables structural analysis (broken links,
+unreachable passages, dead ends) that file-by-file tooling cannot provide.
+Game loop detection is planned but not yet implemented — it requires
+conditional-edge tracking that the current graph model does not support.
 
 The project is split into two main parts:
 
@@ -64,8 +64,11 @@ plugins produce and all analysis runs against:
   segments.
 - **`Graph`** — a `petgraph` directed graph where nodes are passages
   and edges are links. Supports incremental surgery (add/remove
-  passages and links without rebuilding the whole graph), cycle
-  detection (SCC analysis for game loops), and reachability analysis.
+  passages and links without rebuilding the whole graph), reachability
+  analysis (for dead-end and unreachable detection), and SCC
+  computation (Tarjan's algorithm). Note: SCC data is computed and
+  exported to the client, but the Story Map webview does not yet
+  render game loop highlighting — see ROADMAP.md.
 - **`Analysis`** — runs the diagnostic passes over the workspace:
   broken links, unreachable passages, uninitialized variables, unused
   variables, redundant writes, duplicate passage names, empty passages,
@@ -93,8 +96,12 @@ Chapbook, Snowman) has its own parser that produces the format-agnostic
   static macro catalog (~1200 lines of data), special passage
   definitions, CSS parsing, and a full JS annotation pipeline that
   tracks variable reads/writes across SugarCube macros.
-- **Harlowe, Chapbook, Snowman** — full parsers, though variable
-  tracking is partial in some.
+- **Harlowe, Chapbook, Snowman** — placeholder/skeleton implementations
+  only. The `FormatPlugin` trait is implemented but the parsers have not
+  been completed to production quality. Link extraction and Story Map
+  visualization are not yet functional for these formats. Build pipeline
+  works (it delegates to Tweego, which is format-agnostic). Bringing
+  these to SugarCube parity is planned — see ROADMAP.md.
 
 The key architectural principle is **format ownership**: each plugin
 owns its syntax, its special passages, its macros, and its semantic
@@ -191,12 +198,19 @@ The build flow is the most complex orchestration in the extension:
 Five items on the left side of the status bar:
 
 - **Story Map** — opens the graph visualization webview
-- **Build** — one-shot build (`F6`)
+- **Build** — one-shot build
 - **Watch** — toggle background auto-rebuild on save
   (`$(eye)` / `$(eye-closed)`)
-- **Play** — open compiled HTML in the default browser (`F5`). If
+- **Play** — open compiled HTML in the default browser. If
   Watch is ON, opens the existing HTML; if OFF, builds first.
 - **⚙** — extension settings
+
+Keybindings are declared in `package.json` (F5=Play, F6=Build,
+Ctrl+Shift+M=Story Map, Shift+F5=Play from Passage) but are scoped to
+`resourceLangId == 'twee'` — they only fire when a `.twee` file is the
+active editor. In practice these shortcuts may conflict with VS Code
+defaults; the status bar buttons and Command Palette are the reliable
+ways to trigger these actions.
 
 The Watch toggle runs a `vscode.workspace.onDidSaveTextDocument`
 watcher for `.tw`/`.twee`/`.js`/`.css`/`.html` files. On each save it
@@ -210,8 +224,13 @@ Four webview panels provide visual tooling:
 
 - **Story Map** — an interactive directed graph of all passages,
   rendered with `@xyflow/react` + `dagre` for layout. Nodes are
-  passages, edges are links. Supports click-to-navigate, focus, and
-  layout customization.
+  passages, edges are links. Supports click-to-navigate (single click
+  jumps to the passage in the editor). All edges are rendered in gray
+  — there is no edge-type color differentiation. Special passages
+  (StoryInit, StoryTitle, etc.) get distinct node colors. Dead-end
+  passages get a yellow double border; unreachable passages are
+  grouped separately. There is no focus mode or right-click context
+  menu.
 - **Passage Diagnostics** — shows detailed info about the passage
   under the cursor: links, variables, macros, complexity metrics.
 - **Project Info** — workspace-level stats: passage count, word count,
