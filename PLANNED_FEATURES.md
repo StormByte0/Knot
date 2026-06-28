@@ -189,6 +189,52 @@ tags that don't belong in a stylesheet/script passage.
 
 ---
 
+## 9. CSS and HTML Parser/Linter
+
+**Use case**: Twine projects routinely embed CSS (in `[stylesheet]`-tagged
+passages or via `<<include>>` of `.css` files) and HTML (in passage bodies,
+`[script]` blocks, or custom `<head>` content). Today Knot has type
+scaffolding for CSS (`crates/core/src/css/`) but the parser itself is not
+implemented — `parse_css()` returns an empty result. Authors writing
+complex stylesheets or inline HTML currently have to leave VS Code for a
+separate linter, breaking the single-tool workflow.
+
+**Proposed approach**:
+- **CSS**: Implement the actual CSS parser behind the existing
+  `crates/core/src/css/` type scaffolding (the types are already stable;
+  only the parser body is missing). Surface syntax errors, unknown
+  properties (with a configurable allow-list for vendor-prefixed and
+  SugarCube-extended properties), and basic best-practice warnings
+  (empty rules, duplicate properties, invalid selector syntax). Add
+  completion for property names and values inside `[stylesheet]`
+  passages and `.css` files in the workspace.
+- **HTML**: Add a fault-tolerant HTML parser that understands the
+  SugarCube/Chapbook/Harlowe passage body context (HTML can appear
+  inline in prose, inside macros like `<<link>>`, or in `[script]`-tagged
+  passages). Surface diagnostics for unclosed tags, mismatched tags,
+  invalid nesting, and common accessibility issues (missing `alt` on
+  images, missing `label` for form controls). Add hover docs for HTML
+  elements and completion for tag names + attributes.
+
+**Dependencies**:
+- Server-side: implement the CSS parser body in `crates/core/src/css/`
+  (types are already in place); add a new HTML parser crate or vendor a
+  fault-tolerant HTML parser (e.g. `html5ever` or `lol_html`). Wire both
+  into the existing `Analysis` pass and the semantic token pipeline.
+- Extension-side: no new UI — diagnostics flow through the standard
+  Problems panel; completion and hover through the existing LSP handlers.
+- Format plugin coordination: CSS and HTML inside passages may interact
+  with format-specific syntax (SugarCube macros inside HTML attributes,
+  Chapbook modifiers inside HTML, etc.). Each format plugin needs a hook
+  to delimit "this region is HTML" vs "this region is format-specific."
+
+**Effort**: Medium (1–2 weeks of dedicated work). Both parsers need to
+be implemented or vendored, the diagnostic categories need to be defined,
+and the format-interaction edge cases need careful handling. Not a
+trivial addition.
+
+---
+
 ## Priority Guidance
 
 **Ship next** (priority #1, blocks smooth onboarding):
@@ -200,6 +246,10 @@ tags that don't belong in a stylesheet/script passage.
 - #6 Test Mode (debugging aid)
 - #7 Module Bundling
 - #8 Custom `<head>` Content
+
+**Ship medium-term** (dedicated work, high value):
+- #9 CSS and HTML Parser/Linter (1–2 weeks; expands Knot's scope beyond
+  twee source into the embedded web languages every Twine project uses)
 
 **Ship last** (large effort, plan carefully):
 - #3 Send Passage to New File
