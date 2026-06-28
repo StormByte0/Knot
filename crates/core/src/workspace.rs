@@ -73,7 +73,7 @@ pub struct KnotConfig {
     /// knot-managed globalStorage). When unset, the server uses the layered
     /// discovery chain in `build.rs::resolve_storyformats_dir()`.
     ///
-    /// This is mirrored by the VS Code setting `knot.storyformats.path`,
+    /// This is mirrored by the VS Code setting `knot.build.storyformatsPath`,
     /// which is the recommended way for users to configure this — the
     /// setting is visible in the Settings UI as a folder picker.
     #[serde(default)]

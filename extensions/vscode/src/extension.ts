@@ -14,12 +14,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { StoryMapPanelManager } from './storyMapProvider';
-import { PlayModeProvider } from './playModeProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
-import { isTweeLanguage, extractPassageName, setGlobalStoragePath } from './utils';
+import { isTweeLanguage, extractPassageName, setGlobalStoragePath, getResolvedTweegoPath } from './utils';
 import { KnotLanguageClient } from './types';
 import { getServerPath } from './binaryResolution';
 import { registerNotifications, NotificationDeps } from './notifications';
@@ -43,7 +42,6 @@ const LanguageClientCtor: typeof VLCModule.LanguageClient = VLCModule.LanguageCl
 let client: KnotLanguageClient | null = null;
 let statusBarItem: vscode.StatusBarItem | null = null;
 let storyMapPanel: StoryMapPanelManager | null = null;
-let playModeProvider: PlayModeProvider | null = null;
 let debugViewProvider: DebugViewProvider | null = null;
 let profileViewProvider: ProfileViewProvider | null = null;
 let variableFlowProvider: VariableFlowProvider | null = null;
@@ -89,10 +87,89 @@ export async function activate(context: vscode.ExtensionContext) {
     await config.update('managed.tweegoPath', path.join(storageRoot, 'tweego', tweegoBinaryName), vscode.ConfigurationTarget.Global);
     await config.update('managed.storyformatsPath', path.join(storageRoot, 'storyformats'), vscode.ConfigurationTarget.Global);
 
-    // Create the permanent left-side status bar items (Story Map, Build, Settings)
+    // ── Settings migration: tweegoPath / storyformats.path → build.* ──
+    // The pre-v2 settings `knot.tweegoPath` and `knot.storyformats.path`
+    // were renamed to `knot.build.tweegoPath` and `knot.build.storyformatsPath`
+    // for namespace consistency. Copy any lingering values forward, then
+    // clear the old keys so they disappear from the Settings UI. Idempotent
+    // — safe to run on every activation.
+    const legacyTweego = config.get<string>('tweegoPath', '');
+    const legacySfPath = config.get<string>('storyformats.path', '');
+    const newTweego = config.get<string>('build.tweegoPath', '');
+    const newSfPath = config.get<string>('build.storyformatsPath', '');
+    if (legacyTweego && !newTweego) {
+        await config.update('build.tweegoPath', legacyTweego, vscode.ConfigurationTarget.Global);
+    }
+    if (legacySfPath && !newSfPath) {
+        await config.update('build.storyformatsPath', legacySfPath, vscode.ConfigurationTarget.Global);
+    }
+    // Always clear the legacy keys — `undefined` removes them from settings.json.
+    await config.update('tweegoPath', undefined, vscode.ConfigurationTarget.Global);
+    await config.update('storyformats.path', undefined, vscode.ConfigurationTarget.Global);
+
+    // Compute and publish the resolved Tweego path (read-only Status & Paths).
+    // Re-computed on every config change so it stays in sync with the user's
+    // `build.tweegoPath` setting and the managed download state.
+    const updateResolvedTweegoPath = () => {
+        const resolved = getResolvedTweegoPath();
+        // Only write at Global scope so it shows in the Settings UI regardless
+        // of workspace. Ignore the "no change" case silently.
+        vscode.workspace.getConfiguration('knot').update(
+            'resolved.tweegoPath', resolved, vscode.ConfigurationTarget.Global,
+        );
+    };
+    updateResolvedTweegoPath();
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('knot.build.tweegoPath')) {
+                updateResolvedTweegoPath();
+            }
+        }),
+    );
+
+    // ── Warn about deprecated project-local storyformats/ ──────────────
+    // The workspace should be purely game files now — story formats live
+    // in the extension-managed folder. If a `<workspace>/storyformats/`
+    // folder exists, warn the user once per session that it's no longer
+    // used and offer to open the managed folder instead.
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        const localStoryformats = vscode.Uri.joinPath(
+            workspaceFolders[0].uri, 'storyformats'
+        );
+        vscode.workspace.fs.stat(localStoryformats).then((stat) => {
+            if (stat.type === vscode.FileType.Directory) {
+                vscode.window.showWarningMessage(
+                    'Knot: A "storyformats" folder was found in this workspace. ' +
+                    'Project-local story formats are no longer supported — the workspace should contain only game files. ' +
+                    'Story formats now live in the extension-managed folder. ' +
+                    'Use "Knot: Open Story Formats Folder" to manage them.',
+                    'Open Managed Folder',
+                    'Dismiss'
+                ).then((choice) => {
+                    if (choice === 'Open Managed Folder') {
+                        vscode.commands.executeCommand('knot.openTweegoFolder');
+                    }
+                });
+            }
+        }, () => {
+            // No storyformats/ folder — expected, nothing to do.
+        });
+    }
+
+    // Create the build output channel early — shared between the status bar
+    // (for the watch toggle's logging) and the build notification handler.
+    buildOutputChannel = vscode.window.createOutputChannel('Knot Build');
+    context.subscriptions.push(buildOutputChannel);
+
+    // Create the permanent left-side status bar items (Story Map, Build, Watch, Play, Settings)
     // These appear after indexing completes; during indexing, the statusBarItem
     // above shows progress instead.
-    createStatusBarItems(context);
+    createStatusBarItems(
+        context,
+        buildOutputChannel,
+        () => client,
+    );
 
     // ── Language client setup ──────────────────────────────────────────
 
@@ -170,11 +247,6 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push({ dispose: () => variableFlowProvider?.dispose() });
 
-    playModeProvider = new PlayModeProvider(context.extensionUri, context);
-
-    buildOutputChannel = vscode.window.createOutputChannel('Knot Build');
-    context.subscriptions.push(buildOutputChannel);
-
     // ── Start client & register notifications ──────────────────────────
 
     try {
@@ -201,9 +273,6 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         if (variableFlowProvider) {
             variableFlowProvider.setClient(client);
-        }
-        if (playModeProvider) {
-            playModeProvider.setClient(client);
         }
 
         // Register custom LSP notification handlers
@@ -255,8 +324,6 @@ export async function activate(context: vscode.ExtensionContext) {
         debugViewProvider,
         profileViewProvider,
         variableFlowProvider,
-        getPlayModeProvider: () => playModeProvider,
-        setPlayModeProvider: (p) => { playModeProvider = p; },
         context,
     };
     registerCommands(cmdDeps);
@@ -350,10 +417,6 @@ function updateDebugViewForEditor(editor: vscode.TextEditor) {
 // ---------------------------------------------------------------------------
 
 export async function deactivate() {
-    if (playModeProvider) {
-        playModeProvider.dispose();
-        playModeProvider = null;
-    }
     if (client) {
         await client.stop();
         client = null;

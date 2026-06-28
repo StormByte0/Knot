@@ -18,7 +18,7 @@
 //!
 //! Resolution order (first hit wins):
 //!
-//! 1. **Configured path** — `knot.storyformats.path` VS Code setting or
+//! 1. **Configured path** — `knot.build.storyformatsPath` VS Code setting or
 //!    `storyformats_path` field in `.vscode/knot.json`. Highest priority.
 //! 2. **Project-local** — `<workspace_root>/storyformats/`. Matches
 //!    tweego's `<cwd>/storyformats/` search when cwd is the workspace root.
@@ -111,20 +111,17 @@ pub(crate) async fn detect_compiler_version(path: &Path) -> Option<String> {
 /// format subdirectories (each with its own `format.js` file). Returns
 /// `None` if no candidate directory exists.
 ///
-/// Resolution order (matches the user-requested architecture):
-///   1. Configured path — `knot.storyformats.path` setting or `.vscode/knot.json`
-///   2. Project-local — `<workspace>/storyformats/` (CWD override)
-///   3. None — caller falls back to managed cache or error
+/// Resolution order:
+///   1. Configured path — `knot.build.storyformatsPath` setting or `.vscode/knot.json`
+///   2. None — caller falls back to managed cache or error
 ///
-/// Note: We do NOT check the tweego binary's sibling directory. That's
-/// tweego's own search path (#1 in its internal order) — if the user has
-/// a project-bundled tweego with storyformats next to it, tweego will find
-/// those automatically at build time. We don't duplicate that here because
-/// the formats catalog UI should only show formats the user explicitly
-/// installed (via managed cache or configured path).
+/// Note: We do NOT check the tweego binary's sibling directory or a
+/// project-local `<workspace>/storyformats/` folder. Story formats live
+/// exclusively in the extension-managed folder (`<globalStorage>/storyformats/`)
+/// or a user-configured path. This keeps the workspace purely game files.
 pub(crate) fn resolve_storyformats_dir(
     configured_path: Option<&Path>,
-    workspace_root: Option<&Path>,
+    _workspace_root: Option<&Path>,
     _tweego_path: Option<&Path>,
 ) -> Option<PathBuf> {
     // 1. Configured path (highest priority)
@@ -139,20 +136,8 @@ pub(crate) fn resolve_storyformats_dir(
         );
     }
 
-    // 2. Project-local storyformats/ (tweego's <cwd>/storyformats/ convention)
-    if let Some(root) = workspace_root {
-        let local = root.join("storyformats");
-        if local.is_dir() {
-            tracing::debug!(
-                "Resolved storyformats dir from project-local: {}",
-                local.display()
-            );
-            return Some(local);
-        }
-    }
-
-    // 3. No resolution — caller falls back to managed cache or error.
-    tracing::debug!("No storyformats directory resolved from config or CWD");
+    // 2. No resolution — caller falls back to managed cache or error.
+    tracing::debug!("No storyformats directory resolved from config");
     None
 }
 
@@ -186,8 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_from_project_local() {
-        // tweego's convention is `storyformats/` (no dot) in the cwd.
+    fn test_resolve_does_not_use_project_local() {
+        // Project-local <workspace>/storyformats/ is intentionally NOT
+        // checked — the workspace is purely game files, formats live in
+        // the managed folder.
         let workspace = tempfile::tempdir().unwrap();
         let local = workspace.path().join("storyformats");
         std::fs::create_dir_all(&local).unwrap();
@@ -197,14 +184,12 @@ mod tests {
             Some(workspace.path()),
             None,
         );
-        assert_eq!(result, Some(local));
+        assert_eq!(result, None, "Should NOT resolve from project-local storyformats/");
     }
 
     #[test]
     fn test_resolve_does_not_use_tweego_sibling() {
         // We intentionally do NOT check the tweego binary's sibling directory.
-        // That's tweego's own search path — we don't duplicate it here.
-        // The formats catalog should only show explicitly-installed formats.
         let tweego_dir = tempfile::tempdir().unwrap();
         let tweego_bin = tweego_dir.path().join("tweego");
         let sibling = tweego_dir.path().join("storyformats");
@@ -216,23 +201,6 @@ mod tests {
             Some(&tweego_bin),
         );
         assert_eq!(result, None, "Should NOT resolve from tweego binary sibling");
-    }
-
-    #[test]
-    fn test_resolve_configured_takes_priority_over_local() {
-        let workspace = tempfile::tempdir().unwrap();
-        let local = workspace.path().join("storyformats");
-        std::fs::create_dir_all(&local).unwrap();
-
-        let configured = tempfile::tempdir().unwrap();
-
-        let result = resolve_storyformats_dir(
-            Some(configured.path()),
-            Some(workspace.path()),
-            None,
-        );
-        // Configured wins over local.
-        assert_eq!(result, Some(configured.path().to_path_buf()));
     }
 
     #[test]

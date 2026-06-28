@@ -97,7 +97,7 @@ pub struct ServerStateInner {
     /// Catalog of installed story formats, indexed from the resolved
     /// storyformats directory (see `build::resolve_storyformats_dir`).
     ///
-    /// This is rebuilt whenever the user changes `knot.storyformats.path`
+    /// This is rebuilt whenever the user changes `knot.build.storyformatsPath`
     /// or invokes `knot/formats/refresh`. The catalog is the source of
     /// truth for "is the format referenced by StoryData actually installed?"
     /// diagnostics and for the `Knot: Configure Story Formats` UI.

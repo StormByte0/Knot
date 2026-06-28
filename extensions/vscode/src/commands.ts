@@ -15,13 +15,13 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync, execFileSync } from 'child_process';
 import { KnotLanguageClient, KnotBuildResponse, KnotCompilerDetectResponse, KnotReindexResponse, KnotGenerateIfidResponse, KnotFormatsListResponse, KnotFormatsRefreshResponse } from './types';
-import { PlayModeProvider } from './playModeProvider';
 import { StoryMapPanelManager } from './storyMapProvider';
 import { DebugViewProvider } from './debugViewProvider';
 import { ProfileViewProvider } from './profileViewProvider';
 import { VariableFlowProvider } from './variableFlowProvider';
 import * as navigation from './navigation';
 import { extractPassageName, getBuildRequestParams, getFormatsRefreshParams, getManagedTweegoPath, getManagedStoryformatsPath } from './utils';
+import { isWatchActive, toggleWatch } from './watchState';
 
 // ---------------------------------------------------------------------------
 // Dependencies injected from extension.ts
@@ -34,9 +34,6 @@ export interface CommandDeps {
     debugViewProvider: DebugViewProvider | null;
     profileViewProvider: ProfileViewProvider | null;
     variableFlowProvider: VariableFlowProvider | null;
-    /** Play mode provider — may be lazily created. */
-    getPlayModeProvider: () => PlayModeProvider | null;
-    setPlayModeProvider: (provider: PlayModeProvider) => void;
     context: vscode.ExtensionContext;
 }
 
@@ -46,7 +43,7 @@ export interface CommandDeps {
 
 /** Register all Knot commands. */
 export function registerCommands(deps: CommandDeps): void {
-    const { context, getPlayModeProvider, setPlayModeProvider } = deps;
+    const { context } = deps;
 
     // Open Story Map — single-instance WebviewPanel.
     context.subscriptions.push(
@@ -79,8 +76,8 @@ export function registerCommands(deps: CommandDeps): void {
             }
 
             try {
-                // getBuildRequestParams reads knot.tweegoPath, knot.build.sourceDir,
-                // knot.build.outputDir, and knot.storyformats.path from VS Code
+                // getBuildRequestParams reads knot.build.tweegoPath, knot.build.sourceDir,
+                // knot.build.outputDir, and knot.build.storyformatsPath from VS Code
                 // Settings. The tweegoPath from ensureTweegoAvailable() is used
                 // as a fallback if the setting isn't set.
                 const buildParams = getBuildRequestParams(workspaceFolders[0].uri.toString());
@@ -153,29 +150,59 @@ export function registerCommands(deps: CommandDeps): void {
         })
     );
 
-    // Play Story
+    // Play Story — open the compiled HTML in the default browser.
+    // If Watch is ON, just open the existing HTML (Watch keeps it fresh).
+    // If Watch is OFF, build first then open.
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.play', async () => {
             const client = deps.getClient();
-            // Check for Tweego availability
-            const tweegoPath = await ensureTweegoAvailable(context, client);
-            if (!tweegoPath) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders || workspaceFolders.length === 0) {
+                vscode.window.showWarningMessage('Knot: No workspace folder open.');
                 return;
             }
 
-            let playMode = getPlayModeProvider();
-            if (!playMode) {
-                playMode = new PlayModeProvider(context.extensionUri, context);
-                if (client) {
-                    playMode.setClient(client);
+            const watchActive = isWatchActive();
+            let htmlPath: string | undefined;
+
+            if (!watchActive) {
+                // Build first
+                const tweegoPath = await ensureTweegoAvailable(context, client);
+                if (!tweegoPath) { return; }
+
+                const buildParams = getBuildRequestParams(workspaceFolders[0].uri.toString());
+                if (!buildParams.compiler_path && tweegoPath) {
+                    buildParams.compiler_path = tweegoPath;
                 }
-                setPlayModeProvider(playMode);
+                const result = await client?.sendRequest<KnotBuildResponse>('knot/build', buildParams);
+                if (!result?.success) {
+                    vscode.window.showErrorMessage(
+                        'Knot: Build failed — ' + (result?.errors?.join('; ') || 'unknown error'),
+                    );
+                    return;
+                }
+                htmlPath = result.output_path;
+            } else {
+                // Watch is ON — find the existing HTML in the output dir
+                htmlPath = await findBuiltHtml(workspaceFolders[0].uri);
             }
-            await playMode.show();
+
+            if (!htmlPath) {
+                vscode.window.showWarningMessage(
+                    'Knot: No built HTML found. ' +
+                    (watchActive
+                        ? 'Save a source file to trigger a build, or use Build first.'
+                        : 'Build did not produce an output file.'),
+                );
+                return;
+            }
+
+            // Open in the system default browser
+            await vscode.env.openExternal(vscode.Uri.file(htmlPath));
         })
     );
 
-    // Play from Passage — start play from a specific passage
+    // Play from Passage — same as Play but with --start <passage>
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.playFromPassage', async (passageName?: string) => {
             const client = deps.getClient();
@@ -185,7 +212,6 @@ export function registerCommands(deps: CommandDeps): void {
                 if (editor) {
                     const text = editor.document.getText();
                     const position = editor.selection.active;
-                    // Find passage header at or before cursor
                     const lines = text.split('\n');
                     let currentPassage: string | undefined;
                     for (let i = 0; i <= position.line; i++) {
@@ -203,33 +229,46 @@ export function registerCommands(deps: CommandDeps): void {
                 return;
             }
 
-            // Check for Tweego availability
-            const tweegoPath = await ensureTweegoAvailable(context, client);
-            if (!tweegoPath) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders || workspaceFolders.length === 0) {
+                vscode.window.showWarningMessage('Knot: No workspace folder open.');
                 return;
             }
 
-            let playMode = getPlayModeProvider();
-            if (!playMode) {
-                playMode = new PlayModeProvider(context.extensionUri, context);
-                if (client) {
-                    playMode.setClient(client);
-                }
-                setPlayModeProvider(playMode);
+            // playFromPassage always builds — it needs --start which changes
+            // the output, so we can't just open the existing HTML.
+            const tweegoPath = await ensureTweegoAvailable(context, client);
+            if (!tweegoPath) { return; }
+
+            const buildParams = getBuildRequestParams(
+                workspaceFolders[0].uri.toString(),
+                passageName,
+            );
+            if (!buildParams.compiler_path && tweegoPath) {
+                buildParams.compiler_path = tweegoPath;
             }
-            await playMode.show(passageName);
+            const result = await client?.sendRequest<KnotBuildResponse>('knot/build', buildParams);
+            if (!result?.success) {
+                vscode.window.showErrorMessage(
+                    'Knot: Build failed — ' + (result?.errors?.join('; ') || 'unknown error'),
+                );
+                return;
+            }
+
+            if (result.output_path) {
+                await vscode.env.openExternal(vscode.Uri.file(result.output_path));
+            }
         })
     );
 
-    // Toggle Auto-Rebuild in Play Mode
+    // Toggle Watch (background auto-rebuild on save)
     context.subscriptions.push(
-        vscode.commands.registerCommand('knot.toggleAutoRebuild', async () => {
-            const playMode = getPlayModeProvider();
-            if (playMode) {
-                playMode.toggleAutoRebuild();
-            } else {
-                vscode.window.showInformationMessage('Knot: Play mode is not active.');
-            }
+        vscode.commands.registerCommand('knot.toggleWatch', async () => {
+            const client = deps.getClient();
+            const active = toggleWatch(client);
+            vscode.window.showInformationMessage(
+                `Knot: Watch ${active ? 'enabled' : 'disabled'}.`,
+            );
         })
     );
 
@@ -346,7 +385,7 @@ export function registerCommands(deps: CommandDeps): void {
     //   - See the currently resolved directory and the formats installed there
     //   - Browse for a different folder (preview before saving)
     //   - Clear the configured path (revert to auto-discovery)
-    //   - Open the Settings UI at the knot.storyformats.path field
+    //   - Open the Settings UI at the knot.build.storyformatsPath field
     //   - Refresh the catalog after manually adding/removing format dirs
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.configureStoryFormats', async () => {
@@ -397,7 +436,7 @@ export function registerCommands(deps: CommandDeps): void {
                 if (configuredPath) {
                     items.push({
                         label: `$(settings) Configured path: ${configuredPath}`,
-                        description: 'From knot.storyformats.path setting',
+                        description: 'From Build: Story Formats Path setting',
                         action: 'openSettings',
                     });
                 } else {
@@ -493,7 +532,7 @@ export function registerCommands(deps: CommandDeps): void {
                 }
                 items.push({
                     label: '$(gear) Open Settings',
-                    description: 'Edit knot.storyformats.path directly in the Settings UI',
+                    description: 'Edit Build: Story Formats Path directly in the Settings UI',
                     action: 'openSettings',
                 });
 
@@ -509,7 +548,7 @@ export function registerCommands(deps: CommandDeps): void {
                 if (selection.action === 'openSettings') {
                     await vscode.commands.executeCommand(
                         'workbench.action.openSettings',
-                        'knot.storyformats.path'
+                        'knot.build.storyformatsPath'
                     );
                     return;
                 }
@@ -563,9 +602,9 @@ export function registerCommands(deps: CommandDeps): void {
                         }
                     }
 
-                    // Save to the knot.storyformats.path setting.
+                    // Save to the knot.build.storyformatsPath setting.
                     const config = vscode.workspace.getConfiguration('knot');
-                    await config.update('storyformats.path', selectedPath, vscode.ConfigurationTarget.Global);
+                    await config.update('build.storyformatsPath', selectedPath, vscode.ConfigurationTarget.Global);
 
                     // Trigger a refresh so the server picks up the new path.
                     await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
@@ -596,7 +635,7 @@ export function registerCommands(deps: CommandDeps): void {
 
                 if (selection.action === 'clear') {
                     const config = vscode.workspace.getConfiguration('knot');
-                    await config.update('storyformats.path', '', vscode.ConfigurationTarget.Global);
+                    await config.update('build.storyformatsPath', '', vscode.ConfigurationTarget.Global);
                     await client.sendRequest<KnotFormatsRefreshResponse>('knot/formats/refresh',
                         getFormatsRefreshParams(workspaceUri)
                     );
@@ -887,19 +926,64 @@ export function registerCommands(deps: CommandDeps): void {
 }
 
 // ---------------------------------------------------------------------------
+// HTML file discovery (for Play when Watch is active)
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the most recently modified .html file in the build output directory.
+ * Used by `knot.play` when Watch is active — the watcher keeps the HTML
+ * fresh, so we just need to find and open it.
+ *
+ * Returns the absolute path to the HTML file, or undefined if none exists.
+ */
+async function findBuiltHtml(workspaceUri: vscode.Uri): Promise<string | undefined> {
+    const config = vscode.workspace.getConfiguration('knot');
+    const outputDirName = config.get<string>('build.outputDir', 'build') || 'build';
+    const outputDirUri = vscode.Uri.joinPath(workspaceUri, outputDirName);
+
+    try {
+        const entries = await vscode.workspace.fs.readDirectory(outputDirUri);
+        const htmlFiles = entries
+            .filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.html'))
+            .map(([name]) => vscode.Uri.joinPath(outputDirUri, name));
+
+        if (htmlFiles.length === 0) {
+            return undefined;
+        }
+
+        // Get stats for all HTML files and pick the most recently modified
+        const stats = await Promise.all(
+            htmlFiles.map(async (uri) => {
+                try {
+                    const stat = await vscode.workspace.fs.stat(uri);
+                    return { uri, mtime: stat.mtime };
+                } catch {
+                    return { uri, mtime: 0 };
+                }
+            }),
+        );
+        stats.sort((a, b) => b.mtime - a.mtime);
+        return stats[0]?.uri.fsPath;
+    } catch {
+        // Output directory doesn't exist or isn't readable
+        return undefined;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tweego compiler availability
 // ---------------------------------------------------------------------------
 
 /** Check if Tweego is available; prompt to download if not.
  *
  *  Resolution order:
- *  1. VS Code setting `knot.tweegoPath` (persisted user preference)
+ *  1. VS Code setting `knot.build.tweegoPath` (persisted user preference)
  *  2. Language server detection (PATH lookup via `which`/`where`)
  *  3. Global storage path (previously downloaded by the extension)
  *  4. Prompt user: Download | Set Path Manually | Cancel
  *
  *  When a path is found via download or manual selection, it is
- *  persisted to the `knot.tweegoPath` setting so subsequent builds
+ *  persisted to the `knot.build.tweegoPath` setting so subsequent builds
  *  don't re-prompt.
  */
 async function ensureTweegoAvailable(
@@ -908,7 +992,7 @@ async function ensureTweegoAvailable(
 ): Promise<string | undefined> {
     // 1. Check VS Code setting (power user override)
     const config = vscode.workspace.getConfiguration('knot');
-    const settingPath = config.get<string>('tweegoPath');
+    const settingPath = config.get<string>('build.tweegoPath');
     if (settingPath && settingPath.trim()) {
         try {
             fs.accessSync(settingPath, fs.constants.X_OK);
@@ -945,9 +1029,9 @@ async function ensureTweegoAvailable(
     if (choice === 'Download Tweego') {
         const downloaded = await downloadTweego(context);
         if (downloaded) {
-            // Don't persist to knot.tweegoPath — getBuildRequestParams()
+            // Don't persist to knot.build.tweegoPath — getBuildRequestParams()
             // checks the managed path automatically. This way, if the user
-            // later sets knot.tweegoPath explicitly, their override works.
+            // later sets knot.build.tweegoPath explicitly, their override works.
             return downloaded;
         }
     } else if (choice === 'Open Storage Folder') {
@@ -977,7 +1061,7 @@ async function ensureTweegoAvailable(
             // Tweego exits non-zero on --version when it can't find .storyformats,
             // which makes validation unreliable. If the path is wrong, the build
             // will fail with a clear error from the server.
-            await config.update('tweegoPath', selectedPath, vscode.ConfigurationTarget.Global);
+            await config.update('build.tweegoPath', selectedPath, vscode.ConfigurationTarget.Global);
             vscode.window.showInformationMessage('Tweego path saved.');
             return selectedPath;
         }

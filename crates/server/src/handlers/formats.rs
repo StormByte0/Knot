@@ -10,11 +10,11 @@
 //! The server does NOT maintain a list of download URLs for story formats.
 //! The user's local copy is authoritative — they install formats by
 //! downloading them into a directory, then point Knot at that directory
-//! via the `knot.storyformats.path` VS Code setting (visible in the
+//! via the `knot.build.storyformatsPath` VS Code setting (visible in the
 //! Settings UI as a folder picker).
 //!
 //! Resolution order (first hit wins):
-//! 1. `knot.storyformats.path` setting (highest priority)
+//! 1. `knot.build.storyformatsPath` setting (highest priority)
 //! 2. Project-local `.storyformats/` directory
 //! 3. `<tweego_dir>/storyformats/` (where official Tweego releases ship)
 //! 4. None — tweego's own search will run, and the build will likely fail
@@ -155,7 +155,7 @@ impl ServerState {
     /// workspace root, re-scans it, and updates the cached catalog on
     /// `ServerStateInner`.
     ///
-    /// The `storyformats_path` param (from the VS Code `knot.storyformats.path`
+    /// The `storyformats_path` param (from the VS Code `knot.build.storyformatsPath`
     /// setting) takes priority over the server's `.vscode/knot.json` config.
     pub async fn knot_formats_refresh(
         &self,

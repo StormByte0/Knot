@@ -147,6 +147,32 @@ export function getManagedStoryformatsPath(): string | undefined {
     }
 }
 
+/**
+ * Resolve the actual Tweego binary that will be used for the next build,
+ * mirroring the chain in `getBuildRequestParams`:
+ *   1. `knot.build.tweegoPath` setting (if set and executable)
+ *   2. Knot-managed binary in globalStorage (if downloaded)
+ *
+ * PATH-based detection (via the language server) is intentionally NOT
+ * included here — that requires a round-trip to the server. The two
+ * local checks cover the common cases and update instantly on config
+ * change. Returns the empty string if nothing is available locally.
+ */
+export function getResolvedTweegoPath(): string {
+    const config = vscode.workspace.getConfiguration('knot');
+    const settingPath = config.get<string>('build.tweegoPath') || '';
+    if (settingPath.trim()) {
+        try {
+            fs.accessSync(settingPath, fs.constants.X_OK);
+            return settingPath;
+        } catch {
+            // Fall through to managed binary
+        }
+    }
+    const managed = getManagedTweegoPath();
+    return managed || '';
+}
+
 // ---------------------------------------------------------------------------
 // Build request params helper
 // ---------------------------------------------------------------------------
@@ -165,10 +191,10 @@ export function getManagedStoryformatsPath(): string | undefined {
  * empty strings as "use the default".
  *
  * Settings read:
- * - `knot.tweegoPath`        → `compiler_path`
- * - `knot.build.sourceDir`   → `source_dir`
- * - `knot.build.outputDir`   → `output_dir`
- * - `knot.storyformats.path` → `storyformats_path`
+ * - `knot.build.tweegoPath`      → `compiler_path`
+ * - `knot.build.sourceDir`       → `source_dir`
+ * - `knot.build.outputDir`       → `output_dir`
+ * - `knot.build.storyformatsPath` → `storyformats_path`
  *
  * @param workspaceUri The workspace root URI as a string.
  * @param startPassage Optional start passage name (for Play From Passage).
@@ -176,15 +202,15 @@ export function getManagedStoryformatsPath(): string | undefined {
 export function getBuildRequestParams(
     workspaceUri: string,
     startPassage?: string,
-): Record<string, string> {
+): Record<string, unknown> {
     const config = vscode.workspace.getConfiguration('knot');
 
-    const params: Record<string, string> = {
+    const params: Record<string, unknown> = {
         workspace_uri: workspaceUri,
     };
 
     // Compiler path: prefer the user's setting, then the managed binary.
-    const tweegoPathSetting = config.get<string>('tweegoPath') || '';
+    const tweegoPathSetting = config.get<string>('build.tweegoPath') || '';
     if (tweegoPathSetting.trim()) {
         params.compiler_path = tweegoPathSetting;
     } else {
@@ -204,18 +230,23 @@ export function getBuildRequestParams(
         params.output_dir = outputDir;
     }
 
-    const storyformatsPath = config.get<string>('storyformats.path') || '';
+    const storyformatsPath = config.get<string>('build.storyformatsPath') || '';
     if (storyformatsPath.trim()) {
         params.storyformats_path = storyformatsPath;
     }
 
     // Always include the managed storyformats path so the server can set
-    // TWEEGO_PATH. This is the fallback — project-local storyformats/ and
-    // the user's setting both take priority (tweego searches CWD before
-    // TWEEGO_PATH, and we put the user's setting first in TWEEGO_PATH).
+    // TWEEGO_PATH. This is the fallback — the user's setting takes priority.
     const managedSf = getManagedStoryformatsPath();
     if (managedSf) {
         params.managed_storyformats_path = managedSf;
+    }
+
+    // Build flags from the Settings UI — merged with .vscode/knot.json
+    // flags on the server side. Both sets apply.
+    const flags = config.get<string[]>('build.flags') || [];
+    if (flags.length > 0) {
+        params.flags = flags;
     }
 
     if (startPassage) {
@@ -227,7 +258,7 @@ export function getBuildRequestParams(
 
 /**
  * Build the request params object for `knot/formats/refresh` requests,
- * reading the `knot.storyformats.path` setting from the VS Code Settings UI.
+ * reading the `knot.build.storyformatsPath` setting from the VS Code Settings UI.
  *
  * This ensures the server's formats catalog respects the VS Code setting,
  * not just `.vscode/knot.json`. Used by the `Knot: Configure Story Formats`
@@ -244,7 +275,7 @@ export function getFormatsRefreshParams(
         workspace_uri: workspaceUri,
     };
 
-    const storyformatsPath = config.get<string>('storyformats.path') || '';
+    const storyformatsPath = config.get<string>('build.storyformatsPath') || '';
     if (storyformatsPath.trim()) {
         params.storyformats_path = storyformatsPath;
     }

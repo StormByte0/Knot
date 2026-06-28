@@ -68,11 +68,15 @@ pub(crate) async fn index_workspace(
             if ignore_patterns.is_empty() {
                 return true;
             }
-            let path_str = entry.path().to_string_lossy();
-            // Normalize to forward slashes for consistent matching
-            let normalized = path_str.replace('\\', "/");
-            let relative = normalized.strip_prefix(&root_path.to_string_lossy().replace('\\', "/"))
-                .unwrap_or(&normalized);
+            // Compute the path relative to the workspace root using PathBuf
+            // methods (cross-platform, no string manipulation). Normalize
+            // to forward slashes for glob matching.
+            let relative = entry
+                .path()
+                .strip_prefix(&root_path)
+                .ok()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
             let relative = relative.trim_start_matches('/');
             // Simple glob-style matching: each ignore pattern is checked against
             // the relative path. Supports basic glob patterns:

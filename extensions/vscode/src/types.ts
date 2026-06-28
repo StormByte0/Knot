@@ -333,7 +333,7 @@ export interface KnotFormatsListResponse {
     resolved_dir: string | null;
     /** The list of installed formats found. */
     formats: KnotFormatEntry[];
-    /** The configured storyformats path (from knot.storyformats.path
+    /** The configured storyformats path (from knot.build.storyformatsPath
      *  setting or .vscode/knot.json). Null when unset. */
     configured_path: string | null;
     /** The format name detected from the project's StoryData passage
@@ -350,7 +350,7 @@ export interface KnotFormatsListResponse {
 export interface KnotFormatsRefreshParams {
     workspace_uri?: string;
     /** Optional storyformats directory override from the VS Code
-     *  `knot.storyformats.path` setting. When provided, takes priority
+     *  `knot.build.storyformatsPath` setting. When provided, takes priority
      *  over `.vscode/knot.json`. */
     storyformats_path?: string;
 }

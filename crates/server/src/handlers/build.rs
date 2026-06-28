@@ -70,7 +70,6 @@ fn format_to_id(format: &knot_core::passage::StoryFormat) -> &'static str {
 ///
 /// Returns true if the directory contains:
 /// - A `tweego` or `tweego.exe` binary (the tweego toolchain)
-/// - A `storyformats/` subdirectory (tweego's bundled formats)
 ///
 /// This is used to reject the common mistake of setting `knot.build.sourceDir`
 /// to `tweego` when the user meant `src`. Without this check, tweego would
@@ -84,13 +83,74 @@ fn is_toolchain_dir(path: &Path) -> bool {
         return true;
     }
 
-    // Check for storyformats/ subdirectory
-    let storyformats = path.join("storyformats");
-    if storyformats.is_dir() {
-        return true;
-    }
-
     false
+}
+
+/// Extract the story title text from the workspace's StoryTitle passage.
+///
+/// Joins all text blocks in the first StoryTitle passage found across
+/// all documents, trimmed. Returns `None` if no StoryTitle passage exists
+/// or if its body is empty.
+fn extract_story_title(workspace: &knot_core::workspace::Workspace) -> Option<String> {
+    use knot_core::passage::Block;
+    let (_doc, passage) = workspace.find_passage("StoryTitle")?;
+    let title: String = passage
+        .body
+        .iter()
+        .filter_map(|block| match block {
+            Block::Text { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        None
+    } else {
+        Some(title)
+    }
+}
+
+/// Sanitize a story title for use as a filename.
+///
+/// Replaces characters that are invalid in filenames on Windows, macOS,
+/// and Linux with underscores. Truncates to 80 characters to avoid
+/// filesystem path length issues.
+fn sanitize_filename(title: &str) -> String {
+    let sanitized: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_control()
+                || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let truncated = sanitized.chars().take(80).collect::<String>();
+    if truncated.trim().is_empty() {
+        "index".to_string()
+    } else {
+        truncated
+    }
+}
+
+/// Extract a numeric stat value from a tweego `-l` output line.
+///
+/// Tweego emits lines like `Passages: 42 | Words: 12345`. This helper
+/// finds the label (e.g. `"Passages:"`) and returns the number that
+/// follows it. Returns `None` if the label isn't found or the value
+/// isn't a valid integer.
+fn extract_stat(line: &str, label: &str) -> Option<String> {
+    let pos = line.find(label)?;
+    let after_label = &line[pos + label.len()..];
+    let token = after_label
+        .split(|c: char| c == '|' || c == ',' || c.is_whitespace())
+        .find(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))?;
+    Some(token.to_string())
 }
 
 impl ServerState {
@@ -115,11 +175,13 @@ impl ServerState {
         let root_uri = inner.workspace.root_uri.clone();
         let config = inner.workspace.config.clone();
         // Read format + version from StoryData for versioned format cache lookup.
-        // This MUST happen before drop(inner) since workspace.metadata is only
-        // accessible while holding the read lock.
+        // Also extract StoryTitle for output filename derivation.
+        // All of this MUST happen before drop(inner) since workspace state is
+        // only accessible while holding the read lock.
         let story_format = inner.workspace.metadata.as_ref().map(|m| m.format.clone());
         let format_version = inner.workspace.metadata.as_ref()
             .and_then(|m| m.format_version.clone());
+        let story_title = extract_story_title(&inner.workspace);
         let global_storage_path = inner.global_storage_path.clone();
         drop(inner);
 
@@ -137,15 +199,10 @@ impl ServerState {
         // ── Resolve tweego binary ─────────────────────────────────────────
         //
         // Priority:
-        //   1. VS Code setting `knot.tweegoPath` (params.compiler_path)
+        //   1. VS Code setting `knot.build.tweegoPath` (params.compiler_path)
         //   2. `.vscode/knot.json` compiler_path
         //   3. PATH lookup (which_compiler)
         //   4. Managed binary: <globalStorage>/tweego/tweego[.exe]
-        //
-        // The managed binary has NO storyformats next to it (the download
-        // relocates them to <globalStorage>/storyformats/), so tweego's
-        // binary-sibling search finds nothing. This ensures CWD overrides
-        // and the managed cache are the only sources for storyformats.
         let compiler_path = if let Some(ref ext_path) = params.compiler_path {
             Some(std::path::PathBuf::from(ext_path))
         } else if let Some(ref path) = config.compiler_path {
@@ -173,16 +230,13 @@ impl ServerState {
                 errors: vec![
                     "No Tweego compiler found. Options:\n\
                      1. Install Tweego and add it to PATH\n\
-                     2. Set 'knot.tweegoPath' in Settings to point at your tweego binary\n\
+                     2. Set 'knot.build.tweegoPath' in Settings to point at your tweego binary\n\
                      3. Use 'Knot: Configure Build Toolchain' to download Tweego automatically"
                         .to_string(),
                 ],
             });
         };
 
-        // Log the actual tweego binary path so users can verify which binary
-        // will be invoked. This is separate from TWEEGO_PATH (which is an env
-        // var telling tweego where to find story formats, not a binary path).
         self.client
             .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
                 line: format!("Knot: Tweego binary: {}", compiler_path.display()),
@@ -192,44 +246,34 @@ impl ServerState {
 
         // ── Resolve source directory ─────────────────────────────────────
         //
-        // Priority:
-        //   1. VS Code setting `knot.build.sourceDir` (or .vscode/knot.json)
-        //   2. Auto-detect: <workspace>/src/ if it exists
-        //   3. Fallback: workspace root
+        // Architecture (simplified): the workspace IS the source directory.
+        // Users put all their game files (.twee, .js, .css, assets) directly
+        // in the workspace. Story formats live separately in the extension-
+        // managed folder, so there's no risk of format.js getting bundled
+        // as a passage.
         //
-        // VALIDATION: If the resolved source dir looks like a toolchain dir
-        // (contains tweego.exe/tweego binary or a storyformats/ subdirectory),
-        // reject it and fall back to auto-detect. This catches the common
-        // mistake of setting sourceDir to "tweego" when the user meant "src".
-        let source_dir_setting = params
+        // The `knot.build.sourceDir` setting still works as an explicit
+        // override for users who want to use a subdirectory, but there's
+        // no more `src/` auto-detection.
+        let source_path = match params
             .source_dir
             .as_ref()
             .filter(|s| !s.is_empty())
-            .or_else(|| config.build.source_dir.as_ref().filter(|s| !s.is_empty()));
-
-        let mut source_path = match source_dir_setting {
+            .or_else(|| config.build.source_dir.as_ref().filter(|s| !s.is_empty()))
+        {
             Some(sd) => {
                 let relative = force_relative(sd);
                 root_path.join(&relative)
             }
-            None => {
-                let auto_src = root_path.join("src");
-                if auto_src.is_dir() {
-                    auto_src
-                } else {
-                    root_path.clone()
-                }
-            }
+            None => root_path.clone(),
         };
 
-        // Validate: reject toolchain directories.
-        // If the source path contains a tweego binary or a storyformats/
-        // subdirectory, it's a toolchain dir, not a source dir.
+        // Validate: reject toolchain directories (contains a tweego binary).
+        // This catches the mistake of pointing sourceDir at the tweego folder.
         if is_toolchain_dir(&source_path) {
             let warning_msg = format!(
                 "Knot: WARNING: Source directory '{}' appears to be a toolchain directory \
-                 (contains tweego binary or storyformats/ folder), not a source directory. \
-                 Falling back to auto-detect.",
+                 (contains tweego binary), not a source directory. Using workspace root instead.",
                 source_path.display()
             );
             self.client
@@ -238,17 +282,64 @@ impl ServerState {
                     is_error: true,
                 })
                 .await;
+            // Override: use workspace root
+            let fallback = root_path.clone();
+            self.client
+                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                    line: format!("Knot: Compiling source from: {}", fallback.display()),
+                    is_error: false,
+                })
+                .await;
+            // Use fallback for the rest of the function
+            // (We can't reassign source_path in this scope due to the match
+            //  arms, so we'll use fallback directly below.)
 
-            // Fall back to auto-detect
-            let auto_src = root_path.join("src");
-            if auto_src.is_dir() {
-                source_path = auto_src;
-            } else {
-                source_path = root_path.clone();
-            }
+            // ── Resolve story formats ────────────────────────────────────
+            let (resolution_msg, tweego_path_value) = self
+                .resolve_story_formats(
+                    &params,
+                    &config,
+                    &story_format,
+                    &format_version,
+                    &global_storage_path,
+                )
+                .await;
+            self.client
+                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                    line: resolution_msg,
+                    is_error: false,
+                })
+                .await;
+
+            // ── Determine output file ────────────────────────────────────
+            let output_dir_name = params
+                .output_dir
+                .as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.as_str())
+                .unwrap_or(&config.build.output_dir);
+            let output_dir = root_path.join(output_dir_name);
+            std::fs::create_dir_all(&output_dir).ok();
+
+            let filename = story_title
+                .as_deref()
+                .map(sanitize_filename)
+                .unwrap_or_else(|| "index".to_string());
+            let output_file = output_dir.join(format!("{}.html", filename));
+
+            return self
+                .run_tweego(
+                    &compiler_path,
+                    &fallback,
+                    &output_file,
+                    &params,
+                    &config,
+                    &tweego_path_value,
+                    &root_path,
+                )
+                .await;
         }
 
-        // Emit the source path to the build output stream.
         self.client
             .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
                 line: format!("Knot: Compiling source from: {}", source_path.display()),
@@ -256,27 +347,80 @@ impl ServerState {
             })
             .await;
 
-        // ── Resolve storyformats ─────────────────────────────────────────
+        // ── Resolve story formats ─────────────────────────────────────────
         //
-        // Architecture: settings → CWD → managed cache → error
+        // Architecture: user setting → versioned managed cache → error
         //
-        // Tweego's internal search order:
-        //   1. <tweego_binary_dir>/storyformats/  (EMPTY for managed binary)
-        //   2. <home>/storyformats/
-        //   3. <cwd>/storyformats/                (PROJECT-LOCAL OVERRIDE)
-        //   4. TWEEGO_PATH env var                (managed fallback)
+        // The workspace is purely game files — story formats live in the
+        // extension-managed folder (<globalStorage>/storyformats/). We set
+        // TWEEGO_PATH to point tweego at the resolved formats directory.
         //
-        // Our resolution:
-        //   a. If <workspace>/storyformats/ exists → CWD override (tweego finds
-        //      it via #3). Don't set TWEEGO_PATH.
-        //   b. Else if knot.storyformats.path setting is set → set TWEEGO_PATH
-        //   c. Else if <globalStorage>/storyformats/<id>@<ver>/ exists → set
+        // Resolution:
+        //   a. If knot.build.storyformatsPath setting is set → set TWEEGO_PATH
+        //   b. Else if <globalStorage>/storyformats/<id>@<ver>/ exists → set
         //      TWEEGO_PATH to the versioned cache dir
-        //   d. Else → error with download hint
+        //   c. Else → error with download hint
+        let (resolution_msg, tweego_path_value) = self
+            .resolve_story_formats(
+                &params,
+                &config,
+                &story_format,
+                &format_version,
+                &global_storage_path,
+            )
+            .await;
 
-        let cwd_storyformats = root_path.join("storyformats");
-        let cwd_has_override = cwd_storyformats.is_dir();
+        self.client
+            .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                line: resolution_msg,
+                is_error: false,
+            })
+            .await;
 
+        // ── Determine output file ────────────────────────────────────────
+        let output_dir_name = params
+            .output_dir
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .unwrap_or(&config.build.output_dir);
+        let output_dir = root_path.join(output_dir_name);
+        std::fs::create_dir_all(&output_dir).ok();
+
+        // Derive filename from StoryTitle (sanitized), fallback to index.html.
+        // This matches Twine GUI behavior where the compiled HTML is named
+        // after the story title.
+        let filename = story_title
+            .as_deref()
+            .map(sanitize_filename)
+            .unwrap_or_else(|| "index".to_string());
+        let output_file = output_dir.join(format!("{}.html", filename));
+
+        self.run_tweego(
+            &compiler_path,
+            &source_path,
+            &output_file,
+            &params,
+            &config,
+            &tweego_path_value,
+            &root_path,
+        )
+        .await
+    }
+
+    /// Resolve the story formats directory and build a diagnostic message.
+    ///
+    /// Returns `(log_message, optional_tweego_path)`. When `tweego_path` is
+    /// `Some`, the caller sets it as the `TWEEGO_PATH` env var for the tweego
+    /// process.
+    async fn resolve_story_formats(
+        &self,
+        params: &KnotBuildParams,
+        config: &knot_core::workspace::KnotConfig,
+        story_format: &Option<knot_core::passage::StoryFormat>,
+        format_version: &Option<String>,
+        global_storage_path: &Option<std::path::PathBuf>,
+    ) -> (String, Option<String>) {
         let user_storyformats = params
             .storyformats_path
             .as_ref()
@@ -287,13 +431,12 @@ impl ServerState {
         // Versioned managed cache: <globalStorage>/storyformats/sugarcube-2@2.37.0/
         // Validate that format.js actually exists inside, not just that the
         // directory exists — a failed download can leave an empty directory.
-        let versioned_managed = match (&global_storage_path, &story_format, &format_version) {
+        let versioned_managed = match (global_storage_path, story_format, format_version) {
             (Some(gs), Some(fmt), Some(ver)) => {
                 let format_id = format_to_id(fmt);
                 let versioned_dir = gs
                     .join("storyformats")
                     .join(format!("{}@{}", format_id, ver));
-                // Check for the actual format.js file inside the format-id subdir
                 let format_js = versioned_dir.join(format_id).join("format.js");
                 if format_js.exists() {
                     Some(versioned_dir)
@@ -304,94 +447,87 @@ impl ServerState {
             _ => None,
         };
 
-        // Build the diagnostic message and determine TWEEGO_PATH
-        let (resolution_msg, tweego_path_value) = if cwd_has_override {
-            (
-                format!(
-                    "Knot: Story formats: using project-local override at {} (CWD storyformats/ takes priority)",
-                    cwd_storyformats.display()
-                ),
-                None, // Don't set TWEEGO_PATH — tweego finds CWD automatically
-            )
-        } else if let Some(ref vm) = versioned_managed {
-            (
-                format!(
-                    "Knot: Story formats: using managed cache at {} (format={} version={})",
-                    vm.display(),
-                    story_format.map(|f| format!("{:?}", f)).unwrap_or_default(),
-                    format_version.as_deref().unwrap_or("?")
-                ),
-                Some(vm.to_string_lossy().to_string()),
-            )
-        } else if let Some(ref us) = user_storyformats {
+        if let Some(ref us) = user_storyformats {
             if us.is_dir() {
-                (
+                return (
                     format!(
-                        "Knot: Story formats: using configured path {} (knot.storyformats.path setting)",
+                        "Knot: Story formats: using configured path {}",
                         us.display()
                     ),
                     Some(us.to_string_lossy().to_string()),
-                )
+                );
             } else {
-                (
+                return (
                     format!(
-                        "Knot: WARNING: Configured storyformats path '{}' does not exist",
+                        "Knot: WARNING: Configured story formats path '{}' does not exist",
                         us.display()
                     ),
                     None,
+                );
+            }
+        }
+
+        if let Some(ref vm) = versioned_managed {
+            return (
+                format!(
+                    "Knot: Story formats: using managed cache at {} (format={:?} version={})",
+                    vm.display(),
+                    story_format,
+                    format_version.as_deref().unwrap_or("?")
+                ),
+                Some(vm.to_string_lossy().to_string()),
+            );
+        }
+
+        // Nothing resolved — build will likely fail.
+        let hint = match (story_format, format_version, global_storage_path) {
+            (Some(fmt), Some(ver), Some(gs)) => {
+                let format_id = format_to_id(fmt);
+                let expected = gs
+                    .join("storyformats")
+                    .join(format!("{}@{}", format_id, ver))
+                    .join(format_id)
+                    .join("format.js");
+                format!(
+                    " — project needs {} v{} but it's not in the managed cache.\n\
+                     Expected at: {}\n\
+                     Use 'Knot: Configure Story Formats' to download it.",
+                    format_id, ver,
+                    expected.display()
                 )
             }
-        } else {
-            // Nothing resolved — build will likely fail.
-            // Include the managed cache path in the error so the user knows
-            // where formats should go.
-            let hint = match (&story_format, &format_version, &global_storage_path) {
-                (Some(fmt), Some(ver), Some(gs)) => {
-                    let format_id = format_to_id(fmt);
-                    format!(
-                        " — project needs {} v{} but it's not in the managed cache.\n\
-                         Expected at: {}\\storyformats\\{}@{}\\{}\\format.js\n\
-                         Use 'Knot: Configure Story Formats' to download it.",
-                        format_id, ver,
-                        gs.display(),
-                        format_id, ver, format_id
-                    )
-                }
-                (Some(fmt), Some(ver), None) => {
-                    let format_id = format_to_id(fmt);
-                    format!(
-                        " — project needs {} v{} but extension global storage is not available.\n\
-                         Use 'Knot: Configure Story Formats' to download it.",
-                        format_id, ver
-                    )
-                }
-                _ => " — no StoryData format/version detected. Is StoryData passage present?".to_string(),
-            };
-            (
-                format!("Knot: No story formats directory resolved{}", hint),
-                None,
-            )
+            (Some(fmt), Some(ver), None) => {
+                let format_id = format_to_id(fmt);
+                format!(
+                    " — project needs {} v{} but extension global storage is not available.\n\
+                     Use 'Knot: Configure Story Formats' to download it.",
+                    format_id, ver
+                )
+            }
+            _ => " — no StoryData format/version detected. Is StoryData passage present?".to_string(),
         };
 
-        self.client
-            .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
-                line: resolution_msg,
-                is_error: false,
-            })
-            .await;
+        (
+            format!("Knot: No story formats directory resolved{}", hint),
+            None,
+        )
+    }
 
-        // ── Determine output directory ───────────────────────────────────
-        let output_dir_name = params
-            .output_dir
-            .as_ref()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.as_str())
-            .unwrap_or(&config.build.output_dir);
-        let output_dir = root_path.join(output_dir_name);
-        std::fs::create_dir_all(&output_dir).ok();
-
-        let output_file = output_dir.join("index.html");
-
+    /// Execute tweego with the given parameters and stream output to the client.
+    ///
+    /// Merges `params.flags` (from VS Code settings) with `config.build.flags`
+    /// (from `.vscode/knot.json`). Adds `-l` for stats logging. Parses the
+    /// stats line from stdout and emits it as a build output line.
+    async fn run_tweego(
+        &self,
+        compiler_path: &Path,
+        source_path: &Path,
+        output_file: &Path,
+        params: &KnotBuildParams,
+        config: &knot_core::workspace::KnotConfig,
+        tweego_path_value: &Option<String>,
+        root_path: &Path,
+    ) -> Result<KnotBuildResponse, tower_lsp::jsonrpc::Error> {
         // Build the command arguments
         let mut args: Vec<String> = Vec::new();
 
@@ -401,29 +537,35 @@ impl ServerState {
             args.push(start_passage.clone());
         }
 
+        // -l logs passage and word counts — always on, parsed from stdout
+        // and emitted as a build stats line. Cheap, no downside.
+        args.push("-l".to_string());
+
         args.push("-o".to_string());
         args.push(output_file.to_string_lossy().to_string());
+
+        // Merge flags: VS Code setting flags + .vscode/knot.json flags.
+        // Both sets apply — the setting is for common flags the user always
+        // wants, knot.json is for project-specific flags.
+        if let Some(ref flags) = params.flags {
+            args.extend(flags.iter().cloned());
+        }
         args.extend(config.build.flags.iter().cloned());
+
         // Source directory must be the LAST argument
         args.push(source_path.to_string_lossy().to_string());
 
         tracing::info!("Build command: {} {}", compiler_path.display(), args.join(" "));
 
         // Run the compiler with cwd set to the workspace root.
-        //
-        // TWEEGO_PATH is set ONLY when we resolved a storyformats directory
-        // that tweego can't find via its own CWD search (i.e. the managed
-        // cache or user-configured path). When CWD override is active,
-        // tweego finds <workspace>/storyformats/ automatically — no
-        // TWEEGO_PATH needed.
-        let mut command = tokio::process::Command::new(&compiler_path);
-        command.args(&args).current_dir(&root_path);
+        let mut command = tokio::process::Command::new(compiler_path);
+        command.args(&args).current_dir(root_path);
 
-        if let Some(ref tp) = tweego_path_value {
+        if let Some(tp) = tweego_path_value {
             command.env("TWEEGO_PATH", tp);
             self.client
                 .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
-                    line: format!("Knot: Story formats search path (TWEEGO_PATH) = {}", tp),
+                    line: format!("Knot: Story formats search path = {}", tp),
                     is_error: false,
                 })
                 .await;
@@ -436,8 +578,37 @@ impl ServerState {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
-                // Stream build output to the client
+                // Stream build output to the client, parsing for stats lines.
+                // Tweego's -l flag emits lines like:
+                //   Passages: 42 | Words: 12345
+                // We extract and re-emit these as Knot stats lines.
+                let mut stats_emitted = false;
                 for line in stdout.lines() {
+                    // Check for tweego's stats line format
+                    if !stats_emitted
+                        && (line.contains("Passages:") || line.contains("Words:"))
+                        && (line.contains('|') || line.contains(','))
+                    {
+                        // Parse "Passages: N | Words: N" or similar
+                        let passages = extract_stat(line, "Passages:");
+                        let words = extract_stat(line, "Words:");
+                        if let (Some(p), Some(w)) = (passages, words) {
+                            self.client
+                                .send_notification::<KnotBuildOutputNotification>(
+                                    KnotBuildOutput {
+                                        line: format!(
+                                            "Knot: Build stats — {} passages, {} words",
+                                            p, w
+                                        ),
+                                        is_error: false,
+                                    },
+                                )
+                                .await;
+                            stats_emitted = true;
+                            continue; // Don't emit the raw line too
+                        }
+                    }
+
                     self.client
                         .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
                             line: line.to_string(),
@@ -500,6 +671,7 @@ impl ServerState {
             output_dir: params.output_dir.clone(),
             storyformats_path: params.storyformats_path.clone(),
             managed_storyformats_path: params.managed_storyformats_path.clone(),
+            flags: params.flags.clone(),
         }).await?;
 
         if build_result.success {

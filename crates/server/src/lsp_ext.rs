@@ -319,7 +319,7 @@ pub struct KnotBuildParams {
     /// Optional passage name to use as start for compilation.
     pub start_passage: Option<String>,
     /// Optional compiler path override from the extension (VS Code setting
-    /// `knot.tweegoPath`). When provided, this takes priority over the
+    /// `knot.build.tweegoPath`). When provided, this takes priority over the
     /// server's config and PATH lookup.
     pub compiler_path: Option<String>,
     /// Optional source directory override from the extension (VS Code setting
@@ -336,7 +336,7 @@ pub struct KnotBuildParams {
     #[serde(default)]
     pub output_dir: Option<String>,
     /// Optional storyformats directory override from the extension (VS Code
-    /// setting `knot.storyformats.path`). When provided, this takes priority
+    /// setting `knot.build.storyformatsPath`). When provided, this takes priority
     /// over the server's config.
     #[serde(default)]
     pub storyformats_path: Option<String>,
@@ -350,6 +350,11 @@ pub struct KnotBuildParams {
     /// so project-local format overrides take priority.
     #[serde(default)]
     pub managed_storyformats_path: Option<String>,
+    /// Additional command-line flags to pass to tweego, from the
+    /// `knot.build.flags` VS Code setting. Merged with flags from
+    /// `.vscode/knot.json` (`config.build.flags`) — both sets apply.
+    #[serde(default)]
+    pub flags: Option<Vec<String>>,
 }
 
 /// Response: `knot/build`
@@ -382,13 +387,17 @@ pub struct KnotPlayParams {
     /// Optional output directory override (VS Code setting `knot.build.outputDir`).
     #[serde(default)]
     pub output_dir: Option<String>,
-    /// Optional storyformats directory override (VS Code setting `knot.storyformats.path`).
+    /// Optional storyformats directory override (VS Code setting `knot.build.storyformatsPath`).
     #[serde(default)]
     pub storyformats_path: Option<String>,
     /// Path to the Knot-managed storyformats directory (in VS Code's
     /// globalStorage). See `KnotBuildParams.managed_storyformats_path`.
     #[serde(default)]
     pub managed_storyformats_path: Option<String>,
+    /// Additional command-line flags to pass to tweego, from the
+    /// `knot.build.flags` VS Code setting. See `KnotBuildParams.flags`.
+    #[serde(default)]
+    pub flags: Option<Vec<String>>,
 }
 
 /// Response: `knot/play`
@@ -931,7 +940,7 @@ pub struct KnotFormatSwitchCompleteResponse {
 /// `helpers::compiler::resolve_storyformats_dir`), scans it for
 /// subdirectories containing `format.js`, parses each, and returns the
 /// resulting list. The catalog is cached on `ServerStateInner` and only
-/// re-scanned when the user changes `knot.storyformats.path` or invokes
+/// re-scanned when the user changes `knot.build.storyformatsPath` or invokes
 /// `knot/formats/refresh`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KnotFormatsListParams {
@@ -957,7 +966,7 @@ pub struct KnotFormatsListResponse {
     /// The list of installed formats found in that directory. Empty if
     /// `resolved_dir` is None or contains no `format.js` files.
     pub formats: Vec<KnotFormatEntry>,
-    /// The configured storyformats path (from `knot.storyformats.path`
+    /// The configured storyformats path (from `knot.build.storyformatsPath`
     /// setting or `.vscode/knot.json`). Empty when unset.
     pub configured_path: Option<String>,
     /// The format name detected from the project's StoryData passage
@@ -1014,7 +1023,7 @@ pub struct KnotFormatEntry {
 /// storyformats directory and refresh the in-memory catalog.
 ///
 /// Called by the extension when:
-/// - The user changes `knot.storyformats.path` in Settings.
+/// - The user changes `knot.build.storyformatsPath` in Settings.
 /// - The user adds/removes a format directory on disk.
 /// - The `Knot: Configure Story Formats` command runs after a path change.
 #[derive(Debug, Serialize, Deserialize)]
@@ -1023,7 +1032,7 @@ pub struct KnotFormatsRefreshParams {
     #[serde(default)]
     pub workspace_uri: String,
     /// Optional storyformats directory override from the extension (VS Code
-    /// setting `knot.storyformats.path`). When provided, this takes priority
+    /// setting `knot.build.storyformatsPath`). When provided, this takes priority
     /// over the server's config (`.vscode/knot.json`).
     #[serde(default)]
     pub storyformats_path: Option<String>,
