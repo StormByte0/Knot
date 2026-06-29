@@ -1,12 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────
 # Source files (not needed in the packaged extension)
+# ─────────────────────────────────────────────────────────────────────
 src/**
 webview/src/**
 webview/node_modules/**
 webview/dist/**
 webview/index.html
 webview/tsconfig.json
+webview/tsconfig.tsbuildinfo
 webview/vite.config.ts
 webview/package.json
+webview/package-lock.json
+webview/bun.lock
 
 # Build tools and configs
 .eslintrc.json
@@ -16,26 +21,72 @@ tsconfig.json
 
 # Development files
 .gitignore
+.gitattributes
 **/*.map
 **/*.ts
+!out/**/*.d.ts
 
+# ─────────────────────────────────────────────────────────────────────
+# node_modules — exclude everything by default, then whitelist only the
+# runtime dependencies the extension actually imports.
+#
+# This drops the VSIX from ~296 files / 182 JS files down to ~80 files /
+# ~30 JS files. The extension's runtime deps (from package.json
+# "dependencies") are: vscode-languageclient (+ transitive: vscode-jsonrpc,
+# semver, minimatch, etc.). Everything else in node_modules is a
+# devDependency (eslint, typescript, vsce, ...) and does not need to ship.
+# ─────────────────────────────────────────────────────────────────────
+node_modules/**
+
+# Runtime dependencies (keep these)
+!node_modules/vscode-languageclient/**
+!node_modules/vscode-jsonrpc/**
+!node_modules/vscode-languageserver-protocol/**
+!node_modules/vscode-languageserver-types/**
+!node_modules/vscode-uri/**
+!node_modules/semver/**
+!node_modules/minimatch/**
+!node_modules/lru-cache/**
+!node_modules/yallist/**
+!node_modules/brace-expansion/**
+!node_modules/balanced-match/**
+!node_modules/path-scurry/**
+
+# Don't ship package-lock (the manifest is enough for end users)
+package-lock.json
+
+# ─────────────────────────────────────────────────────────────────────
 # Keep the compiled JS output
+# ─────────────────────────────────────────────────────────────────────
 !out/**
 
+# ─────────────────────────────────────────────────────────────────────
 # Keep the built webview assets
+# ─────────────────────────────────────────────────────────────────────
 !media/storymap/**
 
+# ─────────────────────────────────────────────────────────────────────
 # Keep the existing media assets
+# ─────────────────────────────────────────────────────────────────────
 !media/passage-icon.svg
 !media/icon.png
+!media/knot-icon.svg
 
-# Keep syntaxes and language config
+# ─────────────────────────────────────────────────────────────────────
+# Keep syntaxes, language config, and themes
+# ─────────────────────────────────────────────────────────────────────
 !syntaxes/**
 !language-configuration.json
+!language-configuration-*.json
+!themes/**
 
+# ─────────────────────────────────────────────────────────────────────
 # Keep the server binary
+# ─────────────────────────────────────────────────────────────────────
 !bin/**
 
-# Documentation (not needed in package)
+# ─────────────────────────────────────────────────────────────────────
+# Documentation (not needed in package — Marketplace has its own README)
+# ─────────────────────────────────────────────────────────────────────
 README.md
 CHANGELOG.md

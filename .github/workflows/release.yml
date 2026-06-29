@@ -23,11 +23,11 @@ jobs:
     name: Build webview (shared)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: extensions/vscode/webview/package-lock.json
 
@@ -40,7 +40,7 @@ jobs:
         working-directory: extensions/vscode/webview
 
       - name: Upload webview assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: webview-assets
           path: extensions/vscode/media/storymap/
@@ -82,10 +82,10 @@ jobs:
 
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download webview assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: webview-assets
           path: extensions/vscode/media/storymap/
@@ -127,9 +127,9 @@ jobs:
              "extensions/vscode/bin/${{ matrix.binary }}"
 
       # ── Extension setup ───────────────────────────────────────────────
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: extensions/vscode/package-lock.json
 
@@ -142,12 +142,14 @@ jobs:
         working-directory: extensions/vscode
 
       # ── Package VSIX ──────────────────────────────────────────────────
+      # --pre-release flags this build as a beta in the Marketplace's
+      # Pre-release tab. Drop the flag when publishing stable 2.0.0.
       - name: Package VSIX
-        run: npx vsce package --target ${{ matrix.target }} --allow-missing-repository
+        run: npx vsce package --pre-release --target ${{ matrix.target }} --allow-missing-repository
         working-directory: extensions/vscode
 
       - name: Upload VSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: vsix-${{ matrix.target }}
           path: extensions/vscode/*.vsix
@@ -163,10 +165,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all VSIX files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           pattern: vsix-*
           merge-multiple: true
@@ -201,7 +203,11 @@ jobs:
 
             ### Publishing to Marketplace
 
-            This is a draft release. To publish to the VS Code Marketplace:
+            This is a draft release. The VSIX files were built with
+            `--pre-release` and are flagged as beta builds for the
+            Marketplace's Pre-release tab. To publish:
             1. Download the VSIX files
             2. Review them
-            3. Run: `vsce publish --packagePath <filename>.vsix`
+            3. Run: `vsce publish --pre-release --packagePath <filename>.vsix`
+
+            (Drop `--pre-release` when publishing stable 2.0.0.)
