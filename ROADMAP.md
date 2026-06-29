@@ -4,133 +4,150 @@ This document tracks features that are intentionally deferred to future
 versions. Items here require architectural advances or significant new
 work that is out of scope for the current release.
 
-For smaller, near-term features (decompile, archive export, test mode,
-project initialization, etc.), see [PLANNED_FEATURES.md](./PLANNED_FEATURES.md).
+For smaller, near-term features (passage management, storymap UX, project initialization, etc.), see [PLANNED_FEATURES.md](./PLANNED_FEATURES.md).
 
 ---
 
-## Knot Standalone Desktop Program
+## Format Plugin Development
 
-Knot currently depends on VS Code for the editor surface, event handling,
-and window management. The extension is structured to make a future
-migration to a self-contained desktop application straightforward — the
-language server, format plugins, and build pipeline are all decoupled
-from the VS Code shell.
+SugarCube is currently the only fully implemented format plugin in Knot,
+with production-ready support for parsing, macro analysis, variable
+tracking, completion, hover documentation, and special passage support.
 
-A dedicated desktop program would offer a purpose-built environment for
-Twine and interactive fiction development, without requiring authors to
-learn the VS Code ecosystem. This is a long-term goal that depends on
-the VS Code extension reaching feature maturity and on community
-support making sustained development possible. No timeline is committed.
+The remaining supported story formats — Harlowe, Chapbook, and Snowman —
+currently exist only as minimal placeholder implementations. While the
+plugin architecture is already in place, each format requires a near
+complete parser and analysis implementation written from the ground up.
+
+Unlike incremental feature work, this is effectively the development of
+three entirely new language plugins, each with its own syntax rules,
+execution model, and authoring conventions.
+
+Each format requires dedicated implementations for:
+
+* **Harlowe 3** — Full macro parser, variable tracking, completion,
+  hover documentation, expression analysis, and support for Harlowe's
+  unique runtime model and `(macro:)` syntax.
+
+* **Chapbook 1** — Modifier parser, completion, hover documentation,
+  expression analysis, variable tracking, and support for Chapbook's
+  distinct authoring syntax and modifier system.
+
+* **Snowman 2** — Embedded JavaScript template analysis, expression
+  parsing inside `<% %>` blocks, helper completions, variable tracking,
+  and support for Snowman's JavaScript-centric execution model.
+
+Estimated effort: if it's anything like sugarcube, several months of dedicated development per format.
+
+---
+
+## HTML & CSS Parser / Linter Integration
+
+Twine projects frequently embed custom CSS stylesheets and HTML content
+directly inside passages. While Knot already supports embedded JavaScript
+analysis, dedicated support for HTML and CSS validation does not yet exist.
+
+Future integration would allow Knot to provide first-class support for
+these embedded languages directly inside the editor.
+
+Planned improvements include:
+
+* CSS syntax validation and linting
+* HTML structure validation
+* Detection of malformed tags and invalid nesting
+* CSS property and selector validation
+* Diagnostics for embedded HTML and CSS inside passages
+
+This requires dedicated parser integration and coordination with the
+existing analysis pipeline.
 
 ---
 
 ## Graph Simplification & Advanced Analysis
 
 Knot's graph model is the foundation of its structural analysis. The
-current implementation prioritizes correctness; several advanced features
-depend on a more capable interpretation layer than exists today.
+current implementation prioritizes correctness, but several advanced
+analysis features require deeper graph interpretation.
 
 ### Game Loop Visualization
 
-The server computes strongly connected components (SCCs) in the passage
-graph using Tarjan's algorithm — cycles where the player can move
-between passages indefinitely. The detection logic lives in
-`crates/core/src/graph.rs`, and the data is sent to the client via the
-`game_loops` field in `KnotGraphResponse`. However, the Story Map webview
-does not yet render this information.
+The server already computes strongly connected components (SCCs) using
+Tarjan's algorithm, but the Story Map does not currently visualize this
+information.
 
-The challenge is presentation. A story can have multiple overlapping
-sub-loops, and showing them all at once overwhelms the graph layout. The
-detection also needs hardening — current SCC analysis identifies cycles
-but cannot reliably distinguish intentional game loops (hub-and-spoke
-patterns, shopping menus) from broken ones where the player cannot
-escape. A proper visualization needs to group related cycles and offer
-collapse/expand controls, so authors can focus on one loop at a time
-without losing the broader context.
+Future work would allow loops to be grouped visually, collapsed, and
+explored without overwhelming the graph layout.
 
 ### Infinite Loop Diagnostic
 
-SCC analysis alone cannot distinguish intentional loops from broken
-ones. A proper diagnostic needs to understand which passages offer exit
-conditions — a loop is only "infinite" if every path through it either
-returns to the loop or reaches a dead end that is not the story's
-conclusion. This requires analyzing the conditional structure inside
-passages (which `<<if>>` branches lead where) and tracking conditional
-edges — links that only fire under certain variable states.
+A loop is only problematic if the player cannot escape it.
 
-This is non-trivial because TwineScript conditions can depend on
-variables set in other passages, requiring cross-passage dataflow
-analysis that the current variable tracker does not fully support.
-This feature depends on the graph flow detection work above.
+Proper diagnostics require analyzing passage conditions, conditional
+branches, and variable-dependent transitions across multiple passages.
+
+This requires deeper flow analysis than the current graph model supports.
 
 ### Graph Simplification Pass
 
-Large stories (100+ passages) produce graphs that are hard to read even
-with good layout. A simplification pass could collapse linear chains
-(A → B → C where B has no other links) into single composite nodes, and
-group tightly-coupled subgraphs into clusters. This is a
-presentation-layer feature — the underlying graph stays the same, but
-the Story Map renders a simplified view that the author can expand on
-demand. This requires work in both the Story Map webview (new node
-types, cluster layout, expand/collapse state) and a server-side
-simplification algorithm.
+Large stories can produce graphs that quickly become difficult to read.
+
+A simplification layer could:
+
+* Collapse linear passage chains into composite nodes
+* Group tightly coupled subgraphs into clusters
+* Allow expand/collapse interactions for simplified graph views
+
+This also serves as foundational infrastructure for more advanced
+cross-passage static analysis in future versions.
 
 ---
 
 ## Advanced Variable Analysis
 
-The current variable tracker knows where each variable is read and
-written, but it does not track the *values* flowing through those
-operations. Several diagnostic improvements depend on value-sensitive
-analysis.
+Knot currently tracks where variables are read and written across the
+project, but does not understand the actual execution order in which
+those operations occur.
+
+For meaningful static analysis, simply knowing *where* a variable was
+modified is not enough — the system must understand *when* and *under*
+*what execution path* those changes happen.
+
+This makes deeper variable analysis fundamentally dependent on improved
+graph flow analysis.
 
 ### Type Inference
 
-SugarCube variables are dynamically typed, but in practice most authors
-use them consistently — a variable is always a string, or always a
-number, or always an object with a known shape. Type inference could
-detect when a variable is used inconsistently (treated as a number in
-one passage and as a string in another), which is a common source of
-runtime errors.
+Variables in Twine are dynamically typed, but most projects use them
+consistently in practice.
 
-This is a difficult feature to implement reliably. The oxc parser
-already produces AST that could support it, but the annotation layer
-would need significant new logic, and the false-positive rate must be
-low enough to be useful. This item is a candidate for future work but
-is not committed to a timeline.
+Future analysis could detect inconsistent variable usage, such as values
+being treated as numbers in one path and strings in another.
 
-### Unreachable Code Detection (within passages)
+### Unreachable Code Detection
 
-Inside passage bodies, SugarCube macros like `<<if>>`, `<<switch>>`,
-and `<<for>>` create branching structure. The parser already builds an
-AST representing this structure, but there is no analysis pass that
-checks for unreachable branches — an `<<if>>` whose condition can never
-be true, or a `<<switch>>` case shadowed by an earlier one.
+Passage logic often creates branches where certain conditions or code
+paths may never execute.
 
-This depends on type inference (above) to evaluate constant conditions,
-and is therefore also a candidate rather than a committed item.
+Future analysis could detect unreachable branches caused by impossible
+conditions or conflicting execution paths.
+
+These features depend on understanding passage flow order and variable
+state transitions throughout the graph.
 
 ---
 
-## Format Plugin Maturity
+## Knot Standalone Desktop Program
 
-SugarCube is the only format with a production-quality plugin today —
-full macro catalog, variable tracking, special passages, completion,
-and hover. The other three formats (Harlowe, Chapbook, Snowman) have
-placeholder/skeleton implementations only. The `FormatPlugin` trait is
-implemented for each, but the parsers have not been completed to
-production quality and link extraction is not yet functional.
+Knot currently depends on Visual Studio Code for the editor surface, event handling,
+and window management. The extension architecture is intentionally
+structured so a future migration to a dedicated desktop application
+remains possible.
 
-Bringing them to feature parity is planned. Each format needs:
+A standalone desktop application would provide a purpose-built
+environment for Twine and interactive fiction development without
+requiring authors to use VS Code directly.
 
-- **Harlowe 3** — Macro catalog (~60 builtins with Harlowe's distinct
-  `(macro:)` syntax), variable tracking (Harlowe uses a different
-  scoping model than SugarCube), completion & hover.
-- **Chapbook 1** — Modifier catalog (Chapbook's equivalent of macros —
-  `~` and `{}` syntax), embedded JS expression analysis, completion &
-  hover.
-- **Snowman 2** — Embedded JS analysis inside `<% %>` ERB template
-  blocks, completion for Underscore.js helpers, variable tracking.
+This is a long-term goal that depends on the extension reaching feature
+maturity and on community support making sustained development possible.
 
-Estimated effort: 3–4 months of dedicated development per format.
+No development timeline is currently planned.

@@ -7,16 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.0.0.1] — Marketplace Beta
+## [2.0.0] — Marketplace Beta (Pre-release)
 
 First public beta release of Knot v2.0.0. Marked as `preview: true` on the
 marketplace to signal pre-release status. SugarCube 2 is feature-complete;
 Harlowe, Chapbook, and Snowman have placeholder implementations.
 
-> **Version note:** The VS Code Marketplace doesn't accept semver pre-release
-> suffixes (e.g. `2.0.0-beta.1`). Beta builds use a 4-number version
-> (`2.0.0.1`, `2.0.0.2`, …) that sorts below the stable `2.0.0` release, so
-> users on the beta will auto-update to stable when it ships.
+> **Version note:** This beta is published with the `--pre-release` flag
+> (`vsce publish --pre-release`), which sets `preRelease: true` in the VSIX
+> manifest. The Marketplace displays it in a separate **Pre-release** tab —
+> users opt in by clicking "Switch to Pre-release Version" on the
+> Marketplace page. When stable `2.0.0` ships (without `--pre-release`),
+> beta users auto-update to it. The 4-component `2.0.0.1` scheme previously
+> documented here does not work: modern `vsce` rejects 4-component versions
+> as non-semver, and the Marketplace itself rejects semver prerelease tags
+> like `2.0.0-beta.1`.
 
 ### Added
 
@@ -199,4 +204,4 @@ Harlowe, Chapbook, and Snowman have placeholder implementations.
 - Fixed hardcoded `\\storyformats\\` backslashes in error messages — now uses `PathBuf::join().display()` for correct separators on all platforms
 - Fixed string-based path normalization in the indexing exclude-pattern matcher — now uses `PathBuf::strip_prefix` instead of string manipulation
 
-[2.0.0.1]: https://github.com/StormByte0/Knot/releases/tag/v2.0.0.1
+[2.0.0]: https://github.com/StormByte0/Knot/releases/tag/v2.0.0

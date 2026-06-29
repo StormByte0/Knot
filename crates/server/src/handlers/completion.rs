@@ -152,27 +152,14 @@ pub(crate) async fn completion_resolve(
                         Some("goto") => {
                             format!("**{}** — Navigation target for <<goto>>\n\n", name)
                         }
-                        Some("include") | Some("display") => {
-                            format!(
-                                "**{}** — Included passage for <<{}>>\n\n",
-                                name,
-                                macro_name.unwrap()
-                            )
+                        Some(m @ ("include" | "display")) => {
+                            format!("**{}** — Included passage for <<{}>>\n\n", name, m)
                         }
-                        Some("link") | Some("button") | Some("click") => {
-                            format!(
-                                "**{}** — Link target for <<{}>>\n\n",
-                                name,
-                                macro_name.unwrap()
-                            )
+                        Some(m @ ("link" | "button" | "click")) => {
+                            format!("**{}** — Link target for <<{}>>\n\n", name, m)
                         }
-                        Some("linkappend") | Some("linkprepend") | Some("linkreplace")
-                        | Some("linkrepeat") => {
-                            format!(
-                                "**{}** — Link target for <<{}>>\n\n",
-                                name,
-                                macro_name.unwrap()
-                            )
+                        Some(m @ ("linkappend" | "linkprepend" | "linkreplace" | "linkrepeat")) => {
+                            format!("**{}** — Link target for <<{}>>\n\n", name, m)
                         }
                         Some("actions") => {
                             format!("**{}** — Choice passage for <<actions>>\n\n", name)
@@ -279,7 +266,7 @@ pub(crate) async fn completion_resolve(
                     let props_list: Vec<String> = child_names
                         .iter()
                         .take(10)
-                        .map(|n| format!("- `{}.{} `", name, n))
+                        .map(|n| format!("- `{}.{}`", name, n))
                         .collect();
                     doc_markdown
                         .push_str(&format!("\n\n**Properties:**\n{}", props_list.join("\n"),));
@@ -325,7 +312,7 @@ pub(crate) async fn completion_resolve(
                 let method_tag = if is_method { " (method)" } else { "" };
 
                 let doc_markdown = format!(
-                    "**{}.{} ** — {}{} of `{}`\n\nAccessed via `{}.{} `",
+                    "**{}.{}** — {}{} of `{}`\n\nAccessed via `{}.{}`",
                     parent_path,
                     property,
                     kind_label,

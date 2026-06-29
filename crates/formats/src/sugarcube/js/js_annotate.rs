@@ -525,8 +525,8 @@ fn annotate_for_macro_args(
     // SugarCube keyword operators that can appear in <<for>> args.
     // Sorted by length (longest first) to ensure longest-match.
     const FOR_KEYWORDS: &[&str] = &[
-        "isnot", "ndef", "from", "and", "ndef", "gte", "lte", "neq", "def", "eq", "gt", "is", "lt",
-        "or", "to", "not",
+        "isnot", "ndef", "from", "and", "gte", "lte", "neq", "def", "eq", "gt", "is", "lt", "or",
+        "to", "not",
     ];
 
     // Symbolic operator chars that can appear in C-style <<for>>.

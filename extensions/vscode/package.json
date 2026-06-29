@@ -2,7 +2,7 @@
   "name": "knot",
   "displayName": "Knot — Twine IDE (Beta)",
   "description": "Next-generation IDE for Twine and Twee projects. Beta — SugarCube 2 is fully supported; other formats are in progress.",
-  "version": "2.0.0.1",
+  "version": "2.0.0",
   "publisher": "stormbyte",
   "license": "SEE LICENSE IN LICENSE",
   "licenseUrl": "../LICENSE",
@@ -24,7 +24,6 @@
     "beta"
   ],
   "activationEvents": [
-    "onLanguage:twee",
     "workspaceContains:**/*.tw",
     "workspaceContains:**/*.twee"
   ],
