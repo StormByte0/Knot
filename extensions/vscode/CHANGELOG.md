@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.0.0] — In Development
+## [2.0.0-beta.1] — Marketplace Beta
+
+First public beta release of Knot v2.0.0. Marked as `preview: true` on the
+marketplace to signal pre-release status. SugarCube 2 is feature-complete;
+Harlowe, Chapbook, and Snowman have placeholder implementations.
 
 ### Added
 
@@ -190,4 +194,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed hardcoded `\\storyformats\\` backslashes in error messages — now uses `PathBuf::join().display()` for correct separators on all platforms
 - Fixed string-based path normalization in the indexing exclude-pattern matcher — now uses `PathBuf::strip_prefix` instead of string manipulation
 
-[2.0.0]: https://github.com/StormByte0/Knot/releases/tag/v2.0.0
+[2.0.0-beta.1]: https://github.com/StormByte0/Knot/releases/tag/v2.0.0-beta.1

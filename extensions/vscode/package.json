@@ -1,11 +1,12 @@
 {
   "name": "knot",
-  "displayName": "Knot \u2014 Twine IDE",
-  "description": "Next-generation IDE for Twine and Twee projects",
-  "version": "2.0.0",
+  "displayName": "Knot — Twine IDE (Beta)",
+  "description": "Next-generation IDE for Twine and Twee projects. Beta — SugarCube 2 is fully supported; other formats are in progress.",
+  "version": "2.0.0-beta.1",
   "publisher": "stormbyte",
   "license": "SEE LICENSE IN LICENSE",
   "licenseUrl": "../LICENSE",
+  "preview": true,
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -19,7 +20,8 @@
     "twee",
     "sugarcube",
     "harlowe",
-    "interactive fiction"
+    "interactive fiction",
+    "beta"
   ],
   "activationEvents": [
     "onLanguage:twee",

@@ -1,10 +1,27 @@
-# Knot — Twine IDE for VS Code
+# Knot — Twine IDE for VS Code (Beta)
 
 A next-generation integrated development environment for Twine and Twee interactive fiction projects. Knot models your entire story as a directed graph, enabling real-time structural analysis, intelligent navigation, and narrative-aware diagnostics that no other Twine tooling provides.
 
 The core language server is written in Rust for high-performance parsing, incremental graph recomputation, and low-latency response times. It communicates with VS Code through the Language Server Protocol.
 
-> **⚠️ Under active development.** Knot is pre-release software. Only **SugarCube 2** currently has full language features (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** have placeholder/skeleton implementations only — the `FormatPlugin` trait is implemented but the parsers are not yet production quality and link extraction is not functional. The build pipeline works for all formats (it delegates to Tweego, which is format-agnostic). See the [Supported Story Formats](#supported-story-formats) matrix below. Expect breaking changes and rough edges until v2.0.0 ships.
+> **⚠️ Beta software.** This is a pre-release build of Knot v2.0.0. Only **SugarCube 2** currently has full language features (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** have placeholder/skeleton implementations only — the `FormatPlugin` trait is implemented but the parsers are not yet production quality and link extraction is not functional. The build pipeline works for all formats (it delegates to Tweego, which is format-agnostic). See the [Supported Story Formats](#supported-story-formats) matrix below. Expect breaking changes and rough edges until v2.0.0 stable ships.
+
+---
+
+## ❤️ Support the Project
+
+Knot is a passion project built and maintained by a solo developer. If Knot makes your interactive fiction workflow better, consider supporting its continued development:
+
+[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://patreon.com/StormByte0)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)
+
+Your support funds:
+- Completing the Harlowe, Chapbook, and Snowman format plugins
+- Building the planned features (project initialization, decompile, passage organization, and more)
+- Ongoing maintenance, bug fixes, and Twine/SugarCube version tracking
+- Keeping Knot free to use for everyone, including commercial Twine authors
+
+Every supporter gets listed in the [Credits](#credits) section. Patreon tiers and benefits are being set up — check the [Patreon page](https://patreon.com/StormByte0) for the latest.
 
 ---
 
@@ -233,23 +250,6 @@ Knot has automatic crash recovery, but if it keeps happening, set `knot.trace.se
 ## Roadmap
 
 Knot is under active development. See [ROADMAP.md](../../ROADMAP.md) for long-term architectural goals and [PLANNED_FEATURES.md](../../PLANNED_FEATURES.md) for near-term feature candidates.
-
----
-
-## Support the Project
-
-Knot is a passion project. If Knot makes your interactive fiction workflow better, consider supporting its continued development on **Patreon** or **Ko-fi**:
-
-- **[Become a Patron →](https://patreon.com/StormByte0)**
-- **[Buy a coffee on Ko-fi →](https://ko-fi.com/stormbyte0)**
-
-Support funds:
-- Completing the Harlowe, Chapbook, and Snowman format plugins
-- Building the planned features in [PLANNED_FEATURES.md](../../PLANNED_FEATURES.md) (project initialization, decompile, passage organization, and more)
-- Ongoing maintenance, bug fixes, and Twine/SugarCube version tracking
-- Keeping Knot free to use for everyone, including commercial Twine authors
-
-Patreon tiers and benefits are being set up — check the Patreon page for the latest. Every supporter gets listed in the Credits below.
 
 ---
 
