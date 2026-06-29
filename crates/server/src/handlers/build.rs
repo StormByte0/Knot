@@ -271,7 +271,14 @@ impl ServerState {
             .as_ref()
             .filter(|s| !s.is_empty())
             .cloned()
-            .or_else(|| config.build.source_dir.as_ref().filter(|s| !s.is_empty()).cloned());
+            .or_else(|| {
+                config
+                    .build
+                    .source_dir
+                    .as_ref()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+            });
 
         let mut source_path = match &source_dir_value {
             Some(sd) => {
@@ -292,7 +299,9 @@ impl ServerState {
             .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
                 line: format!(
                     "Knot: Source directory setting: '{}' (from {})",
-                    source_dir_value.as_deref().unwrap_or("(empty — using workspace root)"),
+                    source_dir_value
+                        .as_deref()
+                        .unwrap_or("(empty — using workspace root)"),
                     source_dir_source
                 ),
                 is_error: false,
@@ -376,7 +385,12 @@ impl ServerState {
         // Log the source of the output dir so users can debug "why is my
         // setting being ignored?" issues. The value shown here is exactly
         // what tweego will receive as the parent of -o.
-        let output_dir_source = if params.output_dir.as_ref().filter(|s| !s.is_empty()).is_some() {
+        let output_dir_source = if params
+            .output_dir
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
             "VS Code setting (knot.build.outputDir)"
         } else {
             ".vscode/knot.json (build.output_dir)"
