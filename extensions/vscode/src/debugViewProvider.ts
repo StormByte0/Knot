@@ -77,11 +77,72 @@ export class DebugViewProvider implements vscode.WebviewViewProvider {
         // Re-fetch data when the view becomes visible again (e.g. after
         // the sidebar was collapsed and re-expanded). Without this, the
         // webview shows stale or empty content because the DOM was reset.
+        //
+        // If no passage is currently selected, try to auto-detect one from
+        // the active editor. This prevents the "empty state" from showing
+        // when the user opens the sidebar — the view should always show
+        // SOMETHING useful (either the passage under the cursor, or the
+        // Start passage as a fallback).
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
+                if (!this._currentPassage) {
+                    this._autoDetectPassage();
+                }
                 this.refresh();
             }
         });
+
+        // Also try to auto-detect on initial resolve — the view might
+        // become visible before any onDidChangeActiveTextEditor fires.
+        if (!this._currentPassage) {
+            this._autoDetectPassage();
+        }
+    }
+
+    /**
+     * Try to detect the current passage from the active text editor.
+     * If no twee editor is active, fall back to the "Start" passage
+     * (the most useful default — it's where the story begins).
+     *
+     * This is called when the view becomes visible and no passage is
+     * currently selected, preventing the empty state from showing
+     * when there's a project open.
+     */
+    private _autoDetectPassage(): void {
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const text = editor.document.getText();
+            const position = editor.selection.active;
+            const lines = text.split('\n');
+            let currentPassage: string | undefined;
+            for (let i = 0; i <= position.line; i++) {
+                const line = lines[i];
+                if (line.startsWith('::')) {
+                    // Extract passage name from the header line
+                    let name = line.replace(/^::\s*/, '');
+                    // Strip JSON metadata blocks {...}
+                    const braceStart = name.indexOf('{');
+                    if (braceStart >= 0) {
+                        name = name.substring(0, braceStart);
+                    }
+                    // Strip tag blocks [...]
+                    const bracketStart = name.indexOf('[');
+                    if (bracketStart >= 0) {
+                        name = name.substring(0, bracketStart);
+                    }
+                    currentPassage = name.trim();
+                }
+            }
+            if (currentPassage) {
+                this._currentPassage = currentPassage;
+                return;
+            }
+        }
+
+        // Fall back to "Start" — it's the most useful default since
+        // it's where the story begins and is always present in a
+        // well-formed Twine project.
+        this._currentPassage = 'Start';
     }
 
     /** Update the diagnostics view for the passage under the cursor. */

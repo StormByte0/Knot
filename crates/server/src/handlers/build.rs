@@ -254,21 +254,26 @@ impl ServerState {
 
         // ── Resolve source directory ─────────────────────────────────────
         //
-        // Architecture (simplified): the workspace IS the source directory.
-        // Users put all their game files (.twee, .js, .css, assets) directly
-        // in the workspace. Story formats live separately in the extension-
-        // managed folder, so there's no risk of format.js getting bundled
-        // as a passage.
+        // The source directory is what tweego recursively scans for .twee,
+        // .js, and .css files. It comes from two sources:
+        //   1. `params.source_dir` — the VS Code `knot.build.sourceDir`
+        //      setting, sent per-request by the extension. Takes priority.
+        //   2. `config.build.source_dir` — from `.vscode/knot.json`.
         //
-        // The `knot.build.sourceDir` setting still works as an explicit
-        // override for users who want to use a subdirectory, but there's
-        // no more `src/` auto-detection.
-        let source_path = match params
+        // When neither is set, the workspace root is used. This is the
+        // common cause of "Output file cannot be an input source" errors:
+        // if the workspace root is the source AND contains the build/
+        // output directory, tweego sees the output as input. The fix is
+        // to set `knot.build.sourceDir` to a subdirectory (e.g. "src")
+        // so the build/ folder is outside the source tree.
+        let source_dir_value: Option<String> = params
             .source_dir
             .as_ref()
             .filter(|s| !s.is_empty())
-            .or_else(|| config.build.source_dir.as_ref().filter(|s| !s.is_empty()))
-        {
+            .cloned()
+            .or_else(|| config.build.source_dir.as_ref().filter(|s| !s.is_empty()).cloned());
+
+        let mut source_path = match &source_dir_value {
             Some(sd) => {
                 let relative = force_relative(sd);
                 root_path.join(&relative)
@@ -276,76 +281,39 @@ impl ServerState {
             None => root_path.clone(),
         };
 
+        // Log the source of the source dir so users can debug "why is my
+        // workspace being scanned?" issues.
+        let source_dir_source = if source_dir_value.is_some() {
+            "VS Code setting (knot.build.sourceDir) or .vscode/knot.json"
+        } else {
+            "default (workspace root) — no sourceDir set"
+        };
+        self.client
+            .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                line: format!(
+                    "Knot: Source directory setting: '{}' (from {})",
+                    source_dir_value.as_deref().unwrap_or("(empty — using workspace root)"),
+                    source_dir_source
+                ),
+                is_error: false,
+            })
+            .await;
+
         // Validate: reject toolchain directories (contains a tweego binary).
         // This catches the mistake of pointing sourceDir at the tweego folder.
+        // Override with the workspace root instead of bailing out.
         if is_toolchain_dir(&source_path) {
-            let warning_msg = format!(
-                "Knot: WARNING: Source directory '{}' appears to be a toolchain directory \
-                 (contains tweego binary), not a source directory. Using workspace root instead.",
-                source_path.display()
-            );
             self.client
                 .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
-                    line: warning_msg,
+                    line: format!(
+                        "Knot: WARNING: Source directory '{}' appears to be a toolchain directory \
+                         (contains tweego binary), not a source directory. Using workspace root instead.",
+                        source_path.display()
+                    ),
                     is_error: true,
                 })
                 .await;
-            // Override: use workspace root
-            let fallback = root_path.clone();
-            self.client
-                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
-                    line: format!("Knot: Compiling source from: {}", fallback.display()),
-                    is_error: false,
-                })
-                .await;
-            // Use fallback for the rest of the function
-            // (We can't reassign source_path in this scope due to the match
-            //  arms, so we'll use fallback directly below.)
-
-            // ── Resolve story formats ────────────────────────────────────
-            let (resolution_msg, tweego_path_value) = self
-                .resolve_story_formats(
-                    &params,
-                    &config,
-                    &story_format,
-                    &format_version,
-                    &global_storage_path,
-                )
-                .await;
-            self.client
-                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
-                    line: resolution_msg,
-                    is_error: false,
-                })
-                .await;
-
-            // ── Determine output file ────────────────────────────────────
-            let output_dir_name = params
-                .output_dir
-                .as_ref()
-                .filter(|s| !s.is_empty())
-                .map(|s| s.as_str())
-                .unwrap_or(&config.build.output_dir);
-            let output_dir = root_path.join(output_dir_name);
-            std::fs::create_dir_all(&output_dir).ok();
-
-            let filename = story_title
-                .as_deref()
-                .map(sanitize_filename)
-                .unwrap_or_else(|| "index".to_string());
-            let output_file = output_dir.join(format!("{}.html", filename));
-
-            return self
-                .run_tweego(
-                    &compiler_path,
-                    &fallback,
-                    &output_file,
-                    &params,
-                    &config,
-                    &tweego_path_value,
-                    &root_path,
-                )
-                .await;
+            source_path = root_path.clone();
         }
 
         self.client
@@ -386,12 +354,43 @@ impl ServerState {
             .await;
 
         // ── Determine output file ────────────────────────────────────────
+        //
+        // The output_dir can come from two sources:
+        //   1. `params.output_dir` — the VS Code `knot.build.outputDir`
+        //      setting, sent per-request by the extension. Takes priority.
+        //   2. `config.build.output_dir` — from `.vscode/knot.json`. Used
+        //      as a fallback when the VS Code setting is empty.
+        //
+        // The value may be relative (e.g. "build", "../build") or absolute
+        // (e.g. "D:\build", "/home/user/build"). We resolve it against the
+        // workspace root for relative paths, and use it as-is for absolute
+        // paths (PathBuf::join replaces the base when given an absolute
+        // path, which is the desired behavior here).
         let output_dir_name = params
             .output_dir
             .as_ref()
             .filter(|s| !s.is_empty())
             .map(|s| s.as_str())
             .unwrap_or(&config.build.output_dir);
+
+        // Log the source of the output dir so users can debug "why is my
+        // setting being ignored?" issues. The value shown here is exactly
+        // what tweego will receive as the parent of -o.
+        let output_dir_source = if params.output_dir.as_ref().filter(|s| !s.is_empty()).is_some() {
+            "VS Code setting (knot.build.outputDir)"
+        } else {
+            ".vscode/knot.json (build.output_dir)"
+        };
+        self.client
+            .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                line: format!(
+                    "Knot: Output directory: '{}' (from {})",
+                    output_dir_name, output_dir_source
+                ),
+                is_error: false,
+            })
+            .await;
+
         let output_dir = root_path.join(output_dir_name);
         std::fs::create_dir_all(&output_dir).ok();
 
@@ -403,6 +402,45 @@ impl ServerState {
             .map(sanitize_filename)
             .unwrap_or_else(|| "index".to_string());
         let output_file = output_dir.join(format!("{}.html", filename));
+
+        // Log the final resolved output path — this is what tweego gets for -o.
+        // If this path is inside source_path, tweego will refuse with
+        // "Output file cannot be an input source."
+        self.client
+            .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                line: format!("Knot: Output file: {}", output_file.display()),
+                is_error: false,
+            })
+            .await;
+
+        // ── Safety check: warn if output is inside source ──────────────
+        //
+        // Tweego recursively scans source_path as input. If output_file is
+        // inside source_path, tweego will refuse with "Output file cannot
+        // be an input source." We warn BEFORE running tweego so the user
+        // sees the cause alongside the error, with clear fixes.
+        //
+        // Two fixes:
+        //   A. Set knot.build.sourceDir to a subdirectory (e.g. "src") so
+        //      the build/ folder is outside the source tree. This is the
+        //      recommended layout: workspace contains src/ + build/.
+        //   B. Set knot.build.outputDir to a path outside the workspace
+        //      (e.g. "../build" or an absolute path).
+        if output_file.starts_with(&source_path) {
+            self.client
+                .send_notification::<KnotBuildOutputNotification>(KnotBuildOutput {
+                    line: format!(
+                        "Knot: WARNING: Output file '{}' is inside the source directory '{}'. \
+                         Tweego will refuse this build. Fix: set 'knot.build.sourceDir' to a \
+                         subdirectory (e.g. 'src') so build/ is outside the source tree, \
+                         OR set 'knot.build.outputDir' to a path outside the workspace.",
+                        output_file.display(),
+                        source_path.display()
+                    ),
+                    is_error: true,
+                })
+                .await;
+        }
 
         self.run_tweego(
             &compiler_path,
@@ -704,6 +742,16 @@ impl ServerState {
     }
 
     /// `knot/compilerDetect` — detect whether a Twine compiler is available.
+    ///
+    /// Resolution order mirrors `knot_build`:
+    ///   1. Configured path from `.vscode/knot.json` (`config.compiler_path`)
+    ///   2. Managed binary at `<global_storage>/tweego/tweego[.exe]`
+    ///   3. PATH lookup (`which_compiler`)
+    ///
+    /// Note: the VS Code setting `knot.build.tweegoPath` is NOT checked here
+    /// — that setting is sent as `params.compiler_path` on `knot/build`, but
+    /// `knot/compilerDetect` has no such param. The extension's
+    /// `ensureTweegoAvailable()` checks the setting client-side first.
     pub async fn knot_compiler_detect(
         &self,
         params: KnotCompilerDetectParams,
@@ -723,9 +771,10 @@ impl ServerState {
         }
 
         let config = inner.workspace.config.clone();
+        let global_storage_path = inner.global_storage_path.clone();
         drop(inner);
 
-        // Check configured path first
+        // 1. Check configured path first
         if let Some(ref path) = config.compiler_path
             && path.exists()
         {
@@ -737,7 +786,24 @@ impl ServerState {
             });
         }
 
-        // Check PATH
+        // 2. Check managed binary: <globalStorage>/tweego/tweego[.exe]
+        if let Some(ref gs) = global_storage_path {
+            let managed_bin = gs.join("tweego").join(if cfg!(windows) {
+                "tweego.exe"
+            } else {
+                "tweego"
+            });
+            if managed_bin.exists() {
+                return Ok(KnotCompilerDetectResponse {
+                    compiler_found: true,
+                    compiler_name: Some("tweego".to_string()),
+                    compiler_version: helpers::detect_compiler_version(&managed_bin).await,
+                    compiler_path: Some(managed_bin.to_string_lossy().to_string()),
+                });
+            }
+        }
+
+        // 3. Check PATH
         if let Some(path) = helpers::which_compiler() {
             return Ok(KnotCompilerDetectResponse {
                 compiler_found: true,

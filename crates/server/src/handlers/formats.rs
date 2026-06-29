@@ -29,19 +29,23 @@ use knot_formats::format_meta::{InstalledFormat, scan_storyformats_dir};
 /// Map a format name string (as it appears in StoryData, e.g. "SugarCube")
 /// to the tweego format ID (directory name, e.g. "sugarcube-2").
 ///
-/// Returns `Err` with a JSON-RPC error if the format is unknown — used by
-/// `knot_formats_list` to bail out cleanly when StoryData references an
-/// unsupported format.
-fn format_name_to_id(format_name: &str) -> Result<&'static str, tower_lsp::jsonrpc::Error> {
+/// Returns `None` for unknown formats — including `StoryFormat::Core`,
+/// which is what the workspace reports before StoryData is parsed or when
+/// the project has no StoryData `format` field. The caller treats `None`
+/// as "we can't determine whether the format is cached", which is the
+/// correct behavior for both cases.
+fn format_name_to_id(format_name: &str) -> Option<&'static str> {
     match format_name {
-        "SugarCube" => Ok("sugarcube-2"),
-        "Harlowe" => Ok("harlowe-3"),
-        "Chapbook" => Ok("chapbook-1"),
-        "Snowman" => Ok("snowman-2"),
-        _ => Err(tower_lsp::jsonrpc::Error::invalid_params(format!(
-            "Unknown story format '{}': only SugarCube, Harlowe, Chapbook, Snowman are supported",
-            format_name
-        ))),
+        "SugarCube" => Some("sugarcube-2"),
+        "Harlowe" => Some("harlowe-3"),
+        "Chapbook" => Some("chapbook-1"),
+        "Snowman" => Some("snowman-2"),
+        // "Core" and any unrecognized string — including the Debug
+        // representation of `StoryFormat::Core` — fall through here. We
+        // do NOT error: an unknown format just means we can't tell the
+        // user whether the cache has it. The build handler will surface
+        // a clear "no storyformats resolved" error if applicable.
+        _ => None,
     }
 }
 
@@ -74,17 +78,22 @@ impl ServerState {
         let global_storage = inner.global_storage_path.clone();
 
         // Check if the project's needed format is already in the managed cache.
+        // Returns None when we can't determine the format ID (e.g. `Core` or
+        // unrecognized format name) — the client treats None as "unknown",
+        // which is correct.
         let project_format_cached =
             match (&global_storage, &project_format, &project_format_version) {
-                (Some(gs), Some(fmt), Some(ver)) => {
-                    let format_id = format_name_to_id(fmt)?;
-                    let format_js = gs
-                        .join("storyformats")
-                        .join(format!("{}@{}", format_id, ver))
-                        .join(format_id)
-                        .join("format.js");
-                    Some(format_js.exists())
-                }
+                (Some(gs), Some(fmt), Some(ver)) => match format_name_to_id(fmt) {
+                    Some(format_id) => {
+                        let format_js = gs
+                            .join("storyformats")
+                            .join(format!("{}@{}", format_id, ver))
+                            .join(format_id)
+                            .join("format.js");
+                        Some(format_js.exists())
+                    }
+                    None => None,
+                },
                 _ => None,
             };
 

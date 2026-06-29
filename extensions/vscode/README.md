@@ -133,7 +133,6 @@ Each diagnostic can be set to `error`, `warning`, `info`, `hint`, or `off`. Defa
 | Setting | Default | Description |
 |---|---|---|
 | `knot.indexing.maxFiles` | `1000` | Maximum files to index before stopping with a warning |
-| `knot.indexing.exclude` | `[]` | Glob patterns to exclude from indexing |
 
 ### Status & Paths
 

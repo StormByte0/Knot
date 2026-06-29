@@ -169,11 +169,6 @@
         "category": "Knot"
       },
       {
-        "command": "knot.openTweegoFolder",
-        "title": "Knot: Open Tweego Folder",
-        "category": "Knot"
-      },
-      {
         "command": "knot.openPassageByName",
         "title": "Knot: Open Passage by Name",
         "category": "Knot"
@@ -198,25 +193,28 @@
     ],
     "keybindings": [
       {
+        "command": "knot.build",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b",
+        "when": "resourceLangId =~ /twee/"
+      },
+      {
         "command": "knot.play",
-        "key": "f5",
-        "when": "resourceLangId == twee"
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "resourceLangId =~ /twee/"
       },
       {
         "command": "knot.playFromPassage",
-        "key": "shift+f5",
-        "when": "resourceLangId == twee"
-      },
-      {
-        "command": "knot.build",
-        "key": "f6",
-        "when": "resourceLangId == twee"
+        "key": "ctrl+alt+shift+p",
+        "mac": "cmd+alt+shift+p",
+        "when": "resourceLangId =~ /twee/"
       },
       {
         "command": "knot.openStoryMap",
-        "key": "ctrl+shift+m",
-        "mac": "cmd+shift+m",
-        "when": "resourceLangId == twee"
+        "key": "ctrl+alt+m",
+        "mac": "cmd+alt+m",
+        "when": "resourceLangId =~ /twee/"
       }
     ],
     "viewsContainers": {
@@ -257,14 +255,14 @@
       "editor/context": [
         {
           "command": "knot.playFromPassage",
-          "when": "resourceLangId == twee",
+          "when": "resourceLangId =~ /twee/",
           "group": "navigation@10"
         }
       ],
       "editor/title": [
         {
           "command": "knot.openStoryMap",
-          "when": "resourceLangId == twee",
+          "when": "resourceLangId =~ /twee/",
           "group": "navigation"
         }
       ]
@@ -276,13 +274,13 @@
           "knot.build.outputDir": {
             "type": "string",
             "default": "build",
-            "description": "Where the compiled index.html is written, relative to the workspace root.",
+            "description": "Where the compiled HTML is written. Relative paths are resolved against the workspace root. RECOMMENDED LAYOUT: set knot.build.sourceDir to 'src' and leave this as 'build' — the workspace then contains src/ (your .twee files) and build/ (the output), and Tweego won't scan build/ as input. If you keep source files at the workspace root, set this to a path OUTSIDE the workspace (e.g. '../build') to avoid 'Output file cannot be an input source' errors.",
             "scope": "workspace"
           },
           "knot.build.sourceDir": {
             "type": "string",
             "default": "",
-            "description": "Subdirectory (relative to workspace root) containing .twee source files. Set this when the workspace root has non-source files (e.g. a bundled tweego/ folder) so Tweego doesn't pick up stray .js files as passages. Empty = workspace root.",
+            "description": "Subdirectory (relative to workspace root) containing .twee/.js/.css source files. RECOMMENDED: set to 'src' so the workspace can contain a build/ output folder without Tweego scanning it as input. When empty, the workspace root is used as the source — in that case, set knot.build.outputDir to a path OUTSIDE the workspace to avoid 'Output file cannot be an input source' errors.",
             "scope": "workspace"
           },
           "knot.build.tweegoPath": {
@@ -398,13 +396,6 @@
             "default": 1000,
             "minimum": 1,
             "description": "Maximum number of .tw/.twee/.js files to index. If the workspace exceeds this limit, indexing stops with a warning — prevents the server from hanging on very large workspaces.",
-            "scope": "workspace"
-          },
-          "knot.indexing.exclude": {
-            "type": "array",
-            "items": { "type": "string" },
-            "default": [],
-            "description": "Glob patterns to skip during workspace indexing, matched against the path relative to workspace root. Examples: \"build/**\", \"node_modules\", \"*.tmp\". Merged with patterns from .vscode/knot.json.",
             "scope": "workspace"
           }
         },

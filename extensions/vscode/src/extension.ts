@@ -160,7 +160,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     'Dismiss'
                 ).then((choice) => {
                     if (choice === 'Open Managed Folder') {
-                        vscode.commands.executeCommand('knot.openTweegoFolder');
+                        vscode.commands.executeCommand('knot.openManagedStorage');
                     }
                 });
             }
@@ -211,11 +211,10 @@ export async function activate(context: vscode.ExtensionContext) {
             // formats into globalStorage, and the server uses them at build time.
             globalStoragePath: context.globalStorageUri.fsPath,
 
-            // Pass indexing settings from VS Code configuration. These are
-            // merged with patterns from .vscode/knot.json on the server side.
-            indexingExclude: vscode.workspace
-                .getConfiguration('knot.indexing')
-                .get<string[]>('exclude', []),
+            // Pass the max-files cap from VS Code configuration. Indexing
+            // exclusions have been removed — the server indexes everything
+            // in the workspace. Users who need to keep directories out of
+            // the build should set knot.build.outputDir outside the workspace.
             indexingMaxFiles: vscode.workspace
                 .getConfiguration('knot.indexing')
                 .get<number>('maxFiles', 1000),

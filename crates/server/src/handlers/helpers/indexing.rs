@@ -145,7 +145,7 @@ pub(crate) async fn index_workspace(
                 format!(
                     "Workspace has {} files, exceeding the max_files limit of {}. \
                      Indexing only the first {} files. \
-                     Increase 'knot.indexing.maxFiles' or add 'ignore' patterns.",
+                     Increase 'knot.indexing.maxFiles' or add 'ignore' patterns to .vscode/knot.json.",
                     total_files, max_files, max_files
                 ),
             )

@@ -32,8 +32,11 @@ pub(crate) async fn initialize(
     // toolchain: `<global_storage>/tweego/` for the binary,
     // `<global_storage>/storyformats/<id>@<ver>/` for versioned format cache.
     //
-    // Also read VS Code settings for indexing (exclude patterns + max files).
-    // These are merged with .vscode/knot.json patterns below.
+    // Also read the VS Code `knot.indexing.maxFiles` setting. Indexing
+    // exclusions have been removed — the server now indexes all .tw/.twee/.js
+    // files in the workspace, capped by maxFiles. Users who need to keep
+    // certain directories out of the build should set `knot.build.outputDir`
+    // outside the workspace root.
     if let Some(opts) = params.initialization_options {
         if let Some(path_str) = opts.get("globalStoragePath").and_then(|v| v.as_str()) {
             let path = std::path::PathBuf::from(path_str);
@@ -45,43 +48,20 @@ pub(crate) async fn initialize(
             );
         }
 
-        // Read VS Code indexing settings (merged with knot.json below)
-        let vc_exclude: Vec<String> = opts
-            .get("indexingExclude")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Read the VS Code maxFiles setting. This is only set if not
+        // already configured in knot.json (knot.json takes priority for
+        // project-specific limits).
         let vc_max_files: Option<usize> = opts
             .get("indexingMaxFiles")
             .and_then(|v| v.as_u64())
             .map(|n| n as usize);
 
-        if !vc_exclude.is_empty() || vc_max_files.is_some() {
+        if let Some(max) = vc_max_files {
             let mut inner = state.inner.write().await;
-            // VS Code exclude patterns are ADDED to knot.json patterns
-            // (union). This lets users set global excludes in VS Code
-            // settings and project-specific ones in knot.json.
-            for pat in &vc_exclude {
-                if !inner.workspace.config.ignore.contains(pat) {
-                    inner.workspace.config.ignore.push(pat.clone());
-                }
-            }
-            // maxFiles is only set if not already configured in knot.json
-            // (knot.json takes priority for project-specific limits).
-            if let Some(max) = vc_max_files
-                && inner.workspace.config.max_files.is_none()
-            {
+            if inner.workspace.config.max_files.is_none() {
                 inner.workspace.config.max_files = Some(max);
             }
-            tracing::info!(
-                "Indexing settings from VS Code: exclude={:?}, max_files={:?}",
-                vc_exclude,
-                vc_max_files
-            );
+            tracing::info!("Indexing max_files from VS Code: {:?}", vc_max_files);
         }
     }
 

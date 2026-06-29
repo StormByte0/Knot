@@ -93,7 +93,9 @@ export function createStatusBarItems(
     };
     watch.command = 'knot.toggleWatch';
     updateWatchIcon();
-    // Update icon after toggle command runs
+    // Register the watch toggle command here (not in commands.ts) because
+    // this is the only place that owns the watch icon — registering in
+    // both places would cause one to silently override the other.
     context.subscriptions.push(
         vscode.commands.registerCommand('knot.toggleWatch', async () => {
             const client = getClient() as { isRunning?: () => boolean } | null;
