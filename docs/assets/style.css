@@ -92,9 +92,13 @@ pre code { background: none; border: none; padding: 0; }
 }
 .brand:hover { text-decoration: none; color: var(--text); }
 .brand .brand-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  max-width: 22px;
+  max-height: 22px;
+  flex-shrink: 0;
+  object-fit: contain;
+  border-radius: 4px;
   display: block;
 }
 .nav-links {
