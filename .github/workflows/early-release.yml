@@ -1,23 +1,40 @@
-# Release — runs on tag push (v*)
-# Builds platform-specific VSIX packages and creates a draft GitHub Release.
-# The release is NOT published to the marketplace automatically — download
-# the VSIX files from the release, review them, then run `vsce publish`
-# manually when ready.
+# Early Release — on-demand VSIX build for Patreon early-access drops.
+#
+# Triggered manually (workflow_dispatch) or by push to the early-release
+# branch. Produces platform-specific VSIX packages WITHOUT cutting a
+# GitHub Release or tagging the repo — the VSIX files are attached as
+# workflow artifacts that the maintainer downloads and ships to Patreon.
+#
+# Difference vs. release.yml:
+#   - No `on: push: tags` trigger — works without a git release
+#   - No `release` job — no draft release is created
+#   - Artifacts are kept for 90 days under the workflow run
+#   - Optional `pre_release` input controls the --pre-release flag
+#     (default true, since Patreon drops are usually beta builds)
 
-name: Release
+name: Early Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      pre_release:
+        description: "Flag VSIX as pre-release (beta) for Marketplace Pre-release tab"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
   push:
-    tags:
-      - 'v*'
+    branches:
+      - early-release
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────
-  # Build the webview once — it produces platform-independent static
-  # assets (JS/CSS) that are identical across all targets.
+  # Build the webview once — platform-independent static assets.
   # ─────────────────────────────────────────────────────────────────────
   build-webview:
     name: Build webview (shared)
@@ -48,14 +65,13 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────
   # Build platform-specific VSIX packages.
-  # Each job downloads the shared webview assets, builds the Rust server
-  # for its target, compiles the extension TS, and packages a VSIX.
+  # Matrix mirrors release.yml minus darwin-x64 (removed — too slow).
   # ─────────────────────────────────────────────────────────────────────
   build-platform:
     name: Build ${{ matrix.target }}
     needs: build-webview
     strategy:
-      fail-fast: false  # let all platforms finish even if one fails
+      fail-fast: false
       matrix:
         include:
           - target: win32-x64
@@ -138,10 +154,16 @@ jobs:
         working-directory: extensions/vscode
 
       # ── Package VSIX ──────────────────────────────────────────────────
-      # --pre-release flags this build as a beta in the Marketplace's
-      # Pre-release tab. Drop the flag when publishing stable 2.0.0.
+      # --pre-release is configurable via workflow_dispatch input so the
+      # same workflow can ship either beta or stable Patreon drops.
       - name: Package VSIX
-        run: npx vsce package --pre-release --target ${{ matrix.target }} --allow-missing-repository
+        shell: bash
+        run: |
+          PRE_FLAG=""
+          if [ "${{ github.event.inputs.pre_release || 'true' }}" = "true" ]; then
+            PRE_FLAG="--pre-release"
+          fi
+          npx vsce package $PRE_FLAG --target ${{ matrix.target }} --allow-missing-repository
         working-directory: extensions/vscode
 
       - name: Upload VSIX
@@ -149,20 +171,17 @@ jobs:
         with:
           name: vsix-${{ matrix.target }}
           path: extensions/vscode/*.vsix
-          retention-days: 30
+          retention-days: 90
 
   # ─────────────────────────────────────────────────────────────────────
-  # Create a draft GitHub Release with all VSIX files attached.
+  # Roll-up: download every platform VSIX and re-upload as a single
+  # artifact so the maintainer grabs one zip for Patreon.
   # ─────────────────────────────────────────────────────────────────────
-  release:
-    name: Create GitHub Release
+  bundle:
+    name: Bundle all VSIX
     needs: build-platform
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - uses: actions/checkout@v5
-
       - name: Download all VSIX files
         uses: actions/download-artifact@v5
         with:
@@ -173,36 +192,15 @@ jobs:
       - name: List VSIX files
         run: ls -la vsix-files/
 
-      - name: Create draft release
-        uses: softprops/action-gh-release@v2
+      - name: Zip bundle
+        run: |
+          cd vsix-files
+          zip -j knot-early-release-${{ github.run_id }}.zip *.vsix
+          ls -la
+
+      - name: Upload bundled zip
+        uses: actions/upload-artifact@v5
         with:
-          draft: true
-          generate_release_notes: true
-          files: vsix-files/*.vsix
-          body: |
-            ## Knot ${{ github.ref_name }}
-
-            ### Platform-specific VSIX packages
-
-            Download the file matching your platform and install with:
-            ```
-            code --install-extension <filename>.vsix
-            ```
-
-            | File | Platform |
-            |---|---|
-            | `*.win32-x64.vsix` | Windows x64 |
-            | `*.darwin-arm64.vsix` | macOS ARM (Apple Silicon) |
-            | `*.linux-x64.vsix` | Linux x64 |
-            | `*.linux-arm64.vsix` | Linux ARM64 |
-
-            ### Publishing to Marketplace
-
-            This is a draft release. The VSIX files were built with
-            `--pre-release` and are flagged as beta builds for the
-            Marketplace's Pre-release tab. To publish:
-            1. Download the VSIX files
-            2. Review them
-            3. Run: `vsce publish --pre-release --packagePath <filename>.vsix`
-
-            (Drop `--pre-release` when publishing stable 2.0.0.)
+          name: knot-early-release-${{ github.run_id }}
+          path: vsix-files/knot-early-release-${{ github.run_id }}.zip
+          retention-days: 90

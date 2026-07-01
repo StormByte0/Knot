@@ -1,5 +1,7 @@
 # Knot — A Twine IDE (Beta)
 
+> **Looking for help, docs, or updates?** Visit the official site: **<https://stormbyte0.github.io/Knot/>** — documentation, feature walkthroughs, and the latest news all live there. For community help, see [Support & Community](#-support--community) below.
+
 Knot is a next-generation development environment for Twine and Twee interactive fiction projects. The bulk of Knot lives in a language server written in Rust that talks to editors through the Language Server Protocol. That design choice matters: Knot is not strictly tethered to VS Code. The VS Code extension is its first host, but the same Rust core can power other editors — and, in time, become a standalone IDE for Twine.
 
 Unlike tooling that bolts regular expressions onto a text editor, Knot actually understands how a Twine project is structured. It models your story as a directed graph of passages connected by links, tracks variables as they flow across passages, and turns that structural understanding into navigation, diagnostics, and insight that pattern matching alone cannot provide. The headline features today are a **variable tracker**, **passage-based diagnostics**, and a **Story Map** for visualizing and navigating your project — with more to come.
