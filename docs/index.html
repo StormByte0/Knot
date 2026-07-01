@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Knot — A Twine IDE</title>
+  <meta name="description" content="Knot is a next-generation development environment for Twine and Twee interactive fiction. A Rust language server gives Knot real structural understanding of your project — not just regex.">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <div class="wrap">
+      <a href="index.html" class="brand"><span class="mark">K</span> Knot</a>
+      <div class="nav-links">
+        <a href="index.html" class="active">Home</a>
+        <a href="onboarding.html">Onboarding</a>
+        <a href="features.html">Features</a>
+        <a href="socials.html">Community</a>
+        <a href="sponsors.html">Sponsors</a>
+        <a href="links.html">Links</a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <h1>Knot</h1>
+      <p class="tagline">A Twine IDE that actually understands your story. A Rust language server models your project as a graph of passages and tracks variables as they flow — giving you navigation, diagnostics, and insight that pattern-matching alone can't provide.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="onboarding.html">Get started</a>
+        <a class="btn" href="features.html">See features</a>
+        <a class="btn" href="socials.html">Support the project</a>
+      </div>
+    </section>
+
+    <h2>Why Knot</h2>
+    <p class="lead">The bulk of Knot lives in a language server written in Rust that talks to editors through the Language Server Protocol. That design choice matters: Knot is not strictly tethered to VS Code. The VS Code extension is its first host, but the same Rust core can power other editors — and, in time, become a standalone IDE for Twine.</p>
+
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon">⊕</div>
+        <h3>Structural understanding</h3>
+        <p>Knot parses your project into passages and the links between them. It can answer questions like "where is this variable set?" or "is this passage reachable?" — questions that pure text matching gets wrong.</p>
+      </div>
+      <div class="card">
+        <div class="icon">∫</div>
+        <h3>Variable tracker</h3>
+        <p>See where every variable is set, read, and how it flows across passages. For SugarCube, tracking is JavaScript-aware via the oxc parser, so it understands <code>&lt;&lt;set $x to 1&gt;&gt;</code>, <code>&lt;&lt;run $x++&gt;&gt;</code>, and JS inside <code>&lt;&lt;script&gt;&gt;</code> blocks.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⚠</div>
+        <h3>Passage diagnostics</h3>
+        <p>A dedicated panel inspects any passage's links, variables, macros, and complexity. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicates, and dead ends.</p>
+      </div>
+      <div class="card">
+        <div class="icon">◈</div>
+        <h3>Story Map</h3>
+        <p>An interactive graph visualization of your project. Nodes are passages, edges are links. Click any node to jump to that passage. The map is primarily for visualization and navigation today; deeper editing is planned.</p>
+      </div>
+      <div class="card">
+        <div class="icon">⚡</div>
+        <h3>Incremental analysis</h3>
+        <p>Only affected passages are re-parsed after each keystroke, so large projects stay responsive even as your story grows into hundreds of passages.</p>
+      </div>
+      <div class="card">
+        <div class="icon">▶</div>
+        <h3>Build &amp; play, no setup</h3>
+        <p>One-click build and play via Tweego. Knot downloads and manages Tweego and story formats for you — no manual compiler setup, no PATH fiddling.</p>
+      </div>
+    </div>
+
+    <div class="callout warn">
+      <p><strong>⚠ Early development.</strong> Knot is still early in development and you may run into bugs or rough edges. Only <strong>SugarCube 2</strong> has full language features today. Harlowe, Chapbook, and Snowman are placeholder implementations — the build pipeline works for all formats, but language features are not yet built out.</p>
+      <p>This is also the best time to get involved. The codebase is still small and the technical debt is low, so feature requests and design input from early users have an outsized impact on where Knot goes. <a href="socials.html">Find us on Discord →</a></p>
+    </div>
+
+    <h2>Get started in 60 seconds</h2>
+    <ol>
+      <li>Install Knot from the VS Code Marketplace (search "Knot").</li>
+      <li>Open a folder containing <code>.tw</code> or <code>.twee</code> files.</li>
+      <li>Click <strong>Build</strong> in the status bar — Knot downloads Tweego and the right story format on first run.</li>
+      <li>Click <strong>Play</strong> to open the compiled story in your browser.</li>
+    </ol>
+    <p><a href="onboarding.html">Read the full onboarding guide →</a></p>
+
+    <h2>Want to help shape Knot?</h2>
+    <p>Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps fund the format plugins, planned features, and ongoing maintenance.</p>
+    <div class="cta" style="justify-content: flex-start; margin-top: 1em;">
+      <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0">Patreon</a>
+      <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+      <a class="btn btn-discord" href="https://discord.gg/UvWSZFkC3">Discord</a>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
+      <div class="links">
+        <a href="https://github.com/StormByte0/Knot">GitHub</a>
+        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+        <a href="https://www.patreon.com/StormByte0">Patreon</a>
+        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Features — Knot</title>
+  <meta name="description" content="A detailed look at what Knot does today: structural understanding, variable tracking, passage diagnostics, the Story Map, incremental analysis, and the integrated build pipeline.">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <div class="wrap">
+      <a href="index.html" class="brand"><span class="mark">K</span> Knot</a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="onboarding.html">Onboarding</a>
+        <a href="features.html" class="active">Features</a>
+        <a href="socials.html">Community</a>
+        <a href="sponsors.html">Sponsors</a>
+        <a href="links.html">Links</a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <h1>Features</h1>
+    <p class="lead">A detailed look at what Knot does today. Only SugarCube 2 has full language features; Harlowe, Chapbook, and Snowman are placeholder implementations with the build pipeline working.</p>
+
+    <h2>Structural understanding, not just regex</h2>
+    <p>Unlike tooling that bolts regular expressions onto a text editor, Knot actually parses your project into passages and the links between them. This structural model lets it answer questions that pattern matching gets wrong:</p>
+    <ul>
+      <li><strong>"Where is this variable set?"</strong> — Knot tracks definitions across passages, not just mentions.</li>
+      <li><strong>"Is this passage reachable from Start?"</strong> — a graph reachability check, not a string search.</li>
+      <li><strong>"Which passages link here?"</strong> — reverse navigation through the link graph.</li>
+      <li><strong>"Are there any orphan passages?"</strong> — passages nothing links to, flagged automatically.</li>
+    </ul>
+    <p>This is the core design principle behind Knot: model the project the way Twine itself models it, and the editor can give you real help instead of approximate help.</p>
+
+    <h2>Variable tracker</h2>
+    <p>The Variable Tracking panel shows where every variable is set, read, and how it flows across passages. For SugarCube, variable tracking is JavaScript-aware via the <a href="https://oxc-project.github.io/">oxc</a> parser, so it understands:</p>
+    <ul>
+      <li><code>&lt;&lt;set $x to 1&gt;&gt;</code> — SugarCube macro syntax</li>
+      <li><code>&lt;&lt;run $x++&gt;&gt;</code> — inline expressions</li>
+      <li>JavaScript inside <code>&lt;&lt;script&gt;&gt;</code> blocks</li>
+      <li>Variables passed through <code>&lt;&lt;include&gt;&gt;</code> and similar macros</li>
+    </ul>
+    <p>This means Knot can warn you about uninitialized variables, unused variables, and variables that are read but never set — all in real time as you type.</p>
+
+    <h2>Passage diagnostics</h2>
+    <p>A dedicated panel inspects any passage's links, variables, macros, and complexity metrics. Real-time diagnostics cover:</p>
+    <div class="card-grid">
+      <div class="card">
+        <h3>Broken links</h3>
+        <p>Links pointing to passages that don't exist yet.</p>
+      </div>
+      <div class="card">
+        <h3>Unreachable passages</h3>
+        <p>Passages no other passage links to (excluding <code>Start</code> and special passages).</p>
+      </div>
+      <div class="card">
+        <h3>Uninitialized variables</h3>
+        <p>Variables read before they're set anywhere in the project.</p>
+      </div>
+      <div class="card">
+        <h3>Duplicate passage names</h3>
+        <p>Two passages with the same name — Twine resolves these unpredictably.</p>
+      </div>
+      <div class="card">
+        <h3>Dead ends</h3>
+        <p>Passages with no outbound links, where the player has nowhere to go.</p>
+      </div>
+      <div class="card">
+        <h3>Complexity metrics</h3>
+        <p>Word count, link count, macro count, and variable count per passage.</p>
+      </div>
+    </div>
+    <p>Each diagnostic can be configured to <code>error</code>, <code>warning</code>, <code>info</code>, <code>hint</code>, or <code>off</code> in VS Code settings.</p>
+
+    <h2>Story Map</h2>
+    <p>An interactive graph visualization of your entire project. Nodes are passages, edges are links. The map is built on <a href="https://reactflow.dev/">@xyflow/react</a> with automatic layout via <a href="https://github.com/dagrejs/dagre">dagre</a>.</p>
+    <ul>
+      <li>Click any node to jump to that passage in the editor.</li>
+      <li>The map updates in real time as you edit — no manual refresh.</li>
+      <li>Edge styling reflects link type (regular link, setter link, etc.).</li>
+    </ul>
+    <p>The Story Map is primarily for visualization and navigation at this time. Deeper structural editing from the map — dragging passages to reorganize, creating links visually — is on the roadmap.</p>
+
+    <h2>Incremental analysis</h2>
+    <p>Knot doesn't re-parse your entire project on every keystroke. Only affected passages are re-parsed, and the graph is updated incrementally. This keeps large projects responsive even as they grow into hundreds of passages and thousands of links.</p>
+
+    <h2>Integrated build pipeline</h2>
+    <p>Knot's build pipeline is designed to "just work" with zero manual setup:</p>
+    <ol>
+      <li><strong>Tweego is auto-downloaded</strong> on first build into the extension's global storage. You never need to install it yourself.</li>
+      <li><strong>Story formats are auto-downloaded</strong> based on your project's <code>StoryData</code> format and version. The format is cached per version in <code>&lt;globalStorage&gt;/storyformats/&lt;id&gt;@&lt;version&gt;/</code>.</li>
+      <li><strong>The workspace is the source directory</strong> — put all your <code>.twee</code>, <code>.js</code>, <code>.css</code>, and asset files directly in the workspace. Story formats live separately in the managed folder, so there's no risk of <code>format.js</code> getting bundled as a passage.</li>
+      <li><strong>The output filename is derived from <code>StoryTitle</code></strong> — if your story is called "The Lost City", the build produces <code>The_Lost_City.html</code>. Falls back to <code>index.html</code> if no <code>StoryTitle</code> passage exists.</li>
+      <li><strong>Build stats are logged</strong> — every build prints <code>Passages: N | Words: N</code> to the Knot Build output channel.</li>
+    </ol>
+
+    <h2>Watch mode</h2>
+    <p>Toggle auto-rebuild on save. When Watch is on, every save of a <code>.tw</code>, <code>.twee</code>, <code>.js</code>, or <code>.css</code> file triggers a rebuild in the background. This is the recommended workflow for active development: edit, save, refresh the browser.</p>
+
+    <h2>Supported story formats</h2>
+    <table>
+      <thead><tr><th>Format</th><th>Status</th><th>What works</th><th>What doesn't (yet)</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>SugarCube 2</strong></td>
+          <td><span class="badge badge-ok">Full support</span></td>
+          <td>Full macro catalog (~120 builtins), JS-aware variable tracking via oxc, special passages, completion, hover, diagnostics, Story Map, build pipeline</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td><strong>Harlowe 3</strong></td>
+          <td><span class="badge badge-partial">Placeholder</span></td>
+          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+          <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
+        </tr>
+        <tr>
+          <td><strong>Chapbook 1</strong></td>
+          <td><span class="badge badge-partial">Placeholder</span></td>
+          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+          <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
+        </tr>
+        <tr>
+          <td><strong>Snowman 2</strong></td>
+          <td><span class="badge badge-partial">Placeholder</span></td>
+          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+          <td>Parser quality, link extraction, Story Map, ERB template detection, macro catalog, variable tracking, completion, hover</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Knot auto-detects the format from your <code>StoryData</code> passage. For non-SugarCube formats, the Language Status indicator shows a <code>◐</code> marker indicating the format is not yet fully supported. Bringing Harlowe, Chapbook, and Snowman to full parity is planned — see the <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">roadmap</a> for details.</p>
+
+    <div class="callout">
+      <p><strong>Want a feature that isn't here?</strong> Knot is still early in development and the codebase is small — this is the ideal time to chime in. <a href="socials.html">Join the Discord</a> or <a href="https://github.com/StormByte0/Knot/issues">open an issue</a> and tell us what you need.</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
+      <div class="links">
+        <a href="https://github.com/StormByte0/Knot">GitHub</a>
+        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+        <a href="https://www.patreon.com/StormByte0">Patreon</a>
+        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

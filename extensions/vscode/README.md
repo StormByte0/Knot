@@ -228,12 +228,12 @@ VS Code settings take priority over `.vscode/knot.json` for the same field. For 
 
 ## How the Build Pipeline Works
 
-Knot's build pipeline is designed to "just work" with minimal manual setup:
+Knot's build pipeline is designed to "just work" with zero manual setup:
 
 1. **Tweego is auto-downloaded** on first build into the extension's global storage. You never need to install it yourself.
 2. **Story formats are auto-downloaded** based on your project's `StoryData` format and version. The format is cached per version in `<globalStorage>/storyformats/<id>@<version>/`.
 3. **The workspace is the source directory** — put all your `.twee`, `.js`, `.css`, and asset files directly in the workspace. Story formats live separately in the managed folder, so there's no risk of `format.js` getting bundled as a passage.
-4. **The output filename is derived from `StoryTitle`** — if your story is called "The Lost City", the build produces `The_Lost_City.html`. Falls back to `index.html` if no `StoryTitle` passage exists. If you do not have a source directory set knot will pass the whole workspace as source directory which inturn will clash with build output into a sub folder. in this case either use a separate absolute path for output, or consider setting a source subDir
+4. **The output filename is derived from `StoryTitle`** — if your story is called "The Lost City", the build produces `The_Lost_City.html`. Falls back to `index.html` if no `StoryTitle` passage exists.
 5. **Build stats are logged** — every build prints `Passages: N | Words: N` to the Knot Build output channel, so you can track your project size at a glance.
 
 Build output appears in the "Knot Build" output channel (`View → Output → Knot Build`). The server logs every resolution decision (which tweego binary, which formats directory, which source path) so you can debug build failures.
@@ -323,6 +323,7 @@ This project is licensed under the **Knot Source-Available License**. You are fr
 ## Links
 
 - **Repository:** [https://github.com/StormByte0/Knot](https://github.com/StormByte0/Knot)
+- **Documentation site:** [https://stormbyte0.github.io/Knot](https://stormbyte0.github.io/Knot)
 - **Issues:** [https://github.com/StormByte0/Knot/issues](https://github.com/StormByte0/Knot/issues)
 - **Patreon:** [https://www.patreon.com/StormByte0](https://www.patreon.com/StormByte0)
 - **Ko-fi:** [https://ko-fi.com/stormbyte0](https://ko-fi.com/stormbyte0)

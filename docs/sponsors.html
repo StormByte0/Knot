@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sponsors — Knot</title>
+  <meta name="description" content="Knot's supporters, organized by tier. This page loads SUPPORTERS.md live from the repository, so it's always current.">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <div class="wrap">
+      <a href="index.html" class="brand"><span class="mark">K</span> Knot</a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="onboarding.html">Onboarding</a>
+        <a href="features.html">Features</a>
+        <a href="socials.html">Community</a>
+        <a href="sponsors.html" class="active">Sponsors</a>
+        <a href="links.html">Links</a>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <h1>Sponsors</h1>
+    <p class="lead">Knot exists because of the people who back it. This page loads <a href="https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md"><code>SUPPORTERS.md</code></a> live from the repository, so it's always current — no rebuild required when names are added.</p>
+
+    <div id="supporters-status">Loading supporters…</div>
+    <div id="supporters-content" class="markdown-body" style="display: none;"></div>
+
+    <h2>Want to be listed here?</h2>
+    <p>Back Knot on <a href="https://www.patreon.com/StormByte0">Patreon</a> or tip on <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>, then DM on Discord (or through Patreon) with the display name, optional avatar, and optional link you'd like shown. See the <a href="https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md#how-to-get-added">full instructions</a> in SUPPORTERS.md.</p>
+    <p><a class="btn btn-primary" href="https://www.patreon.com/StormByte0">Become a patron</a> <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0">Tip on Ko-fi</a></p>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
+      <div class="links">
+        <a href="https://github.com/StormByte0/Knot">GitHub</a>
+        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+        <a href="https://www.patreon.com/StormByte0">Patreon</a>
+        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- marked.js: tiny markdown renderer, no dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+  <script>
+    (function () {
+      // The canonical source of truth. Updating this file in the repo
+      // (even via the GitHub web editor) is enough — no rebuild needed.
+      var SUPPORTERS_URL =
+        'https://raw.githubusercontent.com/StormByte0/Knot/main/SUPPORTERS.md';
+
+      // Repo-relative paths (like media/supporters/foo.png) resolve
+      // against this base. Repo-relative markdown links (like ../../LICENSE)
+      // get rewritten to point at the GitHub blob viewer.
+      var RAW_BASE =
+        'https://raw.githubusercontent.com/StormByte0/Knot/main/';
+      var BLOB_BASE =
+        'https://github.com/StormByte0/Knot/blob/main/';
+
+      var statusEl = document.getElementById('supporters-status');
+      var contentEl = document.getElementById('supporters-content');
+
+      function showError(message) {
+        statusEl.className = 'error';
+        statusEl.textContent = message;
+      }
+
+      function rewriteUrls(html) {
+        // Parse the rendered HTML so we can fix up relative URLs.
+        var parser = new DOMParser();
+        var doc = parser.parseFromString(html, 'text/html');
+
+        // Images: rewrite repo-relative paths to raw.githubusercontent.com
+        // so avatars in media/supporters/ load correctly.
+        doc.querySelectorAll('img').forEach(function (img) {
+          var src = img.getAttribute('src') || '';
+          if (/^(https?:|data:|#)/.test(src)) return;
+          // Strip leading ./ or ../
+          var clean = src.replace(/^\.?\.\//, '').replace(/^\.\//, '');
+          img.setAttribute('src', RAW_BASE + clean);
+          img.setAttribute('loading', 'lazy');
+        });
+
+        // Anchors: rewrite repo-relative links to the GitHub blob viewer.
+        // External http(s), #anchor, and mailto: links are left alone.
+        doc.querySelectorAll('a').forEach(function (a) {
+          var href = a.getAttribute('href') || '';
+          if (/^(https?:|mailto:|#)/.test(href)) return;
+          var clean = href.replace(/^\.?\.\//, '').replace(/^\.\//, '');
+          a.setAttribute('href', BLOB_BASE + clean);
+          a.setAttribute('target', '_blank');
+          a.setAttribute('rel', 'noopener');
+        });
+
+        return doc.body.innerHTML;
+      }
+
+      fetch(SUPPORTERS_URL, { cache: 'no-store' })
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.text();
+        })
+        .then(function (md) {
+          if (!md || !md.trim()) {
+            showError('SUPPORTERS.md is currently empty.');
+            return;
+          }
+          var html = window.marked ? marked.parse(md) : md;
+          contentEl.innerHTML = rewriteUrls(html);
+          statusEl.style.display = 'none';
+          contentEl.style.display = 'block';
+        })
+        .catch(function (err) {
+          showError(
+            'Could not load SUPPORTERS.md from the repository. ' +
+            'Check your connection or view it directly on GitHub: ' +
+            'https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md ' +
+            '(' + err.message + ')'
+          );
+        });
+    })();
+  </script>
+</body>
+</html>
