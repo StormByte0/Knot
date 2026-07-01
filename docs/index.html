@@ -6,11 +6,13 @@
   <title>Knot — A Twine IDE</title>
   <meta name="description" content="Knot is a next-generation development environment for Twine and Twee interactive fiction. A Rust language server gives Knot real structural understanding of your project — not just regex.">
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
   <nav class="topnav">
     <div class="wrap">
-      <a href="index.html" class="brand"><span class="mark">K</span> Knot</a>
+      <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
       <div class="nav-links">
         <a href="index.html" class="active">Home</a>
         <a href="onboarding.html">Onboarding</a>
@@ -38,39 +40,39 @@
 
     <div class="card-grid">
       <div class="card">
-        <div class="icon">⊕</div>
+        <div class="icon"><i class="bi bi-diagram-3"></i></div>
         <h3>Structural understanding</h3>
         <p>Knot parses your project into passages and the links between them. It can answer questions like "where is this variable set?" or "is this passage reachable?" — questions that pure text matching gets wrong.</p>
       </div>
       <div class="card">
-        <div class="icon">∫</div>
+        <div class="icon"><i class="bi bi-braces"></i></div>
         <h3>Variable tracker</h3>
         <p>See where every variable is set, read, and how it flows across passages. For SugarCube, tracking is JavaScript-aware via the oxc parser, so it understands <code>&lt;&lt;set $x to 1&gt;&gt;</code>, <code>&lt;&lt;run $x++&gt;&gt;</code>, and JS inside <code>&lt;&lt;script&gt;&gt;</code> blocks.</p>
       </div>
       <div class="card">
-        <div class="icon">⚠</div>
+        <div class="icon"><i class="bi bi-shield-check"></i></div>
         <h3>Passage diagnostics</h3>
         <p>A dedicated panel inspects any passage's links, variables, macros, and complexity. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicates, and dead ends.</p>
       </div>
       <div class="card">
-        <div class="icon">◈</div>
+        <div class="icon"><i class="bi bi-share"></i></div>
         <h3>Story Map</h3>
         <p>An interactive graph visualization of your project. Nodes are passages, edges are links. Click any node to jump to that passage. The map is primarily for visualization and navigation today; deeper editing is planned.</p>
       </div>
       <div class="card">
-        <div class="icon">⚡</div>
+        <div class="icon"><i class="bi bi-lightning-charge"></i></div>
         <h3>Incremental analysis</h3>
         <p>Only affected passages are re-parsed after each keystroke, so large projects stay responsive even as your story grows into hundreds of passages.</p>
       </div>
       <div class="card">
-        <div class="icon">▶</div>
+        <div class="icon"><i class="bi bi-play-circle"></i></div>
         <h3>Build &amp; play, no setup</h3>
         <p>One-click build and play via Tweego. Knot downloads and manages Tweego and story formats for you — no manual compiler setup, no PATH fiddling.</p>
       </div>
     </div>
 
     <div class="callout warn">
-      <p><strong>⚠ Early development.</strong> Knot is still early in development and you may run into bugs or rough edges. Only <strong>SugarCube 2</strong> has full language features today. Harlowe, Chapbook, and Snowman are placeholder implementations — the build pipeline works for all formats, but language features are not yet built out.</p>
+      <p><strong><i class="bi bi-exclamation-triangle"></i> Early development.</strong> Knot is still early in development and you may run into bugs or rough edges. Only <strong>SugarCube 2</strong> has full language features today. Harlowe, Chapbook, and Snowman are placeholder implementations — the build pipeline works for all formats, but language features are not yet built out.</p>
       <p>This is also the best time to get involved. The codebase is still small and the technical debt is low, so feature requests and design input from early users have an outsized impact on where Knot goes. <a href="socials.html">Find us on Discord →</a></p>
     </div>
 

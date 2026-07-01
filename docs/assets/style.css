@@ -91,14 +91,11 @@ pre code { background: none; border: none; padding: 0; }
   color: var(--text);
 }
 .brand:hover { text-decoration: none; color: var(--text); }
-.brand .mark {
-  width: 28px; height: 28px;
-  display: grid; place-items: center;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
+.brand .brand-icon {
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
-  color: var(--accent);
-  font-weight: 800;
+  display: block;
 }
 .nav-links {
   display: flex;
@@ -207,9 +204,15 @@ main li { margin: 0.3em 0; }
   display: grid; place-items: center;
   background: var(--accent-soft);
   border-radius: 8px;
-  font-size: 1.2rem;
+  font-size: 1.25rem;
+  color: var(--accent);
   margin-bottom: 12px;
 }
+.card .icon .bi { line-height: 1; }
+
+/* Inline Bootstrap Icons inside callouts — colored to match the callout tone */
+.callout .bi { color: var(--accent); margin-right: 4px; vertical-align: -0.05em; }
+.callout.warn .bi { color: var(--warning); }
 
 /* ---------- Tables ---------- */
 table {
