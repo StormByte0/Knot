@@ -192,32 +192,6 @@
         "icon": "$(add)"
       }
     ],
-    "keybindings": [
-      {
-        "command": "knot.build",
-        "key": "ctrl+alt+b",
-        "mac": "cmd+alt+b",
-        "when": "resourceLangId =~ /twee/"
-      },
-      {
-        "command": "knot.play",
-        "key": "ctrl+alt+p",
-        "mac": "cmd+alt+p",
-        "when": "resourceLangId =~ /twee/"
-      },
-      {
-        "command": "knot.playFromPassage",
-        "key": "ctrl+alt+shift+p",
-        "mac": "cmd+alt+shift+p",
-        "when": "resourceLangId =~ /twee/"
-      },
-      {
-        "command": "knot.openStoryMap",
-        "key": "ctrl+alt+m",
-        "mac": "cmd+alt+m",
-        "when": "resourceLangId =~ /twee/"
-      }
-    ],
     "viewsContainers": {
       "activitybar": [
         {
