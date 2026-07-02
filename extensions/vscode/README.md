@@ -16,9 +16,9 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 ![Story Map](media/demos/storymap.gif)
 
-![Variable Tracking](media/demos/variable-tracking.gif)
-
 ![Passage Diagnostics](media/demos/passage-diagnostics.gif)
+
+![Variable Tracking](media/demos/variable-tracking.gif)
 
 ![Build & Play](media/demos/build-and-play.gif)
 
@@ -42,31 +42,22 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps.
 
+[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)[![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/knsn9Y5KG)
+
 ### Patreon — Development Funding
 
-[Patreon](https://www.patreon.com/StormByte0) is the primary way to fund ongoing development. Tiers are structured around sustained support:
-
-| Tier | Monthly | Highlights |
-|---|---|---|
-| **Supporter** | $5 | General support, Discord Supporter role, name in [SUPPORTERS.md](../../SUPPORTERS.md), backer-only dev updates |
-| **Insider** | $10 | Everything in Supporter + roadmap voting on what gets built next |
-| **Sponsor** | $25 | Everything in Insider + priority issue tagging and a top-billing "Special Thanks" in the docs |
-
+[Patreon](https://www.patreon.com/StormByte0) is the primary way to fund ongoing development.
 All tiers include Discord access and the backer-only dev-updates channel. See the [Patreon page](https://www.patreon.com/StormByte0) for the full breakdown.
-
-[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)
 
 ### Ko-fi — Tips & One-time Donations
 
 [Ko-fi](https://ko-fi.com/stormbyte0) is for smaller contributions that don't fit a recurring Patreon tier — anything under $5 a month, or a one-time tip of any size. It's the low-friction way to say "thanks" without a recurring commitment.
 
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)
-
 ### Discord — Support & Development Updates
 
 The [Knot Discord](https://discord.gg/UvWSZFkC3) is the place to get help, follow along with development, and shape what gets built next. Supporters get early visibility into what's being worked on, and it's the fastest channel to chime in with feature requests while the project is still young and flexible.
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/UvWSZFkC3)
+
 
 ### Reporting Issues
 
@@ -283,7 +274,7 @@ Try `Knot: Re-index Workspace` to force a full reparse. If that doesn't help, `K
 Make sure Watch is toggled on (the eye icon in the status bar should be open, not closed). If Watch is off, Play only builds if no HTML exists yet — otherwise it opens the existing file.
 
 **Language server crashes repeatedly**
-Knot has automatic crash recovery, but if it keeps happening, set `knot.trace.server` to `"verbose"`, reproduce the crash, then check the "Knot" output channel for the stack trace. Please report it — either via [GitHub Issues](https://github.com/StormByte0/Knot/issues) (the standard channel) or by dropping a message in the [Discord](https://discord.gg/UvWSZFkC3), whichever you prefer.
+Knot has automatic crash recovery, but if it keeps happening, set `knot.trace.server` to `"verbose"`, reproduce the crash, then check the "Knot" output channel for the stack trace. Please report it — either via [GitHub Issues](https://github.com/StormByte0/Knot/issues) (the standard channel) or by dropping a message in the [Discord](https://discord.gg/knsn9Y5KG), whichever you prefer.
 
 ---
 
@@ -297,7 +288,7 @@ Knot is under active development. See [ROADMAP.md](../../ROADMAP.md) for long-te
 
 ### Author
 
-- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://www.patreon.com/StormByte0) · [Ko-fi](https://ko-fi.com/stormbyte0) · [Discord](https://discord.gg/UvWSZFkC3)
+- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://www.patreon.com/StormByte0) · [Ko-fi](https://ko-fi.com/stormbyte0) · [Discord](https://discord.gg/knsn9Y5KG)
 
 ### Patrons
 
@@ -329,6 +320,6 @@ This project is licensed under the **Knot Source-Available License**. You are fr
 - **Issues:** [https://github.com/StormByte0/Knot/issues](https://github.com/StormByte0/Knot/issues)
 - **Patreon:** [https://www.patreon.com/StormByte0](https://www.patreon.com/StormByte0)
 - **Ko-fi:** [https://ko-fi.com/stormbyte0](https://ko-fi.com/stormbyte0)
-- **Discord:** [https://discord.gg/UvWSZFkC3](https://discord.gg/UvWSZFkC3)
+- **Discord:** [https://discord.gg/knsn9Y5KG](https://discord.gg/knsn9Y5KG)
 - **Tweego:** [https://www.motoslave.net/tweego/](https://www.motoslave.net/tweego/)
 - **Twine:** [https://twinery.org/](https://twinery.org/)
