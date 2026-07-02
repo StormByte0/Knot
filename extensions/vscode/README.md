@@ -14,13 +14,13 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 ## In Action
 
-![Story Map](media/demos/storymap.gif)
+![Story Map](https://github.com/StormByte0/Knot/raw/main/extensions/vscode/media/demos/storymap.gif)
 
-![Passage Diagnostics](media/demos/passage-diagnostics.gif)
+![Passage Diagnostics](https://github.com/StormByte0/Knot/raw/main/extensions/vscode/media/demos/passage-diagnostics.gif)
 
-![Variable Tracking](media/demos/variable-tracking.gif)
+![Variable Tracking](https://github.com/StormByte0/Knot/raw/main/extensions/vscode/media/demos/variable-tracking.gif)
 
-![Build & Play](media/demos/build-and-play.gif)
+![Build & Play](https://github.com/StormByte0/Knot/raw/main/extensions/vscode/media/demos/build-and-play.gif)
 
 
 ---
@@ -41,7 +41,7 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps.
 
-[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)[![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/knsn9Y5KG)
+[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)  [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)    [![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/knsn9Y5KG)
 
 ### Patreon — Development Funding
 
