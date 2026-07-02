@@ -22,7 +22,6 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 ![Build & Play](media/demos/build-and-play.gif)
 
-> Demo recordings are placeholders for now and will be filled in as features stabilize.
 
 ---
 
