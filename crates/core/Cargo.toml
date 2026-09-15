@@ -19,10 +19,12 @@ oxc_ast = "0.150"
 oxc_allocator = "0.150"
 oxc_diagnostics = "0.150"
 
-# CSS parsing — currently unserved. The `css` module exposes stable types
-# (`CssToken`, `CssTokenKind`, `CssDiagnostic`, `CssParseOutcome`) and a
-# `parse_css()` entry point that returns an empty outcome. A future CSS
-# crate will plug in here without changing downstream callers.
+# CSS parsing via oxc-css-parser — the raffia-based parser maintained by the
+# oxc-project org (same ecosystem as the JS side), returning a span-carrying
+# AST with recoverable errors. Pinned exact: 0.0.x API churn is real; the
+# `css` module's stable types are the isolation boundary so downstream
+# callers never see crate types. See plan.md Phase 6.
+oxc-css-parser = "=0.0.15"
 
 # HTML parsing via html5gum — WHATWG-compliant tokenizer with byte spans.
 # `knot-core` owns a shared `html` module (sibling of `oxc/`) that builds a

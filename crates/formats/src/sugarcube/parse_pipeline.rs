@@ -151,6 +151,8 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // prefix, applied at the LSP boundary to produce document-absolute
         // positions from the passage-relative token offsets.
         let mut passage_tokens = Vec::new();
+        // CSS parse errors relayed from the stylesheet branch (Phase 6).
+        let mut css_diagnostics = Vec::new();
         let is_special = cp.special_def.is_some();
 
         // Header tokens (already passage-relative from build_header_tokens)
@@ -164,10 +166,11 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             passage_tokens.extend(json_tokens);
         } else if matches!(mode, ParseMode::Stylesheet) {
             // Stylesheet passages are pure CSS (plan.md Phase 4.2): the
-            // whole body tokenizes through the knot-core CSS service. CSS
-            // diagnostics are intentionally NOT raised as LSP diagnostics —
-            // upstream SugarCube is silent about broken CSS (styleTag hands
-            // the text to the browser), so this is highlighting-only.
+            // whole body parses through the knot-core CSS service. Since
+            // Phase 6 the service parses with oxc-css-parser and RELAYS
+            // recoverable parse errors (plan.md §0.1 user policy: show
+            // breaking code when written — the old "diagnostics
+            // intentionally NOT raised" stance is superseded).
             let css_analysis = crate::sugarcube::css::analyze_css(&cp.body_text);
             for tok in css_analysis.tokens {
                 passage_tokens.push(crate::plugin::SemanticToken {
@@ -177,6 +180,10 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                     modifier: tok.modifier,
                 });
             }
+            css_diagnostics.extend(crate::sugarcube::css::shift_css_diagnostics(
+                css_analysis.diagnostics,
+                body_offset_in_passage,
+            ));
         } else if matches!(mode, ParseMode::Interface) {
             // StoryInterface body is HTML. Token serving for it is still a
             // follow-up (plan.md 2.4/4.1 worklog note) — no tokens emitted,
@@ -212,6 +219,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
         // The passage_offset is applied at the LSP boundary to produce
         // document-absolute ranges — same pattern as semantic tokens.
         let mut passage_diagnostics = Vec::new();
+        passage_diagnostics.append(&mut css_diagnostics);
         super::token_builder::build_diagnostics(
             &passage_ast.nodes,
             &mut passage_diagnostics,
@@ -593,6 +601,8 @@ pub fn parse_single(
 
     // ── Build semantic tokens (same per-passage logic as parse_full) ──
     let mut passage_tokens = Vec::new();
+    // CSS parse errors relayed from the stylesheet branch (Phase 6).
+    let mut css_diagnostics = Vec::new();
     let is_special = cp.special_def.is_some();
 
     // Header tokens (already passage-relative from build_header_tokens)
@@ -605,8 +615,8 @@ pub fn parse_single(
             super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
         passage_tokens.extend(json_tokens);
     } else if matches!(mode, ParseMode::Stylesheet) {
-        // Stylesheet passages are pure CSS (plan.md Phase 4.2) — same as
-        // the full-parse path above: highlighting-only, no diagnostics.
+        // Stylesheet passages are pure CSS — same as the full-parse path:
+        // tokens plus RELAYED parse diagnostics (plan.md Phase 6 policy).
         let css_analysis = crate::sugarcube::css::analyze_css(&cp.body_text);
         for tok in css_analysis.tokens {
             passage_tokens.push(crate::plugin::SemanticToken {
@@ -616,6 +626,10 @@ pub fn parse_single(
                 modifier: tok.modifier,
             });
         }
+        css_diagnostics = crate::sugarcube::css::shift_css_diagnostics(
+            css_analysis.diagnostics,
+            body_offset_in_passage,
+        );
     } else if matches!(mode, ParseMode::Interface) {
         // StoryInterface body is HTML. Token serving still a follow-up —
         // no tokens emitted.
@@ -649,6 +663,7 @@ pub fn parse_single(
 
     // ── Build diagnostics (same per-passage logic as parse_full) ──
     let mut passage_diagnostics = Vec::new();
+    passage_diagnostics.append(&mut css_diagnostics);
     {
         let registry = plugin.registry();
         super::token_builder::build_diagnostics(

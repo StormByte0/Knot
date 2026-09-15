@@ -2,14 +2,17 @@
 //! into `SemanticToken`s + `FormatDiagnostic`s for stylesheet passages and
 //! `<<style>>` blocks.
 //!
-//! Thin pass-through over `knot_core::css::parse_css` (plan.md Phase 4.2):
-//! the core tokenizer now populates tokens + structural diagnostics, and
-//! this mapping table converts them to `SemanticToken`s / `FormatDiagnostic`s
-//! for all CSS-bearing constructs (stylesheets, `<style>` bodies,
+//! Thin pass-through over `knot_core::css::parse_css` (plan.md Phase 6: the
+//! core service parses with the `oxc-css-parser` crate and maps its
+//! span-carrying AST to tokens; recoverable parse errors are relayed with
+//! real severity instead of being hidden — see plan.md §0.1 policy):
+//! the core parser populates tokens + diagnostics, and this mapping table
+//! converts them to `SemanticToken`s / `FormatDiagnostic`s for all
+//! CSS-bearing constructs (stylesheets, `<style>` bodies,
 //! `<<style>>`/`<<css>>` blocks, `style="…"` attribute values).
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenType};
-use knot_core::css::{self, CssParseOutcome, CssTokenKind};
+use knot_core::css::{self, CssDiagnosticSeverity, CssParseOutcome, CssTokenKind};
 
 #[derive(Debug, Clone, Default)]
 pub struct CssAnalysis {
@@ -63,7 +66,7 @@ pub fn css_outcome_to_analysis(outcome: &CssParseOutcome, body_offset: usize) ->
         diagnostics.push(FormatDiagnostic {
             range: body_offset + diag.range.start..body_offset + diag.range.end,
             message: diag.message.clone(),
-            severity: FormatDiagnosticSeverity::Error,
+            severity: css_severity_to_format(diag.severity),
             code: "css-parse".to_string(),
         });
     }
@@ -72,4 +75,32 @@ pub fn css_outcome_to_analysis(outcome: &CssParseOutcome, body_offset: usize) ->
         tokens,
         diagnostics,
     }
+}
+
+/// Relay the core CSS severities 1:1. The crate reports parse errors; the
+/// Warning/Info tiers exist for future lint passes and map through already
+/// so new core severities surface without another formats-side change.
+fn css_severity_to_format(severity: CssDiagnosticSeverity) -> FormatDiagnosticSeverity {
+    match severity {
+        CssDiagnosticSeverity::Error => FormatDiagnosticSeverity::Error,
+        CssDiagnosticSeverity::Warning => FormatDiagnosticSeverity::Warning,
+        CssDiagnosticSeverity::Info => FormatDiagnosticSeverity::Info,
+    }
+}
+
+/// Shift relayed CSS diagnostics by `offset` (the pipeline's
+/// `body_offset_in_passage`) so they can be appended directly to a
+/// passage's diagnostic list, which expects passage-relative ranges —
+/// the same shift the token stream already applies per token.
+pub fn shift_css_diagnostics(
+    diagnostics: Vec<FormatDiagnostic>,
+    offset: usize,
+) -> Vec<FormatDiagnostic> {
+    diagnostics
+        .into_iter()
+        .map(|d| FormatDiagnostic {
+            range: offset + d.range.start..offset + d.range.end,
+            ..d
+        })
+        .collect()
 }

@@ -4808,13 +4808,14 @@ mod resilient_js {
     }
 }
 
-/// CSS support (plan.md Phase 4.2): `knot_core::css::parse_css` is now a
-/// real tokenizer, so `<style>` bodies, `style="…"` attribute values,
-/// `<<style>>` macro blocks and `[stylesheet]` passages all produce CSS
-/// semantic tokens; markup diagnostics inside CSS stay silent.
+/// CSS support (plan.md Phase 4.2 tokens, Phase 6 parser + relay):
+/// `knot_core::css::parse_css` parses with the oxc-css-parser crate, so
+/// `<style>` bodies, `style="…"` attribute values, `<<style>>` macro blocks
+/// and `[stylesheet]` passages all produce CSS semantic tokens, and
+/// stylesheet parse errors are RELAYED as severity-carrying diagnostics.
 mod css_support {
     use super::*;
-    use crate::plugin::SemanticTokenType;
+    use crate::plugin::{FormatDiagnosticSeverity, SemanticTokenType};
 
     fn parse_full(src: &str) -> crate::plugin::ParseResult {
         let mut registry = FormatRegistry::with_defaults();
@@ -4914,6 +4915,83 @@ mod css_support {
         assert!(
             props.contains(&"color"),
             "stylesheet passage must get CSS Property tokens, got: {props:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_parse_error_is_relayed_as_error() {
+        // Phase 6 policy (user: "show breaking code when written"): CSS
+        // parse errors are RELAYED, not hidden. The unclosed block relies
+        // on the parser's EOF recovery, so tokens still flow, but the
+        // recoverable error surfaces with Error severity.
+        let src = ":: Start [stylesheet]\n.a { color: red;\n";
+        let result = parse_full(src);
+        let css_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "css-parse")
+            .collect();
+        assert!(
+            !css_diags.is_empty(),
+            "broken stylesheet CSS must produce a relayed diagnostic, got: {:?}",
+            css_diags
+        );
+        assert!(
+            css_diags
+                .iter()
+                .all(|d| matches!(d.severity, FormatDiagnosticSeverity::Error)),
+            "CSS parse errors relay as Error severity, got: {:?}",
+            css_diags
+        );
+        // Highlighting still survives the broken input (recovery path).
+        let tokens = flatten_token_groups(&result);
+        let props = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Property)
+        });
+        assert!(
+            props.contains(&"color"),
+            "recovered CSS must still highlight its healthy parts, got: {props:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_valid_css_produces_no_css_diagnostics() {
+        let src = ":: Start [stylesheet]\n.hud { color: red; }\n@media (min-width: 400px) { .a { --x: 1; } }\n";
+        let result = parse_full(src);
+        let css_diags: Vec<_> = result
+            .diagnostic_groups
+            .iter()
+            .flat_map(|g| g.diagnostics.iter())
+            .filter(|d| d.code == "css-parse")
+            .collect();
+        assert!(
+            css_diags.is_empty(),
+            "valid stylesheet CSS must produce no diagnostics, got: {css_diags:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_diagnostic_offset_is_body_relative() {
+        // The relayed diagnostic must point INTO the stylesheet body
+        // (passage-relative offsets — body starts after the header line).
+        let src = ":: Start [stylesheet]\n.a { color: red;\n";
+        let result = parse_full(src);
+        let body_start = src.find(".a {").unwrap();
+        let group = result
+            .diagnostic_groups
+            .iter()
+            .find(|g| g.diagnostics.iter().any(|d| d.code == "css-parse"))
+            .expect("css diagnostic group");
+        let diag = group
+            .diagnostics
+            .iter()
+            .find(|d| d.code == "css-parse")
+            .unwrap();
+        let abs = group.passage_offset + diag.range.start;
+        assert!(
+            abs >= body_start,
+            "diagnostic must land inside the CSS body (abs {abs}, body starts {body_start})"
         );
     }
 }

@@ -540,6 +540,7 @@ name = "knot-core"
 version = "2.0.1-preview"
 dependencies = [
  "html5gum",
+ "oxc-css-parser",
  "oxc_allocator",
  "oxc_ast",
  "oxc_diagnostics",
@@ -758,6 +759,15 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "oxc-css-parser"
+version = "0.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8facf57774c1953389c535ba907d3d561e4ab059fa3b4413de154bbbd227e4bc"
+dependencies = [
+ "oxc_allocator",
+]
 
 [[package]]
 name = "oxc_allocator"

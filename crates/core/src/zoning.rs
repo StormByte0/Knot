@@ -52,15 +52,15 @@ use crate::types::{BodyRequirement, MacroKind};
 // ---------------------------------------------------------------------------
 
 /// The language of a raw body region. Raw bodies are processed by external
-/// parsers (oxc for JS, the `knot-core` html module for HTML, a future CSS
-/// parser for CSS), not by the SugarCube parser. The zone engine does not
-/// recurse into them.
+/// parsers (oxc for JS, the `knot-core` html module for HTML, the
+/// `knot_core::css` service — oxc-css-parser since Phase 6 — for CSS), not
+/// by the SugarCube parser. The zone engine does not recurse into them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawLanguage {
     /// JavaScript — processed by oxc. Currently `<<script>>` bodies.
     Js,
-    /// CSS — processed by the `knot_core::css` tokenizer (plan.md Phase
-    /// 4.2): `<style>` bodies, `<<style>>`/`<<css>>` blocks, stylesheet
+    /// CSS — parsed by the `knot_core::css` service (oxc-css-parser, plan.md
+    /// Phase 6): `<style>` bodies, `<<style>>`/`<<css>>` blocks, stylesheet
     /// passages and `style="…"` attribute values.
     Css,
     /// HTML — parsed by `knot_core::html` (html5gum CST). Used by the
@@ -262,7 +262,8 @@ pub struct MacroBody {
     pub depth: u32,
 
     /// `Some(Js)` for `<<script>>` bodies (raw JS, processed by oxc).
-    /// `Some(Css)` for future `<<style>>`/`<<css>>` bodies.
+    /// `Some(Css)` for `<<style>>`/`<<css>>` bodies (raw CSS, parsed by
+    /// the `knot_core::css` service).
     /// `Some(Html)` for HTML zones (Phase 2.2 tag interiors / 2.3 raw-text
     /// elements).
     /// `None` for normal SugarCube bodies (recursively parsed).
