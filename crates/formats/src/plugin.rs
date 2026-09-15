@@ -164,8 +164,10 @@ pub enum SemanticTokenType {
     /// blocks like `<<silently>>`). This enables themes to style story
     /// content distinctly from structural/code elements.
     Prose,
-    /// SugarCube inline styling markup (`@@class;text@@` or `@class;text@`).
-    /// Produces `<span class="class">text</span>` in the rendered output.
+    /// SugarCube inline styling markup (`@@class;text@@` — the only form
+    /// SugarCube defines; the non-upstream single-`@` form was removed in
+    /// plan.md Phase 1.1). Produces `<span class="class">text</span>` in the
+    /// rendered output.
     InlineStyle,
     /// SugarCube text formatting markup (`''bold''`, `//italic//`, `__underline__`,
     /// `==strike==`, `~~sub~~`, `^^super^^`). These produce HTML inline elements.
@@ -1429,8 +1431,12 @@ pub trait FormatPlugin: Send + Sync {
     /// reads, and writes. The variable flow UI and diagnostics are fully
     /// available for these formats.
     ///
-    /// The default implementation returns `false`. SugarCube and Snowman
-    /// override this to return `true`.
+    /// The default implementation returns `false`. SugarCube overrides this
+    /// to return `true` (registry-backed dataflow). Snowman previously did
+    /// too, but that was a false claim — it has no registry implementation —
+    /// and was corrected to `false` + partial in plan.md Phase 1.6 (study
+    /// P1-5: the lie enabled the full variable-flow UI, which then showed
+    /// an empty flow).
     fn supports_full_variable_tracking(&self) -> bool {
         false
     }

@@ -1,6 +1,6 @@
 //! Variable scanning for `$var` and `_var` references.
 
-use super::predicates::{is_ident_char, is_ident_start};
+use super::predicates::{is_ident_char, is_ident_start, is_var_ident_char};
 use crate::sugarcube::ast::*;
 
 /// Scan a variable reference starting at position `start`.
@@ -12,9 +12,17 @@ pub(super) fn scan_variable(text: &str, start: usize, is_temporary: bool) -> (Va
     let len = bytes.len();
     let _sigil = bytes[start];
 
-    // Scan identifier
+    // Scan identifier.
+    //
+    // P1-6 (study / plan.md Phase 1.6): this previously used `is_ident_char`
+    // (which includes `-` for MACRO names like `<<link-replace>>`), so
+    // `$my-var` scanned the whole `$my-var` as one variable name — wrong on
+    // two counts: SugarCube variable names never contain hyphens, and the
+    // over-long name produced wrong entries in the registries/completions.
+    // `is_var_ident_char` matches the documented variable rule
+    // (predicates.rs: `$my` + `-var` as prose).
     let mut i = start + 1;
-    while i < len && is_ident_char(bytes[i]) {
+    while i < len && is_var_ident_char(bytes[i]) {
         i += 1;
     }
 
@@ -131,4 +139,23 @@ pub(in crate::sugarcube) fn scan_inline_vars(text: &str, offset: usize) -> Vec<V
     }
 
     refs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P1-6 (study / plan.md Phase 1.6): variable names never contain
+    /// hyphens. `$my-var` must scan as `$my` (span ends at the `-`), not
+    /// `$my-var`; the old `is_ident_char` scan (which includes `-` for
+    /// macro names like `<<link-replace>>`) swallowed the hyphen and
+    /// produced a wrong variable name in registries/completions.
+    #[test]
+    fn hyphenated_prose_does_not_extend_variable_name() {
+        let text = "$my-var";
+        let (var_ref, end) = scan_variable(text, 0, false);
+        assert_eq!(var_ref.name, "$my");
+        assert_eq!(end, 3, "scan must stop at the hyphen");
+        assert_eq!(var_ref.span, 0..3);
+    }
 }

@@ -259,13 +259,26 @@ impl<'a> ZoneBuilder<'a> {
                 );
             }
 
-            AstNode::TextFormat { span, .. } => {
-                // Raw content string, no children — single Markup leaf.
-                self.leaves.push(LeafZone {
-                    span: self.shift(span),
-                    kind: LeafKind::Markup(MarkupKind::TextFormat),
-                    body_idx: parent_body_idx,
-                });
+            AstNode::TextFormat { span, children, .. } => {
+                // Phase 1.3 (plan.md): format content is wikified — the
+                // parser attaches recursive children, so the delimiters get
+                // Markup(TextFormat) gap leaves and the content inside is
+                // zoned by its own children (a `[[link]]` inside `''…''`
+                // gets a Link leaf, `$var` gets Prose/variable zones).
+                //
+                // This resolves the KNOWN DIVERGENCE noted here previously
+                // (verified against upstream 2026-09-15): SugarCube 2's
+                // `formatByChar` subWikifies formatting content, so links,
+                // macros and variables inside ''…''-style constructs are
+                // live upstream; the old opaque raw-content zone hid all of
+                // them from link, variable, and diagnostic passes.
+                self.emit_markup_with_gaps(
+                    span,
+                    MarkupKind::TextFormat,
+                    children,
+                    parent_body_idx,
+                    depth,
+                );
             }
 
             AstNode::Heading { span, children, .. } => {

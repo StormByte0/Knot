@@ -83,6 +83,20 @@ pub struct Link {
     pub target: String,
     /// The byte range of this link in the source text.
     pub span: Range<usize>,
+    /// The byte range of just the target passage name within the link,
+    /// when the format knows it precisely (passage-relative).
+    ///
+    /// For SugarCube this covers the target inside `[[display->target]]`,
+    /// `[[target|display]]`, `[[target]]` and setter forms — everything
+    /// except `[[`, `]]`, separators and the display text. Rename uses this
+    /// sub-span so the display text and link markup survive; `span` (the
+    /// whole construct) is still used for diagnostics and graph spans.
+    ///
+    /// Formats that only locate the whole link (regex-based extractors)
+    /// leave this `None`; rename then falls back to substituting the target
+    /// text inside the link span.
+    #[serde(default)]
+    pub target_span: Option<Range<usize>>,
     /// A format-provided hint about the semantic edge type.
     ///
     /// When set by the format plugin during link extraction (e.g., SugarCube

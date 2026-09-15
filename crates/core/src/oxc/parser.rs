@@ -96,8 +96,13 @@ pub fn parse_js(source: &str, mode: ParseMode) -> JsParseOutcome {
 /// (`outcome.panicked == true`), the visitor is NOT called and this function
 /// returns `(outcome, None)`.
 ///
-/// If Oxc encountered recoverable syntax errors, the visitor IS called on
-/// the partial AST. Use `outcome.diagnostics` to report the errors.
+/// If Oxc encountered errors it could recover from, the visitor IS called on
+/// the partial AST and `outcome.diagnostics` reports the errors. NOTE that
+/// oxc's recovery is narrow (verified empirically against oxc 0.134): common
+/// authoring errors such as a missing operand (`var x = ;`), an unclosed
+/// `{`, or an unterminated string literal are FATAL — the parser aborts with
+/// `panicked == true` and an EMPTY AST, so the visitor is skipped. Treat the
+/// partial-AST path as the exception, not the rule.
 ///
 /// ## Arguments
 ///
@@ -155,8 +160,10 @@ where
         collect_diagnostics(&result.errors, &source_text, mode)
     };
 
-    // Run the visitor only if Oxc did not panic. On recoverable errors the
-    // (partial) AST is still walked — this is oxc's error recovery model.
+    // Run the visitor only if Oxc did not panic. When oxc DOES recover from a
+    // syntax error, the partial AST is still walked. But recovery is narrow:
+    // common authoring errors (missing operand, unclosed `{`, unterminated
+    // string) panic the parser and yield an empty AST — no visitor run.
     let visitor_result = if panicked {
         None
     } else {
@@ -315,17 +322,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_and_visit_partial_ast_with_recoverable_error() {
-        // oxc has error recovery: when it encounters a syntax error, it tries
-        // to continue parsing. This test verifies that we can still get an AST
-        // even when there are errors. We use a construct that oxc can recover
-        // from (unclosed brace followed by valid code on the next line).
+    fn test_parse_and_visit_valid_module_walks_ast() {
+        // Despite the historical name/comment, the input here is VALID JS
+        // (the brace is closed; there is no recoverable error to exercise).
+        // This test verifies the happy path: a clean multi-statement module
+        // parses, reports no diagnostics, and the visitor walks the AST.
+        // (Empirical probe work against oxc 0.134 — see scripts/oxc_probe —
+        // shows genuinely recoverable errors are hard to construct and that
+        // common authoring errors panic the parser instead of recovering.)
         let (outcome, body_len) = parse_and_visit(
             "function foo() {\n  return 42;\n}\nvar x = 1;",
             ParseMode::Module,
             |program| program.body.len(),
         );
-        // This should parse cleanly (no errors) — just verifying the API works
+        assert!(outcome.is_clean(), "Expected clean parse");
         assert!(outcome.has_ast(), "Expected AST to be available");
         assert!(
             body_len.unwrap_or(0) > 0,
@@ -367,12 +377,12 @@ mod tests {
 
     #[test]
     fn test_parse_and_visit_visitor_not_called_on_panic() {
-        // Construct an input that causes oxc to panic (unrecoverable error).
-        // We use a deeply nested structure that exhausts oxc's recovery —
-        // in practice oxc is robust, so we test the contract: if panicked,
-        // the visitor is not called.
-        //
-        // For a non-panicking input, verify the visitor IS called.
+        // Contract check on the non-panicking path: for a VALID input the
+        // visitor must be called and `panicked` must be false. (The test does
+        // NOT construct a panicking input despite the historical comment —
+        // deep nesting is NOT a reliable panic trigger; oxc handles it. Real
+        // panic cases — `var x = ;`, unclosed `{`, unterminated strings — are
+        // documented in the probe results referenced in `oxc/mod.rs`.)
         let (outcome, visitor_result) =
             parse_and_visit("var x = 1;", ParseMode::Module, |program| {
                 program.body.len()

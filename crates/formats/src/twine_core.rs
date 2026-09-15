@@ -142,6 +142,7 @@ impl TwineCorePlugin {
             let target = caps.get(2).unwrap().as_str().to_string();
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: (body_offset + m.start())..(body_offset + m.end()),
                 edge_type_hint: None,
@@ -155,6 +156,7 @@ impl TwineCorePlugin {
             let target = caps.get(2).unwrap().as_str().to_string();
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: (body_offset + m.start())..(body_offset + m.end()),
                 edge_type_hint: None,
@@ -175,6 +177,7 @@ impl TwineCorePlugin {
             let target = caps.get(1).unwrap().as_str().to_string();
             links.push(Link {
                 display_text: None,
+                target_span: None,
                 target,
                 span: start..(body_offset + m.end()),
                 edge_type_hint: None,

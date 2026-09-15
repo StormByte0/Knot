@@ -798,7 +798,16 @@ fn build_semantic_tokens_at_depth(
             // no font styles applied).
             //
             // All SugarCube markup delimiters are 2 chars: //, '', __, ==, ^^, ~~
-            ast::AstNode::TextFormat { span, .. } => {
+            //
+            // Phase 1.3 (plan.md): format content is wikified — the parser
+            // attaches recursive children. Structured children (links, macros,
+            // nested formats, Text nodes carrying variable refs) get their
+            // real tokens via recursion instead of the blanket content token,
+            // so `''[[Forest]]''` shows a Link token and `$gold` inside bold
+            // shows a Variable token. Plain-text children keep the single
+            // `TextFormat` content token (the pre-1.3 rendering) so themes
+            // don't shift for simple `''bold''`/`//italic//` prose.
+            ast::AstNode::TextFormat { span, children, .. } => {
                 let delim_len = 2usize;
                 let full_start = body_offset_in_passage + span.start;
                 let full_end = body_offset_in_passage + span.end;
@@ -815,14 +824,35 @@ fn build_semantic_tokens_at_depth(
                     });
                 }
 
-                // Content — slightly off from prose, no font styles
-                if content_end > content_start {
-                    tokens.push(SemanticToken {
-                        start: content_start,
-                        length: content_end - content_start,
-                        token_type: SemanticTokenType::TextFormat,
-                        modifier: None,
-                    });
+                // Content
+                if children.is_empty() {
+                    // No children (empty content) — nothing to emit.
+                } else if children.iter().all(
+                    |c| matches!(c, ast::AstNode::Text { var_refs, .. } if var_refs.is_empty()),
+                ) {
+                    // Plain-text content — keep the single TextFormat token
+                    // over the whole content range (pre-1.3 rendering).
+                    if content_end > content_start {
+                        tokens.push(SemanticToken {
+                            start: content_start,
+                            length: content_end - content_start,
+                            token_type: SemanticTokenType::TextFormat,
+                            modifier: None,
+                        });
+                    }
+                } else {
+                    // Structured content — recurse so each child emits its
+                    // own tokens. `_at_depth` keeps the surrounding block
+                    // depth so macros inside format content still get their
+                    // BlockDepthN modifiers.
+                    build_semantic_tokens_at_depth(
+                        children,
+                        tokens,
+                        body_offset_in_passage,
+                        custom_macro_names,
+                        depth,
+                        body_text,
+                    );
                 }
 
                 // Closing delimiter — same as opening

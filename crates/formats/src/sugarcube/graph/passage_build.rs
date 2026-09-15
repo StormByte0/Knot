@@ -168,6 +168,10 @@ pub fn build_passage(
                 target: link_info.target.clone(),
                 span: body_offset_in_passage + link_info.span.start
                     ..body_offset_in_passage + link_info.span.end,
+                target_span: link_info
+                    .target_span
+                    .as_ref()
+                    .map(|ts| body_offset_in_passage + ts.start..body_offset_in_passage + ts.end),
                 edge_type_hint,
             }
         })
@@ -309,6 +313,10 @@ fn narrow_link_spans(links: &mut [knot_core::passage::Link], arg_refs: &[MacroAr
                     && link.span.end <= arg_ref.macro_open_span.end;
                 if link_overlaps_macro {
                     link.span = arg_ref.span.clone();
+                    // The narrowed span IS the target region (the string arg
+                    // holding the passage name) — record it as the target
+                    // sub-span too, so rename can edit just the target.
+                    link.target_span = Some(arg_ref.span.clone());
                     break; // One arg ref per link
                 }
             }
@@ -603,6 +611,22 @@ fn collect_vars_from_nodes(
                         });
                     }
                 }
+            }
+            // Recurse into container nodes that hold parsed children so
+            // variable reads inside them reach the unified var list. Text
+            // children carry their own `var_refs`; child spans are
+            // body-relative already, so the same offset addition applies.
+            // TextFormat gained children in plan.md Phase 1.3 (subWikify
+            // parity) — `$var` inside `''…''` was previously invisible to
+            // the variable registry; the heading/list/blockquote/
+            // inline-style containers had the same gap.
+            ast::AstNode::Heading { children, .. }
+            | ast::AstNode::ListItem { children, .. }
+            | ast::AstNode::Blockquote { children, .. }
+            | ast::AstNode::BlockquoteBlock { children, .. }
+            | ast::AstNode::InlineStyle { children, .. }
+            | ast::AstNode::TextFormat { children, .. } => {
+                collect_vars_from_nodes(children, vars, body_offset_in_passage);
             }
             _ => {}
         }

@@ -497,6 +497,25 @@ pub fn parse_passage_incremental(
                     "plugin did not set passage_offset correctly"
                 );
             }
+
+            // P1-4 (study / plan.md Phase 1.6): the incremental contract
+            // (see `FormatPlugin::parse_passage_mut`) requires the result to
+            // carry this passage's semantic-token groups. The regex-based
+            // formats (Harlowe/Chapbook/Snowman) returned empty groups, so
+            // merging the incremental result silently degraded highlighting
+            // for the edited passage. Report that as a classification
+            // failure so the caller falls back to a full re-parse, which
+            // produces the real tokens — an honest "full reparse" for the
+            // formats that don't support single-passage tokenization.
+            if parse_result.token_groups.is_empty() {
+                tracing::debug!(
+                    format = ?format,
+                    passage = passage_name,
+                    "parse_passage_incremental: plugin returned no token groups — falling back to full re-parse"
+                );
+                return Err(PassageParseError::ClassificationFailed);
+            }
+
             Ok(parse_result)
         }
         Ok(None) => Err(PassageParseError::ClassificationFailed),

@@ -984,9 +984,7 @@ fn did_change_incremental(
     //   (b) Count `::` header lines in `text_after`. If the count differs
     //       from `doc_before.passages.len()`, fall back (new passage
     //       created, or existing passage header deleted).
-    let header_line_end = passage_text
-        .find('\n')
-        .unwrap_or(passage_text.len());
+    let header_line_end = passage_text.find('\n').unwrap_or(passage_text.len());
     let header_line = &passage_text[..header_line_end];
     if let Some(parsed) = knot_formats::header::parse_twee_header(header_line, 0) {
         if parsed.name != passage_name {
@@ -1708,21 +1706,84 @@ fn apply_document_changes(
             evolving_text
         }
     } else {
-        // No snapshot available — fall back to the last change's full text
-        // This is the old FULL-sync behavior
-        let text = content_changes
-            .into_iter()
-            .last()
-            .map(|c| c.text)
-            .unwrap_or_default();
+        // No snapshot available.
+        //
+        // P0-3 (study / plan.md Phase 1.6): the old fallback used the LAST
+        // change's text as the whole document. That is only correct for
+        // full-text syncs (`range: None`). For an incremental change
+        // (`range: Some(_)`), `.text` is just the typed snippet — treating
+        // it as the whole document silently replaced the cached document
+        // with a fragment, corrupting passages/diagnostics (reachable when
+        // a file is opened during indexing and edited before its snapshot
+        // exists).
+        //
+        // Recovery:
+        // - Full-text events: take the text as before and rebuild the
+        //   snapshot (this also heals the no-snapshot state).
+        // - Incremental events: we cannot reconstruct the document from a
+        //   snippet — re-read the file from disk; if the read fails, keep
+        //   the previously cached text and effectively skip this event. A
+        //   later full-text sync or save heals the state. Either way the
+        //   cache is never replaced with a bare snippet.
+        let has_full_replace = content_changes.iter().any(|c| c.range.is_none());
 
-        tracing::debug!(
-            file = %uri,
-            version,
-            text_len = text.len(),
-            "apply_document_changes: no snapshot, using last change text"
-        );
-        text
+        if has_full_replace {
+            let text = content_changes
+                .into_iter()
+                .rev()
+                .find(|c| c.range.is_none())
+                .map(|c| c.text)
+                .unwrap_or_default();
+
+            // Rebuild the snapshot from the full text
+            if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                doc.version = version;
+                doc.set_snapshot_from_text(&text);
+            }
+
+            tracing::debug!(
+                file = %uri,
+                version,
+                text_len = text.len(),
+                "apply_document_changes: no snapshot, full-text replacement"
+            );
+            text
+        } else {
+            match uri
+                .to_file_path()
+                .ok()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+            {
+                Some(disk_text) => {
+                    // Re-read succeeded — treat as a full document and
+                    // rebuild the snapshot from it.
+                    if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                        doc.version = version;
+                        doc.set_snapshot_from_text(&disk_text);
+                    }
+                    tracing::warn!(
+                        file = %uri,
+                        version,
+                        text_len = disk_text.len(),
+                        "apply_document_changes: no snapshot for incremental change, re-read from disk"
+                    );
+                    disk_text
+                }
+                None => {
+                    // Cannot reconstruct the document — keep the previously
+                    // cached text so the cache is not corrupted by the
+                    // snippet. The next full-text sync/save heals the state.
+                    let stale = inner.open_documents.get(uri).cloned().unwrap_or_default();
+                    tracing::warn!(
+                        file = %uri,
+                        version,
+                        text_len = stale.len(),
+                        "apply_document_changes: no snapshot for incremental change and disk re-read failed, keeping stale cache"
+                    );
+                    stale
+                }
+            }
+        }
     }
 }
 
@@ -1842,6 +1903,45 @@ mod tests {
             },
             content_changes: changes,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 0 (P0-3): incremental change without snapshot must not corrupt
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn incremental_change_without_snapshot_does_not_corrupt_cache() {
+        // P0-3 (study / plan.md Phase 1.6): when the document has NO rope
+        // snapshot (e.g. the file was opened during indexing and edited
+        // before the snapshot existed) and an INCREMENTAL change arrives,
+        // the old fallback treated the typed snippet as the whole document,
+        // silently replacing the cache with a fragment. The cache must keep
+        // the previous text instead (disk re-read, or stale until the next
+        // full sync / save heals it).
+        let src = ":: Start\nHello world\n";
+        let (mut inner, uri) = build_state(src);
+
+        // Simulate the missing-snapshot state.
+        inner
+            .workspace
+            .get_document_mut(&uri)
+            .expect("document in workspace")
+            .snapshot = None;
+
+        // An incremental change replacing "world" with "XY" — the typed
+        // snippet "XY" is NOT the whole document.
+        let changes = vec![change(1, 6, 1, 11, "XY")];
+        let _result = did_change_phase1(&mut inner, uri.clone(), 2, changes);
+
+        let cached = inner.open_documents.get(&uri).expect("cached text");
+        assert_ne!(
+            cached, "XY",
+            "the snippet must never replace the whole document"
+        );
+        assert!(
+            cached.contains(":: Start"),
+            "document cache should remain usable (stale or disk re-read), got: {cached:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

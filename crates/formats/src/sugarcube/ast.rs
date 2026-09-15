@@ -933,7 +933,9 @@ pub enum AstNode {
         span: Range<usize>,
     },
 
-    /// SugarCube inline styling: `@@class;text@@` or `@class;text@`.
+    /// SugarCube inline styling: `@@class;text@@` — the only form SugarCube
+    /// defines (the non-upstream single-`@` form `@class;text@` was removed in
+    /// plan.md Phase 1.1; upstream `customStyle` matches `@@` only).
     ///
     /// Produces `<span class="class">text</span>` in the rendered output.
     /// The `children` contain the parsed body content (Text nodes with prose,
@@ -954,8 +956,15 @@ pub enum AstNode {
     TextFormat {
         /// What kind of formatting this is.
         kind: TextFormatKind,
-        /// The formatted text content.
+        /// The formatted text content (raw, without delimiters).
         content: String,
+        /// Recursively parsed content (plan.md Phase 1.3, subWikify parity):
+        /// SugarCube's `formatByChar` (parserlib.js L892-941) wikifies
+        /// formatting content, so links, macros, variables and nested formats
+        /// inside `''…''`-style constructs are live upstream. The children
+        /// span exactly the `content` byte range; empty only when the content
+        /// itself is empty.
+        children: Vec<AstNode>,
         /// Byte range of the entire formatting construct including delimiters.
         span: Range<usize>,
     },
@@ -1229,6 +1238,14 @@ pub struct LinkInfo {
     pub target: String,
     /// Byte range of the link in the passage body.
     pub span: Range<usize>,
+    /// Byte range of just the target passage name within the link
+    /// (passage-body-relative), when precisely known.
+    ///
+    /// Populated for plain `[[…]]` links from the AST's `target_span`;
+    /// macro-argument links get theirs via `narrow_link_spans` (the string
+    /// arg span). Consumers use it for rename/linked-editing so display
+    /// text and markup survive; `None` = only the whole link is known.
+    pub target_span: Option<Range<usize>>,
     /// Whether this link uses a variable target (dynamic navigation).
     pub is_dynamic: bool,
     /// The source context of this link, used for edge type classification.
@@ -1306,21 +1323,36 @@ pub struct PassageConnection {
 // AstWalker — convenience methods for common AST queries
 // ---------------------------------------------------------------------------
 
-/// Walk an AST and collect all macros (including nested ones).
+/// Walk an AST and collect all macros (including nested ones, and macros
+/// inside container nodes — format content, inline-style bodies, block
+/// markup — which hold parsed children since plan.md Phase 1.3 made format
+/// content wikified).
 pub fn collect_macros(nodes: &[AstNode]) -> Vec<&AstNode> {
     let mut result = Vec::new();
     for node in nodes {
-        if let AstNode::Macro { children, .. } = node {
-            result.push(node);
-            if let Some(ch) = children {
-                result.extend(collect_macros(ch));
+        match node {
+            AstNode::Macro { children, .. } => {
+                result.push(node);
+                if let Some(ch) = children {
+                    result.extend(collect_macros(ch));
+                }
             }
+            AstNode::Heading { children, .. }
+            | AstNode::ListItem { children, .. }
+            | AstNode::Blockquote { children, .. }
+            | AstNode::BlockquoteBlock { children, .. }
+            | AstNode::InlineStyle { children, .. }
+            | AstNode::TextFormat { children, .. } => {
+                result.extend(collect_macros(children));
+            }
+            _ => {}
         }
     }
     result
 }
 
-/// Walk an AST and collect all links (including inside macros).
+/// Walk an AST and collect all links (including inside macros and other
+/// container nodes — format content, inline-style bodies, block markup).
 pub fn collect_links(nodes: &[AstNode]) -> Vec<&AstNode> {
     let mut result = Vec::new();
     for node in nodes {
@@ -1332,13 +1364,22 @@ pub fn collect_links(nodes: &[AstNode]) -> Vec<&AstNode> {
                 result.extend(collect_links(ch));
             }
             AstNode::Macro { children: None, .. } => {}
+            AstNode::Heading { children, .. }
+            | AstNode::ListItem { children, .. }
+            | AstNode::Blockquote { children, .. }
+            | AstNode::BlockquoteBlock { children, .. }
+            | AstNode::InlineStyle { children, .. }
+            | AstNode::TextFormat { children, .. } => {
+                result.extend(collect_links(children));
+            }
             _ => {}
         }
     }
     result
 }
 
-/// Walk an AST and collect all errors (including inside macros).
+/// Walk an AST and collect all errors (including inside macros and other
+/// container nodes — format content, inline-style bodies, block markup).
 pub fn collect_errors(nodes: &[AstNode]) -> Vec<&AstNode> {
     let mut result = Vec::new();
     for node in nodes {
@@ -1350,6 +1391,14 @@ pub fn collect_errors(nodes: &[AstNode]) -> Vec<&AstNode> {
                 result.extend(collect_errors(ch));
             }
             AstNode::Macro { children: None, .. } => {}
+            AstNode::Heading { children, .. }
+            | AstNode::ListItem { children, .. }
+            | AstNode::Blockquote { children, .. }
+            | AstNode::BlockquoteBlock { children, .. }
+            | AstNode::InlineStyle { children, .. }
+            | AstNode::TextFormat { children, .. } => {
+                result.extend(collect_errors(children));
+            }
             _ => {}
         }
     }
@@ -1591,6 +1640,20 @@ fn collect_js_snippets_recursive(
             if let Some(ch) = children {
                 collect_js_snippets_recursive(ch, result, known_macro_names);
             }
+        }
+
+        // Recurse into container nodes that hold parsed children so JS
+        // expressions inside them (e.g. `<<set $x to 1>>` inside `''…''`)
+        // are still validated. Format content is wikified upstream
+        // (plan.md Phase 1.3), so macros inside it are live.
+        if let AstNode::Heading { children, .. }
+        | AstNode::ListItem { children, .. }
+        | AstNode::Blockquote { children, .. }
+        | AstNode::BlockquoteBlock { children, .. }
+        | AstNode::InlineStyle { children, .. }
+        | AstNode::TextFormat { children, .. } = node
+        {
+            collect_js_snippets_recursive(children, result, known_macro_names);
         }
 
         if let AstNode::Expression {

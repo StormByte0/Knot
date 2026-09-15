@@ -3,7 +3,8 @@
 //! This module provides the **JS side** of the two-parser model. It is a pure
 //! parsing service: it takes JavaScript source text and a parse mode, and
 //! returns either syntax diagnostics (on error) or invokes a visitor on the
-//! parsed AST (on success / recoverable error).
+//! parsed AST (on success, or on the rare syntax errors oxc recovers from
+//! without panicking).
 //!
 //! ## Design
 //!
@@ -17,8 +18,11 @@
 //! 3. Calls [`parse_js()`] (for diagnostics only) or [`parse_and_visit()`]
 //!    (to also walk the AST) with the pre-processed source
 //! 4. Handles the result:
-//!    - Walk the AST via the `parse_and_visit` visitor for token highlighting
-//!      (works even with recoverable errors — oxc produces a partial AST)
+//!    - Walk the AST via the `parse_and_visit` visitor for token highlighting.
+//!      Note: oxc's error recovery is narrow — for most authoring errors
+//!      (missing operand, unclosed brace, unterminated string) oxc panics and
+//!      the AST comes back EMPTY, so nothing is walked. Partial-AST walking
+//!      only happens for the errors oxc recovers from without panicking.
 //!    - Check `outcome.diagnostics` for error reporting (precise squiggles)
 //!
 //! ## Why this lives in `knot-core` (not `knot-formats`)

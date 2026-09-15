@@ -77,16 +77,20 @@ fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str, sugarc
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text, sugarcube_syntax);
 
     // Parse with oxc as a JS module.
-    // oxc has error recovery — even when there are syntax errors, the AST
-    // is usually still available (partial). We walk whatever AST we can get
-    // so the user gets token highlighting for the valid parts while the
-    // broken parts get precise error diagnostics via js_validate.
     //
-    // If oxc panics (unrecoverable error), we leave script_js_analysis as
-    // None — no tokens are emitted for the JS body. This is intentional:
-    // a blank JS block is a clearer signal that "something is broken" than
-    // a sea of approximate tokens from a fallback scanner. The diagnostic
-    // from js_validate still shows the error location.
+    // NOTE on oxc's error recovery (verified empirically against oxc 0.134):
+    // it is narrow. Common authoring errors — `var hp = ;`, an unclosed `{`,
+    // an unterminated string literal — are FATAL: oxc reports a single error,
+    // `panicked` is true, and the AST comes back EMPTY. Only some errors are
+    // recovered from with a partial AST; when that happens we still walk it so
+    // the valid parts keep their tokens.
+    //
+    // When oxc panics, `unwrap_or_default()` below leaves an empty
+    // `script_js_analysis` — NO tokens are emitted for the whole JS body.
+    // This is the known weakness tracked in PLANNED_FEATURES.md ("Error
+    // Recovery"); the planned fix is chunked region parsing with per-chunk
+    // parsing plus a lexer-level fallback token scan for panicked chunks.
+    // The js_validate diagnostic still shows the error location.
     //
     // Task 1 (optimization): we capture `outcome.diagnostics` and store
     // them on `JsAnalysis.diagnostics` so `validate_script_passage` can

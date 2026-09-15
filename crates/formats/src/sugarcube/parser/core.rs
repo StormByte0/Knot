@@ -29,17 +29,41 @@ use std::ops::Range;
 /// line comment vs. prose — though the existing `bytes[i-1] == b'\n'`
 /// peek is kept as a fallback for backward compatibility during the
 /// Phase 1 refactor.
+///
+/// `depth` is the recursion depth of this parse call (0 = top level). Every
+/// nested `parse_body_with_ctx` call (format content, inline-style bodies,
+/// headings, blockquote lines/blocks, list items, table cells) increments it.
+/// Format constructs (`''…''`, `//…//`, `__…__`, `==…==`, `~~…~~`, `^^…^^`,
+/// `@@…@@`) refuse to recurse once `depth` reaches `MAX_FORMAT_NESTING_DEPTH`
+/// and fall back to literal text — without the cap, input like
+/// `''@@;''@@;''@@;…` would nest one frame per ~8 input bytes and overflow
+/// the stack on pathological (but is_complete-looking) passages.
 struct ParseCtx {
     offset: usize,
     col: usize,
+    depth: usize,
 }
+
+/// Maximum nesting depth for recursive format-content parsing (plan.md
+/// Phase 1.3). Real-world prose nests formats a handful deep
+/// (`''//__x__//''` = 3); 32 leaves a wide margin while bounding recursion.
+/// At the cap the format opener falls back to literal text, the same
+/// conservative policy as a missing closer.
+const MAX_FORMAT_NESTING_DEPTH: usize = 32;
 
 /// Parse body text into AST nodes.
 ///
 /// `offset` is the byte offset within the body where this segment starts
 /// (0 for the top level, nonzero for nested content inside block macros).
 pub(super) fn parse_body(text: &str, offset: usize) -> Vec<AstNode> {
-    parse_body_with_ctx(text, &mut ParseCtx { offset, col: 0 })
+    parse_body_with_ctx(
+        text,
+        &mut ParseCtx {
+            offset,
+            col: 0,
+            depth: 0,
+        },
+    )
 }
 
 /// Internal parse loop with explicit context (offset + column tracking).
@@ -85,10 +109,19 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     let start = i;
                     i += 2;
                     ctx.col += 2;
+                    // `None` = bare `<<` with no macro name (upstream's
+                    // lookahead requires a name) — literal text: `i` was
+                    // restored to just past the `<<`, so both characters
+                    // stay in the text flow via the flush below.
                     let node = parse_macro(text, &mut i, offset, start);
-                    resync_col_after_advance(text, start, i, ctx);
-                    flush_text(text, &mut text_start, start, offset, &mut nodes);
-                    Some(node)
+                    match node {
+                        Some(node) => {
+                            resync_col_after_advance(text, start, i, ctx);
+                            flush_text(text, &mut text_start, start, offset, &mut nodes);
+                            Some(node)
+                        }
+                        None => None,
+                    }
                 }
             }
             b'[' if i + 1 < len && bytes[i + 1] == b'[' => {
@@ -172,7 +205,10 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     found
                 };
 
-                if has_closing_double_slash {
+                // The depth gate bounds recursive format nesting (plan.md
+                // Phase 1.3): at MAX_FORMAT_NESTING_DEPTH the opener falls
+                // back to literal text, same as the missing-closer policy.
+                if has_closing_double_slash && ctx.depth < MAX_FORMAT_NESTING_DEPTH {
                     // Italic formatting: //text//
                     let start = i;
                     i += 2;
@@ -180,15 +216,22 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     while i + 1 < len && !(bytes[i] == b'/' && bytes[i + 1] == b'/') {
                         i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
                     }
-                    let content = text[content_start..i].to_string();
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
                     if i + 1 < len {
                         i += 2; // skip closing //
                     }
                     resync_col_after_advance(text, start, i, ctx);
                     flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — content is wikified (children), not opaque:
+                    // links/macros/formats inside stay live, matching upstream
+                    // formatByChar's subWikify behavior.
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
                     Some(AstNode::TextFormat {
                         kind: TextFormatKind::Italic,
                         content,
+                        children,
                         span: offset + start..offset + i,
                     })
                 } else {
@@ -233,108 +276,235 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
             }
             b'\'' if i + 1 < len && bytes[i + 1] == b'\'' => {
                 // '' — bold formatting: ''text''
-                let start = i;
-                i += 2;
-                ctx.col += 2;
-                let content_start = i;
-                while i + 1 < len && !(bytes[i] == b'\'' && bytes[i + 1] == b'\'') {
-                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
-                }
-                let content = text[content_start..i].to_string();
-                if i + 1 < len {
+                //
+                // Same-line closer guard, mirroring the `//` italic arm: the
+                // closing `''` must be on the SAME line as the opener,
+                // otherwise the opener falls through as literal text. Without
+                // this guard an unmatched `''` (e.g. a stray apostrophe pair in
+                // prose) scans to the NEXT `''` anywhere in the passage — or
+                // pairs with one on a later paragraph — and swallows the bytes
+                // in between as an opaque TextFormat with no children parsed:
+                // `[[links]]`, macros and variables inside silently vanish
+                // from links/variables/diagnostic passes (verified 2026-09-15:
+                // a single stray `''` hid `[[Forest]]`, dropped tokens 16→7,
+                // and produced zero diagnostics while `is_complete` stayed
+                // true). The same guard now covers the `__`, `==`, `~~` and
+                // `^^` arms below.
+                //
+                // Upstream nuance (pinned 2026-09-15): SugarCube 2
+                // `formatByChar` (parserlib.js L892-941) subWikifies formatting
+                // content and its terminator search does NOT stop at newlines
+                // — upstream bold can span lines and stays live when
+                // unterminated (wikifier.js `subWikify` L123+ consumes to EOF
+                // but keeps wikifying). The same-line closer restriction is
+                // still a deliberate Knot-side divergence from that multi-line
+                // matching; with content now recursively wikified (plan.md
+                // Phase 1.3) the original opacity rationale is gone — a
+                // same-line pair around live markup is genuinely formatted
+                // upstream — but the cross-paragraph swallow prevention stands
+                // on its own (a stray `''` in one paragraph must never pair
+                // with one paragraphs later; upstream would swallow the whole
+                // span opaquely-lively, Knot degrades both to literal).
+                if !has_same_line_delimiter(text, i + 2, b"''")
+                    || ctx.depth >= MAX_FORMAT_NESTING_DEPTH
+                {
+                    // Not bold (no same-line closer, or at the format nesting
+                    // cap) — literal text: leave both quote chars in the
+                    // text flow (the catch-all's flush logic includes them in
+                    // the next Text node).
                     i += 2;
+                    ctx.col += 2;
+                    None
+                } else {
+                    let start = i;
+                    i += 2;
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'\'' && bytes[i + 1] == b'\'') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    resync_col_after_advance(text, start, i, ctx);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — wikified children: `''[[Forest]]''` keeps the
+                    // link visible, macros/variables/nested formats inside stay
+                    // live (upstream formatByChar subWikifies its content).
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Bold,
+                        content,
+                        children,
+                        span: offset + start..offset + i,
+                    })
                 }
-                resync_col_after_advance(text, start, i, ctx);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Bold,
-                    content,
-                    span: offset + start..offset + i,
-                })
             }
             b'_' if i + 1 < len && bytes[i + 1] == b'_' => {
                 // __ — underline formatting: __text__
-                let start = i;
-                i += 2;
-                ctx.col += 2;
-                let content_start = i;
-                while i + 1 < len && !(bytes[i] == b'_' && bytes[i + 1] == b'_') {
-                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
-                }
-                let content = text[content_start..i].to_string();
-                if i + 1 < len {
+                //
+                // Same-line closer guard, same rationale as the `''` bold arm
+                // above: without it a stray `__` scans to the next `__`/EOF as
+                // an opaque TextFormat in which links and macros vanish.
+                // Upstream permits multi-line matches — see the bold arm's
+                // pinned upstream nuance note.
+                if !has_same_line_delimiter(text, i + 2, b"__")
+                    || ctx.depth >= MAX_FORMAT_NESTING_DEPTH
+                {
+                    // Not underline — literal text (both chars stay in the
+                    // text flow via the catch-all's flush logic).
                     i += 2;
+                    ctx.col += 2;
+                    None
+                } else {
+                    let start = i;
+                    i += 2;
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'_' && bytes[i + 1] == b'_') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    resync_col_after_advance(text, start, i, ctx);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — wikified children (see the bold arm).
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Underline,
+                        content,
+                        children,
+                        span: offset + start..offset + i,
+                    })
                 }
-                resync_col_after_advance(text, start, i, ctx);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Underline,
-                    content,
-                    span: offset + start..offset + i,
-                })
             }
             b'=' if i + 1 < len && bytes[i + 1] == b'=' => {
                 // == — strike formatting: ==text==
-                let start = i;
-                i += 2;
-                ctx.col += 2;
-                let content_start = i;
-                while i + 1 < len && !(bytes[i] == b'=' && bytes[i + 1] == b'=') {
-                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
-                }
-                let content = text[content_start..i].to_string();
-                if i + 1 < len {
+                //
+                // Same-line closer guard, same rationale as the `''` bold arm
+                // above: without it a stray `==` scans to the next `==`/EOF as
+                // an opaque TextFormat in which links and macros vanish.
+                // Upstream permits multi-line matches — see the bold arm's
+                // pinned upstream nuance note.
+                if !has_same_line_delimiter(text, i + 2, b"==")
+                    || ctx.depth >= MAX_FORMAT_NESTING_DEPTH
+                {
+                    // Not strike — literal text (both chars stay in the text
+                    // flow via the catch-all's flush logic).
                     i += 2;
+                    ctx.col += 2;
+                    None
+                } else {
+                    let start = i;
+                    i += 2;
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'=' && bytes[i + 1] == b'=') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    resync_col_after_advance(text, start, i, ctx);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — wikified children (see the bold arm).
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Strike,
+                        content,
+                        children,
+                        span: offset + start..offset + i,
+                    })
                 }
-                resync_col_after_advance(text, start, i, ctx);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Strike,
-                    content,
-                    span: offset + start..offset + i,
-                })
             }
             b'~' if i + 1 < len && bytes[i + 1] == b'~' => {
                 // ~~ — subscript formatting: ~~text~~
-                let start = i;
-                i += 2;
-                ctx.col += 2;
-                let content_start = i;
-                while i + 1 < len && !(bytes[i] == b'~' && bytes[i + 1] == b'~') {
-                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
-                }
-                let content = text[content_start..i].to_string();
-                if i + 1 < len {
+                //
+                // Same-line closer guard, same rationale as the `''` bold arm
+                // above: without it a stray `~~` scans to the next `~~`/EOF as
+                // an opaque TextFormat in which links and macros vanish.
+                // Upstream permits multi-line matches — see the bold arm's
+                // pinned upstream nuance note.
+                if !has_same_line_delimiter(text, i + 2, b"~~")
+                    || ctx.depth >= MAX_FORMAT_NESTING_DEPTH
+                {
+                    // Not subscript — literal text (both chars stay in the
+                    // text flow via the catch-all's flush logic).
                     i += 2;
+                    ctx.col += 2;
+                    None
+                } else {
+                    let start = i;
+                    i += 2;
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'~' && bytes[i + 1] == b'~') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    resync_col_after_advance(text, start, i, ctx);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — wikified children (see the bold arm).
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Sub,
+                        content,
+                        children,
+                        span: offset + start..offset + i,
+                    })
                 }
-                resync_col_after_advance(text, start, i, ctx);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Sub,
-                    content,
-                    span: offset + start..offset + i,
-                })
             }
             b'^' if i + 1 < len && bytes[i + 1] == b'^' => {
                 // ^^ — superscript formatting: ^^text^^
-                let start = i;
-                i += 2;
-                ctx.col += 2;
-                let content_start = i;
-                while i + 1 < len && !(bytes[i] == b'^' && bytes[i + 1] == b'^') {
-                    i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
-                }
-                let content = text[content_start..i].to_string();
-                if i + 1 < len {
+                //
+                // Same-line closer guard, same rationale as the `''` bold arm
+                // above: without it a stray `^^` scans to the next `^^`/EOF as
+                // an opaque TextFormat in which links and macros vanish.
+                // Upstream permits multi-line matches — see the bold arm's
+                // pinned upstream nuance note.
+                if !has_same_line_delimiter(text, i + 2, b"^^")
+                    || ctx.depth >= MAX_FORMAT_NESTING_DEPTH
+                {
+                    // Not superscript — literal text (both chars stay in the
+                    // text flow via the catch-all's flush logic).
                     i += 2;
+                    ctx.col += 2;
+                    None
+                } else {
+                    let start = i;
+                    i += 2;
+                    let content_start = i;
+                    while i + 1 < len && !(bytes[i] == b'^' && bytes[i + 1] == b'^') {
+                        i += text[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    }
+                    let content_end = i;
+                    let content = text[content_start..content_end].to_string();
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    resync_col_after_advance(text, start, i, ctx);
+                    flush_text(text, &mut text_start, start, offset, &mut nodes);
+                    // Phase 1.3 — wikified children (see the bold arm).
+                    let children =
+                        parse_format_content(text, content_start, content_end, offset, ctx.depth);
+                    Some(AstNode::TextFormat {
+                        kind: TextFormatKind::Super,
+                        content,
+                        children,
+                        span: offset + start..offset + i,
+                    })
                 }
-                resync_col_after_advance(text, start, i, ctx);
-                flush_text(text, &mut text_start, start, offset, &mut nodes);
-                Some(AstNode::TextFormat {
-                    kind: TextFormatKind::Super,
-                    content,
-                    span: offset + start..offset + i,
-                })
             }
             b'<' if text[i..].starts_with("<!--") => {
                 // <!-- — HTML comment (or conditional comment <!--[if ...]>)
@@ -403,22 +573,60 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // flush_text extract them.
                 None
             }
-            b'@' if i + 1 < len
-                && (bytes[i + 1] == b'@'
-                    || bytes[i + 1] == b'.'
-                    || bytes[i + 1] == b'#'
-                    || is_ident_start(bytes[i + 1])) =>
-            {
-                // @ or @@ — SugarCube inline styling
-                // Double-at: @@class;text@@
-                // Single-at: @class;text@ (class may start with . or # for CSS selectors)
+            b'@' if i + 1 < len && bytes[i + 1] == b'@' => {
+                // @@ — inline styling: @@class;text@@ (the only inline-style
+                // form SugarCube defines)
                 //
-                // SugarCube requires the class spec + `;` separator to be on
-                // the SAME LINE as the opening `@@`/`@`. A `@@` followed by a
-                // newline (or by another `@@` with no `;` in between) is NOT
-                // a valid inline-style opener — it's either a closing
-                // delimiter (consumed by the matching opener's
-                // `parse_inline_style` call) or literal text.
+                // NOTE (verified against upstream 2026-09-15): SugarCube 2's own
+                // parser (`customStyle` in src/markup/parserlib.js) matches `@@`
+                // only, and the SugarCube 1.x markup docs show no single-`@` form
+                // either. A former version of this arm also accepted single-`@`
+                // (`@class;text@`) — NOT upstream syntax — and mis-fired on plain
+                // prose like `@handle;` or `user@host.com;` (any `@` + identifier
+                // followed by a same-line `;`), reclassifying the rest of the
+                // passage as an InlineStyle that swallowed to EOF when no closing
+                // `@` existed. The single-`@` form was removed (plan.md Phase
+                // 1.1): a bare `@` is now always literal text.
+                //
+                // ISSUE #6 (verified 2026-09-15): `@attr="..."` IS upstream syntax
+                // — the HTML/SVG attribute directive (v2.21+, docs §markup-html-
+                // svg-attribute-directive). Upstream handles it in the `htmlTag`
+                // parser, which consumes whole tags atomically (quote-aware), so
+                // markup parsers never see inside a tag. Knot has no htmlTag
+                // stratum yet (plan.md Phase 2.2), so until then `@`-directives
+                // in tags are inert literal text — harmless, unlike the old
+                // single-`@` arm whose same-line `;` scan ignored quoting, so a
+                // `;` inside an attribute value (e.g. `@style="color: red;"` or
+                // a sibling `style="...;"`) opened a false InlineStyle that
+                // swallowed to EOF, ate macro closers, and yielded false
+                // "Unclosed block macro" errors.
+                //
+                // UPSTREAM (pinned 2026-09-15: parserlib.js `customStyle`
+                // L941-986 + wikifier.js `subWikify` L123+ + lib/patterns.js
+                // `inlineCss` L145-153): `customStyle` matches the OPENING
+                // `@@` only. `WikifierUtil.inlineCss` then parses
+                // `prop:value;` / `#id.class;` segments (their regexes cannot
+                // cross a newline); a classless `@@text@@` becomes a
+                // `.marked` span; `@@` immediately followed by a newline
+                // opens the BLOCK form (a `<div>` running to the next
+                // line-start `@@`); the body is subWikified to the `@@`
+                // terminator — or, when the terminator never appears, to
+                // end-of-source with the content still wikified (see the
+                // missing-closer note in `parse_inline_style`).
+                //
+                // Knot-side guard (deliberate divergence, added Phase 1.1):
+                // this arm ADDITIONALLY requires a `;` on the SAME LINE as
+                // the opener — a `@@` followed by a newline, or by another
+                // `@@` with no `;` in between, is treated as literal text
+                // (or as the closing delimiter of a matching opener). Under
+                // upstream semantics some of those ARE openers (block form /
+                // classless marked span) that would consume to EOF or to the
+                // next `@@`; Knot degrades them to literal instead, because
+                // the testbed uses standalone `@@` as stray emphasis marks
+                // and live-swallowing them silently reordered the analysis
+                // of everything between. Classless/block forms are pending
+                // support (plan.md Phase 2.2/4.1); the guard stays until
+                // then.
                 //
                 // Without this guard, a standalone `@@` on its own line would
                 // be treated as an opener and `find_class_and_body_start`
@@ -430,13 +638,12 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // See: sugarcube-testbed/src/51-combat.twee lines 42, 52, 65,
                 // 76, 85 — standalone `@@` markers that were eating
                 // `<</replace>>` / `<</link>>` / `<</if>>` closers.
-                let is_double_at = bytes[i + 1] == b'@';
 
                 // Look ahead from just after the opener for a `;` on the same
                 // line. Break on `\n` (no `;` on this line) or on the close
-                // delimiter (no `;` at all — class-less form, which SugarCube
-                // does not document and the testbed does not use).
-                let mut k = i + if is_double_at { 2 } else { 1 };
+                // delimiter `@@` (no `;` at all — class-less form, which
+                // SugarCube does not document and the testbed does not use).
+                let mut k = i + 2;
                 let mut found_semi = false;
                 while k < len {
                     let b = bytes[k];
@@ -447,31 +654,28 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                     if b == b'\n' {
                         break;
                     }
-                    if is_double_at {
-                        if b == b'@' && k + 1 < len && bytes[k + 1] == b'@' {
-                            break;
-                        }
-                    } else if b == b'@' {
+                    if b == b'@' && k + 1 < len && bytes[k + 1] == b'@' {
                         break;
                     }
                     k += 1;
                 }
 
-                if !found_semi {
-                    // Not a valid inline-style opener — treat `@@`/`@` as
+                // At the format nesting cap (plan.md Phase 1.3) the opener
+                // also falls back to literal text — same policy as the
+                // text-format arms, bounding recursive `@@…@@` body parsing.
+                if !found_semi || ctx.depth >= MAX_FORMAT_NESTING_DEPTH {
+                    // Not a valid inline-style opener — treat `@@` as
                     // literal text. Advance past the opener characters; the
                     // catch-all's text-flush logic will include them in the
                     // next Text node.
-                    let adv = if is_double_at { 2 } else { 1 };
-                    i += adv;
-                    ctx.col += adv;
+                    i += 2;
+                    ctx.col += 2;
                     None
                 } else {
                     let start = i;
-                    let adv = if is_double_at { 2 } else { 1 };
-                    i += adv;
-                    ctx.col += adv;
-                    let node = parse_inline_style(text, &mut i, ctx, start, is_double_at);
+                    i += 2;
+                    ctx.col += 2;
+                    let node = parse_inline_style(text, &mut i, ctx, start, true);
                     flush_text(text, &mut text_start, start, offset, &mut nodes);
                     Some(node)
                 }
@@ -662,7 +866,7 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // `parse_table` scans ALL consecutive table-row lines and
                 // groups them into a single `Table` node.
                 let start = i;
-                let node = parse_table(text, &mut i, offset);
+                let node = parse_table(text, &mut i, offset, ctx.depth);
                 resync_col_after_advance(text, start, i, ctx);
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
@@ -734,6 +938,37 @@ fn resync_col_after_advance(text: &str, start: usize, end: usize, ctx: &mut Pars
     }
 }
 
+/// Same-line delimiter lookahead shared by the text-format arms (`''`, `__`,
+/// `==`, `~~`, `^^`), mirroring the `//` italic arm's guard.
+///
+/// Returns `true` if the two-byte `delim` appears at or after byte `from` on
+/// the same line (the search stops at `\n`). Used to decide whether an opener
+/// is real formatting or literal text: without it, an unmatched opener scans
+/// to the next delimiter anywhere in the passage (or EOF) and the bytes in
+/// between become an opaque TextFormat in which links and macros vanish.
+///
+/// Upstream nuance (pinned 2026-09-15): SugarCube 2 `formatByChar`
+/// (parserlib.js L892-941) does not stop its terminator search at newlines —
+/// upstream matches can span lines and stay live when unterminated
+/// (wikifier.js `subWikify` L123+ consumes to EOF but keeps wikifying). The
+/// same-line restriction remains a deliberate Knot-side divergence (plan.md
+/// Phase 1.2): with format content now recursively wikified (Phase 1.3) the
+/// old opacity rationale is gone, but preventing a stray opener in one
+/// paragraph from pairing with (and swallowing) a much later one still
+/// requires it.
+fn has_same_line_delimiter(text: &str, from: usize, delim: &[u8; 2]) -> bool {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut k = from;
+    while k + 1 < len && bytes[k] != b'\n' {
+        if bytes[k] == delim[0] && bytes[k + 1] == delim[1] {
+            return true;
+        }
+        k += 1;
+    }
+    false
+}
+
 /// Flush accumulated text into a Text node.
 ///
 /// `text_start` is updated to `end` after flushing.
@@ -766,16 +1001,18 @@ fn flush_text(
     *text_start = end;
 }
 
-/// Parse SugarCube inline styling markup (`@@class;text@@` or `@class;text@`).
+/// Parse inline styling markup (`@@class;text@@` — the only inline-style form
+/// SugarCube defines; see the note at the `b'@'` dispatch arm).
 ///
-/// `i` points to the first character after the opening `@@` or `@`.
+/// `i` points to the first character after the opening `@@`.
 /// `start` is the position of the first `@` in `text`.
-/// `is_double_at` is `true` for `@@...@@`, `false` for `@...@`.
 ///
-/// For double-at: the class is between `@@` and `;`, the body is between
+/// The class is between `@@` and `;`, the body is between
 /// `;` and `@@`. The close delimiter is `@@`.
 ///
-/// For single-at: same structure but with single `@` delimiters.
+/// `is_double_at` remains a parameter, but only `true` is constructed since
+/// Phase 1.1 (plan.md) removed the non-upstream single-`@` form (`@...@`),
+/// which previously reached this function with `false`.
 ///
 /// The `ctx` parameter carries the body offset and the current column. After
 /// parsing, `ctx.col` is resync'd to reflect the column position past the
@@ -822,6 +1059,7 @@ fn parse_inline_style(
         let mut child_ctx = ParseCtx {
             offset: body_start,
             col: initial_col,
+            depth: ctx.depth + 1,
         };
         parse_body_with_ctx(body_content, &mut child_ctx)
     } else {
@@ -835,6 +1073,15 @@ fn parse_inline_style(
     // would overshoot `text.len()` and the subsequent `resync_col_after_advance`
     // would panic on `&text[start..*i]`. Clamp to `len` so an unclosed inline
     // style simply consumes the rest of the text without panicking.
+    //
+    // UPSTREAM PIN (plan.md Phase 1.4, verified 2026-09-15): consuming to EOF
+    // on a missing `@@` closer is SugarCube's OWN behavior — `customStyle`
+    // (parserlib.js L941-986) matches the opening `@@` and subWikifies the
+    // body to the `@@` terminator; wikifier.js `subWikify` (L123+) runs its
+    // do-while until the terminator matches OR the source ends, emitting the
+    // tail either way. The body children parsed above stay live (links,
+    // macros, variables), satisfying plan.md D1 rule 5: consume-to-EOF is
+    // upstream-correct; what is forbidden is a silent *opaque* swallow.
     *i = (body_end + close_delim.len()).min(len);
 
     // Resync the caller's column to match the new position past the closing
@@ -866,6 +1113,37 @@ fn compute_initial_col(text: &str, local_start: usize) -> usize {
         Some(nl_pos) => local_start - (nl_pos + 1),
         None => local_start,
     }
+}
+
+/// Recursively parse the inner content of a text-format construct
+/// (`''…''`, `//…//`, `__…__`, `==…==`, `~~…~~`, `^^…^^`) into child nodes —
+/// the "subWikify" step that gives Knot parity with SugarCube's
+/// `formatByChar` (parserlib.js L892-941), which wikifies formatting
+/// content (plan.md Phase 1.3).
+///
+/// `content_start..content_end` is the raw content byte range within
+/// `text` (between the delimiters); `offset` is the body-relative offset
+/// of `text` itself, so child spans come out body-relative like every
+/// other AST node. `parent_depth` is the caller's `ctx.depth`; the child
+/// parse runs at `parent_depth + 1` so the `MAX_FORMAT_NESTING_DEPTH` cap
+/// (checked at the format arms before entering) bounds total recursion.
+fn parse_format_content(
+    text: &str,
+    content_start: usize,
+    content_end: usize,
+    offset: usize,
+    parent_depth: usize,
+) -> Vec<AstNode> {
+    if content_start >= content_end {
+        return Vec::new();
+    }
+    let content = &text[content_start..content_end];
+    let mut child_ctx = ParseCtx {
+        offset: offset + content_start,
+        col: compute_initial_col(text, content_start),
+        depth: parent_depth + 1,
+    };
+    parse_body_with_ctx(content, &mut child_ctx)
 }
 
 /// Parse a block code section: `{{{\n...\n}}}`.
@@ -1150,6 +1428,7 @@ fn parse_heading(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: usize) ->
         let mut child_ctx = ParseCtx {
             offset: offset + content_start,
             col: level as usize,
+            depth: ctx.depth + 1,
         };
         parse_body_with_ctx(content, &mut child_ctx)
     } else {
@@ -1290,6 +1569,7 @@ fn parse_blockquote_line(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: u
         let mut child_ctx = ParseCtx {
             offset: offset + content_start,
             col: depth as usize,
+            depth: ctx.depth + 1,
         };
         parse_body_with_ctx(content, &mut child_ctx)
     } else {
@@ -1369,6 +1649,7 @@ fn parse_list_item(
         let mut child_ctx = ParseCtx {
             offset: offset + content_start,
             col: depth as usize,
+            depth: ctx.depth + 1,
         };
         parse_body_with_ctx(content, &mut child_ctx)
     } else {
@@ -1478,7 +1759,7 @@ fn parse_table_row_suffix(line: &str) -> (TableRowType, usize) {
 /// ALL rows (including `h`/`f`) are stored in `rows` in document order, with
 /// their `row_type` set correctly. `header`/`footer` are additional references
 /// to the first `h`/`f` row for consumer convenience.
-fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
+fn parse_table(text: &str, i: &mut usize, offset: usize, parent_depth: usize) -> AstNode {
     let bytes = text.as_bytes();
     let len = bytes.len();
 
@@ -1511,7 +1792,7 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
         let cells_text = &text[cells_start..cells_end];
 
         // Parse cells (split by `|`, recursive content).
-        let cells = parse_table_cells(cells_text, cells_start, offset);
+        let cells = parse_table_cells(cells_text, cells_start, offset, parent_depth);
 
         // Body-relative span of this row line.
         let row_span = offset + line_start..offset + line_end;
@@ -1625,7 +1906,12 @@ fn parse_table(text: &str, i: &mut usize, offset: usize) -> AstNode {
 ///   - Otherwise → normal cell.
 ///
 /// Cell content is recursively parsed via `parse_body_with_ctx`.
-fn parse_table_cells(cells_text: &str, cells_start: usize, offset: usize) -> Vec<TableCell> {
+fn parse_table_cells(
+    cells_text: &str,
+    cells_start: usize,
+    offset: usize,
+    parent_depth: usize,
+) -> Vec<TableCell> {
     let mut cells = Vec::new();
     let bytes = cells_text.as_bytes();
     let len = bytes.len();
@@ -1662,6 +1948,7 @@ fn parse_table_cells(cells_text: &str, cells_start: usize, offset: usize) -> Vec
                 let mut child_ctx = ParseCtx {
                     offset: offset + content_start,
                     col: 0,
+                    depth: parent_depth + 1,
                 };
                 parse_body_with_ctx(content_text, &mut child_ctx)
             } else {
@@ -1757,6 +2044,7 @@ fn parse_blockquote_block(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: 
             let mut child_ctx = ParseCtx {
                 offset: offset + content_start,
                 col: 0,
+                depth: ctx.depth + 1,
             };
             parse_body_with_ctx(content, &mut child_ctx)
         } else {
@@ -1782,6 +2070,7 @@ fn parse_blockquote_block(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: 
             let mut child_ctx = ParseCtx {
                 offset: offset + content_start,
                 col: 0,
+                depth: ctx.depth + 1,
             };
             parse_body_with_ctx(content, &mut child_ctx)
         } else {
@@ -2864,22 +3153,24 @@ mod tests {
     }
 
     #[test]
-    fn inline_style_single_at() {
-        // @.red;warning text@
+    fn single_at_is_not_inline_style() {
+        // The single-`@` inline-style form (`@.red;warning text@`) is NOT
+        // SugarCube syntax — upstream `customStyle` (parserlib.js L943-982)
+        // matches `@@` only. The former single-`@` arm mis-fired on plain
+        // prose (`@handle;`, `user@host.com;`) and on valid HTML attribute
+        // directives (`@class="..."` — Knot issue #6), and was removed in
+        // plan.md Phase 1.1. A bare `@` must now stay literal text.
         let ast = crate::sugarcube::parser::parse_passage_body(
             "@.red;warning text@",
             0,
             ParseMode::Normal,
         );
-        let style_node = ast
-            .nodes
-            .iter()
-            .find_map(|n| match n {
-                AstNode::InlineStyle { class, .. } => Some(class.clone()),
-                _ => None,
-            })
-            .expect("should find InlineStyle node");
-        assert_eq!(style_node, ".red");
+        assert!(
+            ast.nodes
+                .iter()
+                .all(|n| !matches!(n, AstNode::InlineStyle { .. })),
+            "single-@ must not produce an InlineStyle node"
+        );
     }
 
     #[test]

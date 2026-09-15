@@ -26,7 +26,21 @@ use crate::sugarcube::ast::*;
 /// `offset` is the base byte offset for the body text being parsed
 /// (0 for top-level, nonzero for nested block content).
 /// `macro_start` is the position of `<<` in `text`.
-pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start: usize) -> AstNode {
+///
+/// Returns `None` when there is no macro here (empty name — a bare `<<`):
+/// upstream's macro lookahead requires a macro name immediately after `<<`
+/// (parserlib.js `<<(/?${Patterns.macroName})…`), so a bare `<<` is literal
+/// text, not a macro. On `None`, `i` is restored to just past the `<<` and
+/// the caller falls back to literal-text handling. This matters at LSP
+/// completion time: an empty-name macro used to consume the following
+/// `<</if>>` closer as its argument terminator, breaking the enclosing
+/// block macro's body pairing (plan.md Phase 1.5).
+pub(super) fn parse_macro(
+    text: &str,
+    i: &mut usize,
+    offset: usize,
+    macro_start: usize,
+) -> Option<AstNode> {
     let bytes = text.as_bytes();
     let len = bytes.len();
 
@@ -52,11 +66,11 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
         // Skip to >>
         skip_to_macro_close(text, i);
         let close_span_end = *i;
-        return AstNode::MacroClose {
+        return Some(AstNode::MacroClose {
             name,
             name_span: offset + name_start..offset + name_end,
             span: offset + macro_start..offset + close_span_end,
-        };
+        });
     }
 
     // Scan the macro name
@@ -78,13 +92,13 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
         let content_end = skip_to_first_macro_close(text, i);
         let content = text[content_start..content_end].to_string();
         let var_refs = scan_inline_vars(&content, offset + content_start);
-        return AstNode::Expression {
+        return Some(AstNode::Expression {
             kind,
             content,
             var_refs,
             js_analysis: None,
             span: offset + macro_start..offset + *i,
-        };
+        });
     }
 
     // Regular macro name
@@ -92,6 +106,14 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
         *i += 1;
     }
     let name = text[name_start..*i].to_string();
+
+    // Empty name — not a macro (see the doc comment above): restore `i` to
+    // just past the `<<` and report literal text.
+    if name.is_empty() {
+        *i = macro_start + 2;
+        return None;
+    }
+
     let name_len = name.len();
 
     // Skip space between name and args
@@ -188,7 +210,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
 
         let full_end = close_span.as_ref().map_or(offset + *i, |s| s.end);
 
-        return AstNode::Macro {
+        return Some(AstNode::Macro {
             name,
             args,
             var_refs,
@@ -204,7 +226,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
             capture_target,
             for_loop_vars,
             structured_args,
-        };
+        });
     }
 
     // ── All other macros: flat emission ─────────────────────────────
@@ -215,7 +237,7 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
     // If no MacroClose is found, the tree builder consults the catalog's
     // BodyRequirement to decide whether this is an inline macro or an
     // unclosed block.
-    AstNode::Macro {
+    Some(AstNode::Macro {
         name,
         args,
         var_refs,
@@ -231,59 +253,67 @@ pub(super) fn parse_macro(text: &str, i: &mut usize, offset: usize, macro_start:
         capture_target,
         for_loop_vars,
         structured_args,
-    }
+    })
 }
 
-/// Scan macro arguments, handling nested `<<`/`>>`, strings, and comments.
+/// Scan macro arguments — upstream-faithful args boundary finding (plan.md
+/// Phase 1.5).
 ///
 /// Returns the byte position where args end (before `>>`).
 /// Advances `i` past the closing `>>`.
 ///
-/// ## Comment handling
+/// ## Upstream model (pinned 2026-09-15)
 ///
-/// SugarCube macro args can contain JS expressions with C-style comments
-/// (`/* ... */` and `// ...`). A `>>` inside a comment must NOT be treated
-/// as the macro closing delimiter. For example:
+/// SugarCube 2's macro-tag lookahead (parserlib.js L114-116) reads the args
+/// with a single alternation group terminated by the FIRST `>>`:
+///
+/// ```text
+/// /*block comment*/ | //line comment | `template` | "string" | 'string'
+/// | /regex/ | [img[...]] markup | [^>] | >(?!>)
+/// ```
+///
+/// There is NO nested-`<<` depth counting — `<<` inside args (e.g. a JS
+/// left-shift like `<<set $x to $a << 2>>`) is plain args content under
+/// `[^>]`, and the macro closes at the first unescaped `>>`. The previous
+/// Knot implementation depth-tracked `<<` as a nested macro open, so a bare
+/// left-shift swallowed past the real closer and wrecked the argument scan
+/// (Task 3 finding; plan.md F/1.5).
+///
+/// ## Quoting / comment context
+///
+/// A `>>` inside any of the quoted contexts must NOT close the macro:
 ///
 /// ```text
 /// <<set $x = [
 ///   /* comment with >> inside */
 ///   1, 2, 3
 /// ]>>
+/// <<set $t to `a >> b`>>            — template literal containing >>
+/// <<set $s to "a >> b">>            — string containing >>
 /// ```
 ///
-/// Without comment awareness, the scanner would find `>>` inside the
-/// `/* */` comment and incorrectly close the macro, truncating the args.
+/// ## Deliberate divergences from upstream (documented, conservative)
+///
+/// - The `/regex/` alternative is bounded to a provably-inline span: the
+///   closing `/` must appear before any `>>` or newline. Upstream's
+///   backtracking engine can additionally treat `/…/` spans that CONTAIN
+///   `>>` (e.g. `/>>/`) as a single literal; a character scanner cannot
+///   emulate that safely, so those keep closing the macro at the `>>`
+///   (the pre-1.5 behavior for that rare case).
+/// - `[img[...]]` markup inside args is not given special treatment (the
+///   `[^>]` class already handles the common cases; links inside macro args
+///   are parsed by `parse_link`-family code elsewhere).
 pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
     let bytes = text.as_bytes();
     let len = bytes.len();
-    let _start = *i;
-    let mut depth = 1u32; // We're inside one <<
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
 
     while *i < len {
         let b = bytes[*i];
 
-        // String tracking
+        // Escaped char — consume both bytes. Covers `\"` inside strings,
+        // `\/` inside regexes, and stray backslashes outside any context.
         if b == b'\\' && *i + 1 < len {
             *i += 2; // Skip escaped char
-            continue;
-        }
-        if b == b'"' && !in_single_quote {
-            in_double_quote = !in_double_quote;
-            *i += 1;
-            continue;
-        }
-        if b == b'\'' && !in_double_quote {
-            in_single_quote = !in_single_quote;
-            *i += 1;
-            continue;
-        }
-        if in_single_quote || in_double_quote {
-            // Advance by full UTF-8 character to avoid landing inside
-            // a multi-byte sequence, which would cause a panic on slicing.
-            *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             continue;
         }
 
@@ -315,30 +345,62 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
             continue;
         }
 
-        // Nested <<
-        if b == b'<' && *i + 1 < len && bytes[*i + 1] == b'<' {
-            depth += 1;
-            *i += 2;
-            continue;
-        }
-
-        // >> or >>>
-        if b == b'>' && *i + 1 < len && bytes[*i + 1] == b'>' {
-            depth -= 1;
-            if depth == 0 {
-                let args_end = *i;
-                *i += 2; // Skip >>
-
-                // SugarCube treats >>> as >> + >. If the next char is >,
-                // it's part of the next token, not part of this close.
-                // But >>> is actually a single sugar syntax for >>
-                // followed by a literal >. So we just consume the two >.
-                return args_end;
+        // Backtick template literal: `...` (upstream alternative 3).
+        // A >> inside a template must NOT close the macro. Escapes
+        // (`\``) are already consumed by the global escape skip above.
+        if b == b'`' {
+            *i += 1;
+            while *i < len && bytes[*i] != b'`' {
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
             }
-            *i += 2;
+            *i += 1; // past the closing ` (or len)
             continue;
         }
 
+        // Quoted strings: "..." or '...' (upstream alternatives 4/5).
+        if b == b'"' || b == b'\'' {
+            let quote = b;
+            *i += 1;
+            while *i < len && bytes[*i] != quote {
+                // Advance by full UTF-8 character to avoid mid-char slicing.
+                *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
+            }
+            *i += 1; // past the closing quote (or len)
+            continue;
+        }
+
+        // Regex literal: /.../ (upstream alternative 6, conservatively
+        // bounded — see the divergence note in the doc comment above).
+        //
+        // A `/` that is not a comment opener is treated as a regex start
+        // only when the span is provably inline: the closing `/` appears
+        // before any `>>` or newline. Division (`$a / 2`) therefore always
+        // falls back to plain args content, and no span can silently swallow
+        // a macro closer.
+        if b == b'/' {
+            if let Some(close) = find_inline_regex_close(text, *i + 1) {
+                *i = close + 1;
+            } else {
+                *i += 1; // plain `/` — division or a bare slash
+            }
+            continue;
+        }
+
+        // Macro close: >> (the FIRST unescaped one — upstream's terminator).
+        //
+        // NOTE: `<<` is NOT special here (no nested-open depth counting) —
+        // it is plain args content under upstream's `[^>]` alternative, so
+        // JS left-shifts (`$a << 2`) scan cleanly. A third `>` after `>>`
+        // belongs to the following token, not this close delimiter.
+        if b == b'>' && *i + 1 < len && bytes[*i + 1] == b'>' {
+            let args_end = *i;
+            *i += 2; // Skip >>
+            return args_end;
+        }
+
+        // Everything else — including `<`, `<<`, and single `>` — is plain
+        // args content (upstream `[^>]` + `>(?!>)`).
         // Advance by full UTF-8 character to avoid mid-char slicing.
         *i += text[*i..].chars().next().map_or(1, |c| c.len_utf8());
     }
@@ -346,6 +408,36 @@ pub(super) fn scan_macro_args(text: &str, i: &mut usize) -> usize {
     // Unclosed macro — everything is args
     *i = len;
     len
+}
+
+/// Find the closing `/` of a provably-inline regex literal, searching from
+/// `from`.
+///
+/// Returns the byte position of the closing `/`, or `None` when the span is
+/// not a safe inline regex: the search stops (returning `None`) at the first
+/// newline or at `>>`, so the returned span is guaranteed free of macro
+/// terminators. Escaped characters (`\/`) are skipped.
+///
+/// This is deliberately narrower than upstream's regex alternative, whose
+/// backtracking engine can treat `/…/` spans crossing `>>` (e.g.
+/// `/>>/`) as a single literal; a character scanner cannot emulate that
+/// safely, and `>>` inside a regex literal in macro args is rare — those
+/// keep the pre-1.5 behavior (args close at the `>>`). See the divergence
+/// note in `scan_macro_args`'s doc comment.
+fn find_inline_regex_close(text: &str, from: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut k = from;
+    while k < len {
+        match bytes[k] {
+            b'\\' => k += 2, // escaped char — skip both bytes
+            b'\n' => return None,
+            b'/' => return Some(k),
+            b'>' if k + 1 < len && bytes[k + 1] == b'>' => return None,
+            _ => k += 1,
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1691,6 +1783,137 @@ mod tests {
             AstNode::Macro { name, children, .. } => {
                 assert_eq!(name, "if");
                 assert!(children.is_some());
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn left_shift_in_args_scans_cleanly() {
+        // plan.md Phase 1.5 (Task 3 finding): a JS left-shift in macro args
+        // was depth-tracked as a nested macro open, swallowing past the real
+        // closer and producing nonsense "Unterminated regular expression"
+        // errors from the JS analyzer. Upstream's args alternation (`[^>]`,
+        // no `<<` nesting) treats `<<` as plain content and closes at the
+        // first `>>`.
+        let ast = parse_passage_body("<<set $x to $a << 2>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1, "a shift must not open a nested macro");
+        match macros[0] {
+            AstNode::Macro { name, args, .. } => {
+                assert_eq!(name, "set");
+                assert_eq!(args, "$x to $a << 2");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+        assert!(
+            ast.var_ops.iter().any(|op| op.name == "$x"),
+            "$x write should be recorded, var_ops: {:?}",
+            ast.var_ops
+        );
+    }
+
+    #[test]
+    fn template_literal_with_shift_in_args_scans_cleanly() {
+        // Backtick template literals are an upstream args alternative; a
+        // `>>` inside one must not close the macro.
+        let ast = parse_passage_body("<<set $t to `a >> b`>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1);
+        match macros[0] {
+            AstNode::Macro { name, args, .. } => {
+                assert_eq!(name, "set");
+                assert_eq!(args, "$t to `a >> b`");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn string_with_gt_gt_in_args_scans_cleanly() {
+        // A `>>` inside a quoted string must not close the macro.
+        let ast = parse_passage_body(
+            "<<set $s to \"a >> b\" and 'x >> y'>>",
+            0,
+            ParseMode::Normal,
+        );
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1);
+        match macros[0] {
+            AstNode::Macro { args, .. } => {
+                assert_eq!(args, "$s to \"a >> b\" and 'x >> y'");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn division_in_args_falls_back_to_plain_slash() {
+        // Division must not be mistaken for a regex literal: no closing `/`
+        // before the macro terminator ⇒ plain args content.
+        let ast = parse_passage_body("<<set $x to $a / 2>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1);
+        match macros[0] {
+            AstNode::Macro { args, .. } => {
+                assert_eq!(args, "$x to $a / 2");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn inline_regex_in_args_is_consumed_atomically() {
+        // A provably-inline regex (closing `/` before any `>>` or newline)
+        // is consumed as one unit so its contents stay in the args.
+        let ast = parse_passage_body("<<run $s.replace(/ab+c/g, \"x\")>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1);
+        match macros[0] {
+            AstNode::Macro { args, .. } => {
+                assert_eq!(args, "$s.replace(/ab+c/g, \"x\")");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn comparison_gt_in_args_still_works() {
+        // Control: a single `>` followed by non-`>` is plain args content
+        // (upstream `>(?!>)`), so `<<if $a > 2>>` keeps parsing.
+        let ast = parse_passage_body("<<if $a > 2>>big<</if>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1);
+        match macros[0] {
+            AstNode::Macro { name, args, .. } => {
+                assert_eq!(name, "if");
+                assert_eq!(args, "$a > 2");
+            }
+            _ => panic!("Expected Macro node"),
+        }
+    }
+
+    #[test]
+    fn bare_macro_open_is_literal_text() {
+        // plan.md Phase 1.5: a bare `<<` (no name) is literal text per
+        // upstream's lookahead, which requires a macro name right after
+        // `<<`. It must NOT become an empty-name macro whose args scan
+        // swallows the following `<</if>>` closer — that broke the
+        // enclosing `<<if>>`'s body pairing and the LSP's `<<else>>`
+        // completion context inside it.
+        let ast = parse_passage_body("<<if $x>>\n    <<\n  <</if>>", 0, ParseMode::Normal);
+        let macros = collect_macros(&ast.nodes);
+        assert_eq!(macros.len(), 1, "only <<if>> should be a macro");
+        match macros[0] {
+            AstNode::Macro { name, children, .. } => {
+                assert_eq!(name, "if");
+                let children = children.as_ref().expect("if body");
+                assert!(
+                    children.iter().any(
+                        |c| matches!(c, AstNode::Text { content, .. } if content.contains("<<"))
+                    ),
+                    "the bare `<<` must remain as literal text inside the body, children: {children:?}"
+                );
             }
             _ => panic!("Expected Macro node"),
         }

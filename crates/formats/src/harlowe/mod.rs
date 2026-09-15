@@ -363,6 +363,7 @@ impl HarlowePlugin {
             }
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
                 edge_type_hint: None,
@@ -382,6 +383,7 @@ impl HarlowePlugin {
             }
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
                 edge_type_hint: None,
@@ -401,6 +403,7 @@ impl HarlowePlugin {
             }
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
                 edge_type_hint: None,
@@ -436,6 +439,7 @@ impl HarlowePlugin {
                 }
                 links.push(Link {
                     display_text: None,
+                    target_span: None,
                     target,
                     span: body_offset + m.start()..body_offset + m.end(),
                     edge_type_hint: None,
@@ -473,6 +477,7 @@ impl HarlowePlugin {
             if !hook_name.contains(' ') && !overlaps_link && !overlaps_attach && !overlaps_ref {
                 links.push(Link {
                     display_text: None,
+                    target_span: None,
                     target: hook_name,
                     span: body_offset + m.start()..body_offset + m.end(),
                     edge_type_hint: None,

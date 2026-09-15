@@ -666,11 +666,15 @@ fn sugarcube_full_variable_tracking() {
 }
 
 #[test]
-fn snowman_full_variable_tracking() {
+fn snowman_variable_tracking_is_partial_not_full() {
+    // P1-5 (study / plan.md Phase 1.6): Snowman claimed FULL variable
+    // tracking with no registry implementation behind it — the full
+    // variable-flow UI showed an empty flow. The honest capability is
+    // partial (per-passage regex extraction only).
     let mut registry = FormatRegistry::with_defaults();
     let plugin = registry.get_mut(&StoryFormat::Snowman).unwrap();
-    assert!(plugin.supports_full_variable_tracking());
-    assert!(!plugin.supports_partial_variable_tracking());
+    assert!(!plugin.supports_full_variable_tracking());
+    assert!(plugin.supports_partial_variable_tracking());
 }
 
 #[test]
@@ -3376,4 +3380,470 @@ fn sugarcube_button_requires_close_tag() {
         "<<button>> without close tag should produce an unclosed-block error, got: {:?}",
         unclosed
     );
+}
+
+// ============================================================================
+// Prose scanner regressions (plan.md Phase 1.1 / 1.2)
+//
+// Permanent versions of the Task 4/5 scratch probe batteries: a stray text
+// format opener or a bare `@` in plain prose must never swallow links/macros
+// or fabricate diagnostics. See plan.md "Ground truth" F1-F3 and the worklog
+// (Tasks 4-5) for the original evidence tables.
+// ============================================================================
+
+#[cfg(test)]
+mod prose_scanner_regressions {
+    use super::*;
+
+    /// Parse a full story and return `(is_complete, Start links, Start diag
+    /// messages)` for the regression assertions below.
+    fn parse_start(src: &str) -> (bool, Vec<String>, Vec<String>) {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///regress/story.tw").unwrap();
+        let result = plugin.parse_mut(&uri, src);
+        let links = result
+            .passages
+            .iter()
+            .find(|p| p.name == "Start")
+            .map(|p| p.links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default();
+        let diags = result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Start")
+            .flat_map(|g| g.diagnostics.iter().map(|d| d.message.clone()))
+            .collect();
+        (result.is_complete, links, diags)
+    }
+
+    // -- Phase 1.1: the single-`@` inline-style form is removed --------------
+
+    #[test]
+    fn bare_at_handle_semicolon_is_literal() {
+        // `@admin;` used to open a false InlineStyle that swallowed to EOF
+        // (single-`@` form; SugarCube only defines `@@`).
+        let (complete, links, diags) = parse_start(
+            ":: Start\nContact @admin; see [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn email_semicolon_is_literal() {
+        // `bob@x.com;` — same false-positive family as `@admin;`.
+        let (complete, links, diags) = parse_start(
+            ":: Start\nMail bob@x.com; then [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn issue6_at_directive_in_tag_no_false_macro_error() {
+        // Issue #6 (jvosk): `@class` / `style` directives inside an HTML tag
+        // inside `<<if>>` produced "Unclosed block macro: <<if>>" because the
+        // `;` inside the attribute value opened a false InlineStyle that ate
+        // the `<</if>>` closer. With the single-`@` arm removed the tag is
+        // inert literal text until the htmlTag stratum lands (plan.md 2.2).
+        let (complete, links, diags) = parse_start(
+            ":: Start\n<<if $hud>><div @class=\"hud\" style=\"color: red;\">hud</div><</if>>\n[[Forest]]\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn double_at_inline_style_still_works() {
+        // Control: the upstream `@@` form must keep working after the
+        // single-`@` removal.
+        let (complete, _links, diags) = parse_start(
+            ":: Start\n@@emma;Hello there@@ and [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    // -- Phase 1.2: same-line guard on text-format openers -------------------
+
+    #[test]
+    fn stray_bold_opener_is_literal() {
+        // A single stray `''` used to swallow to the next `''`/EOF as an
+        // opaque TextFormat, hiding `[[Forest]]` (tokens 16→7, zero diags).
+        let (complete, links, diags) = parse_start(
+            ":: Start\nSays '' here [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn stray_bold_openers_do_not_pair_across_paragraphs() {
+        // Two stray `''` on different lines used to pair up, swallowing the
+        // `<<if>>` block and `[[Forest]]` in between.
+        let (complete, links, diags) = parse_start(
+            ":: Start\nHe typed '' and left\n<<if $gold>>gold<</if>>\n[[Forest]]\n<<set $y to 2>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn same_line_stray_pair_still_formats_like_real_bold() {
+        // Documented semantics (mirrors the `//` italic arm): two openers on
+        // the SAME line are indistinguishable from real formatting, so they
+        // pair up — but content outside the pair must survive untouched.
+        let (complete, links, diags) = parse_start(
+            ":: Start\nx '' y '' z and [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn proper_bold_still_works() {
+        // Control: real bold formatting must keep working after the guard.
+        let (complete, links, diags) = parse_start(
+            ":: Start\nSays ''bold'' here [[Forest]] <<set $gold to 1>>\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn stray_openers_of_all_format_kinds_are_literal() {
+        // Phase 1.2 covers all five text-format arms: a lone stray opener on
+        // its line must not swallow `[[Forest]]` (no closer on that line).
+        for (name, opener) in [
+            ("bold", "''"),
+            ("underline", "__"),
+            ("strike", "=="),
+            ("subscript", "~~"),
+            ("superscript", "^^"),
+        ] {
+            let src = format!(
+                ":: Start\nx {} y [[Forest]]\n<<set $gold to 1>>\n:: Forest\nforest\n",
+                opener
+            );
+            let (complete, links, diags) = parse_start(&src);
+            assert!(complete, "{}: should parse to completion", name);
+            assert!(
+                links.iter().any(|t| t == "Forest"),
+                "{}: links: {:?}",
+                name,
+                links
+            );
+            assert!(diags.is_empty(), "{}: diags: {:?}", name, diags);
+        }
+    }
+
+    // -- Phase 1.3: wikified format content (subWikify parity) ---------------
+
+    /// AST helper: find the first TextFormat node of `kind` at the top level.
+    fn find_format(
+        nodes: &[crate::sugarcube::ast::AstNode],
+        kind: crate::sugarcube::ast::TextFormatKind,
+    ) -> Option<&crate::sugarcube::ast::AstNode> {
+        nodes.iter().find(|n| {
+            matches!(
+                n,
+                crate::sugarcube::ast::AstNode::TextFormat { kind: k, .. } if *k == kind
+            )
+        })
+    }
+
+    #[test]
+    fn bold_link_visible_subwikify_parity() {
+        // The F5 headline case: `''[[Forest]]''` must keep the link visible.
+        // Pre-1.3 the content was an opaque raw string, so the link vanished
+        // from passage.links (and got a blanket TextFormat token instead of
+        // a Link token).
+        let (complete, links, diags) = parse_start(":: Start\n''[[Forest]]''\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn links_inside_all_six_format_kinds_are_visible() {
+        // Upstream formatByChar subWikifies ALL six formatting constructs,
+        // so a link inside any of them is live. One graph-level assertion
+        // per construct.
+        for (name, open, close) in [
+            ("bold", "''", "''"),
+            ("italic", "//", "//"),
+            ("underline", "__", "__"),
+            ("strike", "==", "=="),
+            ("subscript", "~~", "~~"),
+            ("superscript", "^^", "^^"),
+        ] {
+            let src = format!(":: Start\n{open}see [[Forest]]{close} now\n:: Forest\nforest\n",);
+            let (complete, links, diags) = parse_start(&src);
+            assert!(complete, "{}: should parse to completion", name);
+            assert!(
+                links.iter().any(|t| t == "Forest"),
+                "{}: link inside format content must be visible, links: {:?}",
+                name,
+                links
+            );
+            assert!(diags.is_empty(), "{}: diags: {:?}", name, diags);
+        }
+    }
+
+    #[test]
+    fn macro_inside_format_content_is_live() {
+        // `<<set $gold to 2>>` inside bold content: upstream subWikifies the
+        // content, so the macro executes. Knot must parse it as a real Macro
+        // child (pre-1.3 it was opaque text bytes).
+        let body = "''start <<set $gold to 2>> end''";
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            body,
+            0,
+            crate::sugarcube::ast::ParseMode::Normal,
+        );
+        let bold = find_format(&ast.nodes, crate::sugarcube::ast::TextFormatKind::Bold)
+            .expect("should find Bold TextFormat node");
+        let crate::sugarcube::ast::AstNode::TextFormat { children, .. } = bold else {
+            panic!("expected TextFormat");
+        };
+        let has_set_macro = children.iter().any(
+            |c| matches!(c, crate::sugarcube::ast::AstNode::Macro { name, .. } if name == "set"),
+        );
+        assert!(
+            has_set_macro,
+            "macro must be a live child, children: {children:?}"
+        );
+    }
+
+    #[test]
+    fn nested_format_children_recursive() {
+        // `''//x// and [[Forest]]''` — the bold content parses recursively:
+        // an Italic child (with its own Text child) plus the Link child.
+        // This is the structural prerequisite for Phase 2's nested
+        // html-in-format zones (plan.md D4).
+        let body = "''//x// and [[Forest]]''";
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            body,
+            0,
+            crate::sugarcube::ast::ParseMode::Normal,
+        );
+        let bold = find_format(&ast.nodes, crate::sugarcube::ast::TextFormatKind::Bold)
+            .expect("should find Bold TextFormat node");
+        let crate::sugarcube::ast::AstNode::TextFormat { children, .. } = bold else {
+            panic!("expected TextFormat");
+        };
+        let has_italic = children.iter().any(|c| {
+            matches!(
+                c,
+                crate::sugarcube::ast::AstNode::TextFormat {
+                    kind: crate::sugarcube::ast::TextFormatKind::Italic,
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_italic,
+            "nested italic must be a child, children: {children:?}"
+        );
+        let has_link = children
+            .iter()
+            .any(|c| matches!(c, crate::sugarcube::ast::AstNode::Link { .. }));
+        assert!(has_link, "link must be a child, children: {children:?}");
+        // Nested italic's own content is parsed too.
+        let italic = children.iter().find_map(|c| match c {
+            crate::sugarcube::ast::AstNode::TextFormat {
+                kind: crate::sugarcube::ast::TextFormatKind::Italic,
+                content,
+                ..
+            } => Some(content.as_str()),
+            _ => None,
+        });
+        assert_eq!(italic, Some("x"), "italic content should be `x`");
+    }
+
+    #[test]
+    fn variable_inside_format_content_is_extracted() {
+        // `$gold` inside bold content must surface as a variable reference
+        // on the child Text node (pre-1.3 it was buried in the raw content
+        // string and invisible to variable passes).
+        let body = "''you have $gold coins''";
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            body,
+            0,
+            crate::sugarcube::ast::ParseMode::Normal,
+        );
+        let bold = find_format(&ast.nodes, crate::sugarcube::ast::TextFormatKind::Bold)
+            .expect("should find Bold TextFormat node");
+        let crate::sugarcube::ast::AstNode::TextFormat { children, .. } = bold else {
+            panic!("expected TextFormat");
+        };
+        let has_var = children.iter().any(|c| {
+            matches!(
+                c,
+                crate::sugarcube::ast::AstNode::Text { var_refs, .. } if !var_refs.is_empty()
+            )
+        });
+        assert!(
+            has_var,
+            "variable ref must be extracted, children: {children:?}"
+        );
+    }
+
+    #[test]
+    fn plain_bold_token_stream_unchanged() {
+        // Back-compat guard: plain-text format content keeps the single
+        // TextFormat token over the content range (pre-1.3 rendering), with
+        // Heading-typed delimiters. Structured content (see the next test)
+        // recurses instead.
+        let mut plugin = crate::sugarcube::SugarCubePlugin::new();
+        let text = ":: Start\n''bold'' rest\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///t13.tw").unwrap(), text);
+        let tokens = flatten_token_groups(&result);
+        let content_tok = tokens
+            .iter()
+            .find(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::TextFormat));
+        let tok = content_tok.expect("plain bold content should keep its TextFormat token");
+        let start = tok.start.min(text.len());
+        let got = &text[start..(start + tok.length).min(text.len())];
+        assert_eq!(
+            got, "bold",
+            "TextFormat token should cover exactly the content"
+        );
+    }
+
+    #[test]
+    fn structured_bold_content_emits_link_token() {
+        // `''[[Forest]]''` must emit a Link token (and no blanket TextFormat
+        // token) so highlighting/theming sees the live link.
+        let mut plugin = crate::sugarcube::SugarCubePlugin::new();
+        let text = ":: Start\n''[[Forest]]''\n";
+        let result = plugin.parse_mut(&url::Url::parse("file:///t13b.tw").unwrap(), text);
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::Link)),
+            "expected a Link token inside bold content, tokens: {tokens:?}"
+        );
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::TextFormat)),
+            "structured content must not get the blanket TextFormat token, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_format_openers_do_not_overflow() {
+        // Stack-safety guard for the Phase 1.3 recursion: 60 alternating
+        // `''`/`//` openers exceed MAX_FORMAT_NESTING_DEPTH (32), so the
+        // innermost openers degrade to literal text instead of recursing.
+        // The parse must complete without overflowing and the outer content
+        // (with its link) must survive.
+        let mut body = String::new();
+        for d in 0..60 {
+            body.push_str(if d % 2 == 0 { "''" } else { "//" });
+        }
+        body.push_str("[[Forest]]");
+        for d in (0..60).rev() {
+            body.push_str(if d % 2 == 0 { "''" } else { "//" });
+        }
+        let src = format!(":: Start\n{body}\n:: Forest\nforest\n");
+        let (complete, links, _diags) = parse_start(&src);
+        assert!(complete);
+        assert!(
+            links.iter().any(|t| t == "Forest"),
+            "link inside deep nesting must stay visible, links: {links:?}"
+        );
+    }
+
+    // -- Phase 1.4: parse_inline_style missing-closer fallback ---------------
+
+    #[test]
+    fn unterminated_double_at_keeps_content_live() {
+        // Phase 1.4 (plan.md): an unclosed `@@emma;Hello` must NOT swallow
+        // opaquely. Upstream customStyle (parserlib.js L941-986) matches the
+        // opening `@@` and subWikifies to the `@@` terminator — wikifier.js
+        // subWikify consumes to end-of-source when the terminator never
+        // appears, content still wikified. Knot mirrors that: consume to EOF
+        // with live children, so the link after the class segment stays
+        // visible and no false diagnostics appear.
+        let (complete, links, diags) =
+            parse_start(":: Start\n@@emma;Hello [[Forest]]\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(
+            links.iter().any(|t| t == "Forest"),
+            "link inside unterminated inline style must stay visible, links: {links:?}"
+        );
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+
+    #[test]
+    fn unterminated_double_at_ast_consumes_to_eof_with_children() {
+        // AST-level pin of the upstream-mirroring behavior: the InlineStyle
+        // node spans to end-of-body and its parsed children contain the live
+        // macro and variable (pre-1.3 these were buried in opaque content).
+        let body = "@@.red;styled [[Forest]] and <<set $gold to 1>>";
+        let ast = crate::sugarcube::parser::parse_passage_body(
+            body,
+            0,
+            crate::sugarcube::ast::ParseMode::Normal,
+        );
+        let inline = ast.nodes.iter().find_map(|n| match n {
+            crate::sugarcube::ast::AstNode::InlineStyle { span, .. } => Some(span.clone()),
+            _ => None,
+        });
+        let span = inline.expect("unterminated @@ must still parse as an InlineStyle node");
+        assert_eq!(
+            span.end,
+            body.len(),
+            "missing closer: inline style must consume to end of body"
+        );
+        // Children are attached and live (link + macro visible).
+        let crate::sugarcube::ast::AstNode::InlineStyle { children, .. } = ast
+            .nodes
+            .iter()
+            .find(|n| matches!(n, crate::sugarcube::ast::AstNode::InlineStyle { .. }))
+            .expect("inline style node")
+        else {
+            panic!("unreachable");
+        };
+        assert!(
+            children
+                .iter()
+                .any(|c| matches!(c, crate::sugarcube::ast::AstNode::Link { .. })),
+            "link must be a live child, children: {children:?}"
+        );
+        assert!(
+            children.iter().any(
+                |c| matches!(c, crate::sugarcube::ast::AstNode::Macro { name, .. } if name == "set")
+            ),
+            "macro must be a live child, children: {children:?}"
+        );
+    }
+
+    #[test]
+    fn standalone_double_at_stays_literal_no_closer_eating() {
+        // Control retained from Phase 1.1: a standalone `@@` (no same-line
+        // `;`) must stay literal so it cannot open a consume-to-EOF inline
+        // style that eats macro closers — the Knot-side guard documented in
+        // the `@@` arm comment (upstream would live-swallow some of these;
+        // deliberate divergence until the classless/block forms land).
+        let (complete, links, diags) = parse_start(
+            ":: Start\n@@ stray\n<<if $gold>>gold<</if>>\n[[Forest]]\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
+        assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
 }

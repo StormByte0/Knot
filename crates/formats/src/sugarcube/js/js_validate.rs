@@ -11,10 +11,12 @@
 //!    module. This is separate from `validate_inline_js` because `[script]`
 //!    passages have no `<<script>>` macro wrapper — their body IS the JS.
 //!
-//! oxc has error recovery: it produces multiple diagnostics per snippet (not
-//! just the first one), each with a precise byte range. We map each one back
-//! to the original SugarCube source so VSCode can squiggle exactly the
-//! broken span.
+//! oxc may report several diagnostics per snippet, each with a precise byte
+//! range — but its error recovery is narrow (verified empirically against
+//! oxc 0.134): for most syntax errors (missing operand, unclosed brace,
+//! unterminated string) it aborts with a SINGLE diagnostic and an empty AST.
+//! We map each returned diagnostic back to the original SugarCube source so
+//! VSCode can squiggle exactly the broken span.
 //!
 //! ## Position Mapping
 //!

@@ -24,6 +24,7 @@ mod tests {
                 display_text: None,
                 target: t.to_string(),
                 span: 0..t.len(),
+                target_span: None,
                 edge_type_hint: None,
             })
             .collect();
@@ -1081,12 +1082,14 @@ mod tests {
             display_text: None,
             target: "Forest".to_string(),
             span: 0..6,
+            target_span: None,
             edge_type_hint: None,
         });
         start.links.push(Link {
             display_text: None,
             target: "Cave".to_string(),
             span: 0..4,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(start);
@@ -1136,12 +1139,14 @@ mod tests {
             display_text: None,
             target: "PathA".to_string(),
             span: 0..5,
+            target_span: None,
             edge_type_hint: None,
         });
         start.links.push(Link {
             display_text: None,
             target: "PathB".to_string(),
             span: 0..5,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(start);
@@ -1150,6 +1155,7 @@ mod tests {
             display_text: None,
             target: "Boss".to_string(),
             span: 0..4,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(path_a);
@@ -1158,6 +1164,7 @@ mod tests {
             display_text: None,
             target: "Boss".to_string(),
             span: 0..4,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(path_b);
@@ -1354,6 +1361,7 @@ mod tests {
             display_text: None,
             target: "Forest".to_string(),
             span: 0..6,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(start);
@@ -1445,6 +1453,7 @@ mod tests {
             display_text: None,
             target: "Forest".to_string(),
             span: 0..6,
+            target_span: None,
             edge_type_hint: None,
         });
         doc.passages.push(start);

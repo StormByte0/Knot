@@ -208,10 +208,16 @@ pub(crate) async fn linked_editing_range(
             for passage in &doc.passages {
                 for link in &passage.links {
                     if link.target.trim() == name {
-                        ranges.push(helpers::byte_range_to_lsp_range(
-                            text,
-                            &passage.abs_range(&link.span),
-                        ));
+                        // Prefer the target sub-span (the passage-name region
+                        // inside the link) so multi-cursor editing doesn't
+                        // wipe the display text / markup; fall back to the
+                        // whole link span for formats without a sub-span.
+                        let abs = link
+                            .target_span
+                            .as_ref()
+                            .map(|ts| passage.abs_range(ts))
+                            .unwrap_or_else(|| passage.abs_range(&link.span));
+                        ranges.push(helpers::byte_range_to_lsp_range(text, &abs));
                     }
                 }
             }

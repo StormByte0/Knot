@@ -865,8 +865,12 @@ pub fn walk_script_js(
 
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text, true);
 
-    // oxc has error recovery — walk whatever AST we can get, even if there
-    // are syntax errors. The valid parts still contribute to the registries.
+    // Walk the AST whenever the parse did not panic. NOTE that oxc's error
+    // recovery is narrow (verified empirically against oxc 0.134): common
+    // syntax errors — missing operand, unclosed `{`, unterminated string —
+    // panic the parser and yield an EMPTY AST, in which case the visitor
+    // does not run and no var ops are recorded from this body. When oxc
+    // DOES recover, the valid parts still contribute to the registries.
     let (_outcome, _) = parse_and_visit(&preprocessed.source, JsParseMode::Module, |program| {
         let analysis = js_walk::walk_script_passage(program, &preprocessed);
 
@@ -1007,10 +1011,18 @@ fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
             ast::AstNode::Link { .. } => {}
             // These node types don't contain _args references
             ast::AstNode::Comment { .. }
-            | ast::AstNode::InlineStyle { .. }
-            | ast::AstNode::TextFormat { .. }
             | ast::AstNode::MacroClose { .. }
             | ast::AstNode::Error { .. } => {}
+            // Containers with parsed children: recurse. TextFormat (and
+            // InlineStyle) children were skipped before plan.md Phase 1.3,
+            // which hid `_args[N]` references inside formatted text
+            // (`''_args[0]''`) in widget bodies.
+            ast::AstNode::InlineStyle { children, .. }
+            | ast::AstNode::TextFormat { children, .. } => {
+                for child in children {
+                    scan_node(child, max_index);
+                }
+            }
             // ── Block-level markup (Phase 1 scaffolding) ──
             // Not yet emitted by the parser. When Phase 3+ adds Heading,
             // ListItem, Blockquote, BlockquoteBlock, TableCell content,

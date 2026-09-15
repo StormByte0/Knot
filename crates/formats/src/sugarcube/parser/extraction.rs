@@ -32,10 +32,12 @@ fn extract_links_recursive(nodes: &[AstNode], links: &mut Vec<LinkInfo>) {
                 display,
                 target,
                 span,
+                target_span,
                 ..
             } => {
                 let is_dynamic = target.starts_with('$') || target.starts_with('_');
                 links.push(LinkInfo {
+                    target_span: Some(target_span.clone()),
                     display: display.clone(),
                     target: target.clone(),
                     span: span.clone(),
@@ -61,15 +63,19 @@ fn extract_links_recursive(nodes: &[AstNode], links: &mut Vec<LinkInfo>) {
             }
             // Recurse into any container node that holds parsed children.
             // Links inside headings, list items, blockquotes, inline styles,
-            // and blockquote blocks must be extracted for the graph builder
-            // to find them — otherwise passages linked only from list items
-            // (e.g. `* [[Widget showcase|WidgetShowcase]]`) produce false
-            // "UnreachablePassage" diagnostics.
+            // text formats, and blockquote blocks must be extracted for the
+            // graph builder to find them — otherwise passages linked only
+            // from list items (e.g. `* [[Widget showcase|WidgetShowcase]]`)
+            // or from formatted text (`''[[Forest]]''`) produce false
+            // "UnreachablePassage" diagnostics. TextFormat gained children
+            // in plan.md Phase 1.3 (subWikify parity: formatting content is
+            // wikified upstream, so links inside `''…''` are live).
             AstNode::Heading { children, .. }
             | AstNode::ListItem { children, .. }
             | AstNode::Blockquote { children, .. }
             | AstNode::BlockquoteBlock { children, .. }
-            | AstNode::InlineStyle { children, .. } => {
+            | AstNode::InlineStyle { children, .. }
+            | AstNode::TextFormat { children, .. } => {
                 extract_links_recursive(children, links);
             }
             _ => {}
@@ -165,6 +171,7 @@ fn extract_macro_passage_refs(
         let trimmed = stripped_args.trim();
         if trimmed.starts_with('$') || trimmed.starts_with('_') {
             links.push(LinkInfo {
+                target_span: None,
                 display: None,
                 target: trimmed.to_string(),
                 span: open_span,
@@ -177,6 +184,7 @@ fn extract_macro_passage_refs(
                 // not a passage target. Mark as dynamic (history-based nav)
                 // with no fixed target to prevent false BrokenLink diagnostics.
                 links.push(LinkInfo {
+                    target_span: None,
                     display: Some(trimmed.to_string()),
                     target: String::new(),
                     span: open_span,
@@ -187,6 +195,7 @@ fn extract_macro_passage_refs(
                 // Bare passage name (e.g., <<goto Forest>>)
                 // SugarCube treats unquoted identifiers as passage names
                 links.push(LinkInfo {
+                    target_span: None,
                     display: None,
                     target: trimmed.to_string(),
                     span: open_span,
@@ -211,6 +220,7 @@ fn extract_macro_passage_refs(
             // <<back "display" "target">>, <<return "display" "target">>
             if string_args.len() >= 2 {
                 links.push(LinkInfo {
+                    target_span: None,
                     display: Some(string_args[0].clone()),
                     target: string_args[1].clone(),
                     span: open_span.clone(),
@@ -239,6 +249,7 @@ fn extract_macro_passage_refs(
                 // We still check for a bare passage name arg below (e.g.
                 // `<<link "Display" PassageName>>`) — that form DOES navigate.
                 links.push(LinkInfo {
+                    target_span: None,
                     display: Some(string_args[0].clone()),
                     target: String::new(), // no fixed passage target
                     span: open_span.clone(),
@@ -256,6 +267,7 @@ fn extract_macro_passage_refs(
                 // `passage.links.is_empty() == true` and flags the passage
                 // as a dead-end. This is the J3 fix.
                 links.push(LinkInfo {
+                    target_span: None,
                     display: None,
                     target: String::new(), // dynamic — resolved from history at runtime
                     span: open_span.clone(),
@@ -272,6 +284,7 @@ fn extract_macro_passage_refs(
                     // Override: the bare arg is the real target, string is display
                     links.clear();
                     links.push(LinkInfo {
+                        target_span: None,
                         display: Some(string_args[0].clone()),
                         target: bare_target.clone(),
                         span: open_span,
@@ -284,6 +297,7 @@ fn extract_macro_passage_refs(
         LinkSource::Actions => {
             for arg in &string_args {
                 links.push(LinkInfo {
+                    target_span: None,
                     display: Some(arg.clone()),
                     target: arg.clone(),
                     span: open_span.clone(),
@@ -296,6 +310,7 @@ fn extract_macro_passage_refs(
             // <<goto "Passage">>, <<include "Passage">>, etc.
             if !string_args.is_empty() {
                 links.push(LinkInfo {
+                    target_span: None,
                     display: None,
                     target: string_args[0].clone(),
                     span: open_span,
@@ -540,6 +555,7 @@ pub fn extract_data_passage_refs(body: &str) -> Vec<LinkInfo> {
                     }
                     if !value.is_empty() {
                         links.push(LinkInfo {
+                            target_span: None,
                             display: None,
                             target: value,
                             span: attr_start..i,
@@ -648,6 +664,22 @@ fn extract_var_ops_recursive(nodes: &[AstNode], ops: &mut Vec<VarOpInfo>, _in_as
                         span: vr.span.clone(),
                     });
                 }
+            }
+            // Recurse into container nodes that hold parsed children so
+            // variable reads inside them reach the analysis passes. Text
+            // children carry their own `var_refs`; containers without
+            // children contribute nothing. TextFormat gained children in
+            // plan.md Phase 1.3 (subWikify parity), fixing the black hole
+            // where `$var` inside `''…''` was invisible to variable passes;
+            // the heading/list/blockquote/inline-style containers had the
+            // same gap (their children were never walked here).
+            AstNode::Heading { children, .. }
+            | AstNode::ListItem { children, .. }
+            | AstNode::Blockquote { children, .. }
+            | AstNode::BlockquoteBlock { children, .. }
+            | AstNode::InlineStyle { children, .. }
+            | AstNode::TextFormat { children, .. } => {
+                extract_var_ops_recursive(children, ops, _in_assignment);
             }
             _ => {}
         }

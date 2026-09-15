@@ -1329,14 +1329,39 @@ pub(crate) fn collect_rename_edits(
                     }
                     for link in &passage.links {
                         if link.target.trim() == *old_name {
-                            let range = helpers::byte_range_to_lsp_range(
-                                text,
-                                &passage.abs_range(&link.span),
-                            );
-                            doc_edits.push(TextEdit {
-                                range,
-                                new_text: new_name.to_string(),
-                            });
+                            let abs_span = passage.abs_range(&link.span);
+                            // P0-1 (study / plan.md Phase 1.6): the old code
+                            // replaced the whole `link.span` (the full
+                            // `[[display->target]]` construct) with the bare
+                            // new name, destroying the display text and the
+                            // link markup. Prefer the format-provided target
+                            // sub-span; fall back to substituting the target
+                            // text inside the link for formats that only
+                            // locate the whole link.
+                            let (range, new_text) = match &link.target_span {
+                                Some(ts) => {
+                                    let abs_target = passage.abs_range(ts);
+                                    (
+                                        helpers::byte_range_to_lsp_range(text, &abs_target),
+                                        new_name.to_string(),
+                                    )
+                                }
+                                None => {
+                                    let link_text = &text[abs_span.start..abs_span.end];
+                                    let trimmed = link.target.trim();
+                                    let substituted =
+                                        if !trimmed.is_empty() && link_text.contains(trimmed) {
+                                            link_text.replace(trimmed, new_name)
+                                        } else {
+                                            new_name.to_string()
+                                        };
+                                    (
+                                        helpers::byte_range_to_lsp_range(text, &abs_span),
+                                        substituted,
+                                    )
+                                }
+                            };
+                            doc_edits.push(TextEdit { range, new_text });
                         }
                     }
                 }
@@ -2246,6 +2271,53 @@ mod goto_definition_tests {
                 doc_edits
             );
         }
+    }
+
+    /// P0-1 (study / plan.md Phase 1.6): renaming a passage referenced by a
+    /// display-target link (`[[The Castle->Castle]]`) must edit ONLY the
+    /// target region — the display text and the `[[`/`->`/`]]` markup must
+    /// survive. The old code replaced the whole `link.span` with the bare
+    /// new name, turning `[[The Castle->Castle]]` into `Keep`.
+    #[test]
+    fn rename_link_preserves_display_text_and_markup() {
+        let src = ":: Castle\n:: Start\n[[The Castle->Castle]]\n";
+        let (inner, uri) = build_state(src);
+
+        // Cursor on `Castle` in the `:: Castle` header.
+        let header_idx = src.find(":: Castle").unwrap() + ":: ".len();
+        let position = helpers::byte_offset_to_position(src, header_idx);
+
+        let target = resolve_target_at_cursor(&inner, &uri, position)
+            .expect("cursor on passage header should resolve to Passage target");
+        let edits = collect_rename_edits(&target, "Keep", &inner);
+
+        // Apply all edits (reverse document order so offsets stay valid)
+        // and verify the resulting text.
+        let doc_edits = edits.get(&uri).expect("edits for current document");
+        let mut renamed = src.to_string();
+        let mut sorted: Vec<_> = doc_edits.iter().collect();
+        sorted.sort_by(|a, b| {
+            (b.range.start.line, b.range.start.character)
+                .cmp(&(a.range.start.line, a.range.start.character))
+        });
+        for edit in sorted {
+            let s = helpers::position_to_byte_offset(src, edit.range.start);
+            let e = helpers::position_to_byte_offset(src, edit.range.end);
+            renamed.replace_range(s..e, &edit.new_text);
+        }
+
+        assert!(
+            renamed.contains("[[The Castle->Keep]]"),
+            "display text and link markup must survive the rename, result: {renamed:?}"
+        );
+        assert!(
+            renamed.contains(":: Keep"),
+            "the passage header must be renamed, result: {renamed:?}"
+        );
+        assert!(
+            !renamed.contains(":: Keep\n:: Start\nKeep"),
+            "the link must not collapse to the bare name, result: {renamed:?}"
+        );
     }
 }
 

@@ -506,9 +506,7 @@ pub fn parse_single(
         // Re-parse the header line to get accurate name_start, tags, and
         // metadata. passage_text starts at the passage head (::), so
         // header_start = 0 (passage-relative).
-        let header_line_end = passage_text
-            .find('\n')
-            .unwrap_or(passage_text.len());
+        let header_line_end = passage_text.find('\n').unwrap_or(passage_text.len());
         let header_line = &passage_text[..header_line_end];
         match crate::header::parse_twee_header(header_line, 0) {
             Some(parsed) => parsed,

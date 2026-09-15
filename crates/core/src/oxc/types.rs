@@ -85,9 +85,12 @@ pub struct JsDiagnostic {
 ///
 /// ## Fields
 ///
-/// - `diagnostics`: empty if parsing succeeded. Non-empty if there were
-///   recoverable errors (AST was still produced and the visitor was still
-///   called) or unrecoverable errors (AST was empty, visitor was NOT called).
+/// - `diagnostics`: empty if parsing succeeded. Non-empty if oxc reported
+///   syntax errors. NOTE which errors are which (verified empirically against
+///   oxc 0.134): most hand-written errors — missing operand (`var x = ;`),
+///   unclosed `{`, unterminated string literal — are UNRECOVERABLE (AST was
+///   empty, visitor NOT called). Recoverable errors that still yield a
+///   walkable partial AST are possible but uncommon.
 /// - `panicked`: `true` if Oxc could not recover. When `true`, the AST was
 ///   empty and `parse_and_visit` did not call the visitor.
 #[derive(Debug, Clone)]
@@ -121,10 +124,12 @@ impl JsParseOutcome {
     /// Returns `true` if the AST was available for walking (i.e. the parser
     /// did not panic). This is `!self.panicked`.
     ///
-    /// Note: this does NOT mean `diagnostics` is empty — Oxc has error
-    /// recovery and produces a partial AST even with recoverable syntax
-    /// errors. In that case `has_ast()` returns `true` and `diagnostics`
-    /// is non-empty.
+    /// Note: `true` does NOT guarantee `diagnostics` is empty — when oxc DOES
+    /// recover from a syntax error it produces a partial AST, and in that case
+    /// `has_ast()` is `true` while `diagnostics` is non-empty. However oxc's
+    /// recovery is narrow: for most authoring errors (missing operand, unclosed
+    /// brace, unterminated string) the parser panics and this returns `false`
+    /// with an empty AST.
     pub fn has_ast(&self) -> bool {
         !self.panicked
     }

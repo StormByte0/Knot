@@ -246,7 +246,8 @@ impl ServerState {
     pub async fn send_semantic_token_refresh_now(&self) {
         // Cancel any pending debounced refresh — we're sending now, so
         // the debounce timer's later send would be redundant.
-        self.semantic_refresh_pending.store(false, Ordering::Relaxed);
+        self.semantic_refresh_pending
+            .store(false, Ordering::Relaxed);
 
         let client = self.client.clone();
         use crate::lsp_ext::WorkspaceSemanticTokensRefreshRequest;

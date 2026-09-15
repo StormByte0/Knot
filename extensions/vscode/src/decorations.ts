@@ -116,10 +116,17 @@ async function updateDecorations(editor: vscode.TextEditor, client: KnotLanguage
         }
     }
 
-    // Find broken links (links with red squiggles from diagnostics)
+    // Find broken links (links whose target is not in the workspace)
     const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
     for (const diag of diagnostics) {
-        if (diag.message.includes('Broken link') || diag.message.includes('broken link')) {
+        // P0-2 (study / plan.md Phase 1.6): the old filter looked for
+        // "broken link", but the server's BrokenLink diagnostic message is
+        // `Link target '<name>' not found in workspace` (knot-core graph.rs),
+        // so the squiggle decoration never rendered. Match the actual
+        // message text (case-insensitive on "link target" covers the
+        // diagnostic family; "broken link" kept for older server builds).
+        const msg = diag.message.toLowerCase();
+        if (msg.includes('broken link') || msg.includes('link target')) {
             brokenLinkRanges.push(diag.range);
         }
     }

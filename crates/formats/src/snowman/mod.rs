@@ -399,6 +399,7 @@ impl SnowmanPlugin {
             }
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
                 edge_type_hint: None,
@@ -422,6 +423,7 @@ impl SnowmanPlugin {
             }
             links.push(Link {
                 display_text: Some(display),
+                target_span: None,
                 target,
                 span: body_offset + m.start()..body_offset + m.end(),
                 edge_type_hint: None,
@@ -455,6 +457,7 @@ impl SnowmanPlugin {
                 }
                 links.push(Link {
                     display_text: None,
+                    target_span: None,
                     target,
                     span: body_offset + m.start()..body_offset + m.end(),
                     edge_type_hint: None,
@@ -1181,7 +1184,17 @@ impl FormatPlugin for SnowmanPlugin {
     // Variable tracking capability
     // -------------------------------------------------------------------
 
+    // P1-5 (study / plan.md Phase 1.6): Snowman previously claimed FULL
+    // variable tracking, but it has no registry-backed variable dataflow
+    // model — only per-passage regex extraction (`s.varName = ...`). The
+    // false claim enabled the full variable-flow UI, which then showed an
+    // empty flow. The honest capability is "partial": per-passage
+    // highlighting/extraction work, cross-passage diagnostics do not.
     fn supports_full_variable_tracking(&self) -> bool {
+        false
+    }
+
+    fn supports_partial_variable_tracking(&self) -> bool {
         true
     }
 
