@@ -75,7 +75,11 @@ fn extract_links_recursive(nodes: &[AstNode], links: &mut Vec<LinkInfo>) {
             | AstNode::Blockquote { children, .. }
             | AstNode::BlockquoteBlock { children, .. }
             | AstNode::InlineStyle { children, .. }
-            | AstNode::TextFormat { children, .. } => {
+            | AstNode::TextFormat { children, .. }
+            // HTML element content is wikified (plan.md Phase 2.2, upstream
+            // htmlTag subWikify) — links inside `<div>…</div>` bodies are
+            // first-class navigation targets.
+            | AstNode::HtmlTag { children, .. } => {
                 extract_links_recursive(children, links);
             }
             _ => {}
@@ -679,6 +683,27 @@ fn extract_var_ops_recursive(nodes: &[AstNode], ops: &mut Vec<VarOpInfo>, _in_as
             | AstNode::BlockquoteBlock { children, .. }
             | AstNode::InlineStyle { children, .. }
             | AstNode::TextFormat { children, .. } => {
+                extract_var_ops_recursive(children, ops, _in_assignment);
+            }
+            // HTML tags (plan.md Phase 2.2): directive attribute values are
+            // TwineScript expressions (upstream evaluates them), so their
+            // parse-time `var_refs` are reads — same treatment as
+            // `Expression::var_refs` — and the element content is wikified,
+            // so children recurse too.
+            AstNode::HtmlTag {
+                attrs, children, ..
+            } => {
+                for attr in attrs {
+                    for vr in &attr.var_refs {
+                        ops.push(VarOpInfo {
+                            name: vr.name.clone(),
+                            property_path: vr.property_path.clone(),
+                            is_temporary: vr.is_temporary,
+                            is_write: false,
+                            span: vr.span.clone(),
+                        });
+                    }
+                }
                 extract_var_ops_recursive(children, ops, _in_assignment);
             }
             _ => {}

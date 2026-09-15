@@ -281,6 +281,65 @@ impl<'a> ZoneBuilder<'a> {
                 );
             }
 
+            AstNode::HtmlTag {
+                open_span,
+                close_span,
+                full_span,
+                children,
+                raw_body,
+                ..
+            } => {
+                // Phase 2.2 (plan.md): the htmlTag stratum. The tag interiors
+                // — the start tag with its attributes, and the `</name>`
+                // terminator — are raw HTML: `LeafKind::Raw { RawLanguage::
+                // Html }`, so per-byte language queries report HTML there and
+                // no prose pass ever re-derives context inside a tag (the
+                // ZoneMap is the per-byte language authority). The element
+                // CONTENT between them is wikified (upstream subWikify — D1
+                // rule 2), so children zone normally: a `[[link]]` inside
+                // `<div>…</div>` still gets a Link leaf.
+                self.leaves.push(LeafZone {
+                    span: self.shift(open_span),
+                    kind: LeafKind::Raw {
+                        language: RawLanguage::Html,
+                    },
+                    body_idx: parent_body_idx,
+                });
+                if let Some(lang) = raw_body {
+                    // Phase 2.3: raw-text bodies (`<script>`/`<style>`) get
+                    // ONE Raw leaf over the body region — upstream runs
+                    // verbatimScriptTag/styleTag before htmlTag, so the body
+                    // is never wikified and must not zone as prose. Children
+                    // hold only the opaque body Text node; they are not
+                    // walked. (The parser only sets `raw_body` when an exact
+                    // closer was found, so `close_span` is always `Some`
+                    // here; the `full_span` fallback is defensive.)
+                    let body_start = open_span.end;
+                    let body_end = close_span
+                        .as_ref()
+                        .map(|c| c.start)
+                        .unwrap_or(full_span.end);
+                    if body_end > body_start {
+                        self.leaves.push(LeafZone {
+                            span: self.shift(&(body_start..body_end)),
+                            kind: LeafKind::Raw { language: *lang },
+                            body_idx: parent_body_idx,
+                        });
+                    }
+                } else {
+                    self.walk_nodes(children, parent_body_idx, depth);
+                }
+                if let Some(cs) = close_span {
+                    self.leaves.push(LeafZone {
+                        span: self.shift(cs),
+                        kind: LeafKind::Raw {
+                            language: RawLanguage::Html,
+                        },
+                        body_idx: parent_body_idx,
+                    });
+                }
+            }
+
             AstNode::Heading { span, children, .. } => {
                 self.emit_markup_with_gaps(
                     span,
@@ -527,6 +586,7 @@ fn node_span(node: &AstNode) -> &Range<usize> {
         AstNode::Comment { span, .. } => span,
         AstNode::InlineStyle { span, .. } => span,
         AstNode::TextFormat { span, .. } => span,
+        AstNode::HtmlTag { full_span, .. } => full_span,
         AstNode::MacroClose { span, .. } => span,
         AstNode::Error { span, .. } => span,
         AstNode::Heading { span, .. } => span,
@@ -832,5 +892,88 @@ body text
             }
             other => panic!("expected MacroTag, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn html_tag_interiors_are_raw_html_zones() {
+        // Phase 2.2 (plan.md): tag interiors get `RawLanguage::Html` leaves;
+        // the wikified content between them zones by its own children (the
+        // link gets a Link leaf). Offsets: `<span>` 0..6, `[[Forest]]`
+        // 6..16, `</span>` 16..22.
+        let body = "<span>[[Forest]]</span>";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let zones = build_from_ast(&ast.nodes, 0, &CustomMacroRegistry::new());
+        assert!(
+            matches!(
+                zones.leaf_at(0).expect("open tag zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Html
+                }
+            ),
+            "open tag must be a Raw(Html) leaf, got {:?}",
+            zones.leaf_at(0).map(|l| l.kind.clone())
+        );
+        assert!(
+            matches!(
+                zones.leaf_at(21).expect("close tag zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Html
+                }
+            ),
+            "close tag must be a Raw(Html) leaf, got {:?}",
+            zones.leaf_at(21).map(|l| l.kind.clone())
+        );
+        assert!(
+            matches!(
+                zones.leaf_at(8).expect("link zone").kind,
+                LeafKind::Markup(MarkupKind::Link)
+            ),
+            "content must zone by children (Link leaf), got {:?}",
+            zones.leaf_at(8).map(|l| l.kind.clone())
+        );
+    }
+
+    #[test]
+    fn script_and_style_bodies_get_raw_language_zones() {
+        // Phase 2.3 (plan.md): raw-text bodies zone as `Raw { Js }` /
+        // `Raw { Css }` — upstream runs verbatimScriptTag/styleTag before
+        // htmlTag, so the bodies are never prose. Offsets in
+        // `<script>var x;</script><style>.a{}</style>`:
+        //   0..8 open <script>, 8..14 body, 14..23 close,
+        //   23..30 open <style>, 30..34 body, 34..41 close.
+        let body = "<script>var x;</script><style>.a{}</style>";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let zones = build_from_ast(&ast.nodes, 0, &CustomMacroRegistry::new());
+        assert!(
+            matches!(
+                zones.leaf_at(10).expect("script body zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Js
+                }
+            ),
+            "script body must be Raw(Js), got {:?}",
+            zones.leaf_at(10).map(|l| l.kind.clone())
+        );
+        assert!(
+            matches!(
+                zones.leaf_at(31).expect("style body zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Css
+                }
+            ),
+            "style body must be Raw(Css), got {:?}",
+            zones.leaf_at(31).map(|l| l.kind.clone())
+        );
+        // Tag interiors stay Raw(Html).
+        assert!(
+            matches!(
+                zones.leaf_at(2).expect("script open tag zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Html
+                }
+            ),
+            "script open tag must be Raw(Html), got {:?}",
+            zones.leaf_at(2).map(|l| l.kind.clone())
+        );
     }
 }

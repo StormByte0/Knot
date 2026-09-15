@@ -97,6 +97,11 @@ pub fn build_body_blocks(nodes: &[ast::AstNode], body_offset_in_passage: usize) 
             | ast::AstNode::Table { .. }
             | ast::AstNode::CodeBlock { .. }
             | ast::AstNode::InlineCode { .. }
+            // HTML tags (plan.md Phase 2.2): the blocks model is shallow —
+            // like Heading/TextFormat, tag constructs don't produce Block
+            // entries; their wikified children contribute via the other
+            // walkers (links, vars), not here.
+            | ast::AstNode::HtmlTag { .. }
             | ast::AstNode::Verbatim { .. } => {}
         }
     }
@@ -626,6 +631,49 @@ fn collect_vars_from_nodes(
             | ast::AstNode::BlockquoteBlock { children, .. }
             | ast::AstNode::InlineStyle { children, .. }
             | ast::AstNode::TextFormat { children, .. } => {
+                collect_vars_from_nodes(children, vars, body_offset_in_passage);
+            }
+            // HTML tags (plan.md Phase 2.2): directive attribute values are
+            // TwineScript expressions (upstream evaluates them) — prefer the
+            // per-attribute js_analysis var ops (oxc-accurate read/write
+            // classification), falling back to the parse-time var_refs;
+            // element content is wikified so children recurse.
+            ast::AstNode::HtmlTag {
+                attrs, children, ..
+            } => {
+                for attr in attrs {
+                    let has_js_analysis = attr
+                        .js_analysis
+                        .as_ref()
+                        .is_some_and(|a| !a.var_ops.is_empty());
+                    if has_js_analysis {
+                        if let Some(analysis) = &attr.js_analysis {
+                            for op in &analysis.var_ops {
+                                vars.push(VarOp {
+                                    name: op.name.clone(),
+                                    kind: if op.access_kind.is_write() {
+                                        VarKind::Init
+                                    } else {
+                                        VarKind::Read
+                                    },
+                                    span: body_offset_in_passage + op.span.start
+                                        ..body_offset_in_passage + op.span.end,
+                                    is_temporary: op.is_temporary,
+                                });
+                            }
+                        }
+                    } else {
+                        for vr in &attr.var_refs {
+                            vars.push(VarOp {
+                                name: vr.name.clone(),
+                                kind: VarKind::Read,
+                                span: body_offset_in_passage + vr.span.start
+                                    ..body_offset_in_passage + vr.span.end,
+                                is_temporary: vr.is_temporary,
+                            });
+                        }
+                    }
+                }
                 collect_vars_from_nodes(children, vars, body_offset_in_passage);
             }
             _ => {}

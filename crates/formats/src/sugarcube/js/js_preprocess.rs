@@ -54,13 +54,18 @@
 //! - `$var` inside strings from being substituted (it's literal text)
 //! - Keyword operators inside strings from being replaced
 //!
-//! ## Known limitations
+//! ## The `not` operator's precedence (corrected 2026-09-15, plan.md Phase 3.1)
 //!
-//! The `not` operator's precedence differs between SugarCube and JS.
-//! SugarCube's `not` has lower precedence than comparison operators, so
-//! `not $x gt 5` means `!($x > 5)`. But after text replacement, oxc sees
-//! `!State_variables_x > 5`, which parses as `(!State_variables_x) > 5`.
-//! Users should use explicit parentheses for such expressions.
+//! An earlier version of this note claimed SugarCube's `not` has lower
+//! precedence than the comparison operators and that Knot's rewrite loses
+//! that precedence. That analysis was INCORRECT. Upstream SugarCube 2
+//! (develop) desugars `not` with a plain token-table substitution —
+//! `scripting.js` `desugar()` tokenTable L492-509 maps `['not', '!']` with
+//! NO operand parenthesization — so upstream `not $x gt 5` compiles to
+//! exactly the same `!State.variables.x > 5` (i.e. JS `(!x) > 5`) that this
+//! preprocessor produces. Knot matches the upstream implementation, not the
+//! (imprecise) TwineScript operator-precedence documentation. If an author
+//! wants `!(x > 5)`, they must parenthesize — on both engines alike.
 
 use std::ops::Range;
 
@@ -109,9 +114,28 @@ pub struct PreprocessedJs {
     /// - Module mode / StatementList: `0` (no wrapping)
     /// - Expression mode: `1` (the opening paren)
     pub wrapping_offset: usize,
+    /// Byte offset of a CHUNK within the full preprocessed region (plan.md
+    /// Phase 3.2 resilient parsing). `0` for whole-region analysis. When a
+    /// region's parse was fatal, the region is split into top-level chunks
+    /// (see `knot_core::oxc::split_js_statements`) and each chunk is parsed
+    /// independently; AST spans are then chunk-relative, and `map_to_original`
+    /// adds this offset first so every existing walk call site keeps working
+    /// unchanged. Use [`PreprocessedJs::for_chunk`] to derive a shifted view.
+    pub chunk_offset: usize,
 }
 
 impl PreprocessedJs {
+    /// Derive the view of a CHUNK (plan.md Phase 3.2): a `PreprocessedJs`
+    /// whose `map_to_original` first shifts chunk-relative positions into
+    /// region-relative positions. Everything else (substitutions,
+    /// `origin_offset`, `wrapping_offset`) is shared with `self`.
+    pub fn for_chunk(&self, chunk_start_in_region: usize) -> PreprocessedJs {
+        PreprocessedJs {
+            chunk_offset: chunk_start_in_region,
+            ..self.clone()
+        }
+    }
+
     /// Map a byte position from the oxc AST back to the original source.
     ///
     /// This is needed for mapping oxc diagnostics and AST node positions
@@ -124,6 +148,11 @@ impl PreprocessedJs {
     /// 2. Applies substitution mapping to get a position in the original source
     /// 3. Adds `origin_offset` to shift from snippet-relative to passage-body-relative
     pub fn map_to_original(&self, oxc_pos: usize) -> usize {
+        // Step 0: Shift into region coordinates (resilient chunked parsing —
+        // Phase 3.2). `0` for whole-region analysis, so this is a no-op on
+        // the healthy path.
+        let oxc_pos = oxc_pos.saturating_add(self.chunk_offset);
+
         // Step 1: Remove wrapping offset (for Expression mode, oxc wraps as `(source)`)
         let processed_pos = oxc_pos.saturating_sub(self.wrapping_offset);
 
@@ -198,6 +227,7 @@ pub fn preprocess_for_oxc(source: &str, sugarcube_syntax: bool) -> PreprocessedJ
             substitutions: Vec::new(),
             origin_offset: 0,
             wrapping_offset: 0,
+            chunk_offset: 0,
         };
     }
     preprocess_for_oxc_sugarcube(source)
@@ -574,6 +604,7 @@ fn preprocess_for_oxc_sugarcube(source: &str) -> PreprocessedJs {
         substitutions,
         origin_offset: 0,
         wrapping_offset: 0,
+        chunk_offset: 0,
     }
 }
 

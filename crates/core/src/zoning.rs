@@ -52,14 +52,38 @@ use crate::types::{BodyRequirement, MacroKind};
 // ---------------------------------------------------------------------------
 
 /// The language of a raw body region. Raw bodies are processed by external
-/// parsers (oxc for JS, a future CSS parser for CSS), not by the SugarCube
-/// parser. The zone engine does not recurse into them.
+/// parsers (oxc for JS, the `knot-core` html module for HTML, a future CSS
+/// parser for CSS), not by the SugarCube parser. The zone engine does not
+/// recurse into them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RawLanguage {
     /// JavaScript — processed by oxc. Currently `<<script>>` bodies.
     Js,
-    /// CSS — processed by a future CSS parser. Reserved for when `<<style>>`/
-    /// `<<css>>` support is added.
+    /// CSS — processed by the `knot_core::css` tokenizer (plan.md Phase
+    /// 4.2): `<style>` bodies, `<<style>>`/`<<css>>` blocks, stylesheet
+    /// passages and `style="…"` attribute values.
+    Css,
+    /// HTML — parsed by `knot_core::html` (html5gum CST). Used by the
+    /// Phase 2.2 htmlTag stratum (atomic tag interiors) and 2.3 raw-text
+    /// zones; see plan.md Phase 2.
+    Html,
+}
+
+/// The per-byte language authority answer (plan.md Phase 4.1): a coarse
+/// classification of which language owns a byte, derived from the leaf kind
+/// via [`LeafKind::language`]. Position-based LSP features consult this
+/// instead of re-deriving context from raw text (the F6 bug class).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    /// SugarCube/Twine markup: prose, links, macro tags, format delimiters,
+    /// errors — anything the story-format parser itself owns.
+    Markup,
+    /// Raw HTML bytes (tag interiors, raw-text tags). Inert for prose
+    /// analysis.
+    Html,
+    /// Raw JavaScript bytes (script bodies / script passages).
+    Js,
+    /// Raw CSS bytes (style bodies).
     Css,
 }
 
@@ -163,6 +187,26 @@ pub enum LeafKind {
     Error { message: String, kind: ErrorKind },
 }
 
+impl LeafKind {
+    /// The [`Language`] this leaf's bytes belong to (plan.md Phase 4.1):
+    /// raw leaves report their foreign language, everything else is the
+    /// story format's own markup.
+    pub fn language(&self) -> Language {
+        match self {
+            LeafKind::Raw {
+                language: RawLanguage::Html,
+            } => Language::Html,
+            LeafKind::Raw {
+                language: RawLanguage::Js,
+            } => Language::Js,
+            LeafKind::Raw {
+                language: RawLanguage::Css,
+            } => Language::Css,
+            _ => Language::Markup,
+        }
+    }
+}
+
 /// A single byte-covering, non-overlapping leaf zone.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LeafZone {
@@ -219,6 +263,8 @@ pub struct MacroBody {
 
     /// `Some(Js)` for `<<script>>` bodies (raw JS, processed by oxc).
     /// `Some(Css)` for future `<<style>>`/`<<css>>` bodies.
+    /// `Some(Html)` for HTML zones (Phase 2.2 tag interiors / 2.3 raw-text
+    /// elements).
     /// `None` for normal SugarCube bodies (recursively parsed).
     pub raw_language: Option<RawLanguage>,
 }
@@ -259,6 +305,48 @@ impl ZoneMap {
         } else {
             None
         }
+    }
+
+    /// The per-byte language authority query (plan.md Phase 4.1): which
+    /// language owns `offset`? Bytes not covered by any leaf (structural
+    /// gaps between leaves) are [`Language::Markup`] by definition — in a
+    /// passage body, uncovered bytes are prose/structure the format parser
+    /// owns.
+    ///
+    /// O(log n). This is the query position-based features (completions,
+    /// hovers, decorations) should consult instead of re-deriving context by
+    /// re-scanning raw text.
+    pub fn language_at(&self, offset: usize) -> Language {
+        self.leaf_at(offset)
+            .map(|l| l.kind.language())
+            .unwrap_or(Language::Markup)
+    }
+
+    /// Zone invariants (plan.md Phase 4.1/5.1): leaves must be non-empty,
+    /// sorted, and non-overlapping — the contract [`ZoneMap::leaf_at`]'s
+    /// binary search depends on. Returns `Err` describing the first violated
+    /// pair when an invariant breaks.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut prev_end: Option<usize> = None;
+        for leaf in &self.leaves {
+            if leaf.span.start >= leaf.span.end {
+                return Err(format!(
+                    "leaf span must be non-empty, got {:?} ({:?})",
+                    leaf.span, leaf.kind
+                ));
+            }
+            if let Some(pe) = prev_end
+                && leaf.span.start < pe
+            {
+                return Err(format!(
+                    "leaves must be sorted and non-overlapping: leaf starting at {} \
+                     begins before the previous leaf's end {}",
+                    leaf.span.start, pe
+                ));
+            }
+            prev_end = Some(leaf.span.end);
+        }
+        Ok(())
     }
 
     /// O(log n + depth). Returns the innermost macro body containing `offset`,
@@ -401,14 +489,8 @@ impl ZoneMap {
     }
 
     // -----------------------------------------------------------------------
-    // Builder access methods — used by the builder in `knot-formats`.
-    // These are `pub(crate)` because only the builder (which lives in
-    // `knot-formats`, a different crate) needs them, but it accesses them
-    // via the `pub` methods below. Wait — that's a different crate.
-    //
-    // Actually, the builder in `knot-formats` needs to construct `ZoneMap`
-    // from `Vec<LeafZone>` + `Vec<MacroBody>`. We expose a `from_parts`
-    // constructor for that purpose.
+    // Builder access — the builder lives in `knot-formats` (a different
+    // crate), so these constructors must be `pub`, not `pub(crate)`.
     // -----------------------------------------------------------------------
 
     /// Construct a `ZoneMap` from its parts. Used by the builder in

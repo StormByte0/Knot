@@ -163,13 +163,24 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
             passage_tokens.extend(json_tokens);
         } else if matches!(mode, ParseMode::Stylesheet) {
-            // Stylesheet passages are pure CSS. CSS parsing is currently
-            // unserved (see `knot_core::css`) — no tokens emitted.
-            // No diagnostic is raised: this is an internal limitation,
-            // not a user-visible problem.
+            // Stylesheet passages are pure CSS (plan.md Phase 4.2): the
+            // whole body tokenizes through the knot-core CSS service. CSS
+            // diagnostics are intentionally NOT raised as LSP diagnostics —
+            // upstream SugarCube is silent about broken CSS (styleTag hands
+            // the text to the browser), so this is highlighting-only.
+            let css_analysis = crate::sugarcube::css::analyze_css(&cp.body_text);
+            for tok in css_analysis.tokens {
+                passage_tokens.push(crate::plugin::SemanticToken {
+                    start: body_offset_in_passage + tok.start,
+                    length: tok.length,
+                    token_type: tok.token_type,
+                    modifier: tok.modifier,
+                });
+            }
         } else if matches!(mode, ParseMode::Interface) {
-            // StoryInterface body is HTML. HTML parsing is currently
-            // unserved — no tokens emitted, no diagnostic raised.
+            // StoryInterface body is HTML. Token serving for it is still a
+            // follow-up (plan.md 2.4/4.1 worklog note) — no tokens emitted,
+            // no diagnostic raised.
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =
@@ -594,11 +605,20 @@ pub fn parse_single(
             super::token_builder::build_json_body_tokens(&cp.body_text, body_offset_in_passage);
         passage_tokens.extend(json_tokens);
     } else if matches!(mode, ParseMode::Stylesheet) {
-        // Stylesheet passages are pure CSS. CSS parsing is currently
-        // unserved (see `knot_core::css`) — no tokens emitted.
+        // Stylesheet passages are pure CSS (plan.md Phase 4.2) — same as
+        // the full-parse path above: highlighting-only, no diagnostics.
+        let css_analysis = crate::sugarcube::css::analyze_css(&cp.body_text);
+        for tok in css_analysis.tokens {
+            passage_tokens.push(crate::plugin::SemanticToken {
+                start: body_offset_in_passage + tok.start,
+                length: tok.length,
+                token_type: tok.token_type,
+                modifier: tok.modifier,
+            });
+        }
     } else if matches!(mode, ParseMode::Interface) {
-        // StoryInterface body is HTML. HTML parsing is currently
-        // unserved — no tokens emitted.
+        // StoryInterface body is HTML. Token serving still a follow-up —
+        // no tokens emitted.
     } else {
         // Collect custom macro names for Function token differentiation
         let registry = plugin.registry();

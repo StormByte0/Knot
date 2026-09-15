@@ -87,7 +87,7 @@ pub struct JsDiagnostic {
 ///
 /// - `diagnostics`: empty if parsing succeeded. Non-empty if oxc reported
 ///   syntax errors. NOTE which errors are which (verified empirically against
-///   oxc 0.134): most hand-written errors — missing operand (`var x = ;`),
+///   oxc 0.134, re-confirmed on 0.150): most hand-written errors — missing operand (`var x = ;`),
 ///   unclosed `{`, unterminated string literal — are UNRECOVERABLE (AST was
 ///   empty, visitor NOT called). Recoverable errors that still yield a
 ///   walkable partial AST are possible but uncommon.
@@ -106,10 +106,10 @@ pub struct JsParseOutcome {
 impl JsParseOutcome {
     /// Construct a parse outcome from its parts.
     ///
-    /// This is `pub(crate)` because the canonical constructors are
-    /// `parse_js` and `parse_and_visit` in `parser.rs`. Format plugins
-    /// consume `JsParseOutcome` but never construct one directly.
-    pub(crate) fn new(diagnostics: Vec<JsDiagnostic>, panicked: bool) -> Self {
+    /// `pub` since plan.md Phase 3.2: the resilient chunked analysis
+    /// (`js_annotate::analyze_module_resilient`) synthesizes an outcome from
+    /// its per-chunk results (localized, de-duplicated, capped diagnostics).
+    pub fn new(diagnostics: Vec<JsDiagnostic>, panicked: bool) -> Self {
         Self {
             diagnostics,
             panicked,

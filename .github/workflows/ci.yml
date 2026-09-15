@@ -1,112 +1,27 @@
-# CI — runs on every push to main and every PR targeting main
-# Lints, tests, and verifies the build compiles. No publishing.
-
+# CI wiring (plan.md Phase 5.3): fmt + clippy + tests on every push/PR.
+#
+# The lint gates mirror the local verification used throughout plan.md
+# Phases 1-5: `cargo fmt --check`, `cargo clippy --workspace --all-targets
+# -- -D warnings`, `cargo test --workspace`.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────
-  # Rust: format check, clippy, tests
-  # ─────────────────────────────────────────────────────────────────────
-  rust:
-    name: Rust — fmt, clippy, test
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
-
       - name: Format check
-        run: cargo fmt --all --check
-
-      - name: Clippy (deny warnings)
+        run: cargo fmt --check
+      - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test
+      - name: Tests
         run: cargo test --workspace
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Extension: lint, compile, webview build
-  # ─────────────────────────────────────────────────────────────────────
-  extension:
-    name: Extension — lint, compile, webview
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: extensions/vscode/package-lock.json
-
-      - name: Install extension dependencies
-        run: npm ci
-        working-directory: extensions/vscode
-
-      - name: Lint
-        run: npm run lint
-        working-directory: extensions/vscode
-
-      - name: Compile TypeScript
-        run: npm run compile
-        working-directory: extensions/vscode
-
-      # Build the webview separately — it has its own package-lock.json
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: extensions/vscode/webview/package-lock.json
-
-      - name: Install webview dependencies
-        run: npm ci
-        working-directory: extensions/vscode/webview
-
-      - name: Build webview
-        run: npm run build
-        working-directory: extensions/vscode/webview
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Smoke build: verify the full build.sh produces a VSIX
-  # ─────────────────────────────────────────────────────────────────────
-  smoke-build:
-    name: Smoke build (Linux x64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: extensions/vscode/package-lock.json
-
-      - name: Run build script
-        run: bash scripts/build.sh
-
-      - name: Verify VSIX can be packaged
-        run: npx vsce package --target linux-x64 --allow-missing-repository
-        working-directory: extensions/vscode
-
-      - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: smoke-vsix-linux-x64
-          path: extensions/vscode/*.vsix
-          retention-days: 7

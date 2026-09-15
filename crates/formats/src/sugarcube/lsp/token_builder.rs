@@ -384,10 +384,19 @@ fn build_semantic_tokens_at_depth(
                         }
                     }
                     if !css_source.trim().is_empty() {
+                        // `analyze_css` spans are relative to the TRIMMED
+                        // source; correct the origin by the stripped leading
+                        // whitespace (the 2.3 HtmlTag CSS arm does the same —
+                        // this arm predates it and was off by the stripped
+                        // bytes; fixed in plan.md Phase 4.2).
+                        let leading_ws = css_source.len() - css_source.trim_start().len();
                         let css_analysis = crate::sugarcube::css::analyze_css(css_source.trim());
                         for css_tok in &css_analysis.tokens {
                             tokens.push(SemanticToken {
-                                start: body_offset_in_passage + body_start + css_tok.start,
+                                start: body_offset_in_passage
+                                    + body_start
+                                    + leading_ws
+                                    + css_tok.start,
                                 length: css_tok.length,
                                 token_type: css_tok.token_type,
                                 modifier: css_tok.modifier,
@@ -772,6 +781,134 @@ fn build_semantic_tokens_at_depth(
             ast::AstNode::Error { .. } => {}
             // Inline styling: emit InlineStyle token for the class name,
             // then recurse into children for prose/variable tokens.
+            // HTML tag stratum (plan.md Phase 2.2). Directive attribute
+            // values are TwineScript expressions — emit the same token
+            // families the Macro arm emits from `js_analysis` (variables,
+            // literals, operators, keywords, …), with the parse-time
+            // `var_refs` fallback. The tag interior gets HTML-stratum tokens
+            // (plan.md Phase 2.4: tag name, attribute names, `=` signs,
+            // quoted values as String, entities, closer name) so themes can
+            // highlight markup; element content is wikified (upstream
+            // subWikify), so children emit their real tokens.
+            ast::AstNode::HtmlTag {
+                attrs,
+                children,
+                name_span,
+                close_span,
+                raw_body,
+                body_js_analysis,
+                ..
+            } => {
+                // HTML stratum tokens (plan.md Phase 2.4): the tag name,
+                // attribute names, `=` signs, quoted values (String, split
+                // around entities) and the closer name — so themes can
+                // highlight markup without any of it being prose-scanned.
+                tokens.push(SemanticToken {
+                    start: body_offset_in_passage + name_span.start,
+                    length: name_span.end - name_span.start,
+                    token_type: SemanticTokenType::HtmlTag,
+                    modifier: None,
+                });
+                for attr in attrs {
+                    emit_html_attr_tokens(attr, body_text, tokens, body_offset_in_passage);
+                    if let Some(analysis) = &attr.js_analysis {
+                        emit_js_analysis_families(analysis, tokens, body_offset_in_passage);
+                    } else {
+                        for vr in &attr.var_refs {
+                            tokens.push(SemanticToken {
+                                start: body_offset_in_passage + vr.span.start,
+                                length: vr.span.end - vr.span.start,
+                                token_type: SemanticTokenType::Variable,
+                                modifier: None,
+                            });
+                        }
+                    }
+                }
+                // Closer name (`</div>` → `div`). The closer span starts at
+                // `</` and the name runs to the first non-name byte (the
+                // closer grammar allows whitespace before `>`).
+                if let Some(cs) = close_span {
+                    let name_start = cs.start + 2;
+                    if cs.end <= body_text.len() && name_start < cs.end {
+                        let closer_bytes = &body_text.as_bytes()[name_start..cs.end];
+                        let mut name_end = 0usize;
+                        while name_end < closer_bytes.len()
+                            && (closer_bytes[name_end].is_ascii_alphanumeric()
+                                || closer_bytes[name_end] == b'-')
+                        {
+                            name_end += 1;
+                        }
+                        if name_end > 0 {
+                            tokens.push(SemanticToken {
+                                start: body_offset_in_passage + name_start,
+                                length: name_end,
+                                token_type: SemanticTokenType::HtmlTag,
+                                modifier: None,
+                            });
+                        }
+                    }
+                }
+
+                // Raw-text bodies (plan.md Phase 2.3): `<script>` bodies emit
+                // the JS token families from their oxc analysis (the direct
+                // analog of `<<script>>` bodies via the Macro arm);
+                // `<style>` bodies get CSS tokens straight from `analyze_css`
+                // (the direct analog of the `<<style>>`/`<<css>>` arm — CSS
+                // needs no annotation pass). The raw Text child itself emits
+                // nothing (is_prose: false, var_refs empty), so there is no
+                // double-emission when the recursion below runs.
+                match raw_body {
+                    Some(knot_core::zoning::RawLanguage::Js) => {
+                        if let Some(analysis) = body_js_analysis {
+                            emit_js_analysis_families(analysis, tokens, body_offset_in_passage);
+                        }
+                    }
+                    Some(knot_core::zoning::RawLanguage::Css) => {
+                        let mut css_source = String::new();
+                        let mut body_start = None;
+                        for child in children.iter() {
+                            if let ast::AstNode::Text { content, span, .. } = child {
+                                if body_start.is_none() {
+                                    body_start = Some(span.start);
+                                }
+                                css_source.push_str(content);
+                            }
+                        }
+                        if let Some(start) = body_start
+                            && !css_source.trim().is_empty()
+                        {
+                            // `analyze_css` spans are relative to the TRIMMED
+                            // source; correct the origin by the stripped
+                            // leading whitespace (stricter than the
+                            // `<<style>>` arm, which maps token 0 to the
+                            // untrimmed body start).
+                            let leading_ws = css_source.len() - css_source.trim_start().len();
+                            let css_analysis =
+                                crate::sugarcube::css::analyze_css(css_source.trim());
+                            for css_tok in &css_analysis.tokens {
+                                tokens.push(SemanticToken {
+                                    start: body_offset_in_passage
+                                        + start
+                                        + leading_ws
+                                        + css_tok.start,
+                                    length: css_tok.length,
+                                    token_type: css_tok.token_type,
+                                    modifier: css_tok.modifier,
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                build_semantic_tokens(
+                    children,
+                    tokens,
+                    body_offset_in_passage,
+                    custom_macro_names,
+                    body_text,
+                );
+            }
             ast::AstNode::InlineStyle {
                 class_span,
                 children,
@@ -1136,6 +1273,172 @@ fn push_delimiter(
         token_type: SemanticTokenType::MacroDelimiter,
         modifier,
     });
+}
+
+/// Emit every token family carried by a `JsAnalysis` (variable ops, literals,
+/// operators, namespaces, comments, keywords, JS-specific spans, function
+/// defs/calls) at `offset`.
+///
+/// The Macro arm, the HtmlTag attribute-directive emission and the HtmlTag
+/// `<script>` raw-body emission all ride the same analysis shape and must
+/// render the same token families — this helper is the single source of that
+/// list (the Macro arm still carries an inline copy; cleanup candidate for
+/// Phase 4.1).
+fn emit_js_analysis_families(
+    analysis: &ast::JsAnalysis,
+    tokens: &mut Vec<SemanticToken>,
+    offset: usize,
+) {
+    for op in &analysis.var_ops {
+        emit_var_op_tokens(op, tokens, offset);
+    }
+    emit_literal_tokens(&analysis.literal_spans, tokens, offset);
+    emit_operator_tokens(&analysis.operator_spans, tokens, offset);
+    emit_namespace_tokens(&analysis.namespace_spans, tokens, offset);
+    emit_comment_tokens(&analysis.comment_spans, tokens, offset);
+    emit_keyword_tokens(&analysis.keyword_spans, tokens, offset);
+    emit_js_var_tokens(&analysis.js_var_spans, tokens, offset);
+    emit_js_var_def_tokens(&analysis.js_var_def_spans, tokens, offset);
+    emit_js_method_tokens(&analysis.js_method_spans, tokens, offset);
+    emit_js_property_tokens(&analysis.js_property_spans, tokens, offset);
+    emit_js_global_tokens(&analysis.js_global_spans, tokens, offset);
+    emit_function_def_tokens(&analysis.function_defs, tokens, offset);
+    emit_function_call_tokens(&analysis.function_calls, tokens, offset);
+}
+
+/// Emit the HTML-stratum tokens for one attribute (plan.md Phase 2.4):
+/// attribute name (directive sigil included), the `=` sign, and — for
+/// NON-directive attributes — the value as `String` segments split around
+/// entity references (directive values are TwineScript expressions owned by
+/// the JS token families; a String token would overlap them).
+fn emit_html_attr_tokens(
+    attr: &ast::HtmlTagAttr,
+    body_text: &str,
+    tokens: &mut Vec<SemanticToken>,
+    offset: usize,
+) {
+    tokens.push(SemanticToken {
+        start: offset + attr.name_span.start,
+        length: attr.name_span.end - attr.name_span.start,
+        token_type: SemanticTokenType::HtmlAttribute,
+        modifier: None,
+    });
+
+    let Some(value_span) = &attr.value_span else {
+        return;
+    };
+
+    // The `=` between name and value (the tag grammar allows whitespace
+    // around it; only the `=` itself is colored).
+    if attr.name_span.end <= value_span.start
+        && value_span.start <= body_text.len()
+        && let Some(eq_rel) = body_text[attr.name_span.end..value_span.start].find('=')
+    {
+        let eq = attr.name_span.end + eq_rel;
+        tokens.push(SemanticToken {
+            start: offset + eq,
+            length: 1,
+            token_type: SemanticTokenType::Operator,
+            modifier: None,
+        });
+    }
+
+    if attr.directive.is_some() {
+        return;
+    }
+
+    // Value as String, split around entities so no two tokens overlap (the
+    // same gap pattern the Text arm uses for variables/templates).
+    // EXCEPTION (plan.md Phase 4.2): `style="…"` values are CSS — they get
+    // CSS tokens from the core tokenizer instead of a String token.
+    if attr.name.eq_ignore_ascii_case("style") {
+        let css_analysis =
+            crate::sugarcube::css::analyze_css_declarations(&body_text[value_span.clone()]);
+        for css_tok in &css_analysis.tokens {
+            tokens.push(SemanticToken {
+                start: offset + value_span.start + css_tok.start,
+                length: css_tok.length,
+                token_type: css_tok.token_type,
+                modifier: css_tok.modifier,
+            });
+        }
+        return;
+    }
+
+    let mut cursor = value_span.start;
+    for (ent_start, ent_end) in find_html_entities(&body_text[value_span.start..value_span.end]) {
+        let ent_abs = value_span.start + ent_start..value_span.start + ent_end;
+        if ent_abs.start > cursor {
+            tokens.push(SemanticToken {
+                start: offset + cursor,
+                length: ent_abs.start - cursor,
+                token_type: SemanticTokenType::String,
+                modifier: None,
+            });
+        }
+        tokens.push(SemanticToken {
+            start: offset + ent_abs.start,
+            length: ent_abs.end - ent_abs.start,
+            token_type: SemanticTokenType::HtmlEntity,
+            modifier: None,
+        });
+        cursor = ent_abs.end;
+    }
+    if cursor < value_span.end {
+        tokens.push(SemanticToken {
+            start: offset + cursor,
+            length: value_span.end - cursor,
+            token_type: SemanticTokenType::String,
+            modifier: None,
+        });
+    }
+}
+
+/// Find HTML entity references in `value` — `&name;`, `&#digits;`,
+/// `&#xhex;` — returning `(start, end)` offsets relative to `value`.
+///
+/// Used only inside attribute values (2.4 scope); prose-level entities are
+/// rendered literally by SugarCube and left untokened.
+fn find_html_entities(value: &str) -> Vec<(usize, usize)> {
+    let bytes = value.as_bytes();
+    let mut result = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            let mut j = i + 1;
+            if j < bytes.len() && bytes[j] == b'#' {
+                j += 1;
+                if j < bytes.len() && (bytes[j] == b'x' || bytes[j] == b'X') {
+                    j += 1;
+                    while j < bytes.len() && bytes[j].is_ascii_hexdigit() {
+                        j += 1;
+                    }
+                } else {
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        j += 1;
+                    }
+                }
+            } else {
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+            }
+            // Require the `;` AND a non-empty body (numeric forms need at
+            // least one digit after `#`/`x`).
+            let has_body = if bytes.get(i + 1) == Some(&b'#') {
+                j > i + 3
+            } else {
+                j > i + 1
+            };
+            if j < bytes.len() && bytes[j] == b';' && has_body {
+                result.push((i, j + 1));
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    result
 }
 
 /// Emit semantic tokens for a single `AnalyzedVarOp`.

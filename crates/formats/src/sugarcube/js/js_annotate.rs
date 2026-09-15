@@ -21,12 +21,22 @@
 //! downstream consumer (tokens, body blocks, widget detection) with a fake
 //! macro node.
 
-use crate::sugarcube::ast::{AnalyzedVarOp, AstNode, JsAnalysis, PassageAst};
+use crate::sugarcube::ast::{
+    AnalyzedVarOp, AstNode, CommentKind, CommentSpan, JsAnalysis, KeywordSpan, LiteralKind,
+    LiteralSpan, PassageAst,
+};
 use crate::sugarcube::js::js_preprocess;
 use crate::sugarcube::js::js_walk;
 use crate::sugarcube::registries::variable_tree::VarAccessKind;
-use knot_core::oxc::{ParseMode as JsParseMode, parse_and_visit};
+use knot_core::oxc::{
+    FallbackTokenKind, JS_KEYWORDS, JsParseOutcome, ParseMode as JsParseMode, parse_and_visit,
+};
 use oxc_span::GetSpan;
+
+/// Cap on syntax diagnostics published for ONE JS region after resilient
+/// chunked parsing (plan.md Phase 3.2): one broken area must not spam the
+/// author with dozens of follow-on errors.
+const MAX_REGION_JS_DIAGNOSTICS: usize = 10;
 
 /// Annotate AST nodes with JS analysis results (Phase 2).
 ///
@@ -76,32 +86,220 @@ fn annotate_script_passage(passage_ast: &mut PassageAst, body_text: &str, sugarc
     // Preprocess $var references for oxc (only when sugarcube_syntax is true)
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text, sugarcube_syntax);
 
-    // Parse with oxc as a JS module.
+    // Resilient Module-mode analysis (plan.md Phase 3.2): the whole region is
+    // parsed first (identical to the pre-3.2 behavior — the full suite is the
+    // golden test); only when oxc reports a FATAL error is the region
+    // re-parsed chunk-by-chunk so healthy statements keep their tokens and
+    // the diagnostics stay localized to the broken chunks. The old
+    // "NO tokens for the whole body" weakness (PLANNED_FEATURES.md "Error
+    // Recovery") is fixed by the chunked path.
     //
-    // NOTE on oxc's error recovery (verified empirically against oxc 0.134):
-    // it is narrow. Common authoring errors — `var hp = ;`, an unclosed `{`,
-    // an unterminated string literal — are FATAL: oxc reports a single error,
-    // `panicked` is true, and the AST comes back EMPTY. Only some errors are
-    // recovered from with a partial AST; when that happens we still walk it so
-    // the valid parts keep their tokens.
-    //
-    // When oxc panics, `unwrap_or_default()` below leaves an empty
-    // `script_js_analysis` — NO tokens are emitted for the whole JS body.
-    // This is the known weakness tracked in PLANNED_FEATURES.md ("Error
-    // Recovery"); the planned fix is chunked region parsing with per-chunk
-    // parsing plus a lexer-level fallback token scan for panicked chunks.
-    // The js_validate diagnostic still shows the error location.
-    //
-    // Task 1 (optimization): we capture `outcome.diagnostics` and store
-    // them on `JsAnalysis.diagnostics` so `validate_script_passage` can
-    // consume them WITHOUT re-parsing the same source.
-    let (outcome, analysis) =
-        parse_and_visit(&preprocessed.source, JsParseMode::Module, |program| {
-            js_walk::walk_script_passage(program, &preprocessed)
-        });
-    let mut analysis = analysis.unwrap_or_default();
+    // Task 1 (optimization) still holds: outcome.diagnostics ride on
+    // `JsAnalysis.diagnostics` so `validate_script_passage` consumes them
+    // WITHOUT re-parsing.
+    let (outcome, mut analysis) = analyze_module_resilient(&preprocessed);
     analysis.diagnostics = outcome.diagnostics;
     passage_ast.script_js_analysis = Some(analysis);
+}
+
+/// Resilient Module-mode analysis of one JS region (plan.md Phase 3.2).
+///
+/// 1. **Healthy path** — the whole region is parsed once with
+///    [`parse_and_visit`] and walked. Output is byte-identical to the
+///    pre-3.2 behavior (the full test suite is the golden test).
+/// 2. **Fatal path** — oxc gave up (`fatal_error`, empty AST). The region is
+///    split into top-level statement chunks
+///    ([`knot_core::oxc::split_js_statements`]), each chunk is parsed and
+///    walked independently (chunk-relative spans map back through
+///    `PreprocessedJs::for_chunk`), and chunks whose parse is STILL fatal
+///    get tolerant fallback-lexer tokens
+///    ([`knot_core::oxc::lex_js_fallback`]) so highlighting never goes
+///    dark. Diagnostics are chunk-local, de-duplicated and capped.
+fn analyze_module_resilient(
+    shifted: &js_preprocess::PreprocessedJs,
+) -> (JsParseOutcome, JsAnalysis) {
+    // 1. Whole-region parse (the healthy path must not change behavior).
+    let (outcome, analysis) = parse_and_visit(&shifted.source, JsParseMode::Module, |program| {
+        js_walk::walk_script_passage(program, shifted)
+    });
+    if !outcome.panicked {
+        return (outcome, analysis.unwrap_or_default());
+    }
+
+    // 2. Chunked salvage.
+    let mut merged = JsAnalysis::default();
+    let mut diags: Vec<knot_core::oxc::JsDiagnostic> = Vec::new();
+    let mut any_fatal = false;
+    for chunk in knot_core::oxc::split_js_statements(&shifted.source) {
+        let chunk_text = &shifted.source[chunk.start..chunk.end];
+        let sub = shifted.for_chunk(chunk.start);
+        let (o, a) = parse_and_visit(chunk_text, JsParseMode::Module, |program| {
+            js_walk::walk_script_passage(program, &sub)
+        });
+        if o.panicked {
+            any_fatal = true;
+            push_shifted_diagnostics(&mut diags, o.diagnostics, &shifted.source, chunk.start);
+            merge_analyses_into(&mut merged, fallback_analysis(&sub, chunk_text));
+        } else {
+            push_shifted_diagnostics(&mut diags, o.diagnostics, &shifted.source, chunk.start);
+            merge_analyses_into(&mut merged, a.unwrap_or_default());
+        }
+    }
+
+    // 3. Localized diagnostics: de-duplicated and capped per region.
+    diags.dedup_by(|a, b| a.range == b.range && a.message == b.message);
+    diags.truncate(MAX_REGION_JS_DIAGNOSTICS);
+
+    (JsParseOutcome::new(diags, any_fatal), merged)
+}
+
+/// Shift chunk-relative diagnostics into region-preprocessed coordinates and
+/// append to `out`. The shift is a plain offset (chunks are ranges of the
+/// region's preprocessed source — same substitution frame), and line/column
+/// are recomputed against the region so every field stays region-frame
+/// consistent.
+fn push_shifted_diagnostics(
+    out: &mut Vec<knot_core::oxc::JsDiagnostic>,
+    chunk_diags: Vec<knot_core::oxc::JsDiagnostic>,
+    region_source: &str,
+    chunk_start: usize,
+) {
+    for mut d in chunk_diags {
+        d.range.start = d.range.start.saturating_add(chunk_start);
+        d.range.end = d
+            .range
+            .end
+            .saturating_add(chunk_start)
+            .max(d.range.start + 1);
+        d.line = compute_line(region_source, d.range.start);
+        d.column = compute_column(region_source, d.range.start);
+        out.push(d);
+    }
+}
+
+/// Recompute a 1-based line number for `offset` in `source` (chunk shifts
+/// invalidate the per-chunk line/column that oxc reported).
+fn compute_line(source: &str, offset: usize) -> u32 {
+    let pos = offset.min(source.len());
+    let line = source[..pos].bytes().filter(|&b| b == b'\n').count();
+    (line + 1) as u32
+}
+
+/// Recompute a 1-based column number for `offset` in `source`.
+fn compute_column(source: &str, offset: usize) -> u32 {
+    let pos = offset.min(source.len());
+    let line_start = source[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    (pos.saturating_sub(line_start) + 1) as u32
+}
+
+/// Merge `src` into `dst` by concatenating every span/info family (plan.md
+/// Phase 3.2: chunk analyses are disjoint by construction — each chunk owns
+/// a disjoint byte range — so concatenation IS the merge).
+fn merge_analyses_into(dst: &mut JsAnalysis, src: JsAnalysis) {
+    let JsAnalysis {
+        var_ops,
+        macro_adds,
+        template_adds,
+        function_defs,
+        function_calls,
+        literal_spans,
+        operator_spans,
+        namespace_spans,
+        comment_spans,
+        keyword_spans,
+        regex_spans,
+        js_var_spans,
+        js_var_def_spans,
+        js_method_spans,
+        js_property_spans,
+        js_global_spans,
+        diagnostics: _, // diagnostics ride the JsParseOutcome, not the analysis
+    } = src;
+    dst.var_ops.extend(var_ops);
+    dst.macro_adds.extend(macro_adds);
+    dst.template_adds.extend(template_adds);
+    dst.function_defs.extend(function_defs);
+    dst.function_calls.extend(function_calls);
+    dst.literal_spans.extend(literal_spans);
+    dst.operator_spans.extend(operator_spans);
+    dst.namespace_spans.extend(namespace_spans);
+    dst.comment_spans.extend(comment_spans);
+    dst.keyword_spans.extend(keyword_spans);
+    dst.regex_spans.extend(regex_spans);
+    dst.js_var_spans.extend(js_var_spans);
+    dst.js_var_def_spans.extend(js_var_def_spans);
+    dst.js_method_spans.extend(js_method_spans);
+    dst.js_property_spans.extend(js_property_spans);
+    dst.js_global_spans.extend(js_global_spans);
+}
+
+/// Tolerant fallback analysis for a FATAL chunk (plan.md Phase 3.2 step 4):
+/// the chunk never gets an AST, so [`knot_core::oxc::lex_js_fallback`]
+/// supplies comment/string/number/keyword/identifier tokens — enough for
+/// theming so the region's highlighting never goes dark. Spans map through
+/// `sub` (chunk-preprocessed → original passage coordinates), exactly like
+/// AST-derived spans.
+fn fallback_analysis(sub: &js_preprocess::PreprocessedJs, chunk_text: &str) -> JsAnalysis {
+    let mut a = JsAnalysis::default();
+    for tok in knot_core::oxc::lex_js_fallback(chunk_text) {
+        let start = sub.map_to_original(tok.range.start);
+        let end = sub.map_to_original(tok.range.end).max(start + 1);
+        let span = start..end;
+        match tok.kind {
+            FallbackTokenKind::LineComment => {
+                a.comment_spans.push(CommentSpan {
+                    kind: CommentKind::JsLine,
+                    span,
+                });
+            }
+            FallbackTokenKind::BlockComment => {
+                a.comment_spans.push(CommentSpan {
+                    kind: CommentKind::CStyle,
+                    span,
+                });
+            }
+            FallbackTokenKind::String | FallbackTokenKind::Template => {
+                a.literal_spans.push(LiteralSpan {
+                    kind: LiteralKind::String,
+                    span,
+                });
+            }
+            FallbackTokenKind::Number => {
+                a.literal_spans.push(LiteralSpan {
+                    kind: LiteralKind::Number,
+                    span,
+                });
+            }
+            FallbackTokenKind::Keyword => {
+                let text = chunk_text.get(tok.range.clone()).unwrap_or("");
+                match text {
+                    "true" | "false" => {
+                        a.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::Boolean,
+                            span,
+                        });
+                    }
+                    "null" | "undefined" => {
+                        a.literal_spans.push(LiteralSpan {
+                            kind: LiteralKind::Null,
+                            span,
+                        });
+                    }
+                    _ => {
+                        // KeywordSpan.text is &'static str — recover the
+                        // static entry from the keyword table.
+                        if let Some(kw) = JS_KEYWORDS.iter().find(|k| **k == text) {
+                            a.keyword_spans.push(KeywordSpan { text: kw, span });
+                        }
+                    }
+                }
+            }
+            FallbackTokenKind::Identifier => {
+                a.js_var_spans.push(span);
+            }
+        }
+    }
+    a
 }
 
 /// Annotate inline JS snippets in normal passage AST nodes.
@@ -407,6 +605,79 @@ fn annotate_inline_js(
                     *js_analysis = Some(analysis);
                 }
             }
+            AstNode::HtmlTag {
+                attrs,
+                children,
+                raw_body,
+                body_js_analysis,
+                ..
+            } => {
+                // HTML attribute directives (plan.md Phase 2.2): the value
+                // of a directive attribute is a TwineScript expression —
+                // upstream `processAttributeDirectives` (parserlib.js
+                // L1832-1874) evaluates it via `Scripting.evalTwineScript`.
+                // Analyze each value exactly like an inline expression:
+                // Expression parse mode, origin at the value's body-relative
+                // start, SugarCube preprocessing on ($var → State.variables…).
+                //
+                // The analysis rides the ATTRIBUTE (token builder + registry
+                // consume it per attribute); the validation path re-derives
+                // one snippet per directive in `ast::collect_js_snippets`.
+                //
+                // Upstream divergence note: `verbatimScriptTag`/`styleTag` run
+                // BEFORE htmlTag upstream, so directives on script/style tags
+                // are technically never evaluated there; Knot still processes
+                // them (harmless, strictly more analysis — no false
+                // diagnostics fall out of it).
+                for attr in attrs.iter_mut() {
+                    if attr.directive.is_some()
+                        && let (Some(value), Some(value_span)) = (&attr.value, &attr.value_span)
+                        && !value.trim().is_empty()
+                    {
+                        attr.js_analysis = Some(analyze_js_snippet(value, value_span.start, false));
+                    }
+                }
+
+                // <script> raw bodies (plan.md Phase 2.3): the whole body is
+                // one Module-mode JS snippet — the exact analog of the
+                // `<<script>>` macro arm above (same Text-children collection,
+                // same leading-whitespace origin correction). The analysis
+                // rides `body_js_analysis`; the token builder emits the token
+                // families from it and `collect_js_snippets` re-derives the
+                // validation snippet.
+                if *raw_body == Some(knot_core::zoning::RawLanguage::Js) {
+                    let mut js_source = String::new();
+                    let mut body_start = None;
+                    for child in children.iter() {
+                        if let AstNode::Text { content, span, .. } = child {
+                            if body_start.is_none() {
+                                body_start = Some(span.start);
+                            }
+                            js_source.push_str(content);
+                        }
+                    }
+                    if let Some(start) = body_start
+                        && !js_source.trim().is_empty()
+                    {
+                        // Leading whitespace was stripped by trim(); origin
+                        // must point at the first non-whitespace byte so the
+                        // analysis spans land on the code (same correction as
+                        // the `<<script>>` arm).
+                        let leading_ws = js_source.len() - js_source.trim_start().len();
+                        *body_js_analysis = Some(analyze_js_snippet(
+                            js_source.trim(),
+                            start + leading_ws,
+                            true, // is_block — Module mode, like <<script>>
+                        ));
+                    }
+                }
+
+                // Recurse into the (wikified) element content — macros and
+                // expressions inside `<div>…</div>` bodies are live (D1
+                // rule 2). Raw bodies hold only the opaque Text node, so the
+                // walk into them is a harmless no-op.
+                annotate_inline_js(children, _body_text, known_macro_names);
+            }
             _ => {}
         }
     }
@@ -678,18 +949,22 @@ fn analyze_js_snippet(source: &str, body_offset: usize, is_block: bool) -> JsAna
         substitutions: preprocessed.substitutions,
         origin_offset: body_offset,
         wrapping_offset,
+        chunk_offset: 0,
     };
 
     // Task 1 (optimization): capture `outcome.diagnostics` so
     // `validate_inline_js` can consume them WITHOUT re-parsing.
-    let (outcome, analysis) = parse_and_visit(&shifted.source, js_mode, |program| {
-        if is_block {
-            js_walk::walk_script_passage(program, &shifted)
-        } else {
+    // Module-mode blocks (script bodies) get the resilient chunked path
+    // (plan.md Phase 3.2) so one fatal error can't blank the whole body;
+    // inline expressions are small and keep the single-parse path.
+    let (outcome, mut analysis) = if is_block {
+        analyze_module_resilient(&shifted)
+    } else {
+        let (o, a) = parse_and_visit(&shifted.source, js_mode, |program| {
             js_walk::walk_inline_js(program, &shifted)
-        }
-    });
-    let mut analysis = analysis.unwrap_or_default();
+        });
+        (o, a.unwrap_or_default())
+    };
     analysis.diagnostics = outcome.diagnostics;
     analysis
 }
@@ -719,6 +994,7 @@ fn decompose_block_literal_for_set(
         substitutions: preprocessed.substitutions,
         origin_offset: expr_body_offset,
         wrapping_offset: 1, // Expression mode
+        chunk_offset: 0,
     };
 
     let mut result = Vec::new();

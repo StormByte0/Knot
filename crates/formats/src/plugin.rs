@@ -229,6 +229,22 @@ pub enum SemanticTokenType {
     CodeBlock,
     /// Inline code (`{{{...}}}` mid-line). Single token over the full span.
     InlineCode,
+
+    // ── HTML stratum (plan.md Phase 2.4) ───────────────────────
+    // Appended AFTER InlineCode to preserve existing legend indices
+    // 0..=29. Emitted from `AstNode::HtmlTag` spans: tag names, attribute
+    // names, `=` signs, quoted attribute values (as `String`, split around
+    // entities), and entity references in attribute values. Raw-text bodies
+    // (`<script>`/`<style>`) ride the JS/CSS pipelines instead (2.3).
+    /// An HTML tag NAME (`div` in `<div>`, `span` in `</span>`).
+    HtmlTag,
+    /// An HTML attribute name (`class`, `@style` incl. the directive
+    /// sigil). Directive VALUES ride the JS token families, not this.
+    HtmlAttribute,
+    /// An HTML entity reference (`&amp;`, `&#39;`) inside an attribute
+    /// value. The surrounding value emits as `String` segments split
+    /// around entities (no overlapping tokens).
+    HtmlEntity,
 }
 
 /// Modifiers for semantic tokens.
@@ -346,6 +362,11 @@ impl SemanticTokenType {
             Self::Table,           // 27
             Self::CodeBlock,       // 28
             Self::InlineCode,      // 29
+            // ── HTML stratum (plan.md Phase 2.4) ───────────────────
+            // Appended at end to preserve existing indices 0..=29.
+            Self::HtmlTag,       // 30
+            Self::HtmlAttribute, // 31
+            Self::HtmlEntity,    // 32
         ]
     }
 
@@ -386,6 +407,10 @@ impl SemanticTokenType {
             Self::Table => "table",
             Self::CodeBlock => "codeBlock",
             Self::InlineCode => "inlineCode",
+            // ── HTML stratum (plan.md Phase 2.4) ───────────────────
+            Self::HtmlTag => "htmlTag",
+            Self::HtmlAttribute => "htmlAttribute",
+            Self::HtmlEntity => "htmlEntity",
         }
     }
 
@@ -1984,6 +2009,25 @@ pub trait FormatPlugin: Send + Sync {
         _token_groups: &[PassageTokenGroup],
     ) -> Option<crate::types::FormatHover> {
         None
+    }
+
+    // -----------------------------------------------------------------------
+    // Zone analysis (plan.md Phase 4.1)
+    // -----------------------------------------------------------------------
+
+    /// Per-format zone analysis (plan.md Phase 4.1): parse `body` and build
+    /// its [`knot_core::zoning::ZoneMap`] — the per-byte language authority.
+    /// The SugarCube implementation orchestrates the strata producers
+    /// stabilized in Phases 1–3 (prose/markup, htmlTag, raw-text
+    /// script/style, macro) into one map; position-based features then query
+    /// `ZoneMap::language_at(byte)` instead of re-deriving context from raw
+    /// text (the F6 bug class).
+    ///
+    /// The default returns an empty map (every byte queries as
+    /// [`knot_core::zoning::Language::Markup`]) — formats without strata
+    /// producers need no override yet.
+    fn zone_analyze(&self, _body: &str) -> knot_core::zoning::ZoneMap {
+        knot_core::zoning::ZoneMap::default()
     }
 
     // -----------------------------------------------------------------------

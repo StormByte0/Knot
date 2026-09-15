@@ -492,6 +492,86 @@ pub enum TextFormatKind {
 }
 
 // ---------------------------------------------------------------------------
+// HTML tag — the SugarCube htmlTag stratum (plan.md Phase 2.2)
+// ---------------------------------------------------------------------------
+
+/// How an HTML element terminates (mirrors the upstream htmlTag handler,
+/// parserlib.js L1712-1828).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlTagKind {
+    /// Has a case-insensitive terminator `</name\s*>` — the FIRST match is
+    /// the closer (upstream `subWikify` terminator semantics). When the
+    /// terminator never appears, the construct consumes to EOF with live
+    /// content (see the `AstNode::HtmlTag` docs for the divergence note).
+    Normal,
+    /// Upstream `voidTags` list (parserlib.js L1710 — SugarCube's list adds
+    /// `keygen`/`menuitem`/`param` to the HTML5 voids) — no content, no
+    /// terminator search.
+    Void,
+    /// Start tag ended with `/>`. Upstream honors the solidus for EVERY tag
+    /// name (`isVoid = voidTags.includes(tagName) || matchText.endsWith('/>')`,
+    /// L1718) — same policy here.
+    SelfClosing,
+}
+
+/// Which evaluation-directive form an attribute uses (upstream
+/// `processAttributeDirectives`, parserlib.js L1832-1874).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HtmlAttrDirectiveKind {
+    /// `@name="expr"` — the `@` shorthand.
+    Shorthand,
+    /// `sc-eval:name="expr"` — the explicit form.
+    ScEval,
+}
+
+/// Evaluation-directive info for one attribute: upstream evaluates the
+/// attribute value as TwineScript (`Scripting.evalTwineScript`) and assigns
+/// the result to the attribute named with the directive prefix stripped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlAttrDirective {
+    /// The real attribute name after stripping the directive prefix
+    /// (`class` for both `@class` and `sc-eval:class`). Upstream forbids
+    /// `data-setter` as the target (throws); Knot keeps the tag parseable
+    /// and defers that diagnostic to the validation pass (plan.md 2.5).
+    pub target_name: String,
+    /// Which form produced it.
+    pub kind: HtmlAttrDirectiveKind,
+}
+
+/// One attribute of an [`AstNode::HtmlTag`], in source order.
+#[derive(Debug, Clone)]
+pub struct HtmlTagAttr {
+    /// Lowercased attribute name as spelled in the source (may carry the
+    /// directive prefix: `@class`, `sc-eval:class`).
+    pub name: String,
+    /// Body-relative range of the name.
+    pub name_span: Range<usize>,
+    /// The raw attribute value (source bytes, NOT entity-decoded — same
+    /// source-fidelity contract as the CST). Upstream decodes entities via
+    /// the DOM before evaluating a directive value; Knot evaluates the raw
+    /// source slice instead — a deliberate, documented divergence (entity-
+    /// escaped directive expressions are pathological; decoding would break
+    /// span mapping into the source).
+    pub value: Option<String>,
+    /// Body-relative range of the value WITHOUT the surrounding quotes.
+    pub value_span: Option<Range<usize>>,
+    /// Body-relative range of the whole attribute (name through value,
+    /// including the closing quote when quoted).
+    pub span: Range<usize>,
+    /// Evaluation-directive info when the name carries `@` / `sc-eval:`.
+    pub directive: Option<HtmlAttrDirective>,
+    /// Variable references scanned from the directive value at parse time
+    /// (same parse-time role as `Expression::var_refs` — read refs). Empty
+    /// for non-directive attributes.
+    pub var_refs: Vec<VarRef>,
+    /// JS analysis of the directive value, attached by `annotate_js` —
+    /// same contract as `Macro::js_analysis` (single source of truth for
+    /// JS-derived tokens/vars once present). `None` until annotation runs,
+    /// and always `None` for non-directive attributes.
+    pub js_analysis: Option<JsAnalysis>,
+}
+
+// ---------------------------------------------------------------------------
 // TableRow / TableCell / TableRowType — TiddlyWiki table support
 // ---------------------------------------------------------------------------
 //
@@ -969,6 +1049,72 @@ pub enum AstNode {
         span: Range<usize>,
     },
 
+    /// A SugarCube HTML tag — the htmlTag stratum (plan.md Phase 2.2;
+    /// upstream parserlib.js `htmlTag` L1704-1829).
+    ///
+    /// The start tag is ATOMIC: quote-aware and consumed whole, so markup
+    /// symbols inside the tag interior (`''`, `@`, `;` in attribute values)
+    /// are never prose-scanned — this closes the issue #6 scope-bleed class
+    /// at the parser level. Element CONTENT is wikified upstream
+    /// (`subWikify` to the terminator), so `children` are the recursively
+    /// parsed content between the tags and links/macros/formats inside stay
+    /// live (D1 rule 2 — no new black holes, D2).
+    ///
+    /// Terminator: upstream searches `</name\s*>` case-insensitively and
+    /// takes the FIRST match (nested same-name tags close at the first
+    /// closer — upstream renders them identically, so Knot mirrors that).
+    /// Missing terminator: upstream renders an error box ("cannot find a
+    /// closing tag for HTML <name>"); Knot consumes to EOF with live
+    /// content and stays silent — the same conservative policy as the
+    /// unterminated `@@` arm (plan.md Phase 1.4), revisited with the
+    /// Phase 2.5 diagnostics wiring.
+    ///
+    /// A stray END tag (`</div>` with no open element) never becomes an
+    /// `HtmlTag`: upstream's htmlTag regex matches start tags only, so end
+    /// tags fall through to literal text there and here.
+    ///
+    /// Raw-text elements (plan.md Phase 2.3): upstream runs `verbatimScriptTag`
+    /// (parserlib.js L1462-1470) and `styleTag` (L1471+) BEFORE `htmlTag`, so
+    /// `<script>`/`<style>` bodies are never wikified — the whole construct is
+    /// emitted verbatim (script) or as CSS (style). For those elements
+    /// `raw_body` is `Some(language)`, `children` holds exactly one raw
+    /// `AstNode::Text` (the body, `is_prose: false`), and the body never gets
+    /// markup children. See `raw_text_language` in parser/core.rs.
+    HtmlTag {
+        /// Lowercased tag name.
+        name: String,
+        /// Body-relative range of the tag name within the start tag.
+        name_span: Range<usize>,
+        /// Attributes in source order.
+        attrs: Vec<HtmlTagAttr>,
+        /// Recursively parsed element content (wikified — D1 rule 2). Empty
+        /// for void/self-closing tags.
+        children: Vec<AstNode>,
+        /// Body-relative range of the entire start tag (through `>`).
+        open_span: Range<usize>,
+        /// Body-relative range of the terminator `</name>` when found.
+        close_span: Option<Range<usize>>,
+        /// Body-relative range of the whole construct (start tag through
+        /// terminator, or to the end of the parse segment when the
+        /// terminator is missing).
+        full_span: Range<usize>,
+        /// Void / self-closing / normal.
+        kind: HtmlTagKind,
+        /// Raw-text body language (plan.md Phase 2.3): `Some(RawLanguage::Js)`
+        /// for `<script>`, `Some(RawLanguage::Css)` for `<style>`, `None` for
+        /// every other element (wikified content). When `Some`, `children` is
+        /// exactly one raw `AstNode::Text` spanning `open_span.end ..
+        /// close_span.start` (or to EOF when the closer is missing — though
+        /// missing closers fall back to the wikified path upstream, which the
+        /// parser mirrors).
+        raw_body: Option<knot_core::zoning::RawLanguage>,
+        /// oxc analysis of a `<script>` raw body (same role as
+        /// `AstNode::Macro::js_analysis` for `<<script>>` bodies). `None` for
+        /// non-script elements and for style bodies (CSS needs no annotation
+        /// pass — the token builder calls `analyze_css` directly).
+        body_js_analysis: Option<JsAnalysis>,
+    },
+
     /// A macro close tag: `<</name>>`.
     ///
     /// Produced by the flat parser and consumed by the tree builder. Does not
@@ -1342,7 +1488,8 @@ pub fn collect_macros(nodes: &[AstNode]) -> Vec<&AstNode> {
             | AstNode::Blockquote { children, .. }
             | AstNode::BlockquoteBlock { children, .. }
             | AstNode::InlineStyle { children, .. }
-            | AstNode::TextFormat { children, .. } => {
+            | AstNode::TextFormat { children, .. }
+            | AstNode::HtmlTag { children, .. } => {
                 result.extend(collect_macros(children));
             }
             _ => {}
@@ -1369,7 +1516,8 @@ pub fn collect_links(nodes: &[AstNode]) -> Vec<&AstNode> {
             | AstNode::Blockquote { children, .. }
             | AstNode::BlockquoteBlock { children, .. }
             | AstNode::InlineStyle { children, .. }
-            | AstNode::TextFormat { children, .. } => {
+            | AstNode::TextFormat { children, .. }
+            | AstNode::HtmlTag { children, .. } => {
                 result.extend(collect_links(children));
             }
             _ => {}
@@ -1396,7 +1544,8 @@ pub fn collect_errors(nodes: &[AstNode]) -> Vec<&AstNode> {
             | AstNode::Blockquote { children, .. }
             | AstNode::BlockquoteBlock { children, .. }
             | AstNode::InlineStyle { children, .. }
-            | AstNode::TextFormat { children, .. } => {
+            | AstNode::TextFormat { children, .. }
+            | AstNode::HtmlTag { children, .. } => {
                 result.extend(collect_errors(children));
             }
             _ => {}
@@ -1642,6 +1791,76 @@ fn collect_js_snippets_recursive(
             }
         }
 
+        // HTML tag directive expressions (plan.md Phase 2.2): one snippet
+        // per directive attribute that has a value. `source` is the raw
+        // attribute value — the exact string `analyze_js_snippet` saw — and
+        // `body_offset` is the value's body-relative start, so the
+        // pre-collected diagnostics map back precisely (same invariant as
+        // the Macro arm's node-level analysis).
+        if let AstNode::HtmlTag {
+            attrs,
+            children,
+            raw_body,
+            body_js_analysis,
+            ..
+        } = node
+        {
+            for attr in attrs {
+                let has_value = attr.directive.is_some()
+                    && attr.value.as_ref().is_some_and(|v| !v.trim().is_empty());
+                if has_value {
+                    let value_span = attr.value_span.clone().unwrap_or(0..0);
+                    let diagnostics = attr
+                        .js_analysis
+                        .as_ref()
+                        .map(|a| a.diagnostics.clone())
+                        .unwrap_or_default();
+                    result.push(JsSnippet {
+                        source: attr.value.clone().unwrap_or_default(),
+                        body_offset: value_span.start,
+                        macro_name: "htmlTag".to_string(),
+                        is_block: false,
+                        diagnostics,
+                    });
+                }
+            }
+            // <script> raw bodies (plan.md Phase 2.3): same snippet shape as
+            // the `<<script>>` macro arm above — the whole raw Text body is
+            // one Module-mode JS snippet whose diagnostics come from the
+            // node-level analysis (`body_js_analysis`, attached by
+            // `annotate_inline_js`). Position mapping is exact because
+            // `body_offset` is the raw body's span start in the passage body.
+            if *raw_body == Some(knot_core::zoning::RawLanguage::Js) {
+                let mut js_source = String::new();
+                let mut body_start = None;
+                for child in children {
+                    if let AstNode::Text { content, span, .. } = child {
+                        if body_start.is_none() {
+                            body_start = Some(span.start);
+                        }
+                        js_source.push_str(content);
+                    }
+                }
+                if let Some(start) = body_start {
+                    let diagnostics = body_js_analysis
+                        .as_ref()
+                        .map(|a| a.diagnostics.clone())
+                        .unwrap_or_default();
+                    result.push(JsSnippet {
+                        source: js_source,
+                        body_offset: start,
+                        // "html-script" (not "script"): js_validate renders
+                        // this as "In <script> element: …" — an HTML tag is
+                        // not a macro, and the message must not claim it is.
+                        macro_name: "html-script".to_string(),
+                        is_block: true,
+                        diagnostics,
+                    });
+                }
+            }
+            collect_js_snippets_recursive(children, result, known_macro_names);
+        }
+
         // Recurse into container nodes that hold parsed children so JS
         // expressions inside them (e.g. `<<set $x to 1>>` inside `''…''`)
         // are still validated. Format content is wikified upstream
@@ -1651,7 +1870,8 @@ fn collect_js_snippets_recursive(
         | AstNode::Blockquote { children, .. }
         | AstNode::BlockquoteBlock { children, .. }
         | AstNode::InlineStyle { children, .. }
-        | AstNode::TextFormat { children, .. } = node
+        | AstNode::TextFormat { children, .. }
+        | AstNode::HtmlTag { children, .. } = node
         {
             collect_js_snippets_recursive(children, result, known_macro_names);
         }

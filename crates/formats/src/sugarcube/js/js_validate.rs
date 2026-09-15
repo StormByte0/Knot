@@ -13,7 +13,7 @@
 //!
 //! oxc may report several diagnostics per snippet, each with a precise byte
 //! range — but its error recovery is narrow (verified empirically against
-//! oxc 0.134): for most syntax errors (missing operand, unclosed brace,
+//! oxc 0.134, re-confirmed on 0.150): for most syntax errors (missing operand, unclosed brace,
 //! unterminated string) it aborts with a SINGLE diagnostic and an empty AST.
 //! We map each returned diagnostic back to the original SugarCube source so
 //! VSCode can squiggle exactly the broken span.
@@ -220,12 +220,16 @@ fn convert_js_diagnostic(
         knot_core::oxc::JsDiagnosticSeverity::Warning => FormatDiagnosticSeverity::Warning,
     };
 
-    // Prefix the message with the macro name for context
+    // Prefix the message with the construct name for context. HTML
+    // `<script>` bodies (plan.md Phase 2.3) are an ELEMENT, not a macro —
+    // they get their own honest label instead of the `<<…>> macro` wording.
     let message = if snippet.macro_name == "=" || snippet.macro_name == "-" {
         format!(
             "In <<{}>> expression: {}",
             snippet.macro_name, js_diag.message
         )
+    } else if snippet.macro_name == "html-script" {
+        format!("In <script> element: {}", js_diag.message)
     } else {
         format!("In <<{}>> macro: {}", snippet.macro_name, js_diag.message)
     };

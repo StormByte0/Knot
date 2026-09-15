@@ -1,20 +1,17 @@
 //! CSS module — type definitions + parse entry point.
 //!
-//! This module is the CSS equivalent of [`crate::oxc`] for JS. It exposes
-//! the stable types a future CSS parser will populate, plus a [`parse_css()`]
-//! entry point.
+//! This module is the CSS equivalent of [`crate::oxc`] for JS: a shared
+//! parsing service formats access on demand. [`parse_css()`] runs a
+//! hand-rolled, tolerant, highlighter-grade tokenizer (plan.md Phase 4.2) —
+//! it never panics and classifies the token families themes need.
 //!
-//! ## Current status: unserved
-//!
-//! CSS parsing is **not yet implemented**. [`parse_css()`] returns an empty
-//! [`CssParseOutcome`] (no tokens, no diagnostics). See [`parser`] for the
-//! re-integration plan.
-//!
-//! The types in [`types`] are kept stable so a future CSS crate can plug
-//! in without breaking downstream callers.
+//! The types in [`types`] are kept stable; downstream callers
+//! (`sugarcube::css::analyze_css`, the token builder, the parse pipeline)
+//! map them to semantic tokens for `[stylesheet]` passages, `<style>`
+//! bodies, `<<style>>`/`<<css>>` blocks and `style="…"` attribute values.
 
 pub mod parser;
 pub mod types;
 
-pub use parser::parse_css;
+pub use parser::{parse_css, parse_css_declarations};
 pub use types::{CssDiagnostic, CssParseOutcome, CssToken, CssTokenKind};

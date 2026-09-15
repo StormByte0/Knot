@@ -35,9 +35,13 @@
 //!   `AnalysisEngine` and `FormatVariableDiagnostic`; JS parsing fits
 //!   alongside them.
 
+pub mod chunks;
 pub mod parser;
 pub mod types;
 
+pub use chunks::{
+    Chunk, FallbackToken, FallbackTokenKind, JS_KEYWORDS, lex_js_fallback, split_js_statements,
+};
 pub use parser::{parse_and_visit, parse_js};
 pub use types::{JsDiagnostic, JsDiagnosticSeverity, JsParseOutcome, ParseMode};
 

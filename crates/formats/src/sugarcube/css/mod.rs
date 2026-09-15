@@ -2,10 +2,11 @@
 //! into `SemanticToken`s + `FormatDiagnostic`s for stylesheet passages and
 //! `<<style>>` blocks.
 //!
-//! Currently a thin pass-through: `knot_core::css::parse_css` returns an empty
-//! outcome (CSS parsing is unserved), so `analyze_css` returns an empty
-//! `CssAnalysis`. The mapping table below is preserved so a future CSS crate
-//! can be plugged in at the `knot-core` level with no changes here.
+//! Thin pass-through over `knot_core::css::parse_css` (plan.md Phase 4.2):
+//! the core tokenizer now populates tokens + structural diagnostics, and
+//! this mapping table converts them to `SemanticToken`s / `FormatDiagnostic`s
+//! for all CSS-bearing constructs (stylesheets, `<style>` bodies,
+//! `<<style>>`/`<<css>>` blocks, `style="…"` attribute values).
 
 use crate::plugin::{FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenType};
 use knot_core::css::{self, CssParseOutcome, CssTokenKind};
@@ -20,6 +21,14 @@ pub struct CssAnalysis {
 /// Spans are relative to the start of `source` (caller adds body_offset).
 pub fn analyze_css(source: &str) -> CssAnalysis {
     let outcome = css::parse_css(source);
+    css_outcome_to_analysis(&outcome, 0)
+}
+
+/// Parse a CSS *declaration list* (`prop: value;` without a block — the
+/// `style="…"` attribute shape, plan.md Phase 4.2) and produce semantic
+/// tokens. Spans are relative to the start of `source`.
+pub fn analyze_css_declarations(source: &str) -> CssAnalysis {
+    let outcome = css::parse_css_declarations(source);
     css_outcome_to_analysis(&outcome, 0)
 }
 

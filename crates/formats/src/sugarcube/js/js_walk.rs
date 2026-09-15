@@ -851,7 +851,24 @@ fn walk_expression(
         }
         Expr::ArrowFunctionExpression(arrow) => {
             emit_param_tokens(&arrow.params, preprocessed, analysis);
-            walk_function_body(&arrow.body, preprocessed, analysis);
+            // oxc 0.150 (plan.md Phase 3.1): arrow bodies became
+            // `ArrowFunctionBody` — a `FunctionBody` variant for block
+            // arrows plus the INHERITED `Expression` variants for concise
+            // arrows (`(x) => $hp += 1`). Both cases MUST be walked: a
+            // FunctionBody-only walk would silently drop the variable/
+            // token analysis of every concise arrow body.
+            match &arrow.body {
+                oxc_ast::ast::ArrowFunctionBody::FunctionBody(b) => {
+                    for stmt in &b.statements {
+                        walk_statement(stmt, preprocessed, analysis);
+                    }
+                }
+                other => {
+                    if let Some(expr) = other.as_expression() {
+                        walk_expression(expr, preprocessed, analysis);
+                    }
+                }
+            }
         }
         Expr::ChainExpression(chain) => {
             // Optional chaining (?.) — recurse into the inner expression.
@@ -1857,7 +1874,20 @@ fn walk_argument(
         }
         Arg::ArrowFunctionExpression(arrow) => {
             emit_param_tokens(&arrow.params, preprocessed, analysis);
-            walk_function_body(&arrow.body, preprocessed, analysis);
+            // oxc 0.150 (plan.md Phase 3.1): `ArrowFunctionBody` — see the
+            // matching arm above for the block/concise split.
+            match &arrow.body {
+                oxc_ast::ast::ArrowFunctionBody::FunctionBody(b) => {
+                    for stmt in &b.statements {
+                        walk_statement(stmt, preprocessed, analysis);
+                    }
+                }
+                other => {
+                    if let Some(expr) = other.as_expression() {
+                        walk_expression(expr, preprocessed, analysis);
+                    }
+                }
+            }
         }
         Arg::UnaryExpression(unary) => {
             emit_unary_operator(unary, preprocessed, analysis);
@@ -2542,6 +2572,7 @@ mod tests {
             substitutions: Vec::new(),
             origin_offset: 0,
             wrapping_offset: 0,
+            chunk_offset: 0,
         };
         let (_outcome, analysis) = parse_and_visit(source, JsParseMode::Module, |program| {
             walk_script_passage(program, &preprocessed)

@@ -558,6 +558,57 @@ fn collect_var_ops_from_nodes(
                     }
                 }
             }
+            ast::AstNode::HtmlTag {
+                attrs, children, ..
+            } => {
+                // HTML tags (plan.md Phase 2.2): directive attribute values
+                // are TwineScript expressions (upstream evaluates them via
+                // `Scripting.evalTwineScript`), so their vars get the
+                // Expression origin — same class as `<<=>>` bodies. Element
+                // content is wikified (upstream subWikify), so children
+                // recurse; Text nodes inside get their zone-based origins
+                // as usual.
+                for attr in attrs {
+                    let has_js_analysis = attr
+                        .js_analysis
+                        .as_ref()
+                        .is_some_and(|a| !a.var_ops.is_empty());
+                    if has_js_analysis {
+                        if let Some(analysis) = &attr.js_analysis {
+                            for op in &analysis.var_ops {
+                                result.push((op.clone(), None, VarOrigin::Expression));
+                            }
+                        }
+                    } else {
+                        for vr in &attr.var_refs {
+                            let segment_spans =
+                                compute_target_segment_spans(&vr.name, &vr.property_path, &vr.span);
+                            result.push((
+                                AnalyzedVarOp {
+                                    name: vr.name.clone(),
+                                    is_temporary: vr.is_temporary,
+                                    access_kind: VarAccessKind::Read,
+                                    span: vr.span.clone(),
+                                    property_path: vr.property_path.clone(),
+                                    segment_spans,
+                                    construct_span: None,
+                                    segment_construct_spans: Vec::new(),
+                                },
+                                None,
+                                VarOrigin::Expression,
+                            ));
+                        }
+                    }
+                }
+                collect_var_ops_from_nodes(
+                    children,
+                    result,
+                    _cp,
+                    _file_uri,
+                    zones,
+                    body_offset_in_passage,
+                );
+            }
             _ => {}
         }
     }
@@ -866,7 +917,8 @@ pub fn walk_script_js(
     let preprocessed = js_preprocess::preprocess_for_oxc(body_text, true);
 
     // Walk the AST whenever the parse did not panic. NOTE that oxc's error
-    // recovery is narrow (verified empirically against oxc 0.134): common
+    // recovery is narrow (verified empirically against oxc 0.134, re-confirmed
+    // on 0.150): common
     // syntax errors — missing operand, unclosed `{`, unterminated string —
     // panic the parser and yield an EMPTY AST, in which case the visitor
     // does not run and no var ops are recorded from this body. When oxc
@@ -1018,7 +1070,11 @@ fn extract_widget_arg_count(children: &[ast::AstNode]) -> Option<usize> {
             // which hid `_args[N]` references inside formatted text
             // (`''_args[0]''`) in widget bodies.
             ast::AstNode::InlineStyle { children, .. }
-            | ast::AstNode::TextFormat { children, .. } => {
+            | ast::AstNode::TextFormat { children, .. }
+            // HTML element content is wikified (plan.md Phase 2.2) — `_args`
+            // references inside `<div>…</div>` bodies in widget passages
+            // must still be found.
+            | ast::AstNode::HtmlTag { children, .. } => {
                 for child in children {
                     scan_node(child, max_index);
                 }

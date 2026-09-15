@@ -33,9 +33,9 @@ serde_json = "1"
 # Parsing
 logos = "0.15"
 regex = "1"
-oxc_ast = "0.134"
-oxc_allocator = "0.134"
-oxc_span = "0.134"
+oxc_ast = "0.150"
+oxc_allocator = "0.150"
+oxc_span = "0.150"
 
 # Logging
 tracing = "0.1"

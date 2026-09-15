@@ -3449,8 +3449,10 @@ mod prose_scanner_regressions {
         // Issue #6 (jvosk): `@class` / `style` directives inside an HTML tag
         // inside `<<if>>` produced "Unclosed block macro: <<if>>" because the
         // `;` inside the attribute value opened a false InlineStyle that ate
-        // the `<</if>>` closer. With the single-`@` arm removed the tag is
-        // inert literal text until the htmlTag stratum lands (plan.md 2.2).
+        // the `<</if>>` closer. The single-`@` removal (Phase 1.1) killed the
+        // symptom immediately; since Phase 2.2 the tag goes through the
+        // htmlTag stratum (atomic interior + REAL directive parsing) — see
+        // the `html_tag_stratum` module below for the full battery.
         let (complete, links, diags) = parse_start(
             ":: Start\n<<if $hud>><div @class=\"hud\" style=\"color: red;\">hud</div><</if>>\n[[Forest]]\n:: Forest\nforest\n",
         );
@@ -3845,5 +3847,1199 @@ mod prose_scanner_regressions {
         assert!(complete);
         assert!(links.iter().any(|t| t == "Forest"), "links: {:?}", links);
         assert!(diags.is_empty(), "diags: {:?}", diags);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2.2 — SugarCube htmlTag stratum (atomic tags + attribute directives)
+//
+// Upstream references (pinned 2026-09-15, tmedwards/sugarcube-2 develop):
+//   - parserlib.js `htmlTag` L1704-1829: tags atomic, terminator
+//     `</name\s*>` case-insensitive FIRST match, content subWikified,
+//     voidTags L1710, `/>` honored for every tag (L1718).
+//   - parserlib.js `processAttributeDirectives` L1832-1874: `@name` /
+//     `sc-eval:name` values evaluated as TwineScript.
+// ---------------------------------------------------------------------------
+
+mod html_tag_stratum {
+    use super::*;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///htmltag/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    /// Same shape as `prose_scanner_regressions::parse_start` (that helper
+    /// is private to its module).
+    fn parse_start(src: &str) -> (bool, Vec<String>, Vec<String>) {
+        let result = parse_full(src);
+        (
+            result.is_complete,
+            start_links(&result),
+            start_diags(&result),
+        )
+    }
+
+    fn start_diags(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Start")
+            .flat_map(|g| g.diagnostics.iter().map(|d| d.message.clone()))
+            .collect()
+    }
+
+    fn start_links(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .passages
+            .iter()
+            .find(|p| p.name == "Start")
+            .map(|p| p.links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Text covered by tokens matching `pred` — makes span assertions
+    /// human-readable ("$cls must get a Variable token, got: …").
+    fn token_texts<'a>(
+        src: &'a str,
+        tokens: &'a [SemanticToken],
+        pred: impl Fn(&SemanticToken) -> bool,
+    ) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .filter(|t| pred(t))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn issue6_tag_with_directives_is_atomic_and_clean() {
+        // The issue #6 shape now goes through the htmlTag stratum: the tag
+        // interior is atomic (the `;` in the attribute value can never open
+        // an InlineStyle again), `<<if>>` pairing is untouched, and the
+        // directive is REAL (parsed + routed to oxc), not inert text.
+        let src = ":: Start\n<<if $hud>><div @class=\"hud\" style=\"color: red;\">hud</div><</if>>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert!(start_links(&result).iter().any(|t| t == "Forest"));
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::InlineStyle)),
+            "tag interior must not produce an InlineStyle token, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn attribute_interior_is_atomic_no_textformat() {
+        // `''b''` inside an attribute value must not produce a TextFormat
+        // token or swallow anything — the tag interior is never
+        // prose-scanned.
+        let src =
+            ":: Start\n<span title=\"a ''b'' c\">shown</span> [[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert!(start_links(&result).iter().any(|t| t == "Forest"));
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::TextFormat)),
+            "attribute interior must not be format-scanned, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn link_shaped_text_inside_attribute_is_inert() {
+        // `[[Forest]]` inside an attribute value is plain attribute text —
+        // no link extracted, no Link token (the interior is inert).
+        let src = ":: Start\n<a title=\"[[Forest]]\">x</a> [[Other]]\n:: Other\no\n";
+        let result = parse_full(src);
+        let links = start_links(&result);
+        assert!(
+            links.iter().any(|t| t == "Other") && !links.iter().any(|t| t == "Forest"),
+            "attribute-value link shapes are inert, links: {links:?}"
+        );
+        let tokens = flatten_token_groups(&result);
+        let link_texts = token_texts(src, &tokens, |t| {
+            t.token_type == crate::plugin::SemanticTokenType::Link
+        });
+        assert!(
+            !link_texts.contains(&"Forest"),
+            "no Link token may cover the attribute value text, link tokens: {link_texts:?}"
+        );
+    }
+
+    #[test]
+    fn element_content_stays_wikified_bold_link_inside_span() {
+        // Upstream subWikify parity (D1 rule 2): `''[[Forest]]''` inside
+        // element content is bold AND a live link — carving content as raw
+        // HTML would create a new black hole (D2).
+        let src = ":: Start\n<span>''[[Forest]]''</span>\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert!(
+            start_links(&result).iter().any(|t| t == "Forest"),
+            "link inside element content must be extracted, links: {:?}",
+            start_links(&result)
+        );
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.token_type, crate::plugin::SemanticTokenType::Link)),
+            "element content must emit a Link token, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn directive_expressions_get_variable_tokens() {
+        // `@class="$cls"` / `sc-eval:data-id="$id"`: directive values are
+        // TwineScript expressions; their variables get Variable tokens at
+        // the correct source spans (annotation pass + token builder).
+        let src = ":: Start\n<div @class=\"$cls\" sc-eval:data-id=\"$id\">x</div>\n";
+        let result = parse_full(src);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+        let tokens = flatten_token_groups(&result);
+        let vars = token_texts(src, &tokens, |t| {
+            t.token_type == crate::plugin::SemanticTokenType::Variable
+        });
+        assert!(
+            vars.contains(&"$cls"),
+            "$cls must get a Variable token, vars: {vars:?}"
+        );
+        assert!(
+            vars.contains(&"$id"),
+            "$id must get a Variable token, vars: {vars:?}"
+        );
+    }
+
+    #[test]
+    fn broken_directive_expression_yields_diagnostic() {
+        // Directive values route into the oxc pipeline: a JS syntax error
+        // in a directive value produces a diagnostic (like a broken
+        // `<<set>>` expression) while the rest of the passage stays live.
+        let src = ":: Start\n<div @class=\"$x +\">x</div> [[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert!(
+            !start_diags(&result).is_empty(),
+            "a broken directive expression must produce a diagnostic, diags: {:?}",
+            start_diags(&result)
+        );
+        assert!(
+            start_links(&result).iter().any(|t| t == "Forest"),
+            "the rest of the passage must stay live"
+        );
+    }
+
+    #[test]
+    fn less_than_in_prose_is_literal() {
+        // `5 < 6` — the `<` does not begin a tag; prose stays prose.
+        let (complete, links, diags) =
+            parse_start(":: Start\nScore: 5 < 6 see [[Forest]]\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn stray_end_tag_is_literal_text() {
+        // Upstream's htmlTag regex matches start tags only — a stray
+        // `</div>` is literal text and must not swallow or error.
+        let (complete, links, diags) =
+            parse_start(":: Start\nx </div> y [[Forest]]\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn void_element_is_atomic_and_content_after_stays_live() {
+        // `<img>` is on upstream's voidTags list — no terminator search, so
+        // the link AFTER it is a sibling, not swallowed content. Also pins
+        // that `''` inside a void element's attribute stays inert.
+        let (complete, links, diags) =
+            parse_start(":: Start\n<img src=\"a ''b''\"> [[Forest]]\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn self_closing_svg_directive_is_clean() {
+        // The issue #6 SVG shape (`<circle @class="hud"/>`): the solidus is
+        // honored for every tag name (upstream L1718), no terminator search,
+        // directive parsed cleanly.
+        let src = ":: Start\n<svg><circle @class=\"hud\"/></svg> [[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert!(start_links(&result).iter().any(|t| t == "Forest"));
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+    }
+
+    #[test]
+    fn missing_terminator_consumes_to_eof_with_live_content() {
+        // Upstream renders an error box for a missing `</name>`; Knot
+        // consumes to EOF with LIVE content and stays silent — the same
+        // conservative policy as the unterminated `@@` arm (plan.md 1.4).
+        // Pinned so a future diagnostic (Phase 2.5) is a deliberate change,
+        // not an accident.
+        let (complete, links, diags) =
+            parse_start(":: Start\n<div>intro [[Forest]] tail\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn nested_tags_and_links_all_visible() {
+        // Upstream first-match terminator semantics + recursion: inner
+        // elements parse within the outer content; links at every level are
+        // extracted.
+        let (complete, links, diags) = parse_start(
+            ":: Start\n<div>go [[A]]<span>''b''</span>then [[C]]</div> end [[Forest]]\n:: A\na\n:: C\nc\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        for target in ["A", "C", "Forest"] {
+            assert!(
+                links.iter().any(|t| t == target),
+                "link {target} must survive nesting, links: {links:?}"
+            );
+        }
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn case_insensitive_terminator_matches_upstream() {
+        // Upstream terminator: `</name\s*>` matched with
+        // `ignoreTerminatorCase: true` (L1726, L1800).
+        let (complete, links, diags) =
+            parse_start(":: Start\n<DIV>content</DIV>[[Forest]]\n:: Forest\nforest\n");
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn data_setter_directive_stays_parseable() {
+        // Upstream THROWS on `@data-setter` (evaluation directive is not
+        // allowed on the data-setter attribute); Knot keeps the tag
+        // parseable and defers that diagnostic to the Phase 2.5 validation
+        // pass — pinned so the divergence stays deliberate.
+        let (complete, links, diags) = parse_start(
+            ":: Start\n<a @data-setter=\"$x\">link</a> [[Forest]]\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    #[test]
+    fn email_in_attribute_stays_literal() {
+        // `bob@x.com` inside an attribute value is inert — directive
+        // recognition is on attribute NAMES, not value contents.
+        let src = ":: Start\n<a title=\"mail bob@x.com today\">x</a> [[Forest]]\n";
+        let result = parse_full(src);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+    }
+
+    #[test]
+    fn link_shaped_attribute_value_yields_no_link_or_broken_link() {
+        // Phase 2.5 pin (plan.md): a `[[link]]`-shaped string inside an
+        // attribute value produces NO link node and therefore NO
+        // BrokenLink diagnostic — tag interiors are inert for prose
+        // analysis; the only link is the real one after the tag.
+        let src = ":: Start\n<span title=\"[[Cave]]\">x</span> [[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+    }
+
+    #[test]
+    fn macro_shaped_attribute_value_yields_no_macro_diagnostics() {
+        // Phase 2.5 pin (plan.md): a `<<macro>>`-shaped string inside a tag
+        // interior produces no macro diagnostics and cannot break pairing
+        // of real macros on the same line.
+        let src = ":: Start\n<<if $hud>><div data-x=\"<<if>>\">hud</div><</if>>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+    }
+}
+
+/// Raw-text element zones (plan.md Phase 2.3): upstream runs
+/// `verbatimScriptTag` (parserlib.js L1462-1470) and `styleTag` (L1471+)
+/// BEFORE `htmlTag`, so `<script>`/`<style>` bodies are never wikified —
+/// markup symbols inside them are inert, script bodies ride the oxc JS
+/// pipeline, and the body zones as `Raw { Js }` / `Raw { Css }`.
+mod raw_text_zones {
+    use super::*;
+    use crate::plugin::SemanticTokenType;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///rawtext/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    fn start_diags(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Start")
+            .flat_map(|g| g.diagnostics.iter().map(|d| d.message.clone()))
+            .collect()
+    }
+
+    fn start_links(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .passages
+            .iter()
+            .find(|p| p.name == "Start")
+            .map(|p| p.links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Text covered by tokens matching `pred`.
+    fn token_texts<'a>(
+        src: &'a str,
+        tokens: &'a [SemanticToken],
+        pred: impl Fn(&SemanticToken) -> bool,
+    ) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .filter(|t| pred(t))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect()
+    }
+
+    fn has_token_in_body(src: &str, body: &str, pred: impl Fn(&SemanticToken) -> bool) -> bool {
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let body_start = src.find(body).expect("body present in src");
+        let body_end = body_start + body.len();
+        tokens
+            .iter()
+            .any(|t| pred(t) && t.start >= body_start && t.start < body_end)
+    }
+
+    #[test]
+    fn script_body_is_never_wikified() {
+        // Links, macros and format delimiters inside a <script> body are
+        // inert bytes — upstream emits the whole construct verbatim, so none
+        // of them may surface as links or markup tokens. The symbol probe
+        // rides a JS COMMENT: `[[Cave]]` as a STATEMENT would be genuinely
+        // invalid JS (the browser throws at runtime too — a JS diagnostic
+        // there is honest behavior, pinned by
+        // `script_body_syntax_error_is_a_js_diagnostic`).
+        let src = ":: Start\n<script>\nvar hp = $coins; // [[Cave]] <<set $x to 1>> ''b''\n</script>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        // The only real link is the one AFTER the tag.
+        assert_eq!(
+            start_links(&result),
+            vec!["Forest"],
+            "links from script body must not leak"
+        );
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+        let tokens = flatten_token_groups(&result);
+        let body_start = src.find("var hp").unwrap();
+        let body_end = src.find("</script>").unwrap();
+        for t in &tokens {
+            let inside = t.start >= body_start && t.start < body_end;
+            assert!(
+                !inside
+                    || matches!(
+                        t.token_type,
+                        SemanticTokenType::Variable
+                            | SemanticTokenType::Keyword
+                            | SemanticTokenType::Operator
+                            | SemanticTokenType::Number
+                            | SemanticTokenType::Comment
+                            | SemanticTokenType::String
+                            | SemanticTokenType::Boolean
+                            | SemanticTokenType::Function
+                    ),
+                "script body must only carry JS-family tokens, got {:?} at {}",
+                t.token_type,
+                t.start
+            );
+        }
+    }
+
+    #[test]
+    fn script_body_gets_js_variable_tokens() {
+        // The body rides the same oxc pipeline as <<script>> macro bodies:
+        // `var hp = 10;` must produce a Variable token on `hp`.
+        let src = ":: Start\n<script>\nvar hp = 10;\n</script>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let hp_tokens = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Variable)
+        });
+        assert!(
+            hp_tokens.iter().any(|s| s.contains("hp")),
+            "expected a Variable token covering `hp`, got: {hp_tokens:?}"
+        );
+    }
+
+    #[test]
+    fn script_body_syntax_error_is_a_js_diagnostic() {
+        // A broken statement inside <script> reports a JS error (oxc
+        // diagnostics ride the same snippet path as <<script>>) — NOT markup
+        // noise — and the passage after the tag keeps working (Phase 3.2
+        // will keep the TOKENS alive too; today oxc's fatal error blanks the
+        // body's tokens, which this test deliberately does not assert).
+        let src = ":: Start\n<script>\nvar hp = ;\n</script>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        let diags = start_diags(&result);
+        assert!(
+            diags.iter().any(|m| m.contains("script")),
+            "expected a JS diagnostic naming the script construct, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn style_body_is_raw_and_markup_symbols_inert() {
+        // `''`, `[[..]]`, `<<..>>` inside <style> are CSS bytes. CSS token
+        // content arrives with Phase 4.2 (knot_core::css::parse_css is a
+        // stub today — analyze_css returns zero tokens), so this pins the
+        // ZONE behavior: no markup diagnostics, no markup tokens, and the
+        // following link still works.
+        let src = ":: Start\n<style>\n.hud { color: red; } /* ''b'' [[Cave]] <<set $x 1>> */\n</style>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+        assert!(!has_token_in_body(src, "''b''", |t| matches!(
+            t.token_type,
+            SemanticTokenType::TextFormat
+                | SemanticTokenType::Link
+                | SemanticTokenType::Macro
+                | SemanticTokenType::InlineStyle
+        ),));
+    }
+
+    #[test]
+    fn unclosed_script_falls_back_to_wikified_content() {
+        // Upstream parity: with no exact `</script>` closer the verbatim
+        // lookahead fails and htmlTag takes over — the content is WIKIFIED
+        // (TextFormat appears), exactly as `</script >`-style fallbacks.
+        let src = ":: Start\n<script>''b''\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        let tokens = flatten_token_groups(&result);
+        // `''…''` renders the delimiters as Heading tokens and the content
+        // as TextFormat — a TextFormat token covering `b` proves wikified.
+        assert!(
+            token_texts(src, &tokens, |t| matches!(
+                t.token_type,
+                SemanticTokenType::TextFormat
+            ))
+            .iter()
+            .any(|s| s.contains('b')),
+            "unclosed <script> must fall back to wikified content, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn script_closer_needs_exact_spelling() {
+        // `</script >` (whitespace before `>`) does NOT satisfy the verbatim
+        // lookahead upstream (`<\/[Ss][Cc][Rr][Ii][Pp][Tt]>` — no `\s*`), so
+        // the body becomes wikified htmlTag content. Mirrored exactly.
+        let src = ":: Start\n<script>''b''</script >\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            token_texts(src, &tokens, |t| matches!(
+                t.token_type,
+                SemanticTokenType::TextFormat
+            ))
+            .iter()
+            .any(|s| s.contains('b')),
+            "a spaced closer must fall back to wikified content, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn textarea_content_stays_wikified() {
+        // Upstream has NO verbatim parser for <textarea> (only
+        // verbatimScriptTag/styleTag run before htmlTag), so its content is
+        // subWikified like any element — `''b''` must format. The core HTML
+        // CST's RCDATA treatment of textarea is deliberately overridden by
+        // the SugarCube stratum.
+        let src = ":: Start\n<textarea>''b''</textarea>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        assert!(
+            token_texts(src, &tokens, |t| matches!(
+                t.token_type,
+                SemanticTokenType::TextFormat
+            ))
+            .iter()
+            .any(|s| s.contains('b')),
+            "textarea content must stay wikified, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn script_tag_is_case_insensitive_for_raw_treatment() {
+        // Upstream spells the match as `<[Ss][Cc][Rr][Ii][Pp][Tt][^>]*>` —
+        // any ASCII case, open and close.
+        let src = ":: Start\n<SCRIPT>''b''</SCRIPT>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let body_start = src.find("''b''").unwrap();
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t.token_type, SemanticTokenType::TextFormat)
+                    && t.start >= body_start
+                    && t.start < body_start + 5),
+            "uppercase <SCRIPT> body must stay raw, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn script_body_survives_stylesheet_passage_shape() {
+        // The [stylesheet] passage shape uses <style> bodies heavily; make
+        // sure a normal passage with a style tag doesn't disturb diagnostics
+        // for the rest of the document (regression guard for the ZoneBuilder
+        // raw-leaf insertion).
+        let src =
+            ":: Start\n<style>\na { color: blue; }\n</style>\nGo: [[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        assert!(
+            start_diags(&result).is_empty(),
+            "diags: {:?}",
+            start_diags(&result)
+        );
+    }
+}
+
+/// HTML-stratum semantic tokens (plan.md Phase 2.4): tag names, attribute
+/// names, `=` signs, quoted values and entities inside them, closer names —
+/// emitted from the HtmlTag AST spans so themes can highlight markup without
+/// any of it being prose-scanned. HTML comments ride the pre-existing
+/// Comment machinery; raw-text bodies ride the JS/CSS pipelines (2.3).
+mod html_tokens {
+    use super::*;
+    use crate::plugin::SemanticTokenType;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///htmltokens/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    fn token_texts<'a>(
+        src: &'a str,
+        tokens: &'a [SemanticToken],
+        pred: impl Fn(&SemanticToken) -> bool,
+    ) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .filter(|t| pred(t))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tag_names_get_html_tag_tokens() {
+        // The open-tag name AND the closer name both highlight.
+        let src = ":: Start\n<div>x</div>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let names = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlTag)
+        });
+        assert_eq!(
+            names.iter().filter(|s| **s == "div").count(),
+            2,
+            "open and closer `div` must both get HtmlTag tokens, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn attribute_name_equals_and_value_get_tokens() {
+        // `class="hud"` → HtmlAttribute(`class`), Operator(`=`), String(`hud`).
+        let src = ":: Start\n<div class=\"hud\">x</div>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let attrs = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlAttribute)
+        });
+        assert!(
+            attrs.contains(&"class"),
+            "attribute name must get HtmlAttribute, got: {attrs:?}"
+        );
+        let eq = src.find("class=\"hud\"").unwrap() + 5; // position of `=`
+        assert!(
+            tokens.iter().any(|t| {
+                t.token_type == SemanticTokenType::Operator && t.start == eq && t.length == 1
+            }),
+            "the `=` must get an Operator token at {eq}"
+        );
+        let strings = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::String)
+        });
+        assert!(
+            strings.contains(&"hud"),
+            "the value must get a String token, got: {strings:?}"
+        );
+    }
+
+    #[test]
+    fn directive_value_gets_js_tokens_not_string() {
+        // `@class="$cls"` — the NAME highlights as an attribute, the VALUE
+        // is a TwineScript expression owned by the JS families (Variable
+        // token on $cls, NO String token overlapping it).
+        let src = ":: Start\n<div @class=\"$cls\">x</div>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let attrs = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlAttribute)
+        });
+        assert!(
+            attrs.contains(&"@class"),
+            "directive name (sigil included) must get HtmlAttribute, got: {attrs:?}"
+        );
+        let value_start = src.find("$cls").unwrap();
+        assert!(
+            tokens.iter().any(|t| {
+                t.token_type == SemanticTokenType::Variable
+                    && t.start == value_start
+                    && t.length == 4
+            }),
+            "$cls must get a Variable token from the directive analysis"
+        );
+        let strings = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::String)
+        });
+        assert!(
+            !strings.iter().any(|s| s.contains("$cls")),
+            "directive value must not also emit a String token, got: {strings:?}"
+        );
+    }
+
+    #[test]
+    fn entity_in_attribute_value_gets_entity_token() {
+        // The value emits as String segments split AROUND the entity —
+        // no overlapping tokens.
+        let src = ":: Start\n<span title=\"a &amp; b\">x</span>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let entities = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlEntity)
+        });
+        assert_eq!(
+            entities,
+            vec!["&amp;"],
+            "the entity must get an HtmlEntity token, got: {entities:?}"
+        );
+        let strings = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::String)
+        });
+        assert!(
+            strings.contains(&"a ") && strings.contains(&" b"),
+            "value must split into String segments around the entity, got: {strings:?}"
+        );
+    }
+
+    #[test]
+    fn html_inside_format_content_gets_tokens() {
+        // Nested strata: `''<em>link</em>''` — format content is wikified
+        // (1.3), so the inner HtmlTag still gets its HtmlTag tokens.
+        let src = ":: Start\n''<em>x</em>''\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let names = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlTag)
+        });
+        assert_eq!(
+            names.iter().filter(|s| **s == "em").count(),
+            2,
+            "em open/closer inside format content must get HtmlTag tokens, got: {names:?}"
+        );
+    }
+
+    #[test]
+    fn raw_script_body_has_no_html_tokens_inside() {
+        // `<script>` bodies are JS (2.3): the BODY carries JS-family tokens;
+        // only the open/closer names highlight as HTML.
+        let src = ":: Start\n<script>var hp = 10;</script>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let body_start = src.find("var hp").unwrap();
+        let body_end = src.find("</script>").unwrap();
+        assert!(
+            !tokens.iter().any(|t| {
+                matches!(
+                    t.token_type,
+                    SemanticTokenType::HtmlTag | SemanticTokenType::HtmlAttribute
+                ) && t.start >= body_start
+                    && t.start < body_end
+            }),
+            "no HTML tokens inside the script body"
+        );
+        let names = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlTag)
+        });
+        assert_eq!(
+            names.iter().filter(|s| **s == "script").count(),
+            2,
+            "script open/closer names still highlight"
+        );
+    }
+}
+
+/// Resilient chunked JS analysis (plan.md Phase 3.2): a fatal syntax error
+/// inside one statement of a JS region must NOT blank the whole region —
+/// healthy chunks keep their tokens, broken chunks get fallback-lexer
+/// tokens, and diagnostics are localized to the broken statements (capped
+/// per region).
+mod resilient_js {
+    use super::*;
+    use crate::plugin::SemanticTokenType;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///resilient/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    fn start_links(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .passages
+            .iter()
+            .find(|p| p.name == "Start")
+            .map(|p| p.links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn start_diags_with_ranges(result: &crate::plugin::ParseResult) -> Vec<(usize, usize, String)> {
+        result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Start")
+            .flat_map(|g| {
+                g.diagnostics
+                    .iter()
+                    .map(|d| (d.range.start, d.range.end, d.message.clone()))
+            })
+            .collect()
+    }
+
+    fn token_texts<'a>(
+        src: &'a str,
+        tokens: &'a [SemanticToken],
+        pred: impl Fn(&SemanticToken) -> bool,
+    ) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .filter(|t| pred(t))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fatal_error_keeps_rest_of_script_body_tokens() {
+        // THE plan.md 3.2 scenario: `var hp = ;` mid-script. Before 3.2 the
+        // whole body went dark (oxc fatal ⇒ empty AST). Now the statements
+        // AFTER the broken one keep real AST tokens, and the broken chunk
+        // itself gets fallback-lexer tokens (`var` keyword, `hp` identifier).
+        let src = ":: Start\n<script>\nsetupHero();\nvar hp = ;\nConfig.saves.id = \"story\";\nvar last = true;\n</script>\n[[Forest]]\n:: Forest\nforest\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+
+        // The statement after the broken one keeps AST tokens: `last` is a
+        // variable definition, `true` a boolean literal.
+        let vars = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Variable)
+        });
+        assert!(
+            vars.contains(&"last"),
+            "statements after the fatal error must keep their tokens, vars: {vars:?}"
+        );
+        let bools = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Boolean)
+        });
+        assert!(
+            bools.contains(&"true"),
+            "boolean literal after the fatal error must keep its token, got: {bools:?}"
+        );
+        // String literal in the statement after the broken one survives.
+        let strings = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::String)
+        });
+        assert!(
+            strings.iter().any(|s| s.contains("story")),
+            "string literal after the fatal error must keep its token, got: {strings:?}"
+        );
+
+        // Diagnostics are LOCALIZED: at least one, and every diagnostic's
+        // range starts within the broken statement's line — never at the
+        // region start blanket.
+        let diags = start_diags_with_ranges(&result);
+        assert!(
+            !diags.is_empty(),
+            "the broken statement must still produce a diagnostic"
+        );
+        let broken_start = src.find("var hp = ;").unwrap();
+        let broken_end = broken_start + "var hp = ;".len();
+        assert!(
+            diags
+                .iter()
+                .any(|(s, e, _)| *s >= broken_start.saturating_sub(4) && *e <= broken_end + 4),
+            "diagnostics must be localized to the broken statement, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn fatal_error_in_macro_script_body_keeps_tokens() {
+        // Same contract through the `<<script>>` macro body path
+        // (analyze_js_snippet is_block=true).
+        let src = ":: Start\n<<script>>\nvar hp = ;\nvar last = true;\n<</script>>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let vars = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Variable)
+        });
+        assert!(
+            vars.contains(&"last"),
+            "statements after the fatal error must keep tokens, vars: {vars:?}"
+        );
+        assert!(
+            start_links(&result).iter().any(|t| t == "Forest"),
+            "the passage around the broken script must be unaffected"
+        );
+    }
+
+    #[test]
+    fn script_body_diagnostics_are_capped() {
+        // 12 broken statements ⇒ at most 10 region diagnostics (the cap).
+        let mut body = String::new();
+        for i in 0..12 {
+            body.push_str(&format!("var v{i} = ;\n"));
+        }
+        let src = format!(":: Start\n<script>\n{body}</script>\n[[Forest]]\n");
+        let result = parse_full(&src);
+        let diags = start_diags_with_ranges(&result);
+        assert!(
+            !diags.is_empty(),
+            "broken statements must produce diagnostics"
+        );
+        assert!(
+            diags.len() <= 10,
+            "region diagnostics must be capped at 10, got {}",
+            diags.len()
+        );
+    }
+}
+
+/// CSS support (plan.md Phase 4.2): `knot_core::css::parse_css` is now a
+/// real tokenizer, so `<style>` bodies, `style="…"` attribute values,
+/// `<<style>>` macro blocks and `[stylesheet]` passages all produce CSS
+/// semantic tokens; markup diagnostics inside CSS stay silent.
+mod css_support {
+    use super::*;
+    use crate::plugin::SemanticTokenType;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///css/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    fn token_texts<'a>(
+        src: &'a str,
+        tokens: &'a [SemanticToken],
+        pred: impl Fn(&SemanticToken) -> bool,
+    ) -> Vec<&'a str> {
+        tokens
+            .iter()
+            .filter(|t| pred(t))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn style_tag_body_gets_css_tokens() {
+        // The 2.3 raw carve + the 4.2 tokenizer: `.hud` selector and `color`
+        // property highlight inside the <style> body.
+        let src = ":: Start\n<style>\n.hud { color: red; }\n</style>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let props = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Property)
+        });
+        assert!(
+            props.contains(&"color"),
+            "the style body must get CSS Property tokens, got: {props:?}"
+        );
+        let selectors = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Tag)
+        });
+        assert!(
+            selectors.contains(&".hud"),
+            "the selector must get a Tag token (CSS selector mapping), got: {selectors:?}"
+        );
+    }
+
+    #[test]
+    fn style_attribute_gets_css_tokens() {
+        // `style="color: red"` — the value is CSS, not a plain string.
+        let src = ":: Start\n<div style=\"color: red\">x</div>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let props = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Property)
+        });
+        assert!(
+            props.contains(&"color"),
+            "style attribute value must get CSS Property tokens, got: {props:?}"
+        );
+        // No String token over the value (CSS tokens own it).
+        let strings = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::String)
+        });
+        assert!(
+            !strings.iter().any(|s| s.contains("color")),
+            "style value must not ALSO emit a String token, got: {strings:?}"
+        );
+    }
+
+    #[test]
+    fn macro_style_block_gets_css_tokens() {
+        // `<<style>>` blocks already called analyze_css pre-4.2; they start
+        // producing tokens now that the core parser is real.
+        let src = ":: Start\n<<style>>\n.hud { color: red; }\n<</style>>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let props = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Property)
+        });
+        assert!(
+            props.contains(&"color"),
+            "<<style>> block must get CSS Property tokens, got: {props:?}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_passage_gets_css_tokens() {
+        // [stylesheet]-tagged passages: previously zero tokens (the stub).
+        let src = ":: Start [stylesheet]\n.hud { color: red; }\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let props = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::Property)
+        });
+        assert!(
+            props.contains(&"color"),
+            "stylesheet passage must get CSS Property tokens, got: {props:?}"
+        );
+    }
+}
+
+/// Probe-battery regression corpus (plan.md Phase 5.2): the original
+/// Task 4 diagnosis table — the reproduction rows that started the whole
+/// plan — consolidated as ONE permanent test. Every row below once
+/// demonstrated breakage in a scratch probe; each now asserts the FIXED
+/// behavior delivered by Phases 1–3. Individual phases also carry their
+/// own finer-grained regressions (see `prose_scanner_regressions`,
+/// `raw_text_zones`, `resilient_js`, …).
+mod probe_battery_regression {
+    use super::*;
+    use crate::plugin::SemanticTokenType;
+
+    fn parse_full(src: &str) -> crate::plugin::ParseResult {
+        let mut registry = FormatRegistry::with_defaults();
+        let plugin = registry
+            .get_mut(&StoryFormat::SugarCube)
+            .expect("sugarcube plugin");
+        let uri = Url::parse("file:///probe/story.tw").unwrap();
+        plugin.parse_mut(&uri, src)
+    }
+
+    fn start_links(result: &crate::plugin::ParseResult) -> Vec<String> {
+        result
+            .passages
+            .iter()
+            .find(|p| p.name == "Start")
+            .map(|p| p.links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn task4_reproduction_table_all_rows_fixed() {
+        // Row 1 — stray `''` used to swallow the following link and blank
+        // its tokens (16→7 tokens, zero diagnostics, is_complete true).
+        // Fixed in Phase 1.2: a stray opener is literal text.
+        let src = ":: Start\nIt's ''quoted'' here\n[[Forest]]\n";
+        let result = parse_full(src);
+        assert_eq!(
+            start_links(&result),
+            vec!["Forest"],
+            "row 1: link must survive a stray opener"
+        );
+
+        // Row 2 — two stray openers on different paragraphs used to pair
+        // across paragraphs and swallow the link between them.
+        let src = ":: Start\nsay ''hello\n\n[[Forest]]\n";
+        let result = parse_full(src);
+        assert_eq!(
+            start_links(&result),
+            vec!["Forest"],
+            "row 2: openers must not pair across paragraphs"
+        );
+
+        // Row 3 — `@admin;` / `bob@x.com;` used to open a bogus InlineStyle
+        // that swallowed the rest of the passage (single-`@` arm, removed
+        // in Phase 1.1).
+        let src = ":: Start\ncontact bob@x.com; today\n[[Forest]]\n";
+        let result = parse_full(src);
+        assert_eq!(
+            start_links(&result),
+            vec!["Forest"],
+            "row 3: email-with-semicolon must stay literal"
+        );
+        assert!(
+            !flatten_token_groups(&result).iter().any(|t| {
+                matches!(t.token_type, SemanticTokenType::InlineStyle)
+                    && t.start < src.find("[[Forest]]").unwrap()
+            }),
+            "row 3: no InlineStyle token before the link"
+        );
+
+        // Row 4 — `''[[Forest]]''` used to hide the link inside an opaque
+        // TextFormat (fixed in Phase 1.3 subWikify parity).
+        let src = ":: Start\n''[[Forest]]''\n";
+        let result = parse_full(src);
+        assert_eq!(
+            start_links(&result),
+            vec!["Forest"],
+            "row 4: link inside bold must be live"
+        );
+
+        // Row 5 — `<<set $x to $a << 2>>` used to lose its args to `<<`
+        // depth-tracking (fixed in Phase 1.5): the left-shift must parse and
+        // `$a` must survive as a read.
+        let src = ":: Start\n<<set $x to $a << 2>>\n[[Forest]]\n";
+        let result = parse_full(src);
+        assert!(
+            start_diags_empty(&result),
+            "row 5: JS left-shift in macro args must scan cleanly"
+        );
+
+        // Row 6 — symbols inside `<span>`/`<div>` interiors used to break
+        // diagnostics (the issue #6 class, fixed in Phase 2.2).
+        let src = ":: Start\n<<if $hud>><div @class=\"hud\" style=\"color: red;\">x</div><</if>>\n[[Forest]]\n";
+        let result = parse_full(src);
+        assert!(
+            start_diags_empty(&result),
+            "row 6: tag interiors must be inert for prose diagnostics"
+        );
+
+        // Row 7 — one JS syntax error used to blank every token in the
+        // region (fixed in Phase 3.2 chunked parsing).
+        let src = ":: Start\n<script>\nvar hp = ;\nvar last = true;\n</script>\n";
+        let result = parse_full(src);
+        let vars: Vec<&str> = flatten_token_groups(&result)
+            .iter()
+            .filter(|t| matches!(t.token_type, SemanticTokenType::Variable))
+            .map(|t| {
+                let start = t.start.min(src.len());
+                &src[start..(start + t.length).min(src.len())]
+            })
+            .collect();
+        assert!(
+            vars.contains(&"last"),
+            "row 7: tokens after the fatal error must survive, vars: {vars:?}"
+        );
+    }
+
+    fn start_diags_empty(result: &crate::plugin::ParseResult) -> bool {
+        result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Start")
+            .all(|g| g.diagnostics.is_empty())
     }
 }

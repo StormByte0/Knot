@@ -540,6 +540,173 @@ fn find_enclosing_passage_name(text: &str, line: u32) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// HTML-stratum completion guard (plan.md Phase 2.5)
+// ---------------------------------------------------------------------------
+
+/// The zone stratum at a cursor position, classified from the ZoneMap (the
+/// per-byte language authority built by `zoning::build_from_ast`).
+///
+/// This is the completion-side answer to the F6 bug class: position-based
+/// features must CONSULT the zone structure instead of re-deriving context
+/// by re-scanning raw text (the exact behavior that made `<<` inside a tag
+/// interior or a JS left-shift inside `<script>` look like macro markup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionZone {
+    /// Wikified markup content — every completion behavior stays active.
+    Prose,
+    /// Inside a tag interior (start-tag bytes or attribute values).
+    /// `directive_value` is true when the cursor sits inside the VALUE of
+    /// an `@attr`/`sc-eval:attr` directive — a TwineScript expression where
+    /// SugarCube variable completions stay meaningful (upstream evaluates
+    /// it via `Scripting.evalTwineScript`).
+    TagInterior { directive_value: bool },
+    /// Inside a `<script>` raw body — JS with SugarCube `$var` syntax; the
+    /// variable sigils stay live, all markup completions suppressed.
+    RawScript,
+    /// Inside a `<style>` raw body — pure CSS; everything suppressed.
+    RawStyle,
+}
+
+/// Classify the completion zone at `byte_offset` by reparsing the enclosing
+/// normal passage and consulting its ZoneMap.
+///
+/// Conservative fallbacks, all returning [`CompletionZone::Prose`] (legacy
+/// behavior): no enclosing header, cursor on a header line, code-like
+/// passages ([script]/[stylesheet]/[style]/[init]/[widget] tags or
+/// StoryInit/StoryData-style names — their bodies are not SugarCube markup
+/// so the HTML stratum never applies), empty bodies, or uncovered gaps
+/// between leaves.
+impl SugarCubePlugin {
+    /// Classify the completion zone at `byte_offset` through the plugin's
+    /// zone analyzer ([`FormatPlugin::zone_analyze`], the Phase 4.1
+    /// ZoneAnalyzer capability — the per-byte language authority).
+    fn completion_zone_at(&self, text: &str, byte_offset: usize) -> CompletionZone {
+        // Line-start table (CRLF-safe: \n positions suffice for line starts).
+        let mut line_starts = vec![0usize];
+        for (i, b) in text.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        let last_start_idx = line_starts.len() - 1;
+        let cursor_line = match line_starts.binary_search(&byte_offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1).min(last_start_idx),
+        };
+
+        // Walk backwards (inclusive) for the nearest `::` header.
+        let mut header_idx = None;
+        let mut header = None;
+        for idx in (0..=cursor_line).rev() {
+            let ls = line_starts[idx];
+            let le = text[ls..].find('\n').map(|p| ls + p).unwrap_or(text.len());
+            if let Some(h) = crate::header::parse_twee_header(&text[ls..le], ls) {
+                header_idx = Some(idx);
+                header = Some((h, le + 1)); // body starts after the header line
+                break;
+            }
+        }
+        let Some((h, body_start)) = header else {
+            return CompletionZone::Prose;
+        };
+        if byte_offset < body_start {
+            // Cursor on the header line itself — header completion contexts own
+            // that region.
+            return CompletionZone::Prose;
+        }
+
+        // Code-like passages: bodies are not SugarCube markup, so the HTML
+        // stratum (and this guard) never applies. Tag matching is
+        // case-insensitive (Twee 3); the name list is the code/JSON subset of
+        // the special passages (markup passages like PassageHeader stay
+        // guarded like any normal passage).
+        let code_tags = ["script", "stylesheet", "style", "init", "widget"];
+        if h.tags
+            .iter()
+            .any(|t| code_tags.contains(&t.to_ascii_lowercase().as_str()))
+            || matches!(
+                h.name.as_str(),
+                "StoryInit"
+                    | "Story JavaScript"
+                    | "StoryCSS"
+                    | "Story Stylesheet"
+                    | "StoryData"
+                    | "Story Metadata"
+            )
+        {
+            return CompletionZone::Prose;
+        }
+
+        // Body extent: from after the header line to the next header (or EOF).
+        let mut body_end = text.len();
+        for &ls in line_starts.iter().skip(header_idx.unwrap() + 1) {
+            let le = text[ls..].find('\n').map(|p| ls + p).unwrap_or(text.len());
+            if crate::header::parse_twee_header(&text[ls..le], ls).is_some() {
+                body_end = ls;
+                break;
+            }
+        }
+        if byte_offset >= body_end || body_start >= body_end {
+            return CompletionZone::Prose;
+        }
+        let body = &text[body_start..body_end];
+        let offset_in_body = byte_offset - body_start;
+
+        // Phase 4.1: the zone map comes from the plugin's ZoneAnalyzer
+        // capability (per-byte language authority) instead of a local
+        // build_from_ast call — LSP features consume the analyzer, they do not
+        // re-derive it.
+        let zones = self.zone_analyze(body);
+        let Some(leaf) = zones.leaf_at(offset_in_body) else {
+            return CompletionZone::Prose;
+        };
+        match leaf.kind.language() {
+            knot_core::zoning::Language::Html => CompletionZone::TagInterior {
+                directive_value: inside_directive_value(
+                    &parser::parse_passage_body(body, 0, ParseMode::Normal).nodes,
+                    offset_in_body,
+                ),
+            },
+            knot_core::zoning::Language::Js => CompletionZone::RawScript,
+            knot_core::zoning::Language::Css => CompletionZone::RawStyle,
+            knot_core::zoning::Language::Markup => CompletionZone::Prose,
+        }
+    }
+}
+
+/// True when `offset` sits inside the VALUE of an `@attr`/`sc-eval:attr`
+/// directive on an [`AstNode::HtmlTag`] (open-tag region only — open spans
+/// never nest, so the first containing tag wins).
+///
+/// The value END is inclusive: a completion cursor sits one byte PAST the
+/// last typed character, so after typing `@class="$` the cursor is at
+/// `value.end` and variable completions must still fire.
+fn inside_directive_value(nodes: &[ast::AstNode], offset: usize) -> bool {
+    for node in nodes {
+        if let ast::AstNode::HtmlTag {
+            open_span,
+            attrs,
+            children,
+            ..
+        } = node
+        {
+            if open_span.start <= offset && offset < open_span.end {
+                return attrs.iter().any(|a| {
+                    a.directive.is_some()
+                        && a.value_span
+                            .as_ref()
+                            .is_some_and(|vs| vs.start <= offset && offset <= vs.end)
+                });
+            }
+            if inside_directive_value(children, offset) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// SugarCube 2.x format plugin.
 ///
 /// All runtime-populated registries are owned by the unified
@@ -631,6 +798,16 @@ impl FormatPluginMut for SugarCubePlugin {
 impl FormatPlugin for SugarCubePlugin {
     fn format(&self) -> StoryFormat {
         StoryFormat::SugarCube
+    }
+
+    fn zone_analyze(&self, body: &str) -> knot_core::zoning::ZoneMap {
+        // Phase 4.1 ZoneAnalyzer: the SugarCube strata producers
+        // (prose/markup, htmlTag + raw-text script/style from Phases 1–3,
+        // macro bodies) orchestrated into ONE ZoneMap — the per-byte
+        // language authority. Uses the LIVE custom macro registry so widget
+        // invocations classify with their registered kinds.
+        let ast = parser::parse_passage_body(body, 0, ParseMode::Normal);
+        crate::zoning::build_from_ast(&ast.nodes, 0, self.registry.custom_macros())
     }
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
@@ -1430,6 +1607,42 @@ impl FormatPlugin for SugarCubePlugin {
         // ── 0. Passage header suppression ──────────────────────────────
         if find_passage_header_at_position(text, line).is_some() {
             return Vec::new();
+        }
+
+        // ── 0b. HTML-stratum guard (plan.md Phase 2.5) ─────────────
+        //
+        // The zone map, not raw-text scanning, decides what the cursor is
+        // inside. In tag interiors and raw-text bodies the markup completion
+        // contexts (macros, close tags, links, passage names, templates) are
+        // inert bytes — only SugarCube variable sigils stay live, and only
+        // where SugarCube actually evaluates variables: `<script>` bodies
+        // (SugarCube syntax: $var → State.variables) and directive
+        // attribute values (upstream `Scripting.evalTwineScript`).
+        match self.completion_zone_at(text, byte_offset) {
+            CompletionZone::Prose => {}
+            CompletionZone::RawScript
+            | CompletionZone::TagInterior {
+                directive_value: true,
+            } => {
+                if trigger == Some('$') || trigger == Some('_') {
+                    let is_temp = trigger == Some('_');
+                    let sigil = if is_temp { '_' } else { '$' };
+                    let partial = extract_partial_after_sigil(before_cursor, sigil);
+                    let passage_name = find_enclosing_passage_name(text, line);
+                    return self.build_variable_completions(
+                        is_temp,
+                        line,
+                        character,
+                        partial,
+                        passage_name.as_deref(),
+                    );
+                }
+                return Vec::new();
+            }
+            CompletionZone::TagInterior {
+                directive_value: false,
+            }
+            | CompletionZone::RawStyle => return Vec::new(),
         }
 
         // ── 1. $ / _ trigger → Variable completions ───────────────────
@@ -6323,6 +6536,237 @@ mod phase4_zone_completion_tests {
                 expected,
                 labels
             );
+        }
+    }
+}
+
+/// HTML-stratum completion guard (plan.md Phase 2.5): position-based
+/// completion contexts consult the ZoneMap instead of re-deriving context
+/// from raw text. Markup completions (macros, close tags, links, passage
+/// names, templates) are suppressed inside tag interiors and raw-text
+/// bodies; SugarCube variable sigils stay live exactly where SugarCube
+/// evaluates them — `<script>` bodies (SugarCube syntax) and directive
+/// attribute values (`Scripting.evalTwineScript` upstream).
+#[cfg(test)]
+mod html_zone_guard_tests {
+    use super::*;
+
+    fn setup(src: &str) -> (SugarCubePlugin, knot_core::Workspace, Url) {
+        let mut plugin = SugarCubePlugin::new();
+        let uri = Url::parse("file:///guard/story.twee").unwrap();
+        let result = plugin.parse_mut(&uri, src);
+        let mut workspace = knot_core::Workspace::new(Url::parse("file:///guard/").unwrap());
+        let mut doc =
+            knot_core::Document::new(uri.clone(), knot_core::passage::StoryFormat::SugarCube);
+        doc.passages = result.passages.clone();
+        workspace.insert_document(doc);
+        (plugin, workspace, uri)
+    }
+
+    #[test]
+    fn macro_completions_suppressed_inside_tag_interior() {
+        // Typing `<<` inside an attribute value must NOT offer macro
+        // completions — those bytes are inert HTML, not markup.
+        let src = ":: Start\n<a title=\"a <<\">x</a>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 1u32;
+        let char = src.lines().nth(1).unwrap().find("<<").unwrap() as u32 + 2;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('<'), &[]);
+        assert!(
+            items.is_empty(),
+            "macro completions must be suppressed inside a tag interior, got: {:?}",
+            items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dollar_completions_suppressed_in_plain_attribute_value() {
+        // `$` inside a NON-directive attribute value is inert — upstream
+        // only evaluates directive values.
+        let src = ":: Start\n<span title=\"$\">x</span>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 1u32;
+        let char = src.lines().nth(1).unwrap().find('$').unwrap() as u32 + 1;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('$'), &[]);
+        assert!(
+            items.is_empty(),
+            "variable completions must be suppressed in plain attribute values, got: {:?}",
+            items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn variable_completions_offered_inside_directive_value() {
+        // `@class="$…"` is a TwineScript expression — SugarCube variable
+        // completions MUST stay available (the plan's "offered inside
+        // @class" pin).
+        let src = ":: Start\n<<set $gold to 1>><div @class=\"$\"></div>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 1u32;
+        let body_line = src.lines().nth(1).unwrap();
+        let char = body_line.find("\"$").unwrap() as u32 + 2; // right after `$`
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('$'), &[]);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.iter().any(|l| l.contains("gold")),
+            "variable completions must be offered inside a directive value, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn macro_completions_suppressed_in_script_body() {
+        // `a << b` in a script body is a JS left-shift, not a macro.
+        let src = ":: Start\n<script>\nif (a << b) {}\n</script>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 2u32;
+        let char = src.lines().nth(2).unwrap().find("<<").unwrap() as u32 + 2;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('<'), &[]);
+        assert!(
+            items.is_empty(),
+            "macro completions must be suppressed inside <script> bodies, got: {:?}",
+            items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dollar_completions_still_live_in_script_body() {
+        // SugarCube script bodies preprocess $var → State.variables, so the
+        // `$` sigil stays meaningful there.
+        let src = ":: StoryInit\n<<set $coins to 0>>\n:: Start\n<script>\n$\n</script>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 4u32;
+        let char = src.lines().nth(4).unwrap().find('$').unwrap() as u32 + 1;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('$'), &[]);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.iter().any(|l| l.contains("coins")),
+            "variable completions must stay live in script bodies, got: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn style_body_completions_suppressed() {
+        let src = ":: Start\n<style>\n.hud << 2 { color: red; }\n</style>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 2u32;
+        let char = src.lines().nth(2).unwrap().find("<<").unwrap() as u32 + 2;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('<'), &[]);
+        assert!(
+            items.is_empty(),
+            "completions must be suppressed inside <style> bodies, got: {:?}",
+            items.iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn prose_macro_completions_unchanged() {
+        // Control: the guard must not over-suppress — `<<` in plain prose
+        // still offers macro completions.
+        let src = ":: Start\nHello <<\n[[Forest]]\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 1u32;
+        let char = src.lines().nth(1).unwrap().find("<<").unwrap() as u32 + 2;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('<'), &[]);
+        assert!(
+            !items.is_empty(),
+            "macro completions in prose must keep working"
+        );
+    }
+
+    #[test]
+    fn zone_helper_classifies_strata() {
+        // Direct pins on the classifier (offsets via find() — no manual
+        // line arithmetic).
+        let src = ":: Start\n<div>body</div>\n<script>x</script>\n<style>y</style>\n";
+        let plugin = SugarCubePlugin::new();
+        let open_tag = src.find("<div").unwrap() + 2; // inside the tag name
+        assert_eq!(
+            plugin.completion_zone_at(src, open_tag),
+            CompletionZone::TagInterior {
+                directive_value: false
+            }
+        );
+        let content = src.find("<div>").unwrap() + 5; // inside element content
+        assert_eq!(
+            plugin.completion_zone_at(src, content),
+            CompletionZone::Prose
+        );
+        let script_body = src.find("<script>").unwrap() + 8;
+        assert_eq!(
+            plugin.completion_zone_at(src, script_body),
+            CompletionZone::RawScript
+        );
+        let style_body = src.find("<style>").unwrap() + 7;
+        assert_eq!(
+            plugin.completion_zone_at(src, style_body),
+            CompletionZone::RawStyle
+        );
+        // Directive value (inclusive end): cursor right after `$`.
+        let src2 = ":: Start\n<div @class=\"$\">x</div>\n";
+        let after_sigil = src2.find("\"$").unwrap() + 2;
+        assert_eq!(
+            plugin.completion_zone_at(src2, after_sigil),
+            CompletionZone::TagInterior {
+                directive_value: true
+            }
+        );
+    }
+}
+
+/// Phase 4.1 ZoneAnalyzer (plan.md): the fixture matrix pins per-byte
+/// `language_at` answers across every stratum, and the zone invariants
+/// (sorted, non-empty, non-overlapping leaves) are validated over a corpus
+/// of representative/hostile fixtures.
+#[cfg(test)]
+mod zone_analyzer_tests {
+    use super::*;
+    use knot_core::zoning::Language;
+
+    #[test]
+    fn language_at_agrees_with_expected_strata() {
+        // Fixture matrix: every stratum in one passage body.
+        let body = "Prose [[Forest]] <<set $x to 1>> <div>in</div>\n<script>var a;</script>\n<style>.b{}</style>\n";
+        let plugin = SugarCubePlugin::new();
+        let zones = plugin.zone_analyze(body);
+        zones.validate().expect("zone invariants hold");
+
+        let at = |needle: &str, skip: usize| body.find(needle).unwrap() + skip;
+        // Prose and wikified constructs are Markup.
+        assert_eq!(zones.language_at(at("Prose", 0)), Language::Markup);
+        assert_eq!(zones.language_at(at("[[Forest]]", 3)), Language::Markup);
+        assert_eq!(zones.language_at(at("<<set", 1)), Language::Markup);
+        // Tag interiors are Html; element content is Markup (wikified).
+        assert_eq!(zones.language_at(at("<div", 2)), Language::Html);
+        assert_eq!(zones.language_at(at("<div>", 5)), Language::Markup);
+        // Raw-text bodies are Js / Css.
+        assert_eq!(zones.language_at(at("<script>", 8)), Language::Js);
+        assert_eq!(zones.language_at(at("<style>", 7)), Language::Css);
+        // Uncovered gaps default to Markup.
+        assert_eq!(zones.language_at(body.len()), Language::Markup);
+    }
+
+    #[test]
+    fn zone_invariants_hold_on_corpus() {
+        // Whole-corpus invariant check: representative fixtures from every
+        // phase's strata plus hostile shapes (broken JS, literal `<`,
+        // symbols inside attributes).
+        let corpus = [
+            ":: A\nplain prose\n",
+            ":: A\n''bold [[link]]'' and <<set $x to 1>>\n",
+            ":: A\n<div class=\"hud\" @style=\"$x\">''b''</div>\n<<if $x>>y<</if>>\n",
+            ":: A\n<script>\nvar hp = ;\nvar ok = 1;\n</script>\n",
+            ":: A\n<style>.hud { color: red; }</style>\n",
+            ":: A\n<textarea>''x''</textarea>\n5 < 6 and <3\n",
+            ":: A\n<<script>>\nbad {\n<</script>>\n[[L]]\n",
+            ":: A\n<span title=\"a <<if>> [[x]]\">t</span> [[L]]\n",
+        ];
+        let plugin = SugarCubePlugin::new();
+        for body in corpus {
+            let label = body.split('\n').next().unwrap_or("").to_string();
+            let zones = plugin.zone_analyze(body);
+            if let Err(e) = zones.validate() {
+                panic!("zone invariants violated for fixture {label:?}: {e}");
+            }
         }
     }
 }

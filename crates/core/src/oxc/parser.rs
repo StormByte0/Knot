@@ -68,12 +68,11 @@ pub fn parse_js(source: &str, mode: ParseMode) -> JsParseOutcome {
     #[cfg(test)]
     record_parse_call();
 
-    let panicked = result.panicked;
-    let diagnostics = if result.errors.is_empty() {
-        Vec::new()
-    } else {
-        collect_diagnostics(&result.errors, &source_text, mode)
-    };
+    // oxc 0.150 (plan.md Phase 3.1): `panicked` was renamed to
+    // `fatal_error` ("the parser gave up — AST is invalid"), and the error
+    // list became the `Diagnostics` collection type.
+    let panicked = result.fatal_error;
+    let diagnostics = collect_diagnostics(&result.diagnostics, &source_text, mode);
 
     JsParseOutcome::new(diagnostics, panicked)
 }
@@ -98,7 +97,8 @@ pub fn parse_js(source: &str, mode: ParseMode) -> JsParseOutcome {
 ///
 /// If Oxc encountered errors it could recover from, the visitor IS called on
 /// the partial AST and `outcome.diagnostics` reports the errors. NOTE that
-/// oxc's recovery is narrow (verified empirically against oxc 0.134): common
+/// oxc's recovery is narrow (verified empirically against oxc 0.134 and
+/// re-confirmed on 0.150, plan.md Phase 3.1): common
 /// authoring errors such as a missing operand (`var x = ;`), an unclosed
 /// `{`, or an unterminated string literal are FATAL — the parser aborts with
 /// `panicked == true` and an EMPTY AST, so the visitor is skipped. Treat the
@@ -153,12 +153,10 @@ where
     #[cfg(test)]
     record_parse_call();
 
-    let panicked = result.panicked;
-    let diagnostics = if result.errors.is_empty() {
-        Vec::new()
-    } else {
-        collect_diagnostics(&result.errors, &source_text, mode)
-    };
+    // oxc 0.150 (plan.md Phase 3.1): `panicked` → `fatal_error`, errors →
+    // `diagnostics` (see parse_js).
+    let panicked = result.fatal_error;
+    let diagnostics = collect_diagnostics(&result.diagnostics, &source_text, mode);
 
     // Run the visitor only if Oxc did not panic. When oxc DOES recover from a
     // syntax error, the partial AST is still walked. But recovery is narrow:
@@ -178,14 +176,18 @@ where
 /// Each error is converted to a `JsDiagnostic` with the error message,
 /// severity, and approximate position. The position is in the source text
 /// passed to the parser (after any wrapping for expressions).
+///
+/// oxc 0.150 (plan.md Phase 3.1): the parser returns the new
+/// `oxc_diagnostics::Diagnostics` collection type instead of
+/// `Vec<OxcDiagnostic>`.
 fn collect_diagnostics(
-    errors: &[oxc_diagnostics::OxcDiagnostic],
+    diagnostics: &oxc_diagnostics::Diagnostics,
     source_text: &str,
     mode: ParseMode,
 ) -> Vec<JsDiagnostic> {
-    let mut diagnostics = Vec::new();
+    let mut result = Vec::new();
 
-    for error in errors {
+    for error in diagnostics.iter() {
         let error_msg = error.to_string();
 
         // Extract position information from the error.
@@ -195,7 +197,7 @@ fn collect_diagnostics(
         // range as a fallback.
         let (line, column, range) = extract_error_position(error, source_text, mode);
 
-        diagnostics.push(JsDiagnostic {
+        result.push(JsDiagnostic {
             message: error_msg,
             severity: JsDiagnosticSeverity::Error,
             range,
@@ -204,7 +206,7 @@ fn collect_diagnostics(
         });
     }
 
-    diagnostics
+    result
 }
 
 /// Extract position information from an Oxc diagnostic.
@@ -227,10 +229,12 @@ fn extract_error_position(
     // Try to extract the span from the error's labels.
     // Oxc miette errors contain source code snippets with span info.
     // The label's span is in the wrapped source text.
-    if let Some(label) = error.labels.as_ref().and_then(|l| l.first()) {
-        let span = label.inner();
-        let start = span.offset().saturating_sub(wrapping_offset);
-        let end = (start + span.len()).min(source_text.len());
+    // oxc 0.150: `labels` is a plain slice (no Option wrapper).
+    if let Some(label) = error.labels.first() {
+        // oxc 0.150: LabeledSpan exposes offset/len directly (the old
+        // `label.inner().offset()` path is gone) and they are `u32` now.
+        let start = (label.offset() as usize).saturating_sub(wrapping_offset);
+        let end = (start + label.len() as usize).min(source_text.len());
 
         // Compute line and column from the offset in the original source
         let line = compute_line(source_text, start);
@@ -327,7 +331,8 @@ mod tests {
         // (the brace is closed; there is no recoverable error to exercise).
         // This test verifies the happy path: a clean multi-statement module
         // parses, reports no diagnostics, and the visitor walks the AST.
-        // (Empirical probe work against oxc 0.134 — see scripts/oxc_probe —
+        // (Empirical probe work against oxc 0.134/0.150 — see
+        // scripts/oxc_probe + scripts/oxc_probe_150 —
         // shows genuinely recoverable errors are hard to construct and that
         // common authoring errors panic the parser instead of recovering.)
         let (outcome, body_len) = parse_and_visit(

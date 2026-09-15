@@ -13,13 +13,19 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 # JavaScript parsing via Oxc
-oxc_parser = "0.134"
-oxc_span = "0.134"
-oxc_ast = "0.134"
-oxc_allocator = "0.134"
-oxc_diagnostics = "0.134"
+oxc_parser = "0.150"
+oxc_span = "0.150"
+oxc_ast = "0.150"
+oxc_allocator = "0.150"
+oxc_diagnostics = "0.150"
 
 # CSS parsing — currently unserved. The `css` module exposes stable types
 # (`CssToken`, `CssTokenKind`, `CssDiagnostic`, `CssParseOutcome`) and a
 # `parse_css()` entry point that returns an empty outcome. A future CSS
 # crate will plug in here without changing downstream callers.
+
+# HTML parsing via html5gum — WHATWG-compliant tokenizer with byte spans.
+# `knot-core` owns a shared `html` module (sibling of `oxc/`) that builds a
+# span-carrying CST on top of the token stream; format crates access it on
+# demand. See plan.md Phase 2.1 / decision D3.
+html5gum = "0.8"

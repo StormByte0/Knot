@@ -551,6 +551,46 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 flush_text(text, &mut text_start, start, offset, &mut nodes);
                 Some(node)
             }
+            b'<' if may_start_html_tag(bytes, i, len) => {
+                // <name …> — SugarCube htmlTag stratum (plan.md Phase 2.2;
+                // upstream parserlib.js `htmlTag` L1704-1829).
+                //
+                // A start tag is consumed ATOMICALLY via the core HTML
+                // module's span-faithful tag scan (`knot_core::html::
+                // scan_leading_tag`) — markup symbols inside the tag interior
+                // (`''`, `@`, `;` in attribute values) can never reach the
+                // prose scanners again. This closes the issue #6 scope-bleed
+                // class at the parser level (plan.md F6): the false
+                // InlineStyle that ate `<</if>>` closers cannot form inside
+                // a tag because the interior is never scanned.
+                //
+                // A `<` that does not begin a well-formed tag (`5 < 6`,
+                // `< div`, `<3`, an unterminated tag at EOF) falls through
+                // as literal text, exactly like upstream where the htmlTag
+                // regex fails to match. A stray END tag (`</div>` with no
+                // open element) is literal text too — upstream's htmlTag
+                // regex matches start tags only.
+                //
+                // Element content stays WIKIFIED (upstream `subWikify` to
+                // the case-insensitive terminator — D1 rule 2): links,
+                // macros, formats and nested tags inside the content are
+                // parsed recursively into `children`.
+                let start = i;
+                match parse_html_tag(text, &mut i, ctx, start) {
+                    Some(node) => {
+                        resync_col_after_advance(text, start, i, ctx);
+                        flush_text(text, &mut text_start, start, offset, &mut nodes);
+                        Some(node)
+                    }
+                    None => {
+                        // Not a tag — literal `<`; the catch-all's text
+                        // handling picks the tag spelling up as prose.
+                        i = start + 1;
+                        ctx.col += 1;
+                        None
+                    }
+                }
+            }
             b'$' if i + 1 < len && bytes[i + 1] == b'$' => {
                 // $$ — escaped dollar, include in text
                 i += 2;
@@ -592,14 +632,16 @@ fn parse_body_with_ctx(text: &str, ctx: &mut ParseCtx) -> Vec<AstNode> {
                 // — the HTML/SVG attribute directive (v2.21+, docs §markup-html-
                 // svg-attribute-directive). Upstream handles it in the `htmlTag`
                 // parser, which consumes whole tags atomically (quote-aware), so
-                // markup parsers never see inside a tag. Knot has no htmlTag
-                // stratum yet (plan.md Phase 2.2), so until then `@`-directives
-                // in tags are inert literal text — harmless, unlike the old
-                // single-`@` arm whose same-line `;` scan ignored quoting, so a
-                // `;` inside an attribute value (e.g. `@style="color: red;"` or
-                // a sibling `style="...;"`) opened a false InlineStyle that
-                // swallowed to EOF, ate macro closers, and yielded false
-                // "Unclosed block macro" errors.
+                // markup parsers never see inside a tag. The htmlTag stratum now
+                // EXISTS (plan.md Phase 2.2, the `b'<'` dispatch arm): tags are
+                // atomic and `@attr`/`sc-eval:attr` directive values are routed
+                // into the oxc JS pipeline by `annotate_js`. A bare `@` OUTSIDE
+                // a tag remains literal text — which is what killed the old
+                // single-`@` arm's failure mode: its same-line `;` scan ignored
+                // quoting, so a `;` inside an attribute value (e.g.
+                // `@style="color: red;"` or a sibling `style="...;"`) opened a
+                // false InlineStyle that swallowed to EOF, ate macro closers,
+                // and yielded false "Unclosed block macro" errors.
                 //
                 // UPSTREAM (pinned 2026-09-15: parserlib.js `customStyle`
                 // L941-986 + wikifier.js `subWikify` L123+ + lib/patterns.js
@@ -1144,6 +1186,328 @@ fn parse_format_content(
         depth: parent_depth + 1,
     };
     parse_body_with_ctx(content, &mut child_ctx)
+}
+
+// ---------------------------------------------------------------------------
+// HTML tag stratum (plan.md Phase 2.2) — upstream parserlib.js `htmlTag`
+// L1704-1829 + `processAttributeDirectives` L1832-1874, pinned 2026-09-15.
+// ---------------------------------------------------------------------------
+
+/// Cheap dispatch guard for the htmlTag arm: a tag-open is `<` + ASCII
+/// alpha, or `</` + ASCII alpha (the HTML spec's tag-open state; upstream's
+/// `htmlTagName` pattern likewise starts `[A-Za-z]`). Everything else —
+/// `< div`, `<3`, `<<` — is not a tag (`<<` is handled by the macro arm
+/// before this guard is ever consulted).
+fn may_start_html_tag(bytes: &[u8], i: usize, len: usize) -> bool {
+    if i + 1 >= len {
+        return false;
+    }
+    let after = bytes[i + 1];
+    if after.is_ascii_alphabetic() {
+        return true;
+    }
+    after == b'/' && i + 2 < len && bytes[i + 2].is_ascii_alphabetic()
+}
+
+/// SugarCube's `voidTags` list (parserlib.js htmlTag L1710, pinned
+/// 2026-09-15) — the HTML5 void elements plus the legacy `keygen`,
+/// `menuitem`, and `param`. Void elements get no content and no terminator
+/// search. (Knot's core HTML module keeps the narrower WHATWG list for its
+/// own CST; the SugarCube stratum follows SugarCube's list — D1.)
+const SUGARCUBE_VOID_TAGS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "menuitem",
+    "meta", "param", "source", "track", "wbr",
+];
+
+fn is_sugarcube_void_tag(name: &str) -> bool {
+    SUGARCUBE_VOID_TAGS.contains(&name)
+}
+
+/// Raw-text element bodies (plan.md Phase 2.3) — elements whose content is
+/// NEVER wikified because upstream parses them before `htmlTag` ever runs:
+/// - `script` → [`RawLanguage::Js`]: upstream `verbatimScriptTag`
+///   (parserlib.js L1462-1470) matches `<script[^>]*>(?:.|\n)*?</script>` and
+///   emits the whole construct verbatim — no wikification at all.
+/// - `style` → [`RawLanguage::Css`]: upstream `styleTag` (L1471+) captures the
+///   body as CSS. Upstream additionally transcludes `[img[...]]` markup inside
+///   the CSS (image URLs); Knot keeps the body pure CSS and does NOT carve
+///   image markup out of it — documented divergence, deferred to Phase 4.2
+///   (CSS support).
+///
+/// Everything else is wikified content (D1 rule 2). Notably `<textarea>` is
+/// NOT raw upstream — there is no verbatim parser for it, so htmlTag handles
+/// it like any element and its content is subWikified; the core HTML CST's
+/// RCDATA treatment of textarea is a general-HTML detail that the SugarCube
+/// stratum deliberately overrides here. (Upstream's htmlTag NOTE comment at
+/// parserlib.js L1697-1703 also lists a 'verbatimSvgTag' parser that does not
+/// exist in develop's parserlib.js — stale upstream comment; `<svg>` is
+/// handled by htmlTag with wikified content, so Knot treats it the same.)
+fn raw_text_language(name: &str) -> Option<knot_core::zoning::RawLanguage> {
+    if name.eq_ignore_ascii_case("script") {
+        Some(knot_core::zoning::RawLanguage::Js)
+    } else if name.eq_ignore_ascii_case("style") {
+        Some(knot_core::zoning::RawLanguage::Css)
+    } else {
+        None
+    }
+}
+
+/// Find the FIRST case-insensitive exact `</name>` at or after `from` — the
+/// raw-text terminator used by upstream's verbatim lookaheads.
+///
+/// Deliberately NOT the same as [`find_html_close_tag`]: the verbatim
+/// lookaheads close on `</script>` / `</style>` spelled exactly — no
+/// whitespace before `>` and no attributes (parserlib.js L1467/L1475 spell
+/// `<\\/[Ss][Cc][Rr][Ii][Pp][Tt]>` etc.). A closer like `</script >` fails the
+/// verbatim lookahead upstream, the tag falls through to htmlTag, and the
+/// content becomes wikified — the parser below mirrors that fallback.
+fn find_raw_text_close(text: &str, from: usize, name: &str) -> Option<Range<usize>> {
+    let needle_loose = format!("</{}>", name);
+    let needle_rest = &needle_loose[1..]; // "/name>" — first `<` already matched
+    let bytes = text.as_bytes();
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let rest = i + 1;
+            if rest + needle_rest.len() <= bytes.len()
+                && bytes[rest..rest + needle_rest.len()]
+                    .eq_ignore_ascii_case(needle_rest.as_bytes())
+            {
+                return Some(i..rest + needle_rest.len());
+            }
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Recognize an upstream evaluation-directive attribute name (plan.md
+/// Phase 2.2; parserlib.js `processAttributeDirectives` L1832-1874):
+/// `@name` (shorthand) or `sc-eval:name` (explicit). Returns the stripped
+/// target attribute name and the form used.
+///
+/// Documented divergences:
+/// - a LONE `@` (empty target) is inert here; upstream would attempt
+///   `setAttribute("", …)` and throw;
+/// - upstream throws when the stripped target is `data-setter`; Knot keeps
+///   the directive (the expression is still analyzed) and defers that
+///   diagnostic to the Phase 2.5 validation pass.
+fn attr_directive(name: &str) -> Option<(String, HtmlAttrDirectiveKind)> {
+    if let Some(rest) = name.strip_prefix('@') {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some((rest.to_string(), HtmlAttrDirectiveKind::Shorthand));
+    }
+    if let Some(rest) = name.strip_prefix("sc-eval:") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some((rest.to_string(), HtmlAttrDirectiveKind::ScEval));
+    }
+    None
+}
+
+/// Find the FIRST case-insensitive `</name\s*>` at or after `from` —
+/// upstream's terminator (`new RegExp('<\\/' + tagName + '\\s*>', 'gim')`,
+/// parserlib.js L1724-1729; `subWikify` consumes it with
+/// `ignoreTerminatorCase: true`, L1800).
+///
+/// Known upstream quirk mirrored deliberately: the search is not
+/// attribute-aware, so a closer spelled inside a LATER tag's attribute
+/// value terminates the element early — upstream renders it that way, and
+/// matching the spec-of-record beats being clever here (D1).
+fn find_html_close_tag(text: &str, from: usize, name: &str) -> Option<Range<usize>> {
+    let bytes = text.as_bytes();
+    let name_bytes = name.as_bytes();
+    let mut i = from;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'<' && bytes[i + 1] == b'/' {
+            let name_start = i + 2;
+            let name_end = name_start + name_bytes.len();
+            if name_end <= bytes.len()
+                && bytes[name_start..name_end].eq_ignore_ascii_case(name_bytes)
+            {
+                let mut k = name_end;
+                while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if k < bytes.len() && bytes[k] == b'>' {
+                    return Some(i..k + 1);
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Parse one SugarCube HTML tag construct (plan.md Phase 2.2).
+///
+/// Returns `None` when no well-formed tag starts at `start` (the caller
+/// treats the `<` as literal text) or when the scanned tag is a stray END
+/// tag (upstream parity: htmlTag matches start tags only, so end tags fall
+/// through to text). On `Some`, `i` has advanced past the whole construct —
+/// start tag + wikified content + terminator, or to end-of-text when the
+/// terminator is missing.
+///
+/// Attribute directives (`@attr="expr"` / `sc-eval:attr="expr"`) are
+/// recognized here and recorded on [`HtmlTagAttr`]; the expression text is
+/// analyzed by `annotate_js` (oxc pipeline, same path as macro args) and
+/// pre-annotation variable refs are scanned at parse time.
+fn parse_html_tag(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: usize) -> Option<AstNode> {
+    // The scan is span-faithful and tolerant: prose `<` degrades to None
+    // (literal text), malformed-but-terminated tags come back with the
+    // tokenizer's best-effort extents (never panics).
+    let scanned = knot_core::html::scan_leading_tag(&text[start..])?;
+    if scanned.is_end {
+        // Stray end tag — literal text (upstream parity; the dispatch arm
+        // comment has the details). Do not advance `i`: the caller backs up
+        // to one byte past `<` and the catch-all folds the spelling into
+        // the text gap.
+        return None;
+    }
+
+    let offset = ctx.offset;
+    let tag_len = scanned.range.end; // scan starts at slice position 0
+    let open_start = offset + start;
+    let open_end_local = start + tag_len;
+    let open_span = open_start..offset + open_end_local;
+    let name_span =
+        offset + start + scanned.name_range.start..offset + start + scanned.name_range.end;
+
+    // Attributes (source order) + directive recognition.
+    let mut attrs = Vec::with_capacity(scanned.attrs.len());
+    for a in &scanned.attrs {
+        let attr_name_span = offset + start + a.name_range.start..offset + start + a.name_range.end;
+        let (value, value_span) = match &a.value_range {
+            Some(vr) => (
+                Some(text[start + vr.start..start + vr.end].to_string()),
+                Some(offset + start + vr.start..offset + start + vr.end),
+            ),
+            None => (None, None),
+        };
+        let directive = attr_directive(&a.name)
+            .map(|(target_name, kind)| HtmlAttrDirective { target_name, kind });
+        // Parse-time variable scan of directive values (read refs) — the
+        // same pre-annotation role as `Expression::var_refs`; consumers
+        // prefer `js_analysis` once annotation has run.
+        let var_refs = if directive.is_some() {
+            match (&value, &value_span) {
+                (Some(v), Some(vs)) if !v.trim().is_empty() => scan_inline_vars(v, vs.start),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        attrs.push(HtmlTagAttr {
+            name: a.name.clone(),
+            name_span: attr_name_span,
+            value,
+            value_span,
+            span: offset + start + a.range.start..offset + start + a.range.end,
+            directive,
+            var_refs,
+            js_analysis: None,
+        });
+    }
+
+    // Element kind: SugarCube's void list, or an explicit `/>` — upstream
+    // honors the solidus for every tag name (L1718), and so does the core
+    // HTML CST (documented there).
+    let kind = if is_sugarcube_void_tag(&scanned.name) {
+        HtmlTagKind::Void
+    } else if scanned.self_closing {
+        HtmlTagKind::SelfClosing
+    } else {
+        HtmlTagKind::Normal
+    };
+
+    // Terminator + content. Raw-text elements (`<script>`/`<style>`, plan.md
+    // Phase 2.3) carve an opaque body between the start tag and the FIRST
+    // exact `</name>` — no recursion, no markup scanning (upstream runs
+    // verbatimScriptTag/styleTag before htmlTag, so their bodies are never
+    // wikified). A raw element WITHOUT the exact closer falls through to the
+    // wikified htmlTag path below, exactly as upstream does (the verbatim
+    // lookahead fails, htmlTag takes over).
+    let mut children = Vec::new();
+    let mut close_span = None;
+    let mut end_local = open_end_local;
+    let mut raw_body = None;
+    if let Some(lang) = raw_text_language(&scanned.name)
+        && kind == HtmlTagKind::Normal
+        && let Some(term) = find_raw_text_close(text, open_end_local, &scanned.name)
+    {
+        let body = &text[open_end_local..term.start];
+        if !body.is_empty() {
+            children.push(AstNode::Text {
+                content: body.to_string(),
+                // Raw bodies are opaque: no pre-scan of variables
+                // (the JS/CSS pipelines own every byte in here) —
+                // same representation as `<<script>>` macro bodies
+                // (macro_parser.rs `parse_raw_body`).
+                var_refs: Vec::new(),
+                span: offset + open_end_local..offset + term.start,
+                is_prose: false,
+            });
+        }
+        raw_body = Some(lang);
+        close_span = Some(offset + term.start..offset + term.end);
+        end_local = term.end;
+        // No exact closer → fall through to the wikified path below
+        // (upstream parity; comment on `find_raw_text_close`).
+    }
+    if raw_body.is_none() && kind == HtmlTagKind::Normal {
+        if ctx.depth >= MAX_FORMAT_NESTING_DEPTH {
+            // Depth cap (plan.md Phase 1.3 policy, applied to the tag
+            // stratum): stop RECURSING, never consume opaquely. The content
+            // becomes a raw Text node (variable refs still scanned) so
+            // analysis keeps partial visibility without stack risk on
+            // pathological tag nesting.
+            let content_str = &text[open_end_local..];
+            let var_refs = scan_inline_vars(content_str, offset + open_end_local);
+            children = vec![AstNode::Text {
+                content: content_str.to_string(),
+                var_refs,
+                span: offset + open_end_local..offset + text.len(),
+                is_prose: true,
+            }];
+            end_local = text.len();
+        } else if let Some(term) = find_html_close_tag(text, open_end_local, &scanned.name) {
+            children = parse_format_content(text, open_end_local, term.start, offset, ctx.depth);
+            close_span = Some(offset + term.start..offset + term.end);
+            end_local = term.end;
+        } else {
+            // Missing terminator: consume to EOF with LIVE content (D1 rule
+            // 5 / D2). Upstream renders an error box here ("cannot find a
+            // closing tag for HTML <name>"); Knot stays silent — the same
+            // conservative policy as the unterminated `@@` arm (plan.md
+            // Phase 1.4); revisit with the Phase 2.5 diagnostics wiring.
+            children = parse_format_content(text, open_end_local, text.len(), offset, ctx.depth);
+            end_local = text.len();
+        }
+    }
+
+    *i = end_local;
+    Some(AstNode::HtmlTag {
+        name: scanned.name,
+        name_span,
+        attrs,
+        children,
+        open_span,
+        close_span,
+        full_span: open_start..offset + end_local,
+        kind,
+        raw_body,
+        // Attached by `annotate_inline_js` (js_annotate.rs) after parsing —
+        // same split as Macro nodes, whose `js_analysis` is also `None` at
+        // parse time.
+        body_js_analysis: None,
+    })
 }
 
 /// Parse a block code section: `{{{\n...\n}}}`.
