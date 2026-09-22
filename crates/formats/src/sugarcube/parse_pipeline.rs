@@ -35,6 +35,10 @@ use crate::plugin::{FormatPlugin, ParseResult, PassageDiagnosticGroup, PassageTo
 ///
 /// This is the body of `FormatPluginMut::parse_mut()` for `SugarCubePlugin`.
 pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) -> ParseResult {
+    // Capture the story's effective version up front — the mutable registry
+    // borrow below spans the whole function, so version-aware helpers can't
+    // reach the plugin afterwards.
+    let story_version = plugin.effective_story_version();
     let registry = plugin.registry_mut();
 
     // 1. Split into raw passages
@@ -198,6 +202,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 body_offset_in_passage,
                 &custom_names,
                 &cp.body_text,
+                story_version,
             );
             // For script passages, also emit tokens from script_js_analysis
             if let Some(ref analysis) = passage_ast.script_js_analysis {
@@ -225,6 +230,7 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             &mut passage_diagnostics,
             body_offset_in_passage,
             registry.custom_macros(),
+            story_version,
         );
         // Embedded HTML/CSS diagnostics (plan.md Phase 2.5 wiring):
         // unclosed/malformed tags, unterminated tags at EOF, and the CSS
@@ -656,6 +662,7 @@ pub fn parse_single(
             body_offset_in_passage,
             &custom_names,
             &cp.body_text,
+            plugin.effective_story_version(),
         );
         // For script passages, also emit tokens from script_js_analysis
         if let Some(ref analysis) = passage_ast.script_js_analysis {
@@ -683,6 +690,7 @@ pub fn parse_single(
             &mut passage_diagnostics,
             body_offset_in_passage,
             registry.custom_macros(),
+            plugin.effective_story_version(),
         );
     }
     // Embedded HTML/CSS diagnostics (plan.md Phase 2.5 wiring) — same

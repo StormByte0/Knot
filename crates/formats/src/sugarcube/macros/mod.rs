@@ -33,8 +33,235 @@ pub use snippets::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::BodyRequirement;
+    use crate::types::{BodyRequirement, FormatVersion, MacroStatus};
     use std::collections::HashSet;
+
+    // ── Version infrastructure ────────────────────────────────────────────
+
+    #[test]
+    fn format_version_parses_storydata_forms() {
+        let v = FormatVersion::parse("2.37.3").expect("full form");
+        assert_eq!((v.major, v.minor, v.patch), (2, 37, 3));
+        assert_eq!(
+            FormatVersion::parse("2.36"),
+            Some(FormatVersion::new(2, 36, 0))
+        );
+        assert_eq!(
+            FormatVersion::parse("v2.31.0"),
+            Some(FormatVersion::new(2, 31, 0))
+        );
+        assert_eq!(
+            FormatVersion::parse("2.30.0-beta.1"),
+            Some(FormatVersion::new(2, 30, 0))
+        );
+        assert_eq!(FormatVersion::parse("garbage"), None);
+        assert_eq!(FormatVersion::parse(""), None);
+        assert_eq!(FormatVersion::parse("2.x"), None, "non-numeric minor");
+    }
+
+    #[test]
+    fn format_version_orders_as_strict_tuple() {
+        // SugarCube is NOT semver: 2.37.0 must compare greater than 2.36.99
+        // despite being a "minor" bump — it shipped removals.
+        assert!(FormatVersion::new(2, 37, 0) > FormatVersion::new(2, 36, 99));
+        assert!(FormatVersion::new(2, 36, 1) > FormatVersion::new(2, 36, 0));
+        assert!(FormatVersion::new(2, 37, 3) > FormatVersion::new(2, 37, 0));
+        assert_eq!(
+            FormatVersion::new(2, 37, 0),
+            FormatVersion::parse("2.37").unwrap()
+        );
+    }
+
+    // ── Catalog version invariants ────────────────────────────────────────
+
+    #[test]
+    fn catalog_version_invariants_hold() {
+        for m in builtin_macros() {
+            assert!(
+                !m.descriptors.is_empty(),
+                "{}: must have at least one descriptor",
+                m.name
+            );
+            assert!(
+                m.added_in <= SUGARCUBE_LATEST,
+                "{}: added_in {} exceeds the latest known {}",
+                m.name,
+                m.added_in,
+                SUGARCUBE_LATEST
+            );
+            // Descriptors ascend strictly by `since`…
+            for w in m.descriptors.windows(2) {
+                assert!(
+                    w[0].since < w[1].since,
+                    "{}: descriptors must ascend by `since`",
+                    m.name
+                );
+            }
+            // …start at the macro's `added_in`…
+            assert_eq!(
+                m.descriptors[0].since, m.added_in,
+                "{}: first descriptor must start at added_in",
+                m.name
+            );
+            // …and never exceed the latest known version.
+            assert!(
+                m.descriptors[m.descriptors.len() - 1].since <= SUGARCUBE_LATEST,
+                "{}: last descriptor starts beyond the latest known version",
+                m.name
+            );
+            if let (Some(dep), Some(rem)) = (m.deprecated_in, m.removed_in) {
+                assert!(
+                    dep < rem,
+                    "{}: deprecated_in must precede removed_in",
+                    m.name
+                );
+            }
+            if let Some(rem) = m.removed_in {
+                assert!(
+                    rem <= SUGARCUBE_LATEST,
+                    "{}: removed_in beyond latest",
+                    m.name
+                );
+                assert!(
+                    m.deprecated_in.is_some(),
+                    "{}: removed macros are always deprecated first",
+                    m.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn status_lifecycle_transitions() {
+        let click = find_macro("click").expect("click in catalog");
+        assert_eq!(
+            click.status_at(FormatVersion::new(2, 0, 0)),
+            MacroStatus::Available
+        );
+        assert_eq!(
+            click.status_at(FormatVersion::new(2, 7, 9)),
+            MacroStatus::Available
+        );
+        assert_eq!(
+            click.status_at(FormatVersion::new(2, 8, 0)),
+            MacroStatus::Deprecated
+        );
+        assert_eq!(
+            click.status_at(FormatVersion::new(2, 36, 99)),
+            MacroStatus::Deprecated
+        );
+        assert_eq!(
+            click.status_at(FormatVersion::new(2, 37, 0)),
+            MacroStatus::Removed
+        );
+        assert_eq!(click.status_at(SUGARCUBE_LATEST), MacroStatus::Removed);
+
+        let silently = find_macro("silently").expect("silently in catalog");
+        assert_eq!(
+            silently.status_at(FormatVersion::new(2, 36, 0)),
+            MacroStatus::Available
+        );
+        assert_eq!(
+            silently.status_at(FormatVersion::new(2, 37, 0)),
+            MacroStatus::Deprecated
+        );
+
+        let type_ = find_macro("type").expect("type in catalog");
+        assert_eq!(
+            type_.status_at(FormatVersion::new(2, 31, 9)),
+            MacroStatus::NotYetAdded
+        );
+        assert_eq!(
+            type_.status_at(FormatVersion::new(2, 32, 0)),
+            MacroStatus::Available
+        );
+    }
+
+    #[test]
+    fn macros_at_filters_by_version() {
+        let at_231 = macros_at(FormatVersion::new(2, 31, 0));
+        let names: HashSet<&str> = at_231.iter().map(|(m, _)| m.name).collect();
+        // Added after 2.31.0 — absent.
+        for absent in ["type", "numberbox", "done", "do", "redo", "silent"] {
+            assert!(
+                !names.contains(absent),
+                "<<{}>> must not exist at 2.31.0",
+                absent
+            );
+        }
+        // Removed in 2.37.0 — present at 2.31.0.
+        for present in [
+            "click",
+            "display",
+            "remember",
+            "forget",
+            "setplaylist",
+            "stopallaudio",
+        ] {
+            assert!(
+                names.contains(present),
+                "<<{}>> must exist at 2.31.0",
+                present
+            );
+        }
+
+        let at_latest = macros_at(SUGARCUBE_LATEST);
+        let names: HashSet<&str> = at_latest.iter().map(|(m, _)| m.name).collect();
+        for absent in [
+            "click",
+            "display",
+            "remember",
+            "forget",
+            "setplaylist",
+            "stopallaudio",
+        ] {
+            assert!(
+                !names.contains(absent),
+                "<<{}>> was removed in 2.37.0 — must not exist at latest",
+                absent
+            );
+        }
+        // Deprecated-but-present at latest.
+        for present in ["actions", "choice", "silently"] {
+            assert!(
+                names.contains(present),
+                "<<{}>> must exist at latest",
+                present
+            );
+        }
+    }
+
+    #[test]
+    fn era_descriptors_resolve_by_version() {
+        // <<script>>: the optional `language` argument only exists from 2.37.0.
+        let script = find_macro("script").expect("script in catalog");
+        let pre = script
+            .descriptor_at(FormatVersion::new(2, 36, 0))
+            .expect("script exists since 2.0.0");
+        assert!(
+            pre.args.is_none(),
+            "pre-2.37.0 <<script>> has no language arg"
+        );
+        assert!(
+            pre.description.contains("Version note"),
+            "pre-2.37.0 descriptor should note the era limitation"
+        );
+        let post = script
+            .descriptor_at(FormatVersion::new(2, 37, 0))
+            .expect("script exists at 2.37.0");
+        let args = post.args.expect("2.37.0+ <<script>> has the language arg");
+        assert_eq!(args[0].label, "language");
+
+        // <<for>>: three eras — base, range form (2.20.0), integer ranges (2.37.0).
+        let for_ = find_macro("for").expect("for in catalog");
+        assert_eq!(for_.descriptors.len(), 3);
+        let e1 = for_.descriptor_at(FormatVersion::new(2, 19, 9)).unwrap();
+        assert!(e1.description.contains("2.20.0"));
+        let e2 = for_.descriptor_at(FormatVersion::new(2, 20, 0)).unwrap();
+        assert!(!e2.description.contains("range form requires"));
+        let e3 = for_.descriptor_at(FormatVersion::new(2, 37, 0)).unwrap();
+        assert_eq!(e3.description, for_.description());
+    }
 
     #[test]
     fn test_builtin_count() {
@@ -141,7 +368,7 @@ mod tests {
         assert!(find_macro("set").is_some());
         assert!(find_macro("if").is_some());
         assert!(find_macro("click").is_some());
-        assert!(find_macro("click").unwrap().deprecated);
+        assert!(find_macro("click").unwrap().deprecated());
         assert!(find_macro("nonexistent").is_none());
     }
 
@@ -163,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_deprecated_macros_exist() {
-        let deprecated: Vec<_> = builtin_macros().iter().filter(|m| m.deprecated).collect();
+        let deprecated: Vec<_> = builtin_macros().iter().filter(|m| m.deprecated()).collect();
         assert!(!deprecated.is_empty(), "Should have some deprecated macros");
         assert!(deprecated.iter().any(|m| m.name == "click"));
         assert!(deprecated.iter().any(|m| m.name == "display"));
@@ -426,7 +653,8 @@ mod tests {
     fn test_deprecated_macros_derived() {
         let deprecated = deprecated_macros();
         // Should match exactly the catalog's deprecated entries
-        let catalog_deprecated: Vec<_> = builtin_macros().iter().filter(|m| m.deprecated).collect();
+        let catalog_deprecated: Vec<_> =
+            builtin_macros().iter().filter(|m| m.deprecated()).collect();
         assert_eq!(deprecated.len(), catalog_deprecated.len());
         assert!(deprecated.contains_key("click"));
         assert!(deprecated.contains_key("display"));
@@ -983,9 +1211,9 @@ mod tests {
         // Deprecated macros should have sort prefix "2" (verified via build_macro_completions)
         // Just verify the catalog data is correct
         for m in builtin_macros() {
-            if m.deprecated {
+            if m.deprecated() {
                 assert!(
-                    m.deprecated,
+                    m.deprecated(),
                     "Macro '{}' should be marked deprecated",
                     m.name
                 );

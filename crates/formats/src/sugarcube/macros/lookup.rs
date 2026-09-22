@@ -21,17 +21,6 @@ use super::classifiers::{label_then_passage_macros, passage_arg_macro_names};
 static MACRO_INDEX: LazyLock<HashMap<&'static str, &'static MacroDef>> =
     LazyLock::new(|| builtin_macros().iter().map(|m| (m.name, m)).collect());
 
-static DEPRECATED_MACROS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    builtin_macros()
-        .iter()
-        .filter(|m| m.deprecated)
-        .map(|m| {
-            let msg = m.deprecation_message.unwrap_or(m.description);
-            (m.name, msg)
-        })
-        .collect()
-});
-
 static KNOWN_MACRO_NAMES: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| builtin_macros().iter().map(|m| m.name).collect());
 
@@ -50,13 +39,14 @@ static STRUCTURAL_CONSTRAINTS: LazyLock<HashMap<&'static str, HashSet<&'static s
 
 /// Built-in SugarCube macro signatures (legacy compat layer).
 ///
-/// This provides the simpler `MacroSignature` view used by existing handlers.
+/// Snapshot at the LATEST known SugarCube version. New code should
+/// resolve era-specific data via `MacroDef::descriptor_at(version)`.
 pub fn sugarcube_macro_signatures() -> Vec<MacroSignature> {
     builtin_macros()
         .iter()
         .map(|m| {
             let signature = m
-                .args
+                .args()
                 .as_ref()
                 .map(|args| args.iter().map(|a| a.label).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default();
@@ -64,9 +54,9 @@ pub fn sugarcube_macro_signatures() -> Vec<MacroSignature> {
             MacroSignature {
                 name: m.name,
                 signature: signature.clone(),
-                description: m.description,
+                description: m.description(),
                 has_params: !signature.is_empty(),
-                deprecated: m.deprecated,
+                deprecated: m.deprecated(),
             }
         })
         .collect()
@@ -110,13 +100,25 @@ pub fn structural_constraints() -> &'static HashMap<&'static str, HashSet<&'stat
     &STRUCTURAL_CONSTRAINTS
 }
 
-/// Deprecated macro names and their deprecation messages.
+/// Deprecated macro names and their deprecation messages — snapshot at
+/// the **latest** known SugarCube version.
 ///
-/// Derived from the macro catalog's `deprecated` and `deprecation_message`
-/// fields — the catalog is the single source of truth. If a macro is marked
-/// deprecated in the catalog but lacks a `deprecation_message`, its
-/// description is used as a fallback.
+/// Legacy helper. Version-aware code must use
+/// `crate::sugarcube::macros::deprecated_at(name, version)` instead, which
+/// reflects the story's pinned format version: e.g. `<<silently>>` is not
+/// deprecated before SugarCube 2.37.0, and `<<click>>` is not merely
+/// deprecated from 2.37.0 on — it is removed entirely.
 pub fn deprecated_macros() -> &'static HashMap<&'static str, &'static str> {
+    static DEPRECATED_MACROS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+        builtin_macros()
+            .iter()
+            .filter(|m| m.deprecated())
+            .map(|m| {
+                let msg = m.deprecation_message.unwrap_or_else(|| m.description());
+                (m.name, msg)
+            })
+            .collect()
+    });
     &DEPRECATED_MACROS
 }
 

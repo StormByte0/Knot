@@ -481,9 +481,9 @@ mod tests {
 
         let set_macro = plugin.find_macro("set").expect("should find <<set>>");
         assert!(
-            set_macro.args.is_some()
+            set_macro.args().is_some()
                 || !set_macro
-                    .args
+                    .args()
                     .as_ref()
                     .map(|a| a.is_empty())
                     .unwrap_or(true),
@@ -493,9 +493,9 @@ mod tests {
         let else_macro = plugin.find_macro("else").expect("should find <<else>>");
         // <<else>> is a bare macro with no arguments
         assert!(
-            else_macro.args.is_none()
+            else_macro.args().is_none()
                 || else_macro
-                    .args
+                    .args()
                     .as_ref()
                     .map(|a| a.is_empty())
                     .unwrap_or(true),

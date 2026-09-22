@@ -54,7 +54,7 @@ pub fn passage_arg_macro_names() -> HashSet<&'static str> {
     builtin_macros()
         .iter()
         .filter(|m| {
-            m.args
+            m.args()
                 .as_ref()
                 .is_some_and(|args| args.iter().any(|a| a.is_passage_ref))
         })
@@ -67,7 +67,7 @@ pub fn label_then_passage_macros() -> HashSet<&'static str> {
     builtin_macros()
         .iter()
         .filter(|m| {
-            m.args
+            m.args()
                 .as_ref()
                 .is_some_and(|args| args.iter().any(|a| a.is_passage_ref && a.position > 0))
         })
@@ -120,7 +120,7 @@ pub fn dynamic_navigation_macros() -> HashSet<&'static str> {
     let mut set = builtin_macros()
         .iter()
         .filter(|m| {
-            m.args
+            m.args()
                 .as_ref()
                 .is_some_and(|args| args.iter().any(|a| a.is_passage_ref))
         })
@@ -159,7 +159,7 @@ pub fn inline_js_macro_names() -> HashSet<&'static str> {
     let mut set: HashSet<&'static str> = builtin_macros()
         .iter()
         .filter(|m| {
-            m.args.as_ref().is_some_and(|args| {
+            m.args().is_some_and(|args| {
                 !args.is_empty()
                     && args.iter().all(|a| {
                         matches!(a.kind, MacroArgKind::Expression | MacroArgKind::Variable)

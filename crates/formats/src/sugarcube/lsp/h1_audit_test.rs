@@ -86,6 +86,7 @@ fn h1_testbed_audit() {
                 0,
                 &HashSet::new(),
                 body,
+                crate::sugarcube::macros::SUGARCUBE_LATEST,
             );
             total_tokens += tokens.len();
         }

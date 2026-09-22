@@ -28,9 +28,10 @@ use crate::plugin::{
 };
 use crate::sugarcube::ast;
 use crate::sugarcube::macros::{
-    deprecated_macros, find_macro, folding_modifier_names, macro_parent_constraints,
+    deprecated_at, find_macro, folding_modifier_names, macro_parent_constraints,
 };
 use crate::sugarcube::special_passages;
+use crate::types::{FormatVersion, MacroStatus};
 
 /// Build semantic tokens from AST nodes.
 ///
@@ -55,6 +56,7 @@ pub fn build_semantic_tokens(
     body_offset_in_passage: usize,
     custom_macro_names: &HashSet<String>,
     body_text: &str,
+    story_version: FormatVersion,
 ) {
     build_semantic_tokens_at_depth(
         nodes,
@@ -63,6 +65,7 @@ pub fn build_semantic_tokens(
         custom_macro_names,
         0,
         body_text,
+        story_version,
     );
     // Filter out zero-length tokens. These can arise from:
     // - def/ndef substitution position mapping (clamped to substitution start)
@@ -92,6 +95,7 @@ fn build_semantic_tokens_at_depth(
     custom_macro_names: &HashSet<String>,
     depth: usize,
     body_text: &str,
+    story_version: FormatVersion,
 ) {
     for node in nodes {
         match node {
@@ -176,7 +180,7 @@ fn build_semantic_tokens_at_depth(
                 // bitset, so we can't combine Deprecated + BlockDepth on a
                 // single token. The name gets Deprecated (if applicable);
                 // the delimiters get depth. Both signals are still visible.
-                let name_modifier = if deprecated_macros().contains_key(name.as_str()) {
+                let name_modifier = if deprecated_at(name, story_version) {
                     Some(SemanticTokenModifier::Deprecated)
                 } else {
                     None
@@ -432,6 +436,7 @@ fn build_semantic_tokens_at_depth(
                         custom_macro_names,
                         effective_depth + 1,
                         body_text,
+                        story_version,
                     );
                 }
             }
@@ -925,6 +930,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     body_text,
+                    story_version,
                 );
             }
             ast::AstNode::InlineStyle {
@@ -944,6 +950,7 @@ fn build_semantic_tokens_at_depth(
                     body_offset_in_passage,
                     custom_macro_names,
                     body_text,
+                    story_version,
                 );
             }
             // Text formatting markup: split into delimiter tokens and content
@@ -1007,6 +1014,7 @@ fn build_semantic_tokens_at_depth(
                         custom_macro_names,
                         depth,
                         body_text,
+                        story_version,
                     );
                 }
 
@@ -1092,6 +1100,7 @@ fn build_semantic_tokens_at_depth(
                     custom_macro_names,
                     depth,
                     body_text,
+                    story_version,
                 );
             }
             // Phase 4: HorizontalRule — single token over the `----` span.
@@ -1129,6 +1138,7 @@ fn build_semantic_tokens_at_depth(
                     custom_macro_names,
                     *depth as usize,
                     body_text,
+                    story_version,
                 );
             }
             // Phase 4: BlockquoteBlock (`<<<...<<<`) — emit `BlockquoteBlock`
@@ -1156,6 +1166,7 @@ fn build_semantic_tokens_at_depth(
                     custom_macro_names,
                     depth,
                     body_text,
+                    story_version,
                 );
                 // Closing `<<<` delimiter token (if present).
                 if let Some(cs) = close_span {
@@ -1197,6 +1208,7 @@ fn build_semantic_tokens_at_depth(
                     custom_macro_names,
                     depth,
                     body_text,
+                    story_version,
                 );
             }
             // Phase 6: Table — emit `Table` tokens for the opening `|` of each
@@ -1233,6 +1245,7 @@ fn build_semantic_tokens_at_depth(
                             custom_macro_names,
                             depth,
                             body_text,
+                            story_version,
                         );
                     }
                 }
@@ -1954,25 +1967,29 @@ fn emit_structured_arg_tokens(
 /// even if the tree builder gave it children. Without this, every inline
 /// custom macro (e.g., `Macro.add("emojify", { handler() {...} })` used as
 /// `<<emojify "x">>`) would produce a false "Unclosed block macro" error.
+///
+/// `story_version` is the story's effective SugarCube version — it drives
+/// the version-aware lifecycle diagnostics (`sc-macro-removed`,
+/// `sc-macro-not-in-version`) and the deprecation-hint messages.
 pub fn build_diagnostics(
     nodes: &[ast::AstNode],
     diagnostics: &mut Vec<FormatDiagnostic>,
     body_offset_in_passage: usize,
     custom_macros: &crate::sugarcube::registries::CustomMacroRegistry,
+    story_version: FormatVersion,
 ) {
-    // Phase 8: container-violation and unknown-macro diagnostics.
+    // Phase 8: container-violation and unknown-macro diagnostics, plus the
+    // version-aware macro lifecycle diagnostics (format-version filtering).
     //
     // We use an inner recursive helper that tracks the enclosing macro stack.
-    // The public signature stays the same — the stack starts empty at the
-    // top level.
-    let dep_macros = deprecated_macros();
+    // The stack starts empty at the top level.
     let parent_constraints = macro_parent_constraints();
     build_diagnostics_inner(
         nodes,
         diagnostics,
         body_offset_in_passage,
         custom_macros,
-        dep_macros,
+        story_version,
         &parent_constraints,
         &mut Vec::new(), // enclosing macro stack (outermost-first)
     );
@@ -1988,7 +2005,7 @@ fn build_diagnostics_inner(
     diagnostics: &mut Vec<FormatDiagnostic>,
     body_offset_in_passage: usize,
     custom_macros: &crate::sugarcube::registries::CustomMacroRegistry,
-    dep_macros: &std::collections::HashMap<&'static str, &'static str>,
+    story_version: FormatVersion,
     parent_constraints: &std::collections::HashMap<
         &'static str,
         std::collections::HashSet<&'static str>,
@@ -2012,12 +2029,61 @@ fn build_diagnostics_inner(
             ..
         } = node
         {
+            // ── Macro lifecycle diagnostics (version-aware) ────────
+            //
+            // The catalog is the union of every SugarCube 2 macro ever;
+            // `status_at(story_version)` resolves the story's pinned
+            // `format-version` into the macro's lifecycle there.
+            if let Some(def) = find_macro(name) {
+                match def.status_at(story_version) {
+                    MacroStatus::Removed => {
+                        // Hard breakage: the engine throws "unknown macro".
+                        let removed = def.removed_in.expect("status Removed implies removed_in");
+                        let mut msg = format!(
+                            "Unknown macro in SugarCube {}: <<{}>> was removed in SugarCube {}",
+                            story_version, name, removed
+                        );
+                        if let Some(dep) = def.deprecated_in {
+                            msg.push_str(&format!(" (deprecated since {})", dep));
+                        }
+                        if let Some(guide) = def.deprecation_message {
+                            msg.push_str(&format!(". {}", guide));
+                        }
+                        msg.push_str(
+                            ". Replace it, or downgrade the story's format-version to use it",
+                        );
+                        diagnostics.push(FormatDiagnostic {
+                            range: body_offset_in_passage + name_span.start
+                                ..body_offset_in_passage + name_span.end,
+                            message: msg,
+                            severity: FormatDiagnosticSeverity::Error,
+                            code: "sc-macro-removed".to_string(),
+                        });
+                    }
+                    MacroStatus::NotYetAdded => {
+                        diagnostics.push(FormatDiagnostic {
+                            range: body_offset_in_passage + name_span.start
+                                ..body_offset_in_passage + name_span.end,
+                            message: format!(
+                                "Unknown macro in SugarCube {}: <<{}>> was added in SugarCube {}",
+                                story_version, name, def.added_in
+                            ),
+                            severity: FormatDiagnosticSeverity::Warning,
+                            code: "sc-macro-not-in-version".to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
             // ── Unknown-macro diagnostic (Phase 8) ──────────────────────
             //
             // If the macro is neither in the builtin catalog nor in the
             // custom macro registry, emit a hint. Custom widgets are
             // registered early (via [widget] and [script] passages), so
             // an unknown macro at this point is genuinely undefined.
+            // (Macros caught by the lifecycle arms above are known to the
+            // catalog — they don't reach this check.)
             let is_known = find_macro(name).is_some() || custom_macros.contains(name);
             if !is_known {
                 diagnostics.push(FormatDiagnostic {
@@ -2081,12 +2147,20 @@ fn build_diagnostics_inner(
                     });
                 }
             }
-            // Deprecated macro usage diagnostic
-            if let Some(msg) = dep_macros.get(name.as_str()) {
+            // Deprecated macro usage diagnostic (version-aware): the macro
+            // exists at this version but is on its way out. Includes the
+            // version it was deprecated in so authors can decide whether
+            // to migrate now or pin an older format-version.
+            if let Some(def) = find_macro(name).filter(|d| d.is_deprecated_at(story_version)) {
+                let base = def.deprecation_message.unwrap_or_else(|| def.description());
+                let since = def
+                    .deprecated_in
+                    .map(|v| format!(" (deprecated since SugarCube {})", v))
+                    .unwrap_or_default();
                 diagnostics.push(FormatDiagnostic {
                     range: body_offset_in_passage + name_span.start
                         ..body_offset_in_passage + name_span.end,
-                    message: (*msg).to_string(),
+                    message: format!("{}{}", base, since),
                     severity: FormatDiagnosticSeverity::Hint,
                     code: "sc-deprecated".to_string(),
                 });
@@ -2099,7 +2173,7 @@ fn build_diagnostics_inner(
                     diagnostics,
                     body_offset_in_passage,
                     custom_macros,
-                    dep_macros,
+                    story_version,
                     parent_constraints,
                     enclosing_stack,
                 );
@@ -2116,7 +2190,7 @@ fn build_diagnostics_inner(
                 diagnostics,
                 body_offset_in_passage,
                 custom_macros,
-                dep_macros,
+                story_version,
                 parent_constraints,
                 enclosing_stack,
             );
@@ -2514,6 +2588,7 @@ mod tests {
             0,
             &std::collections::HashSet::new(),
             body,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
         );
 
         tokens
@@ -2657,7 +2732,13 @@ mod phase8_diagnostics_tests {
     fn diagnostics_for(body: &str) -> Vec<FormatDiagnostic> {
         let ast = parse_passage_body(body, 0, ParseMode::Normal);
         let mut diags = Vec::new();
-        build_diagnostics(&ast.nodes, &mut diags, 0, &CustomMacroRegistry::new());
+        build_diagnostics(
+            &ast.nodes,
+            &mut diags,
+            0,
+            &CustomMacroRegistry::new(),
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
         diags
     }
 

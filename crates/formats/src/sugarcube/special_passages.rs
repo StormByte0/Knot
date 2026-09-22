@@ -264,3 +264,85 @@ pub(crate) fn tag_matched_special_passages() -> Vec<SpecialPassageDef> {
         // be handled as a passage property, not as a special passage category.
     ]
 }
+
+// ── Version filtering ───────────────────────────────────────────────────────
+
+/// Special passage/tag names introduced after the SugarCube 2.0.0 baseline,
+/// with the version that introduced them. Anything not listed here has
+/// existed since 2.0.0.
+///
+/// Sources: SugarCube v2 docs per-passage History sections.
+const POST_2_0_ADDITIONS: &[(&str, (u32, u32, u32))] =
+    &[("StoryDisplayTitle", (2, 31, 0)), ("init", (2, 36, 0))];
+
+/// Whether a special passage/tag (by name) exists at the given SugarCube
+/// version.
+///
+/// Tag names match case-insensitively in the engine; this check is
+/// case-sensitive like the defs themselves — callers pass the def's own
+/// `name`, so both spellings agree.
+pub(crate) fn exists_at_version(name: &str, version: crate::types::FormatVersion) -> bool {
+    let added = POST_2_0_ADDITIONS.iter().find(|(n, _)| *n == name).map_or(
+        crate::types::FormatVersion::new(2, 0, 0),
+        |(_, (major, minor, patch))| crate::types::FormatVersion::new(*major, *minor, *patch),
+    );
+    version >= added
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::plugin::FormatPlugin;
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
+
+    fn special_names(plugin: &SugarCubePlugin) -> Vec<String> {
+        plugin
+            .all_special_passages()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn special_passages_are_version_filtered() {
+        // Default (no pinned version) = latest: StoryDisplayTitle + [init]
+        // are both known.
+        let plugin = SugarCubePlugin::new();
+        let names = special_names(&plugin);
+        assert!(names.iter().any(|n| n == "StoryDisplayTitle"));
+        assert!(names.iter().any(|n| n == "init"));
+
+        // Before 2.31.0, StoryDisplayTitle doesn't exist.
+        let plugin = SugarCubePlugin::new();
+        plugin.set_story_version(Some(FormatVersion::new(2, 30, 0)));
+        let names = special_names(&plugin);
+        assert!(
+            !names.iter().any(|n| n == "StoryDisplayTitle"),
+            "StoryDisplayTitle was added in 2.31.0"
+        );
+        assert!(
+            !names.iter().any(|n| n == "init"),
+            "[init] tag was added in 2.36.0"
+        );
+
+        // At 2.31.0 exactly, StoryDisplayTitle exists but [init] doesn't.
+        let plugin = SugarCubePlugin::new();
+        plugin.set_story_version(Some(FormatVersion::new(2, 31, 0)));
+        let names = special_names(&plugin);
+        assert!(names.iter().any(|n| n == "StoryDisplayTitle"));
+        assert!(!names.iter().any(|n| n == "init"));
+
+        // At 2.36.0, [init] exists too.
+        let plugin = SugarCubePlugin::new();
+        plugin.set_story_version(Some(FormatVersion::new(2, 36, 0)));
+        let names = special_names(&plugin);
+        assert!(names.iter().any(|n| n == "init"));
+
+        // Ancient passages exist at every 2.x version.
+        let plugin = SugarCubePlugin::new();
+        plugin.set_story_version(Some(FormatVersion::new(2, 0, 0)));
+        let names = special_names(&plugin);
+        assert!(names.iter().any(|n| n == "StoryInit"));
+        assert!(names.iter().any(|n| n == "PassageHeader"));
+    }
+}

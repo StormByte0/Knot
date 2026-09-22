@@ -206,6 +206,11 @@ pub(crate) async fn index_workspace(
             // by resolve_format() (Priority 1 = config, Priority 2 = StoryData).
             inner.workspace.metadata = Some(meta);
         }
+        // Push the pinned format-version into the plugin BEFORE any
+        // parsing happens — version-filtered completions, hover, and
+        // lifecycle diagnostics must see the story's version from the
+        // very first parse.
+        inner.sync_story_version();
     }
 
     let resolved_format = {
@@ -313,6 +318,9 @@ pub(crate) async fn index_workspace(
 
         // Check for StoryData (may update metadata with start passage, ifid, etc.)
         extract_and_set_metadata(&mut inner.workspace, &doc, &text);
+        // Keep the plugin's pinned format-version in sync with any
+        // metadata this file revealed.
+        inner.sync_story_version();
 
         inner.workspace.insert_document(doc);
         drop(inner);

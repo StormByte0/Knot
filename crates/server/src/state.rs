@@ -256,3 +256,29 @@ impl ServerState {
             .await;
     }
 }
+
+impl ServerStateInner {
+    /// Push the workspace's story format version into the active format
+    /// plugin's versioned catalog.
+    ///
+    /// Must be called whenever StoryData metadata is discovered or updated
+    /// (initial indexing, StoryData edits) so that version-filtered features
+    /// (macro completions, hover, signature help, lifecycle diagnostics)
+    /// track the story's pinned `format-version`. Idempotent: skips the
+    /// write when the plugin already holds the same version.
+    pub fn sync_story_version(&self) {
+        let version = self
+            .workspace
+            .metadata
+            .as_ref()
+            .and_then(|m| m.format_version.as_deref())
+            .and_then(knot_formats::types::FormatVersion::parse);
+        let format = self.workspace.resolve_format();
+        if let Some(plugin) = self.format_registry.get(&format)
+            && plugin.story_version() != version
+        {
+            plugin.set_story_version(version);
+            tracing::debug!(?version, "story format version synced to plugin");
+        }
+    }
+}

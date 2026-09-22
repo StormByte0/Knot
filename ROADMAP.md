@@ -109,6 +109,39 @@ existing analysis pipeline.
 
 ---
 
+## Story Format Versioning (SugarCube)
+
+**IMPLEMENTED (2026-09-22, v2.1.0).** The static macro catalog is now a
+versioned union catalog: every macro that ever existed in SugarCube 2.x
+carries `added_in` / `deprecated_in` / `removed_in` plus per-era
+descriptors (description + args), sourced from the official v2 docs
+per-macro History sections, the docs upgrade guides, release notes
+2.31.0–2.37.3, and the 2.37.3 engine source.
+
+Key design points:
+
+* The raw union catalog is **not** for user-facing features — completions,
+  hover, signature help, and diagnostics resolve through
+  `macros_at(version)` / `descriptor_at(version)` / `status_at(version)` so
+  only the macros and descriptions relevant to the story's pinned
+  `format-version` are surfaced. Structural parsing (tree building,
+  pairing) stays version-blind so removed macros still parse while being
+  flagged.
+* The server pushes the StoryData `format-version` into the plugin
+  (`set_story_version`) at indexing and on metadata change; editing it
+  triggers a full reindex. Unknown/missing versions fail open to the
+  latest known release.
+* New diagnostics: `sc-macro-removed` (Error, with removal version +
+  replacement + downgrade guidance) and `sc-macro-not-in-version`
+  (Warning, with the version the macro was added in); `sc-deprecated`
+  now reports the deprecation version.
+* Version-aware "elements": special passages (`StoryDisplayTitle`
+  2.31.0, `[init]` 2.36.0) filter the same way.
+* Future extension points: versioning the globals/methods surface (the
+  2.37.0 `Save.*` deprecations etc.) follows the same descriptor pattern.
+
+---
+
 ## Graph Simplification & Advanced Analysis
 
 Knot's graph model is the foundation of its structural analysis. The

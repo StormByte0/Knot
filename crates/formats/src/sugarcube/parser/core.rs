@@ -3003,7 +3003,14 @@ mod tests {
 
         let ast = crate::sugarcube::parser::parse_passage_body("<<= $hp>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<= $hp>>");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "<<= $hp>>",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         // Should have at least a Macro token for the = sigil and a Variable token for $hp
         let macro_tokens: Vec<_> = tokens
@@ -3033,7 +3040,14 @@ mod tests {
 
         let ast = crate::sugarcube::parser::parse_passage_body("<<- $hp>>", 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "<<- $hp>>");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "<<- $hp>>",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let sigil_tokens: Vec<_> = tokens
             .iter()
@@ -3066,7 +3080,14 @@ mod tests {
         let input = "<<set $hp to 10>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let delims: Vec<_> = tokens
             .iter()
@@ -3120,7 +3141,14 @@ mod tests {
         let input = "<<if $hp gte 10>>Alive<</if>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let delims: Vec<_> = tokens
             .iter()
@@ -3166,7 +3194,14 @@ mod tests {
         let input = "<<if $a>><<if $b>>nested<</if>><</if>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let depth0_delims = tokens
             .iter()
@@ -3212,7 +3247,14 @@ mod tests {
         let input = "<<link \"Go\" \"Forest\">><<set $x to 1>><</link>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         // <<link>> name at offset 2, length 4 — should be None (base color, no depth)
         let link_name = tokens
@@ -3295,7 +3337,14 @@ mod tests {
             "<<link \"Chat\" \"Coworker\">><<if true>><<adjustStat \"stress\" -3>><</if>><</link>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let macro_tokens: Vec<_> = tokens
             .iter()
@@ -3363,7 +3412,14 @@ mod tests {
         let input = "<<set $x to 1>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let set_name = tokens
             .iter()
@@ -3400,7 +3456,14 @@ mod tests {
         let input = "<<= $hp>>";
         let ast = crate::sugarcube::parser::parse_passage_body(input, 0, ParseMode::Normal);
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), input);
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            input,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let delims: Vec<_> = tokens
             .iter()
@@ -3437,6 +3500,7 @@ mod tests {
             0,
             &HashSet::new(),
             "<<set $x to 1>>",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
         );
 
         let has_macro_name = tokens
@@ -3466,8 +3530,22 @@ mod tests {
 
         let mut tokens_print = Vec::new();
         let mut tokens_expr = Vec::new();
-        build_semantic_tokens(&ast_print.nodes, &mut tokens_print, 0, &HashSet::new(), "");
-        build_semantic_tokens(&ast_expr.nodes, &mut tokens_expr, 0, &HashSet::new(), "");
+        build_semantic_tokens(
+            &ast_print.nodes,
+            &mut tokens_print,
+            0,
+            &HashSet::new(),
+            "",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
+        build_semantic_tokens(
+            &ast_expr.nodes,
+            &mut tokens_expr,
+            0,
+            &HashSet::new(),
+            "",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let var_tokens_print: Vec<_> = tokens_print
             .iter()
@@ -3601,7 +3679,14 @@ mod tests {
             ParseMode::Normal,
         );
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let style_tokens: Vec<_> = tokens
             .iter()
@@ -3696,7 +3781,14 @@ mod tests {
             ParseMode::Normal,
         );
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
 
         let format_tokens: Vec<_> = tokens
             .iter()
@@ -7053,7 +7145,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("silent").expect("<<silent>> should be in catalog");
         assert!(
-            !def.deprecated,
+            !def.deprecated(),
             "<<silent>> should NOT be deprecated (it's the replacement)"
         );
         assert_eq!(def.body, crate::types::BodyRequirement::Required);
@@ -7064,7 +7156,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_do_in_catalog() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("do").expect("<<do>> should be in catalog");
-        assert!(!def.deprecated, "<<do>> should NOT be deprecated");
+        assert!(!def.deprecated(), "<<do>> should NOT be deprecated");
         assert_eq!(def.body, crate::types::BodyRequirement::Required);
         assert_eq!(def.kind, crate::types::MacroKind::Container);
     }
@@ -7073,7 +7165,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_redo_in_catalog() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("redo").expect("<<redo>> should be in catalog");
-        assert!(!def.deprecated, "<<redo>> should NOT be deprecated");
+        assert!(!def.deprecated(), "<<redo>> should NOT be deprecated");
         assert_eq!(def.body, crate::types::BodyRequirement::Never);
         assert_eq!(def.kind, crate::types::MacroKind::Inline);
     }
@@ -7082,7 +7174,10 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7b_choice_in_catalog_and_deprecated() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("choice").expect("<<choice>> should be in catalog");
-        assert!(def.deprecated, "<<choice>> should be deprecated (v2.37.0)");
+        assert!(
+            def.deprecated(),
+            "<<choice>> should be deprecated (v2.37.0)"
+        );
         assert!(
             def.deprecation_message.is_some(),
             "<<choice>> should have a deprecation message"
@@ -7096,7 +7191,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def =
             find_macro("setplaylist").expect("<<setplaylist>> should be in catalog (deprecated)");
-        assert!(def.deprecated, "<<setplaylist>> should be deprecated");
+        assert!(def.deprecated(), "<<setplaylist>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
 
@@ -7105,7 +7200,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def =
             find_macro("stopallaudio").expect("<<stopallaudio>> should be in catalog (deprecated)");
-        assert!(def.deprecated, "<<stopallaudio>> should be deprecated");
+        assert!(def.deprecated(), "<<stopallaudio>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
 
@@ -7114,7 +7209,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         use crate::sugarcube::macros::find_macro;
         let def =
             find_macro("silently").expect("<<silently>> should still be in catalog (deprecated)");
-        assert!(def.deprecated, "<<silently>> should be deprecated");
+        assert!(def.deprecated(), "<<silently>> should be deprecated");
         assert!(def.deprecation_message.is_some());
     }
 
@@ -7137,19 +7232,24 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
             "choice",
         ] {
             let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
-            assert!(def.deprecated, "{} should be deprecated", name);
+            assert!(def.deprecated(), "{} should be deprecated", name);
             assert!(
                 def.deprecation_message.is_some(),
                 "{} should have a deprecation message",
                 name
             );
         }
-        // `actions` is deprecated but has no deprecation_message (see comment above).
+        // `actions` is deprecated since 2.37.0 and now carries a migration hint.
         let actions_def = find_macro("actions").expect("actions should be in catalog");
-        assert!(actions_def.deprecated, "actions should be deprecated");
+        assert!(actions_def.deprecated(), "actions should be deprecated");
+        assert_eq!(
+            actions_def.deprecated_in,
+            Some(crate::types::FormatVersion::new(2, 37, 0)),
+            "actions should be deprecated since 2.37.0"
+        );
         assert!(
-            actions_def.deprecation_message.is_none(),
-            "actions should have deprecation_message = None to avoid duplicate hover warning"
+            actions_def.deprecation_message.is_some(),
+            "actions should have a deprecation message with migration guidance"
         );
     }
 
@@ -7316,7 +7416,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_textbox_has_4_args() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("textbox").expect("textbox should be in catalog");
-        let args = def.args.expect("textbox should have args");
+        let args = def.args().expect("textbox should have args");
         assert_eq!(
             args.len(),
             4,
@@ -7337,7 +7437,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_numberbox_has_4_args_with_number_kind() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("numberbox").expect("numberbox should be in catalog");
-        let args = def.args.expect("numberbox should have args");
+        let args = def.args().expect("numberbox should have args");
         assert_eq!(args.len(), 4);
         assert_eq!(args[1].label, "defaultValue");
         assert_eq!(
@@ -7353,7 +7453,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_textarea_has_3_args_no_passage() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("textarea").expect("textarea should be in catalog");
-        let args = def.args.expect("textarea should have args");
+        let args = def.args().expect("textarea should have args");
         assert_eq!(
             args.len(),
             3,
@@ -7372,7 +7472,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_option_has_selected_keyword() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("option").expect("option should be in catalog");
-        let args = def.args.expect("option should have args");
+        let args = def.args().expect("option should have args");
         assert_eq!(
             args.len(),
             3,
@@ -7387,7 +7487,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_include_has_element_name() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("include").expect("include should be in catalog");
-        let args = def.args.expect("include should have args");
+        let args = def.args().expect("include should have args");
         assert_eq!(
             args.len(),
             2,
@@ -7402,7 +7502,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_widget_has_container_keyword() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("widget").expect("widget should be in catalog");
-        let args = def.args.expect("widget should have args");
+        let args = def.args().expect("widget should have args");
         assert_eq!(
             args.len(),
             2,
@@ -7417,7 +7517,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_script_has_language_keyword() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("script").expect("script should be in catalog");
-        let args = def.args.expect("script should now have args");
+        let args = def.args().expect("script should now have args");
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].label, "language");
         assert_eq!(args[0].kind, crate::types::MacroArgKind::Keyword);
@@ -7427,7 +7527,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7cd_cacheaudio_has_track_and_source() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("cacheaudio").expect("cacheaudio should be in catalog");
-        let args = def.args.expect("cacheaudio should now have args");
+        let args = def.args().expect("cacheaudio should now have args");
         assert_eq!(
             args.len(),
             2,
@@ -7672,7 +7772,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
             }
             // All other macros should have args: Some
             assert!(
-                m.args.is_some(),
+                m.args().is_some(),
                 "'{}' should have args: Some (not None) — only JS-expression macros should have None",
                 m.name
             );
@@ -7683,7 +7783,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7d_case_has_variadic_expression() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("case").expect("case should be in catalog");
-        let args = def.args.expect("case should have args");
+        let args = def.args().expect("case should have args");
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].label, "valueList");
         // valueList is String kind (space-separated values, NOT a single JS expression).
@@ -7695,7 +7795,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7d_type_has_full_signature() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("type").expect("type should be in catalog");
-        let args = def.args.expect("type should have args");
+        let args = def.args().expect("type should have args");
         assert!(
             args.len() >= 7,
             "type should have at least 7 args (speed + 6 optional), got: {}",
@@ -7709,7 +7809,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7d_cycle_has_once_and_autoselect() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("cycle").expect("cycle should be in catalog");
-        let args = def.args.expect("cycle should have args");
+        let args = def.args().expect("cycle should have args");
         assert_eq!(
             args.len(),
             3,
@@ -7725,7 +7825,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7d_listbox_has_autoselect() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("listbox").expect("listbox should be in catalog");
-        let args = def.args.expect("listbox should have args");
+        let args = def.args().expect("listbox should have args");
         assert_eq!(
             args.len(),
             2,
@@ -7741,7 +7841,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
         for name in &["link", "button"] {
             let def = find_macro(name).unwrap_or_else(|| panic!("{} should be in catalog", name));
             let args = def
-                .args
+                .args()
                 .unwrap_or_else(|| panic!("{} should have args", name));
             assert_eq!(
                 args[0].label, "linkText",
@@ -7755,7 +7855,7 @@ Some narrative text with — em dashes — and $gs.inventory references."#;
     fn phase7d_audio_has_trackidlist_and_actionlist() {
         use crate::sugarcube::macros::find_macro;
         let def = find_macro("audio").expect("audio should be in catalog");
-        let args = def.args.expect("audio should have args");
+        let args = def.args().expect("audio should have args");
         assert_eq!(args.len(), 2);
         assert_eq!(args[0].label, "trackIdList");
         assert_eq!(args[1].label, "actionList");

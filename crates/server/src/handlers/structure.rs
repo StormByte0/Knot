@@ -430,7 +430,18 @@ fn build_signature_help(
 ) -> Option<SignatureHelp> {
     let mdef = plugin.find_macro(macro_name)?;
 
-    let params_list: Vec<ParameterInformation> = if let Some(args) = mdef.args {
+    // Version-aware: signature + docs come from the era-effective
+    // descriptor at the story's pinned format version (e.g. `<<script>>`
+    // shows no `language` parameter before SugarCube 2.37.0).
+    let story_version = plugin
+        .story_version()
+        .unwrap_or(knot_formats::sugarcube::macros::SUGARCUBE_LATEST);
+    let descriptor = mdef
+        .descriptor_at(story_version)
+        .unwrap_or_else(|| mdef.latest_descriptor());
+    let args = descriptor.args;
+
+    let params_list: Vec<ParameterInformation> = if let Some(args) = args {
         args.iter()
             .map(|a| ParameterInformation {
                 label: ParameterLabel::Simple(a.label.to_string()),
@@ -441,7 +452,7 @@ fn build_signature_help(
         Vec::new()
     };
 
-    let sig_str = if let Some(args) = mdef.args {
+    let sig_str = if let Some(args) = args {
         args.iter().map(|a| a.label).collect::<Vec<_>>().join(", ")
     } else {
         String::new()
@@ -455,7 +466,7 @@ fn build_signature_help(
             label: sig_label,
             documentation: Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: mdef.description.to_string(),
+                value: descriptor.description.to_string(),
             })),
             parameters: if has_params { Some(params_list) } else { None },
             active_parameter: if has_params { Some(active_param) } else { None },

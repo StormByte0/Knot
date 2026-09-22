@@ -401,6 +401,9 @@ pub(crate) fn check_storydata_format_change(
             return true;
         }
     };
+    // Copy the format-version out so the immutable `cached` borrow ends
+    // before the in-place IFID update below (NLL ends it at its last use).
+    let cached_version = cached.format_version.clone();
 
     // Compare the format field — this is the primary trigger for reindex
     // because changing format requires re-parsing all files with the new
@@ -427,20 +430,29 @@ pub(crate) fn check_storydata_format_change(
         return true;
     }
 
-    // IFID and format-version changes don't require reindex — they don't
-    // affect parsing or graph analysis. The next time the workspace is
-    // fully reindexed (e.g. server restart), they'll be picked up.
-    // Update them in-place so they're visible to features that read them
-    // (e.g. build process uses IFID).
-    if new_metadata.ifid != cached.ifid || new_metadata.format_version != cached.format_version {
+    // IFID changes don't affect parsing, graph analysis, or the versioned
+    // catalog — update in place. Format-version changes DO affect the
+    // plugin's versioned catalog now (completions, hover, lifecycle
+    // diagnostics), so they require a reindex to refresh every passage's
+    // cached tokens + diagnostics under the new version.
+    if new_metadata.ifid != cached.ifid {
         tracing::debug!(
             file = %uri,
-            "StoryData IFID or format-version changed — updating metadata in place (no reindex needed)"
+            "StoryData IFID changed — updating metadata in place (no reindex needed)"
         );
+        let new_ifid = new_metadata.ifid.clone();
         if let Some(m) = inner.workspace.metadata.as_mut() {
-            m.ifid = new_metadata.ifid;
-            m.format_version = new_metadata.format_version;
+            m.ifid = new_ifid;
         }
+    }
+    if new_metadata.format_version != cached_version {
+        tracing::info!(
+            file = %uri,
+            old_version = ?cached_version,
+            new_version = ?new_metadata.format_version,
+            "StoryData format-version changed — reindex required so version-filtered completions/diagnostics update"
+        );
+        return true;
     }
 
     false

@@ -3000,10 +3000,16 @@ fn sugarcube_deprecated_macro_token_modifier() {
     // visually stable (always the base `macro` color + strikethrough if
     // deprecated), while the delimiters around it shift color to show
     // nesting depth. Both signals are visible simultaneously.
-    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
+    //
+    // Version-aware: <<click>> is deprecated (not removed) in SugarCube
+    // 2.36.x — pin the plugin there. At the latest (2.37.3) it is REMOVED,
+    // which is no longer "deprecated" styling.
+    use crate::plugin::{FormatPlugin, SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
 
     let mut plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 36, 0)));
     let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
@@ -3075,11 +3081,14 @@ fn sugarcube_non_deprecated_macro_no_modifier() {
 
 #[test]
 fn sugarcube_deprecated_macro_diagnostic() {
-    // Deprecated macros should emit a Hint diagnostic with the deprecation message
-    use crate::plugin::FormatDiagnosticSeverity;
+    // Deprecated macros should emit a Hint diagnostic with the deprecation
+    // message — pinned at 2.36.0 where <<click>> is deprecated but present.
+    use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin};
     use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
 
     let mut plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 36, 0)));
     let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
@@ -3102,11 +3111,15 @@ fn sugarcube_deprecated_macro_diagnostic() {
 
 #[test]
 fn sugarcube_display_deprecated_diagnostic() {
-    // <<display>> is deprecated — should get both Deprecated modifier and diagnostic
-    use crate::plugin::{SemanticTokenModifier, SemanticTokenType};
+    // <<display>> is deprecated — should get both Deprecated modifier and
+    // diagnostic. Pinned at 2.36.0 (removed in 2.37.0, where it becomes a
+    // hard sc-macro-removed error instead).
+    use crate::plugin::{FormatPlugin, SemanticTokenModifier, SemanticTokenType};
     use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
 
     let mut plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 36, 0)));
     let text = ":: Start\n<<display \"Intro\">>\n:: Intro\nHello.\n";
     let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
 
@@ -5326,4 +5339,148 @@ mod probe_battery_regression {
             .filter(|g| g.passage_name == "Start")
             .all(|g| g.diagnostics.is_empty())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Version-aware macro lifecycle (format-version filtering)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sugarcube_removed_macro_diagnostic_at_latest() {
+    // At the latest version (default when no StoryData version is pinned),
+    // <<click>> is REMOVED: a hard Error with the removal version + guidance.
+    use crate::plugin::FormatDiagnosticSeverity;
+    use crate::sugarcube::SugarCubePlugin;
+
+    let mut plugin = SugarCubePlugin::new();
+    let text = ":: Start\n<<click \"Go\">>Clicked<</click>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let removed = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-macro-removed");
+    assert!(
+        removed.is_some(),
+        "Should have sc-macro-removed for <<click>>"
+    );
+    let d = removed.unwrap();
+    assert_eq!(d.severity, FormatDiagnosticSeverity::Error);
+    assert!(
+        d.message.contains("removed in SugarCube 2.37.0"),
+        "Message should state the removal version: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("<<link>>"),
+        "Message should suggest the replacement: {}",
+        d.message
+    );
+    // The deprecation hint must NOT also fire for a removed macro.
+    let dep = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-deprecated");
+    assert!(
+        dep.is_none(),
+        "Removed macro should not double-report deprecated"
+    );
+}
+
+#[test]
+fn sugarcube_not_yet_added_macro_diagnostic() {
+    // A story pinned to 2.31.0 using <<type>> (added 2.32.0) gets a
+    // version-aware warning, not a generic unknown-macro hint.
+    use crate::plugin::{FormatDiagnosticSeverity, FormatPlugin};
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
+
+    let mut plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 31, 0)));
+    let text = ":: Start\n<<type 50ms>>Hi<</type>>\n";
+    let result = plugin.parse_mut(&url::Url::parse("file:///test.tw").unwrap(), text);
+
+    let nya = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-macro-not-in-version");
+    assert!(
+        nya.is_some(),
+        "Should have sc-macro-not-in-version for <<type>>"
+    );
+    let d = nya.unwrap();
+    assert_eq!(d.severity, FormatDiagnosticSeverity::Warning);
+    assert!(
+        d.message.contains("added in SugarCube 2.32.0"),
+        "Message should state the addition version: {}",
+        d.message
+    );
+    // No generic unknown-macro hint alongside.
+    let unknown = result
+        .diagnostic_groups
+        .iter()
+        .flat_map(|g| g.diagnostics.iter())
+        .find(|d| d.code == "sc-unknown-macro");
+    assert!(unknown.is_none());
+}
+
+#[test]
+fn sugarcube_versioned_completions() {
+    // The completion list must be version-filtered: at 2.31.0 the 2.32+
+    // macros are absent; at latest the removed macros are absent but the
+    // deprecated ones (e.g. <<silently>>) remain.
+    use crate::plugin::FormatPlugin;
+    use crate::sugarcube::SugarCubePlugin;
+    use crate::types::FormatVersion;
+
+    let workspace =
+        knot_core::Workspace::new(url::Url::parse("file:///test.tw").expect("valid uri"));
+    let uri = url::Url::parse("file:///test.tw").expect("valid uri");
+    // Cursor directly after a bare `<<` opener — the macro-name completion
+    // context. (With empty text the completion guard returns nothing.)
+    let text = "<<";
+    let (line, character) = (0u32, 2u32);
+
+    // Default (no pinned StoryData version) = latest known: newer macros
+    // ARE offered, and the default matches SUGARCUBE_LATEST.
+    let plugin = SugarCubePlugin::new();
+    let at_default = plugin.provide_completions(text, &workspace, &uri, line, character, None, &[]);
+    let labels_default: Vec<&str> = at_default.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels_default.iter().any(|l| l.contains("type")));
+    assert!(labels_default.iter().any(|l| l.contains("numberbox")));
+    assert!(labels_default.iter().any(|l| l.contains("done")));
+
+    let plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 31, 0)));
+    let at_231_pinned =
+        plugin.provide_completions(text, &workspace, &uri, line, character, None, &[]);
+    let labels_pinned: Vec<&str> = at_231_pinned.iter().map(|i| i.label.as_str()).collect();
+    assert!(!labels_pinned.iter().any(|l| l.contains("type")));
+    assert!(
+        labels_pinned.iter().any(|l| l.contains("click")),
+        "at 2.31.0 <<click>> (removed 2.37.0) IS offered — it existed there"
+    );
+
+    let plugin = SugarCubePlugin::new();
+    plugin.set_story_version(Some(FormatVersion::new(2, 37, 3)));
+    let at_latest = plugin.provide_completions(text, &workspace, &uri, line, character, None, &[]);
+    let labels_latest: Vec<&str> = at_latest.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        !labels_latest.iter().any(|l| l.contains("click")),
+        "at 2.37.3 <<click>> (removed) must not be offered"
+    );
+    assert!(
+        labels_latest.iter().any(|l| l.contains("silently")),
+        "at 2.37.3 <<silently>> (deprecated alias) IS offered"
+    );
+    assert!(
+        at_latest
+            .iter()
+            .find(|i| i.label.contains("silently"))
+            .is_some_and(|i| i.deprecated),
+        "at 2.37.3 <<silently>> completion item must be flagged deprecated"
+    );
 }

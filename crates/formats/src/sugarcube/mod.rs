@@ -873,6 +873,12 @@ fn attr_position_in(nodes: &[ast::AstNode], offset: usize) -> Option<AttrPositio
 pub struct SugarCubePlugin {
     /// The unified registry hub — owns all sub-registries.
     registry: SugarCubeRegistry,
+    /// The story's pinned format version (from StoryData `format-version`),
+    /// updated by the server via [`FormatPlugin::set_story_version`].
+    /// `None` until StoryData is indexed — the effective version then
+    /// falls back to [`macros::SUGARCUBE_LATEST`] (fail-open: no version
+    /// must never mean false diagnostics).
+    story_version: std::sync::RwLock<Option<crate::types::FormatVersion>>,
 }
 
 impl Default for SugarCubePlugin {
@@ -885,7 +891,18 @@ impl SugarCubePlugin {
     pub fn new() -> Self {
         Self {
             registry: SugarCubeRegistry::new(),
+            story_version: std::sync::RwLock::new(None),
         }
+    }
+
+    /// The story's effective format version: the pinned StoryData
+    /// `format-version` if known, else the catalog's latest (fail-open).
+    pub fn effective_story_version(&self) -> crate::types::FormatVersion {
+        self.story_version
+            .read()
+            .ok()
+            .and_then(|v| *v)
+            .unwrap_or(macros::SUGARCUBE_LATEST)
     }
 
     /// Determine the parse mode for a classified passage.
@@ -957,6 +974,16 @@ impl FormatPlugin for SugarCubePlugin {
         StoryFormat::SugarCube
     }
 
+    fn set_story_version(&self, version: Option<crate::types::FormatVersion>) {
+        if let Ok(mut v) = self.story_version.write() {
+            *v = version;
+        }
+    }
+
+    fn story_version(&self) -> Option<crate::types::FormatVersion> {
+        self.story_version.read().ok().and_then(|v| *v)
+    }
+
     fn zone_analyze(&self, body: &str) -> knot_core::zoning::ZoneMap {
         // Phase 4.1 ZoneAnalyzer: the SugarCube strata producers
         // (prose/markup, htmlTag + raw-text script/style from Phases 1–3,
@@ -969,10 +996,20 @@ impl FormatPlugin for SugarCubePlugin {
 
     fn special_passages(&self) -> Vec<SpecialPassageDef> {
         special_passages::name_matched_special_passages()
+            .into_iter()
+            .filter(|d| {
+                special_passages::exists_at_version(&d.name, self.effective_story_version())
+            })
+            .collect()
     }
 
     fn tag_matched_special_passages(&self) -> Vec<SpecialPassageDef> {
         special_passages::tag_matched_special_passages()
+            .into_iter()
+            .filter(|d| {
+                special_passages::exists_at_version(&d.name, self.effective_story_version())
+            })
+            .collect()
     }
 
     fn display_name(&self) -> &str {
@@ -2950,11 +2987,21 @@ impl SugarCubePlugin {
         };
         let parent_constraints = macros::macro_parent_constraints();
 
-        // ── Builtin macros ────────────────────────────────────────────
-        for mdef in self.builtin_macros() {
+        // ── Builtin macros (version-filtered) ──────────────────────
+        //
+        // The completion list is filtered through `macros_at` — the
+        // version gate over the union catalog — so only macros that exist
+        // (available or deprecated) at the story's pinned `format-version`
+        // are offered. Removed macros (e.g. `<<click>>` at 2.37+) and
+        // not-yet-added macros (e.g. `<<type>>` before 2.32) are excluded,
+        // and each item's detail/description comes from its era-effective
+        // descriptor.
+        let story_version = self.effective_story_version();
+        for (mdef, descriptor) in macros::macros_at(story_version) {
             if !filter_prefix.is_empty() && !mdef.name.starts_with(filter_prefix) {
                 continue;
             }
+            let is_deprecated = mdef.is_deprecated_at(story_version);
 
             // Phase 2: Sub-macro scoping — filter SubMacro items when the
             // cursor is not inside a valid parent container.
@@ -3001,7 +3048,7 @@ impl SugarCubePlugin {
                 } else {
                     "1"
                 }
-            } else if mdef.deprecated {
+            } else if is_deprecated {
                 "2" // Deprecated — shown after normal macros
             } else {
                 "1"
@@ -3013,7 +3060,7 @@ impl SugarCubePlugin {
                     let snippet = macros::convert_snippet_newlines(form.snippet);
                     let text_edit =
                         compute_macro_text_edit(filter_prefix, cursor, &snippet, after_cursor);
-                    let detail_text = if mdef.deprecated {
+                    let detail_text = if is_deprecated {
                         format!("[Deprecated] [{}] {}", category, form.detail)
                     } else {
                         format!("[{}] {}", category, form.detail)
@@ -3030,7 +3077,7 @@ impl SugarCubePlugin {
                         insert_text: Some(snippet),
                         insert_text_format: FormatInsertTextFormat::Snippet,
                         text_edit,
-                        deprecated: mdef.deprecated,
+                        deprecated: is_deprecated,
                         preselect: form.sort_priority == 0
                             && (sort_prefix == "0" || sort_prefix == "1"),
                         data: Some(serde_json::json!({"type": "macro", "name": mdef.name})),
@@ -3042,10 +3089,10 @@ impl SugarCubePlugin {
                 let snippet = self.build_macro_snippet(mdef.name, mdef.body);
                 let text_edit =
                     compute_macro_text_edit(filter_prefix, cursor, &snippet, after_cursor);
-                let detail_text = if mdef.deprecated {
-                    format!("[Deprecated] [{}] {}", category, mdef.description)
+                let detail_text = if is_deprecated {
+                    format!("[Deprecated] [{}] {}", category, descriptor.description)
                 } else {
-                    format!("[{}] {}", category, mdef.description)
+                    format!("[{}] {}", category, descriptor.description)
                 };
                 items.push(FormatCompletionItem {
                     label: format!("<<{}>>", mdef.name),
@@ -3056,7 +3103,7 @@ impl SugarCubePlugin {
                     insert_text: Some(snippet),
                     insert_text_format: FormatInsertTextFormat::Snippet,
                     text_edit,
-                    deprecated: mdef.deprecated,
+                    deprecated: is_deprecated,
                     preselect: false,
                     data: Some(serde_json::json!({"type": "macro", "name": mdef.name})),
                     commit_characters: Vec::new(),

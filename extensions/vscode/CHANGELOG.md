@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.1.0] — Full Release
+
+Graduation from preview to the first full stable release of the Knot v2 line.
+The headline feature is **story format versioning**: the SugarCube macro
+catalog is now versioned end to end, and every user-facing feature is
+filtered through the story's pinned `format-version` from StoryData.
+
+### Added
+
+#### Story Format Versioning (SugarCube)
+- **Versioned macro catalog** — every entry now carries its lifecycle
+  (`added_in`, `deprecated_in`, `removed_in`) plus per-era descriptors
+  (description + argument signature), so the same macro is described
+  correctly for the version the story is pinned to (e.g. `<<script>>` shows
+  no `language` parameter before SugarCube 2.37.0; `<<for>>` documents
+  only its era's forms).
+- **Version-filtered completions** — the builtin completion list only
+  offers macros that exist at the story's version: `<<type>>`,
+  `<<numberbox>>`, `<<done>>`, `<<do>>`/`<<redo>>` etc. are hidden for
+  stories pinned below their introduction; the six macros removed in
+  SugarCube 2.37.0 (`<<click>>`, `<<display>>`, `<<forget>>`,
+  `<<remember>>`, `<<setplaylist>>`, `<<stopallaudio>>`) are offered again
+  for older stories and hidden on 2.37+.
+- **Version-aware lifecycle diagnostics** — new `sc-macro-removed` (Error:
+  states the removal version, the deprecation window, the replacement, and
+  downgrade guidance) and `sc-macro-not-in-version` (Warning: states the
+  version the macro was added in). The `sc-deprecated` hint now reports
+  the deprecation version.
+- **Version-aware hover and signature help** — hovers resolve the
+  era-appropriate description and arguments, and show tombstone notes for
+  macros that don't exist at the story's version.
+- **Version-aware special passages** — `StoryDisplayTitle` (added 2.31.0)
+  and the `[init]` tag (added 2.36.0) are only special for stories on
+  versions that actually have them.
+- **StoryData `format-version` change → reindex** — editing the pinned
+  version now triggers a full reparse so all completions, tokens, and
+  diagnostics immediately reflect the new version (IFID edits remain
+  in-place, as they affect nothing).
+- **Fail-open version policy** — stories without a parseable
+  `format-version` (or with a version newer than the catalog tracks)
+  are treated as the latest known SugarCube; unusual metadata degrades
+  to the full current surface, never to bogus diagnostics.
+
+### Changed
+- SugarCube version data is sourced from the official v2 docs per-macro
+  History sections, the docs upgrade guides (≥2.37.0 … ≥2.8.0), release
+  notes 2.31.0–2.37.3, and the 2.37.3 engine source itself.
+- Versions compare strictly as `(major, minor, patch)` tuples — SugarCube
+  does not follow semver (2.37.0 shipped removals in a "minor" bump).
+
+---
+
 ## [2.0.0] — Marketplace Beta (Pre-release)
 
 First public beta release of Knot v2.0.0. Marked as `preview: true` on the

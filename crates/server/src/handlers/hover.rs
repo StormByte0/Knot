@@ -1044,16 +1044,68 @@ fn build_macro_hover_text(
     mdef: &knot_formats::types::MacroDef,
     plugin: &dyn fmt_plugin::FormatPlugin,
 ) -> String {
+    use knot_formats::types::MacroStatus;
+
     let mut hover_text = format!("**`{}`**", plugin.format_macro_label(mdef.name));
 
-    // Add description
-    hover_text.push_str(&format!("\n\n{}", mdef.description));
+    // Version-aware resolution: prefer the era-effective descriptor and
+    // the lifecycle AT the story's pinned format version. Fall back to the
+    // latest-era descriptor when the story's version is unknown (plugins
+    // without version tracking), matching the pre-versioning behavior.
+    let story_version = plugin
+        .story_version()
+        .unwrap_or(knot_formats::sugarcube::macros::SUGARCUBE_LATEST);
+    let (description, args, status) = match mdef.descriptor_at(story_version) {
+        Some(descriptor) => (
+            descriptor.description,
+            descriptor.args,
+            mdef.status_at(story_version),
+        ),
+        None => (
+            mdef.latest_descriptor().description,
+            mdef.latest_descriptor().args,
+            // Macro doesn't exist at the story's version — classify which
+            // side of history it's on for the tombstone note below.
+            mdef.status_at(story_version),
+        ),
+    };
 
-    // Add deprecation warning
-    if mdef.deprecated
-        && let Some(msg) = mdef.deprecation_message
-    {
-        hover_text.push_str(&format!("\n\n**Deprecated**: {}", msg));
+    // Add description (era-appropriate for the story's format version)
+    hover_text.push_str(&format!("\n\n{}", description));
+
+    // Lifecycle notes — replace the old flat "deprecated" flag with the
+    // version-resolved status so hovers explain WHEN and what to do.
+    match status {
+        MacroStatus::Removed => {
+            // status_at only reports Removed when removed_in is set.
+            let removed = mdef.removed_in.unwrap_or(story_version);
+            hover_text.push_str(&format!(
+                "\n\n**Removed in SugarCube {}** — it does not exist in this story's version ({}).",
+                removed, story_version
+            ));
+            if let Some(msg) = mdef.deprecation_message {
+                hover_text.push_str(&format!(" {}", msg));
+            }
+            hover_text
+                .push_str("\n\nReplace it, or downgrade the story's `format-version` to use it.");
+        }
+        MacroStatus::Deprecated => {
+            if let Some(msg) = mdef.deprecation_message {
+                hover_text.push_str(&format!("\n\n**Deprecated**: {}", msg));
+            } else {
+                hover_text.push_str("\n\n**Deprecated**.");
+            }
+            if let Some(dep) = mdef.deprecated_in {
+                hover_text.push_str(&format!(" (deprecated since SugarCube {})", dep));
+            }
+        }
+        MacroStatus::NotYetAdded => {
+            hover_text.push_str(&format!(
+                "\n\n**Added in SugarCube {}** — it does not exist in this story's version ({}).",
+                mdef.added_in, story_version
+            ));
+        }
+        MacroStatus::Available => {}
     }
 
     // Close-tag hint for container macros (those that require a body and a
@@ -1068,7 +1120,7 @@ fn build_macro_hover_text(
 
     // Add parameter info — render with human-readable kind descriptions
     // so users understand what to write, not just the type name.
-    if let Some(args) = mdef.args
+    if let Some(args) = args
         && !args.is_empty()
     {
         hover_text.push_str("\n\n**Parameters:**\n");

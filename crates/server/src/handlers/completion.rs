@@ -341,21 +341,32 @@ pub(crate) async fn completion_resolve(
                 if let Some(plugin) = plugin {
                     if let Some(mdef) = plugin.find_macro(name) {
                         let kind = macros::classify(mdef.name, mdef, plugin);
+                        // Version-aware: resolve the era-effective descriptor
+                        // + lifecycle at the story's pinned format version.
+                        let story_version = plugin
+                            .story_version()
+                            .unwrap_or(knot_formats::sugarcube::macros::SUGARCUBE_LATEST);
+                        let descriptor = mdef
+                            .descriptor_at(story_version)
+                            .unwrap_or_else(|| mdef.latest_descriptor());
+                        let is_deprecated = mdef.is_deprecated_at(story_version);
                         let mut doc_markdown = format!(
                             "**{}** `{}`\n\n{}",
                             macros::hover_kind_label(kind),
                             plugin.format_macro_label(mdef.name),
-                            mdef.description
+                            descriptor.description
                         );
-                        if mdef.deprecated
-                            && let Some(msg) = mdef.deprecation_message
-                        {
+                        if is_deprecated && let Some(msg) = mdef.deprecation_message {
                             doc_markdown.push_str(&format!("\n\n**Deprecated**: {}", msg));
+                            if let Some(dep) = mdef.deprecated_in {
+                                doc_markdown
+                                    .push_str(&format!(" (deprecated since SugarCube {})", dep));
+                            }
                         }
                         if let Some(note) = macros::hover_kind_note(kind, mdef.name, plugin) {
                             doc_markdown.push_str(&format!("\n\n{}", note));
                         }
-                        if let Some(args) = mdef.args
+                        if let Some(args) = descriptor.args
                             && !args.is_empty()
                         {
                             doc_markdown.push_str("\n\n**Parameters:**\n");

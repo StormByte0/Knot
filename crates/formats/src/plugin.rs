@@ -1098,12 +1098,41 @@ pub trait FormatPlugin: Send + Sync {
     }
 
     // -----------------------------------------------------------------------
+    // Story format versioning (optional)
+    // -----------------------------------------------------------------------
+
+    /// Inform the plugin of the story's pinned format version.
+    ///
+    /// Called by the server whenever workspace StoryData metadata changes
+    /// (initial indexing, StoryData edits). `None` means no version is
+    /// known — plugins with versioned catalogs treat that as their latest
+    /// known version (fail-open).
+    ///
+    /// Plugins without version-sensitive data keep the default no-op.
+    /// Implementations must use interior mutability: this takes `&self`
+    /// because the server holds the plugin through the read-side registry.
+    fn set_story_version(&self, _version: Option<crate::types::FormatVersion>) {}
+
+    /// The story's pinned format version, if the plugin tracks one.
+    ///
+    /// Returns `None` for version-blind formats. Callers wanting an
+    /// effective version should fall back to the catalog's latest
+    /// (e.g. `sugarcube::macros::SUGARCUBE_LATEST`).
+    fn story_version(&self) -> Option<crate::types::FormatVersion> {
+        None
+    }
+
+    // -----------------------------------------------------------------------
     // Macro catalog (optional)
     // -----------------------------------------------------------------------
 
     /// Returns the builtin macro definitions for this format.
     ///
-    /// Used by completion, hover, validation, and signature help.
+    /// **Union catalog**: for versioned formats (SugarCube) this includes
+    /// deprecated and removed macros. User-facing features must filter
+    /// through the version-aware accessors rather than consuming this
+    /// list directly. Used by completion, hover, validation, and
+    /// signature help.
     fn builtin_macros(&self) -> &'static [MacroDef] {
         &[]
     }

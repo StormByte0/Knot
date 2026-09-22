@@ -143,11 +143,131 @@ pub use knot_core::types::BodyRequirement;
 /// compatibility. See [`knot_core::types::MacroKind`].
 pub use knot_core::types::MacroKind;
 
+/// A story format version, compared as a strict `(major, minor, patch)` tuple.
+///
+/// SugarCube does **not** follow semver — e.g. v2.37.0, a "minor" bump by
+/// numbering, shipped breaking removals (`<<click>>`, `<<display>>`, …) — so
+/// versions must never be compared with semver precedence rules (where a
+/// higher minor is assumed backward compatible). The derived `Ord` compares
+/// field-by-field: major first, then minor, then patch.
+///
+/// StoryData `format-version` strings are parsed leniently by
+/// [`FormatVersion::parse`]: a leading `v` is accepted, two components
+/// (`"2.36"`) imply patch `0`, and trailing prerelease/build suffixes are
+/// ignored (`"2.30.0-beta"` → `2.30.0`). Unparseable versions yield `None`
+/// — callers treat that as "unknown" and fall back to the catalog's latest
+/// known version rather than emitting false positives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FormatVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl FormatVersion {
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    /// Parse a story format version string.
+    ///
+    /// Accepts `"2.37.3"`, `"2.36"` (patch 0), `"v2.31.0"`, and tolerates
+    /// prerelease/build suffixes (`"2.30.0-beta.1+meta"` → `2.30.0`).
+    /// Returns `None` for anything else — fail-open so that unusual
+    /// StoryData values degrade to the latest known catalog, never to
+    /// bogus diagnostics.
+    pub fn parse(s: &str) -> Option<Self> {
+        let trimmed = s.trim().trim_start_matches(['v', 'V']);
+        // Strip a prerelease/build suffix if present.
+        let core = trimmed
+            .split_once(['-', '+'])
+            .map(|(c, _)| c)
+            .unwrap_or(trimmed);
+        let mut parts = core.split('.');
+        let major = parts.next()?.parse::<u32>().ok()?;
+        let minor = match parts.next() {
+            None => 0,
+            Some(p) => p.parse::<u32>().ok()?,
+        };
+        let patch = match parts.next() {
+            None => 0,
+            Some(p) => p.parse::<u32>().ok()?,
+        };
+        if parts.next().is_some() {
+            return None; // e.g. "2.36.1.9" — not a version we understand
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+impl std::fmt::Display for FormatVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// The lifecycle status of a macro relative to a specific format version.
+///
+/// Derived from a [`MacroDef`]'s `added_in` / `deprecated_in` / `removed_in`
+/// fields. Version filtering (completions, diagnostics, hover) is driven by
+/// this classification; structural parsing stays version-blind so that a
+/// removed macro still pairs syntactically while being flagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroStatus {
+    /// The macro exists at this version and is not deprecated.
+    Available,
+    /// The macro exists at this version but is deprecated (still functional).
+    Deprecated,
+    /// The macro was removed at or before this version — it does not exist
+    /// there. Diagnostics should report when it was valid so the author can
+    /// replace it or pin/downgrade their story format.
+    Removed,
+    /// The macro does not exist yet at this version — it was added later.
+    NotYetAdded,
+}
+
+/// A versioned macro descriptor — the era-specific view of a macro.
+///
+/// Macros whose arguments or behavior changed across format versions carry
+/// one descriptor per era, sorted ascending by `since`. The effective
+/// descriptor at version `v` is the last one whose `since <= v`; macros
+/// with a single unchanging era have exactly one descriptor whose `since`
+/// matches the macro's `added_in`.
+#[derive(Debug, Clone)]
+pub struct MacroDescriptor {
+    /// First version (inclusive) to which this descriptor applies.
+    pub since: FormatVersion,
+    /// Era-appropriate description (hover, completion detail, docs).
+    pub description: &'static str,
+    /// Era-appropriate argument signature. `None` = arbitrary args.
+    pub args: Option<&'static [MacroArgDef]>,
+}
+
 /// A format-specific macro definition entry.
+///
+/// ## Versioned catalog design
+///
+/// The catalog is the **union** of every macro that ever existed in
+/// SugarCube 2.x, each carrying its lifecycle (`added_in`, `deprecated_in`,
+/// `removed_in`) and per-era [`MacroDescriptor`]s. The raw list must NOT be
+/// used for user-facing features directly — completions, hover, and
+/// signature help must resolve through the version-aware accessors
+/// ([`MacroDef::descriptor_at`], [`MacroDef::status_at`]) so that only the
+/// macros and descriptions relevant to the story's pinned format version
+/// are surfaced. Structural consumers (the parser/tree builder, zone and
+/// pairing logic) may use the version-blind lookups since removed macros
+/// must still parse syntactically.
 #[derive(Debug, Clone)]
 pub struct MacroDef {
     pub name: &'static str,
-    pub description: &'static str,
     /// Whether this macro can have a body (content between open and close tags).
     ///
     /// Determines how the tree builder handles an open macro with no close tag:
@@ -160,11 +280,24 @@ pub struct MacroDef {
     /// top-level completions unless the cursor is inside a valid parent),
     /// close-tag behavior, and sort ordering.
     pub kind: MacroKind,
-    /// Argument signature definitions. If None, the macro takes arbitrary args.
-    pub args: Option<&'static [MacroArgDef]>,
-    /// Whether this macro is deprecated.
-    pub deprecated: bool,
-    /// Deprecation message if deprecated.
+    /// First format version in which this macro exists.
+    ///
+    /// Macros predating the catalog's baseline era use the baseline
+    /// (SugarCube 2.0.0) as their `added_in`.
+    pub added_in: FormatVersion,
+    /// Version in which this macro was deprecated (`None` = not deprecated).
+    ///
+    /// Deprecation is inclusive: the macro is [`MacroStatus::Deprecated`] for
+    /// every version `>= deprecated_in` until (and unless) [`Self::removed_in`].
+    pub deprecated_in: Option<FormatVersion>,
+    /// Version in which this macro was removed (`None` = still present).
+    ///
+    /// Removal is inclusive: the macro is [`MacroStatus::Removed`] for every
+    /// version `>= removed_in`. The union catalog keeps the entry so that
+    /// older stories still get completions for it.
+    pub removed_in: Option<FormatVersion>,
+    /// Replacement/migration message for deprecated and removed macros
+    /// (e.g., "Use `<<link>>` instead").
     pub deprecation_message: Option<&'static str>,
     /// Category for filtering.
     pub category: MacroCategory,
@@ -184,6 +317,75 @@ pub struct MacroDef {
     /// (plan.md §7a). `<<style>>` and `<<css>>` do NOT exist in SugarCube
     /// and have been removed from the catalog.
     pub body_is_raw: bool,
+    /// Versioned descriptors (description + args), ascending by `since`.
+    /// The effective entry at version `v` is the last one with `since <= v`.
+    pub descriptors: &'static [MacroDescriptor],
+}
+
+impl MacroDef {
+    /// The descriptor effective at `version`.
+    ///
+    /// Returns `None` when the macro does not exist at `version` yet —
+    /// callers that want the latest-era text regardless (e.g. hover
+    /// tombstones for removed macros) should use [`Self::latest_descriptor`].
+    pub fn descriptor_at(&self, version: FormatVersion) -> Option<&'static MacroDescriptor> {
+        // Bind the 'static slice first so iteration yields 'static items.
+        let descriptors: &'static [MacroDescriptor] = self.descriptors;
+        descriptors.iter().rev().find(|d| d.since <= version)
+    }
+
+    /// The latest-era descriptor — what version-blind code saw before the
+    /// catalog was versioned. Safe fallback for structural or legacy uses.
+    pub fn latest_descriptor(&self) -> &'static MacroDescriptor {
+        // Catalog invariant: every MacroDef has at least one descriptor.
+        &self.descriptors[self.descriptors.len() - 1]
+    }
+
+    /// Latest-era description (compat shim for the pre-versioning field).
+    pub fn description(&self) -> &'static str {
+        self.latest_descriptor().description
+    }
+
+    /// Latest-era argument signature (compat shim for the pre-versioning field).
+    pub fn args(&self) -> Option<&'static [MacroArgDef]> {
+        self.latest_descriptor().args
+    }
+
+    /// Whether this macro is deprecated at all in the catalog (i.e. at the
+    /// latest known version). Compat shim for the pre-versioning field.
+    pub fn deprecated(&self) -> bool {
+        self.deprecated_in.is_some()
+    }
+
+    /// Lifecycle status of this macro at `version`.
+    pub fn status_at(&self, version: FormatVersion) -> MacroStatus {
+        if let Some(removed) = self.removed_in
+            && version >= removed
+        {
+            MacroStatus::Removed
+        } else if version < self.added_in {
+            MacroStatus::NotYetAdded
+        } else if let Some(dep) = self.deprecated_in
+            && version >= dep
+        {
+            MacroStatus::Deprecated
+        } else {
+            MacroStatus::Available
+        }
+    }
+
+    /// Whether the macro exists (available or deprecated) at `version`.
+    pub fn exists_at(&self, version: FormatVersion) -> bool {
+        matches!(
+            self.status_at(version),
+            MacroStatus::Available | MacroStatus::Deprecated
+        )
+    }
+
+    /// Whether the macro is deprecated (but still present) at `version`.
+    pub fn is_deprecated_at(&self, version: FormatVersion) -> bool {
+        matches!(self.status_at(version), MacroStatus::Deprecated)
+    }
 }
 
 /// A property or method of a builtin global object.

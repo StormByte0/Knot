@@ -109,7 +109,14 @@ fn debug_tokens_for_expression() {
         // sugarcube_syntax=true (SugarCube $var and keyword operators are allowed)
         crate::sugarcube::js::js_annotate::annotate_js(&mut ast, src, false, true, &HashSet::new());
         let mut tokens = Vec::new();
-        build_semantic_tokens(&ast.nodes, &mut tokens, 0, &HashSet::new(), "");
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            "",
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
         // Sort by start position
         let mut sorted = tokens.clone();
         sorted.sort_by_key(|t| t.start);

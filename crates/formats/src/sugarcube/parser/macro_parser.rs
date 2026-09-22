@@ -1240,7 +1240,7 @@ pub(super) fn parse_structured_args(
 
     // Look up the macro in the catalog
     let macro_def = find_macro(name)?;
-    let arg_defs = macro_def.args?;
+    let arg_defs = macro_def.args()?;
 
     // If no args string, nothing to extract
     if args.is_empty() {
