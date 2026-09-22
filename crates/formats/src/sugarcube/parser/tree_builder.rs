@@ -36,6 +36,19 @@ use crate::types::BodyRequirement;
 /// non-rendering macros (`<<silently>>`, `<<script>>`, `<<style>>`) are
 /// marked `is_prose = false`.
 pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
+    let mut roots = build_tree_inner(flat);
+    // Propagate prose context: mark Text nodes inside non-rendering macros
+    // (`<<silently>>`, `<<script>>`) as `is_prose = false`.
+    propagate_prose_context(&mut roots);
+    roots
+}
+
+/// The pairing pass proper — same logic as `build_tree` minus the
+/// prose-context propagation (which must run exactly once, over the
+/// finished tree). Also invoked for HTML element children, whose flat
+/// content (macros + close tags) is wikified and needs the same pairing
+/// (see the `other` arm below).
+fn build_tree_inner(flat: Vec<AstNode>) -> Vec<AstNode> {
     let mut stack: Vec<StackEntry> = Vec::new();
     let mut roots: Vec<AstNode> = Vec::new();
 
@@ -154,7 +167,46 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
             }
 
             other => {
-                // Text, Link, Expression, Comment, Error — add to current context
+                // Text, Link, Expression, Comment, Error — add to current
+                // context.
+                //
+                // HTML element content is WIKIFIED (upstream subWikify,
+                // plan.md D1 rule 2): its flat children contain macros and
+                // macro close tags that must go through the same pairing
+                // pass. Without this, `<<if>>…<</if>>` inside a `<div>`
+                // never paired — the macro stayed inline, its content
+                // became loose Text siblings, and every pairing-dependent
+                // consumer (block-depth tokens, macro diagnostics, the
+                // `<<style>>`/`<<css>>` CSS relay) was blind inside HTML
+                // elements. Raw-text elements (`<script>`/`<style>`
+                // bodies — `raw_body: Some`) are exempt: their single Text
+                // child is final, never wikified.
+                let other = match other {
+                    AstNode::HtmlTag {
+                        name,
+                        name_span,
+                        attrs,
+                        children,
+                        open_span,
+                        close_span,
+                        full_span,
+                        kind,
+                        raw_body: None,
+                        body_js_analysis,
+                    } => AstNode::HtmlTag {
+                        name,
+                        name_span,
+                        attrs,
+                        children: build_tree_inner(children),
+                        open_span,
+                        close_span,
+                        full_span,
+                        kind,
+                        raw_body: None,
+                        body_js_analysis,
+                    },
+                    node => node,
+                };
                 let current = stack.last_mut();
                 if let Some(entry) = current {
                     entry.pending_children.push(other);
@@ -170,9 +222,6 @@ pub fn build_tree(flat: Vec<AstNode>) -> Vec<AstNode> {
         let node = entry.into_node_with_catalog();
         roots.push(node);
     }
-
-    // Propagate prose context: mark Text nodes inside non-rendering macros
-    propagate_prose_context(&mut roots);
 
     roots
 }
@@ -437,4 +486,126 @@ fn is_prose_rendering_macro(name: &str) -> bool {
     // render their body content as prose to the player. `<<style>>` and
     // `<<css>>` were removed (they don't exist in SugarCube — plan.md §7a).
     !matches!(lower.as_str(), "silently" | "silent" | "done" | "script")
+}
+
+#[cfg(test)]
+mod html_content_pairing_tests {
+    use super::*;
+
+    fn parse(body: &str) -> Vec<AstNode> {
+        let flat = crate::sugarcube::parser::core::parse_body(body, 0);
+        build_tree(flat)
+    }
+
+    /// The fix this pins: HTML element content is wikified, so macros inside
+    /// a `<div>` must pair with their close tags exactly like top-level
+    /// ones. Before the fix, `<<if>>` inside a div stayed inline
+    /// (`children: None`), its content became loose Text siblings, and the
+    /// content's structure (nesting depth, close spans) was lost.
+    #[test]
+    fn if_macro_inside_html_element_pairs_with_close_tag() {
+        let roots = parse("<div>\n<<if $x>>inner<</if>>\n</div>");
+        let [
+            AstNode::HtmlTag {
+                name,
+                children,
+                close_span,
+                ..
+            },
+        ] = &roots[..]
+        else {
+            panic!("expected one div, got: {}", roots.len());
+        };
+        assert_eq!(name, "div");
+        assert!(close_span.is_some(), "div must be closed");
+        let if_macro = children
+            .iter()
+            .find_map(|n| match n {
+                AstNode::Macro {
+                    name,
+                    children,
+                    close_span,
+                    ..
+                } if name == "if" => Some((children, close_span)),
+                _ => None,
+            })
+            .expect("the <<if>> macro inside the div");
+        let (if_children, if_close) = if_macro;
+        assert!(if_close.is_some(), "<<if>> close tag must pair");
+        assert!(
+            if_children.as_ref().is_some_and(|ch| ch
+                .iter()
+                .any(|n| matches!(n, AstNode::Text { content, .. } if content == "inner"))),
+            "the macro's content must be its children, not loose siblings"
+        );
+    }
+
+    /// Nesting pairs at depth: a `<<widget>>`-shaped block inside a closed
+    /// element inside another element.
+    #[test]
+    fn pairing_works_at_arbitrary_html_depth() {
+        let body = "<div><span><<if $a>>deep<</if>></span></div>";
+        let roots = parse(body);
+        let find_if = |nodes: &[AstNode]| -> Option<Option<Range<usize>>> {
+            nodes.iter().find_map(|n| match n {
+                AstNode::Macro {
+                    name, close_span, ..
+                } if name == "if" => Some(close_span.clone()),
+                _ => None,
+            })
+        };
+        let div = &roots[0];
+        let AstNode::HtmlTag {
+            children: div_ch, ..
+        } = div
+        else {
+            panic!()
+        };
+        let span = div_ch
+            .iter()
+            .find_map(|n| match n {
+                AstNode::HtmlTag { name, children, .. } if name == "span" => Some(children),
+                _ => None,
+            })
+            .expect("span");
+        let if_close = find_if(span).expect("<<if>> inside span");
+        assert!(if_close.is_some(), "deep <<if>> must pair with <</if>>");
+    }
+
+    /// Raw bodies stay opaque: `<script>` element children are never
+    /// re-paired (a `<<if>>`-shaped string inside JS stays one raw Text).
+    #[test]
+    fn raw_text_bodies_are_not_repaired() {
+        let body = "<script>var a = 1;\nif (a) { b(); }</script>";
+        let roots = parse(body);
+        let AstNode::HtmlTag {
+            raw_body, children, ..
+        } = &roots[0]
+        else {
+            panic!()
+        };
+        assert_eq!(*raw_body, Some(knot_core::zoning::RawLanguage::Js));
+        assert_eq!(children.len(), 1, "single raw Text child, got {children:?}");
+        assert!(matches!(children[0], AstNode::Text { .. }));
+    }
+
+    /// An orphan close tag inside an element becomes an Error node (same
+    /// as top level) instead of silently leaking a MacroClose child.
+    #[test]
+    fn orphan_close_inside_element_is_an_error_node() {
+        let roots = parse("<div>x<</if>></div>");
+        let AstNode::HtmlTag { children, .. } = &roots[0] else {
+            panic!()
+        };
+        assert!(
+            children.iter().any(|n| matches!(n, AstNode::Error { .. })),
+            "orphan <</if>> inside div must surface as an Error, got: {children:?}"
+        );
+        assert!(
+            !children
+                .iter()
+                .any(|n| matches!(n, AstNode::MacroClose { .. })),
+            "no raw MacroClose node may leak into the final AST"
+        );
+    }
 }

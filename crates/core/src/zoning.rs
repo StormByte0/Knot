@@ -8,8 +8,10 @@
 //! - [`LeafKind::MacroTag`] — the `<<name args>>` / `<</name>>` / `<<=>>expr>>`
 //!   token itself.
 //! - [`LeafKind::Raw`] — foreign-language content (JS inside `<<script>>`,
-//!   CSS inside a future `<<style>>`). Processed by external parsers (oxc
-//!   for JS); the zone engine does NOT recurse into these.
+//!   CSS inside `<<style>>` bodies and `style="…"` attribute values,
+//!   HTML tag interiors). Processed by external parsers (oxc for JS, the
+//!   `knot-core` css service for CSS, the html5gum integration for HTML);
+//!   the zone engine does NOT recurse into these.
 //! - [`LeafKind::Error`] — parse errors. Carries the message so diagnostics
 //!   can be emitted directly from the zone map.
 //!
@@ -61,7 +63,8 @@ pub enum RawLanguage {
     Js,
     /// CSS — parsed by the `knot_core::css` service (oxc-css-parser, plan.md
     /// Phase 6): `<style>` bodies, `<<style>>`/`<<css>>` blocks, stylesheet
-    /// passages and `style="…"` attribute values.
+    /// passages and `style="…"` attribute values (the builder in
+    /// `knot-formats` zones those values as `Raw { Css }` leaves).
     Css,
     /// HTML — parsed by `knot_core::html` (html5gum CST). Used by the
     /// Phase 2.2 htmlTag stratum (atomic tag interiors) and 2.3 raw-text
@@ -176,9 +179,10 @@ pub enum LeafKind {
         orphan: bool,
     },
 
-    /// Raw foreign-language content — JS inside `<<script>>`, CSS inside a
-    /// future `<<css>>`/`<<style>>`. Processed by external parsers; the zone
-    /// engine does NOT recurse into these. The formatter defers these to
+    /// Raw foreign-language content — JS inside `<<script>>`, CSS inside
+    /// `<<style>>`/`<<css>>` blocks and `style="…"` attribute values, HTML
+    /// tag interiors. Processed by external parsers; the zone engine does
+    /// NOT recurse into these. The formatter defers these to
     /// language-specific sub-formatters.
     Raw { language: RawLanguage },
 

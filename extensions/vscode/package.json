@@ -551,6 +551,38 @@
       {
         "id": "inlineCode",
         "description": "Inline code ({{{...}}})"
+      },
+      {
+        "id": "htmlTag",
+        "description": "HTML tag name (div in <div>)"
+      },
+      {
+        "id": "htmlAttribute",
+        "description": "HTML attribute name (class, @style incl. the directive sigil)"
+      },
+      {
+        "id": "htmlEntity",
+        "description": "HTML entity reference (&amp;) inside an attribute value"
+      },
+      {
+        "id": "htmlDelimiter",
+        "description": "HTML tag punctuation (<, >, </, />)"
+      },
+      {
+        "id": "cssProperty",
+        "description": "CSS declaration name (color, margin, --main)"
+      },
+      {
+        "id": "cssSelector",
+        "description": "CSS selector part (.class, #id, tag names)"
+      },
+      {
+        "id": "cssAtRule",
+        "description": "CSS at-rule name with the leading @ (@media)"
+      },
+      {
+        "id": "htmlDirective",
+        "description": "SugarCube evaluation-directive sigil on an HTML attribute name (@attr, sc-eval:attr)"
       }
     ],
     "semanticTokenModifiers": [
@@ -735,6 +767,37 @@
           ],
           "inlineCode": [
             "markup.raw.inline.twee"
+          ],
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.tag"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ],
+          "htmlEntity": [
+            "constant.character.escape.html",
+            "constant.character.escape"
+          ],
+          "htmlDelimiter": [
+            "punctuation.definition.tag.html",
+            "punctuation.definition.tag"
+          ],
+          "cssProperty": [
+            "support.type.property-name.css"
+          ],
+          "cssSelector": [
+            "entity.name.tag.css",
+            "entity.other.attribute-name.class.css",
+            "entity.other.attribute-name.id.css"
+          ],
+          "cssAtRule": [
+            "keyword.control.at-rule.css"
+          ],
+          "htmlDirective": [
+            "keyword.control.directive.sugarcube",
+            "storage.modifier.sugarcube"
           ]
         }
       },
@@ -864,6 +927,37 @@
           ],
           "inlineCode": [
             "markup.raw.inline.twee"
+          ],
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.tag"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ],
+          "htmlEntity": [
+            "constant.character.escape.html",
+            "constant.character.escape"
+          ],
+          "htmlDelimiter": [
+            "punctuation.definition.tag.html",
+            "punctuation.definition.tag"
+          ],
+          "cssProperty": [
+            "support.type.property-name.css"
+          ],
+          "cssSelector": [
+            "entity.name.tag.css",
+            "entity.other.attribute-name.class.css",
+            "entity.other.attribute-name.id.css"
+          ],
+          "cssAtRule": [
+            "keyword.control.at-rule.css"
+          ],
+          "htmlDirective": [
+            "keyword.control.directive.sugarcube",
+            "storage.modifier.sugarcube"
           ]
         }
       },
@@ -993,6 +1087,37 @@
           ],
           "inlineCode": [
             "markup.raw.inline.twee"
+          ],
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.tag"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ],
+          "htmlEntity": [
+            "constant.character.escape.html",
+            "constant.character.escape"
+          ],
+          "htmlDelimiter": [
+            "punctuation.definition.tag.html",
+            "punctuation.definition.tag"
+          ],
+          "cssProperty": [
+            "support.type.property-name.css"
+          ],
+          "cssSelector": [
+            "entity.name.tag.css",
+            "entity.other.attribute-name.class.css",
+            "entity.other.attribute-name.id.css"
+          ],
+          "cssAtRule": [
+            "keyword.control.at-rule.css"
+          ],
+          "htmlDirective": [
+            "keyword.control.directive.sugarcube",
+            "storage.modifier.sugarcube"
           ]
         }
       },
@@ -1122,6 +1247,37 @@
           ],
           "inlineCode": [
             "markup.raw.inline.twee"
+          ],
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.tag"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ],
+          "htmlEntity": [
+            "constant.character.escape.html",
+            "constant.character.escape"
+          ],
+          "htmlDelimiter": [
+            "punctuation.definition.tag.html",
+            "punctuation.definition.tag"
+          ],
+          "cssProperty": [
+            "support.type.property-name.css"
+          ],
+          "cssSelector": [
+            "entity.name.tag.css",
+            "entity.other.attribute-name.class.css",
+            "entity.other.attribute-name.id.css"
+          ],
+          "cssAtRule": [
+            "keyword.control.at-rule.css"
+          ],
+          "htmlDirective": [
+            "keyword.control.directive.sugarcube",
+            "storage.modifier.sugarcube"
           ]
         }
       },
@@ -1251,6 +1407,37 @@
           ],
           "inlineCode": [
             "markup.raw.inline.twee"
+          ],
+          "htmlTag": [
+            "entity.name.tag.html",
+            "entity.name.tag"
+          ],
+          "htmlAttribute": [
+            "entity.other.attribute-name.html",
+            "entity.other.attribute-name"
+          ],
+          "htmlEntity": [
+            "constant.character.escape.html",
+            "constant.character.escape"
+          ],
+          "htmlDelimiter": [
+            "punctuation.definition.tag.html",
+            "punctuation.definition.tag"
+          ],
+          "cssProperty": [
+            "support.type.property-name.css"
+          ],
+          "cssSelector": [
+            "entity.name.tag.css",
+            "entity.other.attribute-name.class.css",
+            "entity.other.attribute-name.id.css"
+          ],
+          "cssAtRule": [
+            "keyword.control.at-rule.css"
+          ],
+          "htmlDirective": [
+            "keyword.control.directive.sugarcube",
+            "storage.modifier.sugarcube"
           ]
         }
       }

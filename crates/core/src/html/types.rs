@@ -128,13 +128,22 @@ pub struct HtmlAttr {
     /// Source range of the name (same byte extent as the source spelling).
     pub name_range: Range<usize>,
     /// Source range of the value **without the surrounding quotes**, if the
-    /// attribute has one (valueless attributes → `None`; `a=""` → an empty
-    /// range between the quotes). The bytes in this range are the *raw*
-    /// source — character references are NOT decoded here (module docs).
+    /// attribute has one. `None` for valueless attributes, and — a
+    /// documented html5gum limitation — for **empty quoted** values
+    /// (`a=""`): the tokenizer collapses their span to the name extent, so
+    /// they are indistinguishable from valueless here (an empty range
+    /// carries no highlightable bytes either way). Whitespace the author
+    /// wrote between `=` and the value is not part of the range (WHATWG
+    /// "before attribute value state" skips it). The bytes in this range
+    /// are the *raw* source — character references are NOT decoded here
+    /// (module docs).
     pub value_range: Option<Range<usize>>,
-    /// Source range of the whole attribute — name through value (including
-    /// the closing quote when quoted). Equal to `name_range` for valueless
-    /// attributes. Excludes the separating whitespace around `=`.
+    /// Source range of the whole attribute as spelled: from the first byte
+    /// of the name through the last byte of the value — **including** the
+    /// `=`, any whitespace written around it, and the closing quote when
+    /// quoted (excludes the one terminator byte html5gum over-extends for
+    /// unquoted values, which the builder strips). Equal to `name_range`
+    /// for valueless attributes.
     pub range: Range<usize>,
 }
 
@@ -240,6 +249,37 @@ pub struct ScannedTag {
     /// Source range of the whole tag, exactly as spelled (`<div a="1">`,
     /// `</div>`).
     pub range: Range<usize>,
+}
+
+/// The full result of a leading-tag scan: the tag (when one starts the
+/// slice) **plus every tokenizer error recorded before it**.
+///
+/// [`scan_leading_tag`](super::parser::scan_leading_tag) answers one
+/// question — *"is there a tag here?"* — and throws the errors away
+/// (a tag preceded by recoverable errors is still a tag). Consumers that
+/// also want to *report* those errors (the diagnostics pipeline) use
+/// [`scan_leading_tag_detailed`](super::parser::scan_leading_tag_detailed)
+/// instead: the errors arrive with the tag so one scan serves both jobs.
+///
+/// ## When there is no tag
+///
+/// A `tag: None` outcome means the slice does not *begin* with a
+/// well-formed tag — the errors then explain why:
+///
+/// - `eof-in-tag` — the tag never terminated (`<div class="x` at EOF).
+///   The author almost certainly wrote a broken tag.
+/// - `invalid-first-character-of-tag-name` (and friends) — prose `<`
+///   (`5 < 6`, `a <3`). Legal in Twee source, **not** a reportable
+///   condition; consumers whitelist the codes they relay.
+///
+/// Spans are slice-relative, same coordinate system as [`ScannedTag`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeadingTagScan {
+    /// The tag, when a well-formed one starts the slice.
+    pub tag: Option<ScannedTag>,
+    /// Tokenizer errors recorded before the first structural token (or
+    /// before EOF, when no structural token ever arrives).
+    pub errors: Vec<HtmlDiagnostic>,
 }
 
 /// The parsed HTML fragment: a forest of top-level nodes plus the

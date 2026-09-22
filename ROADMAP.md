@@ -53,10 +53,56 @@ these embedded languages directly inside the editor.
 Planned improvements include:
 
 * CSS syntax validation and linting
-* HTML structure validation
-* Detection of malformed tags and invalid nesting
+  * **IMPLEMENTED (plan.md Phase 2.5, 2026-09-22):** CSS parse errors are
+    relayed on every CSS-bearing surface — `[stylesheet]` passages,
+    `<style>` element bodies, `<<style>>`/`<<css>>` blocks — and an
+    unknown-property lint (a curated 500+ property registry, custom and
+    vendor-prefixed names always allowed) flags typos like `colr` on all
+    surfaces including `style="…"` attribute values. See
+    `knot-core/src/css/properties.rs` and
+    `sugarcube/lsp/embedded_diags.rs`.
 * CSS property and selector validation
+  * Property validation: implemented (see above). Selector validation:
+    **IMPLEMENTED (2026-09-22)** — a pseudo-name lint (curated
+    pseudo-class/pseudo-element registries; legacy single-colon
+    spellings, `@page` pseudos and vendor prefixes always allowed) flags
+    unknown names like `:hvoer`/`::befor` — the typo class that makes
+    browsers silently drop the whole rule — plus a placement lint for
+    pseudo-elements that are not last in their compound
+    (`div::before:hover`). Runs on every stylesheet surface via the
+    real-parser token stream. See `knot-core/src/css/selectors.rs`.
+* HTML attribute directives (`@attr="expr"` / `sc-eval:attr="expr"`)
+  * **IMPLEMENTED (2026-09-22):** recognition is raw-source and
+    case-sensitive (upstream parity: `SC-EVAL:x` is an ordinary
+    attribute); `@data-setter`/`sc-eval:data-setter` and lone sigils
+    (`@`, `sc-eval:`) are Error diagnostics mirroring the engine's
+    `processAttributeDirectives` throws; the directive sigil gets its
+    own `htmlDirective` token type (split from the base attribute name,
+    themed in both themes); attribute-NAME positions inside tag
+    interiors — including mid-typing unterminated tags — offer curated
+    HTML attribute completions with `@`/`sc-eval:` families (`@data-setter`
+    is never offered as a directive — it is an upstream error). See
+    `sugarcube/lsp/html_completions.rs` and the directive section of
+    `embedded_diags.rs`.
+* HTML structure validation
+  * **PARTIALLY IMPLEMENTED (plan.md Phase 2.5, 2026-09-22):** unclosed
+    elements (Error — upstream renders an error box for the same shape),
+    duplicate attributes and missing attribute values (Warning), and
+    unterminated tags at passage end (Warning) are diagnosed inside
+    passages and StoryInterface. Prose `<`, stray end tags, and literal
+    regions (`<nowiki>`, `{{{ }}}`, raw bodies) are deliberately silent —
+    matching both the WHATWG tokenizer's tolerance and SugarCube's
+    behavior.
+* Detection of malformed tags and invalid nesting
+  * Malformed tags: implemented (see above). Invalid nesting (e.g.
+    `<p>` inside `<span>`) remains future work — it needs honest tree
+    reasoning beyond the wikifier's model.
 * Diagnostics for embedded HTML and CSS inside passages
+  * **IMPLEMENTED (plan.md Phase 2.5, 2026-09-22)** — including a
+    tree-builder fix that lets macros inside HTML elements pair with
+    their close tags (wikified-content parity; previously `<<if>>`
+    inside a `<div>` never paired, and macro diagnostics were blind
+    inside HTML elements).
 
 This requires dedicated parser integration and coordination with the
 existing analysis pipeline.

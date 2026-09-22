@@ -238,13 +238,52 @@ pub enum SemanticTokenType {
     // (`<script>`/`<style>`) ride the JS/CSS pipelines instead (2.3).
     /// An HTML tag NAME (`div` in `<div>`, `span` in `</span>`).
     HtmlTag,
-    /// An HTML attribute name (`class`, `@style` incl. the directive
-    /// sigil). Directive VALUES ride the JS token families, not this.
+    /// An HTML attribute name (`class`, the base `style` of `@style` — the
+    /// directive sigil itself rides [`Self::HtmlDirective`]). Directive
+    /// VALUES ride the JS token families, not this.
     HtmlAttribute,
     /// An HTML entity reference (`&amp;`, `&#39;`) inside an attribute
     /// value. The surrounding value emits as `String` segments split
     /// around entities (no overlapping tokens).
     HtmlEntity,
+    /// An HTML tag delimiter: `<`, `>`, `</`, or the `/>` of a self-closing
+    /// tag.
+    ///
+    /// Emitted as a distinct token type from `HtmlTag` (the name) so themes
+    /// can color delimiters separately — the direct analog of
+    /// [`Self::MacroDelimiter`] for `<<`/`>>`. Delimiters carry no
+    /// modifiers; nesting depth is a macro-body concept, not an HTML one.
+    HtmlDelimiter,
+
+    // ── CSS stratum (dedicated CSS token types) ────────────────────
+    // Appended AFTER HtmlEntity to preserve existing legend indices
+    // 0..=33. Emitted from `CssTokenKind` (via `sugarcube::css`'s mapping
+    // table) for every CSS-bearing construct: stylesheet passages,
+    // `<style>` bodies, `<<style>>`/`<<css>>` blocks and `style="…"`
+    // attribute values. The role kinds that map onto shared token types
+    // (Keyword, Number, String, Variable, Function, Comment, Operator)
+    // keep riding those families — only the CSS-specific roles get their
+    // own legend entries here.
+    /// A CSS declaration name (`color`, `margin`, `--main`). Custom-property
+    /// names included — same kind, distinguished by consumers when needed.
+    CssProperty,
+    /// A CSS selector part: tag names, `.class`, `#id`, attribute/pseudo
+    /// names, raw idents in rule position.
+    CssSelector,
+    /// An at-rule name **with the leading `@`** (`@media`) — the CSS token
+    /// stream covers the whole spelling, so the token does too.
+    CssAtRule,
+    /// A SugarCube evaluation-directive sigil on an HTML attribute name:
+    /// the `@` of `@id="…"` or the `sc-eval:` of `sc-eval:id="…"`
+    /// (SugarCube ≥2.21.0 — the value is evaluated as TwineScript).
+    ///
+    /// Emitted as its own token type (spanning only the prefix) so themes
+    /// can color the directive distinctly from the base attribute name,
+    /// which still rides [`Self::HtmlAttribute`] — the visual cue that the
+    /// value is code, not a literal. A LONE sigil (`@`, `sc-eval:` with no
+    /// target — an upstream error) also emits this type; the missing-target
+    /// diagnostic marks the spot.
+    HtmlDirective,
 }
 
 /// Modifiers for semantic tokens.
@@ -367,6 +406,14 @@ impl SemanticTokenType {
             Self::HtmlTag,       // 30
             Self::HtmlAttribute, // 31
             Self::HtmlEntity,    // 32
+            Self::HtmlDelimiter, // 33
+            // ── CSS stratum (dedicated CSS token types) ────────────
+            Self::CssProperty, // 34
+            Self::CssSelector, // 35
+            Self::CssAtRule,   // 36
+            // ── SugarCube HTML attribute directives ──────────────
+            // Appended at end to preserve existing indices 0..=36.
+            Self::HtmlDirective, // 37
         ]
     }
 
@@ -411,6 +458,13 @@ impl SemanticTokenType {
             Self::HtmlTag => "htmlTag",
             Self::HtmlAttribute => "htmlAttribute",
             Self::HtmlEntity => "htmlEntity",
+            Self::HtmlDelimiter => "htmlDelimiter",
+            // ── CSS stratum (dedicated CSS token types) ────────────
+            Self::CssProperty => "cssProperty",
+            Self::CssSelector => "cssSelector",
+            Self::CssAtRule => "cssAtRule",
+            // ── SugarCube HTML attribute directives ──────────────
+            Self::HtmlDirective => "htmlDirective",
         }
     }
 

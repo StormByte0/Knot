@@ -94,6 +94,86 @@ fn attributes_quoted_unquoted_valueless() {
 }
 
 #[test]
+fn attributes_with_whitespace_around_equals() {
+    // WHATWG "before attribute value state" skips whitespace between `=`
+    // and the value — browsers parse all four shapes identically, so the
+    // CST must too (the value is exactly `b`/`z` in every case; the range
+    // keeps the author's spelling).
+    for (spelled, value) in [
+        (r#"<div a ="b">x</div>"#, "a =\"b\""),
+        (r#"<div a= "b">x</div>"#, "a= \"b\""),
+        (r#"<div a = "b">x</div>"#, "a = \"b\""),
+        (r#"<div a = 'b'>x</div>"#, "a = 'b'"),
+    ] {
+        let cst = parse_html_fragment(spelled);
+        let HtmlNodeKind::Element(el) = &cst.nodes[0].kind else {
+            panic!("expected element in {spelled:?}");
+        };
+        assert_eq!(el.attrs.len(), 1, "in {spelled:?}");
+        let attr = &el.attrs[0];
+        assert_eq!(attr.name, "a");
+        assert_eq!(
+            &spelled[attr.range.clone()],
+            value,
+            "full range in {spelled:?}"
+        );
+        assert_eq!(
+            &spelled[attr.value_range.clone().expect("value")],
+            "b",
+            "value in {spelled:?}"
+        );
+    }
+
+    // Unquoted with whitespace after `=`: the value is `b`, not ` b`.
+    let src = r#"<div a = b>x</div>"#;
+    let cst = parse_html_fragment(src);
+    let HtmlNodeKind::Element(el) = &cst.nodes[0].kind else {
+        panic!();
+    };
+    assert_eq!(&src[el.attrs[0].range.clone()], "a = b");
+    assert_eq!(&src[el.attrs[0].value_range.clone().expect("value")], "b");
+}
+
+#[test]
+fn empty_quoted_value_collapses_to_valueless() {
+    // html5gum collapses `a=""` to a name-only span — indistinguishable
+    // from valueless. Pinned here (documented limitation in HtmlAttr docs).
+    let src = r#"<div a="" b = ''>x</div>"#;
+    let cst = parse_html_fragment(src);
+    let HtmlNodeKind::Element(el) = &cst.nodes[0].kind else {
+        panic!();
+    };
+    assert_eq!(el.attrs.len(), 2);
+    for attr in &el.attrs {
+        assert_eq!(attr.value_range, None, "attr {:?}", attr.name);
+    }
+    assert_eq!(&src[el.attrs[0].range.clone()], "a");
+    assert_eq!(&src[el.attrs[1].range.clone()], "b");
+}
+
+#[test]
+fn missing_attribute_value_is_valueless_with_error() {
+    // `a= >` — the spec's missing-attribute-value error: html5gum records
+    // the error and still emits the tag, with `a` collapsed to its name.
+    let src = "<div a= >x</div>";
+    let cst = parse_html_fragment(src);
+    assert!(
+        cst.errors
+            .iter()
+            .any(|e| e.code == "missing-attribute-value")
+    );
+    let HtmlNodeKind::Element(el) = &cst.nodes[0].kind else {
+        panic!();
+    };
+    assert_eq!(el.name, "div");
+    assert_eq!(el.attrs.len(), 1);
+    assert_eq!(&src[el.attrs[0].range.clone()], "a");
+    assert_eq!(el.attrs[0].value_range, None);
+    // The content after the tag survives.
+    assert_eq!(&src[cst.nodes[0].children[0].range.clone()], "x");
+}
+
+#[test]
 fn attributes_with_sugarcube_symbols_stay_atomic() {
     // The issue #6 shapes: markup-looking bytes inside attribute values are
     // plain attribute content — they must never leak out as markup spans.
@@ -488,6 +568,28 @@ fn scan_rejects_non_tags() {
 }
 
 #[test]
+fn scan_skips_leading_error_tokens() {
+    // html5gum may emit an error token BEFORE the tag it belongs to; the
+    // scan's question is "is there a tag here?", so those tags must scan.
+    //
+    // `a= >` — missing-attribute-value: the tag is still a tag.
+    let src = "<div a= >x</div>";
+    let tag = scan_leading_tag(src).expect("missing-attribute-value tag");
+    assert_eq!(tag.name, "div");
+    assert_eq!(&src[tag.range.clone()], "<div a= >");
+    assert_eq!(tag.attrs.len(), 1);
+    assert_eq!(tag.attrs[0].value_range, None);
+
+    // Duplicate attribute: the error precedes the tag; the FIRST value wins.
+    let src = r#"<p a="1" a="2">x</p>"#;
+    let tag = scan_leading_tag(src).expect("duplicate-attribute tag");
+    assert_eq!(tag.name, "p");
+    assert_eq!(&src[tag.range.clone()], r#"<p a="1" a="2">"#);
+    assert_eq!(tag.attrs.len(), 1);
+    assert_eq!(&src[tag.attrs[0].value_range.clone().expect("value")], "1");
+}
+
+#[test]
 fn scan_quoted_gt_and_symbols_in_values() {
     // Quoted `>` inside a value must not terminate the tag early.
     let src = r#"<span title="a ''b'' c" data-x="x>>y">t</span>"#;
@@ -501,4 +603,74 @@ fn scan_quoted_gt_and_symbols_in_values() {
         "a ''b'' c"
     );
     assert_eq!(&src[tag.attrs[1].value_range.clone().expect("v")], "x>>y");
+}
+
+// scan_leading_tag_detailed — the reporting variant (Phase 2.5 diagnostics)
+
+#[test]
+fn detailed_scan_reports_errors_the_plain_scan_skips() {
+    use super::scan_leading_tag_detailed;
+
+    // Missing-attribute-value: error + the tag. Both must arrive.
+    let scan = scan_leading_tag_detailed("<div a= >");
+    let tag = scan.tag.expect("tag");
+    assert_eq!(tag.name, "div");
+    assert!(
+        scan.errors
+            .iter()
+            .any(|e| e.code == "missing-attribute-value"),
+        "codes: {:?}",
+        scan.errors
+            .iter()
+            .map(|e| e.code.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // Duplicate attribute: error + the tag (first value wins).
+    let scan = scan_leading_tag_detailed(r#"<p a="1" a="2">"#);
+    assert!(scan.tag.is_some());
+    assert!(
+        scan.errors.iter().any(|e| e.code == "duplicate-attribute"),
+        "codes: {:?}",
+        scan.errors
+            .iter()
+            .map(|e| e.code.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // Unterminated at EOF: NO tag, eof-in-tag recorded with a non-empty span.
+    let scan = scan_leading_tag_detailed("<div class=\"x");
+    assert!(scan.tag.is_none());
+    let eof = scan
+        .errors
+        .iter()
+        .find(|e| e.code == "eof-in-tag")
+        .expect("eof-in-tag");
+    // Pinned: html5gum's eof-in-tag span is EMPTY at the EOF position
+    // (13..13 for a 13-byte source). Consumers that relay it as a
+    // diagnostic must derive their own, richer range (e.g. the whole
+    // unterminated spelling) — this pin keeps that contract explicit.
+    assert_eq!(eof.span, 13..13, "span: {:?}", eof.span);
+
+    // Prose `<`: no tag, and the errors are the prose class — consumers
+    // must whitelist, not blanket-relay (pinned so the contract is explicit).
+    let scan = scan_leading_tag_detailed("5 < 6");
+    assert!(scan.tag.is_none());
+    assert!(
+        !scan.errors.iter().any(|e| e.code == "eof-in-tag"),
+        "prose must not read as an unterminated tag: {:?}",
+        scan.errors
+    );
+}
+
+#[test]
+fn detailed_scan_matches_plain_scan_on_clean_input() {
+    use super::{scan_leading_tag, scan_leading_tag_detailed};
+
+    for src in ["<div a=\"1\">", "</div>", "<circle/>", "<br>"] {
+        let plain = scan_leading_tag(src);
+        let detailed = scan_leading_tag_detailed(src);
+        assert_eq!(plain, detailed.tag, "src: {src}");
+        assert!(detailed.errors.is_empty(), "src: {src}");
+    }
 }

@@ -20,6 +20,7 @@
 //! ```
 
 use std::collections::HashSet;
+use std::ops::Range;
 
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, SemanticToken, SemanticTokenModifier,
@@ -794,6 +795,7 @@ fn build_semantic_tokens_at_depth(
                 attrs,
                 children,
                 name_span,
+                open_span,
                 close_span,
                 raw_body,
                 body_js_analysis,
@@ -801,8 +803,17 @@ fn build_semantic_tokens_at_depth(
             } => {
                 // HTML stratum tokens (plan.md Phase 2.4): the tag name,
                 // attribute names, `=` signs, quoted values (String, split
-                // around entities) and the closer name — so themes can
-                // highlight markup without any of it being prose-scanned.
+                // around entities), the closer name, and the tag delimiters
+                // (`<`, `>`, `</`, `/>` — the analog of MacroDelimiter) — so
+                // themes can highlight markup without any of it being
+                // prose-scanned.
+                emit_html_delimiter_tokens(
+                    Some(open_span),
+                    None,
+                    body_text,
+                    tokens,
+                    body_offset_in_passage,
+                );
                 tokens.push(SemanticToken {
                     start: body_offset_in_passage + name_span.start,
                     length: name_span.end - name_span.start,
@@ -828,6 +839,13 @@ fn build_semantic_tokens_at_depth(
                 // `</` and the name runs to the first non-name byte (the
                 // closer grammar allows whitespace before `>`).
                 if let Some(cs) = close_span {
+                    emit_html_delimiter_tokens(
+                        None,
+                        Some(cs),
+                        body_text,
+                        tokens,
+                        body_offset_in_passage,
+                    );
                     let name_start = cs.start + 2;
                     if cs.end <= body_text.len() && name_start < cs.end {
                         let closer_bytes = &body_text.as_bytes()[name_start..cs.end];
@@ -1306,23 +1324,145 @@ fn emit_js_analysis_families(
     emit_function_call_tokens(&analysis.function_calls, tokens, offset);
 }
 
+/// Emit `HtmlDelimiter` tokens for one element's tag punctuation (the
+/// analog of the SugarCube `MacroDelimiter` family): the `<` of the start
+/// tag, its trailing `>` or `/>`, and — when `close_span` is given — the
+/// `</` and `>` of the terminator.
+///
+/// Defensive by design: every delimiter is verified against the source
+/// bytes before emission (a tolerant scan can produce truncated spans,
+/// e.g. an EOF-truncated tag), so a wrong byte simply emits nothing rather
+/// than a misplaced token. The delimiters never overlap the name/attribute
+/// tokens because the grammar puts whitespace or the name right after `<`
+/// and nothing but the closer's trailing `>` after the name scan.
+fn emit_html_delimiter_tokens(
+    open_span: Option<&Range<usize>>,
+    close_span: Option<&Range<usize>>,
+    body_text: &str,
+    tokens: &mut Vec<SemanticToken>,
+    offset: usize,
+) {
+    let bytes = body_text.as_bytes();
+    let in_bounds = |r: &Range<usize>| r.start < r.end && r.end <= bytes.len();
+
+    // Start tag: leading `<`.
+    if let Some(open_span) = open_span {
+        let lead = open_span.start..(open_span.start + 1);
+        if in_bounds(&lead) && bytes[lead.start] == b'<' {
+            tokens.push(SemanticToken {
+                start: offset + lead.start,
+                length: 1,
+                token_type: SemanticTokenType::HtmlDelimiter,
+                modifier: None,
+            });
+        }
+        // Start tag: trailing `>` or `/>` (self-closing).
+        let tail_2 = (open_span.end - 2).max(open_span.start)..open_span.end;
+        if in_bounds(&tail_2) && &bytes[tail_2.start..tail_2.end] == b"/>" {
+            tokens.push(SemanticToken {
+                start: offset + tail_2.start,
+                length: 2,
+                token_type: SemanticTokenType::HtmlDelimiter,
+                modifier: None,
+            });
+        } else {
+            let tail_1 = (open_span.end - 1).max(open_span.start)..open_span.end;
+            if in_bounds(&tail_1) && bytes[tail_1.start] == b'>' {
+                tokens.push(SemanticToken {
+                    start: offset + tail_1.start,
+                    length: 1,
+                    token_type: SemanticTokenType::HtmlDelimiter,
+                    modifier: None,
+                });
+            }
+        }
+    }
+
+    // Terminator `</name … >`: leading `</` + trailing `>`.
+    let Some(cs) = close_span else {
+        return;
+    };
+    let close_lead = cs.start..(cs.start + 2);
+    if in_bounds(&close_lead) && &bytes[close_lead.start..close_lead.end] == b"</" {
+        tokens.push(SemanticToken {
+            start: offset + close_lead.start,
+            length: 2,
+            token_type: SemanticTokenType::HtmlDelimiter,
+            modifier: None,
+        });
+    }
+    let close_tail = (cs.end - 1).max(cs.start)..cs.end;
+    if in_bounds(&close_tail) && bytes[close_tail.start] == b'>' {
+        tokens.push(SemanticToken {
+            start: offset + close_tail.start,
+            length: 1,
+            token_type: SemanticTokenType::HtmlDelimiter,
+            modifier: None,
+        });
+    }
+}
+
 /// Emit the HTML-stratum tokens for one attribute (plan.md Phase 2.4):
-/// attribute name (directive sigil included), the `=` sign, and — for
-/// NON-directive attributes — the value as `String` segments split around
-/// entity references (directive values are TwineScript expressions owned by
-/// the JS token families; a String token would overlap them).
+/// attribute name, the `=` sign, and — for NON-directive attributes — the
+/// value as `String` segments split around entity references (directive
+/// values are TwineScript expressions owned by the JS token families; a
+/// String token would overlap them).
+///
+/// The NAME splits on directives: the `@` / `sc-eval:` sigil rides
+/// [`SemanticTokenType::HtmlDirective`] and the base name rides
+/// [`SemanticTokenType::HtmlAttribute`] — the visual cue that the value is
+/// code, not a literal. A LONE sigil (`@`, `sc-eval:` with no target — an
+/// upstream error, flagged by `embedded_diags`) emits the whole spelling
+/// as `HtmlDirective`; recognition is case-sensitive (see the parser's
+/// `attr_directive`), so `SC-EVAL:id` stays one plain `HtmlAttribute`.
 fn emit_html_attr_tokens(
     attr: &ast::HtmlTagAttr,
     body_text: &str,
     tokens: &mut Vec<SemanticToken>,
     offset: usize,
 ) {
-    tokens.push(SemanticToken {
-        start: offset + attr.name_span.start,
-        length: attr.name_span.end - attr.name_span.start,
-        token_type: SemanticTokenType::HtmlAttribute,
-        modifier: None,
-    });
+    let name_span = attr.name_span.clone();
+    let name_len = name_span.end.saturating_sub(name_span.start);
+    let sigil_len = match &attr.directive {
+        Some(d) => match d.kind {
+            ast::HtmlAttrDirectiveKind::Shorthand => 1,
+            ast::HtmlAttrDirectiveKind::ScEval => "sc-eval:".len(),
+        },
+        None => {
+            // Lone-sigil shapes (raw spelling — attr.name is the
+            // tokenizer's lowercased name).
+            let raw = body_text.get(name_span.start..name_span.end);
+            if name_len > 0 && (raw == Some("@") || raw == Some("sc-eval:")) {
+                name_len
+            } else {
+                0
+            }
+        }
+    };
+    if sigil_len == 0 {
+        tokens.push(SemanticToken {
+            start: offset + name_span.start,
+            length: name_len,
+            token_type: SemanticTokenType::HtmlAttribute,
+            modifier: None,
+        });
+    } else {
+        tokens.push(SemanticToken {
+            start: offset + name_span.start,
+            length: sigil_len,
+            token_type: SemanticTokenType::HtmlDirective,
+            modifier: None,
+        });
+        // A lone sigil has no base name left to emit.
+        if sigil_len < name_len {
+            tokens.push(SemanticToken {
+                start: offset + name_span.start + sigil_len,
+                length: name_len - sigil_len,
+                token_type: SemanticTokenType::HtmlAttribute,
+                modifier: None,
+            });
+        }
+    }
 
     let Some(value_span) = &attr.value_span else {
         return;
@@ -1965,6 +2105,21 @@ fn build_diagnostics_inner(
                 );
                 enclosing_stack.pop();
             }
+        }
+        // HTML element content is wikified — its children carry macros
+        // that deserve the same diagnostics as top-level ones. Without
+        // this recursion, unknown/unclosed/deprecated macros inside
+        // `<div>`s were invisible to every macro diagnostic.
+        if let ast::AstNode::HtmlTag { children, .. } = node {
+            build_diagnostics_inner(
+                children,
+                diagnostics,
+                body_offset_in_passage,
+                custom_macros,
+                dep_macros,
+                parent_constraints,
+                enclosing_stack,
+            );
         }
     }
 }

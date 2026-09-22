@@ -35,10 +35,20 @@
 //! - Tag/attribute names are lowercased; ranges are unaffected (ASCII).
 //! - An unterminated tag at EOF (`<div class="x`) emits only an
 //!   `EofInTag` error — the tag itself is dropped (spec behavior).
-//! - Attribute spans: name start → value end. For quoted values this ends
-//!   **after the closing quote** (exact); for unquoted values the raw span
-//!   over-extends by one byte (the terminator: whitespace or `>`), which
-//!   the builder corrects; for valueless attributes the span is the name.
+//! - Attribute spans: first byte of the name through the last byte of the
+//!   value, **including** the `=` and any whitespace the author wrote
+//!   around it. For quoted values this ends exactly past the closing
+//!   quote; for unquoted values the raw span over-extends by one byte (the
+//!   terminator: whitespace or `>`), which [`build_attr`] corrects;
+//!   for valueless attributes the span is the name. An empty quoted value
+//!   (`a=""`) collapses to the name-only extent — indistinguishable from
+//!   valueless, see [`build_attr`]. `a=` directly before `>` is the spec's
+//!   missing-attribute-value error: html5gum records it and still emits the
+//!   tag, with the attribute collapsed to its name.
+//! - Error tokens can precede the tag they belong to (missing-attribute-
+//!   value, duplicate-attribute): the CST builder records them as
+//!   diagnostics and then handles the tag; [`scan_leading_tag`] skips them
+//!   when looking for the leading tag.
 //! - Attribute values are entity-decoded in the token *value* but spans
 //!   stay source-faithful; the builder takes values from the source slice,
 //!   so no decoding ever leaks into the CST.
@@ -48,7 +58,7 @@ use html5gum::{DefaultEmitter, Span, Token, Tokenizer};
 
 use super::types::{
     HtmlAttr, HtmlCst, HtmlDiagnostic, HtmlElement, HtmlElementKind, HtmlNode, HtmlNodeKind,
-    HtmlRawKind, ScannedTag,
+    HtmlRawKind, LeadingTagScan, ScannedTag,
 };
 
 /// HTML5 void elements — no content, no end tag.
@@ -92,50 +102,90 @@ pub fn parse_html_fragment(src: &str) -> HtmlCst {
 ///   the tag and emits only an `eof-in-tag` error (spec), matching
 ///   upstream where the htmlTag regex requires the closing `>`.
 ///
+/// Tokenizer **error tokens do not reject the scan**: html5gum may emit an
+/// error before the tag itself (`<div a= >` records missing-attribute-value
+/// and `<p a="1" a="2">` records duplicate-attribute, then the tag token) —
+/// those tags are still tags, so leading error tokens are skipped. A tag
+/// that only *fails to exist* (stray `<` → error then text) stays `None`
+/// because the first structural token is text, not a tag.
+///
 /// Total: never panics, never returns `Err`.
 pub fn scan_leading_tag(src: &str) -> Option<ScannedTag> {
+    scan_leading_tag_detailed(src).tag
+}
+
+/// The reporting variant of [`scan_leading_tag`]: same question, but the
+/// tokenizer errors skipped on the way to the first structural token are
+/// returned alongside the tag (see [`LeadingTagScan`] for the contract and
+/// the no-tag error shapes).
+///
+/// The errors are the ones the plain scan silently discards —
+/// `duplicate-attribute`, `missing-attribute-value` before an emitted tag,
+/// or `eof-in-tag` when no tag ever forms. Consumers relaying them as
+/// diagnostics whitelist the codes they consider authoring mistakes; the
+/// rest (prose-`<` shapes like `invalid-first-character-of-tag-name`) are
+/// legal Twee source and must stay silent.
+///
+/// Total: never panics, never returns `Err`.
+pub fn scan_leading_tag_detailed(src: &str) -> LeadingTagScan {
     // Same tokenizer configuration as the CST builder (spans + raw-text
     // state switching; StringReader is Infallible). Only the FIRST emitted
-    // token matters: a leading tag starts at slice position 0, so anything
-    // else (text, comment, doctype, error-then-text) means "not a leading
-    // tag".
+    // *structural* token matters: a leading tag starts at slice position 0,
+    // so anything else (text, comment, doctype, error-then-text) means "not
+    // a leading tag". Error tokens are collected for the caller (the CST
+    // builder records them as diagnostics; the plain scan drops them).
     let mut emitter = DefaultEmitter::<usize>::new_with_span();
     emitter.naively_switch_states(true);
     let mut tokenizer = Tokenizer::new_with_emitter(src, emitter);
-    let token: Token<usize> = tokenizer.next()?.expect("StringReader cannot fail");
-    match token {
-        Token::StartTag(tag) => {
+    let mut errors = Vec::new();
+    let token: Option<Token<usize>> = loop {
+        let Some(tok) = tokenizer.next() else {
+            break None; // EOF before any structural token
+        };
+        let tok: Token<usize> = tok.expect("StringReader cannot fail");
+        if let Token::Error(e) = tok {
+            errors.push(HtmlDiagnostic {
+                code: e.value.as_str().to_string(),
+                span: e.span.start..e.span.end,
+            });
+            continue;
+        }
+        break Some(tok);
+    };
+    let tag = match token {
+        Some(Token::StartTag(tag)) => {
             let Span { start, end } = tag.span;
             if start != 0 {
                 // Defensive: the first token always covers position 0
                 // (leading text would have been a String token), so a
                 // non-zero start cannot be a *leading* tag.
-                return None;
+                None
+            } else {
+                let name_bytes: &[u8] = &tag.name;
+                let name = String::from_utf8_lossy(name_bytes).into_owned();
+                let name_range = start + 1..start + 1 + name.len();
+                let mut attrs: Vec<HtmlAttr> = tag
+                    .attributes
+                    .iter()
+                    .map(|(aname, avalue)| build_attr(src, aname, avalue.span))
+                    .collect();
+                // html5gum yields attributes alphabetically (BTreeMap);
+                // restore source order (same correction as the CST builder).
+                attrs.sort_by_key(|a| a.range.start);
+                Some(ScannedTag {
+                    name,
+                    name_range,
+                    is_end: false,
+                    self_closing: tag.self_closing,
+                    attrs,
+                    range: start..end,
+                })
             }
-            let name_bytes: &[u8] = &tag.name;
-            let name = String::from_utf8_lossy(name_bytes).into_owned();
-            let name_range = start + 1..start + 1 + name.len();
-            let mut attrs: Vec<HtmlAttr> = tag
-                .attributes
-                .iter()
-                .map(|(aname, avalue)| build_attr(src, aname, avalue.span))
-                .collect();
-            // html5gum yields attributes alphabetically (BTreeMap);
-            // restore source order (same correction as the CST builder).
-            attrs.sort_by_key(|a| a.range.start);
-            Some(ScannedTag {
-                name,
-                name_range,
-                is_end: false,
-                self_closing: tag.self_closing,
-                attrs,
-                range: start..end,
-            })
         }
-        Token::EndTag(tag) => {
+        Some(Token::EndTag(tag)) => {
             let Span { start, end } = tag.span;
             if start != 0 {
-                return None;
+                return LeadingTagScan { tag: None, errors };
             }
             let name = String::from_utf8_lossy(&tag.name).into_owned();
             let name_range = start + 2..start + 2 + name.len();
@@ -150,10 +200,11 @@ pub fn scan_leading_tag(src: &str) -> Option<ScannedTag> {
                 range: start..end,
             })
         }
-        // Anything else (text, comment, doctype, error-then-text) — the
-        // slice does not begin with a tag.
+        // Anything else (text, comment, doctype) — the slice does not
+        // begin with a tag.
         _ => None,
-    }
+    };
+    LeadingTagScan { tag, errors }
 }
 
 /// One open element on the builder's stack.
@@ -363,15 +414,38 @@ impl<'a> CstBuilder<'a> {
 ///
 /// Free function so both the CST builder and [`scan_leading_tag`] share the
 /// exact same span semantics.
+///
+/// The tokenizer emits, per attribute, a span that runs from the first byte
+/// of the **name** to the last byte of the **value** — with the separator
+/// (`=`, and any whitespace the author wrote around it) in between, and one
+/// terminator byte over-extended for unquoted values. This function re-derives
+/// the value's true extent from the source bytes, following the WHATWG
+/// tokenizer's own state machine ("before attribute value state" skips
+/// whitespace before the value; the value may be single- or double-quoted, or
+/// unquoted):
+///
+/// - **Quoted** (`a = "b"`): the raw span ends exactly past the closing
+///   quote, so `value` covers the bytes between the quotes and `range` runs
+///   from the name through the closing quote.
+/// - **Unquoted** (`a = b`): the raw span includes one terminator byte
+///   (whitespace or `>`) after the value, which is stripped; `value` starts
+///   at the first byte after the separator whitespace.
+/// - **Valueless** (`d`, and `a=` followed by `>` — the spec's
+///   missing-attribute-value error, which html5gum records before emitting
+///   the tag): the span collapses to the name extent; `value_range` is
+///   `None`.
+/// - **Empty quoted** (`a=""`, `a = ''`): html5gum's span collapses to the
+///   name extent too, so these are indistinguishable from valueless
+///   attributes — `value_range` is `None` (documented limitation; the empty
+///   range would carry no highlightable bytes either way).
 fn build_attr(src: &str, name: &[u8], span: Span<usize>) -> HtmlAttr {
     let name = String::from_utf8_lossy(name).into_owned();
     let name_len = name.len();
     let raw_slice = &src[span.start..span.end];
+    let raw_bytes = raw_slice.as_bytes();
 
     // Valueless attribute: span == name extent.
-    let has_value = span.end - span.start > name_len;
-
-    if !has_value {
+    if raw_bytes.len() <= name_len {
         return HtmlAttr {
             name,
             name_range: span.start..span.end,
@@ -380,40 +454,76 @@ fn build_attr(src: &str, name: &[u8], span: Span<usize>) -> HtmlAttr {
         };
     }
 
-    // Locate the `=` between name and value in the slice. Names cannot
-    // contain `=` in anything Knot treats as a tag (html5gum tokenizes
-    // the first `=` after the name as the value separator).
-    let eq_rel = raw_slice[name_len..]
-        .find('=')
+    // Locate the `=` between name and value. Names cannot contain `=` in
+    // anything Knot treats as a tag (html5gum tokenizes the first `=` after
+    // the name as the value separator).
+    let Some(eq_rel) = raw_bytes[name_len..]
+        .iter()
+        .position(|b| *b == b'=')
         .map(|i| i + name_len)
-        .unwrap_or(name_len);
-
-    let raw_bytes = raw_slice.as_bytes();
-    let after_eq = &raw_bytes[eq_rel + 1..];
-    let quoted = matches!(after_eq.first(), Some(b'"') | Some(b'\''));
-    let quote = if quoted { after_eq[0] } else { 0 };
-
-    // Unquoted values: the raw span includes one terminator byte
-    // (whitespace or `>`) — strip it. Quoted values end exactly after
-    // the closing quote. Pathological `a="` (unterminated quote inside
-    // a terminated tag): keep the tokenizer's extent as-is.
-    let (attr_end, value_end) = if quoted {
-        let closes = raw_slice.as_bytes().last() == Some(&quote);
-        if closes {
-            (span.end, span.end - 1)
-        } else {
-            (span.end, span.end)
-        }
-    } else {
-        (span.end - 1, span.end - 1)
+    else {
+        // Separator bytes without an `=` cannot occur in an html5gum span
+        // (defensive): treat as valueless.
+        return HtmlAttr {
+            name,
+            name_range: span.start..span.start + name_len,
+            value_range: None,
+            range: span.start..span.start + name_len,
+        };
     };
 
-    let value_start = span.start + eq_rel + 1 + usize::from(quoted);
-    HtmlAttr {
-        name,
-        name_range: span.start..span.start + name_len,
-        value_range: Some(value_start..value_end),
-        range: span.start..attr_end,
+    // Before-attribute-value state: whitespace between `=` and the value is
+    // skipped (WHATWG) — `a= "b"`, `a = b` and `a = "b"` all have the value
+    // starting after it.
+    let mut v = eq_rel + 1;
+    while matches!(
+        raw_bytes.get(v),
+        Some(b' ' | b'\t' | b'\n' | b'\r' | b'\x0c')
+    ) {
+        v += 1;
+    }
+    let value_start = span.start + v;
+
+    match raw_bytes.get(v) {
+        Some(&quote @ (b'"' | b'\'')) => {
+            // Quoted value. In an emitted tag the raw span ends exactly past
+            // the closing quote (a quoted value always terminates before the
+            // tag does — an unterminated one swallows the `>` and the whole
+            // tag is dropped with an eof-in-tag error instead). The closing
+            // check is defensive for hypothetical shapes.
+            let closes = raw_bytes.last() == Some(&quote) && raw_bytes.len() - 1 > v;
+            if closes {
+                HtmlAttr {
+                    name,
+                    name_range: span.start..span.start + name_len,
+                    value_range: Some(value_start + 1..span.start + raw_bytes.len() - 1),
+                    range: span.start..span.end,
+                }
+            } else {
+                // Pathological unterminated quote: keep the tokenizer's
+                // extent as-is.
+                HtmlAttr {
+                    name,
+                    name_range: span.start..span.start + name_len,
+                    value_range: Some(value_start + 1..span.end),
+                    range: span.start..span.end,
+                }
+            }
+        }
+        _ => {
+            // Unquoted value: the raw span includes one terminator byte
+            // (whitespace or `>`) — strip it. The missing-attribute-value
+            // shape (`a= >`) never reaches here: html5gum collapses its span
+            // to the name extent above. The `max` guards the hypothetical
+            // all-whitespace tail (keep the range valid, possibly empty).
+            let value_end = (span.end - 1).max(value_start);
+            HtmlAttr {
+                name,
+                name_range: span.start..span.start + name_len,
+                value_range: Some(value_start..value_end),
+                range: span.start..value_end,
+            }
+        }
     }
 }
 

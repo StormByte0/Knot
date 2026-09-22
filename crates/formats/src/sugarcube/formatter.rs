@@ -992,6 +992,37 @@ mod tests {
         );
     }
 
+    // ===================================================================
+    // Inline-CSS zoning split — formatter round-trip tests
+    // ===================================================================
+    // `style="…"` values zone as Raw(Css) leaves inside the tag's Raw(Html)
+    // leaves (see zoning::emit_open_tag_leaves). The formatter emits every
+    // Raw leaf via `emit_player_text`, so the SPLIT must be invisible in
+    // the output: same bytes, same line structure.
+
+    /// A tag with a style attribute round-trips byte-identically.
+    #[test]
+    fn test_style_attribute_tag_round_trips() {
+        assert_format_eq(
+            "<div class=\"hud\" style=\"color: red;\">text</div>",
+            "<div class=\"hud\" style=\"color: red;\">text</div>",
+        );
+    }
+
+    /// Multi-line style values: the split must produce the SAME output the
+    /// single-leaf path always produced. `emit_player_text` normalizes
+    /// continuation lines in EVERY Raw leaf (leading whitespace stripped,
+    /// re-indented by depth — the established contract for JS/CSS bodies
+    /// too), so a multi-line style value de-indents to column 0 at depth 0
+    /// both before and after the inline-CSS zoning split.
+    #[test]
+    fn test_multiline_style_value_matches_single_leaf_contract() {
+        assert_format_eq(
+            "<div style=\"color: red;\n  margin: 0\">x</div>",
+            "<div style=\"color: red;\nmargin: 0\">x</div>",
+        );
+    }
+
     /// Idempotency with markup normalization.
     #[test]
     fn test_idempotent_with_markup() {

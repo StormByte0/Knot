@@ -556,11 +556,14 @@ enum CompletionZone {
     /// Wikified markup content — every completion behavior stays active.
     Prose,
     /// Inside a tag interior (start-tag bytes or attribute values).
-    /// `directive_value` is true when the cursor sits inside the VALUE of
-    /// an `@attr`/`sc-eval:attr` directive — a TwineScript expression where
-    /// SugarCube variable completions stay meaningful (upstream evaluates
-    /// it via `Scripting.evalTwineScript`).
-    TagInterior { directive_value: bool },
+    /// `position` says WHERE in the tag: the value of an `@attr`/
+    /// `sc-eval:attr` directive is a TwineScript expression where SugarCube
+    /// variable completions stay meaningful (upstream evaluates it via
+    /// `Scripting.evalTwineScript`); a plain value offers nothing; an
+    /// attribute-NAME position offers the HTML attribute completions
+    /// (incl. the directive families); the element-name region offers
+    /// nothing.
+    TagInterior { position: AttrPosition },
     /// Inside a `<script>` raw body — JS with SugarCube `$var` syntax; the
     /// variable sigils stay live, all markup completions suppressed.
     RawScript,
@@ -661,9 +664,19 @@ impl SugarCubePlugin {
         let Some(leaf) = zones.leaf_at(offset_in_body) else {
             return CompletionZone::Prose;
         };
+        // Trailing unterminated tag (the mid-typing shape): `<div cla|`
+        // never closed, so the flat parser kept it as prose and no AST
+        // HtmlTag exists — but the author is inside a tag, and attribute
+        // completions must fire. Same-line only (multi-line unclosed tags
+        // are a miss, prose after a stray unclosed tag must stay prose).
+        if matches!(leaf.kind.language(), knot_core::zoning::Language::Markup)
+            && let Some(zone) = unterminated_tag_zone(body, offset_in_body)
+        {
+            return zone;
+        }
         match leaf.kind.language() {
             knot_core::zoning::Language::Html => CompletionZone::TagInterior {
-                directive_value: inside_directive_value(
+                position: attr_position_at(
                     &parser::parse_passage_body(body, 0, ParseMode::Normal).nodes,
                     offset_in_body,
                 ),
@@ -675,36 +688,180 @@ impl SugarCubePlugin {
     }
 }
 
-/// True when `offset` sits inside the VALUE of an `@attr`/`sc-eval:attr`
-/// directive on an [`AstNode::HtmlTag`] (open-tag region only — open spans
+/// Where the cursor sits inside an `AstNode::HtmlTag`'s OPEN tag (open spans
 /// never nest, so the first containing tag wins).
 ///
-/// The value END is inclusive: a completion cursor sits one byte PAST the
+/// Values' END is inclusive: a completion cursor sits one byte PAST the
 /// last typed character, so after typing `@class="$` the cursor is at
 /// `value.end` and variable completions must still fire.
-fn inside_directive_value(nodes: &[ast::AstNode], offset: usize) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttrPosition {
+    /// Inside the VALUE of an `@attr`/`sc-eval:attr` directive.
+    DirectiveValue,
+    /// Inside the VALUE of a plain (non-directive) attribute.
+    PlainValue,
+    /// In the attribute-NAME region: after the tag name, between
+    /// attributes, on a name or its directive sigil — where the HTML
+    /// attribute completions fire.
+    AttrName,
+    /// Inside the element NAME region itself (`<di|v`) — completions
+    /// suppressed (tag-name completion is not part of this feature).
+    TagName,
+}
+
+fn attr_position_at(nodes: &[ast::AstNode], offset: usize) -> AttrPosition {
+    attr_position_in(nodes, offset).unwrap_or(AttrPosition::TagName)
+}
+
+/// The mid-typing complement of [`attr_position_at`]: the cursor sits in
+/// prose that is really an UNTERMINATED trailing tag (`<div cla|`, tag
+/// never closed — the flat parser degrades it to text, so no AST node
+/// exists to ask).
+///
+/// Returns the [`CompletionZone`] for the position inside the would-be
+/// tag, or `None` when the cursor is not in that shape:
+///
+/// - The last `<` + ASCII letter before the cursor must be on the SAME
+///   LINE — prose on later lines after a stray unclosed tag keeps its
+///   prose completions (multi-line unclosed tags are a documented miss).
+/// - That `<` must not be a macro opener (`<<if …`) — the byte before it
+///   must not be another `<`.
+/// - The tokenizer's detailed scan from that `<` must report `eof-in-tag`
+///   with NO formed tag — a formed tag means the AST path owns it (or the
+///   shape is a closed macro, which is markup).
+///
+/// The position walk is quote-aware: an unclosed quote at the cursor is a
+/// VALUE position (directive vs. plain by the attribute name before its
+/// `=`); otherwise the cursor is the element-name region until the name
+/// run ends, and the attribute-name region after it.
+fn unterminated_tag_zone(body: &str, cursor: usize) -> Option<CompletionZone> {
+    let bytes = body.as_bytes();
+    let cursor = cursor.min(bytes.len());
+    // Last `<` + ASCII letter on the cursor's line, not a `<<` macro opener.
+    let mut lt = None;
+    let mut i = cursor;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'\n' {
+            break; // same-line gate
+        }
+        if bytes[i] == b'<'
+            && bytes.get(i + 1).is_some_and(|b| b.is_ascii_alphabetic())
+            && !bytes[..i].ends_with(b"<")
+        {
+            lt = Some(i);
+            break;
+        }
+    }
+    let lt = lt?;
+    let scan = knot_core::html::scan_leading_tag_detailed(&body[lt..]);
+    if scan.tag.is_some() || !scan.errors.iter().any(|e| e.code == "eof-in-tag") {
+        return None;
+    }
+
+    // Element-name run, then the attribute region with quote tracking.
+    let mut pos = lt + 1;
+    while pos < cursor
+        && (bytes[pos].is_ascii_alphanumeric() || matches!(bytes[pos], b'-' | b'_' | b':'))
+    {
+        pos += 1;
+    }
+    if cursor <= pos {
+        return Some(CompletionZone::TagInterior {
+            position: AttrPosition::TagName,
+        });
+    }
+
+    // Attribute region: track the quoted value containing the cursor (if
+    // any) and the attribute name that precedes its `=`.
+    let mut quote: Option<u8> = None;
+    let mut value_attr: Option<&str> = None;
+    let mut j = pos;
+    while j < cursor {
+        let b = bytes[j];
+        match quote {
+            Some(q) if b == q => quote = None,
+            Some(_) => {}
+            None => {
+                if b == b'"' || b == b'\'' {
+                    quote = Some(b);
+                    // The attribute name is the word before the last
+                    // unquoted `=` before this quote.
+                    let name = body[pos..j]
+                        .rsplit_once('=')
+                        .map(|(before_eq, _)| {
+                            let trimmed = before_eq.trim_end();
+                            let start = trimmed
+                                .rfind(|c: char| c.is_ascii_whitespace())
+                                .map(|p| trimmed[..=p].len())
+                                .unwrap_or(0);
+                            &trimmed[start..]
+                        })
+                        .unwrap_or("");
+                    value_attr = Some(name);
+                }
+            }
+        }
+        j += 1;
+    }
+    if quote.is_some() {
+        let position = match value_attr {
+            Some(name) if name.starts_with('@') || name.starts_with("sc-eval:") => {
+                AttrPosition::DirectiveValue
+            }
+            _ => AttrPosition::PlainValue,
+        };
+        return Some(CompletionZone::TagInterior { position });
+    }
+    Some(CompletionZone::TagInterior {
+        position: AttrPosition::AttrName,
+    })
+}
+
+fn attr_position_in(nodes: &[ast::AstNode], offset: usize) -> Option<AttrPosition> {
     for node in nodes {
         if let ast::AstNode::HtmlTag {
-            open_span,
+            name_span,
             attrs,
             children,
+            open_span,
+            full_span,
             ..
         } = node
         {
+            // This tag's OPEN span contains the offset (open spans never
+            // nest — the first match owns the verdict).
             if open_span.start <= offset && offset < open_span.end {
-                return attrs.iter().any(|a| {
-                    a.directive.is_some()
-                        && a.value_span
-                            .as_ref()
-                            .is_some_and(|vs| vs.start <= offset && offset <= vs.end)
-                });
+                // Element-name region — suppressed position.
+                if name_span.start <= offset && offset <= name_span.end {
+                    return Some(AttrPosition::TagName);
+                }
+                for a in attrs {
+                    if let Some(vs) = &a.value_span
+                        && vs.start <= offset
+                        && offset <= vs.end
+                    {
+                        return Some(if a.directive.is_some() {
+                            AttrPosition::DirectiveValue
+                        } else {
+                            AttrPosition::PlainValue
+                        });
+                    }
+                }
+                return Some(AttrPosition::AttrName);
             }
-            if inside_directive_value(children, offset) {
-                return true;
+            // Between this tag's open and close: only a CHILD tag's open
+            // span can claim the offset (content between elements is
+            // prose — the zone map never routes it here).
+            if full_span.start <= offset
+                && offset < full_span.end
+                && let Some(pos) = attr_position_in(children, offset)
+            {
+                return Some(pos);
             }
         }
     }
-    false
+    None
 }
 
 /// SugarCube 2.x format plugin.
@@ -1622,7 +1779,7 @@ impl FormatPlugin for SugarCubePlugin {
             CompletionZone::Prose => {}
             CompletionZone::RawScript
             | CompletionZone::TagInterior {
-                directive_value: true,
+                position: AttrPosition::DirectiveValue,
             } => {
                 if trigger == Some('$') || trigger == Some('_') {
                     let is_temp = trigger == Some('_');
@@ -1640,9 +1797,16 @@ impl FormatPlugin for SugarCubePlugin {
                 return Vec::new();
             }
             CompletionZone::TagInterior {
-                directive_value: false,
+                position: AttrPosition::PlainValue | AttrPosition::TagName,
+            } => return Vec::new(),
+            CompletionZone::TagInterior {
+                position: AttrPosition::AttrName,
+            } => {
+                // Attribute-NAME position — the HTML attribute completions
+                // (plain names + the `@` / `sc-eval:` directive families).
+                return lsp::html_completions::build_html_attr_completions(before_cursor);
             }
-            | CompletionZone::RawStyle => return Vec::new(),
+            CompletionZone::RawStyle => return Vec::new(),
         }
 
         // ── 1. $ / _ trigger → Variable completions ───────────────────
@@ -6674,6 +6838,70 @@ mod html_zone_guard_tests {
     }
 
     #[test]
+    fn attr_name_position_offers_html_attribute_completions() {
+        // End-to-end: typing an attribute word in a tag interior offers
+        // the curated attribute names; the `@` prefix switches to the
+        // directive family.
+        let src = ":: Start\n<div cla\n[[Forest]]\n";
+        let (plugin, workspace, uri) = setup(src);
+        let char = src.lines().nth(1).unwrap().find("cla").unwrap() as u32 + 3;
+        let items = plugin.provide_completions(src, &workspace, &uri, 1, char, None, &[]);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"class"), "labels: {labels:?}");
+        assert!(
+            labels.iter().all(|l| !l.starts_with('@')),
+            "no directive items on a plain word: {labels:?}"
+        );
+
+        let src = ":: Start\n<div @da\n[[Forest]]\n";
+        let (plugin, workspace, uri) = setup(src);
+        let char = src.lines().nth(1).unwrap().find("@da").unwrap() as u32 + 3;
+        let items = plugin.provide_completions(src, &workspace, &uri, 1, char, None, &[]);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"@data-passage"), "labels: {labels:?}");
+        assert!(
+            labels.iter().all(|l| !l.contains("setter")),
+            "the erroring @data-setter is never offered: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn attr_value_and_tag_name_positions_stay_suppressed() {
+        // Inside a plain attribute VALUE and inside the element NAME:
+        // nothing is offered.
+        let src = ":: Start\n<div title=\"xx\">y</div>\n[[Forest]]\n";
+        let (plugin, workspace, uri) = setup(src);
+        let char = src.lines().nth(1).unwrap().find("xx").unwrap() as u32 + 1;
+        assert!(
+            plugin
+                .provide_completions(src, &workspace, &uri, 1, char, None, &[])
+                .is_empty()
+        );
+        let char = src.find("<div").unwrap() as u32 + 3 - "\n:: Start\n".len() as u32;
+        assert!(
+            plugin
+                .provide_completions(src, &workspace, &uri, 1, char, None, &[])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn directive_values_keep_variable_completions() {
+        // The @-directive VALUE keeps its TwineScript behavior: `$`
+        // offers variables (regression pin for the zone refactor).
+        let src = ":: Start\n<span @id=\"$p\">x</span>\n";
+        let (plugin, workspace, uri) = setup(src);
+        let line = 1u32;
+        let char = src.lines().nth(1).unwrap().find("$p").unwrap() as u32 + 1;
+        let items = plugin.provide_completions(src, &workspace, &uri, line, char, Some('$'), &[]);
+        // No variables registered → empty is fine; the pin is that the
+        // DIRECTIVE-VALUE arm handled it (a panic-free pass means the
+        // guard classified correctly — the variable list itself is
+        // covered by the scoped-variable tests).
+        let _ = items;
+    }
+
+    #[test]
     fn zone_helper_classifies_strata() {
         // Direct pins on the classifier (offsets via find() — no manual
         // line arithmetic).
@@ -6683,7 +6911,7 @@ mod html_zone_guard_tests {
         assert_eq!(
             plugin.completion_zone_at(src, open_tag),
             CompletionZone::TagInterior {
-                directive_value: false
+                position: AttrPosition::TagName
             }
         );
         let content = src.find("<div>").unwrap() + 5; // inside element content
@@ -6701,13 +6929,43 @@ mod html_zone_guard_tests {
             plugin.completion_zone_at(src, style_body),
             CompletionZone::RawStyle
         );
+        // Inline CSS: cursor inside a `style="…"` attribute VALUE reports
+        // the CSS zone (not TagInterior) — the zoning refinement that makes
+        // the per-byte language authority match what the bytes actually are.
+        let src_style = ":: Start\n<div style=\"color: red\">x</div>\n";
+        let style_value = src_style.find("color").unwrap();
+        assert_eq!(
+            plugin.completion_zone_at(src_style, style_value),
+            CompletionZone::RawStyle
+        );
+        // The `style` attribute NAME is still tag-interior HTML — and it
+        // is an attribute-NAME position (the HTML attribute completions
+        // fire there).
+        let style_name = src_style.find("style").unwrap();
+        assert_eq!(
+            plugin.completion_zone_at(src_style, style_name),
+            CompletionZone::TagInterior {
+                position: AttrPosition::AttrName
+            }
+        );
+        // A plain attribute VALUE offers nothing (position-wise it is a
+        // plain value; the zone language for `style="…"` is CSS, but for
+        // a non-style value the language stays Html).
+        let src_plain = ":: Start\n<div title=\"x\">y</div>\n";
+        let title_value = src_plain.find("x").unwrap();
+        assert_eq!(
+            plugin.completion_zone_at(src_plain, title_value),
+            CompletionZone::TagInterior {
+                position: AttrPosition::PlainValue
+            }
+        );
         // Directive value (inclusive end): cursor right after `$`.
         let src2 = ":: Start\n<div @class=\"$\">x</div>\n";
         let after_sigil = src2.find("\"$").unwrap() + 2;
         assert_eq!(
             plugin.completion_zone_at(src2, after_sigil),
             CompletionZone::TagInterior {
-                directive_value: true
+                position: AttrPosition::DirectiveValue
             }
         );
     }

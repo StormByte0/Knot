@@ -48,7 +48,15 @@ use std::ops::Range;
 
 /// Parse CSS source text (a stylesheet-shaped region: `[stylesheet]`
 /// passages, `<style>` bodies, `<<style>>`/`<<css>>` blocks) and return
-/// classified tokens + diagnostics. Spans are source-relative.
+/// classified tokens + diagnostics.
+///
+/// ## Coordinate contract
+///
+/// All token spans and diagnostic ranges are **byte offsets into `source`**
+/// — not passage-relative, not document-absolute. Callers parsing a
+/// sub-region shift by the region offset themselves (the same contract as
+/// [`crate::oxc::parse_js`] and [`crate::html::parse_html_fragment`]; see
+/// `types.rs` for the full note).
 ///
 /// For declaration-list regions (`style="…"` attribute values) use
 /// [`super::fallback::parse_css_declarations`] — that microsyntax is a
@@ -72,19 +80,34 @@ pub fn parse_css(source: &str) -> CssParseOutcome {
                     span: comment.span.start..comment.span.end,
                 });
             }
+            let tokens = sort_and_dedupe(tokens);
             // Relay recoverable errors — user policy: show breaking code
-            // when written, never hide it.
-            let diagnostics = parser
+            // when written, never hide it. Both ends are clamped to the
+            // source length so a misbehaving span can never produce an
+            // out-of-bounds or inverted range for downstream consumers.
+            let mut diagnostics: Vec<CssDiagnostic> = parser
                 .recoverable_errors()
                 .iter()
                 .map(|e| CssDiagnostic {
                     message: e.kind.to_string(),
-                    range: e.span.start..e.span.end.min(source.len()),
+                    range: e.span.start.min(source.len())..e.span.end.min(source.len()),
                     severity: CssDiagnosticSeverity::Error,
                 })
                 .collect();
+            // Semantic tier: unknown-property lint (Warning) rides the same
+            // diagnostic stream — see `properties`' module docs for the
+            // coverage policy. The `selectors` pseudo lint rides with it
+            // (real-parser path only: it judges colon-adjacent Selector
+            // tokens, whose classification is AST-derived — see that
+            // module's docs for why the fallback scanner skips it).
+            diagnostics.extend(super::properties::unknown_property_diagnostics(
+                &tokens, source,
+            ));
+            diagnostics.extend(super::selectors::unknown_pseudo_diagnostics(
+                &tokens, source,
+            ));
             CssParseOutcome {
-                tokens: sort_and_dedupe(tokens),
+                tokens,
                 diagnostics,
             }
         }
@@ -1034,6 +1057,10 @@ mod tests {
             "unclosed block must produce at least one diagnostic"
         );
         assert!(
+            !outcome.is_clean(),
+            "is_clean() must be false when diagnostics exist"
+        );
+        assert!(
             outcome
                 .diagnostics
                 .iter()
@@ -1046,6 +1073,18 @@ mod tests {
                 .iter()
                 .any(|t| t.kind == CssTokenKind::Property)
         );
+        // Diagnostic ranges stay inside the source (both ends clamped).
+        for d in &outcome.diagnostics {
+            assert!(d.range.end <= ".a { color: red;".len());
+        }
+    }
+
+    #[test]
+    fn clean_parse_is_clean() {
+        // Parity with JsParseOutcome::is_clean — false iff diagnostics.
+        assert!(parse_css(".a { color: red; }").is_clean());
+        assert!(!parse_css(".a {").is_clean());
+        assert!(parse_css("").is_clean());
     }
 
     #[test]

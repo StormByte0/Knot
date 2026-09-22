@@ -35,10 +35,10 @@
 pub mod parser;
 pub mod types;
 
-pub use parser::{parse_html_fragment, scan_leading_tag};
+pub use parser::{parse_html_fragment, scan_leading_tag, scan_leading_tag_detailed};
 pub use types::{
     HtmlAttr, HtmlCst, HtmlDiagnostic, HtmlElement, HtmlElementKind, HtmlNode, HtmlNodeKind,
-    HtmlRawKind, ScannedTag,
+    HtmlRawKind, LeadingTagScan, ScannedTag,
 };
 
 #[cfg(test)]

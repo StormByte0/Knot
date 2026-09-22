@@ -316,6 +316,32 @@
     },
     "inlineCode": {
       "foreground": "#336f3c"
+    },
+    "htmlTag": {
+      "foreground": "#8c4351"
+    },
+    "htmlAttribute": {
+      "foreground": "#8c5a00"
+    },
+    "htmlEntity": {
+      "foreground": "#6b3fa0"
+    },
+    "htmlDelimiter": {
+      "foreground": "#5c6a7e"
+    },
+    "cssProperty": {
+      "foreground": "#34548a"
+    },
+    "cssSelector": {
+      "foreground": "#0d9488"
+    },
+    "cssAtRule": {
+      "foreground": "#6b3fa0",
+      "fontStyle": "italic"
+    },
+    "htmlDirective": {
+      "foreground": "#9a4e00",
+      "fontStyle": "bold"
     }
   }
 }

@@ -1288,12 +1288,22 @@ fn find_raw_text_close(text: &str, from: usize, name: &str) -> Option<Range<usiz
 /// `@name` (shorthand) or `sc-eval:name` (explicit). Returns the stripped
 /// target attribute name and the form used.
 ///
+/// **Feed this the RAW (case-preserved) source spelling**, never the
+/// tokenizer's lowercased name: upstream matches the prefixes
+/// case-sensitively (`"@" === name[0]`, `name.startsWith("sc-eval:")` —
+/// verified against the 2.37.3 engine source), so `SC-EVAL:x` is an
+/// ordinary attribute there. The `@` shorthand is a first-byte check, so
+/// `@ID` IS a directive (with target `ID`) — matching upstream, which
+/// would `setAttribute("ID", evaluated)`.
+///
 /// Documented divergences:
 /// - a LONE `@` (empty target) is inert here; upstream would attempt
 ///   `setAttribute("", …)` and throw;
-/// - upstream throws when the stripped target is `data-setter`; Knot keeps
-///   the directive (the expression is still analyzed) and defers that
-///   diagnostic to the Phase 2.5 validation pass.
+/// - upstream throws when the stripped target is exactly `data-setter`
+///   (case-sensitive — `@DATA-SETTER` instead sets a data-setter attribute
+///   with the evaluated value); Knot keeps the directive (the expression
+///   is still analyzed) and the `html-directive-data-setter` diagnostic
+///   fires only on the exact upstream-throwing spelling.
 fn attr_directive(name: &str) -> Option<(String, HtmlAttrDirectiveKind)> {
     if let Some(rest) = name.strip_prefix('@') {
         if rest.is_empty() {
@@ -1381,9 +1391,16 @@ fn parse_html_tag(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: usize) -
         offset + start + scanned.name_range.start..offset + start + scanned.name_range.end;
 
     // Attributes (source order) + directive recognition.
+    //
+    // Directive recognition reads the RAW source slice: the tokenizer
+    // lowercases attribute names (core/html module docs), but upstream
+    // matches the prefixes case-sensitively — see `attr_directive`'s docs.
+    // `SC-EVAL:x` therefore stays an ordinary attribute, exactly as
+    // upstream treats it.
     let mut attrs = Vec::with_capacity(scanned.attrs.len());
     for a in &scanned.attrs {
         let attr_name_span = offset + start + a.name_range.start..offset + start + a.name_range.end;
+        let raw_name = &text[start + a.name_range.start..start + a.name_range.end];
         let (value, value_span) = match &a.value_range {
             Some(vr) => (
                 Some(text[start + vr.start..start + vr.end].to_string()),
@@ -1391,7 +1408,7 @@ fn parse_html_tag(text: &str, i: &mut usize, ctx: &mut ParseCtx, start: usize) -
             ),
             None => (None, None),
         };
-        let directive = attr_directive(&a.name)
+        let directive = attr_directive(raw_name)
             .map(|(target_name, kind)| HtmlAttrDirective { target_name, kind });
         // Parse-time variable scan of directive values (read refs) — the
         // same pre-annotation role as `Expression::var_refs`; consumers

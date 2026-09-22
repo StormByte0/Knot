@@ -22,10 +22,23 @@
 //!   [`fallback`] so highlighting never goes dark.
 //! - [`fallback::parse_css_declarations()`] — the `style="…"` attribute
 //!   microsyntax (a declaration LIST, not a stylesheet; browsers drop
-//!   invalid declarations silently, so no diagnostics for that shape).
+//!   invalid declarations silently, so no parse-error diagnostics for that
+//!   shape).
+//!
+//! Both entry points (and the fallback path) also run the [`properties`]
+//! unknown-property lint — a Warning-tier *semantic* check layered on top
+//! of the syntax result, flagging declaration names that are neither
+//! standard properties, custom (`--x`), nor vendor-prefixed spellings.
+//! The stylesheet path additionally runs the [`selectors`] pseudo lint
+//! (unknown pseudo-class/element names, misplaced pseudo-elements) —
+//! it needs the real parser's AST-derived classification, so the
+//! fallback path skips it (see that module's docs for the false-positive
+//! class that exclusion avoids).
 
 pub mod fallback;
 pub mod parser;
+pub mod properties;
+pub mod selectors;
 pub mod types;
 
 pub use fallback::parse_css_declarations;

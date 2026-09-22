@@ -4107,15 +4107,16 @@ mod html_tag_stratum {
     #[test]
     fn missing_terminator_consumes_to_eof_with_live_content() {
         // Upstream renders an error box for a missing `</name>`; Knot
-        // consumes to EOF with LIVE content and stays silent — the same
-        // conservative policy as the unterminated `@@` arm (plan.md 1.4).
-        // Pinned so a future diagnostic (Phase 2.5) is a deliberate change,
-        // not an accident.
+        // consumes to EOF with LIVE content (same recovery as before) and
+        // since Phase 2.5 reports the missing terminator as an
+        // `html-unclosed-tag` diagnostic — the upstream verdict, restored.
+        // The content stays live: the link inside must still work.
         let (complete, links, diags) =
             parse_start(":: Start\n<div>intro [[Forest]] tail\n:: Forest\nforest\n");
         assert!(complete);
         assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
-        assert!(diags.is_empty(), "diags: {diags:?}");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(diags[0].contains("Unclosed HTML tag"), "diags: {diags:?}");
     }
 
     #[test]
@@ -4151,14 +4152,16 @@ mod html_tag_stratum {
     fn data_setter_directive_stays_parseable() {
         // Upstream THROWS on `@data-setter` (evaluation directive is not
         // allowed on the data-setter attribute); Knot keeps the tag
-        // parseable and defers that diagnostic to the Phase 2.5 validation
-        // pass — pinned so the divergence stays deliberate.
+        // parseable and the Phase 2.5 validation pass now delivers the
+        // verdict as a diagnostic instead of a parse failure — pinned so
+        // both halves stay true.
         let (complete, links, diags) = parse_start(
             ":: Start\n<a @data-setter=\"$x\">link</a> [[Forest]]\n:: Forest\nforest\n",
         );
         assert!(complete);
         assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
-        assert!(diags.is_empty(), "diags: {diags:?}");
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(diags[0].contains("data-setter"), "message: {}", diags[0]);
     }
 
     #[test]
@@ -4205,6 +4208,94 @@ mod html_tag_stratum {
             "diags: {:?}",
             start_diags(&result)
         );
+    }
+
+    #[test]
+    fn attribute_spelling_edge_shapes_are_tags() {
+        // WHATWG attribute shapes the html5gum span audit fixed: whitespace
+        // around `=` (`a= "b"`), and `a= >` (missing-attribute-value — the
+        // tokenizer records an error but the tag is still a tag). All must
+        // go through the htmlTag stratum atomically: tag name tokens cover
+        // the names, the `b` value is a String token, and the real link
+        // after the tag still works.
+        let src = concat!(
+            ":: Start\n",
+            "<div a= \"b\" c= >text</div>\n",
+            "<span a = \"q\">w</span> [[Forest]]\n",
+            ":: Forest\nforest\n",
+        );
+        let result = parse_full(src);
+        assert!(result.is_complete);
+        assert_eq!(start_links(&result), vec!["Forest"]);
+        // Phase 2.5: the missing-attribute-value shape (`c= >`) now warns —
+        // exactly one HTML warning, nothing else.
+        let diags = start_diags(&result);
+        assert_eq!(diags.len(), 1, "diags: {diags:?}");
+        assert!(
+            diags[0].contains("Missing attribute value"),
+            "diags: {diags:?}"
+        );
+        let tokens = flatten_token_groups(&result);
+        let attr_values = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, crate::plugin::SemanticTokenType::String)
+        });
+        assert!(
+            attr_values.contains(&"b"),
+            "the `a= \"b\"` value must be a String token, got: {attr_values:?}"
+        );
+        assert!(
+            attr_values.contains(&"q"),
+            "the `a = \"q\"` value must be a String token, got: {attr_values:?}"
+        );
+    }
+
+    /// End-to-end battery for the Phase 2.5 embedded HTML/CSS diagnostics:
+    /// one passage carrying every diagnostic class the walk produces,
+    /// verified through the full parse pipeline (parse_full → diagnostic
+    /// groups) the same way the LSP server consumes them.
+    #[test]
+    fn embedded_html_css_diagnostics_end_to_end() {
+        let src = concat!(
+            ":: Start\n",
+            "<div class=\"hud\" style=\"colr: red; margin: 0\">broken open\n",
+            "<span a=\"1\" a=\"2\">ok</span>\n",
+            "<style>\n",
+            ".hud { color: var(--x); bakground: blue; }\n",
+            "</style>\n",
+            "<<style>>\n",
+            ".warn { colr: green; }\n",
+            "<</style>>\n",
+            "tail <img src=\"x.png\n",
+            ":: Forest\nforest\n",
+        );
+        let result = parse_full(src);
+        let diags = start_diags(&result);
+        // (message fragment, expected count) — the walk's full output for
+        // this passage, nothing more, nothing less.
+        let expects: [(&str, usize); 6] = [
+            ("Unclosed HTML tag", 1),                 // the <div>
+            ("Unknown CSS property: `colr`", 2),      // style attr + <<style>> block
+            ("Unknown CSS property: `bakground`", 1), // <style> body
+            ("Duplicate attribute", 1),               // <span a="1" a="2">
+            ("Unterminated HTML tag", 1),             // <img src="x.png at EOF
+            ("Unknown macro: <<style>>", 1),          // honest hint: not a builtin,
+                                                      // undefined in a bare project
+        ];
+        for (needle, want) in expects {
+            let hits = diags.iter().filter(|d| d.contains(needle)).count();
+            assert_eq!(hits, want, "{needle:?}: expected {want}x, diags: {diags:?}");
+        }
+        let total: usize = expects.iter().map(|(_, n)| n).sum();
+        assert_eq!(diags.len(), total, "no extra diagnostics, diags: {diags:?}");
+        // A clean sibling passage stays clean — the battery above must not
+        // leak into Forest.
+        let forest: Vec<String> = result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "Forest")
+            .flat_map(|g| g.diagnostics.iter().map(|d| d.message.clone()))
+            .collect();
+        assert!(forest.is_empty(), "Forest diags: {forest:?}");
     }
 }
 
@@ -4354,11 +4445,11 @@ mod raw_text_zones {
 
     #[test]
     fn style_body_is_raw_and_markup_symbols_inert() {
-        // `''`, `[[..]]`, `<<..>>` inside <style> are CSS bytes. CSS token
-        // content arrives with Phase 4.2 (knot_core::css::parse_css is a
-        // stub today — analyze_css returns zero tokens), so this pins the
-        // ZONE behavior: no markup diagnostics, no markup tokens, and the
-        // following link still works.
+        // `''`, `[[..]]`, `<<..>>` inside <style> are CSS bytes. Since Phase 6
+        // `knot_core::css::parse_css` is the real oxc-css-parser service, so
+        // this pins BOTH behaviors: the ZONE rules (no markup diagnostics,
+        // no markup tokens, the following link still works) and the CSS
+        // token content (selector + property + keyword from the body).
         let src = ":: Start\n<style>\n.hud { color: red; } /* ''b'' [[Cave]] <<set $x 1>> */\n</style>\n[[Forest]]\n:: Forest\nforest\n";
         let result = parse_full(src);
         assert!(result.is_complete);
@@ -4375,6 +4466,37 @@ mod raw_text_zones {
                 | SemanticTokenType::Macro
                 | SemanticTokenType::InlineStyle
         ),));
+        // CSS tokens do arrive from the body (Phase 6): `.hud` →
+        // CssSelector, `color` → CssProperty, `red` → Keyword.
+        let body_start = src.find(".hud").unwrap();
+        let body_end = src.find("</style>").unwrap();
+        let tokens = flatten_token_groups(&result);
+        let body_css_texts: Vec<&str> = tokens
+            .iter()
+            .filter(|t| {
+                t.start >= body_start
+                    && t.start < body_end
+                    && matches!(
+                        t.token_type,
+                        SemanticTokenType::CssSelector
+                            | SemanticTokenType::CssProperty
+                            | SemanticTokenType::Keyword
+                    )
+            })
+            .map(|t| &src[t.start..t.start + t.length])
+            .collect();
+        assert!(
+            body_css_texts.contains(&".hud"),
+            "expected a selector token `.hud`, got: {body_css_texts:?}"
+        );
+        assert!(
+            body_css_texts.contains(&"color"),
+            "expected a property token `color`, got: {body_css_texts:?}"
+        );
+        assert!(
+            body_css_texts.contains(&"red"),
+            "expected a keyword token `red`, got: {body_css_texts:?}"
+        );
     }
 
     #[test]
@@ -4526,6 +4648,23 @@ mod html_tokens {
     }
 
     #[test]
+    fn tag_delimiters_get_html_delimiter_tokens() {
+        // `<`, `>`, `</` — the MacroDelimiter analog for the HTML stratum.
+        // Self-closing `/>` rides the same family.
+        let src = ":: Start\n<div>x</div><br/>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let delims = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlDelimiter)
+        });
+        assert_eq!(
+            delims,
+            vec!["<", ">", "</", ">", "<", "/>"],
+            "every tag delimiter must get an HtmlDelimiter token, got: {delims:?}"
+        );
+    }
+
+    #[test]
     fn attribute_name_equals_and_value_get_tokens() {
         // `class="hud"` → HtmlAttribute(`class`), Operator(`=`), String(`hud`).
         let src = ":: Start\n<div class=\"hud\">x</div>\n[[Forest]]\n";
@@ -4556,9 +4695,10 @@ mod html_tokens {
 
     #[test]
     fn directive_value_gets_js_tokens_not_string() {
-        // `@class="$cls"` — the NAME highlights as an attribute, the VALUE
-        // is a TwineScript expression owned by the JS families (Variable
-        // token on $cls, NO String token overlapping it).
+        // `@class="$cls"` — the sigil rides HtmlDirective, the base NAME
+        // rides HtmlAttribute, and the VALUE is a TwineScript expression
+        // owned by the JS families (Variable token on $cls, NO String
+        // token overlapping it).
         let src = ":: Start\n<div @class=\"$cls\">x</div>\n[[Forest]]\n";
         let result = parse_full(src);
         let tokens = flatten_token_groups(&result);
@@ -4566,8 +4706,16 @@ mod html_tokens {
             matches!(t.token_type, SemanticTokenType::HtmlAttribute)
         });
         assert!(
-            attrs.contains(&"@class"),
-            "directive name (sigil included) must get HtmlAttribute, got: {attrs:?}"
+            attrs.contains(&"class"),
+            "the base directive name must get HtmlAttribute, got: {attrs:?}"
+        );
+        let sigils = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlDirective)
+        });
+        assert_eq!(
+            sigils,
+            vec!["@"],
+            "the directive sigil must get its own HtmlDirective token, got: {sigils:?}"
         );
         let value_start = src.find("$cls").unwrap();
         assert!(
@@ -4585,6 +4733,46 @@ mod html_tokens {
             !strings.iter().any(|s| s.contains("$cls")),
             "directive value must not also emit a String token, got: {strings:?}"
         );
+    }
+
+    #[test]
+    fn explicit_directive_sigil_splits_and_case_variants_stay_whole() {
+        // `sc-eval:data-id` — the 8-byte sigil rides HtmlDirective, the
+        // base name rides HtmlAttribute. `SC-EVAL:id` (case variant) is NOT
+        // a directive upstream (prefix match is case-sensitive), so its
+        // whole spelling stays one plain HtmlAttribute.
+        let src = ":: Start\n<div sc-eval:data-id=\"$id\" SC-EVAL:id=\"x\">x</div>\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let sigils = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlDirective)
+        });
+        assert_eq!(sigils, vec!["sc-eval:"], "sigils: {sigils:?}");
+        let attrs = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlAttribute)
+        });
+        assert!(
+            attrs.contains(&"data-id"),
+            "base name after the sigil: {attrs:?}"
+        );
+        assert!(
+            attrs.contains(&"SC-EVAL:id"),
+            "case variant stays whole: {attrs:?}"
+        );
+    }
+
+    #[test]
+    fn lone_directive_sigil_emits_directive_token() {
+        // `<span @>` — the lone sigil (an upstream error, flagged by
+        // embedded_diags) still highlights as the directive it was meant
+        // to be.
+        let src = ":: Start\n<span @>x</span>\n[[Forest]]\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let sigils = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::HtmlDirective)
+        });
+        assert_eq!(sigils, vec!["@"], "sigils: {sigils:?}");
     }
 
     #[test]
@@ -4844,23 +5032,24 @@ mod css_support {
     #[test]
     fn style_tag_body_gets_css_tokens() {
         // The 2.3 raw carve + the 4.2 tokenizer: `.hud` selector and `color`
-        // property highlight inside the <style> body.
+        // property highlight inside the <style> body — with the DEDICATED
+        // CSS token types (not the shared Tag/Property families).
         let src = ":: Start\n<style>\n.hud { color: red; }\n</style>\n[[Forest]]\n";
         let result = parse_full(src);
         let tokens = flatten_token_groups(&result);
         let props = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Property)
+            matches!(t.token_type, SemanticTokenType::CssProperty)
         });
         assert!(
             props.contains(&"color"),
-            "the style body must get CSS Property tokens, got: {props:?}"
+            "the style body must get CssProperty tokens, got: {props:?}"
         );
         let selectors = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Tag)
+            matches!(t.token_type, SemanticTokenType::CssSelector)
         });
         assert!(
             selectors.contains(&".hud"),
-            "the selector must get a Tag token (CSS selector mapping), got: {selectors:?}"
+            "the selector must get a CssSelector token, got: {selectors:?}"
         );
     }
 
@@ -4871,11 +5060,11 @@ mod css_support {
         let result = parse_full(src);
         let tokens = flatten_token_groups(&result);
         let props = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Property)
+            matches!(t.token_type, SemanticTokenType::CssProperty)
         });
         assert!(
             props.contains(&"color"),
-            "style attribute value must get CSS Property tokens, got: {props:?}"
+            "style attribute value must get CssProperty tokens, got: {props:?}"
         );
         // No String token over the value (CSS tokens own it).
         let strings = token_texts(src, &tokens, |t| {
@@ -4895,11 +5084,11 @@ mod css_support {
         let result = parse_full(src);
         let tokens = flatten_token_groups(&result);
         let props = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Property)
+            matches!(t.token_type, SemanticTokenType::CssProperty)
         });
         assert!(
             props.contains(&"color"),
-            "<<style>> block must get CSS Property tokens, got: {props:?}"
+            "<<style>> block must get CssProperty tokens, got: {props:?}"
         );
     }
 
@@ -4910,11 +5099,28 @@ mod css_support {
         let result = parse_full(src);
         let tokens = flatten_token_groups(&result);
         let props = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Property)
+            matches!(t.token_type, SemanticTokenType::CssProperty)
         });
         assert!(
             props.contains(&"color"),
-            "stylesheet passage must get CSS Property tokens, got: {props:?}"
+            "stylesheet passage must get CssProperty tokens, got: {props:?}"
+        );
+    }
+
+    #[test]
+    fn at_rule_gets_dedicated_css_at_rule_token() {
+        // `@media` (sigil included) rides the dedicated CssAtRule type, so
+        // themes can style at-rules apart from value keywords.
+        let src = ":: Start [stylesheet]\n@media (min-width: 600px) { .hud { color: red; } }\n";
+        let result = parse_full(src);
+        let tokens = flatten_token_groups(&result);
+        let at_rules = token_texts(src, &tokens, |t| {
+            matches!(t.token_type, SemanticTokenType::CssAtRule)
+        });
+        assert_eq!(
+            at_rules,
+            vec!["@media"],
+            "the at-rule name (with @) must get one CssAtRule token, got: {at_rules:?}"
         );
     }
 
@@ -4947,7 +5153,7 @@ mod css_support {
         // Highlighting still survives the broken input (recovery path).
         let tokens = flatten_token_groups(&result);
         let props = token_texts(src, &tokens, |t| {
-            matches!(t.token_type, SemanticTokenType::Property)
+            matches!(t.token_type, SemanticTokenType::CssProperty)
         });
         assert!(
             props.contains(&"color"),

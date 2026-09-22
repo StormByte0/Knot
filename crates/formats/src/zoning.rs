@@ -23,6 +23,10 @@
 //! - `leaves` is sorted by `span.start`.
 //! - `leaves` covers the body region with no gaps and no overlaps (every byte
 //!   is in exactly one leaf).
+//! - A start tag carrying `style="…"` attributes is split: the attribute
+//!   VALUES zone as `Raw { Css }` (inline CSS), the remaining tag bytes as
+//!   `Raw { Html }` — see `ZoneBuilder::emit_open_tag_leaves`. The split is
+//!   gap-free, so byte coverage and sort order are preserved.
 //! - `bodies` is sorted by `span.start` but MAY overlap (nested bodies).
 //! - Every `LeafZone.body_idx` is either `None` (top-level) or a valid index
 //!   into `bodies` whose `span` contains `leaf.span`.
@@ -285,6 +289,7 @@ impl<'a> ZoneBuilder<'a> {
                 open_span,
                 close_span,
                 full_span,
+                attrs,
                 children,
                 raw_body,
                 ..
@@ -298,13 +303,19 @@ impl<'a> ZoneBuilder<'a> {
                 // CONTENT between them is wikified (upstream subWikify — D1
                 // rule 2), so children zone normally: a `[[link]]` inside
                 // `<div>…</div>` still gets a Link leaf.
-                self.leaves.push(LeafZone {
-                    span: self.shift(open_span),
-                    kind: LeafKind::Raw {
-                        language: RawLanguage::Html,
-                    },
-                    body_idx: parent_body_idx,
-                });
+                //
+                // Inline-CSS refinement: a `style="…"` attribute VALUE is CSS
+                // (the `RawLanguage::Css` contract in `knot-core`), so the
+                // start tag is zoned as HTML gaps around `Raw { Css }` leaves
+                // over each style value. This is what makes
+                // `ZoneMap::language_at` report CSS inside `style="col|"` —
+                // position-based features (completion, hover) then dispatch
+                // to the CSS tooling instead of the HTML one. The quotes,
+                // the `style` name and every other attribute stay HTML.
+                // `@style` / `sc-eval:style` DIRECTIVE values are TwineScript
+                // (JS families own them, same as `emit_html_attr_tokens`)
+                // and stay inside the HTML zone.
+                self.emit_open_tag_leaves(open_span, attrs, parent_body_idx);
                 if let Some(lang) = raw_body {
                     // Phase 2.3: raw-text bodies (`<script>`/`<style>`) get
                     // ONE Raw leaf over the body region — upstream runs
@@ -478,6 +489,75 @@ impl<'a> ZoneBuilder<'a> {
                     body_idx: parent_body_idx,
                 });
             }
+        }
+    }
+
+    /// Emit the start-tag leaves: one `Raw { Html }` leaf, or — when the tag
+    /// carries non-directive `style` attributes — HTML gap leaves around
+    /// `Raw { Css }` leaves over each style VALUE (the inline-CSS refinement
+    /// of the Phase 2.2 htmlTag stratum; see the `HtmlTag` arm).
+    ///
+    /// The CSS zones are the attribute `value_span`s (quote-exclusive, body-
+    /// relative) of `style` attributes that are NOT evaluation directives
+    /// (`@style`/`sc-eval:style` values are TwineScript, owned by the JS
+    /// token families). Everything else in the tag — delimiters, names,
+    /// other attribute bytes — stays one HTML language. Both leaf kinds keep
+    /// the same `body_idx` as the tag itself, so macro-body context queries
+    /// are unaffected by the split.
+    fn emit_open_tag_leaves(
+        &mut self,
+        open_span: &Range<usize>,
+        attrs: &[crate::sugarcube::ast::HtmlTagAttr],
+        parent_body_idx: Option<usize>,
+    ) {
+        // Inline-CSS regions: non-directive style values, sorted, clamped
+        // into the tag, zero-width spans dropped (leaves must be non-empty).
+        let mut css_zones: Vec<Range<usize>> = attrs
+            .iter()
+            .filter(|a| a.directive.is_none() && a.name.eq_ignore_ascii_case("style"))
+            .filter_map(|a| a.value_span.clone())
+            .filter(|vs| vs.start < vs.end)
+            .collect();
+        css_zones.sort_by_key(|z| z.start);
+
+        // Walk the tag, emitting HTML gaps around each CSS zone. `cursor`
+        // stays monotonic because the zones are sorted and (per the HTML
+        // grammar) attributes never overlap.
+        let mut cursor = open_span.start;
+        for zone in css_zones {
+            let zone_start = zone.start.max(open_span.start);
+            let zone_end = zone.end.min(open_span.end);
+            if zone_start >= zone_end {
+                continue; // outside the tag (malformed scan) — skip
+            }
+            if cursor < zone_start {
+                self.leaves.push(LeafZone {
+                    span: self.shift(&(cursor..zone_start)),
+                    kind: LeafKind::Raw {
+                        language: RawLanguage::Html,
+                    },
+                    body_idx: parent_body_idx,
+                });
+            }
+            self.leaves.push(LeafZone {
+                span: self.shift(&(zone_start..zone_end)),
+                kind: LeafKind::Raw {
+                    language: RawLanguage::Css,
+                },
+                body_idx: parent_body_idx,
+            });
+            cursor = zone_end;
+        }
+        // Trailing HTML gap through `>` (also the whole tag when there are
+        // no style values — the common case stays a single leaf).
+        if cursor < open_span.end {
+            self.leaves.push(LeafZone {
+                span: self.shift(&(cursor..open_span.end)),
+                kind: LeafKind::Raw {
+                    language: RawLanguage::Html,
+                },
+                body_idx: parent_body_idx,
+            });
         }
     }
 
@@ -931,6 +1011,99 @@ body text
             "content must zone by children (Link leaf), got {:?}",
             zones.leaf_at(8).map(|l| l.kind.clone())
         );
+    }
+
+    #[test]
+    fn style_attribute_value_zones_as_inline_css() {
+        // The inline-CSS refinement: `style="color: red"` VALUES zone as
+        // `Raw { Css }` inside the start tag's `Raw { Html }` leaf, so the
+        // per-byte language authority reports CSS exactly where CSS lives
+        // (completion/hover dispatch on that). Offsets in
+        // `<div style="color: red">x</div>`:
+        //   0 `<`, 1..4 `div`, 5..10 `style`, 10 `=`, 11 `"`,
+        //   12..22 `color: red` (the CSS zone), 22 `"`, 23 `>`.
+        let body = "<div style=\"color: red\">x</div>";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let zones = build_from_ast(&ast.nodes, 0, &CustomMacroRegistry::new());
+        assert!(
+            matches!(
+                zones.leaf_at(21).expect("style value zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Css
+                }
+            ),
+            "cursor inside the style value must be a Raw(Css) leaf, got {:?}",
+            zones.leaf_at(21).map(|l| l.kind.clone())
+        );
+        assert_eq!(
+            zones.language_at(21),
+            knot_core::zoning::Language::Css,
+            "language_at inside the style value must be Css"
+        );
+        // The `style` NAME (and every other tag byte) stays HTML.
+        assert!(
+            matches!(
+                zones.leaf_at(7).expect("style name zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Html
+                }
+            ),
+            "the `style` attribute name must stay Raw(Html), got {:?}",
+            zones.leaf_at(7).map(|l| l.kind.clone())
+        );
+        // Zone invariants survive the split: no gaps, no overlaps.
+        assert!(zones.validate().is_ok(), "leaves must stay sorted/covered");
+        // Coverage check: every byte of the open tag is in exactly one leaf.
+        let open_tag_end = body.find('>').map(|p| p + 1).unwrap();
+        for off in 0..open_tag_end {
+            assert!(
+                zones.leaf_at(off).is_some(),
+                "byte {off} of the start tag must be covered by a leaf"
+            );
+        }
+    }
+
+    #[test]
+    fn style_directive_value_stays_html_zone() {
+        // `@style="$cls"` is an evaluation DIRECTIVE — the value is a
+        // TwineScript expression owned by the JS token families, so it must
+        // NOT become a CSS zone (same policy as `emit_html_attr_tokens`).
+        let body = "<div @style=\"$cls\">x</div>";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let zones = build_from_ast(&ast.nodes, 0, &CustomMacroRegistry::new());
+        assert!(
+            matches!(
+                zones.leaf_at(14).expect("directive value zone").kind,
+                LeafKind::Raw {
+                    language: RawLanguage::Html
+                }
+            ),
+            "directive style value must stay Raw(Html), got {:?}",
+            zones.leaf_at(14).map(|l| l.kind.clone())
+        );
+    }
+
+    #[test]
+    fn empty_and_valueless_style_attributes_zone_flat_html() {
+        // `style=""` (collapsed to a name-only span by the tokenizer) and a
+        // bare `style` with no value produce NO CSS leaf — the whole tag
+        // stays one Raw(Html) leaf.
+        let body = "<div style=\"\">x</div><span style>y</span>";
+        let ast = parse_passage_body(body, 0, ParseMode::Normal);
+        let zones = build_from_ast(&ast.nodes, 0, &CustomMacroRegistry::new());
+        for leaf in zones.iter_leaves() {
+            assert!(
+                matches!(
+                    leaf.kind,
+                    LeafKind::Raw {
+                        language: RawLanguage::Html
+                    }
+                ) | matches!(leaf.kind, LeafKind::Prose { .. }),
+                "no CSS leaf may appear for empty/valueless style attrs, got {:?}",
+                leaf.kind
+            );
+        }
+        assert!(zones.validate().is_ok());
     }
 
     #[test]

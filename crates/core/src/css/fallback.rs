@@ -12,7 +12,9 @@
 //!    the scanner as if inside a declaration block. The HTML style-attribute
 //!    microsyntax is a declaration LIST, not a stylesheet, and browsers
 //!    drop invalid declarations silently, so the scanner (which reports no
-//!    diagnostics for this shape) matches the environment's tolerance.
+//!    parse-error diagnostics for this shape) matches the environment's
+//!    tolerance. The unknown-property lint still applies — a typo the
+//!    browser silently swallows is exactly what an editor should flag.
 //!
 //! ## Design notes
 //!
@@ -55,8 +57,17 @@ enum DeclPhase {
 pub fn parse_css_declarations(source: &str) -> CssParseOutcome {
     let mut outcome = parse_css_inner(source, Some((BlockKind::Declarations, DeclPhase::Property)));
     // A declaration list has no braces to close, and browsers drop invalid
-    // declarations silently — no diagnostics for this shape.
+    // declarations silently — no parse-error diagnostics for this shape.
+    // The unknown-property LINT still applies: `style="colr: red"` is a
+    // typo the browser will silently swallow, which is precisely when an
+    // editor should speak up (Warning tier — the story still runs).
     outcome.diagnostics.clear();
+    outcome
+        .diagnostics
+        .extend(super::properties::unknown_property_diagnostics(
+            &outcome.tokens,
+            source,
+        ));
     outcome
 }
 
@@ -71,7 +82,17 @@ fn decl_phase(blocks: &[(BlockKind, DeclPhase)]) -> Option<(BlockKind, DeclPhase
 /// well-formed [`CssParseOutcome`] (tolerant tokenization, no panics).
 /// The unclosed-block-at-EOF summary is the only diagnostic.
 pub(crate) fn tokenize_css_fallback(source: &str) -> CssParseOutcome {
-    parse_css_inner(source, None)
+    let mut outcome = parse_css_inner(source, None);
+    // Same semantic tier as the real parser's path: unknown-property lint
+    // rides along (Warning) — the degenerate path must not lint less than
+    // the primary one, or highlighting quality would differ by accident.
+    outcome
+        .diagnostics
+        .extend(super::properties::unknown_property_diagnostics(
+            &outcome.tokens,
+            source,
+        ));
+    outcome
 }
 
 /// The tokenizer proper. `seed_block` seeds the block stack (used by
@@ -122,9 +143,12 @@ fn parse_css_inner(source: &str, seed_block: Option<(BlockKind, DeclPhase)>) -> 
                     span: start..i,
                 });
             }
-            b'@' if is_ident_start(b) || b == b'@' => {
+            b'@' if next_is_at_keyword(bytes, i) => {
                 // At-rule: `@` + identifier (prelude handled by the generic
                 // scanner — at-rule arguments classify as keywords/strings).
+                // Per css-syntax-3 §4.3.3, only an ident-start after the `@`
+                // forms an at-keyword; a bare `@` is a delimiter and falls
+                // through to the punctuation arm.
                 let start = i;
                 i += 1;
                 while i < len && is_ident_byte(bytes[i]) {
@@ -226,6 +250,24 @@ fn parse_css_inner(source: &str, seed_block: Option<(BlockKind, DeclPhase)>) -> 
                     span: start..i,
                 });
             }
+            b'.' if i + 1 < len
+                && bytes[i + 1].is_ascii_digit()
+                && matches!(
+                    decl_phase(&blocks),
+                    Some((BlockKind::Declarations, DeclPhase::Value))
+                ) =>
+            {
+                // `.5em` — a leading-dot number (css-syntax-3 allows it) in
+                // value position. Consume with the number scanner so it is
+                // not shredded by the class-selector arm below (class
+                // selectors cannot start with a digit, so this is safe).
+                let start = i;
+                i = consume_number(bytes, i);
+                tokens.push(CssToken {
+                    kind: CssTokenKind::Number,
+                    span: start..i,
+                });
+            }
             b'.' if i + 1 < len && is_ident_byte(bytes[i + 1]) => {
                 // Class selector `.name` — one Selector token (parity with
                 // the `#name` ID-selector handling).
@@ -311,8 +353,44 @@ fn parse_css_inner(source: &str, seed_block: Option<(BlockKind, DeclPhase)>) -> 
                 while i < len && is_ident_byte(bytes[i]) {
                     i += 1;
                 }
-                let span = start..i;
-                tokens.push(classify_ident(source, span, decl_phase(&blocks)));
+                // `url(…)` with an UNQUOTED payload: consume through the
+                // matching `)` as one String token so the URL is not
+                // shredded into keyword/selector fragments (`url(bg.png)`'s
+                // `.png` would otherwise wear the selector color). Parity
+                // with the real parser's url() handling; the quoted form
+                // already rides the string arm above.
+                if is_url_call(source, start..i, bytes, i) {
+                    tokens.push(CssToken {
+                        kind: CssTokenKind::Function,
+                        span: start..start + 3,
+                    });
+                    tokens.push(CssToken {
+                        kind: CssTokenKind::Punctuation,
+                        span: i..i + 1,
+                    });
+                    let payload_start = i + 1;
+                    i += 1;
+                    while i < len && bytes[i] != b')' {
+                        i += 1;
+                    }
+                    if payload_start < i {
+                        tokens.push(CssToken {
+                            kind: CssTokenKind::String,
+                            span: payload_start..i,
+                        });
+                    }
+                    if i < len {
+                        // Consume the `)` (unterminated → stop at EOF).
+                        tokens.push(CssToken {
+                            kind: CssTokenKind::Punctuation,
+                            span: i..i + 1,
+                        });
+                        i += 1;
+                    }
+                } else {
+                    let span = start..i;
+                    tokens.push(classify_ident(source, span, decl_phase(&blocks)));
+                }
             }
             b' ' | b'\t' | b'\n' | b'\r' => {
                 // Whitespace is not emitted (the downstream mapping skips
@@ -347,6 +425,21 @@ fn parse_css_inner(source: &str, seed_block: Option<(BlockKind, DeclPhase)>) -> 
         tokens,
         diagnostics,
     }
+}
+
+/// True when the byte after the `@` at `i` starts an at-keyword name
+/// (css-syntax-3 §4.3.3: ident-start; `-` counts, the ident scanner handles
+/// the rest). Anything else (including another `@`) makes this `@` a bare
+/// delimiter that falls through to the punctuation arm.
+fn next_is_at_keyword(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i + 1).is_some_and(|&next| is_ident_start(next))
+}
+
+/// True when the ident at `span` is the function name `url` (ASCII
+/// case-insensitive) immediately followed by `(` — the unquoted-url
+/// microsyntax handled inline by the scanner (see the ident arm).
+fn is_url_call(source: &str, span: Range<usize>, bytes: &[u8], i: usize) -> bool {
+    source[span].eq_ignore_ascii_case("url") && bytes.get(i) == Some(&b'(')
 }
 
 /// Classify an identifier token by context: selectors at rule level,
@@ -437,6 +530,57 @@ mod tests {
         assert!(out.contains(&(CssTokenKind::Selector, ".hud".into())));
         assert!(out.contains(&(CssTokenKind::Property, "color".into())));
         assert!(out.contains(&(CssTokenKind::Keyword, "red".into())));
+    }
+
+    #[test]
+    fn unquoted_url_payload_is_one_string() {
+        // The url() microsyntax: the payload is a String, not shredded into
+        // keyword/selector fragments (`.png` would otherwise wear the
+        // selector color). Parity with the real parser's url() handling.
+        let out = kinds(".a { background: url(bg.png) no-repeat; }");
+        assert!(out.contains(&(CssTokenKind::Function, "url".into())));
+        assert!(out.contains(&(CssTokenKind::String, "bg.png".into())));
+        assert!(!out.contains(&(CssTokenKind::Selector, ".png".into())));
+        // The same shape in the `style="…"` declaration list (this
+        // scanner's primary path for that microsyntax).
+        let src = "background: url(bg.png)";
+        let decl = parse_css_declarations(src);
+        let texts: Vec<(CssTokenKind, &str)> = decl
+            .tokens
+            .into_iter()
+            .map(|t| (t.kind, &src[t.span.start..t.span.end]))
+            .collect();
+        assert!(texts.contains(&(CssTokenKind::Property, "background")));
+        assert!(texts.contains(&(CssTokenKind::Function, "url")));
+        assert!(texts.contains(&(CssTokenKind::String, "bg.png")));
+
+        // Unterminated url( runs to EOF without panicking.
+        let _ = kinds(".a { background: url(bg.pi");
+    }
+
+    #[test]
+    fn leading_dot_numbers_in_values() {
+        // css-syntax-3 allows `.5em`; in value phase it is a Number, not a
+        // class-selector fragment.
+        let out = kinds(".a { margin: .5em; }");
+        assert!(out.contains(&(CssTokenKind::Number, ".5em".into())));
+        // Class selectors still win at rule level (`.` + ident, not digit).
+        assert!(out.contains(&(CssTokenKind::Selector, ".a".into())));
+    }
+
+    #[test]
+    fn at_keyword_needs_ident_start() {
+        // `@media` is an at-rule; a bare `@` (or `@ x`) is punctuation —
+        // css-syntax-3 §4.3.3: only `@` + ident-start forms an at-keyword.
+        let out = kinds("@media { .a { color: red; } }");
+        assert!(out.contains(&(CssTokenKind::AtRule, "@media".into())));
+        let out = kinds("@ x .a { color: red; }");
+        assert!(out.contains(&(CssTokenKind::Punctuation, "@".into())));
+        assert!(!out.iter().any(|(k, _)| *k == CssTokenKind::AtRule));
+        // `@@x`: first `@` is a delimiter, the second starts the at-rule.
+        let out = kinds("@@media { .a { color: red; } }");
+        assert!(out.contains(&(CssTokenKind::Punctuation, "@".into())));
+        assert!(out.contains(&(CssTokenKind::AtRule, "@media".into())));
     }
 
     #[test]

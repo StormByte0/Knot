@@ -226,6 +226,18 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             body_offset_in_passage,
             registry.custom_macros(),
         );
+        // Embedded HTML/CSS diagnostics (plan.md Phase 2.5 wiring):
+        // unclosed/malformed tags, unterminated tags at EOF, and the CSS
+        // diagnostics the token-only emission sites dropped (style
+        // attributes, <style> bodies, <<style>> blocks). Stylesheet and
+        // StoryData passages have empty ASTs at this point — their CSS
+        // flows through the css_diagnostics branch above instead.
+        super::lsp::embedded_diags::build_embedded_diagnostics(
+            &passage_ast.nodes,
+            &mut passage_diagnostics,
+            body_offset_in_passage,
+            &cp.body_text,
+        );
 
         // Validate inline JS snippets via oxc (for diagnostics only)
         if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
@@ -673,6 +685,14 @@ pub fn parse_single(
             registry.custom_macros(),
         );
     }
+    // Embedded HTML/CSS diagnostics (plan.md Phase 2.5 wiring) — same
+    // per-passage logic as parse_full.
+    super::lsp::embedded_diags::build_embedded_diagnostics(
+        &passage_ast.nodes,
+        &mut passage_diagnostics,
+        body_offset_in_passage,
+        &cp.body_text,
+    );
 
     // Validate inline JS snippets via oxc (for diagnostics only)
     if !matches!(mode, ParseMode::Stylesheet | ParseMode::Minimal) {
