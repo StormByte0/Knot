@@ -30,6 +30,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::core_links::scan_core_links;
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
@@ -42,23 +43,6 @@ use crate::types::BodyRequirement;
 // Compiled regexes (module-level LazyLock)
 // ---------------------------------------------------------------------------
 
-/// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
-});
-/// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
-});
-/// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
-});
-/// Detect passage header lines: starts with `::` followed by at least one
-/// non-whitespace character. The actual name/tag/metadata extraction is done
-/// by the unified `parse_twee_header()` in `crate::header`.
-static RE_HEADER_DETECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*\S").expect("invalid regex for RE_HEADER_DETECT"));
 /// Regex for state variable writes: `state.varName =`
 static RE_STATE_WRITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bstate\.([A-Za-z_][A-Za-z0-9_]*)\s*=").expect("invalid regex for RE_STATE_WRITE")
@@ -151,7 +135,7 @@ impl ChapbookPlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if RE_HEADER_DETECT.is_match(line) {
+            if header::is_header_line(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -205,92 +189,28 @@ impl ChapbookPlugin {
 
     /// Extract links from a passage body.
     fn extract_links(&self, body: &str, body_offset: usize) -> Vec<Link> {
-        let mut links = Vec::new();
-
-        // Arrow-style links: [[Display->Target]]
-        for caps in RE_LINK_ARROW.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else {
-                continue;
-            };
-            let Some(target_match) = caps.get(2) else {
-                continue;
-            };
-            let display = display_match.as_str().trim().to_string();
-            let target = target_match.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Pipe-style links: [[Display|Target]]
-        for caps in RE_LINK_PIPE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else {
-                continue;
-            };
-            let Some(target_match) = caps.get(2) else {
-                continue;
-            };
-            let display = display_match.as_str().trim().to_string();
-            let target = target_match.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Simple links: [[Target]] (skip overlaps with arrow/pipe).
-        let known_spans: Vec<std::ops::Range<usize>> = RE_LINK_ARROW
-            .captures_iter(body)
-            .chain(RE_LINK_PIPE.captures_iter(body))
-            .filter_map(|caps| {
-                let m = caps.get(0)?;
-                Some(m.start()..m.end())
-            })
-            .collect();
-
-        for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let span = m.start()..m.end();
-            let overlaps = known_spans
-                .iter()
-                .any(|s| span.start >= s.start && span.end <= s.end);
-            if !overlaps {
-                let Some(target_match) = caps.get(1) else {
-                    continue;
-                };
-                let target = target_match.as_str().trim().to_string();
-                // Filter: skip targets containing "::" — JS namespace accessor
+        // Shared span-carrying scanner (see `core_links`); the simple form
+        // has no display part. Per Chapbook policy: display/target are
+        // trimmed, and targets containing `::` are skipped (JS namespace
+        // accessor syntax, not a passage name). Ambiguous content such as
+        // [[a|b->c]] yields both the arrow and the pipe reading — the
+        // same quirk the previous regex runs had.
+        scan_core_links(body)
+            .into_iter()
+            .filter_map(|l| {
+                let target = l.target(body).trim();
                 if target.contains("::") {
-                    continue;
+                    return None;
                 }
-                links.push(Link {
-                    display_text: None,
+                Some(Link {
+                    display_text: l.display(body).map(|d| d.trim().to_string()),
                     target_span: None,
-                    target,
-                    span: body_offset + m.start()..body_offset + m.end(),
+                    target: target.to_string(),
+                    span: (body_offset + l.span.start)..(body_offset + l.span.end),
                     edge_type_hint: None,
-                });
-            }
-        }
-
-        links
+                })
+            })
+            .collect()
     }
 
     /// Parse the body text into template segments: [javascript], [modify], {{inserts}}.
@@ -603,29 +523,10 @@ impl ChapbookPlugin {
         let segments = self.parse_template_segments(body);
 
         // Link tokens.
-        for caps in RE_LINK_ARROW.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
+        for l in scan_core_links(body) {
             tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
-                token_type: SemanticTokenType::Link,
-                modifier: None,
-            });
-        }
-        for caps in RE_LINK_PIPE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
-                token_type: SemanticTokenType::Link,
-                modifier: None,
-            });
-        }
-        for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
+                start: body_offset + l.span.start,
+                length: l.span.end - l.span.start,
                 token_type: SemanticTokenType::Link,
                 modifier: None,
             });

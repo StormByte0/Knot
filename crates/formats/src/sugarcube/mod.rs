@@ -1840,8 +1840,12 @@ impl FormatPlugin for SugarCubePlugin {
                 position: AttrPosition::AttrName,
             } => {
                 // Attribute-NAME position — the HTML attribute completions
-                // (plain names + the `@` / `sc-eval:` directive families).
-                return lsp::html_completions::build_html_attr_completions(before_cursor);
+                // (plain names + the `@` / `sc-eval:` directive families,
+                // version-gated: the directives exist only from 2.21.0).
+                return lsp::html_completions::build_html_attr_completions(
+                    before_cursor,
+                    self.effective_story_version(),
+                );
             }
             CompletionZone::RawStyle => return Vec::new(),
         }
@@ -2985,8 +2989,6 @@ impl SugarCubePlugin {
                 find_enclosing_block_macros(text, byte_offset, &body_macros)
             }
         };
-        let parent_constraints = macros::macro_parent_constraints();
-
         // ── Builtin macros (version-filtered) ──────────────────────
         //
         // The completion list is filtered through `macros_at` — the
@@ -2995,8 +2997,11 @@ impl SugarCubePlugin {
         // are offered. Removed macros (e.g. `<<click>>` at 2.37+) and
         // not-yet-added macros (e.g. `<<type>>` before 2.32) are excluded,
         // and each item's detail/description comes from its era-effective
-        // descriptor.
+        // descriptor. The parent-constraints map (sub-macro scoping) is
+        // filtered through the same gate: a sub-macro whose macro does
+        // not exist at this version is not a relevant element to scope.
         let story_version = self.effective_story_version();
+        let parent_constraints = macros::macro_parent_constraints_at(story_version);
         for (mdef, descriptor) in macros::macros_at(story_version) {
             if !filter_prefix.is_empty() && !mdef.name.starts_with(filter_prefix) {
                 continue;
@@ -3566,9 +3571,12 @@ impl SugarCubePlugin {
             });
         }
 
-        // If no unclosed macros found, offer all block macro close tags as fallback
+        // If no unclosed macros found, offer all block macro close tags as
+        // fallback — version-filtered, so only macros that exist at the
+        // story's pinned `format-version` are offered (a 2.30 story never
+        // sees `<</type>>`; a 2.37 story never sees `<</click>>`).
         if items.is_empty() {
-            for name in self.body_macro_names() {
+            for name in macros::body_macro_names_at(self.effective_story_version()) {
                 if seen.contains(name) || (!partial.is_empty() && !name.starts_with(partial)) {
                     continue;
                 }

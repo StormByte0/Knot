@@ -186,7 +186,9 @@ pub(crate) async fn initialize(
         capabilities,
         server_info: Some(ServerInfo {
             name: "Knot Language Server".to_string(),
-            version: Some("2.0.0".to_string()),
+            // Workspace version (Cargo.toml [workspace.package]) — compile-time
+            // so the reported server version can never drift from the crate.
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     })
 }

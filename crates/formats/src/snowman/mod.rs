@@ -20,6 +20,7 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::core_links::scan_core_links;
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
@@ -51,18 +52,6 @@ enum TemplateSegment {
 // Compiled regexes (module-level LazyLock)
 // ---------------------------------------------------------------------------
 
-/// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
-});
-/// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
-});
-/// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
-});
 /// Regex for Snowman state variable reads: `s.variableName`
 static RE_VAR_READ: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bs\.([A-Za-z_][A-Za-z0-9_]*)").expect("invalid regex for RE_VAR_READ")
@@ -81,22 +70,6 @@ static RE_WSS_VAR_WRITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"window\.story\.state\.([A-Za-z_][A-Za-z0-9_]*)\s*=")
         .expect("invalid regex for RE_WSS_VAR_WRITE")
 });
-/// Detect passage header lines: starts with `::` followed by at least one
-/// non-whitespace character. Actual parsing done by unified parser.
-static RE_HEADER_DETECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^::\s*\S").expect("invalid regex for RE_HEADER_DETECT"));
-/// Regex for ERB expression tag opening: `<%= `
-static RE_EXPR_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<%=\s*").expect("invalid regex for RE_EXPR_TAG"));
-/// Regex for ERB code tag opening: `<%` (not `<%=`).
-///
-/// Rust's `regex` crate does not support lookahead, so we match `<%`
-/// and let the caller skip matches that are actually `<%=` (handled by
-/// `RE_EXPR_TAG`). Whitespace after `<%` is also trimmed by the caller
-/// rather than via `\s*` here.
-static RE_CODE_TAG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<%").expect("invalid regex for RE_CODE_TAG"));
-
 // ---------------------------------------------------------------------------
 // Plugin struct
 // ---------------------------------------------------------------------------
@@ -134,7 +107,7 @@ impl SnowmanPlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if RE_HEADER_DETECT.is_match(line) {
+            if header::is_header_line(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -380,92 +353,28 @@ impl SnowmanPlugin {
 
     /// Extract links from a passage body.
     fn extract_links(&self, body: &str, body_offset: usize) -> Vec<Link> {
-        let mut links = Vec::new();
-
-        // Arrow links.
-        for caps in RE_LINK_ARROW.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else {
-                continue;
-            };
-            let Some(target_match) = caps.get(2) else {
-                continue;
-            };
-            let display = display_match.as_str().trim().to_string();
-            let target = target_match.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Pipe links.
-        for caps in RE_LINK_PIPE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(display_match) = caps.get(1) else {
-                continue;
-            };
-            let Some(target_match) = caps.get(2) else {
-                continue;
-            };
-            let display = display_match.as_str().trim().to_string();
-            let target = target_match.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Simple links (skip overlaps with arrow/pipe).
-        let known_spans: Vec<Range<usize>> = RE_LINK_ARROW
-            .captures_iter(body)
-            .chain(RE_LINK_PIPE.captures_iter(body))
-            .filter_map(|caps| {
-                let m = caps.get(0)?;
-                Some(m.start()..m.end())
-            })
-            .collect();
-
-        for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let span = m.start()..m.end();
-            let overlaps = known_spans
-                .iter()
-                .any(|s| span.start >= s.start && span.end <= s.end);
-            if !overlaps {
-                let Some(target_match) = caps.get(1) else {
-                    continue;
-                };
-                let target = target_match.as_str().trim().to_string();
-                // Filter: skip targets containing "::" — JS namespace accessor
+        // Shared span-carrying scanner (see `core_links`); the simple form
+        // has no display part. Per Snowman policy: display/target are
+        // trimmed, and targets containing `::` are skipped (JS namespace
+        // accessor syntax, not a passage name). Ambiguous content such as
+        // [[a|b->c]] yields both the arrow and the pipe reading — the
+        // same quirk the previous regex runs had.
+        scan_core_links(body)
+            .into_iter()
+            .filter_map(|l| {
+                let target = l.target(body).trim();
                 if target.contains("::") {
-                    continue;
+                    return None;
                 }
-                links.push(Link {
-                    display_text: None,
+                Some(Link {
+                    display_text: l.display(body).map(|d| d.trim().to_string()),
                     target_span: None,
-                    target,
-                    span: body_offset + m.start()..body_offset + m.end(),
+                    target: target.to_string(),
+                    span: (body_offset + l.span.start)..(body_offset + l.span.end),
                     edge_type_hint: None,
-                });
-            }
-        }
-
-        links
+                })
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -840,29 +749,10 @@ impl SnowmanPlugin {
         }
 
         // Link tokens.
-        for caps in RE_LINK_ARROW.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
+        for l in scan_core_links(body) {
             tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
-                token_type: SemanticTokenType::Link,
-                modifier: None,
-            });
-        }
-        for caps in RE_LINK_PIPE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
-                token_type: SemanticTokenType::Link,
-                modifier: None,
-            });
-        }
-        for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            tokens.push(SemanticToken {
-                start: body_offset + m.start(),
-                length: m.end() - m.start(),
+                start: body_offset + l.span.start,
+                length: l.span.end - l.span.start,
                 token_type: SemanticTokenType::Link,
                 modifier: None,
             });
@@ -1212,50 +1102,51 @@ impl FormatPlugin for SnowmanPlugin {
         // Snowman uses ERB-style templates:
         //   <%= expression %>  — inline expression (output)
         //   <% code %>         — code block (no output)
-        // Detect these at position.
+        // Detect these at position. Plain substring scans — the old
+        // `<%=\s*` / `<%` regexes bought nothing a `find` cannot.
 
         // Check for <%= ... %> (expression)
-        if let Some(m) = RE_EXPR_TAG.find(line) {
-            let start = m.start();
-            if byte_pos >= start {
-                // Find closing %>
-                if let Some(end_offset) = line[start..].find("%>") {
-                    let end = start + end_offset + 2;
-                    if byte_pos <= end {
-                        let content = &line[m.end()..start + end_offset];
-                        let name = content.split_whitespace().next().unwrap_or(content);
-                        let name_start = m.end();
-                        let name_end = name_start + name.len();
-                        return Some(MacroAtPosition {
-                            name: name.to_string(),
-                            full_range: start..end,
-                            name_range: name_start..name_end,
-                            is_unclosed: false,
-                        });
-                    }
-                } else if byte_pos >= start {
-                    // Unclosed expression
-                    let content = &line[m.end()..];
+        if let Some(start) = line.find("<%=")
+            && byte_pos >= start
+        {
+            // The old regex consumed the whitespace run after `<%=`;
+            // the macro name starts past it.
+            let after_open = start + 3;
+            let ws = line[after_open..].len() - line[after_open..].trim_start().len();
+            let name_start = after_open + ws;
+            // Find closing %>
+            if let Some(end_offset) = line[start..].find("%>") {
+                let end = start + end_offset + 2;
+                if byte_pos <= end {
+                    let content = &line[name_start..start + end_offset];
                     let name = content.split_whitespace().next().unwrap_or(content);
-                    let name_start = m.end();
                     let name_end = name_start + name.len();
                     return Some(MacroAtPosition {
                         name: name.to_string(),
-                        full_range: start..line.len(),
+                        full_range: start..end,
                         name_range: name_start..name_end,
-                        is_unclosed: true,
+                        is_unclosed: false,
                     });
                 }
+            } else {
+                // Unclosed expression
+                let content = &line[name_start..];
+                let name = content.split_whitespace().next().unwrap_or(content);
+                let name_end = name_start + name.len();
+                return Some(MacroAtPosition {
+                    name: name.to_string(),
+                    full_range: start..line.len(),
+                    name_range: name_start..name_end,
+                    is_unclosed: true,
+                });
             }
         }
 
         // Check for <% ... %> (code block)
-        // Iterate over all `<%` matches and skip any that are actually `<%=`
-        // (handled by RE_EXPR_TAG above). This replaces the original
-        // `(?!=)` lookahead that Rust's `regex` crate does not support.
-        for m in RE_CODE_TAG.find_iter(line) {
-            let start = m.start();
-            // Skip `<%=` — expression tags are handled by RE_EXPR_TAG above.
+        // Iterate over all `<%` occurrences and skip any that are actually
+        // `<%=` (handled by the expression branch above).
+        for (start, _) in line.match_indices("<%") {
+            // Skip `<%=` — expression tags are handled above.
             if line.as_bytes().get(start + 2) == Some(&b'=') {
                 continue;
             }
@@ -1263,16 +1154,17 @@ impl FormatPlugin for SnowmanPlugin {
                 // Cursor is before this match; no point checking later ones.
                 break;
             }
-            // `m.end() == start + 2` (just `<%`). Trim leading whitespace
-            // from the content the way the original `\s*` would have.
-            let raw_after_open = &line[m.end()..];
+            // The tag is just `<%` (two bytes); trim leading whitespace
+            // from the content the way the old scanner did.
+            let after_open = start + 2;
+            let raw_after_open = &line[after_open..];
             let leading_ws = raw_after_open
                 .char_indices()
                 .take_while(|(_, c)| c.is_whitespace())
                 .last()
                 .map(|(i, c)| i + c.len_utf8())
                 .unwrap_or(0);
-            let content_start = m.end() + leading_ws;
+            let content_start = after_open + leading_ws;
             if let Some(end_offset) = line[start..].find("%>") {
                 let end = start + end_offset + 2;
                 if byte_pos <= end {

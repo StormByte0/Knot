@@ -1320,16 +1320,150 @@ fn attr_directive(name: &str) -> Option<(String, HtmlAttrDirectiveKind)> {
     None
 }
 
-/// Find the FIRST case-insensitive `</name\s*>` at or after `from` —
-/// upstream's terminator (`new RegExp('<\\/' + tagName + '\\s*>', 'gim')`,
-/// parserlib.js L1724-1729; `subWikify` consumes it with
-/// `ignoreTerminatorCase: true`, L1800).
+/// Find the matching `</name\s*>` for an element whose content starts at
+/// `from` — **nesting-aware** (the fix for the StoryInterface false
+/// positives: an outer wrapper must not steal an inner same-name closer).
 ///
-/// Known upstream quirk mirrored deliberately: the search is not
-/// attribute-aware, so a closer spelled inside a LATER tag's attribute
-/// value terminates the element early — upstream renders it that way, and
-/// matching the spec-of-record beats being clever here (D1).
+/// Upstream semantics: each start tag's `subWikify` runs with its own
+/// terminator (`new RegExp('<\\/' + tagName + '\\s*>', 'gim')`,
+/// parserlib.js L1724-1729; consumed with `ignoreTerminatorCase: true`,
+/// L1800) and re-executes it from the current position after every
+/// construct it consumes — so a nested `<div>…</div>` pair consumes its
+/// own closer first and the outer element pairs with the NEXT one. A
+/// naive first-`</name>`-match search breaks exactly there: the outer
+/// wrapper claims an inner closer, and the bounded content slice handed
+/// to the recursive parse then hides every real closer below it,
+/// cascading false `html-unclosed-tag` errors through a well-formed
+/// document.
+///
+/// The scan therefore walks the source the way the recursive content
+/// parse will, and virtually consumes the same extents:
+///
+/// - **HTML comments** (`<!-- … -->`) are consumed as units — a closer
+///   spelled inside a comment never terminates (the comment arm eats the
+///   whole construct before the terminator can re-match inside it).
+/// - **Raw-text elements** (`<script>` / `<style>`, with bodies the
+///   verbatim arms swallow) are skipped whole: a closer inside a script
+///   string or a CSS comment is opaque. An unclosed raw element consumes
+///   to EOF upstream, so nothing after it can close our element either
+///   (`None`).
+/// - **Start-tag extents are scanned quote-aware**: a `</name>` or
+///   `<name>` spelled inside a quoted attribute value is part of the
+///   attribute, not markup (matches `scan_leading_tag` / html5gum, which
+///   keep quoted `>` from terminating the tag). This deliberately drops
+///   the old "closer inside a later tag's attribute value terminates the
+///   element early" reading — that shape rendered a mangled tree both
+///   here and in the browser, and no test pins it.
+/// - **Same-name start tags** that open scope (not void, not `/>`)
+///   increment a depth counter; each `</name>` first pays down that
+///   depth, and only a depth-0 `</name>` closes our element. Void and
+///   self-closing spellings never count.
+/// - **Raw-text names themselves** keep the flat first-match search:
+///   upstream's verbatim arms close `<script>`/`<style>` lazily on the
+///   FIRST closer, and those elements do not nest — the fall-through
+///   case here is exactly the Normal-path search for a raw element
+///   whose exact closer is missing (`</script >`-shaped).
 fn find_html_close_tag(text: &str, from: usize, name: &str) -> Option<Range<usize>> {
+    if raw_text_language(name).is_some() {
+        return find_html_close_tag_flat(text, from, name);
+    }
+
+    let bytes = text.as_bytes();
+    let name_bytes = name.as_bytes(); // lowercase (html5gum lowercases)
+    let mut i = from;
+    let mut depth: usize = 0;
+
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            i += 1;
+            continue;
+        }
+
+        // HTML comment — consumed as a unit; unterminated swallows the rest.
+        if bytes[i..].starts_with(b"<!--") {
+            let end = find_sub(bytes, i + 4, b"-->")?;
+            i = end + 3;
+            continue;
+        }
+
+        match bytes.get(i + 1) {
+            // Bogus markup / doctype — skipped to their `>`.
+            Some(b'!') | Some(b'?') => {
+                let Some(end) = bytes[i + 2..].iter().position(|b| *b == b'>') else {
+                    return None; // unterminated — swallows the rest as text
+                };
+                i = i + 2 + end + 1;
+                continue;
+            }
+            // End tag.
+            Some(b'/') => {
+                let name_start = i + 2;
+                let name_end = name_start + name_bytes.len();
+                if name_end <= bytes.len()
+                    && bytes[name_start..name_end].eq_ignore_ascii_case(name_bytes)
+                {
+                    let mut k = name_end;
+                    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+                        k += 1;
+                    }
+                    if k < bytes.len() && bytes[k] == b'>' {
+                        if depth == 0 {
+                            return Some(i..k + 1);
+                        }
+                        depth -= 1; // closes a nested same-name element
+                        i = k + 1;
+                        continue;
+                    }
+                }
+                // A different element's end tag — its own parse consumes
+                // it; it can never match our needle. Step past the `<`:
+                // the spelling contains no markup that matters here.
+                i += 1;
+                continue;
+            }
+            // Start tag — scan its quote-aware extent.
+            Some(c) if c.is_ascii_alphabetic() => {
+                let Some((tag_name, tag_end, self_closing)) = scan_tag_extent(bytes, i) else {
+                    // Unterminated tag at EOF (an unclosed quote, most
+                    // likely): html5gum drops the tag and the spelling
+                    // becomes text — nothing after it can close us.
+                    return None;
+                };
+                let tag_name = String::from_utf8_lossy(&tag_name).into_owned();
+
+                // Raw-text element: its body is verbatim (the raw arm or
+                // the flat Normal fallback consumes it whole).
+                if raw_text_language(&tag_name).is_some() {
+                    let term = find_raw_text_close(text, tag_end, &tag_name)
+                        .or_else(|| find_html_close_tag_flat(text, tag_end, &tag_name))?;
+                    i = term.end;
+                    continue;
+                }
+
+                // Same-name nesting: only scope-opening spellings count.
+                if tag_name.as_bytes() == name_bytes
+                    && !self_closing
+                    && !is_sugarcube_void_tag(&tag_name)
+                {
+                    depth += 1;
+                }
+                i = tag_end;
+                continue;
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+    }
+    None
+}
+
+/// The flat variant used for raw-text names and their fall-throughs: the
+/// FIRST case-insensitive `</name\s*>` at or after `from`, ignoring
+/// everything else (verbatim bodies are lazy-regex upstream — no nesting,
+/// no comment/attribute awareness).
+fn find_html_close_tag_flat(text: &str, from: usize, name: &str) -> Option<Range<usize>> {
     let bytes = text.as_bytes();
     let name_bytes = name.as_bytes();
     let mut i = from;
@@ -1352,6 +1486,65 @@ fn find_html_close_tag(text: &str, from: usize, name: &str) -> Option<Range<usiz
         } else {
             i += 1;
         }
+    }
+    None
+}
+
+/// Scan one start tag's extent from `start` (the `<`): returns the tag
+/// name bytes, the offset just past the closing `>`, and whether the tag
+/// is self-closing (`/>`).
+///
+/// Quote-aware: `>` inside a quoted attribute value does not terminate
+/// the tag (mirrors html5gum / [`knot_core::html::scan_leading_tag`]). An
+/// unterminated tag (no `>` before EOF) returns `None` — the tokenizer
+/// drops it (spec behavior; the spelling degrades to text).
+fn scan_tag_extent(bytes: &[u8], start: usize) -> Option<(Vec<u8>, usize, bool)> {
+    let len = bytes.len();
+    let mut j = start + 1;
+
+    // Tag name: ASCII letters/digits plus the legacy `-`, `:`, `_` set —
+    // enough to know whether it matches our needle; the authoritative
+    // parse is `scan_leading_tag`'s, this only needs to agree on extents.
+    let name_start = j;
+    while j < len && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'-' | b':' | b'_')) {
+        j += 1;
+    }
+    let name = bytes[name_start..j].to_vec();
+
+    let mut quote: Option<u8> = None;
+    while j < len {
+        let b = bytes[j];
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'>' => {
+                    let self_closing = j > start + 1 && bytes[j - 1] == b'/';
+                    return Some((name, j + 1, self_closing));
+                }
+                _ => {}
+            },
+        }
+        j += 1;
+    }
+    None // unterminated at EOF
+}
+
+/// Find the first occurrence of `needle` in `bytes` at or after `from`.
+fn find_sub(bytes: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || bytes.len() < needle.len() {
+        return None;
+    }
+    let mut i = from;
+    while i + needle.len() <= bytes.len() {
+        if &bytes[i..i + needle.len()] == needle {
+            return Some(i);
+        }
+        i += 1;
     }
     None
 }

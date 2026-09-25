@@ -323,9 +323,47 @@ pub fn passage_name_range_in_header(after_colons: &str) -> Option<Range<usize>> 
     Some(start..end)
 }
 
+/// Quick predicate: does this line *look like* a Twee passage header?
+///
+/// True when the line starts with the `::` prefix and at least one
+/// non-whitespace character follows it (`^::\s*\S`). This is the cheap
+/// line-level gate passage splitters use before handing the line to the
+/// full [`parse_twee_header`] — the name/tag/metadata extraction itself
+/// is always the unified parser's job.
+///
+/// Replaces the per-plugin `^::\s*\S` regexes that used to live in
+/// `twine_core`, `snowman`, `chapbook`, and `harlowe`.
+pub fn is_header_line(line: &str) -> bool {
+    let Some(after_colons) = line.strip_prefix("::") else {
+        return false;
+    };
+    // `\s*\S` — whitespace may intervene, but a non-whitespace character
+    // must follow. `trim_start` uses the same White_Space property the
+    // regex crate's `\s` uses in unicode mode.
+    !after_colons.trim_start().is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_header_line_matches_twee_headers() {
+        assert!(is_header_line(":: Start"));
+        assert!(is_header_line("::Start"));
+        assert!(is_header_line("::\t Start"));
+        assert!(is_header_line(":: StoryData {\"ifid\":\"X\"}"));
+    }
+
+    #[test]
+    fn is_header_line_rejects_non_headers() {
+        assert!(!is_header_line("::"));
+        assert!(!is_header_line(":: "));
+        assert!(!is_header_line("::\t \t"));
+        assert!(!is_header_line(": Start"));
+        assert!(!is_header_line("Start :: x"));
+        assert!(!is_header_line(""));
+    }
 
     #[test]
     fn test_simple_header() {

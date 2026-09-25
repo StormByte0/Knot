@@ -581,7 +581,6 @@ dependencies = [
  "knot-core",
  "knot-formats",
  "lsp-types",
- "regex",
  "serde",
  "serde_json",
  "tempfile",

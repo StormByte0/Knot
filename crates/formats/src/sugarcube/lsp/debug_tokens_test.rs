@@ -246,3 +246,47 @@ fn debug_js_analysis_for_property_fn() {
         }
     }
 }
+
+#[test]
+fn debug_tokens_for_html() {
+    use crate::sugarcube::ast::ParseMode;
+    use crate::sugarcube::lsp::token_builder::build_semantic_tokens;
+    use crate::sugarcube::parser::parse_passage_body;
+    use std::collections::HashSet;
+
+    let samples: &[(&str, &str)] = &[
+        ("plain-div", "<div class=\"hud\">text</div>"),
+        (
+            "storyinterface-shape",
+            "<div id=\"app\">\n\t<main id=\"area\">\n\t\t<div id=\"inner\"></div>\n\t</main>\n</div>",
+        ),
+    ];
+
+    for (label, src) in samples {
+        println!("\n=== {} === ({:?})", label, src);
+        let mut ast = parse_passage_body(src, 0, ParseMode::Normal);
+        crate::sugarcube::js::js_annotate::annotate_js(&mut ast, src, false, true, &HashSet::new());
+        let mut tokens = Vec::new();
+        build_semantic_tokens(
+            &ast.nodes,
+            &mut tokens,
+            0,
+            &HashSet::new(),
+            src,
+            crate::sugarcube::macros::SUGARCUBE_LATEST,
+        );
+        let mut sorted = tokens.clone();
+        sorted.sort_by_key(|t| t.start);
+        for t in &sorted {
+            let snippet = &src[t.start..t.start + t.length];
+            println!(
+                "  [{:3},{:3}) {:?} {:?}  {:?}",
+                t.start,
+                t.start + t.length,
+                t.token_type,
+                t.modifier,
+                snippet
+            );
+        }
+    }
+}

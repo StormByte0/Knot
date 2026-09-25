@@ -4161,6 +4161,121 @@ mod html_tag_stratum {
         assert!(diags.is_empty(), "diags: {diags:?}");
     }
 
+    /// The StoryInterface shape (issue report): nested same-name elements
+    /// (`<div>` wrappers containing further `<div>`s) must each pair with
+    /// their OWN closing tag. The first-`</name>`-match search made the
+    /// outer wrapper steal an inner closer, and the bounded content slice
+    /// then hid the real closers from every element below — cascading
+    /// false `html-unclosed-tag` errors on a well-formed document.
+    #[test]
+    fn storyinterface_nested_same_name_elements_close_correctly() {
+        let src = concat!(
+            ":: StoryInterface\n",
+            "<div id=\"app-shell\" class=\"app-shell\">\n",
+            "\t<!-- Region 1: multi-line comment\n",
+            "\t     spanning several lines. -->\n",
+            "\t<aside id=\"left-sidebar\" data-passage=\"PanelLeft\"></aside>\n",
+            "\n",
+            "\t<!-- Regions 2 + 3: Main area -->\n",
+            "\t<main id=\"main-area\" class=\"main-area\">\n",
+            "\t\t<!-- Region 2: Scene canvas. -->\n",
+            "\t\t<div id=\"scene-canvas\" class=\"scene-canvas\"></div>\n",
+            "\n",
+            "\t\t<!-- Region 3: Story content -->\n",
+            "\t\t<div id=\"passages\" class=\"story-content\"></div>\n",
+            "\t</main>\n",
+            "\n",
+            "\t<!-- Region 4: Right sidebar. -->\n",
+            "\t<aside id=\"right-sidebar\" data-passage=\"PanelRight\"></aside>\n",
+            "\n",
+            "\t<!-- Region 5: Floating window. -->\n",
+            "\t<div id=\"floating-window\" class=\"floating-window\">\n",
+            "\t\t<header class=\"fw-header\">\n",
+            "\t\t\t<nav id=\"fw-tabs\"></nav>\n",
+            "\t\t\t<button id=\"fw-close\">&times;</button>\n",
+            "\t\t</header>\n",
+            "\t\t<div id=\"fw-content\"></div>\n",
+            "\t</div>\n",
+            "</div>\n",
+        );
+        let result = parse_full(src);
+        let diags: Vec<String> = result
+            .diagnostic_groups
+            .iter()
+            .filter(|g| g.passage_name == "StoryInterface")
+            .flat_map(|g| g.diagnostics.iter().map(|d| d.message.clone()))
+            .collect();
+        assert!(diags.is_empty(), "false diagnostics: {diags:?}");
+    }
+
+    /// StoryInterface passages must be HIGHLIGHTED, not just parsed: the
+    /// interface parse mode builds the full unified AST (htmlTag stratum
+    /// included), and the token pipeline now serves it — tag names,
+    /// attribute names, delimiters, and quoted values all get tokens so
+    /// themes can color shell files. (Was a "token serving is a follow-up"
+    /// hole: StoryInterface rendered with zero highlighting.)
+    #[test]
+    fn storyinterface_passage_emits_html_tokens() {
+        let src = concat!(
+            ":: StoryInterface\n",
+            "<div id=\"app-shell\" class=\"app-shell\">\n",
+            "\t<main id=\"main-area\">\n",
+            "\t\t<div id=\"passages\" class=\"story-content\"></div>\n",
+            "\t</main>\n",
+            "</div>\n",
+        );
+        let result = parse_full(src);
+        let group = result
+            .token_groups
+            .iter()
+            .find(|g| g.passage_name == "StoryInterface")
+            .expect("StoryInterface token group");
+        let type_names: Vec<&str> = group
+            .tokens
+            .iter()
+            .map(|t| t.token_type.lsp_name())
+            .collect();
+        for expected in ["htmlTag", "htmlAttribute", "htmlDelimiter", "string"] {
+            assert!(
+                type_names.contains(&expected),
+                "StoryInterface must emit `{expected}` tokens, got: {type_names:?}"
+            );
+        }
+    }
+
+    /// The closer-search transparency rules: a `</div>` spelled inside an
+    /// HTML comment or inside a `<script>` body is NOT markup — the
+    /// comment/script is consumed as a unit before the terminator can
+    /// re-match inside it, so the outer element pairs with its real
+    /// closer.
+    #[test]
+    fn closer_inside_comment_and_script_is_opaque() {
+        let (complete, links, diags) = parse_start(
+            ":: Start\n<div><!-- </div> --><script>if (a < b) { s = \"</div>\"; }</script>[[Forest]]</div> tail\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        assert!(links.iter().any(|t| t == "Forest"), "links: {links:?}");
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
+    /// Nested same-name wrappers each consume their OWN closer: the outer
+    /// `<div>` pairs with the second `</div>`, the inner with the first —
+    /// links at both levels stay live and nothing is reported unclosed.
+    #[test]
+    fn nested_same_name_pair_their_own_closers() {
+        let (complete, links, diags) = parse_start(
+            ":: Start\n<div>a<div>b [[Inner]]</div>c [[Outer]]</div>d [[Forest]]\n:: Inner\ni\n:: Outer\no\n:: Forest\nforest\n",
+        );
+        assert!(complete);
+        for target in ["Inner", "Outer", "Forest"] {
+            assert!(
+                links.iter().any(|t| t == target),
+                "link {target} must survive, links: {links:?}"
+            );
+        }
+        assert!(diags.is_empty(), "diags: {diags:?}");
+    }
+
     #[test]
     fn data_setter_directive_stays_parseable() {
         // Upstream THROWS on `@data-setter` (evaluation directive is not

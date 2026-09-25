@@ -232,6 +232,7 @@ const SC_EVAL_ITEM: KnownAttr = KnownAttr {
 };
 
 /// Which completion family the cursor's word belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttrFamily {
     /// `@` shorthand — offers `@name` items.
     AtShorthand,
@@ -270,39 +271,61 @@ fn attr_completion_family(before_cursor: &str) -> (AttrFamily, String) {
     (AttrFamily::Plain, word.to_string())
 }
 
-/// Build the attribute-name completion items for a tag interior.
+/// The SugarCube version that introduced the evaluation attribute
+/// directives (`@attr="expr"` / `sc-eval:attr="expr"`).
+///
+/// Below this version the directives do not exist upstream, so the
+/// directive families are suppressed from completions — the plain
+/// attribute family (class, id, style, …) predates it and is always
+/// offered.
+const DIRECTIVES_ADDED_IN: crate::types::FormatVersion = crate::types::FormatVersion::new(2, 21, 0);
+
+/// Build attribute-name completions for the word in progress at the
+/// cursor, gated to the story's pinned `format-version`.
 ///
 /// `before_cursor` is the line text up to the cursor (same slice
 /// `provide_completions` already computes). Items are filtered by the
 /// word in progress so VS Code's own filtering stays consistent with
 /// the prefix families (`@cl` only ever offers `@class`-shaped items).
-pub fn build_html_attr_completions(before_cursor: &str) -> Vec<FormatCompletionItem> {
+///
+/// `story_version` decides element relevance: the `@…` / `sc-eval:…`
+/// directive families exist only from SugarCube 2.21.0, so an older
+/// story never sees them offered (the plain attributes are version-old
+/// and always relevant). Stories without a parseable version fail open
+/// to [`crate::sugarcube::macros::SUGARCUBE_LATEST`] before reaching
+/// here, so the gate only ever *narrows* to a recorded boundary.
+pub fn build_html_attr_completions(
+    before_cursor: &str,
+    story_version: crate::types::FormatVersion,
+) -> Vec<FormatCompletionItem> {
     let (family, partial) = attr_completion_family(before_cursor);
     let lower_partial = partial.to_ascii_lowercase();
     let mut items = Vec::new();
     let keep =
         |name: &str| -> bool { lower_partial.is_empty() || name.starts_with(&lower_partial) };
     match family {
-        AttrFamily::AtShorthand => {
+        AttrFamily::AtShorthand | AttrFamily::ScEval => {
+            // Directives do not exist before 2.21.0 — offering them for an
+            // older story would suggest syntax its engine cannot run.
+            if story_version < DIRECTIVES_ADDED_IN {
+                return items;
+            }
+            let prefix = if family == AttrFamily::AtShorthand {
+                "@"
+            } else {
+                "sc-eval:"
+            };
             for attr in KNOWN_ATTRS {
                 // data-setter + directive is an upstream error — never
                 // offer it (see the module docs).
                 if attr.name == "data-setter" || !keep(attr.name) {
                     continue;
                 }
-                items.push(directive_item(attr, "@"));
-            }
-        }
-        AttrFamily::ScEval => {
-            for attr in KNOWN_ATTRS {
-                if attr.name == "data-setter" || !keep(attr.name) {
-                    continue;
-                }
-                items.push(directive_item(attr, "sc-eval:"));
+                items.push(directive_item(attr, prefix));
             }
         }
         AttrFamily::Plain => {
-            if keep("sc-eval:") {
+            if story_version >= DIRECTIVES_ADDED_IN && keep("sc-eval:") {
                 items.push(FormatCompletionItem {
                     label: SC_EVAL_ITEM.name.to_string(),
                     kind: FormatCompletionKind::Keyword,
@@ -372,9 +395,14 @@ fn plain_item(attr: &KnownAttr) -> FormatCompletionItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sugarcube::macros::SUGARCUBE_LATEST;
 
     fn labels(before_cursor: &str) -> Vec<String> {
-        build_html_attr_completions(before_cursor)
+        labels_at(before_cursor, SUGARCUBE_LATEST)
+    }
+
+    fn labels_at(before_cursor: &str, version: crate::types::FormatVersion) -> Vec<String> {
+        build_html_attr_completions(before_cursor, version)
             .into_iter()
             .map(|i| i.label)
             .collect()
@@ -449,8 +477,37 @@ mod tests {
 
     #[test]
     fn empty_word_offers_the_full_plain_list() {
-        let items = build_html_attr_completions("<div ");
+        let items = build_html_attr_completions("<div ", SUGARCUBE_LATEST);
         assert!(items.len() > 30, "curated list: {}", items.len());
         assert!(items.iter().all(|i| !i.label.starts_with('@')));
+    }
+
+    /// The directive families (`@…`, `sc-eval:…`) exist only from
+    /// SugarCube 2.21.0 — an older story never sees them offered, and
+    /// the plain family is unaffected.
+    #[test]
+    fn directives_are_not_offered_before_2_21() {
+        let old = crate::types::FormatVersion::new(2, 20, 9);
+
+        // Word in progress: `@cl` — no directive items below 2.21.0.
+        let got = labels_at("<div @cl", old);
+        assert!(got.is_empty(), "no directive items below 2.21.0: {got:?}");
+
+        // `sc-eval:i` — same.
+        let got = labels_at("<span sc-eval:i", old);
+        assert!(got.is_empty(), "no sc-eval items below 2.21.0: {got:?}");
+
+        // Plain family unaffected: empty word keeps the curated list but
+        // loses the bare `sc-eval:` keyword item.
+        let got = labels_at("<div ", old);
+        assert!(!got.contains(&"sc-eval:".to_string()), "{got:?}");
+        assert!(got.contains(&"data-passage".to_string()), "{got:?}");
+        assert!(got.len() > 30, "curated plain list: {got:?}");
+        assert!(got.iter().all(|l| !l.starts_with('@')), "{got:?}");
+
+        // And the 2.21.0 boundary itself offers them.
+        let edge = crate::types::FormatVersion::new(2, 21, 0);
+        let got = labels_at("<div @cl", edge);
+        assert!(got.contains(&"@class".to_string()), "{got:?}");
     }
 }

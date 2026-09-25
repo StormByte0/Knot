@@ -49,6 +49,41 @@ filtered through the story's pinned `format-version` from StoryData.
   `format-version` (or with a version newer than the catalog tracks)
   are treated as the latest known SugarCube; unusual metadata degrades
   to the full current surface, never to bogus diagnostics.
+- **Version-filtered close-tag completions and sub-macro scoping** — the
+  `<</` close-tag fallback list and the parent-constraint map (which
+  scopes sub-macros like `<<option>>` to their containers) are filtered
+  through the same version gate, so only relevant macros and elements
+  are shown.
+- **Version-gated HTML attribute directives** — the `@attr` / `sc-eval:attr`
+  evaluation-directive completion families exist only from SugarCube
+  2.21.0 and are suppressed for older stories (plain attributes are
+  always offered).
+
+#### HTML Highlighting
+- **StoryInterface passages are now highlighted** — the interface parse
+  mode builds the full unified AST but previously served no tokens,
+  leaving shell files (e.g. `01-shell.twee`) completely unhighlighted.
+  Tag names, attribute names, `=`s, quoted values, entities, and
+  delimiters now flow through the semantic-token pipeline with the
+  `htmlTag` / `htmlAttribute` / `htmlEntity` / `htmlDelimiter` /
+  `htmlDirective` theme colors (present in both Knot Dark and Knot Light,
+  and mapped to standard TextMate scopes for third-party themes).
+
+### Fixed
+
+#### HTML Parser
+- **False `Unclosed HTML tag` errors on nested same-name elements** — the
+  close-tag search matched the FIRST `</name>` in the remaining source,
+  so an outer wrapper (`<div id="app-shell">`) stole an inner closer
+  (`<div id="scene-canvas"></div>`'s own `</div>`), and the bounded
+  content slice then hid every real closer below it — cascading bogus
+  errors on well-formed StoryInterface documents. The search is now
+  nesting-aware: same-name start tags increment a depth counter, HTML
+  comments and `<script>`/`<style>` bodies are consumed as units (a
+  closer spelled inside them is not markup), start-tag extents are
+  scanned quote-aware (a closer inside a quoted attribute value is part
+  of the attribute), and raw-text elements keep upstream's flat
+  first-closer semantics.
 
 ### Changed
 - SugarCube version data is sourced from the official v2 docs per-macro
@@ -56,6 +91,9 @@ filtered through the story's pinned `format-version` from StoryData.
   notes 2.31.0–2.37.3, and the 2.37.3 engine source itself.
 - Versions compare strictly as `(major, minor, patch)` tuples — SugarCube
   does not follow semver (2.37.0 shipped removals in a "minor" bump).
+- The language server's reported version now derives from the workspace
+  `Cargo.toml` at compile time — it can never drift from the extension
+  version again.
 
 ---
 

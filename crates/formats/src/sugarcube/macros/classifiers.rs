@@ -3,11 +3,23 @@
 //! Provides classification functions that derive sets of macro names from
 //! the builtin macro catalog, used for completion, validation, and structural
 //! analysis.
+//!
+//! ## Version discipline (catalog.rs contract)
+//!
+//! The plain functions below derive from the **union** catalog — every
+//! macro that ever existed. They are for STRUCTURAL work (parsing,
+//! pairing, zone scanning, unknown-macro detection): a removed macro
+//! must still parse and pair, which is why these stay version-blind.
+//!
+//! User-facing DISPLAY surfaces (completions, offered close tags,
+//! sub-macro scoping) must use the `_at(version)` variants, which keep
+//! only macros that exist (`Available` or `Deprecated`) at the story's
+//! pinned `format-version` — see [`super::catalog`] for the contract.
 
 use std::collections::{HashMap, HashSet};
 
 use super::catalog::builtin_macros;
-use crate::types::MacroArgKind;
+use crate::types::{FormatVersion, MacroArgKind};
 
 /// Macro names that can have a body (Container macros).
 ///
@@ -21,6 +33,19 @@ pub fn body_macro_names() -> HashSet<&'static str> {
     builtin_macros()
         .iter()
         .filter(|m| m.body != crate::types::BodyRequirement::Never)
+        .map(|m| m.name)
+        .collect()
+}
+
+/// Version-aware [`body_macro_names`]: only macros that exist at `version`
+/// (user-facing close-tag completion fallback — the "offer every block
+/// macro's close tag" list must not offer macros the story's format
+/// version never had, e.g. `<<type>>` before 2.32, `<<click>>` at 2.37+).
+pub fn body_macro_names_at(version: FormatVersion) -> HashSet<&'static str> {
+    builtin_macros()
+        .iter()
+        .filter(|m| m.body != crate::types::BodyRequirement::Never)
+        .filter(|m| m.exists_at(version))
         .map(|m| m.name)
         .collect()
 }
@@ -111,6 +136,34 @@ pub fn macro_parent_constraints() -> HashMap<&'static str, HashSet<&'static str>
     map
 }
 
+/// Version-aware [`macro_parent_constraints`]: drops sub-macros that do
+/// not exist at `version` from the map (their parent-scoped completion
+/// boost/suppression must not fire — e.g. `<<dropdown>>`'s `<<option>>`
+/// is not a relevant element before `<<dropdown>>` exists). Parents are
+/// kept as-is: they exist whenever any of their children does.
+pub fn macro_parent_constraints_at(
+    version: FormatVersion,
+) -> HashMap<&'static str, HashSet<&'static str>> {
+    let mut map: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    for m in builtin_macros() {
+        if !m.exists_at(version) {
+            continue;
+        }
+        let mut parents: Vec<&'static str> = Vec::new();
+        if let Some(p) = m.container {
+            parents.push(p);
+        }
+        if let Some(ps) = m.container_any_of {
+            parents.extend_from_slice(ps);
+        }
+        if !parents.is_empty() {
+            let set: HashSet<&'static str> = parents.into_iter().collect();
+            map.insert(m.name, set);
+        }
+    }
+    map
+}
+
 /// Macros that can navigate to a passage dynamically (variable args, runtime resolution).
 ///
 /// Derived from the catalog: macros whose args include at least one passage
@@ -183,4 +236,74 @@ pub fn inline_js_macro_names() -> HashSet<&'static str> {
     }
 
     set
+}
+
+// ---------------------------------------------------------------------------
+// Tests — the version discipline of the `_at` variants
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod version_filter_tests {
+    use super::*;
+
+    /// The union vs version-filtered sets must differ in exactly the
+    /// documented direction: `_at` is always a subset, and macros with
+    /// known lifecycle boundaries cross in/out at their recorded versions.
+    #[test]
+    fn body_macro_names_at_is_version_gated() {
+        use crate::types::FormatVersion;
+
+        let union = body_macro_names();
+        let modern = body_macro_names_at(FormatVersion::new(2, 37, 3));
+        let ancient = body_macro_names_at(FormatVersion::new(2, 0, 0));
+
+        // Subset discipline: every _at set is contained in the union.
+        for name in &modern {
+            assert!(union.contains(name), "{name} missing from union set");
+        }
+        for name in &ancient {
+            assert!(union.contains(name), "{name} missing from union set");
+        }
+
+        // `<<type>>` was added in 2.32.0 — absent from 2.0, present at latest.
+        assert!(
+            !ancient.contains("type"),
+            "<<type>> must not exist at 2.0.0"
+        );
+        assert!(modern.contains("type"), "<<type>> must exist at 2.37.3");
+
+        // `<<click>>` was removed in 2.37.0 — present at 2.0, absent at 2.37.3.
+        assert!(ancient.contains("click"), "<<click>> must exist at 2.0.0");
+        assert!(
+            !modern.contains("click"),
+            "<<click>> must be removed at 2.37.3"
+        );
+
+        // Deprecation does NOT remove: `<<timed>>`-era deprecated macros stay
+        // offered (with the deprecated flag) until their recorded removal.
+        assert!(modern.len() <= union.len());
+        assert!(ancient.len() <= union.len());
+    }
+
+    /// Parent constraints must not carry sub-macros of macros that do not
+    /// exist at the version — e.g. `<<option>>` (child of `<<dropdown>>`,
+    /// `<<listbox>>`) is irrelevant before `<<dropdown>>` exists, but the
+    /// `<<if>>` family is as old as the format.
+    #[test]
+    fn parent_constraints_at_drops_future_children() {
+        use crate::types::FormatVersion;
+
+        let modern = macro_parent_constraints_at(FormatVersion::new(2, 37, 3));
+        let ancient = macro_parent_constraints_at(FormatVersion::new(2, 0, 0));
+
+        // The if-family is 2.0.0-era: `else`/`elseif` constraints exist at
+        // every version.
+        assert!(ancient.contains_key("else"), "else must be known at 2.0.0");
+        assert!(ancient.contains_key("elseif"));
+        assert!(modern.contains_key("else"));
+
+        // The union map has children that 2.0.0 never saw.
+        let union = macro_parent_constraints();
+        assert!(union.len() > ancient.len() || union.keys().any(|k| !ancient.contains_key(k)));
+    }
 }

@@ -18,33 +18,21 @@
 //! This ensures that the LSP never overfits to a specific format when the
 //! actual story format cannot be determined. Users making new story formats
 //! still get core Twine engine highlights and handlers.
+//!
+//! Link and header recognition go through the shared, regex-free scanners
+//! ([`crate::core_links::scan_core_links`] and
+//! [`crate::header::is_header_line`]) so the fallback plugin obeys the same
+//! span-carrying-parse-result rule as the rest of the codebase.
 
 use knot_core::passage::{Link, Passage, SpecialPassageDef, StoryFormat};
 use url::Url;
 
+use crate::core_links::scan_core_links;
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatPlugin, FormatPluginMut, ParseResult, PassageTokenGroup, SemanticToken,
     SemanticTokenModifier, SemanticTokenType,
 };
-
-// ---------------------------------------------------------------------------
-// Regex patterns (LazyLock for one-time compilation)
-// ---------------------------------------------------------------------------
-
-use regex::Regex;
-use std::sync::LazyLock;
-
-static RE_LINK_SIMPLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|>-]+?)\]\]").unwrap());
-static RE_LINK_ARROW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").unwrap());
-static RE_LINK_PIPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").unwrap());
-/// Detect passage header lines: starts with `::` followed by at least one
-/// non-whitespace character. The actual name/tag/metadata extraction is done
-/// by the unified `parse_twee_header()` in `crate::header`.
-static RE_HEADER_DETECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^::\s*\S").unwrap());
 
 // ---------------------------------------------------------------------------
 // Plugin struct
@@ -81,7 +69,7 @@ impl TwineCorePlugin {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
-            if RE_HEADER_DETECT.is_match(line) {
+            if header::is_header_line(line) {
                 header_spans.push((line_start, line_end));
             }
 
@@ -133,58 +121,20 @@ impl TwineCorePlugin {
     // -----------------------------------------------------------------------
 
     fn extract_links(body_text: &str, body_offset: usize) -> Vec<Link> {
-        let mut links = Vec::new();
-
-        // Arrow-style links: [[Display->Target]]
-        for caps in RE_LINK_ARROW.captures_iter(body_text) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().to_string();
-            let target = caps.get(2).unwrap().as_str().to_string();
-            links.push(Link {
-                display_text: Some(display),
+        // The shared span-carrying scanner (see the module docs) — the
+        // simple form has no display part; arrow/pipe forms carry one.
+        // Span/coverage quirks of the previous regex trio are pinned by
+        // the core_links tests.
+        scan_core_links(body_text)
+            .into_iter()
+            .map(|l| Link {
+                display_text: l.display(body_text).map(str::to_string),
                 target_span: None,
-                target,
-                span: (body_offset + m.start())..(body_offset + m.end()),
+                target: l.target(body_text).to_string(),
+                span: (body_offset + l.span.start)..(body_offset + l.span.end),
                 edge_type_hint: None,
-            });
-        }
-
-        // Pipe-style links: [[Display|Target]]
-        for caps in RE_LINK_PIPE.captures_iter(body_text) {
-            let m = caps.get(0).unwrap();
-            let display = caps.get(1).unwrap().as_str().to_string();
-            let target = caps.get(2).unwrap().as_str().to_string();
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: (body_offset + m.start())..(body_offset + m.end()),
-                edge_type_hint: None,
-            });
-        }
-
-        // Simple links: [[Target]]
-        for caps in RE_LINK_SIMPLE.captures_iter(body_text) {
-            let m = caps.get(0).unwrap();
-            // Skip if this match is already covered by an arrow/pipe link
-            let start = body_offset + m.start();
-            if links
-                .iter()
-                .any(|l| l.span.start <= start && l.span.end >= body_offset + m.end())
-            {
-                continue;
-            }
-            let target = caps.get(1).unwrap().as_str().to_string();
-            links.push(Link {
-                display_text: None,
-                target_span: None,
-                target,
-                span: start..(body_offset + m.end()),
-                edge_type_hint: None,
-            });
-        }
-
-        links
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------

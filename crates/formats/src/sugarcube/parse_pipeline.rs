@@ -189,9 +189,25 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
                 body_offset_in_passage,
             ));
         } else if matches!(mode, ParseMode::Interface) {
-            // StoryInterface body is HTML. Token serving for it is still a
-            // follow-up (plan.md 2.4/4.1 worklog note) — no tokens emitted,
-            // no diagnostic raised.
+            // StoryInterface bodies are HTML-with-macros — the exact
+            // constructs the unified-AST token builder already emits for
+            // Normal passages (the htmlTag stratum: tag names, attribute
+            // names, `=`s, quoted values, entities, delimiters, plus any
+            // `<<macros>>` and `$vars` inside). The interface AST is fully
+            // built (parse + zoning + JS annotation all run above), so the
+            // only thing this arm ever lacked was serving the tokens —
+            // the old "token serving is a follow-up" hole left shell
+            // files like `01-shell.twee` completely unhighlighted.
+            let custom_names: std::collections::HashSet<String> =
+                registry.custom_macros().names().cloned().collect();
+            super::token_builder::build_semantic_tokens(
+                &passage_ast.nodes,
+                &mut passage_tokens,
+                body_offset_in_passage,
+                &custom_names,
+                &cp.body_text,
+                story_version,
+            );
         } else {
             // Collect custom macro names for Function token differentiation
             let custom_names: std::collections::HashSet<String> =

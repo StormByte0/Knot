@@ -22,6 +22,7 @@ use std::ops::Range;
 use std::sync::LazyLock;
 use url::Url;
 
+use crate::core_links::{CoreLinkForm, scan_core_links};
 use crate::header::{self, TweeHeader};
 use crate::plugin::{
     FormatDiagnostic, FormatDiagnosticSeverity, FormatPlugin, FormatPluginMut, ParseResult,
@@ -53,18 +54,6 @@ enum TweeToken {
 // Regex statics
 // ---------------------------------------------------------------------------
 
-/// Regex for simple links: `[[Target]]`
-static RE_LINK_SIMPLE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]|>-]+?)\]\]").expect("invalid regex for RE_LINK_SIMPLE")
-});
-/// Regex for arrow links: `[[Display->Target]]`
-static RE_LINK_ARROW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)->([^\]]+?)\]\]").expect("invalid regex for RE_LINK_ARROW")
-});
-/// Regex for pipe links: `[[Display|Target]]`
-static RE_LINK_PIPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[\[([^\]]+?)\|([^\]]+?)\]\]").expect("invalid regex for RE_LINK_PIPE")
-});
 /// Regex for Harlowe link changer: `(link:"text")[[Target]]`
 static RE_LINK_CHANGER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\(link:\s*"([^"]+)"\s*\)\[\[([^\]]+?)\]\]"#)
@@ -370,81 +359,39 @@ impl HarlowePlugin {
             });
         }
 
-        // Arrow-style links: [[Display->Target]]
-        for caps in RE_LINK_ARROW.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(match1) = caps.get(1) else { continue };
-            let Some(match2) = caps.get(2) else { continue };
-            let display = match1.as_str().trim().to_string();
-            let target = match2.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Pipe-style links: [[Display|Target]]
-        for caps in RE_LINK_PIPE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let Some(match1) = caps.get(1) else { continue };
-            let Some(match2) = caps.get(2) else { continue };
-            let display = match1.as_str().trim().to_string();
-            let target = match2.as_str().trim().to_string();
-            // Filter: skip targets containing "::" — JS namespace accessor
-            if target.contains("::") {
-                continue;
-            }
-            links.push(Link {
-                display_text: Some(display),
-                target_span: None,
-                target,
-                span: body_offset + m.start()..body_offset + m.end(),
-                edge_type_hint: None,
-            });
-        }
-
-        // Simple links: [[Target]]
-        // Skip overlaps with arrow/pipe/changer links.
-        let known_spans: Vec<Range<usize>> = RE_LINK_ARROW
-            .captures_iter(body)
-            .chain(RE_LINK_PIPE.captures_iter(body))
-            .chain(RE_LINK_CHANGER.captures_iter(body))
-            .filter_map(|caps| {
-                let m = caps.get(0)?;
-                Some(m.start()..m.end())
-            })
+        // Changer spans (body-relative) — a simple link inside a
+        // changer's [[...]] is the changer's own target, already covered.
+        let changer_spans: Vec<Range<usize>> = links
+            .iter()
+            .map(|l| (l.span.start - body_offset)..(l.span.end - body_offset))
             .collect();
 
-        for caps in RE_LINK_SIMPLE.captures_iter(body) {
-            let Some(m) = caps.get(0) else { continue };
-            let span = m.start()..m.end();
-            let overlaps = known_spans
-                .iter()
-                .any(|s| span.start >= s.start && span.end <= s.end);
-            if !overlaps {
-                let Some(match1) = caps.get(1) else { continue };
-                let target = match1.as_str().trim().to_string();
-                // Filter: skip targets containing "::" — this is JavaScript
-                // namespace accessor syntax (e.g., Use::Operation), not a
-                // Twine passage name.
-                if target.contains("::") {
-                    continue;
-                }
-                links.push(Link {
-                    display_text: None,
-                    target_span: None,
-                    target,
-                    span: body_offset + m.start()..body_offset + m.end(),
-                    edge_type_hint: None,
-                });
+        // Arrow, pipe, and simple links via the shared span-carrying
+        // scanner (see `core_links`). Behavior parity with the previous
+        // regex runs: ambiguous content such as [[a|b->c]] yields both
+        // the arrow and the pipe interpretation, and simple links inside
+        // a changer span are skipped (the old known_spans exclusion).
+        for l in scan_core_links(body) {
+            let target = l.target(body).trim();
+            // Filter: skip targets containing "::" — this is JavaScript
+            // namespace accessor syntax, not a Twine passage name.
+            if target.contains("::") {
+                continue;
             }
+            if l.form == CoreLinkForm::Simple
+                && changer_spans
+                    .iter()
+                    .any(|s| l.span.start >= s.start && l.span.end <= s.end)
+            {
+                continue;
+            }
+            links.push(Link {
+                display_text: l.display(body).map(|d| d.trim().to_string()),
+                target_span: None,
+                target: target.to_string(),
+                span: body_offset + l.span.start..body_offset + l.span.end,
+                edge_type_hint: None,
+            });
         }
 
         // Named hooks are also link targets: [hookname] can be reached via

@@ -29,6 +29,7 @@
 //! that story formats can be hotswapped based on workspace configuration.
 
 pub mod chapbook;
+pub mod core_links;
 pub mod core_specials;
 pub mod format_meta;
 pub mod harlowe;
@@ -58,3 +59,5 @@ pub use types::{
 mod integration_tests;
 #[cfg(test)]
 mod property_tests;
+#[cfg(test)]
+mod user_report_regression;

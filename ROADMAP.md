@@ -39,6 +39,16 @@ Each format requires dedicated implementations for:
 
 Estimated effort: if it's anything like sugarcube, several months of dedicated development per format.
 
+> **Note on link/header scanning (2026-09):** the base Twine constructs —
+> `[[...]]` links (`simple` / `->` / `|` forms) and passage-header line
+> detection — no longer live in per-plugin regexes. They go through the
+> shared, span-carrying scanners in `knot-formats/src/core_links.rs`
+> (`scan_core_links`) and `header.rs` (`is_header_line`), which all
+> plugins (including the Twine Core fallback) consume. The regexes that
+> remain in the Harlowe/Chapbook/Snowman skeletons are format-semantic
+> scanners (variable tracking, modifiers, hooks, macro calls); they will
+> be absorbed by the per-format parser rewrites tracked above.
+
 ---
 
 ## HTML & CSS Parser / Linter Integration

@@ -1,4 +1,4 @@
-# Knot — A Twine IDE (Beta)
+# Knot — A Twine IDE
 
 > **Looking for help, docs, or updates?** Visit the official site: **<https://stormbyte0.github.io/Knot/>** — documentation, feature walkthroughs, and the latest news all live there. For community help, see [Support & Community](#-support--community) below.
 
@@ -6,7 +6,7 @@ Knot is a next-generation development environment for Twine and Twee interactive
 
 Unlike tooling that bolts regular expressions onto a text editor, Knot actually understands how a Twine project is structured. It models your story as a directed graph of passages connected by links, tracks variables as they flow across passages, and turns that structural understanding into navigation, diagnostics, and insight that pattern matching alone cannot provide. The headline features today are a **variable tracker**, **passage-based diagnostics**, and a **Story Map** for visualizing and navigating your project — with more to come.
 
-> **⚠️ Early development.** Knot is still early in development and you may run into bugs or rough edges. Only **SugarCube 2** has full language features today (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** are placeholder implementations — the build pipeline works for every format because it delegates to Tweego, which is format-agnostic, but the language features are not yet built out. Expect breaking changes until a stable release ships.
+> **⚠️ Early development.** Knot is still early in development and you may run into bugs or rough edges. Only **SugarCube 2** has full language features today (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** are placeholder implementations — the build pipeline works for every format because it delegates to Tweego, which is format-agnostic, but the language features are not yet built out. Knot v2.1.0 is the first full stable release of the v2 line — the SugarCube 2 surface is stable; expect iteration on the remaining formats.
 >
 > This is also the best time to get involved. The codebase is still small and the technical debt is low, so feature requests and design input from early users have an outsized impact on where Knot goes. If there's something you want Knot to do, say so now — see [Support & Community](#-support--community) for where to chime in.
 
