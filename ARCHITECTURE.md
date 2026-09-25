@@ -66,9 +66,16 @@ plugins produce and all analysis runs against:
   and edges are links. Supports incremental surgery (add/remove
   passages and links without rebuilding the whole graph), reachability
   analysis (for dead-end and unreachable detection), and SCC
-  computation (Tarjan's algorithm). Note: SCC data is computed and
-  exported to the client, but the Story Map webview does not yet
-  render game loop highlighting — see ROADMAP.md.
+  computation (Tarjan's algorithm). Reachability is multi-rooted: it
+  runs from the start passage (from StoryData) plus every passage
+  marked `reachable` in its header metadata — manual entry points
+  for navigation that is opaque to static analysis (links aliased
+  through variables), so dynamic stories don't get false
+  "unreachable" diagnostics. The flag is tool-level state in the
+  per-passage metadata block (the engine never sees it), not a story
+  tag. Note: SCC data is computed and exported to the client, but the
+  Story Map webview does not yet render game loop highlighting — see
+  ROADMAP.md.
 - **`Analysis`** — runs the diagnostic passes over the workspace:
   broken links, unreachable passages, uninitialized variables, unused
   variables, redundant writes, duplicate passage names, empty passages,

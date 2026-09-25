@@ -222,6 +222,68 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // set_reachable_in_header
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_reachable_new_json() {
+        let result = set_reachable_in_header(":: Start");
+        assert_eq!(result, ":: Start {\"reachable\":true}");
+    }
+
+    #[test]
+    fn test_set_reachable_merges_existing_metadata() {
+        let result = set_reachable_in_header(":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}");
+        // The flag merges into the existing block — position and the
+        // unknown (preserved) key survive, no second JSON block appears.
+        assert!(result.starts_with(":: Start {"), "Result: {}", result);
+        assert!(result.contains("\"reachable\":true"), "Result: {}", result);
+        assert!(
+            result.contains("\"position\":\"50,75\""),
+            "Result: {}",
+            result
+        );
+        assert!(result.contains("\"ifid\":\"ABC\""), "Result: {}", result);
+    }
+
+    #[test]
+    fn test_set_reachable_preserves_tags() {
+        let result = set_reachable_in_header(":: Start [important] {\"position\":\"1,2\"}");
+        assert!(result.contains("[important]"), "Result: {}", result);
+        assert!(result.contains("\"reachable\":true"), "Result: {}", result);
+        assert!(
+            result.contains("\"position\":\"1,2\""),
+            "Result: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_set_reachable_overrides_false_and_is_idempotent() {
+        // An explicit false flips to true…
+        let once = set_reachable_in_header(":: Start {\"reachable\":false}");
+        assert!(once.contains("\"reachable\":true"), "Result: {}", once);
+        assert!(!once.contains("false"), "Result: {}", once);
+
+        // …and re-applying never duplicates the key (single JSON block,
+        // single flag occurrence).
+        let twice = set_reachable_in_header(&once);
+        assert_eq!(twice, once, "second application must be a no-op");
+        assert_eq!(
+            twice.matches("\"reachable\":").count(),
+            1,
+            "Result: {}",
+            twice
+        );
+    }
+
+    #[test]
+    fn test_set_reachable_trims_trailing_whitespace() {
+        let result = set_reachable_in_header(":: Start   ");
+        assert_eq!(result, ":: Start {\"reachable\":true}");
+    }
+
+    // -----------------------------------------------------------------------
     // find_passage_header_range
     // -----------------------------------------------------------------------
 

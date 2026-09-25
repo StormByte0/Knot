@@ -23,6 +23,8 @@ export interface KnotGraphNode {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
+  /** Manual reachability entry point (header metadata `reachable`). */
+  is_entry?: boolean;
   position_x?: number;
   position_y?: number;
   group?: string;
@@ -110,6 +112,8 @@ export interface PassageNodeData extends Record<string, unknown> {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
+  /** Manual reachability entry point (header metadata `reachable`). */
+  is_entry: boolean;
   is_dead_end: boolean;
   color: string;
   metadata_color?: string;

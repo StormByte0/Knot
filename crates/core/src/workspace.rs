@@ -523,6 +523,48 @@ impl Workspace {
         None
     }
 
+    /// Collect the reachability roots: the start passage (from StoryData
+    /// metadata, defaulting to `"Start"`) plus every passage marked
+    /// `reachable` in its header metadata.
+    ///
+    /// Manual entries exist because links aliased through variables
+    /// (`<<goto $next>>`) are opaque to static analysis — authors mark the
+    /// top-level entry passages, and the downward reachability analysis
+    /// runs from all roots. See
+    /// [`crate::passage::Passage::manual_reachable`] for the flag's
+    /// documentation.
+    pub fn reachability_roots(&self) -> Vec<String> {
+        let start = self
+            .metadata
+            .as_ref()
+            .map(|m| m.start_passage.as_str())
+            .unwrap_or("Start");
+        let mut roots = vec![start.to_string()];
+        for doc in self.documents() {
+            for passage in &doc.passages {
+                if passage.is_manual_entry() && passage.name != start {
+                    roots.push(passage.name.clone());
+                }
+            }
+        }
+        roots
+    }
+
+    /// Detect unreachable passages considering ALL reachability roots:
+    /// the start passage plus every manual `reachable` metadata
+    /// entry.
+    ///
+    /// This is the preferred entry point over calling
+    /// [`PassageGraph::detect_unreachable`] directly — it keeps the
+    /// false-positive suppression for variable-aliased navigation working
+    /// everywhere (diagnostics, code actions, passage diagnostics, the
+    /// Story Map export).
+    pub fn detect_unreachable_passages(&self) -> Vec<GraphDiagnostic> {
+        let roots = self.reachability_roots();
+        let root_refs: Vec<&str> = roots.iter().map(String::as_str).collect();
+        self.graph.detect_unreachable_from_roots(&root_refs)
+    }
+
     /// Remove a document and update the graph by removing all passages
     /// that belonged to it.
     ///

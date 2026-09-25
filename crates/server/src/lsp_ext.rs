@@ -59,6 +59,13 @@ pub struct KnotGraphNode {
     pub is_unreachable: bool,
     /// Whether this is the story's start passage (parsed from StoryData).
     pub is_start: bool,
+    /// Whether this passage is a manual reachability entry point
+    /// (header metadata `reachable`).
+    ///
+    /// Manual entries act as additional reachability roots alongside the
+    /// start passage — used by the Story Map to render them distinctly.
+    #[serde(default)]
+    pub is_entry: bool,
     /// The x-coordinate of the passage in the Twine visual editor, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_x: Option<f64>,

@@ -1174,6 +1174,7 @@ mod tests {
             header_start: 0,
             name_start: 0,
             metadata_json: None,
+            line: 0,
             name_text_raw: "Game".to_string(),
             tags_raw: String::new(),
         };
@@ -1295,6 +1296,7 @@ mod tests {
                 header_start: 0,
                 name_start: 3,
                 metadata_json: None,
+                line: 0,
                 name_text_raw: "Test".to_string(),
                 tags_raw: String::new(),
             },

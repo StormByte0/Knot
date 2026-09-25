@@ -145,6 +145,10 @@ pub(super) fn parse_full(plugin: &mut SugarCubePlugin, uri: &Url, text: &str) ->
             passage_build::build_passage(cp, &passage_ast, body_offset_in_passage, passage_head);
         passage.span = 0..(header_line_end - passage_head + cp.body_text.len());
         passage.passage_offset = passage_head;
+        // Copy the header's tooling metadata (position/group/color/size) and
+        // line number onto the model, so the Story Map export reads it from
+        // the passage instead of rescanning raw document text.
+        crate::header::apply_header_metadata(&mut passage, &cp.header);
 
         // Build passage.vars from the unified AST (including js_analysis + script_js_analysis)
         passage.vars =
@@ -575,6 +579,7 @@ pub fn parse_single(
                     header_start: 0,
                     name_start: 0,
                     metadata_json: None,
+                    line: 0,
                     name_text_raw: passage_name.to_string(),
                     tags_raw: String::new(),
                 }
@@ -589,6 +594,7 @@ pub fn parse_single(
             header_start: 0,
             name_start: 0,
             metadata_json: None,
+            line: 0,
             name_text_raw: passage_name.to_string(),
             tags_raw: String::new(),
         }
@@ -665,8 +671,28 @@ pub fn parse_single(
             body_offset_in_passage,
         );
     } else if matches!(mode, ParseMode::Interface) {
-        // StoryInterface body is HTML. Token serving still a follow-up —
-        // no tokens emitted.
+        // StoryInterface bodies are HTML-with-macros — same builder as the
+        // Normal arm and as the full-parse path (parse_full's Interface
+        // arm). The interface AST is fully built above (parse + zoning +
+        // JS annotation all run), so the incremental path serves body
+        // tokens too. The old "token serving still a follow-up" stub here
+        // emitted header-only tokens, and since merge_incremental_tokens
+        // REPLACES the edited passage's token group wholesale, every
+        // WithinPassage keystroke wiped the StoryInterface body
+        // highlighting until the next full re-parse restored it — the
+        // exact "hiccups while editing" residue from when this mode was
+        // excluded from token serving.
+        let registry = plugin.registry();
+        let custom_names: std::collections::HashSet<String> =
+            registry.custom_macros().names().cloned().collect();
+        super::token_builder::build_semantic_tokens(
+            &passage_ast.nodes,
+            &mut passage_tokens,
+            body_offset_in_passage,
+            &custom_names,
+            &cp.body_text,
+            plugin.effective_story_version(),
+        );
     } else {
         // Collect custom macro names for Function token differentiation
         let registry = plugin.registry();
@@ -848,6 +874,7 @@ pub(super) fn parse_script_file(
             header_start: 0,
             name_start: 0,
             metadata_json: None,
+            line: 0,
             name_text_raw: passage_name.clone(),
             tags_raw: String::new(),
         },

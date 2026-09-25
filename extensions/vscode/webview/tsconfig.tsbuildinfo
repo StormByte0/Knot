@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/global.d.ts","./src/main.tsx","./src/types.ts","./src/components/legend.tsx","./src/components/storymap.tsx","./src/components/toolbar.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/global.d.ts","./src/main.tsx","./src/types.ts","./src/components/Legend.tsx","./src/components/StoryMap.tsx","./src/components/Toolbar.tsx"],"version":"5.9.3"}

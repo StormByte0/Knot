@@ -39,6 +39,18 @@ export default function Legend() {
         Start
       </div>
       <div className="legend-item">
+        <span
+          className="legend-dot"
+          style={{
+            background: 'transparent',
+            border: '2px solid #2ecc71',
+            boxShadow: '0 0 0 2px rgba(46,125,50,0.35)',
+          }}
+          title="Passage marked `reachable` in its header metadata — a manual reachability entry point"
+        />
+        Manual entry
+      </div>
+      <div className="legend-item">
         <span className="legend-dot" style={{ background: '#e65100' }} />
         Special
       </div>

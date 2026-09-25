@@ -33,6 +33,8 @@
 
 use std::ops::Range;
 
+use knot_core::passage::Passage;
+
 /// The result of parsing a Twee 3 passage header line.
 ///
 /// All byte offsets are relative to the start of the full source text
@@ -50,6 +52,15 @@ pub struct TweeHeader {
     /// The raw JSON metadata string (e.g., `{"position":"100,200"}`),
     /// if present. `None` if no `{...}` block was found.
     pub metadata_json: Option<String>,
+    /// The 0-based **line index** of this header line within the parsed
+    /// text.
+    ///
+    /// `parse_twee_header` itself has no line context, so it always sets
+    /// this to 0; the passage splitters (which walk whole documents and
+    /// know line boundaries) overwrite it with the real index. Passage-
+    /// isolated parses (the incremental single-passage path) leave it at 0
+    /// — the server recomputes the line from the passage offset there.
+    pub line: u32,
     /// The text between `::` and the first `[` or `{`, preserving the
     /// original whitespace for accurate name-end offset computation.
     /// Useful for semantic token generation.
@@ -113,6 +124,7 @@ pub fn parse_twee_header(line: &str, offset: usize) -> Option<TweeHeader> {
         header_start: offset,
         name_start,
         metadata_json,
+        line: 0,
         name_text_raw: name_text.to_string(),
         tags_raw: rest_after_json.to_string(),
     })
@@ -341,6 +353,151 @@ pub fn is_header_line(line: &str) -> bool {
     // must follow. `trim_start` uses the same White_Space property the
     // regex crate's `\s` uses in unicode mode.
     !after_colons.trim_start().is_empty()
+}
+
+// ---------------------------------------------------------------------------
+// Header metadata (Story Map tooling block)
+// ---------------------------------------------------------------------------
+
+/// Header metadata key for the manual reachability entry flag
+/// (`{"reachable":true}`).
+///
+/// Reachability is a property of Knot's static analysis, not of the
+/// story engine: the engine and other Twee tools treat this as an
+/// unknown (preserved) metadata key. That is why the flag lives in the
+/// header's JSON metadata block instead of the engine-facing tag
+/// bracket — tags are part of the story, metadata is tool state.
+const REACHABLE_KEY: &str = "reachable";
+
+/// Tooling-relevant fields parsed from a header's `{...}` JSON metadata
+/// block (the Twee 3 block that Twine writes for its visual editor).
+///
+/// Positions/sizes accept all serialized shapes found in the wild:
+/// `"x,y"` strings (Twine 2 twee output), `{"x":..,"y":..}` objects, and
+/// `[x, y]` arrays (Twine 2 HTML archive JSON). Each field is parsed
+/// independently — one malformed field never hides the others.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HeaderMetadata {
+    /// `{"position":"100,200"}` — canvas position in the Twine editor.
+    pub position: Option<(f64, f64)>,
+    /// `{"group":"Intro"}` — manual Story Map group assignment.
+    pub group: Option<String>,
+    /// `{"color":"#ff6600"}` — Story Map node color (hex or named).
+    pub color: Option<String>,
+    /// `{"size":"100,100"}` — Twine editor node size (width, height).
+    pub size: Option<(f64, f64)>,
+    /// `{"reachable":true}` — manual reachability entry flag
+    /// (a tool-level property; see [`Passage::manual_reachable`]).
+    /// Only JSON booleans are accepted; anything else parses as `None`.
+    pub reachable: Option<bool>,
+}
+
+/// Parse a two-number value from any of its serialized shapes:
+/// `"a,b"` string, `{"x":..,"y":..}`-keyed object (keys given by
+/// `first`/`second`), or `[a, b]` array.
+fn parse_number_pair(value: &serde_json::Value, first: &str, second: &str) -> Option<(f64, f64)> {
+    if let Some(s) = value.as_str() {
+        let (a, b) = s.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    } else if let Some(obj) = value.as_object() {
+        let a = obj.get(first).and_then(serde_json::Value::as_f64)?;
+        let b = obj.get(second).and_then(serde_json::Value::as_f64)?;
+        Some((a, b))
+    } else if let Some(arr) = value.as_array()
+        && arr.len() >= 2
+    {
+        Some((arr[0].as_f64()?, arr[1].as_f64()?))
+    } else {
+        None
+    }
+}
+
+/// Parse the tooling metadata from a [`TweeHeader`]'s JSON block.
+///
+/// Returns the default (all-`None`) value when no metadata block is
+/// present or the block isn't valid JSON — `parse_twee_header` already
+/// guarantees `metadata_json` only holds valid JSON, so this is purely
+/// defensive. Fields are parsed independently: a malformed `position`
+/// doesn't prevent `group`/`color`/`size` from being read.
+pub fn parse_header_metadata(header: &TweeHeader) -> HeaderMetadata {
+    let Some(json) = header.metadata_json.as_deref() else {
+        return HeaderMetadata::default();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return HeaderMetadata::default();
+    };
+    HeaderMetadata {
+        position: value
+            .get("position")
+            .and_then(|v| parse_number_pair(v, "x", "y")),
+        group: value
+            .get("group")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        color: value
+            .get("color")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        size: value
+            .get("size")
+            .and_then(|v| parse_number_pair(v, "width", "height"))
+            // Some Twee editors write width/height as separate top-level
+            // fields instead of a "size" sub-value.
+            .or_else(|| {
+                let w = value.get("width").and_then(serde_json::Value::as_f64)?;
+                let h = value.get("height").and_then(serde_json::Value::as_f64)?;
+                Some((w, h))
+            }),
+        reachable: value
+            .get(REACHABLE_KEY)
+            .and_then(serde_json::Value::as_bool),
+    }
+}
+
+/// Copy the header's parsed metadata (position, group, color, size, the
+/// `reachable` flag) and line number onto a [`Passage`].
+///
+/// This is the single wiring point every format plugin's full-document
+/// parse goes through after building a `Passage`, so the Story Map never
+/// has to rescan raw document text to recover Twine editor metadata.
+pub fn apply_header_metadata(passage: &mut Passage, header: &TweeHeader) {
+    let meta = parse_header_metadata(header);
+    passage.position = meta.position;
+    passage.group = meta.group;
+    passage.color = meta.color;
+    passage.size = meta.size;
+    passage.manual_reachable = meta.reachable;
+    passage.line = header.line;
+}
+
+/// Compute the 0-based line index for each `(start, _end)` header span.
+///
+/// Single O(text) pass: the line index of a header is the number of
+/// `\n` bytes before its start offset. `spans` must be sorted by start
+/// offset (all splitters produce them in document order).
+///
+/// Used by the tokenizer-based splitters (SugarCube, Harlowe) that walk
+/// with logos and don't track line numbers while scanning; the
+/// `text.lines()`-based splitters count lines inline instead.
+pub fn header_line_indices(text: &str, spans: &[(usize, usize)]) -> Vec<u32> {
+    let mut lines = Vec::with_capacity(spans.len());
+    let mut line = 0u32;
+    let mut next_span = 0usize;
+    for (i, b) in text.bytes().enumerate() {
+        while next_span < spans.len() && spans[next_span].0 == i {
+            lines.push(line);
+            next_span += 1;
+        }
+        if b == b'\n' {
+            line += 1;
+        }
+    }
+    // Headers at the very end of the text (no trailing newline).
+    while next_span < spans.len() {
+        lines.push(line);
+        next_span += 1;
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -611,5 +768,127 @@ mod tests {
         let (rest, json_str) = extract_json_block_public(line.trim_end()).unwrap();
         assert!(json_str.contains("nested"));
         assert_eq!(rest, ":: Name [tag]");
+    }
+
+    // ── Header metadata (Story Map tooling block) ─────────────────────────
+
+    fn meta_header(line: &str) -> TweeHeader {
+        parse_twee_header(line, 0).unwrap()
+    }
+
+    #[test]
+    fn metadata_parse_position_string_form() {
+        let m = parse_header_metadata(&meta_header(r#":: A {"position":"100,200"}"#));
+        assert_eq!(m.position, Some((100.0, 200.0)));
+        assert_eq!(m.group, None);
+        assert_eq!(m.color, None);
+        assert_eq!(m.size, None);
+    }
+
+    #[test]
+    fn metadata_parse_position_object_and_array_forms() {
+        let m = parse_header_metadata(&meta_header(r#":: A {"position":{"x":12.5,"y":-3}}"#));
+        assert_eq!(m.position, Some((12.5, -3.0)));
+        // The array form (Twine 2 HTML archive JSON) — must be nested inside
+        // the metadata object, since the block itself has to end with `}`.
+        let m = parse_header_metadata(&meta_header(r#":: A {"position":[10, 20],"group":"G"}"#));
+        assert_eq!(m.position, Some((10.0, 20.0)));
+        assert_eq!(m.group.as_deref(), Some("G"));
+    }
+
+    #[test]
+    fn metadata_parse_all_fields() {
+        let m = parse_header_metadata(&meta_header(
+            r##":: A [tags] {"position":"1,2","group":"Intro","color":"#ff6600","size":"100,50"}"##,
+        ));
+        assert_eq!(m.position, Some((1.0, 2.0)));
+        assert_eq!(m.group.as_deref(), Some("Intro"));
+        assert_eq!(m.color.as_deref(), Some("#ff6600"));
+        assert_eq!(m.size, Some((100.0, 50.0)));
+    }
+
+    #[test]
+    fn metadata_parse_size_object_and_separate_fields() {
+        let m = parse_header_metadata(&meta_header(r#":: A {"size":{"width":30,"height":40}}"#));
+        assert_eq!(m.size, Some((30.0, 40.0)));
+        let m = parse_header_metadata(&meta_header(r#":: A {"width":30,"height":40}"#));
+        assert_eq!(m.size, Some((30.0, 40.0)));
+    }
+
+    #[test]
+    fn metadata_parse_fields_are_independent() {
+        // A malformed position must NOT hide the other fields (the old
+        // server-side parser aborted on the first bad field).
+        let m = parse_header_metadata(&meta_header(
+            r#":: A {"position":"not,anumber","group":"G","color":"red"}"#,
+        ));
+        assert_eq!(m.position, None);
+        assert_eq!(m.group.as_deref(), Some("G"));
+        assert_eq!(m.color.as_deref(), Some("red"));
+    }
+
+    #[test]
+    fn metadata_parse_absent_or_invalid() {
+        let m = parse_header_metadata(&meta_header(":: A [tag]"));
+        assert_eq!(m, HeaderMetadata::default());
+        // Metadata block that isn't valid JSON never becomes metadata_json,
+        // so this header has none.
+        let hdr = meta_header(":: A {not json}");
+        assert!(hdr.metadata_json.is_none());
+        assert_eq!(parse_header_metadata(&hdr), HeaderMetadata::default());
+    }
+
+    #[test]
+    fn metadata_parse_reachable_flag() {
+        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":true,"position":"1,2"}"#));
+        assert_eq!(m.reachable, Some(true));
+        assert_eq!(m.position, Some((1.0, 2.0)));
+
+        // Explicit false is parsed (and simply means "not an entry").
+        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":false}"#));
+        assert_eq!(m.reachable, Some(false));
+
+        // Non-boolean values are ignored, not guessed.
+        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":"true"}"#));
+        assert_eq!(m.reachable, None);
+    }
+
+    #[test]
+    fn apply_header_metadata_copies_fields_and_line() {
+        let mut passage = Passage::new("A".to_string(), 0..10);
+        let mut hdr = meta_header(r#":: A [stub] {"position":"5,6","group":"G","reachable":true}"#);
+        hdr.line = 7;
+        apply_header_metadata(&mut passage, &hdr);
+        assert_eq!(passage.position, Some((5.0, 6.0)));
+        assert_eq!(passage.group.as_deref(), Some("G"));
+        assert_eq!(passage.color, None);
+        assert_eq!(passage.size, None);
+        assert_eq!(passage.line, 7);
+        assert_eq!(passage.manual_reachable, Some(true));
+    }
+
+    #[test]
+    fn twee_header_line_defaults_to_zero() {
+        let hdr = meta_header(":: A");
+        assert_eq!(hdr.line, 0);
+    }
+
+    #[test]
+    fn header_line_indices_counts_lf_and_crlf() {
+        let text = ":: A\nbody\n:: B\nmore\n:: C";
+        let spans = [(0, 4), (11, 15), (21, 25)];
+        assert_eq!(header_line_indices(text, &spans), vec![0, 2, 4]);
+
+        // CRLF files count one line per \n too.
+        let text = ":: A\r\nbody\r\n:: B\r\n";
+        let spans = [(0, 5), (13, 18)];
+        assert_eq!(header_line_indices(text, &spans), vec![0, 2]);
+    }
+
+    #[test]
+    fn header_line_indices_header_at_eof_without_newline() {
+        let text = ":: A\nbody\n:: B";
+        let spans = [(11, 15)];
+        assert_eq!(header_line_indices(text, &spans), vec![2]);
     }
 }

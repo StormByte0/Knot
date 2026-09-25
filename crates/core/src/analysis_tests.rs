@@ -212,6 +212,144 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Manual reachability entries (reachable header metadata)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn manual_entry_metadata_makes_downstream_passages_reachable() {
+        // A dynamic-dispatch story: Start links Forest normally. IslandA is
+        // entered at runtime through variable-aliased navigation (no static
+        // in-edges), so the author marks it as a manual entry. Everything
+        // downstream of IslandA is reachable through normal links. Cave is
+        // genuinely unreachable, and Hub (variable-aliased links, unmarked)
+        // demonstrates that the flag itself only rescues the marked passage
+        // and its statically-resolvable downstream — authors mark the TOP
+        // level of each dynamic branch.
+        let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+        workspace.metadata = Some(StoryMetadata {
+            format: StoryFormat::SugarCube,
+            format_version: None,
+            start_passage: "Start".to_string(),
+            ifid: None,
+        });
+
+        let mut doc = Document::new(
+            Url::parse("file:///project/story.tw").unwrap(),
+            StoryFormat::SugarCube,
+        );
+        doc.passages.push(make_passage("Start", &["Forest"]));
+        doc.passages.push(make_passage("Forest", &["Start"]));
+
+        let mut island_a = make_passage("IslandA", &["IslandB"]);
+        island_a.manual_reachable = Some(true);
+        doc.passages.push(island_a);
+        doc.passages.push(make_passage("IslandB", &["IslandC"]));
+        doc.passages.push(make_passage("IslandC", &["IslandB"]));
+
+        // Unmarked hub with opaque (variable) links — still unreachable.
+        doc.passages.push(make_passage("Hub", &[]));
+        // Genuinely isolated passage.
+        doc.passages.push(make_passage("Cave", &[]));
+
+        doc.passages.push(make_story_data_passage());
+
+        workspace.insert_document(doc);
+        rebuild_workspace_graph(&mut workspace);
+
+        // Roots: start passage + every manual entry.
+        let roots = workspace.reachability_roots();
+        assert_eq!(roots, vec!["Start".to_string(), "IslandA".to_string()]);
+
+        let diagnostics = AnalysisEngine::analyze(&workspace);
+        let unreachable: Vec<&_> = diagnostics
+            .iter()
+            .filter(|d| d.kind == DiagnosticKind::UnreachablePassage)
+            .collect();
+
+        let names: Vec<&str> = unreachable
+            .iter()
+            .map(|d| d.passage_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Hub", "Cave"],
+            "IslandA/B/C must be reachable via the manual entry; Hub and Cave must not"
+        );
+
+        // With manual roots present, the message says entry points were
+        // considered (the single-root wording stays out of the way).
+        assert!(unreachable[0].message.contains("manual entry point"));
+    }
+
+    #[test]
+    fn manual_entry_on_start_passage_is_not_duplicated_in_roots() {
+        let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+        workspace.metadata = Some(StoryMetadata {
+            format: StoryFormat::SugarCube,
+            format_version: None,
+            start_passage: "Start".to_string(),
+            ifid: None,
+        });
+
+        let mut doc = Document::new(
+            Url::parse("file:///project/story.tw").unwrap(),
+            StoryFormat::SugarCube,
+        );
+        let mut start = make_passage("Start", &[]);
+        start.manual_reachable = Some(true);
+        doc.passages.push(start);
+        doc.passages.push(make_story_data_passage());
+        workspace.insert_document(doc);
+        rebuild_workspace_graph(&mut workspace);
+
+        assert_eq!(
+            workspace.reachability_roots(),
+            vec!["Start".to_string()],
+            "marking the start passage must not duplicate the root"
+        );
+    }
+
+    #[test]
+    fn detect_unreachable_from_roots_multi_root_message_and_seeding() {
+        let mut workspace = Workspace::new(Url::parse("file:///project/").unwrap());
+        workspace.metadata = Some(StoryMetadata {
+            format: StoryFormat::SugarCube,
+            format_version: None,
+            start_passage: "Start".to_string(),
+            ifid: None,
+        });
+
+        let mut doc = Document::new(
+            Url::parse("file:///project/story.tw").unwrap(),
+            StoryFormat::SugarCube,
+        );
+        doc.passages.push(make_passage("Start", &["A"]));
+        doc.passages.push(make_passage("A", &[]));
+        let mut entry = make_passage("Entry", &["B"]);
+        entry.manual_reachable = Some(true);
+        doc.passages.push(entry);
+        doc.passages.push(make_passage("B", &[]));
+        doc.passages.push(make_passage("Orphan", &[]));
+        doc.passages.push(make_story_data_passage());
+        workspace.insert_document(doc);
+        rebuild_workspace_graph(&mut workspace);
+
+        // The single-root graph API keeps its exact wording.
+        let single = workspace.graph.detect_unreachable("Start");
+        assert_eq!(single.len(), 3); // Entry, B, Orphan
+        assert!(
+            single[0]
+                .message
+                .contains("unreachable from start passage 'Start'")
+        );
+
+        // The multi-root API seeds from every root.
+        let multi = workspace.detect_unreachable_passages();
+        let names: Vec<&str> = multi.iter().map(|d| d.passage_name.as_str()).collect();
+        assert_eq!(names, vec!["Orphan"]);
+    }
+
+    // -----------------------------------------------------------------------
     // Game loop detection (SCCs via graph export)
     // -----------------------------------------------------------------------
 

@@ -99,16 +99,17 @@ impl SnowmanPlugin {
     /// the raw text between the end of this header line and the start of the
     /// next header (or end of file).
     fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
-        // Collect header spans: (line_start, line_end) for each detected header line.
-        let mut header_spans: Vec<(usize, usize)> = Vec::new();
+        // Collect header spans: (line_idx, line_start, line_end) for each
+        // detected header line.
+        let mut header_spans: Vec<(u32, usize, usize)> = Vec::new();
         let mut byte_offset = 0;
 
-        for line in text.lines() {
+        for (line_idx, line) in text.lines().enumerate() {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
             if header::is_header_line(line) {
-                header_spans.push((line_start, line_end));
+                header_spans.push((line_idx as u32, line_start, line_end));
             }
 
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
@@ -124,14 +125,15 @@ impl SnowmanPlugin {
 
         // Build passage bodies and parse headers via the unified parser.
         let mut results = Vec::new();
-        for &(line_start, line_end) in &header_spans {
+        for &(line_idx, line_start, line_end) in &header_spans {
             let header_line = &text[line_start..line_end];
 
             // Use the unified header parser for content extraction.
-            let header = match header::parse_twee_header(header_line, line_start) {
+            let mut header = match header::parse_twee_header(header_line, line_start) {
                 Some(h) => h,
                 None => continue,
             };
+            header.line = line_idx;
 
             // Body starts after the header line + its trailing newline (CRLF = 2, LF = 1)
             let newline_len = if text.get(line_end..line_end + 2) == Some("\r\n") {
@@ -146,8 +148,8 @@ impl SnowmanPlugin {
             // Body ends at the start of the next header, or end of text.
             let body_end = header_spans
                 .iter()
-                .find(|&&(s, _)| s > line_start)
-                .map(|&(s, _)| s)
+                .find(|&&(_, s, _)| s > line_start)
+                .map(|&(_, s, _)| s)
                 .unwrap_or(text.len());
 
             let body = text.get(body_start..body_end).unwrap_or("");
@@ -862,6 +864,9 @@ impl FormatPluginMut for SnowmanPlugin {
             };
 
             passage.tags = header.tags.clone();
+            // Header tooling metadata (position/group/color/size) + line
+            // index — shared Story Map pipeline.
+            crate::header::apply_header_metadata(&mut passage, header);
 
             let is_script = passage.is_script_passage();
             let is_stylesheet = passage.is_stylesheet_passage();
@@ -1601,6 +1606,29 @@ mod tests {
         assert_eq!(result.passages.len(), 2);
         assert_eq!(result.passages[0].name, "Start");
         assert_eq!(result.passages[1].name, "Cave");
+        // Line indices + header metadata ride along on the model now.
+        assert_eq!(result.passages[0].line, 0);
+        assert_eq!(result.passages[1].line, 3);
+    }
+
+    #[test]
+    fn parse_mut_populates_header_metadata() {
+        let mut plugin = SnowmanPlugin::new();
+        let src = concat!(
+            ":: Start {\"position\":\"10,20\",\"group\":\"Intro\",\"color\":\"#ff6600\",\"size\":\"100,50\"}\n",
+            "body\n",
+            ":: Cave\nYou are here.\n"
+        );
+        let result = plugin.parse_mut(&Url::parse("file:///test.twee").unwrap(), src);
+        let start = &result.passages[0];
+        assert_eq!(start.position, Some((10.0, 20.0)));
+        assert_eq!(start.group.as_deref(), Some("Intro"));
+        assert_eq!(start.color.as_deref(), Some("#ff6600"));
+        assert_eq!(start.size, Some((100.0, 50.0)));
+        assert_eq!(start.line, 0);
+        let cave = &result.passages[1];
+        assert_eq!(cave.line, 2);
+        assert_eq!(cave.position, None);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use lsp_types::*;
 use std::collections::HashMap;
 use url::Url;
 
-use super::position::parse_passage_name_from_header;
+use super::position::{parse_passage_name_from_header, set_reachable_in_header, utf16_len};
 
 /// Extract a quoted name from a diagnostic message, e.g. "Broken link to 'Foo'"
 pub(crate) fn extract_quoted_name(message: &str) -> Option<String> {
@@ -118,7 +118,9 @@ pub(crate) fn find_nearest_reachable_passage(workspace: &Workspace, name: &str) 
         .map(|m| m.start_passage.as_str())
         .unwrap_or("Start");
 
-    let unreachable = workspace.graph.detect_unreachable(start_passage);
+    // Reachability now considers ALL roots (start + manual `reachable`
+    // metadata entries), matching the diagnostics the user actually sees.
+    let unreachable = workspace.detect_unreachable_passages();
     let unreachable_set: std::collections::HashSet<String> =
         unreachable.iter().map(|d| d.passage_name.clone()).collect();
 
@@ -138,6 +140,39 @@ pub(crate) fn find_nearest_reachable_passage(workspace: &Workspace, name: &str) 
     } else {
         None
     }
+}
+
+/// Resolve the unreachable-passage quickfix for a cursor position, when the
+/// client-provided diagnostics don't carry it.
+///
+/// VS Code only includes diagnostics intersecting the cursor range in
+/// `CodeActionContext.diagnostics` (LSP: "an array of diagnostics known in
+/// the content range"), and the UnreachablePassage squiggle covers just
+/// the passage NAME in the header. With the cursor in the passage body —
+/// where authors actually edit — the context arrives empty and no
+/// quickfix ever surfaces. This derives the passage containing the
+/// cursor (header or body, via span containment) and returns its name
+/// when it is currently flagged unreachable.
+pub(crate) fn unreachable_passage_under_cursor(
+    workspace: &Workspace,
+    text: &str,
+    uri: &Url,
+    position: lsp_types::Position,
+) -> Option<String> {
+    // Respect the same severity suppression the published diagnostics use
+    // ("Off" hides the squiggle) — don't offer quickfixes for a diagnostic
+    // the user has turned off.
+    if let Some(knot_core::workspace::DiagnosticSeverity::Off) =
+        workspace.config.diagnostics.get("UnreachablePassage")
+    {
+        return None;
+    }
+    let name = super::position::find_passage_containing_position(text, workspace, uri, position)?;
+    workspace
+        .detect_unreachable_passages()
+        .iter()
+        .any(|d| d.passage_name == name)
+        .then_some(name)
 }
 
 /// Create a WorkspaceEdit that adds a link from one passage to another.
@@ -187,6 +222,59 @@ pub(crate) fn add_link_edit(
                     new_text: format!("[[{}]]\n", to_passage),
                 }],
             );
+        }
+    }
+
+    WorkspaceEdit {
+        changes: Some(changes),
+        document_changes: None,
+        change_annotations: None,
+    }
+}
+
+/// Create a WorkspaceEdit that marks a passage as a manual reachability
+/// entry by writing `"reachable":true` into its header metadata.
+///
+/// This backs the "it's not really unreachable" quickfix on the
+/// UnreachablePassage diagnostic: static analysis can't see through
+/// variable-aliased navigation (`<<goto $next>>`, `<<link $label $target>>`),
+/// so authors override the analyzer by hand. The edit replaces the
+/// passage's whole header line with one whose JSON metadata block
+/// carries the flag — merging with any existing position/group/color
+/// values — and returns an empty edit when the passage or its file
+/// can't be found (the code action is then a no-op for the client).
+pub(crate) fn mark_reachable_edit(
+    inner: &crate::state::ServerStateInner,
+    name: &str,
+) -> WorkspaceEdit {
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+
+    if let Some((doc, _)) = inner.workspace.find_passage(name)
+        && let Some(text) = inner.open_documents.get(&doc.uri)
+    {
+        for (i, line) in text.lines().enumerate() {
+            if line.starts_with("::") {
+                let pname = parse_passage_name_from_header(&line[2..]);
+                if pname == name {
+                    changes.insert(
+                        doc.uri.clone(),
+                        vec![TextEdit {
+                            range: Range {
+                                start: Position {
+                                    line: i as u32,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: i as u32,
+                                    character: utf16_len(line),
+                                },
+                            },
+                            new_text: set_reachable_in_header(line),
+                        }],
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -357,5 +445,190 @@ pub(crate) fn initialize_var_in_story_init_edit(
         changes: Some(changes),
         document_changes: None,
         change_annotations: None,
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use knot_core::document::Document;
+    use knot_core::graph::{PassageEdge, PassageGraph, PassageNode};
+    use knot_core::passage::StoryFormat;
+    use knot_core::workspace::{StoryMetadata, Workspace};
+    use knot_formats::FormatPluginMut;
+    use knot_formats::sugarcube::SugarCubePlugin;
+    use lsp_types::Position;
+    use url::Url;
+
+    /// Build a workspace from twee source through the real SugarCube
+    /// parser, with a rebuilt passage graph (nodes + navigation edges) and
+    /// StoryData-style start metadata — the minimum `detect_unreachable_
+    /// passages` needs to answer reachability queries.
+    fn workspace_with(src: &str, uri: &Url) -> Workspace {
+        let mut plugin = SugarCubePlugin::new();
+        let result = plugin.parse_mut(uri, src);
+        let mut doc = Document::new(uri.clone(), StoryFormat::SugarCube);
+        doc.passages = result.passages.clone();
+        let mut ws = Workspace::new(Url::parse("file:///project/").unwrap());
+        ws.metadata = Some(StoryMetadata {
+            format: StoryFormat::SugarCube,
+            format_version: None,
+            start_passage: "Start".to_string(),
+            ifid: None,
+        });
+        ws.insert_document(doc);
+
+        // Rebuild the graph from the parsed passages (nodes + link edges),
+        // mirroring what the indexing pipeline does after insert. Node and
+        // edge data are collected first so the immutable document borrow
+        // ends before the graph is mutated.
+        let nodes: Vec<PassageNode> = {
+            let doc = ws.get_document(uri).unwrap();
+            doc.passages
+                .iter()
+                .map(|p| PassageNode {
+                    name: p.name.clone(),
+                    file_uri: uri.to_string(),
+                    is_special: p.is_special,
+                    is_metadata: p.is_metadata(),
+                    is_placeholder: false,
+                    layer: None,
+                    category: knot_core::PassageCategory::Regular,
+                    behavior: None,
+                })
+                .collect()
+        };
+        let edges: Vec<(String, String, PassageEdge)> = {
+            let doc = ws.get_document(uri).unwrap();
+            doc.passages
+                .iter()
+                .flat_map(|p| {
+                    p.links
+                        .iter()
+                        .filter(|l| !l.target.is_empty())
+                        .map(|l| {
+                            (
+                                p.name.clone(),
+                                l.target.clone(),
+                                PassageEdge {
+                                    display_text: l.display_text.clone(),
+                                    edge_type: knot_core::graph::EdgeType::Navigation,
+                                    pre_broken_type: None,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        ws.graph = PassageGraph::new();
+        for node in nodes {
+            ws.graph.add_passage(node);
+        }
+        for (from, to, edge) in edges {
+            ws.graph.add_edge(&from, &to, edge);
+        }
+        ws
+    }
+
+    #[test]
+    fn unreachable_quickfix_resolves_from_cursor_in_body() {
+        // Start → Forest (reachable); Cave is orphaned. The quickfix must
+        // resolve with the cursor anywhere INSIDE Cave — including deep in
+        // the body, where the client-side diagnostics context is empty.
+        let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n:: Cave\nDeep in the body text.\n";
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let ws = workspace_with(src, &uri);
+
+        let body_line = 5u32; // "Deep in the body text."
+        let got = unreachable_passage_under_cursor(
+            &ws,
+            src,
+            &uri,
+            Position {
+                line: body_line,
+                character: 7,
+            },
+        );
+        assert_eq!(got.as_deref(), Some("Cave"));
+    }
+
+    #[test]
+    fn unreachable_quickfix_resolves_from_cursor_on_header() {
+        let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n:: Cave\nDeep in the body text.\n";
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let ws = workspace_with(src, &uri);
+
+        let got = unreachable_passage_under_cursor(
+            &ws,
+            src,
+            &uri,
+            Position {
+                line: 4,
+                character: 4, // on "Cave" in the header
+            },
+        );
+        assert_eq!(got.as_deref(), Some("Cave"));
+    }
+
+    #[test]
+    fn reachable_passage_under_cursor_yields_none() {
+        // Cursor inside a REACHABLE passage's body — no quickfix fallback.
+        let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n:: Cave\nDeep in the body text.\n";
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let ws = workspace_with(src, &uri);
+
+        let got = unreachable_passage_under_cursor(
+            &ws,
+            src,
+            &uri,
+            Position {
+                line: 3,
+                character: 2, // inside "Trees."
+            },
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn cursor_between_passages_yields_none() {
+        // Position outside any passage span (past the end of the text).
+        let src = ":: Start\n[[Forest]]\n:: Forest\nTrees.\n:: Cave\nDeep.\n";
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let ws = workspace_with(src, &uri);
+
+        let got = unreachable_passage_under_cursor(
+            &ws,
+            src,
+            &uri,
+            Position {
+                line: 99,
+                character: 0,
+            },
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn manual_entry_passage_is_not_offered_the_fallback() {
+        // A passage marked reachable in its header metadata is not
+        // unreachable — no fallback quickfix for it.
+        let src = concat!(
+            ":: Start\n[[Forest]]\n:: Forest\nTrees.\n",
+            ":: IslandA {\"reachable\":true}\nEntered via variable navigation.\n",
+        );
+        let uri = Url::parse("file:///project/story.tw").unwrap();
+        let ws = workspace_with(src, &uri);
+
+        let got = unreachable_passage_under_cursor(
+            &ws,
+            src,
+            &uri,
+            Position {
+                line: 5,
+                character: 5,
+            },
+        );
+        assert_eq!(got, None);
     }
 }

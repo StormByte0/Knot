@@ -853,6 +853,48 @@ pub struct Passage {
     /// this is `None` and the graph view will use an automatic layout.
     #[serde(default)]
     pub position: Option<(f64, f64)>,
+    /// Manual group assignment parsed from the passage header metadata
+    /// JSON block (e.g., `:: Name [tags] {"group":"Intro"}`).
+    ///
+    /// Used by the Story Map to draw visual group containers. When no
+    /// group is recorded, this is `None`.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Node color parsed from the passage header metadata JSON block
+    /// (e.g., `{"color":"#ff6600"}`), used by the Story Map node
+    /// rendering. `None` means the category color is used.
+    #[serde(default)]
+    pub color: Option<String>,
+    /// The (width, height) of this passage in the Twine editor canvas,
+    /// parsed from the header metadata JSON block (Twine convention:
+    /// `"size":"100,100"`). `None` means the default node size.
+    #[serde(default)]
+    pub size: Option<(f64, f64)>,
+    /// The 0-based line index of this passage's header line within its
+    /// document.
+    ///
+    /// Populated by the format plugin during full-document parsing; the
+    /// incremental single-passage path derives it from the passage
+    /// offset (and shifts it for later passages on line-count changes).
+    /// Used by the Story Map's "open passage" navigation so it works for
+    /// closed files too, without rescanning open-document text.
+    #[serde(default)]
+    pub line: u32,
+    /// Manual reachability entry flag parsed from the passage header
+    /// metadata JSON block (e.g., `:: Hub {"reachable":true}`).
+    ///
+    /// A **tool-level** override for stories whose navigation is opaque
+    /// to static analysis: links aliased through variables
+    /// (`<<goto $next>>`, `<<link $label $target>>`) hide their real
+    /// targets, so the downward reachability analysis would report false
+    /// "unreachable passage" diagnostics. Marking a top-level entry
+    /// passage with `"reachable": true` makes it a reachability
+    /// root alongside the start passage — everything statically
+    /// reachable from it stops being flagged. The story engine never
+    /// sees this key: reachability is Knot's property, stored in header
+    /// metadata (tool state), not in the engine-facing tag bracket.
+    #[serde(default)]
+    pub manual_reachable: Option<bool>,
     /// Byte offset of the passage head (`::` prefix) in the document.
     ///
     /// Adding this to any passage-relative span/offset produces a
@@ -898,6 +940,11 @@ impl Passage {
             is_special: false,
             special_def: None,
             position: None,
+            group: None,
+            color: None,
+            size: None,
+            line: 0,
+            manual_reachable: None,
             passage_offset: 0,
             zones: crate::zoning::ZoneMap::default(),
         }
@@ -921,6 +968,11 @@ impl Passage {
             is_special: true,
             special_def: Some(def),
             position: None,
+            group: None,
+            color: None,
+            size: None,
+            line: 0,
+            manual_reachable: None,
             passage_offset: 0,
             zones: crate::zoning::ZoneMap::default(),
         }
@@ -960,6 +1012,16 @@ impl Passage {
         let abs_start = span.start + self.passage_offset;
         let abs_end = span.end + self.passage_offset;
         abs_offset >= abs_start && abs_offset < abs_end
+    }
+
+    /// Whether this passage is a manual reachability entry point
+    /// (header metadata `"reachable": true` — see
+    /// [`Self::manual_reachable`]).
+    ///
+    /// Manual entries act as additional reachability roots alongside the
+    /// start passage — see [`crate::Workspace::detect_unreachable_passages`].
+    pub fn is_manual_entry(&self) -> bool {
+        self.manual_reachable == Some(true)
     }
 
     /// Returns true if this passage participates in narrative flow (graph edges).

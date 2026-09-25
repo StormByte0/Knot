@@ -927,6 +927,7 @@ body text
                 header_start: 0,
                 name_start: 3,
                 metadata_json: None,
+                line: 0,
                 name_text_raw: "Test".to_string(),
                 tags_raw: "Test".to_string(),
             },

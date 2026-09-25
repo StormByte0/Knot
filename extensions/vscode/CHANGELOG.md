@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.2.0] — Unreleased
+
+Story Map foundations: header metadata now lives in the language model, and
+reachability gets a manual escape hatch for variable-aliased navigation.
+
+### Added
+
+- **Manual reachability entries (`reachable` header metadata)** — static
+  analysis can't see through variable-aliased navigation (`<<goto $next>>`,
+  `<<link $label $target>>`), which produced persistent false
+  "unreachable passage" warnings for dynamic stories. Marking a top-level
+  entry passage in its header metadata — `:: Hub {"reachable":true}` —
+  makes it act like a second start node: Knot runs its downward
+  reachability analysis from the start passage AND every marked entry,
+  suppressing the false positives for everything downstream while still
+  flagging genuinely orphaned passages. Reachability is a tool-level
+  property (the story engine never sees it), so the flag lives in the
+  per-passage metadata block rather than the engine-facing tag bracket —
+  story tags stay semantic, and other Twee tools treat the key as
+  unknown (preserved) metadata. The unreachable-passage warning offers a
+  `Mark '…' as reachable (manual entry)` quickfix that writes the flag
+  into the passage header for you — merging with any existing
+  position/group/color metadata instead of overwriting it. The flag
+  round-trips through Story Map position saves, which merge into the
+  existing metadata block instead of rewriting it. The Story Map renders
+  manual entries with a green ring + corner marker and a "Manual entry
+  point" tooltip; the unreachable-diagnostic message notes how many
+  entry points were considered.
+- **Header metadata in the language model** — passage position, group,
+  color, size, and header line number are parsed once (by every format
+  plugin, through the shared header parser) onto the `Passage` model
+  instead of being re-derived from raw file text on every Story Map
+  request. This also means the "open passage" navigation now jumps to the
+  correct line for **closed** files, which previously always opened line 0.
+
+### Fixed
+
+- **StoryInterface highlighting while editing** — the incremental
+  single-passage re-parse (what runs on every keystroke inside a
+  passage) still skipped StoryInterface body tokens from when that mode
+  was excluded from token serving, while the full-document parse served
+  them. Each WithinPassage edit replaced the passage's token group with
+  header-only tokens, so the body highlighting flickered off until the
+  next full re-parse restored it. The incremental path now serves the
+  same tokens as the full parse.
+- **Unreachable-passage quickfixes now surface from the passage body**
+  — VS Code only includes diagnostics intersecting the cursor in the
+  code-action context, and the unreachable warning squiggles only the
+  passage name in the header, so with the cursor in the passage body —
+  where authors actually edit — no quickfix ever appeared. The server
+  now derives the passage containing the cursor itself and offers the
+  same fixes (add link / mark reachable) from anywhere in the passage,
+  respecting diagnostic severity suppression.
+- **StoryData positions from any file** — the Story Map position fallback
+  read the *first* open document's text, silently dropping StoryData
+  passage positions whenever StoryData lived in a different file. It now
+  extracts from every open document that actually contains a StoryData
+  passage.
+- **Metadata through incremental edits** — editing a passage (including
+  edits on the header line itself, like changing a position value) kept the
+  pre-edit header metadata forever; the incremental path now re-derives
+  it. Inserting or deleting lines inside one passage also shifts the
+  recorded header line numbers of every later passage in the document.
+- **Malformed metadata fields no longer hide their siblings** — the old
+  reader aborted on the first unparseable field (a bad `position` value
+  made `group`/`color`/`size` invisible); fields are now parsed
+  independently, and position/size accept string (`"100,200"`), object
+  (`{"x":..,"y":..}`), and array (`[100, 200]`) forms.
+
+### Changed
+
+- **Faster "save all positions"** — `knot/updatePositions` now groups
+  updates per file and scans each file once instead of rescanning the
+  whole file per passage (O(passages × lines) → O(lines)); drag-heavy
+  sessions with large stories stop paying a quadratic tax.
+
+---
+
 ## [2.1.0] — Full Release
 
 Graduation from preview to the first full stable release of the Knot v2 line.

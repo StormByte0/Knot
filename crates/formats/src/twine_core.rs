@@ -62,15 +62,15 @@ impl TwineCorePlugin {
 
     fn split_passages<'a>(&self, text: &'a str) -> Vec<(TweeHeader, &'a str)> {
         let mut results = Vec::new();
-        let mut header_spans: Vec<(usize, usize)> = Vec::new();
+        let mut header_spans: Vec<(u32, usize, usize)> = Vec::new();
         let mut byte_offset = 0;
 
-        for line in text.lines() {
+        for (line_idx, line) in text.lines().enumerate() {
             let line_start = byte_offset;
             let line_end = line_start + line.len();
 
             if header::is_header_line(line) {
-                header_spans.push((line_start, line_end));
+                header_spans.push((line_idx as u32, line_start, line_end));
             }
 
             // Detect actual newline length: CRLF is 2 bytes, LF is 1 byte.
@@ -86,9 +86,12 @@ impl TwineCorePlugin {
             byte_offset = line_end + newline_len;
         }
 
-        for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
+        for (i, &(header_line_idx, header_start, header_end)) in header_spans.iter().enumerate() {
             let header_line = &text[header_start..header_end];
-            let parsed = header::parse_twee_header(header_line, header_start);
+            let mut parsed = header::parse_twee_header(header_line, header_start);
+            if let Some(hdr) = parsed.as_mut() {
+                hdr.line = header_line_idx;
+            }
 
             // Body starts after the header line's newline (CRLF = 2, LF = 1).
             let newline_len = if text.get(header_end..header_end + 2) == Some("\r\n") {
@@ -100,7 +103,7 @@ impl TwineCorePlugin {
             };
             let body_start = header_end + newline_len;
             let body_end = if i + 1 < header_spans.len() {
-                header_spans[i + 1].0
+                header_spans[i + 1].1
             } else {
                 text.len()
             };
@@ -276,6 +279,9 @@ impl FormatPluginMut for TwineCorePlugin {
             passage.vars = Vec::new();
             passage.is_special = is_special;
             passage.special_def = special_def;
+            // Header tooling metadata (position/group/color/size) + line
+            // index — shared Story Map pipeline.
+            crate::header::apply_header_metadata(&mut passage, header);
 
             passages.push(passage);
             token_groups.push(PassageTokenGroup {

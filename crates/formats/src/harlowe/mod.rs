@@ -154,6 +154,10 @@ impl HarlowePlugin {
 
         let mut results: Vec<(TweeHeader, &'a str)> = Vec::new();
 
+        // Compute the 0-based line index of every header in one pass (the
+        // logos walk doesn't track lines). Headers are in document order.
+        let header_lines = header::header_line_indices(text, &header_spans);
+
         for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
             let mut header_line = &text[header_start..header_end];
             // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
@@ -168,7 +172,10 @@ impl HarlowePlugin {
             } else {
                 header_end
             };
-            let parsed = header::parse_twee_header(header_line, header_start);
+            let mut parsed = header::parse_twee_header(header_line, header_start);
+            if let Some(hdr) = parsed.as_mut() {
+                hdr.line = header_lines[i];
+            }
 
             // Body starts after the header line (skip trailing newline).
             let body_start = adjusted_header_end;
@@ -1159,6 +1166,9 @@ impl FormatPluginMut for HarlowePlugin {
             };
 
             passage.tags = header.tags.clone();
+            // Header tooling metadata (position/group/color/size) + line
+            // index — shared Story Map pipeline.
+            crate::header::apply_header_metadata(&mut passage, header);
 
             // ── Context-aware parsing ──────────────────────────────────────
             let is_script = passage.is_script_passage();

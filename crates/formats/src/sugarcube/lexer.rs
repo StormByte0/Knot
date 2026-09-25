@@ -49,6 +49,11 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
 
     let mut results: Vec<(TweeHeader, &str)> = Vec::new();
 
+    // Compute the 0-based line index of every header in one pass, so
+    // each TweeHeader can carry its line for the Passage model (Story Map
+    // navigation). Headers are already in document order.
+    let header_lines = header::header_line_indices(text, &header_spans);
+
     for (i, &(header_start, header_end)) in header_spans.iter().enumerate() {
         let mut header_line = &text[header_start..header_end];
         // The Logos regex `::[^\n]*` includes trailing \r on CRLF files.
@@ -64,7 +69,10 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
         } else {
             header_end
         };
-        let parsed = header::parse_twee_header(header_line, header_start);
+        let mut parsed = header::parse_twee_header(header_line, header_start);
+        if let Some(hdr) = parsed.as_mut() {
+            hdr.line = header_lines[i];
+        }
 
         // Body starts after the header line (skip trailing newline).
         //
@@ -101,37 +109,50 @@ pub(crate) fn split_passages(text: &str) -> Vec<(TweeHeader, &str)> {
     results
 }
 
-/// Extract the position from a `TweeHeader`'s metadata JSON block, if present.
-///
-/// Twine 2 serialises position as a string `"x,y"` (e.g., `"100,200"`).
-/// Some Twee compilers may emit a JSON object `{"x":100,"y":200}` instead.
-/// Both formats are supported.
-///
-/// This function is currently unused but retained for the story map
-/// visualization feature (passage position in the Twine graph UI).
-#[allow(dead_code)]
-pub(crate) fn position_from_header(header: &TweeHeader) -> Option<(f64, f64)> {
-    let json_str = header.metadata_json.as_ref()?;
-    parse_position_from_metadata(json_str)
-}
+// header_line_indices lives in crate::header (shared with the Harlowe
+// tokenizer splitter).
 
-/// Parse a `"position"` value from a passage header metadata JSON block.
-///
-/// See [`position_from_header`] for the intended use case.
-#[allow(dead_code)]
-fn parse_position_from_metadata(json: &str) -> Option<(f64, f64)> {
-    let val = serde_json::from_str::<serde_json::Value>(json).ok()?;
-    if let Some(pos_str) = val.get("position").and_then(|v| v.as_str()) {
-        let parts: Vec<&str> = pos_str.split(',').collect();
-        if parts.len() == 2 {
-            let x = parts[0].trim().parse::<f64>().ok()?;
-            let y = parts[1].trim().parse::<f64>().ok()?;
-            return Some((x, y));
-        }
-    } else if let Some(pos_obj) = val.get("position").and_then(|v| v.as_object()) {
-        let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
-        let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
-        return Some((x, y));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_passages_carries_line_indices_and_metadata() {
+        // LF file:
+        //   line 0: :: A {"position":"1,2"}
+        //   line 1: body
+        //   line 2: :: B
+        //   line 3: more
+        //   line 4: :: C           (last line, no trailing newline)
+        let text = ":: A {\"position\":\"1,2\"}\nbody\n:: B\nmore\n:: C";
+        let parts = split_passages(text);
+
+        let lines: Vec<u32> = parts.iter().map(|(h, _)| h.line).collect();
+        assert_eq!(lines, vec![0, 2, 4]);
+        assert_eq!(parts[0].0.name, "A");
+        assert_eq!(
+            parts[0].0.metadata_json.as_deref(),
+            Some(r#"{"position":"1,2"}"#)
+        );
+        assert_eq!(parts[1].0.name, "B");
+        assert_eq!(parts[2].0.name, "C");
     }
-    None
+
+    #[test]
+    fn split_passages_line_indices_crlf() {
+        // CRLF file: every header line still gets its 0-based index.
+        let text = ":: A\r\nbody\r\n:: B\r\nmore\r\n";
+        let parts = split_passages(text);
+        let lines: Vec<u32> = parts.iter().map(|(h, _)| h.line).collect();
+        assert_eq!(lines, vec![0, 2]);
+    }
+
+    #[test]
+    fn split_passages_body_slices_unchanged() {
+        // The line-index addition must not perturb body slicing.
+        let text = ":: A\nhello\n:: B\nworld\n";
+        let parts = split_passages(text);
+        assert_eq!(parts[0].1, "hello\n");
+        assert_eq!(parts[1].1, "world\n");
+    }
 }

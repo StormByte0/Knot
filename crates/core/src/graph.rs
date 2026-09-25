@@ -559,6 +559,15 @@ impl PassageGraph {
     /// Detect unreachable passages using BFS from the start passage.
     /// Returns diagnostics for passages that cannot be reached.
     ///
+    /// Delegates to [`PassageGraph::detect_unreachable_from_roots`] with the
+    /// start passage as the only root.
+    pub fn detect_unreachable(&self, start_passage: &str) -> Vec<GraphDiagnostic> {
+        self.detect_unreachable_from_roots(std::slice::from_ref(&start_passage))
+    }
+
+    /// Detect unreachable passages using BFS from multiple reachability
+    /// roots (the start passage plus any manually tagged entry passages).
+    ///
     /// ## Special Passage Reachability
     ///
     /// Special passages themselves are always considered reachable (they're
@@ -568,18 +577,29 @@ impl PassageGraph {
     /// `<<goto>>` in StoryInit). These referenced passages must be considered
     /// reachable too, since the engine will navigate to them.
     ///
-    /// To handle this, the BFS starts from the start passage AND from all
+    /// To handle this, the BFS starts from all provided roots AND from all
     /// special passages that have `participates_in_graph: true` or that
     /// are in the upstream chain (ScriptInjection, Startup). Passages
     /// reachable from any of these entry points are considered reachable.
-    pub fn detect_unreachable(&self, start_passage: &str) -> Vec<GraphDiagnostic> {
+    ///
+    /// ## Manual Entry Roots
+    ///
+    /// When `roots` contains more than the start passage (manual
+    /// `reachable` metadata entries), the diagnostic message reflects
+    /// that the analysis considered all entry points.
+    pub fn detect_unreachable_from_roots(&self, roots: &[&str]) -> Vec<GraphDiagnostic> {
         let mut reachable = HashSet::new();
         let mut queue = VecDeque::new();
 
-        // Seed BFS from the start passage
-        if let Some(&start_idx) = self.name_to_idx.get(start_passage) {
-            reachable.insert(start_idx);
-            queue.push_back(start_idx);
+        // Seed BFS from every provided root (start passage + manual entries).
+        // Unknown names are skipped the same way the single-root version
+        // always has (missing start passage → no seed).
+        for &root in roots {
+            if let Some(&idx) = self.name_to_idx.get(root)
+                && reachable.insert(idx)
+            {
+                queue.push_back(idx);
+            }
         }
 
         // Also seed BFS from special passages that have outgoing edges
@@ -641,14 +661,27 @@ impl PassageGraph {
                 continue;
             }
             if !reachable.contains(&idx) {
+                // Message mirrors the single-root wording when only the
+                // start passage is a root (tests and users rely on it);
+                // with manual entry roots, mention that they were considered.
+                let message = if roots.len() <= 1 {
+                    format!(
+                        "Passage '{}' is unreachable from start passage '{}'",
+                        node.name,
+                        roots.first().copied().unwrap_or_default()
+                    )
+                } else {
+                    format!(
+                        "Passage '{}' is unreachable from the start passage and {} manual entry point(s)",
+                        node.name,
+                        roots.len() - 1
+                    )
+                };
                 diagnostics.push(GraphDiagnostic {
                     passage_name: node.name.clone(),
                     file_uri: node.file_uri.clone(),
                     kind: DiagnosticKind::UnreachablePassage,
-                    message: format!(
-                        "Passage '{}' is unreachable from start passage '{}'",
-                        node.name, start_passage
-                    ),
+                    message,
                 });
             }
         }

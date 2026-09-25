@@ -55,13 +55,9 @@ impl ServerState {
 
         let file_uri = doc.uri.to_string();
 
-        // Determine reachability
-        let start_passage = workspace
-            .metadata
-            .as_ref()
-            .map(|m| m.start_passage.as_str())
-            .unwrap_or("Start");
-        let unreachable_diags = workspace.graph.detect_unreachable(start_passage);
+        // Determine reachability — from ALL roots (start passage + manual
+        // `reachable` metadata entries), matching the diagnostics surface.
+        let unreachable_diags = workspace.detect_unreachable_passages();
         let is_reachable = !unreachable_diags
             .iter()
             .any(|d| d.passage_name == params.passage_name);

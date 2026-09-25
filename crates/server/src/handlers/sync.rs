@@ -671,6 +671,13 @@ pub fn did_change_phase1(
     // nothing before it changed). But passages after it shift by the net byte
     // delta of the edit.
     //
+    // The same applies to the passage header LINE indices (`Passage::line`)
+    // when the edit changes the line count (line_delta != 0) — e.g. pasting
+    // a multi-line block inside one passage shifts every later passage's
+    // header line down. Byte delta and line delta are independent (replacing
+    // "\n" with "x" keeps the byte count but shifts lines up; a paste can
+    // change both), so they are computed and applied separately.
+    //
     // This fix-up applies to:
     // 1. `doc.passages[i].passage_offset` — used by workspace lookups
     //    (find_passage, related-info builders, etc.).
@@ -680,9 +687,13 @@ pub fn did_change_phase1(
     // 3. `inner.semantic_tokens[uri][name].passage_offset` — used by
     //    `convert_semantic_tokens` to map tokens to document-absolute
     //    positions.
+    // 4. `doc.passages[i].line` — used by the Story Map "open passage"
+    //    navigation.
     if was_incremental {
+        let newline_count = |t: &str| t.bytes().filter(|&b| b == b'\n').count() as isize;
         let delta = text.len() as isize - text_before.len() as isize;
-        if delta != 0 {
+        let line_delta = newline_count(&text) - newline_count(&text_before);
+        if delta != 0 || line_delta != 0 {
             // Find the edited passage's old offset from doc_before.
             let edited_name = match &dispatch {
                 DidChangeDispatch::Incremental { passage_name }
@@ -695,10 +706,18 @@ pub fn did_change_phase1(
                 .map(|p| p.passage_offset);
 
             if let Some(edited_offset) = edited_offset {
-                // 1. Fix up passage_offset on doc.passages
+                // 1. Fix up passage_offset (byte delta) and header line
+                //    index (line delta) in a single pass — the membership
+                //    test must see the PRE-shift offsets, so both mutations
+                //    happen together after the comparison.
                 for p in doc.passages.iter_mut() {
                     if p.passage_offset > edited_offset {
-                        p.passage_offset = ((p.passage_offset as isize) + delta) as usize;
+                        if delta != 0 {
+                            p.passage_offset = ((p.passage_offset as isize) + delta) as usize;
+                        }
+                        if line_delta != 0 {
+                            p.line = ((p.line as isize) + line_delta).max(0) as u32;
+                        }
                     }
                 }
 
@@ -998,8 +1017,11 @@ fn did_change_incremental(
     //       created, or existing passage header deleted).
     let header_line_end = passage_text.find('\n').unwrap_or(passage_text.len());
     let header_line = &passage_text[..header_line_end];
-    if let Some(parsed) = knot_formats::header::parse_twee_header(header_line, 0) {
-        if parsed.name != passage_name {
+    // Parsed once for BOTH uses: the stability check below and (on success)
+    // restoring the header tooling metadata onto the spliced passage.
+    let parsed_header = knot_formats::header::parse_twee_header(header_line, 0);
+    match &parsed_header {
+        Some(parsed) if parsed.name != passage_name => {
             tracing::info!(
                 file = %uri,
                 old_passage = %passage_name,
@@ -1008,16 +1030,18 @@ fn did_change_incremental(
             );
             return None;
         }
-    } else {
-        // Header line no longer parses as a passage header. This could
-        // mean the user deleted the `::` prefix or made the name empty.
-        // Fall back to full re-parse.
-        tracing::info!(
-            file = %uri,
-            passage = %passage_name,
-            "did_change_incremental: passage header no longer parses — falling back to full re-parse"
-        );
-        return None;
+        None => {
+            // Header line no longer parses as a passage header. This could
+            // mean the user deleted the `::` prefix or made the name empty.
+            // Fall back to full re-parse.
+            tracing::info!(
+                file = %uri,
+                passage = %passage_name,
+                "did_change_incremental: passage header no longer parses — falling back to full re-parse"
+            );
+            return None;
+        }
+        _ => {}
     }
 
     // (b) Count `::` header lines in the full post-edit text. If the count
@@ -1056,10 +1080,21 @@ fn did_change_incremental(
         Ok(single_result) => {
             // Success: splice the new passage into the document.
             let mut new_doc = doc_before.clone();
-            // Replace the passage by name.
-            if let Some(new_passage) = single_result.passages.into_iter().next()
+            // Replace the passage by name. The incremental plugin path only
+            // receives name + tags, so restore the header tooling metadata
+            // (position/group/color/size — an edit on the header line can
+            // change them) and derive the line index from the passage
+            // offset here, uniformly for every format plugin.
+            if let Some(mut new_passage) = single_result.passages.into_iter().next()
                 && let Some(slot) = new_doc.passages.iter_mut().find(|p| p.name == passage_name)
             {
+                if let Some(hdr) = parsed_header.as_ref() {
+                    knot_formats::header::apply_header_metadata(&mut new_passage, hdr);
+                }
+                new_passage.line = text_after[..passage_offset_new]
+                    .bytes()
+                    .filter(|&b| b == b'\n')
+                    .count() as u32;
                 *slot = new_passage;
             }
             // The passage_offset values don't need fix-up because the edit
@@ -1915,6 +1950,75 @@ mod tests {
             },
             content_changes: changes,
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Header metadata survival through the incremental edit path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn incremental_edit_preserves_metadata_and_shifts_later_lines() {
+        // Three passages with header metadata. An edit inside the FIRST
+        // passage's body that adds two lines must:
+        // - keep the edited passage's metadata (restored from its header),
+        // - shift the later passages' line indices by +2,
+        // - keep the edited passage's own line stable.
+        let src = concat!(
+            ":: Start {\"position\":\"10,20\",\"group\":\"Intro\",\"color\":\"#aabbcc\"}\n",
+            "line one\n",
+            ":: Middle {\"position\":\"30,40\"}\n",
+            "mid body\n",
+            ":: End {\"position\":\"50,60\"}\n",
+            "end body\n"
+        );
+        let (mut inner, uri) = build_state(src);
+
+        // Insert two lines inside Start's body (before "line one", line 1).
+        let changes = vec![change(1, 0, 1, 0, "extra\nlines\n")];
+        let _result = did_change_phase1(&mut inner, uri.clone(), 2, changes);
+
+        let doc = inner.workspace.get_document(&uri).expect("document");
+        let start = doc.passages.iter().find(|p| p.name == "Start").unwrap();
+        let middle = doc.passages.iter().find(|p| p.name == "Middle").unwrap();
+        let end = doc.passages.iter().find(|p| p.name == "End").unwrap();
+
+        // Metadata restored on the edited passage (the incremental plugin
+        // path only receives name + tags; the server re-derives the rest).
+        assert_eq!(start.position, Some((10.0, 20.0)));
+        assert_eq!(start.group.as_deref(), Some("Intro"));
+        assert_eq!(start.color.as_deref(), Some("#aabbcc"));
+        // Line numbers: Start stayed at 0; Middle/End shifted by +2.
+        assert_eq!(start.line, 0);
+        assert_eq!(middle.line, 4, "Middle's header shifted down 2 lines");
+        assert_eq!(end.line, 6, "End's header shifted down 2 lines");
+        // Untouched passages keep their metadata.
+        assert_eq!(middle.position, Some((30.0, 40.0)));
+        assert_eq!(end.position, Some((50.0, 60.0)));
+    }
+
+    #[test]
+    fn incremental_header_line_edit_refreshes_metadata() {
+        // An edit ON a passage's header line (same passage, same name, so
+        // classify_edit says WithinPassage) must refresh the header metadata
+        // instead of silently keeping the pre-edit values forever.
+        //   Line 0: `:: Start {"position":"10,20"}` — replace `10` with `99`.
+        let src = ":: Start {\"position\":\"10,20\"}\nbody\n:: Second\nbody2\n";
+        let (mut inner, uri) = build_state(src);
+
+        // Columns: `:: Start {"position":"10,20"}` — "10" spans 22..24.
+        let changes = vec![change(0, 22, 0, 24, "99")];
+        let _result = did_change_phase1(&mut inner, uri.clone(), 2, changes);
+
+        let doc = inner.workspace.get_document(&uri).expect("document");
+        let start = doc.passages.iter().find(|p| p.name == "Start").unwrap();
+        assert_eq!(
+            start.position,
+            Some((99.0, 20.0)),
+            "header metadata must refresh from the edited header line"
+        );
+        // Same-length replacement: no line/offset shifts.
+        let second = doc.passages.iter().find(|p| p.name == "Second").unwrap();
+        assert_eq!(second.line, 2);
     }
 
     // -----------------------------------------------------------------------

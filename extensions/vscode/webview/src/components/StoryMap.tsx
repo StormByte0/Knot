@@ -145,6 +145,7 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
     d.is_special     && 'pn--special',
     d.is_metadata    && 'pn--metadata',
     d.is_unreachable && 'pn--unreachable',
+    d.is_entry       && 'pn--entry',
     d.is_dead_end    && 'pn--dead-end',
     d.highlighted    && 'pn--highlighted',
     d.dimmed         && 'pn--dimmed',
@@ -476,6 +477,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         is_metadata: !!n.is_metadata,
         is_unreachable: !!n.is_unreachable,
         is_start: !!n.is_start,
+        is_entry: !!n.is_entry && !n.is_start,
         is_dead_end: isDeadEnd,
         color: nodeColor(n),
         metadata_color: n.color,
@@ -735,6 +737,7 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
   const typeLabel = d.is_start ? 'Start passage' :
     d.is_metadata ? 'Metadata' :
     d.is_special ? 'Special' :
+    d.is_entry ? 'Manual entry point' :
     d.is_unreachable ? 'Unreachable' :
     d.is_dead_end ? 'Dead end' :
     'Passage';

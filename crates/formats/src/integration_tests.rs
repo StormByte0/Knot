@@ -238,6 +238,45 @@ fn sugarcube_parse_and_analyze() {
     );
 }
 
+#[test]
+fn sugarcube_reachable_metadata_flows_to_reachability_roots() {
+    // End-to-end pin for the `reachable` header metadata flag:
+    // real twee text -> splitter -> Passage model -> reachability roots.
+    let mut registry = FormatRegistry::with_defaults();
+    let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
+
+    let src = ":: Start\n[[Forest]]\n:: Forest\nIt has an island.\n:: IslandA {\"reachable\":true}\nEntered through variable-aliased navigation. [[IslandB]]\n:: IslandB\nDownstream of the manual entry.\n:: Cave\nTruly orphaned.\n";
+    let uri = Url::parse("file:///project/story.tw").unwrap();
+    parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
+    rebuild_graph(&mut ws);
+
+    // The flag lands on the model through the real splitter + shared
+    // apply_header_metadata wiring; an absent key stays None.
+    let doc = ws.get_document(&uri).unwrap();
+    assert_eq!(
+        doc.find_passage("IslandA").unwrap().manual_reachable,
+        Some(true)
+    );
+    assert_eq!(doc.find_passage("Forest").unwrap().manual_reachable, None);
+
+    // Roots: start passage + manual entry (deduped, in order).
+    assert_eq!(
+        ws.reachability_roots(),
+        vec!["Start".to_string(), "IslandA".to_string()]
+    );
+
+    // IslandA/B are rescued by the manual entry root, Forest is
+    // reachable from Start, and only the genuinely orphaned Cave is
+    // flagged as unreachable.
+    let diagnostics = AnalysisEngine::analyze(&ws);
+    let unreachable: Vec<&str> = diagnostics
+        .iter()
+        .filter(|d| d.kind == DiagnosticKind::UnreachablePassage)
+        .map(|d| d.passage_name.as_str())
+        .collect();
+    assert_eq!(unreachable, vec!["Cave"]);
+}
+
 // ===========================================================================
 // Harlowe end-to-end
 // ===========================================================================

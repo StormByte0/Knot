@@ -239,107 +239,6 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
     knot_formats::header::extract_passage_name(header)
 }
 
-/// Parsed passage metadata from the header line's JSON block.
-///
-/// The JSON block can contain `position`, `group`, and `color` properties,
-/// and is extensible for future metadata. Only the last `{...}` block on the
-/// line is parsed (matching the Twee 3 specification).
-pub(crate) struct PassageMetadata {
-    pub position: Option<(f64, f64)>,
-    pub group: Option<String>,
-    pub color: Option<String>,
-    pub size: Option<(f64, f64)>,
-}
-
-/// Parse all known metadata properties from a passage header line's JSON block.
-///
-/// Twee 3 format: `:: Passage Name [tags] {"position":"100,200","group":"Intro","color":"#ff6600"}`
-///
-/// Returns `None` if no valid JSON metadata block is found on the line.
-pub(crate) fn parse_passage_metadata_from_header(line: &str) -> Option<PassageMetadata> {
-    // Use the unified header parser's JSON block extraction. This correctly
-    // handles: nested JSON, multiple `[tag]` blocks, custom tags with braces,
-    // CRLF line endings, and avoids matching `{...}` that isn't valid JSON.
-    //
-    // The old `rfind('{')` approach could match braces inside tag text or
-    // passage names, and couldn't handle nested objects like
-    // `{"position":"1,2","data":{"x":1}}`.
-    let (_rest, json_str) = knot_formats::header::extract_json_block_public(line.trim_end())?;
-    let json_val: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-
-    // Extract position
-    let position = {
-        // Try "position" as a string "x,y"
-        if let Some(pos_str) = json_val.get("position").and_then(|v| v.as_str()) {
-            let parts: Vec<&str> = pos_str.split(',').collect();
-            if parts.len() == 2 {
-                let x = parts[0].trim().parse::<f64>().ok()?;
-                let y = parts[1].trim().parse::<f64>().ok()?;
-                Some((x, y))
-            } else {
-                None
-            }
-        }
-        // Try "position" as a JSON object {"x":...,"y":...}
-        else if let Some(pos_obj) = json_val.get("position").and_then(|v| v.as_object()) {
-            let x = pos_obj.get("x").and_then(|v| v.as_f64())?;
-            let y = pos_obj.get("y").and_then(|v| v.as_f64())?;
-            Some((x, y))
-        } else {
-            None
-        }
-    };
-
-    // Extract group
-    let group = json_val
-        .get("group")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Extract color
-    let color = json_val
-        .get("color")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    // Extract size (Twine convention: "size":"w,h" string, or {"width":w,"height":h} object)
-    let size = {
-        // Try "size" as a string "w,h"
-        if let Some(size_str) = json_val.get("size").and_then(|v| v.as_str()) {
-            let parts: Vec<&str> = size_str.split(',').collect();
-            if parts.len() == 2 {
-                let w = parts[0].trim().parse::<f64>().ok()?;
-                let h = parts[1].trim().parse::<f64>().ok()?;
-                Some((w, h))
-            } else {
-                None
-            }
-        }
-        // Try "size" as a JSON object {"width":...,"height":...}
-        else if let Some(size_obj) = json_val.get("size").and_then(|v| v.as_object()) {
-            let w = size_obj.get("width").and_then(|v| v.as_f64())?;
-            let h = size_obj.get("height").and_then(|v| v.as_f64())?;
-            Some((w, h))
-        }
-        // Also try separate "width"/"height" fields (some Twee editors use these)
-        else if let (Some(w), Some(h)) = (
-            json_val.get("width").and_then(|v| v.as_f64()),
-            json_val.get("height").and_then(|v| v.as_f64()),
-        ) {
-            Some((w, h))
-        } else {
-            None
-        }
-    };
-
-    Some(PassageMetadata {
-        position,
-        group,
-        color,
-        size,
-    })
-}
-
 /// Build or update the JSON metadata block in a passage header line with
 /// a new position value.
 ///
@@ -392,27 +291,7 @@ pub(crate) fn update_passage_metadata_in_header(
     // - Nested JSON objects
     // - Custom tags with braces in them (e.g., [tag{stuff}])
     // - Multiple `[tag1] [tag2]` blocks before the JSON
-    let mut stripped_line = line;
-    let mut existing_json: Option<serde_json::Value> = None;
-
-    // Peel off JSON blocks from right to left, keeping only the last one.
-    // The unified parser validates each block as proper JSON before stripping.
-    loop {
-        if let Some((rest, json_str)) =
-            knot_formats::header::extract_json_block_public(stripped_line.trim_end())
-            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str)
-        {
-            // Keep the last (rightmost) block's data — it has the
-            // most recent position/group/color values.
-            if existing_json.is_none() {
-                existing_json = Some(parsed);
-            }
-            // Strip this block and continue scanning for more
-            stripped_line = rest;
-            continue;
-        }
-        break;
-    }
+    let (stripped_line, existing_json) = peel_trailing_json_blocks(line);
 
     // If we found an existing JSON block, merge the new values into it
     if let Some(mut json_val) = existing_json {
@@ -458,7 +337,7 @@ pub(crate) fn update_passage_metadata_in_header(
         if let Some(obj) = json_val.as_object()
             && obj.is_empty()
         {
-            return stripped_line.to_string();
+            return stripped_line;
         }
 
         if let Ok(new_json) = serde_json::to_string(&json_val) {
@@ -497,6 +376,66 @@ pub(crate) fn update_passage_metadata_in_header(
         .unwrap_or_else(|_| "{}".to_string());
     let trimmed = line.trim_end();
     format!("{} {}", trimmed, new_json)
+}
+
+/// Peel trailing JSON metadata blocks off a header line, right to left.
+///
+/// Returns the line with its trailing `{...}` blocks (and trailing
+/// whitespace) removed, plus the parsed contents of the **last**
+/// (rightmost) block — the one holding the most recently written
+/// values. Each block is validated as proper JSON by the unified header
+/// parser before it is stripped, so custom tags containing braces
+/// (e.g., `[tag{stuff}]`) survive untouched.
+///
+/// Example: `:: Name [tags] {"position":"1,2"} {"position":"3,4"}`
+/// peels to `:: Name [tags]` + the `{"position":"3,4"}` value.
+fn peel_trailing_json_blocks(line: &str) -> (String, Option<serde_json::Value>) {
+    let mut stripped = line;
+    let mut json = None;
+    loop {
+        if let Some((rest, json_str)) =
+            knot_formats::header::extract_json_block_public(stripped.trim_end())
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str)
+        {
+            // Keep the last (rightmost) block's data — it has the most
+            // recently written position/group/color/reachable values.
+            if json.is_none() {
+                json = Some(parsed);
+            }
+            stripped = rest;
+            continue;
+        }
+        break;
+    }
+    (stripped.to_string(), json)
+}
+
+/// Insert or update the `"reachable"` flag in a passage header line's
+/// JSON metadata block, preserving every other field.
+///
+/// This is the quickfix writer for the unreachable-passage diagnostic:
+/// `:: Hub` becomes `:: Hub {"reachable":true}`, while
+/// `:: Hub {"position":"1,2"}` becomes
+/// `:: Hub {"position":"1,2","reachable":true}`. The flag lands in
+/// the metadata block — tool state the engine never reads — rather than
+/// the engine-facing tag bracket, and merges with any existing
+/// position/group/color values the way Story Map position saves do.
+pub(crate) fn set_reachable_in_header(line: &str) -> String {
+    let (stripped, json) = peel_trailing_json_blocks(line);
+
+    let mut json_val = match json {
+        Some(v) => v,
+        // No metadata block yet — append a fresh one holding only the flag.
+        None => return format!("{} {{\"reachable\":true}}", line.trim_end()),
+    };
+
+    json_val["reachable"] = serde_json::Value::Bool(true);
+    match serde_json::to_string(&json_val) {
+        Ok(new_json) => format!("{} {}", stripped, new_json),
+        // Unreachable in practice (Value::Object always serializes);
+        // keep the author's line rather than emitting a broken header.
+        Err(_) => line.to_string(),
+    }
 }
 
 // ===========================================================================
@@ -818,6 +757,32 @@ pub(crate) fn find_passage_at_position_span_based(
     }
     // Fallback: line-based scan
     find_passage_at_position(text, position)
+}
+
+/// Find the passage containing the cursor **anywhere** — header line or
+/// body — via span containment.
+///
+/// [`find_passage_at_position_span_based`] only matches when the cursor is
+/// on the header line, but graph diagnostics (like UnreachablePassage)
+/// squiggle only the passage NAME in the header, while authors spend
+/// their time editing in the body. This lookup covers the whole passage
+/// span, letting code actions surface quickfixes from wherever in the
+/// passage the cursor happens to be.
+///
+/// Returns `None` when the workspace has no document for the URI or the
+/// position falls between passages (e.g. a blank line outside any span).
+pub(crate) fn find_passage_containing_position(
+    text: &str,
+    workspace: &Workspace,
+    uri: &Url,
+    position: Position,
+) -> Option<String> {
+    let doc = workspace.get_document(uri)?;
+    let byte_offset = position_to_byte_offset(text, position).min(text.len());
+    doc.passages
+        .iter()
+        .find(|p| p.contains_abs_offset(byte_offset))
+        .map(|p| p.name.clone())
 }
 
 /// Span-based version of [`find_link_target_at_position`].
