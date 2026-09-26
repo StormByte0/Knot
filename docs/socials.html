@@ -6,6 +6,7 @@
   <title>Community &amp; Support — Knot</title>
   <meta name="description" content="Support Knot's development on Patreon or Ko-fi, join the Discord for support and dev updates, and report issues through GitHub or Discord.">
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
@@ -19,15 +20,18 @@
         <a href="socials.html" class="active">Community</a>
         <a href="sponsors.html">Sponsors</a>
         <a href="links.html">Links</a>
+        <a class="nav-gh" href="https://github.com/StormByte0/Knot"><i class="bi bi-github"></i><span class="gh-label">GitHub</span></a>
       </div>
     </div>
   </nav>
 
   <main>
-    <h1>Community &amp; Support</h1>
-    <p class="lead">Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps.</p>
+    <div class="pagehead">
+      <h1>Community &amp; Support</h1>
+      <p class="lead">Knot is free — including for commercial use — and built by a solo developer on nights and weekends. Its funding is currently <strong>exactly zero</strong>: no patrons, no tips yet. If Knot makes your interactive fiction workflow better, you'd be the first dollar in the jar — and every contribution goes straight into development time.</p>
+    </div>
 
-    <h2>Patreon — development funding</h2>
+    <h2 id="patreon">Patreon — development funding</h2>
     <p><a href="https://www.patreon.com/StormByte0">Patreon</a> is the primary way to fund ongoing development. Tiers are structured around sustained support, and all tiers include Discord access plus a backer-only dev-updates channel.</p>
 
     <div class="support-grid">
@@ -41,7 +45,7 @@
           <li>Name in <a href="sponsors.html">SUPPORTERS.md</a></li>
           <li>Backer-only dev updates</li>
         </ul>
-        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0">Join as Supporter</a>
+        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0"><i class="bi bi-patreon"></i> Join as Supporter</a>
       </div>
       <div class="support-card">
         <h3>Insider</h3>
@@ -53,7 +57,7 @@
           <li>Backer-only dev updates</li>
           <li>Discord access</li>
         </ul>
-        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0">Join as Insider</a>
+        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0"><i class="bi bi-patreon"></i> Join as Insider</a>
       </div>
       <div class="support-card">
         <h3>Sponsor</h3>
@@ -65,19 +69,19 @@
           <li>Top-billing "Special Thanks" in the docs</li>
           <li>Discord access</li>
         </ul>
-        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0">Join as Sponsor</a>
+        <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0"><i class="bi bi-patreon"></i> Join as Sponsor</a>
       </div>
     </div>
 
-    <h2>Ko-fi — tips &amp; one-time donations</h2>
-    <p><a href="https://ko-fi.com/stormbyte0">Ko-fi</a> is for smaller contributions that don't fit a recurring Patreon tier — anything under $5 a month, or a one-time tip of any size. It's the low-friction way to say "thanks" without a recurring commitment.</p>
-    <p><a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0">Buy a coffee</a></p>
+    <h2 id="kofi">Ko-fi — tips &amp; one-time donations</h2>
+    <p><a href="https://ko-fi.com/stormbyte0">Ko-fi</a> is for smaller contributions that don't fit a recurring Patreon tier — anything under $5 a month, or a one-time tip of any size. It's the low-friction way to say "thanks" without a recurring commitment. If Knot has ever caught a broken link before your players did, that's a fine moment for a coffee.</p>
+    <p><a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0"><i class="bi bi-cup-hot-fill"></i> Buy a coffee</a></p>
 
-    <h2>Discord — support &amp; development updates</h2>
-    <p>The <a href="https://discord.gg/UvWSZFkC3">Knot Discord</a> is the place to get help, follow along with development, and shape what gets built next. Supporters get early visibility into what's being worked on, and it's the fastest channel to chime in with feature requests while the project is still young and flexible.</p>
-    <p><a class="btn btn-discord" href="https://discord.gg/UvWSZFkC3">Join the Discord</a></p>
+    <h2 id="discord">Discord — support &amp; development updates</h2>
+    <p>The <a href="https://discord.gg/YYm9nGbtZY">Knot Discord</a> is the place to get help, follow along with development, and shape what gets built next. Supporters get early visibility into what's being worked on, and it's the fastest channel to chime in with feature requests while the project is still young and flexible.</p>
+    <p><a class="btn btn-discord" href="https://discord.gg/YYm9nGbtZY"><i class="bi bi-discord"></i> Join the Discord</a></p>
 
-    <h2>Reporting issues</h2>
+    <h2 id="issues">Reporting issues</h2>
     <p>The standard channel for bug reports is <a href="https://github.com/StormByte0/Knot/issues">GitHub Issues</a> — it keeps everything searchable and tied to the repo. That said, if Discord is more comfortable for you, you're welcome to report issues there too. Either way, please include:</p>
     <ul>
       <li><strong>What you were doing</strong> — the steps to reproduce.</li>
@@ -86,39 +90,55 @@
     </ul>
     <p>If the language server is crashing repeatedly, set <code>knot.trace.server</code> to <code>"verbose"</code> in VS Code settings, reproduce the crash, then check the "Knot" output channel for the stack trace — that's hugely helpful for debugging.</p>
 
-    <h2>What your support funds</h2>
+    <h2 id="funds">What your support funds</h2>
     <div class="card-grid">
       <div class="card">
+        <div class="icon"><i class="bi bi-puzzle"></i></div>
         <h3>Format plugins</h3>
         <p>Completing the Harlowe, Chapbook, and Snowman format plugins to full parity with SugarCube.</p>
       </div>
       <div class="card">
+        <div class="icon"><i class="bi bi-stars"></i></div>
         <h3>Planned features</h3>
         <p>Project initialization, decompile, passage organization, and the rest of the <a href="https://github.com/StormByte0/Knot/blob/main/PLANNED_FEATURES.md">planned features list</a>.</p>
       </div>
       <div class="card">
+        <div class="icon green"><i class="bi bi-wrench"></i></div>
         <h3>Maintenance</h3>
         <p>Ongoing bug fixes, Twine and SugarCube version tracking, and keeping Knot working as VS Code evolves.</p>
       </div>
       <div class="card">
+        <div class="icon"><i class="bi bi-unlock"></i></div>
         <h3>Free for everyone</h3>
         <p>Keeping Knot free to use for everyone, including commercial Twine authors — your support makes that sustainable.</p>
       </div>
     </div>
 
-    <h2>See our supporters</h2>
-    <p>The full list of patrons and Ko-fi supporters — organized by tier — lives on the <a href="sponsors.html">sponsors page</a>. It updates automatically when SUPPORTERS.md is updated, so it's always current.</p>
+    <h2 id="supporters">See our supporters</h2>
+    <p>The full list of patrons and Ko-fi supporters — organized by tier — lives on the <a href="sponsors.html">sponsors page</a>. It updates automatically when SUPPORTERS.md is updated, so it's always current. The list is empty right now — which means the top spot is still open.</p>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>

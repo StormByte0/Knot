@@ -73,9 +73,11 @@ plugins produce and all analysis runs against:
   through variables), so dynamic stories don't get false
   "unreachable" diagnostics. The flag is tool-level state in the
   per-passage metadata block (the engine never sees it), not a story
-  tag. Note: SCC data is computed and exported to the client, but the
-  Story Map webview does not yet render game loop highlighting — see
-  ROADMAP.md.
+  tag. (The `reachable` flag and header metadata on the `Passage`
+  model are unreleased — present on `main`, not yet in a Marketplace
+  release.) Note: SCC data is computed and exported to the
+  client, but the Story Map webview does not yet render game loop
+  highlighting — see ROADMAP.md.
 - **`Analysis`** — runs the diagnostic passes over the workspace:
   broken links, unreachable passages, uninitialized variables, unused
   variables, redundant writes, duplicate passage names, empty passages,
@@ -100,9 +102,14 @@ Chapbook, Snowman) has its own parser that produces the format-agnostic
 - **SugarCube** (`crates/formats/src/sugarcube/`) — the most complete
   plugin. Uses a recursive descent parser backed by `oxc` (a
   JavaScript parser) for the `<<script>>` and `<<set>>` bodies. Has a
-  static macro catalog (~1200 lines of data), special passage
-  definitions, CSS parsing, and a full JS annotation pipeline that
-  tracks variable reads/writes across SugarCube macros.
+  **versioned union macro catalog** (73 entries covering every macro
+  that ever existed in SugarCube 2.x, each with `added_in` /
+  `deprecated_in` / `removed_in` lifecycle data and per-era
+  descriptors — see the "Story Format Versioning" section of
+  ROADMAP.md), 19 special-passage definitions, CSS parsing and
+  linting, and a full JS annotation pipeline that tracks variable
+  reads/writes across SugarCube macros. The hover surface also covers
+  23 globals, 20 functions, and 15 methods.
 - **Harlowe, Chapbook, Snowman** — placeholder/skeleton implementations
   only. The `FormatPlugin` trait is implemented but the parsers have not
   been completed to production quality. Link extraction and Story Map
@@ -127,13 +134,19 @@ actual work.
 - **`handlers/`** — LSP request handlers, organized by concern:
   - `sync.rs` — `did_open`, `did_change`, `did_close`, file watching,
     workspace indexing.
-  - `completion.rs`, `hover.rs`, `navigation.rs`, `semantic.rs`,
-    `structure.rs` — standard LSP features.
+  - `completion.rs`, `hover.rs`, `navigation.rs` (definition/
+    references/highlight), `call_hierarchy.rs`, `semantic.rs`,
+    `structure.rs` (symbols/folding/lenses) — standard LSP features.
+  - `code_actions.rs`, `editing.rs` (formatting/renames),
+    `variables.rs` (variable flow) — editing-time features.
   - `build.rs` — the `knot/build` and `knot/play` custom requests.
     Resolves the tweego binary, story formats directory, source
     directory, output filename, and runs tweego.
-  - `profile.rs`, `passage_diagnostics.rs` — custom requests for the
-    extension's webview panels.
+  - `graph.rs` — the `knot/graph` export for the Story Map.
+  - `formats.rs` — story format listing/download (`knot/formats/*`).
+  - `profile.rs`, `passage_diagnostics.rs`, `macros.rs`,
+    `workspace.rs`, `lifecycle.rs` — the remaining custom requests
+    and server lifecycle.
 - **`lsp_ext.rs`** — definitions for all custom `knot/*` request and
   notification types.
 - **`helpers/`** — shared utilities: compiler resolution (`which`/
@@ -156,11 +169,11 @@ extensions/vscode/src/
 ├── watchState.ts          — singleton: background save watcher state
 ├── taskProvider.ts        — "Build Story" task for VS Code's task system
 ├── storyMapProvider.ts    — Story Map webview (graph visualization)
-├── debugViewProvider.ts   — Passage Diagnostics webview
-├── profileViewProvider.ts — Project Info webview
-├── variableFlowProvider.ts— Variable Tracking webview
+├── debugViewProvider.ts   — Passage Diagnostics sidebar view
+├── profileViewProvider.ts — Project Info sidebar view
+├── variableFlowProvider.ts— Variable Tracking sidebar view
 ├── notifications.ts       — custom LSP notification handlers
-├── decorations.ts         — editor decorations (gutter badges, fades)
+├── decorations.ts         — editor decorations (gutter badges, broken-link underlines)
 ├── languageStatus.ts      — Language Status API indicator
 ├── navigation.ts          — cross-panel navigation coordination
 ├── crashRecovery.ts       — automatic server restart on crash
@@ -212,12 +225,12 @@ Five items on the left side of the status bar:
   Watch is ON, opens the existing HTML; if OFF, builds first.
 - **⚙** — extension settings
 
-Keybindings are declared in `package.json` (F5=Play, F6=Build,
-Ctrl+Shift+M=Story Map, Shift+F5=Play from Passage) but are scoped to
-`resourceLangId == 'twee'` — they only fire when a `.twee` file is the
-active editor. In practice these shortcuts may conflict with VS Code
-defaults; the status bar buttons and Command Palette are the reliable
-ways to trigger these actions.
+Keybindings: **none are shipped.** Four shortcuts (F5=Play, F6=Build,
+Ctrl+Shift+M=Story Map, Shift+F5=Play from Passage) were declared early
+in development but removed before the 2.0.0 release because they
+clashed with VS Code defaults and other extensions. The status bar
+buttons and Command Palette are the reliable entry points; users can
+bind their own shortcuts via VS Code's Keyboard Shortcuts editor.
 
 The Watch toggle runs a `vscode.workspace.onDidSaveTextDocument`
 watcher for `.tw`/`.twee`/`.js`/`.css`/`.html` files. On each save it
@@ -227,23 +240,27 @@ reloads).
 
 ### Webview Panels
 
-Four webview panels provide visual tooling:
+The extension registers an activity-bar container ("Knot IDE") with
+three sidebar webview views, plus one editor-area webview panel:
 
-- **Story Map** — an interactive directed graph of all passages,
-  rendered with `@xyflow/react` + `dagre` for layout. Nodes are
-  passages, edges are links. Supports click-to-navigate (single click
-  jumps to the passage in the editor). All edges are rendered in gray
-  — there is no edge-type color differentiation. Special passages
-  (StoryInit, StoryTitle, etc.) get distinct node colors. Dead-end
-  passages get a yellow double border; unreachable passages are
-  grouped separately. There is no focus mode or right-click context
-  menu.
-- **Passage Diagnostics** — shows detailed info about the passage
-  under the cursor: links, variables, macros, complexity metrics.
-- **Project Info** — workspace-level stats: passage count, word count,
-  format, IFID, story format version.
-- **Variable Tracking** — shows variable flow across passages:
-  where each variable is set, read, and how it propagates.
+- **Story Map** (editor panel) — an interactive directed graph of all
+  passages, rendered with `@xyflow/react` + `dagre` for layout. Nodes
+  are passages, edges are links. Supports click-to-navigate (single
+  click jumps to the passage in the editor — including passages in
+  closed files, at the correct line; unreleased). All edges are
+  rendered in gray — there is no edge-type color differentiation.
+  Special passages (StoryInit, StoryTitle, etc.) get distinct node
+  colors. Dead-end passages get a yellow double border; unreachable
+  passages are grouped separately (manual entry points render with a
+  green ring + corner marker; unreleased). There is no focus mode
+  or right-click context menu.
+- **Passage Diagnostics** (sidebar view) — shows detailed info about
+  the passage under the cursor: links, variables, macros, complexity
+  metrics.
+- **Project Info** (sidebar view) — workspace-level stats: passage
+  count, word count, format, IFID, story format version.
+- **Variable Tracking** (sidebar view) — shows variable flow across
+  passages: where each variable is set, read, and how it propagates.
 
 ---
 
@@ -307,10 +324,13 @@ is visible.
 
 ## Platform Support
 
-Knot supports Windows, macOS, and Linux on x64 and arm64. The
-extension bundles pre-compiled `knot-server` binaries for each
-platform. Tweego is downloaded on first build into the extension's
-global storage, so users do not need to install it manually.
+The release pipeline bundles pre-compiled `knot-server` binaries for
+four platforms: **win32-x64, darwin-arm64, linux-x64, and
+linux-arm64**. (A fifth target, darwin-x64, was dropped after 2.0.0 —
+Intel Macs install the extension without the Rust server and fall
+back to TextMate grammar highlighting.) Tweego is downloaded on first
+build into the extension's global storage, so users do not need to
+install it manually.
 
 Path handling is cross-platform: the server uses `PathBuf` for all
 path manipulation, `cfg!(windows)` for platform-specific behavior

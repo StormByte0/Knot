@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Features — Knot</title>
-  <meta name="description" content="A detailed look at what Knot does today: structural understanding, variable tracking, passage diagnostics, the Story Map, incremental analysis, and the integrated build pipeline.">
+  <meta name="description" content="A detailed look at what Knot does today: version-aware SugarCube support, structural understanding, variable tracking, CSS and HTML linting, passage diagnostics, the Story Map, incremental analysis, and the integrated build pipeline.">
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
@@ -19,77 +20,203 @@
         <a href="socials.html">Community</a>
         <a href="sponsors.html">Sponsors</a>
         <a href="links.html">Links</a>
+        <a class="nav-gh" href="https://github.com/StormByte0/Knot"><i class="bi bi-github"></i><span class="gh-label">GitHub</span></a>
       </div>
     </div>
   </nav>
 
   <main>
-    <h1>Features</h1>
-    <p class="lead">A detailed look at what Knot does today. Only SugarCube 2 has full language features; Harlowe, Chapbook, and Snowman are placeholder implementations with the build pipeline working.</p>
+    <div class="pagehead">
+      <h1>Features</h1>
+      <p class="lead">A detailed look at what Knot does today, verified against the codebase. Only SugarCube 2 has full language features; Harlowe, Chapbook, and Snowman are placeholder implementations with the build pipeline working. The current release is <strong>v2.1.0</strong> — anything marked <span class="badge badge-unreleased">Unreleased</span> is in the repository build but not yet in a Marketplace release.</p>
+    </div>
 
-    <h2>Structural understanding, not just regex</h2>
+    <h2 id="version-aware">Version-aware SugarCube 2 support</h2>
+    <p>SugarCube has shipped breaking changes across its 2.x life — macros added, deprecated, and removed (2.37.0 alone removed six). Knot's macro catalog is a <strong>versioned union catalog</strong>: every macro that ever existed in SugarCube 2.x carries its lifecycle (<code>added_in</code> / <code>deprecated_in</code> / <code>removed_in</code>) plus per-era descriptions and argument signatures, sourced from the official docs, upgrade guides, release notes, and the 2.37.3 engine source.</p>
+    <p>Every user-facing feature resolves through the story's pinned <code>format-version</code> from <code>StoryData</code>:</p>
+    <ul>
+      <li><strong>Completions</strong> only offer macros that exist at your version — <code>&lt;&lt;type&gt;&gt;</code> and friends are hidden for stories pinned below their introduction, and macros removed in 2.37.0 are offered again for older stories.</li>
+      <li><strong>Lifecycle diagnostics</strong> — <code>sc-macro-removed</code> (Error: removal version, replacement, downgrade guidance) and <code>sc-macro-not-in-version</code> (Warning: the version the macro was added in).</li>
+      <li><strong>Hover and signature help</strong> resolve era-appropriate documentation, with tombstone notes for macros that don't exist at your version.</li>
+      <li><strong>Special passages</strong> like <code>StoryDisplayTitle</code> (2.31.0) and the <code>[init]</code> tag (2.36.0) are only special on versions that have them.</li>
+      <li><strong>Editing <code>format-version</code> triggers a full reindex</strong> — everything updates immediately.</li>
+    </ul>
+    <p>Stories without a parseable version fail open to the latest known SugarCube — unusual metadata degrades to the full current surface, never to bogus diagnostics.</p>
+
+    <div class="window" role="img" aria-label="Knot flagging a macro removed in SugarCube 2.37.0 and suggesting the replacement">
+      <div class="window-bar">
+        <div class="window-dots"><span></span><span></span><span></span></div>
+        <span class="window-title">hub.tw — pinned to SugarCube 2.37.3</span>
+        <span class="window-badge">Knot</span>
+      </div>
+      <pre><code><span class="ln">1</span><span class="tk-hdr">::</span> <span class="tk-name">Hub</span>
+<span class="ln">2</span>Where to next?
+<span class="ln">3</span><span class="sq sq-err"><span class="tk-mac">&lt;&lt;</span>click <span class="tk-str">"Open the cellar door"</span><span class="tk-mac">&gt;&gt;</span></span>
+<span class="ln">4</span>  The door groans open.
+<span class="ln">5</span><span class="tk-mac">&lt;&lt;/click&gt;&gt;</span></code></pre>
+      <div class="problems">
+        <div class="problems-head"><i class="bi bi-list-check"></i> Problems — 1</div>
+        <ul>
+          <li><i class="bi bi-x-circle-fill bi-err"></i> Macro <code>&lt;&lt;click&gt;&gt;</code> was removed in SugarCube 2.37.0 — use <code>&lt;&lt;link&gt;&gt;</code> instead <span class="loc">line 3</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 id="structural">Structural understanding, not just regex</h2>
     <p>Unlike tooling that bolts regular expressions onto a text editor, Knot actually parses your project into passages and the links between them. This structural model lets it answer questions that pattern matching gets wrong:</p>
     <ul>
       <li><strong>"Where is this variable set?"</strong> — Knot tracks definitions across passages, not just mentions.</li>
-      <li><strong>"Is this passage reachable from Start?"</strong> — a graph reachability check, not a string search.</li>
+      <li><strong>"Is this passage reachable from Start?"</strong> — a graph reachability check, not a string search. Static analysis can't see through variable-aliased navigation (<code>&lt;&lt;goto $next&gt;&gt;</code>), so you can mark entry passages with <code>"reachable": true</code> header metadata — the warning even offers a quickfix that writes it for you <span class="badge badge-unreleased">Unreleased</span>.</li>
       <li><strong>"Which passages link here?"</strong> — reverse navigation through the link graph.</li>
       <li><strong>"Are there any orphan passages?"</strong> — passages nothing links to, flagged automatically.</li>
     </ul>
     <p>This is the core design principle behind Knot: model the project the way Twine itself models it, and the editor can give you real help instead of approximate help.</p>
 
-    <h2>Variable tracker</h2>
-    <p>The Variable Tracking panel shows where every variable is set, read, and how it flows across passages. For SugarCube, variable tracking is JavaScript-aware via the <a href="https://oxc-project.github.io/">oxc</a> parser, so it understands:</p>
+    <h2 id="variable-tracker">Variable tracker</h2>
+    <p>The Variable Tracking panel shows where every variable is set, read, and how it flows across passages. For SugarCube, variable tracking is JavaScript-aware via the <a href="https://oxc.rs/">oxc</a> parser, so it understands:</p>
     <ul>
       <li><code>&lt;&lt;set $x to 1&gt;&gt;</code> — SugarCube macro syntax</li>
       <li><code>&lt;&lt;run $x++&gt;&gt;</code> — inline expressions</li>
       <li>JavaScript inside <code>&lt;&lt;script&gt;&gt;</code> blocks</li>
       <li>Variables passed through <code>&lt;&lt;include&gt;&gt;</code> and similar macros</li>
     </ul>
-    <p>This means Knot can warn you about uninitialized variables, unused variables, and variables that are read but never set — all in real time as you type.</p>
+    <p>This means Knot can warn you about uninitialized variables, unused variables, and variables that are read but never set — all in real time as you type. When JavaScript inside a passage has a syntax error, the parser recovers chunk-by-chunk so one broken block doesn't blind the rest of the file.</p>
 
-    <h2>Passage diagnostics</h2>
-    <p>A dedicated panel inspects any passage's links, variables, macros, and complexity metrics. Real-time diagnostics cover:</p>
-    <div class="card-grid">
-      <div class="card">
-        <h3>Broken links</h3>
-        <p>Links pointing to passages that don't exist yet.</p>
+    <h2 id="diagnostics">Passage diagnostics</h2>
+    <p>A dedicated panel inspects any passage's links, variables, macros, and complexity metrics. Real-time diagnostics are all configurable — each of the 11 checks below can be set to <code>error</code>, <code>warning</code>, <code>info</code>, <code>hint</code>, or <code>off</code> in VS Code settings:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Diagnostic</th><th>Default</th><th>What it flags</th></tr></thead>
+        <tbody>
+          <tr><td><code>knot.diagnostics.broken-link</code></td><td><span class="sev sev-warning">warning</span></td><td>Links pointing to passages that don't exist yet</td></tr>
+          <tr><td><code>knot.diagnostics.unreachable-passage</code></td><td><span class="sev sev-warning">warning</span></td><td>Passages no other passage links to (excluding <code>Start</code> and special passages); manual entry points for dynamic navigation <span class="badge badge-unreleased">Unreleased</span></td></tr>
+          <tr><td><code>knot.diagnostics.uninitialized-variable</code></td><td><span class="sev sev-warning">warning</span></td><td>Variables read before they're set anywhere in the project</td></tr>
+          <tr><td><code>knot.diagnostics.invalid-passage-name</code></td><td><span class="sev sev-warning">warning</span></td><td>Passage names that break Twine's naming rules</td></tr>
+          <tr><td><code>knot.diagnostics.duplicate-passage-name</code></td><td><span class="sev sev-error">error</span></td><td>Two passages with the same name — Twine resolves these unpredictably</td></tr>
+          <tr><td><code>knot.diagnostics.dead-end-passage</code></td><td><span class="sev sev-info">info</span></td><td>Passages with no outbound links, where the player has nowhere to go</td></tr>
+          <tr><td><code>knot.diagnostics.complex-passage</code></td><td><span class="sev sev-hint">hint</span></td><td>Passages whose nesting and branch complexity exceed a threshold</td></tr>
+          <tr><td><code>knot.diagnostics.empty-passage</code></td><td><span class="sev sev-hint">hint</span></td><td>Passages with no content</td></tr>
+          <tr><td><code>knot.diagnostics.large-passage</code></td><td><span class="sev sev-hint">hint</span></td><td>Passages that have grown large enough to slow the editor and the reader</td></tr>
+          <tr><td><code>knot.diagnostics.redundant-write</code></td><td><span class="sev sev-hint">hint</span></td><td>Writing a variable that's never read before it's written again</td></tr>
+          <tr><td><code>knot.diagnostics.unused-variable</code></td><td><span class="sev sev-hint">hint</span></td><td>Variables that are set but never read</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Alongside the diagnostics, the Passage Diagnostics panel surfaces per-passage complexity metrics: word count, link count, macro count, and variable count.</p>
+
+    <h2 id="css-linting">Embedded CSS linting</h2>
+    <p>Twine projects embed CSS in passages more often than they keep it in separate files — and a single typo can make a browser silently drop an entire rule. Knot runs a real CSS parser over every stylesheet surface and reports:</p>
+    <ul>
+      <li><strong>Parse errors</strong> on <code>[stylesheet]</code> passages, <code>&lt;style&gt;</code> element bodies, and <code>&lt;&lt;style&gt;&gt;</code>/<code>&lt;&lt;css&gt;&gt;</code> blocks — including <code>style="…"</code> attribute values.</li>
+      <li><strong>Unknown properties</strong> against a curated 500+ property registry (custom and vendor-prefixed names are always allowed) — flags <code>colr</code>-style typos.</li>
+      <li><strong>Pseudo-class and pseudo-element typos</strong> — <code>:hvoer</code>, <code>::befor</code>, the typo class browsers punish with total rule silence — plus a placement lint for pseudo-elements that aren't last in their compound selector.</li>
+    </ul>
+
+    <div class="window" role="img" aria-label="Knot flagging an unknown CSS property typo">
+      <div class="window-bar">
+        <div class="window-dots"><span></span><span></span><span></span></div>
+        <span class="window-title">styles.tw — [stylesheet] passage</span>
+        <span class="window-badge">Knot</span>
       </div>
-      <div class="card">
-        <h3>Unreachable passages</h3>
-        <p>Passages no other passage links to (excluding <code>Start</code> and special passages).</p>
-      </div>
-      <div class="card">
-        <h3>Uninitialized variables</h3>
-        <p>Variables read before they're set anywhere in the project.</p>
-      </div>
-      <div class="card">
-        <h3>Duplicate passage names</h3>
-        <p>Two passages with the same name — Twine resolves these unpredictably.</p>
-      </div>
-      <div class="card">
-        <h3>Dead ends</h3>
-        <p>Passages with no outbound links, where the player has nowhere to go.</p>
-      </div>
-      <div class="card">
-        <h3>Complexity metrics</h3>
-        <p>Word count, link count, macro count, and variable count per passage.</p>
+      <pre><code><span class="ln">1</span><span class="tk-hdr">::</span> <span class="tk-name">Story Stylesheet</span> <span class="tk-tag">[stylesheet]</span>
+<span class="ln">2</span><span class="tk-punc">.passage {</span>
+<span class="ln">3</span>  <span class="sq sq-wrn"><span class="tk-var">colr</span><span class="tk-punc">:</span> <span class="tk-str">#f8f4ff</span><span class="tk-punc">;</span></span>
+<span class="ln">4</span>  <span class="tk-var">line-height</span><span class="tk-punc">:</span> <span class="tk-num">1.6</span><span class="tk-punc">;</span>
+<span class="ln">5</span><span class="tk-punc">}</span></code></pre>
+      <div class="problems">
+        <div class="problems-head"><i class="bi bi-list-check"></i> Problems — 1</div>
+        <ul>
+          <li><i class="bi bi-exclamation-triangle-fill bi-wrn"></i> Unknown property <code>colr</code> — browsers will silently drop this rule. Did you mean <code>color</code>? <span class="loc">line 3</span></li>
+        </ul>
       </div>
     </div>
-    <p>Each diagnostic can be configured to <code>error</code>, <code>warning</code>, <code>info</code>, <code>hint</code>, or <code>off</code> in VS Code settings.</p>
 
-    <h2>Story Map</h2>
+    <h2 id="html-validation">Embedded HTML validation</h2>
+    <p>Passages and StoryInterface files mix prose with markup, so Knot validates the HTML it finds there with tolerance matching the Twine engine's own:</p>
+    <ul>
+      <li><strong>Unclosed elements</strong> (Error), <strong>duplicate attributes</strong> and <strong>missing attribute values</strong> (Warning), and <strong>unterminated tags at passage end</strong> (Warning).</li>
+      <li><strong>Attribute directive support</strong> — <code>@attr="expr"</code> / <code>sc-eval:attr="expr"</code> recognition with completions for the directive families, version-gated to SugarCube 2.21.0+ where they exist.</li>
+      <li><strong>Deliberate silence</strong> on prose <code>&lt;</code>, stray end tags, and literal regions (<code>&lt;nowiki&gt;</code>, <code>{{{ }}}</code>) — matching what the engine actually tolerates, so you're not spammed with non-errors.</li>
+    </ul>
+    <p>StoryInterface passages get full semantic highlighting — tag names, attributes, entities, and delimiters — via the same token pipeline.</p>
+
+    <h2 id="story-map">Story Map</h2>
     <p>An interactive graph visualization of your entire project. Nodes are passages, edges are links. The map is built on <a href="https://reactflow.dev/">@xyflow/react</a> with automatic layout via <a href="https://github.com/dagrejs/dagre">dagre</a>.</p>
     <ul>
-      <li>Click any node to jump to that passage in the editor.</li>
+      <li>Click any node to jump to that passage in the editor — including passages in closed files, at the correct line <span class="badge badge-unreleased">Unreleased</span>.</li>
       <li>The map updates in real time as you edit — no manual refresh.</li>
-      <li>Edge styling reflects link type (regular link, setter link, etc.).</li>
+      <li>Passage metadata (position, group, color) round-trips through the map; manual entry points render with their own green ring, corner marker, and tooltip <span class="badge badge-unreleased">Unreleased</span>.</li>
+      <li>Special passages get distinct node colors; dead-end passages get a yellow double border; unreachable passages are grouped separately.</li>
     </ul>
+    <div class="graph-demo" role="img" aria-label="A small story graph: Start links to two passages, one dead end, and one unreachable passage grouped separately">
+      <svg viewBox="0 0 760 240" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="#5c6a7e"/>
+          </marker>
+        </defs>
+        <!-- edges -->
+        <path d="M 195 110 C 240 110, 250 70, 295 70" fill="none" stroke="#5c6a7e" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <path d="M 195 130 C 240 130, 250 170, 295 170" fill="none" stroke="#5c6a7e" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <path d="M 405 70 C 450 70, 460 110, 505 110" fill="none" stroke="#5c6a7e" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <path d="M 405 170 C 450 170, 460 130, 505 130" fill="none" stroke="#5c6a7e" stroke-width="1.6" marker-end="url(#arrow)"/>
+        <!-- Start node (green ring = reachability root) -->
+        <g>
+          <rect x="95" y="90" width="100" height="52" rx="9" fill="#11161f" stroke="#3fb950" stroke-width="2"/>
+          <text x="145" y="112" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Start</text>
+          <text x="145" y="130" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">entry point</text>
+        </g>
+        <g>
+          <rect x="295" y="44" width="110" height="52" rx="9" fill="#11161f" stroke="#263041" stroke-width="1.5"/>
+          <text x="350" y="66" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Crossroads</text>
+          <text x="350" y="84" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">2 links out</text>
+        </g>
+        <g>
+          <rect x="295" y="144" width="110" height="52" rx="9" fill="#11161f" stroke="#d29922" stroke-width="2.5"/>
+          <text x="350" y="166" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Marketplace</text>
+          <text x="350" y="184" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">dead end</text>
+        </g>
+        <g>
+          <rect x="505" y="90" width="100" height="52" rx="9" fill="#11161f" stroke="#263041" stroke-width="1.5"/>
+          <text x="555" y="112" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Cellar</text>
+          <text x="555" y="130" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">leaf passage</text>
+        </g>
+        <!-- Unreachable zone (dashed) -->
+        <rect x="655" y="30" width="95" height="210" rx="12" fill="rgba(210,153,34,0.06)" stroke="#d29922" stroke-width="1" stroke-dasharray="5 4"/>
+        <g>
+          <rect x="672" y="60" width="62" height="40" rx="8" fill="#11161f" stroke="#bf6900" stroke-width="1.5"/>
+          <text x="703" y="77" text-anchor="middle" fill="#e6a56e" font-family="ui-monospace, Menlo, monospace" font-size="11">Old Wing</text>
+          <text x="703" y="91" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="8">unreachable</text>
+        </g>
+        <text x="702" y="225" text-anchor="middle" fill="#d29922" font-family="ui-monospace, Menlo, monospace" font-size="9">unreachable zone</text>
+      </svg>
+    </div>
     <p>The Story Map is primarily for visualization and navigation at this time. Deeper structural editing from the map — dragging passages to reorganize, creating links visually — is on the roadmap.</p>
 
-    <h2>Incremental analysis</h2>
+    <h2 id="sidebar">The Knot IDE sidebar</h2>
+    <p>Beside the editor, Knot installs a dedicated activity-bar panel (the Knot icon on the left edge of the window) with three views:</p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon"><i class="bi bi-clipboard-pulse"></i></div>
+        <h3>Passage Diagnostics</h3>
+        <p>Live inspection of the passage under the cursor: links, variables, macros, and complexity metrics.</p>
+      </div>
+      <div class="card">
+        <div class="icon blue"><i class="bi bi-braces"></i></div>
+        <h3>Variable Tracking</h3>
+        <p>Where every variable is set and read, and how values propagate across passages.</p>
+      </div>
+      <div class="card">
+        <div class="icon green"><i class="bi bi-info-circle"></i></div>
+        <h3>Project Info</h3>
+        <p>Workspace statistics: passage and word counts, format and version, IFID, graph health.</p>
+      </div>
+    </div>
+
+    <h2 id="incremental">Incremental analysis</h2>
     <p>Knot doesn't re-parse your entire project on every keystroke. Only affected passages are re-parsed, and the graph is updated incrementally. This keeps large projects responsive even as they grow into hundreds of passages and thousands of links.</p>
 
-    <h2>Integrated build pipeline</h2>
+    <h2 id="build">Integrated build pipeline</h2>
     <p>Knot's build pipeline is designed to "just work" with zero manual setup:</p>
     <ol>
       <li><strong>Tweego is auto-downloaded</strong> on first build into the extension's global storage. You never need to install it yourself.</li>
@@ -98,56 +225,71 @@
       <li><strong>The output filename is derived from <code>StoryTitle</code></strong> — if your story is called "The Lost City", the build produces <code>The_Lost_City.html</code>. Falls back to <code>index.html</code> if no <code>StoryTitle</code> passage exists.</li>
       <li><strong>Build stats are logged</strong> — every build prints <code>Passages: N | Words: N</code> to the Knot Build output channel.</li>
     </ol>
+    <p>Beyond the defaults, a <code>knot.json</code> file in the workspace root can override the story format and version and declare special passages explicitly.</p>
 
-    <h2>Watch mode</h2>
+    <h2 id="watch">Watch mode</h2>
     <p>Toggle auto-rebuild on save. When Watch is on, every save of a <code>.tw</code>, <code>.twee</code>, <code>.js</code>, or <code>.css</code> file triggers a rebuild in the background. This is the recommended workflow for active development: edit, save, refresh the browser.</p>
 
-    <h2>Supported story formats</h2>
-    <table>
-      <thead><tr><th>Format</th><th>Status</th><th>What works</th><th>What doesn't (yet)</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><strong>SugarCube 2</strong></td>
-          <td><span class="badge badge-ok">Full support</span></td>
-          <td>Full macro catalog (~120 builtins), JS-aware variable tracking via oxc, special passages, completion, hover, diagnostics, Story Map, build pipeline</td>
-          <td>—</td>
-        </tr>
-        <tr>
-          <td><strong>Harlowe 3</strong></td>
-          <td><span class="badge badge-partial">Placeholder</span></td>
-          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
-          <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
-        </tr>
-        <tr>
-          <td><strong>Chapbook 1</strong></td>
-          <td><span class="badge badge-partial">Placeholder</span></td>
-          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
-          <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
-        </tr>
-        <tr>
-          <td><strong>Snowman 2</strong></td>
-          <td><span class="badge badge-partial">Placeholder</span></td>
-          <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
-          <td>Parser quality, link extraction, Story Map, ERB template detection, macro catalog, variable tracking, completion, hover</td>
-        </tr>
-      </tbody>
-    </table>
-    <p>Knot auto-detects the format from your <code>StoryData</code> passage. For non-SugarCube formats, the Language Status indicator shows a <code>◐</code> marker indicating the format is not yet fully supported. Bringing Harlowe, Chapbook, and Snowman to full parity is planned — see the <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">roadmap</a> for details.</p>
+    <h2 id="formats">Supported story formats</h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Format</th><th>Status</th><th>What works</th><th>What doesn't (yet)</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>SugarCube 2</strong></td>
+            <td><span class="badge badge-ok">Full support</span></td>
+            <td>Versioned macro catalog (73-entry union, filtered by your story's <code>format-version</code>), JS-aware variable tracking via oxc, CSS &amp; HTML linting, special passages, completion, hover, signature help, diagnostics, Story Map, build pipeline</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td><strong>Harlowe 3</strong></td>
+            <td><span class="badge badge-partial">Placeholder</span></td>
+            <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+            <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
+          </tr>
+          <tr>
+            <td><strong>Chapbook 1</strong></td>
+            <td><span class="badge badge-partial">Placeholder</span></td>
+            <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+            <td>Parser quality, link extraction, Story Map, macro catalog, variable tracking, completion, hover</td>
+          </tr>
+          <tr>
+            <td><strong>Snowman 2</strong></td>
+            <td><span class="badge badge-partial">Placeholder</span></td>
+            <td><code>FormatPlugin</code> trait implemented; build pipeline (via Tweego)</td>
+            <td>Parser quality, link extraction, Story Map, ERB template detection, macro catalog, variable tracking, completion, hover</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Knot auto-detects the format from your <code>StoryData</code> passage. The Language Status indicator (lower-right of the editor, on <code>.twee</code> files) shows the detected format plus passage, broken-link, and unreachable counts — turning warning-colored when links are broken. Bringing Harlowe, Chapbook, and Snowman to full parity is planned — see the <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">roadmap</a> for details.</p>
 
     <div class="callout">
-      <p><strong>Want a feature that isn't here?</strong> Knot is still early in development and the codebase is small — this is the ideal time to chime in. <a href="socials.html">Join the Discord</a> or <a href="https://github.com/StormByte0/Knot/issues">open an issue</a> and tell us what you need.</p>
+      <p><strong><i class="bi bi-lightbulb"></i> Want a feature that isn't here?</strong> Knot is still early in development and the codebase is small — this is the ideal time to chime in. <a href="socials.html">Join the Discord</a> or <a href="https://github.com/StormByte0/Knot/issues">open an issue</a> and tell us what you need.</p>
     </div>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [2.2.0] — Unreleased
+## Unreleased
 
 Story Map foundations: header metadata now lives in the language model, and
 reachability gets a manual escape hatch for variable-aliased navigation.
@@ -82,6 +82,19 @@ reachability gets a manual escape hatch for variable-aliased navigation.
   updates per file and scans each file once instead of rescanning the
   whole file per passage (O(passages × lines) → O(lines)); drag-heavy
   sessions with large stories stop paying a quadratic tax.
+
+### Documentation
+
+- **Docs accuracy pass** — every descriptive doc was re-audited against the
+  codebase and corrected to match actual functionality: the extension's
+  marketplace listing now points at the correct repository
+  (`github.com/StormByte0/Knot` — the old `stormbyte/knot` URL 404s), the
+  extension README's command table matches the 13 registered commands
+  (two documented commands never existed), and the root README, docs site,
+  and ARCHITECTURE.md now carry accurate feature lists, macro catalog
+  numbers (73-entry versioned union catalog), and version notes for
+  unreleased features. The 2.0.0 changelog entry was reconciled with what
+  actually shipped in the tag (see the corrected entry below).
 
 ---
 
@@ -172,6 +185,11 @@ filtered through the story's pinned `format-version` from StoryData.
 - The language server's reported version now derives from the workspace
   `Cargo.toml` at compile time — it can never drift from the extension
   version again.
+- **Release matrix consolidated (undocumented at the time):** the
+  `darwin-x64` (Intel Mac) build was dropped from the release workflow
+  after 2.0.0. The marketplace now ships four platform binaries —
+  win32-x64, darwin-arm64, linux-x64, linux-arm64. Intel Mac installs
+  fall back to TextMate highlighting (no Rust language server binary).
 
 ---
 
@@ -255,7 +273,7 @@ Harlowe, Chapbook, and Snowman have placeholder implementations.
 - Format resolution priority: StoryData → knot.json config → heuristic → default (SugarCube)
 - StoryData validation: missing, duplicate, missing start passage
 
-#### Standard LSP Methods (26 implemented)
+#### Standard LSP Methods (28 request handlers)
 - `textDocument/completion` — Context-aware: passages (`[[`), variables (`$`), SugarCube macros (`<<`) (SugarCube only; other formats do not yet have macro catalogs)
 - `completionItem/resolve` — Markdown documentation for passage/variable/macro
 - `textDocument/hover` — Passage metadata (links, vars, tags, incoming refs)
@@ -264,7 +282,7 @@ Harlowe, Chapbook, and Snowman have placeholder implementations.
 - `textDocument/typeDefinition` — Navigate to StoryData passage
 - `textDocument/implementation` — Passages that link to current passage
 - `textDocument/references` — All header defs + link occurrences
-- `textDocument/prepareRename` / `textDocument/rename` — Rename across all definitions and references
+- `textDocument/documentHighlight` — Highlight occurrences of the passage/variable under the cursor
 - `textDocument/documentSymbol` — Passages as DocumentSymbols with tag details
 - `workspace/symbol` — Workspace-wide passage search
 - `textDocument/signatureHelp` — SugarCube macro parameter hints (SugarCube only)
@@ -281,57 +299,64 @@ Harlowe, Chapbook, and Snowman have placeholder implementations.
 - `textDocument/prepareCallHierarchy` — Passage call hierarchy items
 - `callHierarchy/incomingCalls` — Passages linking to current
 - `callHierarchy/outgoingCalls` — Passages linked from current
-- `textDocument/diagnostic` — Pull diagnostics model
-- `textDocument/semanticTokens/full` — 10 token types, 4 modifiers with delta encoding
+- `textDocument/semanticTokens/full` — Delta-encoded semantic tokens
 
-#### Custom LSP Extensions (11 methods)
+#### Custom LSP Extensions
+
+Requests (14):
 - `knot/graph` — Passage graph export with metadata, unreachable flags, broken edges, and SCC game-loop data (note: Story Map does not yet render game-loop highlighting)
 - `knot/build` — Invoke Tweego compiler, stream output via `knot/buildOutput` notifications
 - `knot/play` — Build and return compiled HTML path
 - `knot/variableFlow` — Per-variable write/read locations, initialized-at-start, unused status (SugarCube only)
-- `knot/debug` — 17-field passage debug info
-- `knot/trace` — DFS execution trace with loop detection (configurable max depth, default 50)
-- `knot/profile` — 20+ workspace statistics (complexity, balance, distribution, tags)
+- `knot/passageDiagnostics` — Detailed passage debug info for the Passage Diagnostics view
+- `knot/profile` — Workspace statistics (complexity, balance, distribution, tags)
 - `knot/compilerDetect` — PATH + configured path search for Tweego
-- `knot/breakpoints` — Set/clear/list debug breakpoints per passage
-- `knot/stepOver` — Single-step outgoing choices and variable operations
 - `knot/watchVariables` — Variable state at passage entry with dataflow
-- `knot/indexProgress` notification — Workspace indexing progress
-- `knot/buildOutput` notification — Streamed compiler output
+- `knot/generateIfid` — Generate a fresh IFID for project initialization
+- `knot/reindexWorkspace` — Force a full workspace reparse
+- `knot/updatePositions` — Persist Story Map node positions back into passage headers
+- `knot/clientReady` — Client handshake after activation
+- `knot/formats/list` — List available/installed story formats
+- `knot/formats/refresh` — Download a story format into the managed cache
+
+Server → client notifications (6):
+- `knot/buildOutput` — Streamed compiler output
+- `knot/indexProgress` — Workspace indexing progress
+- `knot/formatDetected` — Story format resolved from StoryData
+- `knot/noTweeFiles` — Empty workspace detection (offers project initialization)
+- `knot/formatSwitchComplete` — Format switch finished, views refresh
+- `knot/refreshSemanticTokens` — Ask the client to refresh token decorations
 
 #### VS Code Extension
 - Binary bootstrap system: platform-specific `knot-server` resolution with fallback to TextMate
 - TextMate grammar for Twee syntax highlighting (`syntaxes/twee.tmLanguage.json`)
 - Language configuration for bracket matching, comment toggling, and word patterns
-- 14 commands: openStoryMap, build, play, playFromPassage, toggleWatch, restartServer, reindexWorkspace, detectCompiler, configureStoryFormats, openManagedStorage, openTweegoFolder, openPassageByName, openSettings, initProject
-- 4 keybindings declared in `package.json` (F5=Play, Shift+F5=Play from Passage, F6=Build, Ctrl+Shift+M=Story Map) — scoped to `resourceLangId == 'twee'`; may conflict with VS Code defaults in practice
+- 13 commands: openStoryMap, build, play, playFromPassage, toggleWatch, restartServer, reindexWorkspace, detectCompiler, configureStoryFormats, openManagedStorage, openPassageByName, openSettings, initProject
+- No default keybindings — the four originally declared (F5=Play, Shift+F5=Play from Passage, F6=Build, Ctrl+Shift+M=Story Map) were removed before release because they clashed with VS Code defaults and other extensions; the status bar buttons and Command Palette are the reliable entry points, and users can bind their own shortcuts
 - **Status Bar Cluster** — Five items: Story Map, Build, Watch (toggle auto-rebuild on save), Play (open in browser), Settings
 - **Watch Toggle** — Background save watcher for `.tw`/`.twee`/`.js`/`.css`/`.html` files with build output logging
 - **Play** — Opens compiled HTML in the default system browser; builds first if Watch is off, opens existing HTML if Watch is on
-- **Decorations API** — Gutter badges on passage headers, faded unreachable passages, wavy red underlines on broken links
-- **Language Status API** — Native status indicator with periodic refresh showing format, passage count, broken/unreachable counts, and format support level (✓ for SugarCube, ◐ for other formats)
+- **Decorations API** — Gutter badges on passage headers and wavy red underlines on broken links (an earlier unreachable-passage dimming experiment was removed before release — whole-passage fades based on incomplete analysis were more noisy than useful)
+- **Language Status API** — Native status indicator with periodic refresh showing the detected story format, passage count, and broken/unreachable counts; turns warning-colored when broken links exist
 - **Task Provider** — `knot/build` task using Pseudoterminal
 - **Story Map Webview** — `@xyflow/react` + `dagre` graph visualization with click-to-navigate (single click jumps to passage in editor), special-passage node coloring, dead-end highlighting (yellow double border), unreachable passage grouping. All edges render in gray — no edge-type color differentiation. No focus mode or right-click context menu.
-- **Debug View** — Passage inspection with trace, step-over, breakpoints, variable watch, diagnostics listing
+- **Debug View** — Passage inspection panel (links, variables, macros, complexity metrics, diagnostics listing). The trace/step-over/breakpoint experiments from early development were removed before release; the view is served by `knot/passageDiagnostics`
 - **Profile View** — Workspace statistics dashboard with graph health, variable stats, link distribution, complexity metrics, structural balance, tag analysis
 - Crash recovery: auto-retry up to 3 times with 2s delay, restart/disable dialog on max retries
-- 10 configurable diagnostic severity settings
+- 11 configurable diagnostic severity settings
 - Editor defaults for Twee files: word wrap, tab size 4, format on save, bracket pair colorization
 
 #### CI/CD
-- GitHub Actions workflow with 5 jobs: check, test, fmt, clippy, build
-- 5-platform binary matrix: win32-x64, darwin-arm64, darwin-x64, linux-x64, linux-arm64
-- Platform-specific VSIX packaging with `@vscode/vsce --target`
-- Cross-compilation support for Linux ARM64
+- GitHub Actions: CI workflow on every push/PR (fmt check, clippy with `-D warnings`, tests) plus a release workflow (shared webview build, per-platform VSIX packaging with `@vscode/vsce --target`, GitHub Release creation)
+- 5-platform binary matrix at release time: win32-x64, darwin-arm64, darwin-x64, linux-x64, linux-arm64 (darwin-x64 was later dropped — see the 2.1.0 notes)
 - Rust cache via `Swatinem/rust-cache@v2`
 
 #### Semantic Token System
-- 10 token types: PassageHeader, Macro, Variable, Link, String, Number, Boolean, Comment, Tag, Keyword
-- 4 token modifiers: Definition, Deprecated, ReadOnly, ControlFlow
+- 30 token types across the passage, code, prose-structure, and markup surfaces (PassageHeader/PassageName, Macro/Variable/Keyword, Prose/InlineStyle/TextFormat, Heading/ListMarker/Blockquote/Table, …) with 18 modifiers (Definition, Deprecated, ControlFlow, Bold/Underline/Strikethrough/Subscript for markup, BlockDepth1–6, …)
 - Delta encoding for efficient token transfer
 
-#### SugarCube Macro Table
-- ~120 built-in SugarCube macro signatures with parameter descriptions
+#### SugarCube Language Surface
+- 73 built-in SugarCube macro entries in the catalog, plus 23 globals, 20 functions, and 15 methods documented for hover
 - Used by signature help and completion providers
 
 #### Build Pipeline

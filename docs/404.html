@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Not found — Knot</title>
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
@@ -22,24 +23,55 @@
     </div>
   </nav>
 
-  <main style="text-align: center; padding-top: 96px;">
-    <h1 style="font-size: 4rem; margin-bottom: 0.2em;">404</h1>
-    <p class="lead" style="margin: 0 auto 2em;">This page got lost in the story graph. The link may be broken, or the page may have moved.</p>
-    <div class="cta" style="justify-content: center;">
-      <a class="btn btn-primary" href="index.html">Back to home</a>
-      <a class="btn" href="https://github.com/StormByte0/Knot/issues">Report a broken link</a>
+  <main style="text-align: center; padding-top: 90px;">
+    <div class="graph-demo" role="img" aria-label="A story graph where one passage, this page, is unreachable from any link" style="max-width: 560px; margin: 0 auto 1.4em;">
+      <svg viewBox="0 0 560 150" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <marker id="arrow404" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="#5c6a7e"/>
+          </marker>
+        </defs>
+        <path d="M 130 75 C 175 75, 185 75, 230 75" fill="none" stroke="#5c6a7e" stroke-width="1.6" marker-end="url(#arrow404)"/>
+        <rect x="30" y="49" width="100" height="52" rx="9" fill="#11161f" stroke="#3fb950" stroke-width="2"/>
+        <text x="80" y="71" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Start</text>
+        <text x="80" y="89" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">home page</text>
+        <rect x="230" y="49" width="110" height="52" rx="9" fill="#11161f" stroke="#263041" stroke-width="1.5"/>
+        <text x="285" y="71" text-anchor="middle" fill="#e8eef7" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">Somewhere</text>
+        <text x="285" y="89" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">a real page</text>
+        <rect x="420" y="49" width="110" height="52" rx="9" fill="#11161f" stroke="#bf6900" stroke-width="1.5"/>
+        <text x="475" y="71" text-anchor="middle" fill="#e6a56e" font-family="ui-monospace, Menlo, monospace" font-size="13" font-weight="600">This page</text>
+        <text x="475" y="89" text-anchor="middle" fill="#93a1b5" font-family="ui-monospace, Menlo, monospace" font-size="9">unreachable</text>
+      </svg>
+    </div>
+    <h1 style="font-size: 4.2rem; margin-bottom: 0.15em; letter-spacing: -0.03em;">404</h1>
+    <p class="lead" style="margin: 0 auto 2em;">This passage is unreachable — no link points here. The link you followed may be broken, or the page may have moved.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="index.html"><i class="bi bi-house"></i> Back to home</a>
+      <a class="btn" href="https://github.com/StormByte0/Knot/issues"><i class="bi bi-bug"></i> Report a broken link</a>
     </div>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>

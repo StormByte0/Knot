@@ -4,9 +4,9 @@
 
 Knot is a next-generation development environment for Twine and Twee interactive fiction projects. The bulk of Knot lives in a language server written in Rust that talks to editors through the Language Server Protocol. That design choice matters: Knot is not strictly tethered to VS Code. The VS Code extension is its first host, but the same Rust core can power other editors — and, in time, become a standalone IDE for Twine.
 
-Unlike tooling that bolts regular expressions onto a text editor, Knot actually understands how a Twine project is structured. It models your story as a directed graph of passages connected by links, tracks variables as they flow across passages, and turns that structural understanding into navigation, diagnostics, and insight that pattern matching alone cannot provide. The headline features today are a **variable tracker**, **passage-based diagnostics**, and a **Story Map** for visualizing and navigating your project — with more to come.
+Unlike tooling that bolts regular expressions onto a text editor, Knot actually understands how a Twine project is structured. It models your story as a directed graph of passages connected by links, tracks variables as they flow across passages, and turns that structural understanding into navigation, diagnostics, and insight that pattern matching alone cannot provide. The headline features today are **version-aware SugarCube 2 support**, **embedded CSS and HTML linting**, a **variable tracker**, and a **Story Map** for visualizing and navigating your project.
 
-> **⚠️ Early development.** Knot is still early in development and you may run into bugs or rough edges. Only **SugarCube 2** has full language features today (macro catalog, JS-aware variable tracking, special passages, completion, hover). **Harlowe**, **Chapbook**, and **Snowman** are placeholder implementations — the build pipeline works for every format because it delegates to Tweego, which is format-agnostic, but the language features are not yet built out. Knot v2.1.0 is the first full stable release of the v2 line — the SugarCube 2 surface is stable; expect iteration on the remaining formats.
+> **⚠️ Early development.** Only **SugarCube 2** has full language features today (versioned macro catalog, JS-aware variable tracking, special passages, completion, hover, CSS/HTML linting). **Harlowe**, **Chapbook**, and **Snowman** are placeholder implementations — the build pipeline works for every format because it delegates to Tweego, which is format-agnostic, but the language features are not yet built out. Knot v2.1.0 is the first full stable release of the v2 line — the SugarCube 2 surface is stable; expect iteration on the remaining formats.
 >
 > This is also the best time to get involved. The codebase is still small and the technical debt is low, so feature requests and design input from early users have an outsized impact on where Knot goes. If there's something you want Knot to do, say so now — see [Support & Community](#-support--community) for where to chime in.
 
@@ -27,13 +27,19 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 ## What Knot Does Today
 
+- **Version-aware SugarCube 2 support.** The macro catalog is versioned end to end: every macro that ever existed in SugarCube 2.x (a 73-entry union catalog — 67 current, 6 removed, 9 deprecated) carries its lifecycle and per-era descriptions, and completions, hover docs, signature help, and diagnostics are all filtered through the `format-version` pinned in your `StoryData`. Using a macro that was removed in SugarCube 2.37.0? You get an error with the removal version, the replacement, and downgrade guidance — not a silent runtime failure. Pin an older version and the removed macros come back, correctly described for that era.
 - **Structural understanding, not just regex.** Knot parses your project into passages and the links between them, so it can answer questions like "where is this variable set?", "is this passage reachable?", and "which passages link here?" — questions that pure text matching gets wrong.
-- **Variable tracker.** See where every variable is set, read, and how it flows across passages. For SugarCube, variable tracking is JavaScript-aware via the [oxc](https://oxc-project.github.io/) parser, so it understands `<<set $x to 1>>`, `<<run $x++>>`, and JS inside `<<script>>` blocks.
-- **Passage-based diagnostics.** A dedicated panel inspects any passage's links, variables, macros, and complexity metrics. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicate passage names, dead ends, and more — updated as you type.
+- **Embedded CSS linting.** A real CSS parser runs over every stylesheet surface — `[stylesheet]` passages, `<style>` bodies, `<<style>>`/`<<css>>` blocks, and `style="…"` attribute values — reporting parse errors, unknown properties against a 500+ property registry, and pseudo-class/pseudo-element typos like `:hvoer` (the mistake that makes browsers silently drop a whole rule).
+- **Embedded HTML validation.** Unclosed elements, duplicate attributes, missing attribute values, and unterminated tags are diagnosed inside passages and StoryInterface — with the same tolerance the Twine engine itself has, so prose `<` and literal regions don't spam you with non-errors. `@attr` / `sc-eval:attr` evaluation directives get completion families, version-gated to SugarCube 2.21.0+ where they exist. StoryInterface files get full semantic highlighting.
+- **Variable tracker.** See where every variable is set, read, and how it flows across passages. For SugarCube, variable tracking is JavaScript-aware via the [oxc](https://oxc.rs/) parser, so it understands `<<set $x to 1>>`, `<<run $x++>>`, and JS inside `<<script>>` blocks. When a JS block has a syntax error, the parser recovers chunk-by-chunk so one broken block doesn't blind the rest of the file.
+- **Passage diagnostics.** A dedicated panel inspects any passage's links, variables, macros, and complexity metrics. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicate passage names, dead ends, and more — updated as you type, each configurable to `error`/`warning`/`info`/`hint`/`off`.
 - **Story Map.** An interactive graph visualization of your project. Nodes are passages, edges are links. Click any node to jump to that passage. The map is primarily for visualization and navigation at this time; deeper structural editing from the map is planned.
+- **The Knot IDE sidebar.** A dedicated activity-bar panel with three views: **Passage Diagnostics**, **Variable Tracking**, and **Project Info** (workspace statistics — passage and word counts, format, IFID, graph health). Everything visual Knot knows about your project lives there, one click away.
 - **Incremental analysis.** Only affected passages are re-parsed after each keystroke, so large projects stay responsive.
-- **Integrated build pipeline.** One-click build and play via [Tweego](https://www.motoslave.net/tweego/). Knot downloads and manages Tweego and story formats for you — no manual compiler setup.
+- **Integrated build pipeline.** One-click build and play via [Tweego](https://www.motoslave.net/tweego/). Knot downloads and manages Tweego and story formats for you — no manual compiler setup. Missing formats trigger a one-click download offer right from a failed build.
 - **Watch mode.** Toggle auto-rebuild on save. Edit, save, refresh in your browser.
+
+> **Unreleased** (merged to `main`, not yet in a Marketplace build): manual reachability entries — mark entry passages with `"reachable": true` header metadata so variable-aliased navigation (`<<goto $next>>`) stops producing false "unreachable" warnings, plus Story Map navigation to the correct line in closed files. See the [changelog](./CHANGELOG.md) for details.
 
 ---
 
@@ -41,7 +47,7 @@ Unlike tooling that bolts regular expressions onto a text editor, Knot actually 
 
 Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps.
 
-[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)  [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)    [![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/knsn9Y5KG)
+[![Patreon](https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?style=for-the-badge&logo=patreon)](https://www.patreon.com/StormByte0)  [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/stormbyte0)    [![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/YYm9nGbtZY)
 
 ### Patreon — Development Funding
 
@@ -54,7 +60,7 @@ All tiers include Discord access and the backer-only dev-updates channel. See th
 
 ### Discord — Support & Development Updates
 
-The [Knot Discord](https://discord.gg/UvWSZFkC3) is the place to get help, follow along with development, and shape what gets built next. Supporters get early visibility into what's being worked on, and it's the fastest channel to chime in with feature requests while the project is still young and flexible.
+The [Knot Discord](https://discord.gg/YYm9nGbtZY) is the place to get help, follow along with development, and shape what gets built next. Supporters get early visibility into what's being worked on, and it's the fastest channel to chime in with feature requests while the project is still young and flexible.
 
 
 
@@ -97,11 +103,11 @@ Welcome to your story. [[Continue]].
 You made it!
 ```
 
-The `StoryData` passage tells Knot (and Tweego) which story format to use. The `Start` passage is where the player begins. Knot auto-detects the format from `StoryData` and activates the right language features.
+The `StoryData` passage tells Knot (and Tweego) which story format to use — the `format-version` also drives Knot's version-aware macro catalog. The `Start` passage is where the player begins. Knot auto-detects the format from `StoryData` and activates the right language features.
 
 ### 3. Build and Play
 
-Click **Build** in the status bar to compile your project into an HTML file. The first build will prompt Knot to download Tweego and the required story format — this happens automatically, no manual setup needed.
+Click **Build** in the status bar to compile your project into an HTML file. If no Tweego compiler is found, Knot offers to download one for you; on the first build it also downloads the story format your `StoryData` pins (cached per version in the extension's managed storage) — no manual setup needed.
 
 Click **Play** to open the compiled story in your default browser. If Watch is off, Play builds first; if Watch is on, Play just opens the already-fresh HTML.
 
@@ -111,9 +117,11 @@ Click **Watch** in the status bar to toggle auto-rebuild on save. When Watch is 
 
 This is the recommended workflow for active development: turn Watch on, open Play in your browser, edit, save, and refresh the browser.
 
-### 5. Explore the Story Map
+### 5. Explore the Story Map and the Sidebar
 
 Click **Story Map** in the status bar to open an interactive graph of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. The map updates in real time as you edit.
+
+The **Knot** icon in the activity bar (left side of the window) opens the Knot IDE sidebar with three views: **Passage Diagnostics** (inspect the passage under the cursor), **Variable Tracking** (where every variable is set and read), and **Project Info** (workspace statistics).
 
 > All Knot actions are triggered through the **status bar buttons** at the bottom of the window or the **Command Palette** (`Ctrl+Shift+P` / `Cmd+Shift+P`), prefixed with "Knot:". Knot intentionally does not ship default keyboard shortcuts — they tended to clash with VS Code defaults and other extensions, so the status bar and Command Palette are the reliable entry points. You can always bind your own shortcuts via VS Code's **Keyboard Shortcuts** editor if you want them.
 
@@ -131,6 +139,8 @@ Knot adds five items to the left side of the status bar:
 | Play | $(play) | Open compiled HTML in browser |
 | Settings | $(gear) | Open Knot settings |
 
+The **Language Status indicator** (lower-right of the editor, on `.twee` files) shows the detected story format plus a live summary — passage count, broken-link count, and unreachable-passage count — and turns warning-colored when broken links exist.
+
 ---
 
 ## Commands
@@ -145,14 +155,12 @@ All commands are available via the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+
 | **Knot: Toggle Watch** | Turn auto-rebuild on save on/off |
 | **Knot: Open Story Map** | Open the passage graph visualization |
 | **Knot: Open Passage by Name** | Quick-pick a passage and jump to it |
-| **Knot: Configure Story Formats** | Manage installed story formats |
-| **Knot: Configure Build Toolchain** | Set up or download Tweego |
+| **Knot: Configure Story Formats** | Manage and download installed story formats |
 | **Knot: Detect Compiler** | Check if Tweego is available on PATH |
 | **Knot: Re-index Workspace** | Force a full re-index of all files |
 | **Knot: Restart Language Server** | Restart the Rust LSP server |
 | **Knot: Initialize Project** | Create a basic project skeleton |
 | **Knot: Open Managed Storage Folder** | Open the folder where Knot stores Tweego and formats |
-| **Knot: Open Tweego Folder** | Open the folder containing the managed Tweego binary |
 | **Knot: Open Extension Settings** | Open the VS Code Settings UI filtered to Knot |
 
 ---
@@ -173,7 +181,7 @@ Settings are organized into sections in the VS Code Settings UI. The most import
 
 ### Diagnostics
 
-Each diagnostic can be set to `error`, `warning`, `info`, `hint`, or `off`. Defaults are tuned for a balance of catching real issues without being noisy.
+Each diagnostic can be set to `error`, `warning`, `info`, `hint`, or `off`. Defaults are tuned for a balance of catching real issues without being noisy. The configurable diagnostics are: `broken-link`, `unreachable-passage`, `uninitialized-variable`, `unused-variable`, `redundant-write`, `duplicate-passage-name`, `empty-passage`, `dead-end-passage`, `invalid-passage-name`, `complex-passage`, and `large-passage` (all under `knot.diagnostics.*`).
 
 ### Indexing
 
@@ -214,6 +222,8 @@ In addition to VS Code settings, Knot reads project-level configuration from `.v
 }
 ```
 
+It also supports a `diagnostics` map (severity overrides), a `format` override (test the project as a different story format without touching `StoryData`), and `special_passages` (declare your own special passages with a matching strategy and behavior — e.g. treat a `sidebar`-tagged passage as chrome). See [ARCHITECTURE.md](../../ARCHITECTURE.md) for the full schema.
+
 VS Code settings take priority over `.vscode/knot.json` for the same field. For `build.flags`, both sets are merged.
 
 ---
@@ -222,8 +232,8 @@ VS Code settings take priority over `.vscode/knot.json` for the same field. For 
 
 Knot's build pipeline is designed to "just work" with zero manual setup:
 
-1. **Tweego is auto-downloaded** on first build into the extension's global storage. You never need to install it yourself.
-2. **Story formats are auto-downloaded** based on your project's `StoryData` format and version. The format is cached per version in `<globalStorage>/storyformats/<id>@<version>/`.
+1. **Tweego is auto-downloaded** — if no compiler is found, the Build command offers a one-click download into the extension's global storage. You never need to install it yourself.
+2. **Story formats are auto-downloaded** based on your project's `StoryData` format and version. The format is cached per version in `<globalStorage>/storyformats/<id>@<version>/`. A build that fails on a missing format offers the download inline and retries automatically.
 3. **The workspace is the source directory** — put all your `.twee`, `.js`, `.css`, and asset files directly in the workspace. Story formats live separately in the managed folder, so there's no risk of `format.js` getting bundled as a passage.
 4. **The output filename is derived from `StoryTitle`** — if your story is called "The Lost City", the build produces `The_Lost_City.html`. Falls back to `index.html` if no `StoryTitle` passage exists.
 5. **Build stats are logged** — every build prints `Passages: N | Words: N` to the Knot Build output channel, so you can track your project size at a glance.
@@ -238,12 +248,12 @@ Knot currently has **SugarCube 2** as its only production-quality format plugin 
 
 | Format | Status | What works | What doesn't (yet) |
 |---|---|---|---|
-| **SugarCube 2** | ✅ Full support | Full macro catalog (~120 builtins), JS-aware variable tracking via oxc, special passages, completion, hover, diagnostics, Story Map, build pipeline | — |
+| **SugarCube 2** | ✅ Full support | Versioned macro catalog (73-entry union, filtered by your story's `format-version`), JS-aware variable tracking via oxc, embedded CSS and HTML linting, special passages, completion, hover, signature help, diagnostics, Story Map, build pipeline | — |
 | **Harlowe 3** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, macro catalog, variable tracking, completion, hover |
 | **Chapbook 1** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, macro catalog, variable tracking, completion, hover |
 | **Snowman 2** | ◐ Placeholder only | `FormatPlugin` trait implemented; build pipeline (via Tweego) | Parser quality, link extraction, Story Map visualization, ERB template detection, macro catalog, variable tracking, completion, hover |
 
-Knot auto-detects the format from your `StoryData` passage. For non-SugarCube formats, the Language Status indicator in the lower-right of the editor will show a `◐` marker indicating the format is not yet fully supported. If you're writing a SugarCube story, all language features activate automatically.
+Knot auto-detects the format from your `StoryData` passage. If you're writing a SugarCube story, all language features activate automatically — including the version-aware surface described above. For the other formats, the Language Status indicator shows the detected format with passage and issue counts while the language features are built out.
 
 Bringing Harlowe, Chapbook, and Snowman to full parity is planned — see [ROADMAP.md](../../ROADMAP.md) for details.
 
@@ -261,10 +271,10 @@ No manual installation of Tweego, Node.js, or any other dependency is required.
 ## Troubleshooting
 
 **Build fails with "No Tweego compiler found"**
-Run the `Knot: Configure Build Toolchain` command to download Tweego automatically, or set `knot.build.tweegoPath` to point at a local Tweego binary.
+Run **Knot: Build Project** — it detects the missing compiler and offers a one-click managed download. Alternatively, set `knot.build.tweegoPath` to point at a local Tweego binary.
 
 **Build fails with "story format not found"**
-Run the `Knot: Configure Story Formats` command. If your `StoryData` specifies a format and version, Knot will offer a one-click download.
+The build output offers a one-click download for the missing format and retries automatically. You can also run `Knot: Configure Story Formats` to manage installed formats manually.
 
 **Diagnostics not updating**
 Try `Knot: Re-index Workspace` to force a full reparse. If that doesn't help, `Knot: Restart Language Server` will restart the Rust server.
@@ -273,7 +283,13 @@ Try `Knot: Re-index Workspace` to force a full reparse. If that doesn't help, `K
 Make sure Watch is toggled on (the eye icon in the status bar should be open, not closed). If Watch is off, Play only builds if no HTML exists yet — otherwise it opens the existing file.
 
 **Language server crashes repeatedly**
-Knot has automatic crash recovery, but if it keeps happening, set `knot.trace.server` to `"verbose"`, reproduce the crash, then check the "Knot" output channel for the stack trace. Please report it — either via [GitHub Issues](https://github.com/StormByte0/Knot/issues) (the standard channel) or by dropping a message in the [Discord](https://discord.gg/knsn9Y5KG), whichever you prefer.
+Knot has automatic crash recovery (restart after a 2-second delay, with a retry counter), but if it keeps happening, set `knot.trace.server` to `"verbose"`, reproduce the crash, then check the "Knot" output channel for the stack trace. Please report it — either via [GitHub Issues](https://github.com/StormByte0/Knot/issues) (the standard channel) or by dropping a message in the [Discord](https://discord.gg/YYm9nGbtZY), whichever you prefer.
+
+---
+
+## Release Notes
+
+See [CHANGELOG.md](./CHANGELOG.md) for the full version history — including the 2.1.0 story-format versioning release and an *Unreleased* section covering work already merged to `main`.
 
 ---
 
@@ -287,7 +303,7 @@ Knot is under active development. See [ROADMAP.md](../../ROADMAP.md) for long-te
 
 ### Author
 
-- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://www.patreon.com/StormByte0) · [Ko-fi](https://ko-fi.com/stormbyte0) · [Discord](https://discord.gg/knsn9Y5KG)
+- **StormByte0** — [GitHub](https://github.com/StormByte0) · [Patreon](https://www.patreon.com/StormByte0) · [Ko-fi](https://ko-fi.com/stormbyte0) · [Discord](https://discord.gg/YYm9nGbtZY)
 
 ### Patrons
 
@@ -298,8 +314,8 @@ Knot is funded by its community of supporters. The full list — organized by ti
 ### Built With
 
 - [Tweego](https://www.motoslave.net/tweego/) — the compiler Knot uses to build stories
-- [oxc](https://oxc-project.github.io/) — JavaScript parser powering SugarCube variable analysis
-- [tower-lsp](https://github.com/silvanshade/lsp-server) — LSP server framework for Rust
+- [oxc](https://oxc.rs/) — JavaScript parser powering SugarCube variable analysis
+- [tower-lsp](https://github.com/ebkalderon/tower-lsp) — LSP server framework for Rust
 - [petgraph](https://github.com/petgraph/petgraph) — graph data structures for passage analysis
 - [@xyflow/react](https://reactflow.dev/) — Story Map graph visualization
 - The Rust and VS Code extension ecosystems
@@ -319,6 +335,6 @@ This project is licensed under the **Knot Source-Available License**. You are fr
 - **Issues:** [https://github.com/StormByte0/Knot/issues](https://github.com/StormByte0/Knot/issues)
 - **Patreon:** [https://www.patreon.com/StormByte0](https://www.patreon.com/StormByte0)
 - **Ko-fi:** [https://ko-fi.com/stormbyte0](https://ko-fi.com/stormbyte0)
-- **Discord:** [https://discord.gg/knsn9Y5KG](https://discord.gg/knsn9Y5KG)
+- **Discord:** [https://discord.gg/YYm9nGbtZY](https://discord.gg/YYm9nGbtZY)
 - **Tweego:** [https://www.motoslave.net/tweego/](https://www.motoslave.net/tweego/)
 - **Twine:** [https://twinery.org/](https://twinery.org/)

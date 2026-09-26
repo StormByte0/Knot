@@ -6,6 +6,7 @@
   <title>Onboarding — Knot</title>
   <meta name="description" content="Get up and running with Knot in minutes: install the extension, open a Twine project, build and play, and explore the Story Map.">
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
@@ -19,80 +20,131 @@
         <a href="socials.html">Community</a>
         <a href="sponsors.html">Sponsors</a>
         <a href="links.html">Links</a>
+        <a class="nav-gh" href="https://github.com/StormByte0/Knot"><i class="bi bi-github"></i><span class="gh-label">GitHub</span></a>
       </div>
     </div>
   </nav>
 
   <main>
-    <h1>Onboarding</h1>
-    <p class="lead">Get up and running with Knot in minutes. Install the extension, open a Twine project, build and play, and explore the Story Map.</p>
-
-    <h2>1. Install Knot</h2>
-    <p>Install from the VS Code Marketplace or by searching "Knot" in the Extensions panel (<code>Ctrl+Shift+X</code> / <code>Cmd+Shift+X</code>). No other setup is required — Knot manages its own dependencies.</p>
-
-    <h2>2. Open a Twine project</h2>
-    <p>Open a folder containing <code>.tw</code> or <code>.twee</code> files. If you don't have a project yet, Knot will detect the empty workspace and offer to initialize one for you via the <strong>Knot: Initialize Project</strong> command.</p>
-    <p>A minimal Twine project needs at least two passages:</p>
-    <pre><code>:: StoryData
-{
-    "ifid": "D674C58C-DEFA-4F70-B7A2-27742230C0FC",
-    "format": "SugarCube",
-    "format-version": "2.37.0"
-}
-
-:: Start
-Welcome to your story. [[Continue]].
-
-:: Continue
-You made it!</code></pre>
-    <p>The <code>StoryData</code> passage tells Knot (and Tweego) which story format to use. The <code>Start</code> passage is where the player begins. Knot auto-detects the format from <code>StoryData</code> and activates the right language features.</p>
-
-    <h2>3. Build and play</h2>
-    <p>Click <strong>Build</strong> in the status bar to compile your project into an HTML file. The first build will prompt Knot to download Tweego and the required story format — this happens automatically, no manual setup needed.</p>
-    <p>Click <strong>Play</strong> to open the compiled story in your default browser. If Watch is off, Play builds first; if Watch is on, Play just opens the already-fresh HTML.</p>
-
-    <div class="callout">
-      <p><strong>Triggering actions.</strong> All Knot actions are triggered through the status bar buttons at the bottom of the window or the Command Palette (<code>Ctrl+Shift+P</code> / <code>Cmd+Shift+P</code>), prefixed with "Knot:". Knot intentionally does not ship default keyboard shortcuts — they tended to clash with VS Code defaults and other extensions. You can always bind your own via VS Code's Keyboard Shortcuts editor.</p>
+    <div class="pagehead">
+      <h1>Onboarding</h1>
+      <p class="lead">Get up and running with Knot in minutes. Install the extension, open a Twine project, build and play, and explore the Story Map.</p>
     </div>
 
-    <h2>4. Enable Watch (optional, recommended)</h2>
-    <p>Click <strong>Watch</strong> in the status bar to toggle auto-rebuild on save. When Watch is on, every save of a <code>.tw</code>, <code>.twee</code>, <code>.js</code>, or <code>.css</code> file triggers a rebuild in the background. Build progress appears in the "Knot Build" output channel.</p>
-    <p>This is the recommended workflow for active development: turn Watch on, open Play in your browser, edit, save, and refresh the browser.</p>
+    <ol class="steps">
+      <li>
+        <h2>Install Knot</h2>
+        <p>Install from the <a href="https://marketplace.visualstudio.com/items?itemName=stormbyte.knot">VS Code Marketplace</a> or by searching "Knot" in the Extensions panel (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>X</kbd>). No other setup is required — Knot manages its own dependencies, including the compiler.</p>
+      </li>
 
-    <h2>5. Explore the Story Map</h2>
-    <p>Click <strong>Story Map</strong> in the status bar to open an interactive graph of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. The map updates in real time as you edit.</p>
-    <p>The Story Map is primarily for visualization and navigation at this time; deeper structural editing from the map is on the roadmap.</p>
+      <li>
+        <h2>Open a Twine project</h2>
+        <p>Open a folder containing <code>.tw</code> or <code>.twee</code> files. If you don't have a project yet, Knot will detect the empty workspace and offer to initialize one for you via the <strong>Knot: Initialize Project</strong> command.</p>
+        <p>A minimal Twine project needs at least two passages:</p>
+        <div class="window" role="img" aria-label="A minimal Twee project with StoryData and Start passages">
+          <div class="window-bar">
+            <div class="window-dots"><span></span><span></span><span></span></div>
+            <span class="window-title">story.tw</span>
+            <span class="window-badge">Knot</span>
+          </div>
+          <pre><code><span class="ln">1</span><span class="tk-hdr">::</span> <span class="tk-name">StoryData</span>
+<span class="ln">2</span><span class="tk-punc">{</span>
+<span class="ln">3</span>  <span class="tk-json-key">"ifid"</span><span class="tk-punc">:</span> <span class="tk-str">"D674C58C-DEFA-4F70-B7A2-27742230C0FC"</span><span class="tk-punc">,</span>
+<span class="ln">4</span>  <span class="tk-json-key">"format"</span><span class="tk-punc">:</span> <span class="tk-str">"SugarCube"</span><span class="tk-punc">,</span>
+<span class="ln">5</span>  <span class="tk-json-key">"format-version"</span><span class="tk-punc">:</span> <span class="tk-str">"2.37.3"</span>
+<span class="ln">6</span><span class="tk-punc">}</span>
+<span class="ln">7</span>
+<span class="ln">8</span><span class="tk-hdr">::</span> <span class="tk-name">Start</span>
+<span class="ln">9</span>Welcome to your story. <span class="tk-punc">[[</span>Continue<span class="tk-punc">]]</span>
+<span class="ln">10</span>
+<span class="ln">11</span><span class="tk-hdr">::</span> <span class="tk-name">Continue</span>
+<span class="ln">12</span>You made it!</code></pre>
+        </div>
+        <p>The <code>StoryData</code> passage tells Knot (and Tweego) which story format to use — the pinned <code>format-version</code> drives the macro catalog, completions, and diagnostics. The <code>Start</code> passage is where the player begins. Knot auto-detects the format from <code>StoryData</code> and activates the right language features.</p>
+      </li>
+
+      <li>
+        <h2>Build and play</h2>
+        <p>Click <strong>Build</strong> in the status bar to compile your project into an HTML file. The first build will prompt Knot to download Tweego and the required story format — this happens automatically, no manual setup needed.</p>
+        <p>Click <strong>Play</strong> to open the compiled story in your default browser. If Watch is off, Play builds first; if Watch is on, Play just opens the already-fresh HTML.</p>
+        <div class="callout">
+          <p><strong><i class="bi bi-keyboard"></i> Triggering actions.</strong> All Knot actions are triggered through the status bar buttons at the bottom of the window or the Command Palette (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> / <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd>), prefixed with "Knot:". Knot intentionally does not ship default keyboard shortcuts — they tended to clash with VS Code defaults and other extensions. You can always bind your own via VS Code's Keyboard Shortcuts editor.</p>
+        </div>
+      </li>
+
+      <li>
+        <h2>Enable Watch <span class="text-dim">(optional, recommended)</span></h2>
+        <p>Click <strong>Watch</strong> in the status bar to toggle auto-rebuild on save. When Watch is on, every save of a <code>.tw</code>, <code>.twee</code>, <code>.js</code>, or <code>.css</code> file triggers a rebuild in the background. Build progress appears in the "Knot Build" output channel.</p>
+        <p>This is the recommended workflow for active development: turn Watch on, open Play in your browser, edit, save, and refresh the browser.</p>
+      </li>
+
+      <li>
+        <h2>Explore the Story Map and the Sidebar</h2>
+        <p>Click <strong>Story Map</strong> in the status bar to open an interactive graph of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. The map updates in real time as you edit.</p>
+        <p>The <strong>Knot</strong> icon in the activity bar (left edge of the window) opens the Knot IDE sidebar with three views: <strong>Passage Diagnostics</strong> (inspect the passage under the cursor), <strong>Variable Tracking</strong> (where every variable is set and read), and <strong>Project Info</strong> (workspace statistics — passage and word counts, format, IFID).</p>
+        <p>The Story Map is primarily for visualization and navigation at this time; deeper structural editing from the map is on the roadmap.</p>
+      </li>
+    </ol>
 
     <h2>Status bar reference</h2>
     <p>Knot adds five items to the left side of the status bar:</p>
-    <table>
-      <thead><tr><th>Item</th><th>Icon</th><th>Action</th></tr></thead>
-      <tbody>
-        <tr><td>Story Map</td><td>compass</td><td>Open the graph visualization</td></tr>
-        <tr><td>Build</td><td>tools</td><td>Compile the project with Tweego</td></tr>
-        <tr><td>Watch</td><td>eye / eye-closed</td><td>Toggle auto-rebuild on save</td></tr>
-        <tr><td>Play</td><td>play</td><td>Open compiled HTML in browser</td></tr>
-        <tr><td>Settings</td><td>gear</td><td>Open Knot settings</td></tr>
-      </tbody>
-    </table>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Item</th><th>Icon</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Story Map</strong></td><td><i class="bi bi-compass"></i></td><td>Open the graph visualization</td></tr>
+          <tr><td><strong>Build</strong></td><td><i class="bi bi-tools"></i></td><td>Compile the project with Tweego</td></tr>
+          <tr><td><strong>Watch</strong></td><td><i class="bi bi-eye"></i> / <i class="bi bi-eye-slash"></i></td><td>Toggle auto-rebuild on save</td></tr>
+          <tr><td><strong>Play</strong></td><td><i class="bi bi-play-fill"></i></td><td>Open compiled HTML in browser</td></tr>
+          <tr><td><strong>Settings</strong></td><td><i class="bi bi-gear"></i></td><td>Open Knot settings</td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <h2>Next steps</h2>
-    <ul>
-      <li><a href="features.html">Read the feature deep-dive</a> to learn what Knot can do today.</li>
-      <li><a href="socials.html">Join the Discord</a> to ask questions and follow development.</li>
-      <li>If you run into trouble, see the troubleshooting section of the <a href="https://github.com/StormByte0/Knot/blob/main/extensions/vscode/README.md#troubleshooting">extension README</a>.</li>
-    </ul>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon"><i class="bi bi-book"></i></div>
+        <h3>Read the feature deep-dive</h3>
+        <p>Everything Knot can do today, with examples — version-aware SugarCube support, the 11 diagnostics, CSS and HTML linting, the Story Map.</p>
+        <p><a href="features.html">Explore features →</a></p>
+      </div>
+      <div class="card">
+        <div class="icon"><i class="bi bi-discord"></i></div>
+        <h3>Join the Discord</h3>
+        <p>Ask questions, follow development, and shape what gets built next — the project is young and input has outsized impact.</p>
+        <p><a href="socials.html">Community &amp; support →</a></p>
+      </div>
+      <div class="card">
+        <div class="icon amber"><i class="bi bi-life-preserver"></i></div>
+        <h3>Run into trouble?</h3>
+        <p>The troubleshooting section of the extension README covers failed builds, download issues, and crash diagnostics.</p>
+        <p><a href="https://github.com/StormByte0/Knot/blob/main/extensions/vscode/README.md#troubleshooting">Troubleshooting →</a></p>
+      </div>
+    </div>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>

@@ -63,7 +63,7 @@ these embedded languages directly inside the editor.
 Planned improvements include:
 
 * CSS syntax validation and linting
-  * **IMPLEMENTED (plan.md Phase 2.5, 2026-09-22):** CSS parse errors are
+  * **IMPLEMENTED (2026-09-22, shipped in v2.1.0):** CSS parse errors are
     relayed on every CSS-bearing surface — `[stylesheet]` passages,
     `<style>` element bodies, `<<style>>`/`<<css>>` blocks — and an
     unknown-property lint (a curated 500+ property registry, custom and
@@ -95,7 +95,7 @@ Planned improvements include:
     `sugarcube/lsp/html_completions.rs` and the directive section of
     `embedded_diags.rs`.
 * HTML structure validation
-  * **PARTIALLY IMPLEMENTED (plan.md Phase 2.5, 2026-09-22):** unclosed
+  * **PARTIALLY IMPLEMENTED (2026-09-22, shipped in v2.1.0):** unclosed
     elements (Error — upstream renders an error box for the same shape),
     duplicate attributes and missing attribute values (Warning), and
     unterminated tags at passage end (Warning) are diagnosed inside
@@ -108,7 +108,7 @@ Planned improvements include:
     `<p>` inside `<span>`) remains future work — it needs honest tree
     reasoning beyond the wikifier's model.
 * Diagnostics for embedded HTML and CSS inside passages
-  * **IMPLEMENTED (plan.md Phase 2.5, 2026-09-22)** — including a
+  * **IMPLEMENTED (2026-09-22, shipped in v2.1.0)** — including a
     tree-builder fix that lets macros inside HTML elements pair with
     their close tags (wikified-content parity; previously `<<if>>`
     inside a `<div>` never paired, and macro diagnostics were blind

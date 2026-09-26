@@ -22,6 +22,30 @@
     "harlowe",
     "interactive fiction"
   ],
+  "homepage": "https://stormbyte0.github.io/Knot/",
+  "bugs": {
+    "url": "https://github.com/StormByte0/Knot/issues"
+  },
+  "sponsor": {
+    "url": "https://www.patreon.com/StormByte0"
+  },
+  "badges": [
+    {
+      "url": "https://img.shields.io/badge/Patreon-Become%20a%20Patron-FF424D?logo=patreon",
+      "href": "https://www.patreon.com/StormByte0",
+      "description": "Support Knot's development on Patreon"
+    },
+    {
+      "url": "https://img.shields.io/badge/Ko--fi-Buy%20a%20coffee-FF5E5B?logo=ko-fi&logoColor=white",
+      "href": "https://ko-fi.com/stormbyte0",
+      "description": "One-time tips on Ko-fi"
+    },
+    {
+      "url": "https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?logo=discord&logoColor=white",
+      "href": "https://discord.gg/YYm9nGbtZY",
+      "description": "Knot community Discord"
+    }
+  ],
   "activationEvents": [
     "workspaceContains:**/*.tw",
     "workspaceContains:**/*.twee"
@@ -260,7 +284,7 @@
           "knot.build.tweegoPath": {
             "type": "string",
             "default": "",
-            "description": "Tweego compiler binary to use. Leave empty for auto-resolution (managed download → PATH). Use 'Knot: Configure Build Toolchain' to download or browse.",
+            "description": "Tweego compiler binary to use. Leave empty for auto-resolution (managed download → PATH). Running 'Knot: Build Project' with no Tweego found offers a one-click managed download.",
             "scope": "workspace"
           },
           "knot.build.storyformatsPath": {
@@ -1546,7 +1570,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/stormbyte/knot"
+    "url": "https://github.com/StormByte0/Knot"
   },
   "icon": "media/icon.png",
   "galleryBanner": {

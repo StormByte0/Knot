@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Knot — A Twine IDE</title>
-  <meta name="description" content="Knot is a next-generation development environment for Twine and Twee interactive fiction. A Rust language server gives Knot real structural understanding of your project — not just regex.">
+  <meta name="description" content="Knot is a development environment for Twine and Twee interactive fiction. A Rust language server gives Knot real structural understanding of your project — version-aware SugarCube support, JS-aware variable tracking, CSS and HTML linting, and a Story Map.">
   <link rel="stylesheet" href="assets/style.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
@@ -20,6 +20,7 @@
         <a href="socials.html">Community</a>
         <a href="sponsors.html">Sponsors</a>
         <a href="links.html">Links</a>
+        <a class="nav-gh" href="https://github.com/StormByte0/Knot"><i class="bi bi-github"></i><span class="gh-label">GitHub</span></a>
       </div>
     </div>
   </nav>
@@ -27,22 +28,70 @@
   <main>
     <section class="hero">
       <h1>Knot</h1>
-      <p class="tagline">A Twine IDE that actually understands your story. A Rust language server models your project as a graph of passages and tracks variables as they flow — giving you navigation, diagnostics, and insight that pattern-matching alone can't provide.</p>
+      <p class="tagline">A <strong>Twine IDE that actually understands your story</strong>. A Rust language server models your project as a graph of passages, tracks variables as they flow, and checks your macros against the exact SugarCube version your story pins — navigation, diagnostics, and insight that pattern-matching alone can't provide.</p>
+      <div class="pillrow">
+        <span class="pill pill-ver"><i class="bi bi-tag"></i> v2.1.0</span>
+        <span class="pill"><i class="bi bi-braces"></i> SugarCube 2 — full support</span>
+        <span class="pill"><i class="bi bi-cpu"></i> Rust core, LSP-native</span>
+        <span class="pill"><i class="bi bi-unlock"></i> Free, source-available</span>
+      </div>
       <div class="cta">
-        <a class="btn btn-primary" href="onboarding.html">Get started</a>
-        <a class="btn" href="features.html">See features</a>
-        <a class="btn" href="socials.html">Support the project</a>
+        <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=stormbyte.knot"><i class="bi bi-download"></i> Install from the Marketplace</a>
+        <a class="btn" href="onboarding.html"><i class="bi bi-compass"></i> Get started</a>
+        <a class="btn btn-discord" href="https://discord.gg/YYm9nGbtZY"><i class="bi bi-discord"></i> Join the Discord</a>
       </div>
     </section>
 
-    <h2>Why Knot</h2>
+    <!-- Mock editor: what Knot sees while you type -->
+    <div class="window" role="img" aria-label="Knot flagging a broken link and a macro removed in SugarCube 2.37.0 inside a Twee file">
+      <div class="window-bar">
+        <div class="window-dots"><span></span><span></span><span></span></div>
+        <span class="window-title">dark-forest.tw</span>
+        <span class="window-badge">Knot</span>
+      </div>
+      <pre><code><span class="ln">1</span><span class="tk-hdr">::</span> <span class="tk-name">StoryData</span>
+<span class="ln">2</span><span class="tk-punc">{</span>
+<span class="ln">3</span>  <span class="tk-json-key">"ifid"</span><span class="tk-punc">:</span> <span class="tk-str">"D674C58C-DEFA-4F70-B7A2-27742230C0FC"</span><span class="tk-punc">,</span>
+<span class="ln">4</span>  <span class="tk-json-key">"format"</span><span class="tk-punc">:</span> <span class="tk-str">"SugarCube"</span><span class="tk-punc">,</span>
+<span class="ln">5</span>  <span class="tk-json-key">"format-version"</span><span class="tk-punc">:</span> <span class="tk-str">"2.37.3"</span>
+<span class="ln">6</span><span class="tk-punc">}</span>
+<span class="ln">7</span>
+<span class="ln">8</span><span class="tk-hdr">::</span> <span class="tk-name">Dark Forest</span>
+<span class="ln">9</span>The trees close in around you. Your lantern gutters.
+<span class="ln">10</span><span class="sq sq-wrn"><span class="tk-punc">[[</span>Follow the path<span class="tk-punc">-&gt;</span>Clearing<span class="tk-punc">]]</span></span>
+<span class="ln">11</span><span class="sq sq-err"><span class="tk-mac">&lt;&lt;</span>display <span class="tk-str">"Lantern"</span><span class="tk-mac">&gt;&gt;</span></span></code></pre>
+      <div class="problems">
+        <div class="problems-head"><i class="bi bi-list-check"></i> Problems — 2</div>
+        <ul>
+          <li><i class="bi bi-exclamation-triangle-fill bi-wrn"></i> Link target <code>Clearing</code> doesn't exist in this story <span class="loc">line 10</span></li>
+          <li><i class="bi bi-x-circle-fill bi-err"></i> Macro <code>&lt;&lt;display&gt;&gt;</code> was removed in SugarCube 2.37.0 — use <code>&lt;&lt;include&gt;&gt;</code> instead <span class="loc">line 11</span></li>
+        </ul>
+      </div>
+    </div>
+    <p class="lead" style="text-align: center; margin: -1em auto 0;">That's Knot working: it read your pinned <code>format-version</code>, resolved the macro's lifecycle against it, and checked the link against the real passage graph — as you type. <a href="features.html">See everything it does →</a></p>
+
+    <!-- Stat band: code-verified numbers -->
+    <div class="stat-band">
+      <div class="stat"><span class="num">73</span><span class="lbl">macros in the versioned SugarCube union catalog, filtered to your story's pinned version</span></div>
+      <div class="stat"><span class="num">11</span><span class="lbl">configurable diagnostics — broken links, unreachable passages, uninitialized variables, and more</span></div>
+      <div class="stat"><span class="num">500<em>+</em></span><span class="lbl">CSS properties in the linting registry behind unknown-property detection</span></div>
+      <div class="stat"><span class="num">4</span><span class="lbl">release platforms — Windows x64, macOS ARM, Linux x64, Linux ARM64</span></div>
+    </div>
+
+    <h2 id="why">Why Knot</h2>
     <p class="lead">The bulk of Knot lives in a language server written in Rust that talks to editors through the Language Server Protocol. That design choice matters: Knot is not strictly tethered to VS Code. The VS Code extension is its first host, but the same Rust core can power other editors — and, in time, become a standalone IDE for Twine.</p>
+    <p class="lead">Most Twine tooling treats stories as text. Knot treats them as what they are: a directed graph of passages with variables flowing through it. Build the model the way the engine sees it, and the editor can answer real questions instead of approximating them.</p>
 
     <div class="card-grid">
       <div class="card">
         <div class="icon"><i class="bi bi-diagram-3"></i></div>
         <h3>Structural understanding</h3>
-        <p>Knot parses your project into passages and the links between them. It can answer questions like "where is this variable set?" or "is this passage reachable?" — questions that pure text matching gets wrong.</p>
+        <p>Knot parses your project into passages and the links between them. It answers "where is this variable set?" and "is this passage reachable?" with graph analysis — questions pure text matching gets wrong.</p>
+      </div>
+      <div class="card">
+        <div class="icon blue"><i class="bi bi-clock-history"></i></div>
+        <h3>Version-aware SugarCube</h3>
+        <p>The macro catalog is versioned end to end. Completions, hover docs, and diagnostics are filtered through the <code>format-version</code> in your <code>StoryData</code> — using a macro removed in SugarCube 2.37.0 gets an error with replacement guidance, not a silent runtime failure.</p>
       </div>
       <div class="card">
         <div class="icon"><i class="bi bi-braces"></i></div>
@@ -50,59 +99,92 @@
         <p>See where every variable is set, read, and how it flows across passages. For SugarCube, tracking is JavaScript-aware via the oxc parser, so it understands <code>&lt;&lt;set $x to 1&gt;&gt;</code>, <code>&lt;&lt;run $x++&gt;&gt;</code>, and JS inside <code>&lt;&lt;script&gt;&gt;</code> blocks.</p>
       </div>
       <div class="card">
-        <div class="icon"><i class="bi bi-shield-check"></i></div>
+        <div class="icon amber"><i class="bi bi-shield-check"></i></div>
         <h3>Passage diagnostics</h3>
-        <p>A dedicated panel inspects any passage's links, variables, macros, and complexity. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicates, and dead ends.</p>
+        <p>A dedicated panel inspects any passage's links, variables, macros, and complexity. Real-time diagnostics cover broken links, unreachable passages, uninitialized variables, duplicates, and dead ends — 11 checks, each configurable.</p>
+      </div>
+      <div class="card">
+        <div class="icon blue"><i class="bi bi-filetype-css"></i></div>
+        <h3>CSS &amp; HTML linting</h3>
+        <p>Embedded stylesheets get parse errors, unknown-property lints against a 500+ property registry, and pseudo-class typo detection. Embedded HTML gets unclosed-element, duplicate-attribute, and directive checks — all inside passages.</p>
       </div>
       <div class="card">
         <div class="icon"><i class="bi bi-share"></i></div>
         <h3>Story Map</h3>
-        <p>An interactive graph visualization of your project. Nodes are passages, edges are links. Click any node to jump to that passage. The map is primarily for visualization and navigation today; deeper editing is planned.</p>
+        <p>An interactive graph visualization of your project. Nodes are passages, edges are links. Click any node to jump to that passage in the editor. It updates in real time as you edit.</p>
       </div>
       <div class="card">
-        <div class="icon"><i class="bi bi-lightning-charge"></i></div>
+        <div class="icon green"><i class="bi bi-lightning-charge"></i></div>
         <h3>Incremental analysis</h3>
         <p>Only affected passages are re-parsed after each keystroke, so large projects stay responsive even as your story grows into hundreds of passages.</p>
       </div>
       <div class="card">
-        <div class="icon"><i class="bi bi-play-circle"></i></div>
+        <div class="icon green"><i class="bi bi-play-circle"></i></div>
         <h3>Build &amp; play, no setup</h3>
         <p>One-click build and play via Tweego. Knot downloads and manages Tweego and story formats for you — no manual compiler setup, no PATH fiddling.</p>
       </div>
     </div>
 
+    <h2 id="status">Release status</h2>
+    <p class="lead">The current release is <strong>v2.1.0</strong> — the first full stable release of the v2 line. Marketplace and repository versions always match.</p>
+    <div class="card-grid">
+      <div class="card">
+        <div class="icon green"><i class="bi bi-rocket-takeoff"></i></div>
+        <h3>Shipped in 2.1.0</h3>
+        <p>Format-version-aware SugarCube support end to end, embedded CSS linting, embedded HTML validation, and the versioned 73-entry macro catalog. Four release platforms: Windows x64, macOS ARM, Linux x64, Linux ARM64.</p>
+      </div>
+      <div class="card">
+        <div class="icon blue"><i class="bi bi-branch"></i></div>
+        <h3>On <code>main</code>, unreleased <span class="badge badge-unreleased">Unreleased</span></h3>
+        <p>Manual reachability entries (<code>"reachable": true</code> header metadata) with a quickfix, Story Map navigation to the correct line in closed files, and Story Map rendering of manual entry points — in the repository build, not yet in a Marketplace release.</p>
+      </div>
+    </div>
+
     <div class="callout warn">
-      <p><strong><i class="bi bi-exclamation-triangle"></i> Early development.</strong> Knot is still early in development and you may run into bugs or rough edges. Only <strong>SugarCube 2</strong> has full language features today. Harlowe, Chapbook, and Snowman are placeholder implementations — the build pipeline works for all formats, but language features are not yet built out.</p>
+      <p><strong><i class="bi bi-exclamation-triangle"></i> Honest status.</strong> Knot v2.1.0 is the first full stable release of the v2 line — the SugarCube 2 surface is stable and production-ready. <strong>Harlowe, Chapbook, and Snowman are placeholder implementations</strong>: the build pipeline works for all formats, but language features are not yet built out for them.</p>
       <p>This is also the best time to get involved. The codebase is still small and the technical debt is low, so feature requests and design input from early users have an outsized impact on where Knot goes. <a href="socials.html">Find us on Discord →</a></p>
     </div>
 
-    <h2>Get started in 60 seconds</h2>
+    <h2 id="start">Get started in 60 seconds</h2>
     <ol>
-      <li>Install Knot from the VS Code Marketplace (search "Knot").</li>
+      <li>Install Knot from the <a href="https://marketplace.visualstudio.com/items?itemName=stormbyte.knot">VS Code Marketplace</a> (search "Knot").</li>
       <li>Open a folder containing <code>.tw</code> or <code>.twee</code> files.</li>
       <li>Click <strong>Build</strong> in the status bar — Knot downloads Tweego and the right story format on first run.</li>
       <li>Click <strong>Play</strong> to open the compiled story in your browser.</li>
     </ol>
     <p><a href="onboarding.html">Read the full onboarding guide →</a></p>
 
-    <h2>Want to help shape Knot?</h2>
-    <p>Knot is a passion project built and maintained by a solo developer. If it makes your interactive fiction workflow better, consider supporting its continued development — every contribution helps fund the format plugins, planned features, and ongoing maintenance.</p>
-    <div class="cta" style="justify-content: flex-start; margin-top: 1em;">
-      <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0">Patreon</a>
-      <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-      <a class="btn btn-discord" href="https://discord.gg/UvWSZFkC3">Discord</a>
+    <h2 id="support">Keep Knot going</h2>
+    <p class="lead">Knot is free — including for commercial use — and it stays that way. It's built by a solo developer on nights and weekends, and its funding is currently <strong>exactly zero</strong>. If Knot catches a broken link before your players do, or untangles a variable bug that would have cost you an evening, put a fraction of that saved time back in:</p>
+    <div class="cta" style="justify-content: flex-start; margin-top: 1.2em;">
+      <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0"><i class="bi bi-heart-fill"></i> Patreon — $5/mo</a>
+      <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0"><i class="bi bi-cup-hot-fill"></i> Ko-fi — one-time tip</a>
+      <a class="btn btn-discord" href="https://discord.gg/YYm9nGbtZY"><i class="bi bi-discord"></i> Discord</a>
     </div>
+    <p style="margin-top: 0.75em;">Donations fund exactly what users ask for most: the Harlowe/Chapbook/Snowman format plugins, the <a href="https://github.com/StormByte0/Knot/blob/main/PLANNED_FEATURES.md">planned features</a>, and ongoing maintenance. See <a href="sponsors.html">who's backing Knot</a> — or become the first name on that list.</p>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>

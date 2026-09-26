@@ -6,6 +6,7 @@
   <title>Sponsors — Knot</title>
   <meta name="description" content="Knot's supporters, organized by tier. This page loads SUPPORTERS.md live from the repository, so it's always current.">
   <link rel="stylesheet" href="assets/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="icon" type="image/png" href="assets/icon.png">
 </head>
 <body>
@@ -19,31 +20,49 @@
         <a href="socials.html">Community</a>
         <a href="sponsors.html" class="active">Sponsors</a>
         <a href="links.html">Links</a>
+        <a class="nav-gh" href="https://github.com/StormByte0/Knot"><i class="bi bi-github"></i><span class="gh-label">GitHub</span></a>
       </div>
     </div>
   </nav>
 
   <main>
-    <h1>Sponsors</h1>
-    <p class="lead">Knot exists because of the people who back it. This page loads <a href="https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md"><code>SUPPORTERS.md</code></a> live from the repository, so it's always current — no rebuild required when names are added.</p>
+    <div class="pagehead">
+      <h1>Sponsors</h1>
+      <p class="lead">Knot exists because of the people who back it. This page loads <a href="https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md"><code>SUPPORTERS.md</code></a> live from the repository, so it's always current — no rebuild required when names are added.</p>
+    </div>
 
     <div id="supporters-status">Loading supporters…</div>
     <div id="supporters-content" class="markdown-body" style="display: none;"></div>
 
-    <h2>Want to be listed here?</h2>
+    <h2 id="listed">Want to be listed here?</h2>
     <p>Back Knot on <a href="https://www.patreon.com/StormByte0">Patreon</a> or tip on <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>, then DM on Discord (or through Patreon) with the display name, optional avatar, and optional link you'd like shown. See the <a href="https://github.com/StormByte0/Knot/blob/main/SUPPORTERS.md#how-to-get-added">full instructions</a> in SUPPORTERS.md.</p>
-    <p><a class="btn btn-primary" href="https://www.patreon.com/StormByte0">Become a patron</a> <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0">Tip on Ko-fi</a></p>
+    <div class="cta" style="justify-content: flex-start;">
+      <a class="btn btn-patreon" href="https://www.patreon.com/StormByte0"><i class="bi bi-patreon"></i> Become a patron</a>
+      <a class="btn btn-kofi" href="https://ko-fi.com/stormbyte0"><i class="bi bi-cup-hot-fill"></i> Tip on Ko-fi</a>
+    </div>
   </main>
 
   <footer>
     <div class="wrap">
-      <div>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></div>
-      <div class="links">
-        <a href="https://github.com/StormByte0/Knot">GitHub</a>
-        <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
-        <a href="https://www.patreon.com/StormByte0">Patreon</a>
-        <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
-        <a href="https://discord.gg/UvWSZFkC3">Discord</a>
+      <div class="col-brand">
+        <a href="index.html" class="brand"><img class="brand-icon" src="assets/icon.png" alt="Knot"> Knot</a>
+        <span>© 2026 StormByte0 · <a href="https://github.com/StormByte0/Knot/blob/main/LICENSE">Source-Available License</a></span>
+      </div>
+      <div class="col">
+        <h4>Project</h4>
+        <div class="links">
+          <a href="https://github.com/StormByte0/Knot">GitHub</a>
+          <a href="https://github.com/StormByte0/Knot/issues">Issues</a>
+          <a href="https://github.com/StormByte0/Knot/blob/main/ROADMAP.md">Roadmap</a>
+        </div>
+      </div>
+      <div class="col">
+        <h4>Support</h4>
+        <div class="links">
+          <a href="https://www.patreon.com/StormByte0">Patreon</a>
+          <a href="https://ko-fi.com/stormbyte0">Ko-fi</a>
+          <a href="https://discord.gg/YYm9nGbtZY">Discord</a>
+        </div>
       </div>
     </div>
   </footer>
