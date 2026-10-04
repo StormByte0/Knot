@@ -359,14 +359,19 @@ pub fn is_header_line(line: &str) -> bool {
 // Header metadata (Story Map tooling block)
 // ---------------------------------------------------------------------------
 
-/// Header metadata key for the manual reachability entry flag
-/// (`{"reachable":true}`).
+/// Header metadata key for the manual reachability link
+/// (`{"reachable":"Start"}`).
 ///
 /// Reachability is a property of Knot's static analysis, not of the
 /// story engine: the engine and other Twee tools treat this as an
-/// unknown (preserved) metadata key. That is why the flag lives in the
+/// unknown (preserved) metadata key. That is why the link lives in the
 /// header's JSON metadata block instead of the engine-facing tag
 /// bracket — tags are part of the story, metadata is tool state.
+///
+/// The value is the **source passage name** of the manual link —
+/// `:: Hub {"reachable":"Start"}` declares "Hub is reachable from
+/// Start", which the graph represents as a `Manual` edge
+/// `Start → Hub`.
 const REACHABLE_KEY: &str = "reachable";
 
 /// Tooling-relevant fields parsed from a header's `{...}` JSON metadata
@@ -386,10 +391,12 @@ pub struct HeaderMetadata {
     pub color: Option<String>,
     /// `{"size":"100,100"}` — Twine editor node size (width, height).
     pub size: Option<(f64, f64)>,
-    /// `{"reachable":true}` — manual reachability entry flag
+    /// `"reachable":"Start"` — manual reachability link, declaring
+    /// "this passage is reachable from the named passage"
     /// (a tool-level property; see [`Passage::manual_reachable`]).
-    /// Only JSON booleans are accepted; anything else parses as `None`.
-    pub reachable: Option<bool>,
+    /// Only JSON **strings** are accepted (a passage name); booleans
+    /// and other shapes parse as `None` and are ignored.
+    pub reachable: Option<String>,
 }
 
 /// Parse a two-number value from any of its serialized shapes:
@@ -450,12 +457,14 @@ pub fn parse_header_metadata(header: &TweeHeader) -> HeaderMetadata {
             }),
         reachable: value
             .get(REACHABLE_KEY)
-            .and_then(serde_json::Value::as_bool),
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     }
 }
 
 /// Copy the header's parsed metadata (position, group, color, size, the
-/// `reachable` flag) and line number onto a [`Passage`].
+/// `reachable` manual link) and line number onto a [`Passage`].
 ///
 /// This is the single wiring point every format plugin's full-document
 /// parse goes through after building a `Passage`, so the Story Map never
@@ -839,24 +848,28 @@ mod tests {
     }
 
     #[test]
-    fn metadata_parse_reachable_flag() {
-        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":true,"position":"1,2"}"#));
-        assert_eq!(m.reachable, Some(true));
+    fn metadata_parse_reachable_manual_link() {
+        let m =
+            parse_header_metadata(&meta_header(r#":: A {"reachable":"Start","position":"1,2"}"#));
+        assert_eq!(m.reachable.as_deref(), Some("Start"));
         assert_eq!(m.position, Some((1.0, 2.0)));
 
-        // Explicit false is parsed (and simply means "not an entry").
+        // Legacy booleans are ignored, not guessed — the manual link must
+        // name its source passage.
+        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":true}"#));
+        assert_eq!(m.reachable, None);
         let m = parse_header_metadata(&meta_header(r#":: A {"reachable":false}"#));
-        assert_eq!(m.reachable, Some(false));
+        assert_eq!(m.reachable, None);
 
-        // Non-boolean values are ignored, not guessed.
-        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":"true"}"#));
+        // Empty strings are ignored as well.
+        let m = parse_header_metadata(&meta_header(r#":: A {"reachable":""}"#));
         assert_eq!(m.reachable, None);
     }
 
     #[test]
     fn apply_header_metadata_copies_fields_and_line() {
         let mut passage = Passage::new("A".to_string(), 0..10);
-        let mut hdr = meta_header(r#":: A [stub] {"position":"5,6","group":"G","reachable":true}"#);
+        let mut hdr = meta_header(r#":: A [stub] {"position":"5,6","group":"G","reachable":"Start"}"#);
         hdr.line = 7;
         apply_header_metadata(&mut passage, &hdr);
         assert_eq!(passage.position, Some((5.0, 6.0)));
@@ -864,7 +877,7 @@ mod tests {
         assert_eq!(passage.color, None);
         assert_eq!(passage.size, None);
         assert_eq!(passage.line, 7);
-        assert_eq!(passage.manual_reachable, Some(true));
+        assert_eq!(passage.manual_reachable.as_deref(), Some("Start"));
     }
 
     #[test]

@@ -118,6 +118,10 @@ fn rebuild_graph(workspace: &mut Workspace) {
             );
         }
     }
+
+    // Mirror production: manual `reachable` metadata declarations
+    // participate as Manual graph edges.
+    workspace.rebuild_manual_edges();
 }
 
 /// Helper to set up a workspace with metadata.
@@ -239,35 +243,38 @@ fn sugarcube_parse_and_analyze() {
 }
 
 #[test]
-fn sugarcube_reachable_metadata_flows_to_reachability_roots() {
-    // End-to-end pin for the `reachable` header metadata flag:
-    // real twee text -> splitter -> Passage model -> reachability roots.
+fn sugarcube_reachable_metadata_flows_to_manual_graph_edges() {
+    // End-to-end pin for the `reachable` header metadata manual link:
+    // real twee text -> splitter -> Passage model -> Manual graph edge ->
+    // reachability.
     let mut registry = FormatRegistry::with_defaults();
     let mut ws = workspace_with_metadata(StoryFormat::SugarCube, "Start");
 
-    let src = ":: Start\n[[Forest]]\n:: Forest\nIt has an island.\n:: IslandA {\"reachable\":true}\nEntered through variable-aliased navigation. [[IslandB]]\n:: IslandB\nDownstream of the manual entry.\n:: Cave\nTruly orphaned.\n";
+    let src = ":: Start\n[[Forest]]\n:: Forest\nIt has an island.\n:: IslandA {\"reachable\":\"Start\"}\nEntered through variable-aliased navigation. [[IslandB]]\n:: IslandB\nDownstream of the manual link.\n:: Cave\nTruly orphaned.\n";
     let uri = Url::parse("file:///project/story.tw").unwrap();
     parse_and_insert(&mut ws, &mut registry, &uri, src, StoryFormat::SugarCube);
     rebuild_graph(&mut ws);
 
-    // The flag lands on the model through the real splitter + shared
-    // apply_header_metadata wiring; an absent key stays None.
+    // The declaration lands on the model through the real splitter +
+    // shared apply_header_metadata wiring; an absent key stays None.
     let doc = ws.get_document(&uri).unwrap();
     assert_eq!(
         doc.find_passage("IslandA").unwrap().manual_reachable,
-        Some(true)
+        Some("Start".to_string())
     );
     assert_eq!(doc.find_passage("Forest").unwrap().manual_reachable, None);
 
-    // Roots: start passage + manual entry (deduped, in order).
-    assert_eq!(
-        ws.reachability_roots(),
-        vec!["Start".to_string(), "IslandA".to_string()]
-    );
+    // Roots: the start passage only — the manual link is an edge now.
+    assert_eq!(ws.reachability_roots(), vec!["Start".to_string()]);
 
-    // IslandA/B are rescued by the manual entry root, Forest is
-    // reachable from Start, and only the genuinely orphaned Cave is
-    // flagged as unreachable.
+    // The Manual edge Start → IslandA exists in the graph.
+    assert!(ws
+        .graph
+        .outgoing_neighbors("Start")
+        .contains(&"IslandA".to_string()));
+
+    // IslandA/B are rescued by the manual link, Forest is reachable from
+    // Start, and only the genuinely orphaned Cave is flagged unreachable.
     let diagnostics = AnalysisEngine::analyze(&ws);
     let unreachable: Vec<&str> = diagnostics
         .iter()

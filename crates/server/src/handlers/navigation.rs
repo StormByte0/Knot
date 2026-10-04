@@ -1364,6 +1364,43 @@ pub(crate) fn collect_rename_edits(
                             doc_edits.push(TextEdit { range, new_text });
                         }
                     }
+
+                    // Manual `reachable` metadata declarations naming the
+                    // old passage must follow the rename — otherwise every
+                    // manual link into the renamed passage silently breaks
+                    // (and the analyzer flags the renamed passage
+                    // unreachable again). Rewritten via the merge-preserving
+                    // header writer.
+                    if passage.manual_reachable.as_deref() == Some(old_name.as_str()) {
+                        for (i, line) in text.lines().enumerate() {
+                            if line.starts_with("::") {
+                                let pname = helpers::parse_passage_name_from_header(&line[2..]);
+                                if pname == passage.name {
+                                    let edits = helpers::HeaderEdits {
+                                        reachable: Some(Some(new_name)),
+                                        ..Default::default()
+                                    };
+                                    if let Ok(new_line) = helpers::update_passage_header(line, edits)
+                                    {
+                                        doc_edits.push(TextEdit {
+                                            range: lsp_types::Range {
+                                                start: lsp_types::Position {
+                                                    line: i as u32,
+                                                    character: 0,
+                                                },
+                                                end: lsp_types::Position {
+                                                    line: i as u32,
+                                                    character: helpers::utf16_len(line),
+                                                },
+                                            },
+                                            new_text: new_line,
+                                        });
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if !doc_edits.is_empty() {
@@ -2317,6 +2354,52 @@ mod goto_definition_tests {
         assert!(
             !renamed.contains(":: Keep\n:: Start\nKeep"),
             "the link must not collapse to the bare name, result: {renamed:?}"
+        );
+    }
+
+    /// Renaming a passage must also rewrite any manual `reachable`
+    /// metadata declarations naming it — otherwise every manual link into
+    /// the renamed passage silently breaks (broken-source diagnostic +
+    /// the passage flips back to unreachable).
+    #[test]
+    fn rename_passage_rewrites_manual_reachable_declarations() {
+        let src = concat!(
+            ":: Start\n[[Forest]]\n\n",
+            ":: Forest\nTrees.\n\n",
+            ":: Hub {\"position\":\"5,6\",\"reachable\":\"Forest\"}\nBody.\n",
+        );
+        let (inner, uri) = build_state(src);
+
+        let target = ReferenceTarget::Passage {
+            name: "Forest".to_string(),
+        };
+        assert!(
+            definition_confirmed(&target, &inner),
+            "definition must be confirmed"
+        );
+        let changes = collect_rename_edits(&target, "Woods", &inner);
+        let edits = changes.get(&uri).expect("should have edits for the file");
+
+        // One of the edits must be the whole-line rewrite of Hub's header
+        // with the manual link retargeted (and position preserved).
+        let header_rewrite = edits
+            .iter()
+            .find(|e| e.new_text.starts_with(":: Hub"))
+            .expect("manual reachable declaration must be rewritten");
+        assert!(
+            header_rewrite.new_text.contains("\"reachable\":\"Woods\""),
+            "manual link must follow the rename: {}",
+            header_rewrite.new_text
+        );
+        assert!(
+            header_rewrite.new_text.contains("\"position\":\"5,6\""),
+            "existing metadata must survive: {}",
+            header_rewrite.new_text
+        );
+        assert!(
+            !header_rewrite.new_text.contains("\"reachable\":\"Forest\""),
+            "old manual link target must be gone: {}",
+            header_rewrite.new_text
         );
     }
 }

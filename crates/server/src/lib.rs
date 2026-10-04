@@ -35,6 +35,14 @@ impl KnotServer {
             .custom_method("knot/generateIfid", ServerState::knot_generate_ifid)
             .custom_method("knot/reindexWorkspace", ServerState::knot_reindex_workspace)
             .custom_method("knot/updatePositions", ServerState::knot_update_positions)
+            .custom_method(
+                "knot/updatePassageMetadata",
+                ServerState::knot_update_passage_metadata,
+            )
+            .custom_method("knot/createPassage", ServerState::knot_create_passage)
+            .custom_method("knot/deletePassage", ServerState::knot_delete_passage)
+            .custom_method("knot/renamePassage", ServerState::knot_rename_passage)
+            .custom_method("knot/setStartPassage", ServerState::knot_set_start_passage)
             .custom_method("knot/clientReady", ServerState::knot_client_ready)
             .custom_method(
                 "knot/formatSwitchComplete",

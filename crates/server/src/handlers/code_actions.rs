@@ -9,8 +9,8 @@ use std::collections::HashSet;
 /// Push the UnreachablePassage quickfixes for `name`.
 ///
 /// Two fixes: "Add link from X" wires the passage into the reachable
-/// graph from the nearest reachable neighbor, and "Mark as reachable"
-/// writes the manual-entry flag into the passage header metadata — the
+/// graph from the nearest reachable neighbor, and "Mark as reachable
+/// from X" declares a manual link in the passage header metadata — the
 /// analyzer override for variable-aliased navigation the static
 /// analysis can't see through. Shared by the client-diagnostic loop
 /// and the cursor-passage fallback below.
@@ -31,11 +31,27 @@ fn push_unreachable_actions(
         }));
     }
 
+    // The manual-link quickfix needs a source passage. Prefer the
+    // nearest reachable neighbor (the most plausible runtime entry
+    // point), falling back to the start passage.
+    let source = helpers::find_nearest_reachable_passage(&inner.workspace, name)
+        .unwrap_or_else(|| {
+            inner
+                .workspace
+                .metadata
+                .as_ref()
+                .map(|m| m.start_passage.clone())
+                .unwrap_or_else(|| "Start".to_string())
+        });
+
     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Mark '{}' as reachable (manual entry)", name),
+        title: format!(
+            "Mark '{}' as reachable from '{}' (manual link)",
+            name, source
+        ),
         kind: Some(CodeActionKind::QUICKFIX),
         diagnostics: diagnostic.cloned().map(|d| vec![d]),
-        edit: Some(helpers::mark_reachable_edit(inner, name)),
+        edit: Some(helpers::mark_reachable_edit(inner, name, &source)),
         ..Default::default()
     }));
 }

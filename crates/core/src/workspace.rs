@@ -524,35 +524,28 @@ impl Workspace {
     }
 
     /// Collect the reachability roots: the start passage (from StoryData
-    /// metadata, defaulting to `"Start"`) plus every passage marked
-    /// `reachable` in its header metadata.
+    /// metadata, defaulting to `"Start"`).
     ///
-    /// Manual entries exist because links aliased through variables
-    /// (`<<goto $next>>`) are opaque to static analysis — authors mark the
-    /// top-level entry passages, and the downward reachability analysis
-    /// runs from all roots. See
-    /// [`crate::passage::Passage::manual_reachable`] for the flag's
-    /// documentation.
+    /// Manual `reachable` metadata declarations (`:: Hub
+    /// {"reachable":"Start"}`) are **no longer roots** — each one
+    /// becomes an [`EdgeType::Manual`] graph edge
+    /// `source → declaring passage` (rebuilt by
+    /// [`Self::rebuild_manual_edges`]), so reachability flows through the
+    /// link graph instead of seeding extra BFS entries. A manual link
+    /// from an *unreachable* source therefore correctly leaves the
+    /// target unreachable.
     pub fn reachability_roots(&self) -> Vec<String> {
         let start = self
             .metadata
             .as_ref()
             .map(|m| m.start_passage.as_str())
             .unwrap_or("Start");
-        let mut roots = vec![start.to_string()];
-        for doc in self.documents() {
-            for passage in &doc.passages {
-                if passage.is_manual_entry() && passage.name != start {
-                    roots.push(passage.name.clone());
-                }
-            }
-        }
-        roots
+        vec![start.to_string()]
     }
 
-    /// Detect unreachable passages considering ALL reachability roots:
-    /// the start passage plus every manual `reachable` metadata
-    /// entry.
+    /// Detect unreachable passages considering ALL reachability paths:
+    /// the start passage plus traversal through every edge kind —
+    /// navigation, includes, and manual `reachable` metadata links.
     ///
     /// This is the preferred entry point over calling
     /// [`PassageGraph::detect_unreachable`] directly — it keeps the
@@ -563,6 +556,85 @@ impl Workspace {
         let roots = self.reachability_roots();
         let root_refs: Vec<&str> = roots.iter().map(String::as_str).collect();
         self.graph.detect_unreachable_from_roots(&root_refs)
+    }
+
+    /// Reconcile the graph's manual-link edge set with the document
+    /// model.
+    ///
+    /// Every passage declaring `"reachable": "X"` in its header metadata
+    /// owns a manual edge `X → passage`. Because the *source* passage can
+    /// live in a different file than the declaring one, incremental
+    /// `graph_surgery` alone can't keep the set consistent (re-parsing
+    /// the source's file drops the edge without re-adding it). This
+    /// method therefore drops **all** `EdgeType::Manual` edges and
+    /// rebuilds them from the workspace's documents — the authoritative
+    /// model — in one O(declarations) pass. It runs after every document
+    /// update and after a full graph rebuild.
+    ///
+    /// Declarations whose source passage doesn't exist are skipped here
+    /// (no edge is created); [`Self::detect_manual_link_errors`]
+    /// surfaces them as diagnostics instead.
+    pub fn rebuild_manual_edges(&mut self) {
+        self.graph.remove_edges_of_type(EdgeType::Manual);
+
+        // Collect declarations first so the immutable document borrow ends
+        // before the graph is mutated.
+        let declarations: Vec<(String, String)> = self
+            .documents()
+            .flat_map(|doc| {
+                doc.passages
+                    .iter()
+                    .filter_map(|p| {
+                        p.manual_link_source()
+                            .map(|src| (src.to_string(), p.name.clone()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for (source, target) in declarations {
+            if self.graph.contains_passage(&source) {
+                self.graph.add_edge(
+                    &source,
+                    &target,
+                    PassageEdge {
+                        display_text: None,
+                        edge_type: EdgeType::Manual,
+                        pre_broken_type: None,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Detect manual `reachable` metadata declarations whose source
+    /// passage doesn't exist in the workspace (typos, renamed targets).
+    ///
+    /// These produce no graph edge (see [`Self::rebuild_manual_edges`]),
+    /// so the declaring passage stays flagged unreachable — but the
+    /// *reason* is the broken manual link, which deserves its own
+    /// diagnostic rather than a confusing generic unreachable warning.
+    pub fn detect_manual_link_errors(&self) -> Vec<GraphDiagnostic> {
+        let mut diagnostics = Vec::new();
+        for doc in self.documents() {
+            for passage in &doc.passages {
+                let Some(source) = passage.manual_link_source() else {
+                    continue;
+                };
+                if !self.graph.contains_passage(source) {
+                    diagnostics.push(GraphDiagnostic {
+                        passage_name: passage.name.clone(),
+                        file_uri: doc.uri.to_string(),
+                        kind: DiagnosticKind::BrokenLink,
+                        message: format!(
+                            "Manual link source '{}' (metadata `reachable`) not found in workspace",
+                            source
+                        ),
+                    });
+                }
+            }
+        }
+        diagnostics
     }
 
     /// Remove a document and update the graph by removing all passages
@@ -644,10 +716,15 @@ impl Workspace {
         // 4. Recheck broken links after surgery
         self.graph.recheck_broken_links();
 
-        // 5. Rebuild upstream lifecycle edges
+        // 5. Rebuild manual `reachable` metadata edges (the declaring
+        //    passage and its source can live in different files, so the
+        //    whole type-scoped set is reconciled from the documents)
+        self.rebuild_manual_edges();
+
+        // 6. Rebuild upstream lifecycle edges
         self.rebuild_upstream_edges();
 
-        // 6. Format isolation: StoryData parsing is a CORE operation handled
+        // 7. Format isolation: StoryData parsing is a CORE operation handled
         // exclusively by the two-pass indexing in index_workspace(). This
         // method must NOT re-extract StoryData metadata or trigger format
         // switches. Individual format plugins (SugarCube, etc.) treat

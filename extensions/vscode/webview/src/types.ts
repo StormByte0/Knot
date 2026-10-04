@@ -23,8 +23,10 @@ export interface KnotGraphNode {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
-  /** Manual reachability entry point (header metadata `reachable`). */
+  /** Declares a manual reachability link (header metadata `reachable`). */
   is_entry?: boolean;
+  /** Source passage name of the manual reachability link, when declared. */
+  manual_link_source?: string;
   position_x?: number;
   position_y?: number;
   group?: string;
@@ -33,6 +35,8 @@ export interface KnotGraphNode {
   size_h?: number;
   var_writes: string[];
   var_reads: string[];
+  /** Plain-text body preview (whitespace-collapsed, truncated). */
+  excerpt?: string;
 }
 
 export interface KnotGraphEdge {
@@ -65,6 +69,23 @@ export interface KnotPositionUpdate {
 }
 
 // ---------------------------------------------------------------------------
+// Metadata editing types (inspector)
+// ---------------------------------------------------------------------------
+
+/** A metadata patch for one passage.
+ *
+ *  Three-state semantics: `undefined` = unchanged, `null` = remove,
+ *  value = set. `tags` replaces the whole list when present. */
+export interface PassageMetadataPatch {
+  tags?: string[];
+  group?: string | null;
+  color?: string | null;
+  size?: { width: number; height: number } | null;
+  reachable?: string | null;
+  position?: { x: number; y: number };
+}
+
+// ---------------------------------------------------------------------------
 // VS Code webview message types
 // ---------------------------------------------------------------------------
 
@@ -74,6 +95,26 @@ export type WebviewOutboundMessage =
   | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
   | { command: 'saveAllPositions'; updates: KnotPositionUpdate[] }
   | { command: 'updateViewport'; x: number; y: number; zoom: number }
+  | {
+      command: 'updatePassageMetadata';
+      passage_name: string;
+      tags?: string[];
+      group?: string | null;
+      color?: string | null;
+      size?: { width: number; height: number } | null;
+      reachable?: string | null;
+      position?: { x: number; y: number };
+    }
+  | {
+      command: 'createPassage';
+      name: string;
+      tags?: string[];
+      position?: { x: number; y: number };
+      target_file?: string;
+    }
+  | { command: 'deletePassage'; passage_name: string; strip_links?: boolean }
+  | { command: 'renamePassage'; name: string; new_name: string }
+  | { command: 'setStartPassage'; passage_name: string }
   | { command: 'log'; level: 'error' | 'warn' | 'info'; message: string };
 
 /** Messages sent FROM the extension TO the webview. */
@@ -112,8 +153,10 @@ export interface PassageNodeData extends Record<string, unknown> {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
-  /** Manual reachability entry point (header metadata `reachable`). */
+  /** Declares a manual reachability link (header metadata `reachable`). */
   is_entry: boolean;
+  /** Source passage name of the manual reachability link, when declared. */
+  manual_link_source?: string;
   is_dead_end: boolean;
   color: string;
   metadata_color?: string;
@@ -123,6 +166,8 @@ export interface PassageNodeData extends Record<string, unknown> {
   size_h?: number;
   var_writes: string[];
   var_reads: string[];
+  /** Plain-text body preview rendered on the card (empty when no body). */
+  excerpt: string;
   group?: string;
   dimmed: boolean;
   highlighted: boolean;

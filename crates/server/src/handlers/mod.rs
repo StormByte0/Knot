@@ -21,6 +21,7 @@ pub mod lifecycle;
 pub mod macros;
 pub mod navigation;
 pub mod passage_diagnostics;
+pub mod passage_editing;
 pub mod profile;
 pub mod semantic;
 pub mod structure;

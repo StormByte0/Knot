@@ -5,6 +5,7 @@
 
 use crate::graph::EdgeType;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::ops::Range;
 
 /// A story format identifier.
@@ -880,21 +881,25 @@ pub struct Passage {
     /// closed files too, without rescanning open-document text.
     #[serde(default)]
     pub line: u32,
-    /// Manual reachability entry flag parsed from the passage header
-    /// metadata JSON block (e.g., `:: Hub {"reachable":true}`).
+    /// Manual reachability link declared in the passage header metadata
+    /// JSON block (e.g., `:: Hub {"reachable":"Start"}`).
     ///
-    /// A **tool-level** override for stories whose navigation is opaque
-    /// to static analysis: links aliased through variables
-    /// (`<<goto $next>>`, `<<link $label $target>>`) hide their real
-    /// targets, so the downward reachability analysis would report false
-    /// "unreachable passage" diagnostics. Marking a top-level entry
-    /// passage with `"reachable": true` makes it a reachability
-    /// root alongside the start passage — everything statically
-    /// reachable from it stops being flagged. The story engine never
-    /// sees this key: reachability is Knot's property, stored in header
-    /// metadata (tool state), not in the engine-facing tag bracket.
+    /// The value is the **source passage name** of a manual link: the
+    /// author states "this passage is reachable *from* `Start`" — the
+    /// graph gains a [`crate::graph::EdgeType::Manual`] edge
+    /// `Start → Hub`, which reachability BFS traverses like a normal
+    /// navigation link. This is a **tool-level** override for stories
+    /// whose navigation is opaque to static analysis: links aliased
+    /// through variables (`<<goto $next>>`, `<<link $label $target>>`)
+    /// hide their real targets, so the downward reachability analysis
+    /// would report false "unreachable passage" diagnostics.
+    ///
+    /// Only JSON **strings** are accepted as the value (a passage name);
+    /// booleans are ignored. The story engine never sees this key:
+    /// reachability is Knot's property, stored in header metadata (tool
+    /// state), not in the engine-facing tag bracket.
     #[serde(default)]
-    pub manual_reachable: Option<bool>,
+    pub manual_reachable: Option<String>,
     /// Byte offset of the passage head (`::` prefix) in the document.
     ///
     /// Adding this to any passage-relative span/offset produces a
@@ -1014,14 +1019,15 @@ impl Passage {
         abs_offset >= abs_start && abs_offset < abs_end
     }
 
-    /// Whether this passage is a manual reachability entry point
-    /// (header metadata `"reachable": true` — see
+    /// The source passage name of this passage's manual reachability
+    /// link (header metadata `"reachable": "X"` — see
     /// [`Self::manual_reachable`]).
     ///
-    /// Manual entries act as additional reachability roots alongside the
-    /// start passage — see [`crate::Workspace::detect_unreachable_passages`].
-    pub fn is_manual_entry(&self) -> bool {
-        self.manual_reachable == Some(true)
+    /// The declared link becomes an `EdgeType::Manual` graph edge
+    /// `X → this passage`; see
+    /// [`crate::Workspace::rebuild_manual_edges`].
+    pub fn manual_link_source(&self) -> Option<&str> {
+        self.manual_reachable.as_deref()
     }
 
     /// Returns true if this passage participates in narrative flow (graph edges).
@@ -1077,6 +1083,72 @@ impl Passage {
         self.vars
             .iter()
             .filter(|v| v.kind == VarKind::Read && !v.is_temporary)
+    }
+
+    /// Returns a plain-text preview of this passage's body for the Story
+    /// Map card.
+    ///
+    /// Blocks are visited in source order (sorted by span defensively, in
+    /// case a re-parse ever produces out-of-order blocks). Text, heading,
+    /// expression, and incomplete blocks contribute their content verbatim;
+    /// macros are rendered in their compact `<<name>>` form so the preview
+    /// still reads like Twine's source-level excerpt. All whitespace runs
+    /// collapse to single spaces and the result is truncated on a character
+    /// boundary to `max_chars`, with a trailing ellipsis when truncation
+    /// occurred. Passages with no body blocks yield an empty string.
+    pub fn excerpt(&self, max_chars: usize) -> String {
+        if max_chars == 0 || self.body.is_empty() {
+            return String::new();
+        }
+
+        // Sort blocks by source position so the preview always reads in
+        // document order regardless of how the parser emitted them.
+        let mut blocks: Vec<&Block> = self.body.iter().collect();
+        blocks.sort_by_key(|b| match b {
+            Block::Text { span, .. }
+            | Block::Macro { span, .. }
+            | Block::Expression { span, .. }
+            | Block::Heading { span, .. }
+            | Block::Incomplete { span, .. } => span.start,
+        });
+
+        let mut out = String::new();
+        let mut count = 0usize;
+        let mut truncated = false;
+
+        for block in blocks {
+            let piece: Cow<'_, str> = match block {
+                Block::Text { content, .. }
+                | Block::Expression { content, .. }
+                | Block::Heading { content, .. }
+                | Block::Incomplete { content, .. } => Cow::Borrowed(content.as_str()),
+                Block::Macro { name, .. } => Cow::Owned(format!("<<{name}>>")),
+            };
+
+            for word in piece.split_whitespace() {
+                let word_len = word.chars().count();
+                // Single space separator between words (none before the first).
+                let sep = usize::from(count > 0);
+                if count + sep + word_len > max_chars {
+                    truncated = true;
+                    break;
+                }
+                if sep == 1 {
+                    out.push(' ');
+                }
+                out.push_str(word);
+                count += sep + word_len;
+            }
+
+            if truncated {
+                break;
+            }
+        }
+
+        if truncated {
+            out.push('\u{2026}');
+        }
+        out
     }
 
     /// Returns all variable operations sorted by source position (span start).
@@ -1570,5 +1642,119 @@ mod tests {
         };
         let passage = Passage::new_special("script".into(), 0..100, def);
         assert_eq!(passage.category(), PassageCategory::CoreLegacy);
+    }
+
+    // ── excerpt() tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_excerpt_joins_text_blocks_in_order() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![
+            Block::Text {
+                content: "You stand in a".into(),
+                span: 20..36,
+            },
+            Block::Text {
+                content: "dim hallway.".into(),
+                span: 36..48,
+            },
+        ];
+        assert_eq!(p.excerpt(140), "You stand in a dim hallway.");
+    }
+
+    #[test]
+    fn test_excerpt_sorts_blocks_by_span() {
+        // Blocks emitted out of order still preview in document order.
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![
+            Block::Text {
+                content: "second part".into(),
+                span: 40..51,
+            },
+            Block::Text {
+                content: "first part".into(),
+                span: 10..20,
+            },
+        ];
+        assert_eq!(p.excerpt(140), "first part second part");
+    }
+
+    #[test]
+    fn test_excerpt_collapses_whitespace() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![Block::Text {
+            content: "  line one\n\t   line two \n  ".into(),
+            span: 10..40,
+        }];
+        assert_eq!(p.excerpt(140), "line one line two");
+    }
+
+    #[test]
+    fn test_excerpt_renders_macros_compactly() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![
+            Block::Text {
+                content: "The guard eyes you.".into(),
+                span: 10..30,
+            },
+            Block::Macro {
+                name: "link".into(),
+                args: "\"Talk\" \"Dialogue\"".into(),
+                span: 30..55,
+            },
+        ];
+        assert_eq!(p.excerpt(140), "The guard eyes you. <<link>>");
+    }
+
+    #[test]
+    fn test_excerpt_includes_expressions_and_headings() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![
+            Block::Heading {
+                content: "Chapter 1".into(),
+                span: 10..20,
+            },
+            Block::Expression {
+                content: "$gold".into(),
+                span: 20..25,
+            },
+        ];
+        assert_eq!(p.excerpt(140), "Chapter 1 $gold");
+    }
+
+    #[test]
+    fn test_excerpt_truncates_with_ellipsis_on_char_boundary() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![Block::Text {
+            content: "aaaa bbbb cccc dddd".into(),
+            span: 10..30,
+        }];
+        // "aaaa bbbb cccc" is exactly 14 chars; adding " dddd" would exceed.
+        assert_eq!(p.excerpt(14), "aaaa bbbb cccc\u{2026}");
+        // A limit that fits everything leaves no ellipsis.
+        assert_eq!(p.excerpt(19), "aaaa bbbb cccc dddd");
+    }
+
+    #[test]
+    fn test_excerpt_never_splits_a_multibyte_char() {
+        let mut p = Passage::new("Hub".into(), 0..200);
+        p.body = vec![Block::Text {
+            content: "héllo wörld".into(),
+            span: 10..22,
+        }];
+        // "héllo" is 5 chars / 6 bytes; the limit of 5 fits it exactly.
+        assert_eq!(p.excerpt(5), "héllo\u{2026}");
+    }
+
+    #[test]
+    fn test_excerpt_empty_body_and_zero_limit() {
+        let p = Passage::new("Hub".into(), 0..100);
+        assert_eq!(p.excerpt(140), "");
+        let mut q = Passage::new("Hub".into(), 0..100);
+        q.body = vec![Block::Text {
+            content: "words".into(),
+            span: 10..15,
+        }];
+        assert_eq!(q.excerpt(0), "");
     }
 }

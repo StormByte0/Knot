@@ -23,7 +23,21 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { KnotLanguageClient, KnotGraphResponse, KnotUpdatePositionsResponse } from './types';
+import {
+    KnotLanguageClient,
+    KnotGraphResponse,
+    KnotUpdatePositionsResponse,
+    KnotUpdatePassageMetadataParams,
+    KnotUpdatePassageMetadataResponse,
+    KnotCreatePassageParams,
+    KnotCreatePassageResponse,
+    KnotDeletePassageParams,
+    KnotDeletePassageResponse,
+    KnotRenamePassageParams,
+    KnotRenamePassageResponse,
+    KnotSetStartPassageParams,
+    KnotSetStartPassageResponse,
+} from './types';
 import { navigateToPassage, findTargetViewColumn } from './navigation';
 
 // ---------------------------------------------------------------------------
@@ -172,6 +186,25 @@ export class StoryMapPanelManager {
         }
     }
 
+    /** Refresh the graph after a workspace edit round-trips through the
+     *  server. The client applies the edit, `did_change` re-syncs the
+     *  server's document model, and the delayed refresh then pulls the
+     *  updated graph. The delay keeps the refresh behind the re-sync. */
+    private _refreshAfterEdit(delayMs = 400) {
+        setTimeout(() => {
+            this.refreshGraph();
+        }, delayMs);
+    }
+
+    /** Resolve the workspace root URI for knot/* requests. */
+    private _workspaceUri(): string | undefined {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            return undefined;
+        }
+        return workspaceFolders[0].uri.toString();
+    }
+
     /** Post the current graph data to the webview. */
     private _postGraphData() {
         if (this._panel && this._graphData) {
@@ -276,6 +309,165 @@ export class StoryMapPanelManager {
                     // Persist viewport state to workspace state
                     const { x, y, zoom } = message;
                     this._context.workspaceState.update('knot.storyMapViewport', { x, y, zoom });
+                    break;
+                }
+                case 'updatePassageMetadata': {
+                    // GUI inspector edit (Tier A): tags/color/group/size/
+                    // manual reachable link/position on one passage.
+                    const { passage_name, tags, group, color, size, reachable, position } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    // Build the request with the three-state field semantics:
+                    // undefined = absent (unchanged), null = remove, value = set.
+                    // JSON.stringify drops undefined properties; null survives.
+                    const params: KnotUpdatePassageMetadataParams = {
+                        workspace_uri: workspaceUri,
+                        passage_name,
+                    };
+                    if (tags !== undefined) params.tags = tags;
+                    if (group !== undefined) params.group = group;
+                    if (color !== undefined) params.color = color;
+                    if (size !== undefined) params.size = size;
+                    if (reachable !== undefined) params.reachable = reachable;
+                    if (position !== undefined) params.position = position;
+                    try {
+                        const result = await this._client.sendRequest<KnotUpdatePassageMetadataResponse>(
+                            'knot/updatePassageMetadata', params,
+                        );
+                        if (!result.success) {
+                            vscode.window.showErrorMessage(`Knot: ${result.error ?? 'Failed to update passage metadata'}`);
+                        } else {
+                            this._refreshAfterEdit();
+                        }
+                    } catch (e) {
+                        console.error('[Knot] Failed to update passage metadata:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to update passage metadata.');
+                    }
+                    break;
+                }
+                case 'createPassage': {
+                    // GUI passage creation (Tier B): new passage from the
+                    // graph (context menu / toolbar), placed at the click.
+                    const { name, tags, position, target_file } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    const params: KnotCreatePassageParams = {
+                        workspace_uri: workspaceUri,
+                        name,
+                    };
+                    if (tags !== undefined) params.tags = tags;
+                    if (position !== undefined) params.position = position;
+                    if (target_file !== undefined) params.target_file = target_file;
+                    try {
+                        const result = await this._client.sendRequest<KnotCreatePassageResponse>(
+                            'knot/createPassage', params,
+                        );
+                        if (!result.success) {
+                            vscode.window.showErrorMessage(`Knot: ${result.error ?? 'Failed to create passage'}`);
+                        } else {
+                            vscode.window.setStatusBarMessage(`Knot: Created passage '${name}'`, 3000);
+                            this._refreshAfterEdit();
+                        }
+                    } catch (e) {
+                        console.error('[Knot] Failed to create passage:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to create passage.');
+                    }
+                    break;
+                }
+                case 'deletePassage': {
+                    // GUI passage deletion (Tier B): remove the passage
+                    // block, optionally unwrinking links to it.
+                    const { passage_name, strip_links } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    const params: KnotDeletePassageParams = {
+                        workspace_uri: workspaceUri,
+                        passage_name,
+                        strip_links: !!strip_links,
+                    };
+                    try {
+                        const result = await this._client.sendRequest<KnotDeletePassageResponse>(
+                            'knot/deletePassage', params,
+                        );
+                        if (!result.success) {
+                            vscode.window.showErrorMessage(`Knot: ${result.error ?? 'Failed to delete passage'}`);
+                        } else {
+                            const stripped = result.links_stripped > 0
+                                ? ` (${result.links_stripped} link${result.links_stripped === 1 ? '' : 's'} removed)`
+                                : '';
+                            vscode.window.setStatusBarMessage(
+                                `Knot: Deleted passage '${passage_name}'${stripped}`, 4000);
+                            this._refreshAfterEdit();
+                        }
+                    } catch (e) {
+                        console.error('[Knot] Failed to delete passage:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to delete passage.');
+                    }
+                    break;
+                }
+                case 'renamePassage': {
+                    // GUI passage rename (Tier B): header + all links +
+                    // manual reachable declarations, cross-file.
+                    const { name, new_name } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    const params: KnotRenamePassageParams = {
+                        workspace_uri: workspaceUri,
+                        name,
+                        new_name,
+                    };
+                    try {
+                        const result = await this._client.sendRequest<KnotRenamePassageResponse>(
+                            'knot/renamePassage', params,
+                        );
+                        if (!result.success) {
+                            vscode.window.showErrorMessage(`Knot: ${result.error ?? 'Failed to rename passage'}`);
+                        } else {
+                            vscode.window.setStatusBarMessage(
+                                `Knot: Renamed '${name}' → '${new_name}' (${result.files_changed} file${result.files_changed === 1 ? '' : 's'})`,
+                                4000);
+                            this._refreshAfterEdit();
+                        }
+                    } catch (e) {
+                        console.error('[Knot] Failed to rename passage:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to rename passage.');
+                    }
+                    break;
+                }
+                case 'setStartPassage': {
+                    // GUI story setting (Tier C): rewrite StoryData's start.
+                    const { passage_name } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    const params: KnotSetStartPassageParams = {
+                        workspace_uri: workspaceUri,
+                        passage_name,
+                    };
+                    try {
+                        const result = await this._client.sendRequest<KnotSetStartPassageResponse>(
+                            'knot/setStartPassage', params,
+                        );
+                        if (!result.success) {
+                            vscode.window.showErrorMessage(`Knot: ${result.error ?? 'Failed to set start passage'}`);
+                        } else {
+                            vscode.window.setStatusBarMessage(
+                                `Knot: Start passage set to '${passage_name}'`, 3000);
+                            this._refreshAfterEdit();
+                        }
+                    } catch (e) {
+                        console.error('[Knot] Failed to set start passage:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to set start passage.');
+                    }
                     break;
                 }
                 case 'log': {

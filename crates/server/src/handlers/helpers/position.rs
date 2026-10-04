@@ -240,7 +240,7 @@ pub(crate) fn parse_passage_name_from_header(header: &str) -> String {
 }
 
 /// Build or update the JSON metadata block in a passage header line with
-/// a new position value.
+/// position, group, and/or color values.
 ///
 /// If the header already has a JSON metadata block, the "position" field
 /// is updated. If not, a new `{"position":"x,y"}` block is appended.
@@ -250,132 +250,224 @@ pub(crate) fn update_passage_position_in_header(line: &str, x: f64, y: f64) -> S
     update_passage_metadata_in_header(line, Some((x, y)), None, None)
 }
 
-/// Build or update the JSON metadata block in a passage header line with
-/// position, group, and/or color values.
-///
-/// This writes the **entire** JSON metadata block, preserving existing
-/// properties and updating/adding the ones provided. Per the design spec,
-/// every metadata write rewrites the whole block to avoid partial updates.
-///
-/// - `position`: If provided, sets or updates the "position" field.
-/// - `group`: If `Some(Some(v))`, sets the "group" field. If `Some(None)`,
-///   removes the "group" field. If `None`, leaves the existing value unchanged.
-/// - `color`: Same semantics as `group`.
-///
-/// Returns the new header line with the updated metadata.
+/// Legacy three-field metadata writer — see
+/// [`update_passage_header`] for the full editor. Kept for the position
+/// drag-save flow (`knot/updatePositions`); delegates with only the
+/// requested fields so tags/size/reachable are preserved untouched.
 pub(crate) fn update_passage_metadata_in_header(
     line: &str,
     position: Option<(f64, f64)>,
     group: Option<Option<&str>>,
     color: Option<Option<&str>>,
 ) -> String {
-    /// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
-    fn format_coord(v: f64) -> String {
-        if v.fract() == 0.0 {
-            format!("{}", v as i64)
+    update_passage_header(
+        line,
+        HeaderEdits {
+            position,
+            group,
+            color,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|_| line.to_string())
+}
+
+/// Field-level edits for [`update_passage_header`].
+///
+/// Every field uses the same three-state semantics as the JSON writer:
+/// - `None` → leave unchanged
+/// - `Some(None)` → remove the field
+/// - `Some(Some(v))` → set/replace the field
+///
+/// `tags` is two-state: `None` keeps the existing tag blocks verbatim,
+/// `Some(list)` replaces them wholesale (`Some([])` removes all tags).
+#[derive(Default)]
+pub(crate) struct HeaderEdits<'a> {
+    /// Canvas position `{"position":"x,y"}`.
+    pub position: Option<(f64, f64)>,
+    /// Story Map group assignment.
+    pub group: Option<Option<&'a str>>,
+    /// Story Map node color.
+    pub color: Option<Option<&'a str>>,
+    /// Node size (width, height) — Twine `"size":"w,h"` convention.
+    pub size: Option<Option<(f64, f64)>>,
+    /// Manual reachability link source (metadata `reachable`).
+    pub reachable: Option<Option<&'a str>>,
+    /// Replacement tag list (whole-block rewrite).
+    pub tags: Option<&'a [String]>,
+}
+
+/// Format a coordinate: integer if whole number, otherwise up to 2 decimal places.
+fn format_coord(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{:.2}", v)
+    }
+}
+
+/// Rewrite a passage header line with the requested field edits.
+///
+/// The line is rebuilt from three parts — `:: Name`, the `[tag]` blocks,
+/// and the `{...}` JSON metadata block — preserving every part that isn't
+/// edited:
+///
+/// - Unedited tag blocks keep their original text (`[a] [b]` stays as-is).
+/// - The JSON block is merged (existing unknown keys survive; setting a
+///   value updates it; `Some(None)` removes it; an object that becomes
+///   empty removes the whole block).
+/// - Trailing duplicate JSON blocks (old race-condition damage) are
+///   repaired by [`peel_trailing_json_blocks`].
+///
+/// # Errors
+///
+/// Returns an error when the line isn't a `::` passage header, or when a
+/// tag in `edits.tags` fails [`validate_tag`]. On error the caller should
+/// keep the original line.
+pub(crate) fn update_passage_header(line: &str, edits: HeaderEdits) -> Result<String, String> {
+    if !line.trim_start().starts_with("::") {
+        return Err(format!("not a passage header line: {}", line));
+    }
+    // ── Part 1: peel the JSON metadata tail ────────────────────────────
+    let (stripped, existing_json) = peel_trailing_json_blocks(line);
+    let trimmed_stripped = stripped.trim_end();
+
+    // ── Part 2: split ":: Name" from the "[tag] blocks" section ───────
+    let (name_part, tag_section) = match trimmed_stripped.find('[') {
+        Some(pos) => (
+            &trimmed_stripped[..pos],
+            &trimmed_stripped[pos..],
+        ),
+        None => (trimmed_stripped, ""),
+    };
+
+    if name_part.trim_start_matches(':').trim().is_empty() {
+        return Err(format!("passage header has no name: {}", line));
+    }
+
+    // ── Part 3: rebuild the tag section ────────────────────────────────
+    let mut tag_section_owned: Option<String> = None;
+    if let Some(tags) = edits.tags {
+        for tag in tags {
+            validate_tag(tag)?;
+        }
+        tag_section_owned = Some(if tags.is_empty() {
+            String::new()
         } else {
-            format!("{:.2}", v)
-        }
+            format!("[{}]", tags.join(" "))
+        });
     }
 
-    // Strip trailing JSON metadata blocks using the unified header parser.
-    // This repairs duplication damage from the old race condition where
-    // multiple position updates could pile up JSON blocks before
-    // open_documents was updated. We keep only the last (most recent)
-    // block's data and merge it with the new values being written.
-    //
-    // Example input:  `:: Name [tags] {"position":"1,2"} {"position":"3,4"}`
-    // After stripping: `:: Name [tags]`  +  merged JSON with latest values
-    //
-    // Using the unified parser ensures we correctly handle:
-    // - Nested JSON objects
-    // - Custom tags with braces in them (e.g., [tag{stuff}])
-    // - Multiple `[tag1] [tag2]` blocks before the JSON
-    let (stripped_line, existing_json) = peel_trailing_json_blocks(line);
+    // ── Part 4: merge the JSON edits ───────────────────────────────────
+    let mut json_val = existing_json.unwrap_or(serde_json::Value::Object(
+        serde_json::Map::new(),
+    ));
 
-    // If we found an existing JSON block, merge the new values into it
-    if let Some(mut json_val) = existing_json {
-        // Update position if provided
-        if let Some((x, y)) = position {
-            let pos_str = format!("{},{}", format_coord(x), format_coord(y));
-            json_val["position"] = serde_json::Value::String(pos_str);
-        }
-
-        // Update group if provided
-        if let Some(group_opt) = group {
-            match group_opt {
-                Some(v) => {
-                    json_val["group"] = serde_json::Value::String(v.to_string());
-                }
-                None => {
-                    // Remove group field
-                    if let Some(obj) = json_val.as_object_mut() {
-                        obj.remove("group");
-                    }
-                }
-            }
-        }
-
-        // Update color if provided
-        if let Some(color_opt) = color {
-            match color_opt {
-                Some(v) => {
-                    json_val["color"] = serde_json::Value::String(v.to_string());
-                }
-                None => {
-                    // Remove color field
-                    if let Some(obj) = json_val.as_object_mut() {
-                        obj.remove("color");
-                    }
-                }
-            }
-        }
-
-        // Remove empty object — if only "position" remains and it was the
-        // only field, we still keep it. But if position is also None and the
-        // object is empty, don't write an empty {} block.
-        if let Some(obj) = json_val.as_object()
-            && obj.is_empty()
-        {
-            return stripped_line;
-        }
-
-        if let Ok(new_json) = serde_json::to_string(&json_val) {
-            return format!("{} {}", stripped_line, new_json);
-        }
-    }
-
-    // No existing JSON block — create one with provided values
-    let mut json_obj = serde_json::Map::new();
-
-    if let Some((x, y)) = position {
+    if let Some((x, y)) = edits.position {
         let pos_str = format!("{},{}", format_coord(x), format_coord(y));
-        json_obj.insert("position".to_string(), serde_json::Value::String(pos_str));
+        json_val["position"] = serde_json::Value::String(pos_str);
     }
 
-    if let Some(Some(v)) = group {
-        json_obj.insert(
-            "group".to_string(),
-            serde_json::Value::String(v.to_string()),
-        );
+    let set_or_remove =
+        |json: &mut serde_json::Value, key: &str, value: Option<&str>| {
+            if let Some(obj) = json.as_object_mut() {
+                match value {
+                    Some(v) => {
+                        obj.insert(key.to_string(), serde_json::Value::String(v.to_string()));
+                    }
+                    None => {
+                        obj.remove(key);
+                    }
+                }
+            }
+        };
+
+    if let Some(group) = edits.group {
+        set_or_remove(&mut json_val, "group", group);
+    }
+    if let Some(color) = edits.color {
+        set_or_remove(&mut json_val, "color", color);
+    }
+    if let Some(size) = edits.size {
+        match size {
+            Some((w, h)) => {
+                let size_str = format!("{},{}", format_coord(w), format_coord(h));
+                json_val["size"] = serde_json::Value::String(size_str);
+            }
+            None => set_or_remove(&mut json_val, "size", None),
+        }
+    }
+    if let Some(reachable) = edits.reachable {
+        set_or_remove(&mut json_val, "reachable", reachable);
     }
 
-    if let Some(Some(v)) = color {
-        json_obj.insert(
-            "color".to_string(),
-            serde_json::Value::String(v.to_string()),
-        );
+    // ── Part 5: assemble ───────────────────────────────────────────────
+    let mut result = String::from(name_part.trim_end());
+    let final_tags = tag_section_owned
+        .as_deref()
+        .unwrap_or(tag_section)
+        .trim();
+    if !final_tags.is_empty() {
+        result.push(' ');
+        result.push_str(final_tags);
     }
 
-    if json_obj.is_empty() {
-        // Nothing to write — return the line unchanged
-        return line.to_string();
+    // An empty JSON object adds nothing — drop the block entirely. This
+    // also covers "removed every field" edits.
+    if let Some(obj) = json_val.as_object()
+        && !obj.is_empty()
+    {
+        let new_json =
+            serde_json::to_string(&json_val).map_err(|e| format!("JSON re-encode failed: {}", e))?;
+        result.push(' ');
+        result.push_str(&new_json);
     }
 
-    let new_json = serde_json::to_string(&serde_json::Value::Object(json_obj))
-        .unwrap_or_else(|_| "{}".to_string());
-    let trimmed = line.trim_end();
-    format!("{} {}", trimmed, new_json)
+    Ok(result)
+}
+
+/// Validate a passage name for header round-tripping.
+///
+/// The header grammar terminates the name at the first `[` or `{`, so a
+/// name containing either bracket cannot survive a write/read cycle.
+/// `::` inside a name would parse as a nested header marker.
+pub(crate) fn validate_passage_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Passage name cannot be empty".to_string());
+    }
+    if name.trim() != name {
+        return Err("Passage name cannot start or end with whitespace".to_string());
+    }
+    if name.contains("::") {
+        return Err("Passage name cannot contain '::'".to_string());
+    }
+    if name.contains('[') || name.contains(']') {
+        return Err("Passage name cannot contain '[' or ']'".to_string());
+    }
+    if name.contains('{') || name.contains('}') {
+        return Err("Passage name cannot contain '{' or '}'".to_string());
+    }
+    if name.contains('\n') || name.contains('\r') {
+        return Err("Passage name cannot contain line breaks".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a tag for the whitespace-separated `[tag1 tag2]` block.
+pub(crate) fn validate_tag(tag: &str) -> Result<(), String> {
+    if tag.is_empty() {
+        return Err("Tag cannot be empty".to_string());
+    }
+    if tag.chars().any(char::is_whitespace) {
+        return Err(format!("Tag '{}' cannot contain whitespace", tag));
+    }
+    if tag.contains('[') || tag.contains(']') {
+        return Err(format!("Tag '{}' cannot contain '[' or ']'", tag));
+    }
+    if tag.contains('{') || tag.contains('}') {
+        return Err(format!("Tag '{}' cannot contain '{{' or '}}'", tag));
+    }
+    Ok(())
 }
 
 /// Peel trailing JSON metadata blocks off a header line, right to left.
@@ -410,32 +502,28 @@ fn peel_trailing_json_blocks(line: &str) -> (String, Option<serde_json::Value>) 
     (stripped.to_string(), json)
 }
 
-/// Insert or update the `"reachable"` flag in a passage header line's
-/// JSON metadata block, preserving every other field.
+/// Insert or update the `"reachable"` manual link in a passage header
+/// line's JSON metadata block, preserving every other field.
 ///
 /// This is the quickfix writer for the unreachable-passage diagnostic:
-/// `:: Hub` becomes `:: Hub {"reachable":true}`, while
+/// `:: Hub` becomes `:: Hub {"reachable":"Start"}`, while
 /// `:: Hub {"position":"1,2"}` becomes
-/// `:: Hub {"position":"1,2","reachable":true}`. The flag lands in
-/// the metadata block — tool state the engine never reads — rather than
-/// the engine-facing tag bracket, and merges with any existing
-/// position/group/color values the way Story Map position saves do.
-pub(crate) fn set_reachable_in_header(line: &str) -> String {
-    let (stripped, json) = peel_trailing_json_blocks(line);
-
-    let mut json_val = match json {
-        Some(v) => v,
-        // No metadata block yet — append a fresh one holding only the flag.
-        None => return format!("{} {{\"reachable\":true}}", line.trim_end()),
-    };
-
-    json_val["reachable"] = serde_json::Value::Bool(true);
-    match serde_json::to_string(&json_val) {
-        Ok(new_json) => format!("{} {}", stripped, new_json),
-        // Unreachable in practice (Value::Object always serializes);
-        // keep the author's line rather than emitting a broken header.
-        Err(_) => line.to_string(),
-    }
+/// `:: Hub {"position":"1,2","reachable":"Start"}`. The value names the
+/// **source passage** of the manual link ("Hub is reachable from Start"),
+/// which the graph represents as a `Manual` edge `Start → Hub`. The
+/// declaration lands in the metadata block — tool state the engine never
+/// reads — rather than the engine-facing tag bracket, and merges with any
+/// existing position/group/color values the way Story Map position saves
+/// do.
+pub(crate) fn set_reachable_in_header(line: &str, source: &str) -> String {
+    update_passage_header(
+        line,
+        HeaderEdits {
+            reachable: Some(Some(source)),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|_| line.to_string())
 }
 
 // ===========================================================================

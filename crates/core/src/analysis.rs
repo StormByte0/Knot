@@ -98,10 +98,16 @@ impl AnalysisEngine {
         // Broken link detection
         diagnostics.extend(workspace.graph.detect_broken_links());
 
-        // Unreachable passage detection — from ALL roots (start passage +
-        // manual `reachable` metadata entries), so variable-aliased
-        // navigation doesn't produce false positives.
+        // Unreachable passage detection — the start passage roots the BFS;
+        // manual `reachable` metadata declarations participate as
+        // `EdgeType::Manual` graph edges, so variable-aliased navigation
+        // doesn't produce false positives.
         diagnostics.extend(workspace.detect_unreachable_passages());
+
+        // Manual link declarations pointing at passages that don't exist
+        // (typos, renames) — flagged separately from unreachability so
+        // the fix (correct the `reachable` value) is obvious.
+        diagnostics.extend(workspace.detect_manual_link_errors());
 
         // NOTE: Variable flow analysis is now delegated to format plugins.
         // The server should call `analyze_with_format_diagnostics()` instead

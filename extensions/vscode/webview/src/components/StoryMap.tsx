@@ -8,7 +8,6 @@ import React, {
 import {
   ReactFlow,
   MiniMap,
-  Controls,
   Background,
   useNodesState,
   useEdgesState,
@@ -25,10 +24,10 @@ import {
   EdgeProps,
   getStraightPath,
   ReactFlowProvider,
-  MarkerType,
   useStore,
   type InternalNode,
   type ReactFlowState,
+  type OnSelectionChangeParams,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
@@ -41,12 +40,17 @@ import {
   GroupNodeData,
 } from '../types';
 import { vscode } from '../App';
+import ContextMenu, { ContextMenuState } from './ContextMenu';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const GRID_SNAP = 20;
+// Compact single-row Twine-style chip card. The body-text preview was
+// removed: a single click now navigates the code editor straight to the
+// passage, so the raw text is always one click away — no need to duplicate
+// it on the canvas (saves vertical real estate in the VS Code layout).
 const NODE_W = 160;
-const NODE_H = 40;
+const NODE_H = 36;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4.0;
 const BIDIR_OFFSET = 7;
@@ -61,20 +65,25 @@ const UNREACHABLE_LIST_X = 40;
 const UNREACHABLE_LIST_Y_OFFSET = 60;
 
 // ── Color palette ──────────────────────────────────────────────────────────
+//
+// Modernized Twine palette: the passage families keep distinct hues so the
+// map reads at a glance, while every edge kind stays legible on the dark
+// canvas at low opacity.
 
 const COLORS = {
-  normal:     '#2d6a9f',
-  start:      '#2e7d32',
-  special:    '#e65100',
-  metadata:   '#6a1b9a',
-  unreachable:'#bf6900',
-  broken:     '#c62828',
-  edgeNav:    '#5a6a7e',   // [[Target]] — player-choice navigation
-  edgeJump:   '#6a4c93',   // <<goto>> — unconditional redirect
-  edgeCall:   '#1b8a6b',   // <<widget>> — pushdown call-return
-  edgeInclude:'#2e86ab',   // <<include>> — inline inclusion
-  edgeUp:     '#3a4555',   // Special passage lifecycle chain
-  edgeBroken: '#c62828',   // Target passage doesn't exist
+  normal:     '#3a7ca5',   // Twine steel blue
+  start:      '#2f9e6e',   // emerald
+  special:    '#d97b3f',   // warm amber-orange
+  metadata:   '#8e5bc0',   // violet
+  unreachable:'#a87534',   // desaturated amber
+  broken:     '#f87171',
+  edgeNav:    '#8494ab',   // [[Target]] — player-choice navigation (slate)
+  edgeJump:   '#a78bfa',   // <<goto>> — unconditional redirect (violet)
+  edgeCall:   '#34d399',   // <<widget>> — pushdown call-return (mint)
+  edgeInclude:'#60a5fa',   // <<include>> — inline inclusion (sky)
+  edgeUp:     '#64748b',   // Special passage lifecycle chain (slate dark)
+  edgeBroken: '#f87171',   // Target passage doesn't exist
+  edgeManual: '#f0b429',   // `reachable` metadata — manual reachability link (gold)
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -109,9 +118,20 @@ function perpOffset(
   return [(-dy / len) * dist, (dx / len) * dist];
 }
 
-// ── Rectangle intersection for floating edges ──────────────────────────────
+// ── Border intersection for floating edges ─────────────────────────────────
+//
+// Nodes render with rounded corners (CSS --node-r), so anchoring edges on
+// the raw rectangle leaves arrow tips floating OUTSIDE the visible shape
+// whenever the center-to-center ray exits near a corner. This computes the
+// exit point on the actual rounded rectangle: intersect the plain rect
+// first, and when the hit lands inside a corner zone, intersect the ray
+// with that corner's arc circle instead (taking the far root, since the
+// ray origin — the node center — is always inside).
 
-function getRectIntersection(
+// Must match --node-r in storymap.css.
+const NODE_R = 8;
+
+function getBorderPoint(
   center: { x: number; y: number },
   target: { x: number; y: number },
   width: number,
@@ -126,14 +146,51 @@ function getRectIntersection(
   const absDx = Math.abs(dx);
   const absDy = Math.abs(dy);
 
-  const scale = (absDx * halfH > absDy * halfW)
-    ? halfW / absDx
-    : halfH / absDy;
+  const dxDominant = absDx * halfH > absDy * halfW;
+  const scale = dxDominant ? halfW / absDx : halfH / absDy;
+  const px = center.x + dx * scale;
+  const py = center.y + dy * scale;
 
-  return [center.x + dx * scale, center.y + dy * scale];
+  // Corner-arc center (the rect inset by NODE_R on both axes), when the
+  // plain-rect hit falls inside a corner zone.
+  let ax: number | null = null;
+  let ay = 0;
+  if (dxDominant) {
+    // Hit the left/right side: corner zone when close to top/bottom.
+    if (Math.abs(py - center.y) > halfH - NODE_R) {
+      ax = center.x + Math.sign(dx) * (halfW - NODE_R);
+      ay = center.y + Math.sign(py - center.y) * (halfH - NODE_R);
+    }
+  } else {
+    // Hit the top/bottom side: corner zone when close to left/right.
+    if (Math.abs(px - center.x) > halfW - NODE_R) {
+      ax = center.x + Math.sign(px - center.x) * (halfW - NODE_R);
+      ay = center.y + Math.sign(dy) * (halfH - NODE_R);
+    }
+  }
+
+  if (ax !== null) {
+    // Ray/circle exit intersection: |c + t·d − a|² = r², larger root.
+    const fx = ax - center.x;
+    const fy = ay - center.y;
+    const dd = dx * dx + dy * dy;
+    const fd = fx * dx + fy * dy;
+    const disc = fd * fd - dd * (fx * fx + fy * fy - NODE_R * NODE_R);
+    if (disc >= 0) {
+      const t = (fd + Math.sqrt(disc)) / dd;
+      return [center.x + dx * t, center.y + dy * t];
+    }
+  }
+
+  return [px, py];
 }
 
 // ── Custom Node: Passage ───────────────────────────────────────────────────
+//
+// Compact single-row Twine-style chip: the whole card carries the passage
+// color (with a subtle top-light gradient), the name, and status badges.
+// The body-text preview was removed — clicking a passage navigates the code
+// editor to it, so the full raw text is always exactly one click away.
 
 function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
   const d = data as PassageNodeData;
@@ -164,20 +221,48 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
     style.minHeight = `${d.size_h}px`;
   }
 
-  // Adjust label max-width based on node width
-  const labelStyle: React.CSSProperties | undefined = (d.size_w != null)
-    ? { maxWidth: `${d.size_w - 30}px` }
-    : undefined;
-
   return (
     <div className={cls} style={style}>
-      <Handle type="target" position={Position.Top}    className="pn__handle" />
-      <span className="pn__label" title={d.label} style={labelStyle}>{d.label}</span>
-      {d.tags?.length > 0 && (
-        <span className="pn__tag-count" title={d.tags.join(', ')}>
-          {d.tags.length}
-        </span>
-      )}
+      <Handle type="target" position={Position.Top} className="pn__handle" />
+      <span className="pn__label" title={d.label}>{d.label}</span>
+      <span className="pn__badges">
+        {d.is_start && (
+          <span className="pn__badge pn__badge--start" title="Start passage">
+            <svg viewBox="0 0 10 10" width="8" height="8" aria-hidden="true">
+              <path d="M1.5 1 L8.5 5 L1.5 9 Z" fill="currentColor" />
+            </svg>
+          </span>
+        )}
+        {d.is_entry && (
+          <span
+            className="pn__badge pn__badge--entry"
+            title={`Manual link from "${d.manual_link_source ?? '?'}" (reachable metadata)`}
+          >
+            <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+              <path
+                d="M4.5 7.5 L7.5 4.5 M3.5 5.5 L2.2 6.8 a1.7 1.7 0 0 0 2.4 2.4 L5.8 8 M6.2 4 L7.4 2.8 a1.7 1.7 0 0 1 2.4 2.4 L8.5 6.5"
+                fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"
+              />
+            </svg>
+          </span>
+        )}
+        {d.is_dead_end && (
+          <span className="pn__badge pn__badge--dead-end" title="Dead end — no outgoing links">
+            <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+              <path
+                d="M6 1.5 L11 10 L1 10 Z"
+                fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"
+              />
+              <path d="M6 4.6 L6 7.2 M6 8.6 L6 8.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+          </span>
+        )}
+        {d.tags?.length > 0 && (
+          <span className="pn__badge pn__badge--tags" title={d.tags.join(', ')}>
+            {d.tags.length}
+          </span>
+        )}
+      </span>
       <Handle type="source" position={Position.Bottom} className="pn__handle" />
     </div>
   );
@@ -221,12 +306,18 @@ function makeNodeGeometrySelector(
 // ── Custom straight edge with floating intersection ────────────────────────
 
 interface StraightEdgeData {
-  edgeKind: 'navigation' | 'upstream' | 'broken' | 'jump' | 'call' | 'include';
+  edgeKind: 'navigation' | 'upstream' | 'broken' | 'jump' | 'call' | 'include' | 'manual';
   offsetPx: number;
   displayText?: string;
 }
 
-const ARROW_PULLBACK = 5;
+// Open-arrowhead geometry. The TIP sits exactly on the target node's
+// border; the main line stops at the arrow BASE so the two strokes never
+// stack opacity. Both grow slightly on hover.
+const ARROW_LEN = 7;
+const ARROW_HALF = 3.75;
+const ARROW_LEN_HOVER = 9;
+const ARROW_HALF_HOVER = 4.75;
 
 function StraightEdge({
   id,
@@ -234,7 +325,7 @@ function StraightEdge({
   sourceX, sourceY,
   targetX, targetY,
   data,
-  markerEnd,
+  style: edgeStyle,
 }: EdgeProps) {
   const { edgeKind = 'navigation', offsetPx = 0, displayText } = (data ?? {}) as unknown as StraightEdgeData;
   const [hovered, setHovered] = useState(false);
@@ -260,65 +351,138 @@ function StraightEdge({
   const srcData = useStore(sourceSelector, nodeEq);
   const tgtData = useStore(targetSelector, nodeEq);
 
-  let sx = sourceX;
-  let sy = sourceY;
-  let tx = targetX;
-  let ty = targetY;
+  const strokeWidth = hovered ? 2.25 : 1.4;
+  const arrowLen = hovered ? ARROW_LEN_HOVER : ARROW_LEN;
+  const arrowHalf = hovered ? ARROW_HALF_HOVER : ARROW_HALF;
 
-  if (srcData && tgtData) {
-    const srcCenter = { x: srcData.x + srcData.w / 2, y: srcData.y + srcData.h / 2 };
-    const tgtCenter = { x: tgtData.x + tgtData.w / 2, y: tgtData.y + tgtData.h / 2 };
+  // ── Geometry ──────────────────────────────────────────────────────────
+  // tip    — arrowhead tip; always anchored ON the target node's border.
+  // tipDir — unit vector the arrowhead points along (travel direction).
+  // path   — the visible main line (stops at the arrowhead base).
+  // start  — where the visible line begins (used for the label midpoint).
+  let tip = { x: targetX, y: targetY };
+  let tipDir = { x: 1, y: 0 };
+  let start = { x: sourceX, y: sourceY };
+  let path: string;
 
-    [sx, sy] = getRectIntersection(srcCenter, tgtCenter, srcData.w, srcData.h);
-    [tx, ty] = getRectIntersection(tgtCenter, srcCenter, tgtData.w, tgtData.h);
+  if (srcData && tgtData && source === target) {
+    // ── Self-loop: bulge out from the node's right side and curve back ──
+    // (React Flow straight edges degenerate to a zero-length path for
+    // source === target, which rendered as nothing at all.)
+    const right = srcData.x + srcData.w;
+    const cY = srcData.y + srcData.h / 2;
+    const yA = cY - Math.min(10, srcData.h * 0.3);
+    const yB = cY + Math.min(10, srcData.h * 0.3);
+    const bulge = 26 + Math.min(24, srcData.w * 0.2);
+    tip = { x: right, y: yB };
+    const tLen = Math.hypot(bulge, 18) || 1;
+    tipDir = { x: -bulge / tLen, y: -18 / tLen };
+    start = { x: right, y: yA };
+    // End the curve at the arrowhead base, pulled back along its tangent.
+    const ex = right - tipDir.x * arrowLen;
+    const ey = yB - tipDir.y * arrowLen;
+    path = `M ${right} ${yA} C ${right + bulge} ${yA - 18}, ${right + bulge} ${yB + 18}, ${ex} ${ey}`;
+  } else if (srcData && tgtData) {
+    // ── Floating straight edge anchored on both node borders ───────────
+    let sc = { x: srcData.x + srcData.w / 2, y: srcData.y + srcData.h / 2 };
+    let tc = { x: tgtData.x + tgtData.w / 2, y: tgtData.y + tgtData.h / 2 };
 
-    const edgeDx = tx - sx;
-    const edgeDy = ty - sy;
-    const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy) || 1;
-    tx -= (edgeDx / edgeLen) * ARROW_PULLBACK;
-    ty -= (edgeDy / edgeLen) * ARROW_PULLBACK;
+    // Bidirectional pairs: translate the whole center line perpendicular
+    // instead of shifting the endpoints. The shifted line still crosses
+    // both node rectangles, so both anchors stay exactly on the border —
+    // the old endpoint-shift made arrows float off the rounded corners.
+    if (offsetPx !== 0) {
+      const [ox, oy] = perpOffset(sc.x, sc.y, tc.x, tc.y, offsetPx);
+      sc = { x: sc.x + ox, y: sc.y + oy };
+      tc = { x: tc.x + ox, y: tc.y + oy };
+    }
+
+    const [bx, by] = getBorderPoint(sc, tc, srcData.w, srcData.h);
+    const [tx, ty] = getBorderPoint(tc, sc, tgtData.w, tgtData.h);
+    start = { x: bx, y: by };
+    tip = { x: tx, y: ty };
+    const dx = tx - bx;
+    const dy = ty - by;
+    const len = Math.hypot(dx, dy) || 1;
+    tipDir = { x: dx / len, y: dy / len };
+
+    // Main line runs border → arrowhead base. For very short edges the
+    // base gap would look broken, so run the line all the way to the tip.
+    const lineLen = len > arrowLen * 2 ? len - arrowLen : len;
+    const ex = bx + tipDir.x * lineLen;
+    const ey = by + tipDir.y * lineLen;
+    [path] = getStraightPath({ sourceX: bx, sourceY: by, targetX: ex, targetY: ey });
+  } else {
+    // Fallback before node measurement: handle-derived coordinates.
+    const dx = targetX - sourceX;
+    const dy = targetY - sourceY;
+    const len = Math.hypot(dx, dy) || 1;
+    tipDir = { x: dx / len, y: dy / len };
+    const lineLen = len > arrowLen * 2 ? len - arrowLen : len;
+    const ex = sourceX + tipDir.x * lineLen;
+    const ey = sourceY + tipDir.y * lineLen;
+    [path] = getStraightPath({ sourceX, sourceY, targetX: ex, targetY: ey });
   }
 
-  if (offsetPx !== 0) {
-    const [ox, oy] = perpOffset(sx, sy, tx, ty, offsetPx);
-    sx += ox; sy += oy;
-    tx += ox; ty += oy;
-  }
-
-  const [path] = getStraightPath({ sourceX: sx, sourceY: sy, targetX: tx, targetY: ty });
-
+  // ── Stroke styling ────────────────────────────────────────────────────
   let stroke = COLORS.edgeNav;
   let strokeDash = '';
-  let opacity = 0.65;
+  let opacity = 0.55;
 
   if (edgeKind === 'upstream') {
     stroke = COLORS.edgeUp;
     strokeDash = '5 3';
-    opacity = 0.35;
+    opacity = 0.32;
   } else if (edgeKind === 'broken') {
     stroke = COLORS.edgeBroken;
     strokeDash = '6 3';
-    opacity = 0.85;
+    opacity = 0.8;
   } else if (edgeKind === 'jump') {
     stroke = COLORS.edgeJump;
     strokeDash = '8 4';
-    opacity = 0.70;
+    opacity = 0.62;
   } else if (edgeKind === 'call') {
     stroke = COLORS.edgeCall;
     strokeDash = '3 2';
-    opacity = 0.60;
+    opacity = 0.55;
   } else if (edgeKind === 'include') {
     stroke = COLORS.edgeInclude;
     strokeDash = '4 2 1 2';
-    opacity = 0.60;
+    opacity = 0.55;
+  } else if (edgeKind === 'manual') {
+    // Manual `reachable` metadata link: dotted golden line — visually
+    // distinct from every link the parser extracted from body text,
+    // because these are author *declarations*, not story markup.
+    stroke = COLORS.edgeManual;
+    strokeDash = '1.5 3.5';
+    opacity = 0.85;
   }
 
-  // Boost opacity on hover
-  if (hovered) opacity = Math.min(opacity + 0.25, 1.0);
+  // Search/tag-filter dimming: the filter writes `style.opacity` onto the
+  // edge object, but React Flow only auto-applies `style` for its built-in
+  // edge components — a custom edge must apply it itself (this dimming
+  // previously had no effect at all).
+  const styleOpacity = (edgeStyle as React.CSSProperties | undefined)?.opacity;
+  const dimmed = typeof styleOpacity === 'number';
 
-  // Compute midpoint for label
-  const midX = (sx + tx) / 2;
-  const midY = (sy + ty) / 2;
+  // Boost opacity on hover (not on dimmed/disconnected edges).
+  if (hovered && !dimmed) opacity = Math.min(opacity + 0.25, 1.0);
+  if (dimmed) opacity = Math.min(opacity, styleOpacity as number);
+
+  // ── Arrowhead: open V, tip exactly on the node border ─────────────────
+  const baseX = tip.x - tipDir.x * arrowLen;
+  const baseY = tip.y - tipDir.y * arrowLen;
+  const nX = -tipDir.y * arrowHalf;
+  const nY = tipDir.x * arrowHalf;
+  const arrowPath = `M ${baseX + nX} ${baseY + nY} L ${tip.x} ${tip.y} L ${baseX - nX} ${baseY - nY}`;
+
+  // Label midpoint (self-loops label near the loop's apex).
+  const midX = source === target && srcData
+    ? srcData.x + srcData.w + (26 + Math.min(24, srcData.w * 0.2)) * 0.75
+    : (start.x + tip.x) / 2;
+  const midY = source === target && srcData
+    ? srcData.y + srcData.h / 2
+    : (start.y + tip.y) / 2;
 
   return (
     <>
@@ -327,13 +491,26 @@ function StraightEdge({
         d={path}
         fill="none"
         stroke={stroke}
-        strokeWidth={hovered ? 2.5 : 1.5}
+        strokeWidth={strokeWidth}
         strokeDasharray={strokeDash || undefined}
+        strokeLinecap={edgeKind === 'manual' ? 'round' : undefined}
         opacity={opacity}
-        markerEnd={markerEnd}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+      />
+      {/* Arrowhead — custom-drawn so the tip lands exactly on the node
+          border (React Flow markers anchor the tip at the path end and
+          scale with strokeWidth, which left a floating gap). */}
+      <path
+        d={arrowPath}
+        fill="none"
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={opacity}
+        style={{ pointerEvents: 'none' }}
       />
       {/* Invisible wider hit area for easier hovering */}
       <path
@@ -346,20 +523,22 @@ function StraightEdge({
         style={{ pointerEvents: 'stroke' }}
       />
       {/* Label on hover */}
-      {hovered && displayText && (
+      {hovered && (displayText || edgeKind === 'manual') && (
         <text
           x={midX}
           y={midY - 6}
           textAnchor="middle"
           className="edge-label"
           style={{
-            fill: 'var(--fg, #c8ccd4)',
+            fill: edgeKind === 'manual' ? COLORS.edgeManual : 'var(--fg, #c8ccd4)',
             fontSize: '10px',
             pointerEvents: 'none',
             userSelect: 'none',
           }}
         >
-          {displayText.length > 30 ? displayText.slice(0, 28) + '…' : displayText}
+          {displayText
+            ? (displayText.length > 30 ? displayText.slice(0, 28) + '…' : displayText)
+            : 'manual link'}
         </text>
       )}
     </>
@@ -382,16 +561,16 @@ function dagreLayout(
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: dir,
-    nodesep: 60,
-    ranksep: 80,
-    marginx: 60,
-    marginy: 60,
+    nodesep: 34,
+    ranksep: 48,
+    marginx: 50,
+    marginy: 50,
     acyclicer: 'greedy',
     ranker: 'network-simplex',
   });
 
   for (const n of nodes) {
-    g.setNode(n.id, { width: NODE_W + 20, height: NODE_H + 16 });
+    g.setNode(n.id, { width: NODE_W + 20, height: NODE_H + 14 });
   }
   for (const e of edges) {
     g.setEdge(e.source, e.target, {}, e.id);
@@ -478,6 +657,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         is_unreachable: !!n.is_unreachable,
         is_start: !!n.is_start,
         is_entry: !!n.is_entry && !n.is_start,
+        manual_link_source: n.manual_link_source,
         is_dead_end: isDeadEnd,
         color: nodeColor(n),
         metadata_color: n.color,
@@ -485,6 +665,7 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         size_h: n.size_h,
         var_writes: n.var_writes || [],
         var_reads: n.var_reads || [],
+        excerpt: n.excerpt || '',
         group: groupId,
         dimmed: false,
         highlighted: false,
@@ -568,11 +749,11 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     const children = allPassageNodes.filter(n => members.includes(n.id));
     if (children.length === 0) continue;
 
-    const pad = 32;
+    const pad = 26;
     const xs = children.map(n => n.position.x);
     const ys = children.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
-    const minY = Math.min(...ys) - pad - 18;
+    const minY = Math.min(...ys) - pad - 16;
     const maxX = Math.max(...xs) + NODE_W + pad;
     const maxY = Math.max(...ys) + NODE_H + pad;
 
@@ -592,8 +773,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     n => n.type === 'passage' && specialSet.has(n.id),
   );
   if (specialRfNodes.length > 0 && !allHavePositions) {
-    const pad = 28;
-    const labelH = 22;
+    const pad = 24;
+    const labelH = 20;
     const xs = specialRfNodes.map(n => n.position.x);
     const ys = specialRfNodes.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
@@ -609,8 +790,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       style: {
         width: snap(maxX - minX),
         height: snap(maxY - minY),
-        background: 'rgba(230, 81, 0, 0.04)',
-        borderColor: 'rgba(230, 81, 0, 0.25)',
+        background: 'rgba(217, 123, 63, 0.045)',
+        borderColor: 'rgba(217, 123, 63, 0.22)',
       },
       draggable: false,
       selectable: false,
@@ -622,8 +803,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     n => n.type === 'passage' && unreachableSet.has(n.id),
   );
   if (unreachableRfNodes.length > 0 && !allHavePositions) {
-    const pad = 28;
-    const labelH = 22;
+    const pad = 24;
+    const labelH = 20;
     const xs = unreachableRfNodes.map(n => n.position.x);
     const ys = unreachableRfNodes.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
@@ -639,8 +820,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       style: {
         width: snap(maxX - minX),
         height: snap(maxY - minY),
-        background: 'rgba(191, 105, 0, 0.04)',
-        borderColor: 'rgba(191, 105, 0, 0.25)',
+        background: 'rgba(168, 117, 52, 0.045)',
+        borderColor: 'rgba(168, 117, 52, 0.22)',
       },
       draggable: false,
       selectable: false,
@@ -684,14 +865,8 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
       e.edge_type === 'broken'   ? 'broken'   :
       e.edge_type === 'jump'     ? 'jump'     :
       e.edge_type === 'call'     ? 'call'     :
-      e.edge_type === 'include'  ? 'include'  : 'navigation';
-
-    const markerColor =
-      edgeKind === 'broken'   ? COLORS.edgeBroken  :
-      edgeKind === 'upstream' ? COLORS.edgeUp      :
-      edgeKind === 'jump'     ? COLORS.edgeJump    :
-      edgeKind === 'call'     ? COLORS.edgeCall    :
-      edgeKind === 'include'  ? COLORS.edgeInclude : COLORS.edgeNav;
+      e.edge_type === 'include'  ? 'include'  :
+      e.edge_type === 'manual'   ? 'manual'   : 'navigation';
 
     // Include edges represent content flowing FROM the included passage INTO
     // the including passage. In Twine's convention, the arrow points backward
@@ -702,19 +877,18 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     const edgeSource = isInclude ? e.target : e.source;
     const edgeTarget = isInclude ? e.source : e.target;
 
+    // NOTE: no `markerEnd` here — the custom StraightEdge draws its own
+    // arrowhead so the tip lands exactly on the target node's border
+    // (React Flow markers anchor the tip at the path end and scale with
+    // strokeWidth). `style` is likewise left empty: per-kind opacity lives
+    // in the edge component, and the search filter uses `style.opacity`
+    // for dimming.
     rfEdges.push({
       id: eid,
       source: edgeSource,
       target: edgeTarget,
       type: 'straight',
       data: { edgeKind, offsetPx, displayText: e.display_text } as unknown as Record<string, unknown>,
-      markerEnd: {
-        type: MarkerType.Arrow,
-        color: markerColor,
-        width: 14,
-        height: 14,
-      },
-      style: { opacity: edgeKind === 'upstream' ? 0.35 : edgeKind === 'broken' ? 0.85 : 0.65 },
     });
   }
 
@@ -742,6 +916,10 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
     d.is_dead_end ? 'Dead end' :
     'Passage';
 
+  // One-line excerpt (the card itself no longer shows a body preview —
+  // clicking navigates the code editor to the full text).
+  const excerpt = (d.excerpt || '').trim();
+
   return (
     <div
       className="node-tooltip"
@@ -749,6 +927,11 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
     >
       <div className="node-tooltip__name">{d.label}</div>
       <div className="node-tooltip__type">{typeLabel}</div>
+      {excerpt && (
+        <div className="node-tooltip__excerpt">
+          {excerpt.length > 110 ? excerpt.slice(0, 108) + '…' : excerpt}
+        </div>
+      )}
       {d.tags?.length > 0 && (
         <div className="node-tooltip__row">
           <span className="node-tooltip__key">tags</span>
@@ -778,13 +961,34 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
       {d.file && (
         <div className="node-tooltip__file">{d.file.split('/').pop()}</div>
       )}
+      <div className="node-tooltip__hint">Click to open in editor</div>
     </div>
   );
 }
 
 // ── Inner StoryMap ─────────────────────────────────────────────────────────
 
-interface StoryMapInnerProps {
+/** Actions the graph surface can request from the app shell. */
+interface StoryMapActions {
+  /** Selection changed (empty array = nothing selected). Multi-select aware. */
+  onSelectionChange: (nodes: { id: string; data: PassageNodeData }[]) => void;
+  /** Open a passage in the editor (instant navigation). */
+  onOpenPassage: (file: string, line: number, passageName: string) => void;
+  /** Begin "new passage" at graph coordinates. */
+  onCreatePassageAt: (x: number, y: number) => void;
+  /** Set the story's start passage. */
+  onSetStart: (name: string) => void;
+  /** Steer the inspector: focus a field or arm the delete confirm. */
+  onActionSignal: (field: 'rename' | 'reachable' | 'delete' | 'tags' | 'color' | 'group') => void;
+  /** Refresh the graph from the server. */
+  onRequestRefresh: () => void;
+  /** Persist the whole layout to the workspace. */
+  onRequestSaveLayout: () => void;
+  /** Viewport tracking (stored in a ref by the shell — no re-render). */
+  onViewportKnown: (vp: { x: number; y: number; zoom: number }) => void;
+}
+
+interface StoryMapInnerProps extends StoryMapActions {
   graphData: KnotGraphResponse | null;
   searchQuery: string;
   selectedTags: Set<string>;
@@ -792,7 +996,20 @@ interface StoryMapInnerProps {
   saveRequested: number;
   focusRequested: number;
   focusPassageName: string;
+  /** Whether an App-driven focus should be recorded in the nav history. */
+  focusPushHistory: boolean;
+  /** Timestamp signal: the shell asks the canvas to drop its selection. */
+  clearSelectionRequested: number;
   restoreViewport: { x: number; y: number; zoom: number; ts: number } | null;
+  /** View toggles (owned by the shell, flipped from the context menu). */
+  showMiniMap: boolean;
+  showLegend: boolean;
+  onToggleMiniMap: () => void;
+  onToggleLegend: () => void;
+  /** Open the find palette (context menu entry). */
+  onFindPassages: () => void;
+  /** New passage at the current view center (context menu entry). */
+  onNewPassageAtViewCenter: () => void;
 }
 
 function StoryMapInner({
@@ -803,9 +1020,25 @@ function StoryMapInner({
   saveRequested,
   focusRequested,
   focusPassageName,
+  focusPushHistory,
+  clearSelectionRequested,
   restoreViewport,
+  showMiniMap,
+  showLegend,
+  onToggleMiniMap,
+  onToggleLegend,
+  onFindPassages,
+  onNewPassageAtViewCenter,
+  onSelectionChange,
+  onOpenPassage,
+  onCreatePassageAt,
+  onSetStart,
+  onActionSignal,
+  onRequestRefresh,
+  onRequestSaveLayout,
+  onViewportKnown,
 }: StoryMapInnerProps) {
-  const { fitView, setViewport, getViewport, getNode } = useReactFlow();
+  const { fitView, setViewport, getViewport, getNode, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -823,6 +1056,44 @@ function StoryMapInner({
   const skipNextViewportRestoreRef = useRef(false);
   const nodesRef = useRef<Node[]>([]);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+
+  // ── Selection bookkeeping (multi-select aware) ───────────────────────
+  // selectedIdsRef mirrors React Flow's selection so keyboard handlers and
+  // graph rebuilds can read it without re-binding. primaryIdRef is the
+  // "focused" member of the selection (last plain-clicked) — Enter/F2 act
+  // on it.
+  const selectedIdsRef = useRef<Set<string>>(new Set());
+  const primaryIdRef = useRef<string | null>(null);
+
+  /** Report a selection (built from a set of ids) to the app shell. */
+  const reportFromIds = useCallback((ids: Set<string>) => {
+    const sel = nodesRef.current
+      .filter(n => ids.has(n.id) && n.type === 'passage')
+      .map(n => ({ id: n.id, data: n.data as PassageNodeData }));
+    onSelectionChange(sel);
+  }, [onSelectionChange]);
+
+  // ── Navigation history (mouse back / forward buttons) ────────────────
+  // Every plain click on a passage (and palette navigations) pushes onto
+  // the history; mouse buttons 3/4 (back/forward) and Alt+←/→ walk it.
+  const navHistoryRef = useRef<{ names: string[]; idx: number }>({ names: [], idx: -1 });
+
+  const pushHistory = useCallback((name: string) => {
+    const h = navHistoryRef.current;
+    if (h.names[h.idx] === name) return;
+    h.names = h.names.slice(0, h.idx + 1);
+    h.names.push(name);
+    h.idx = h.names.length - 1;
+    if (h.names.length > 120) {
+      h.names.shift();
+      h.idx--;
+    }
+  }, []);
+
+  // ── Focus target: pan + select + flash a passage ─────────────────────
+  // Driven either by App props (editor cursor / find palette) or internally
+  // (history back/forward).
+  const [focus, setFocus] = useState<{ name: string; ts: number; push: boolean } | null>(null);
 
   // ── Debounced message senders ──────────────────────────────────────────
 
@@ -852,6 +1123,30 @@ function StoryMapInner({
     } catch { /* not ready yet */ }
 
     const { nodes: newNodes, edges: newEdges } = buildElements(graphData);
+
+    // Preserve the whole selection across rebuilds (metadata edits and
+    // other refreshes shouldn't slam the inspector shut). Deselected are
+    // only the passages that no longer exist.
+    const keptIds = selectedIdsRef.current;
+    if (keptIds.size > 0) {
+      const survivors = new Set<string>();
+      newNodes.forEach((n, i) => {
+        if (keptIds.has(n.id)) {
+          survivors.add(n.id);
+          newNodes[i] = { ...n, selected: true } as Node;
+        }
+      });
+      selectedIdsRef.current = survivors;
+      if (primaryIdRef.current && !survivors.has(primaryIdRef.current)) {
+        primaryIdRef.current = survivors.size > 0 ? [...survivors][0] : null;
+      }
+      // Re-report so the inspector shows fresh data after the rebuild.
+      const sel = newNodes
+        .filter(n => survivors.has(n.id) && n.type === 'passage')
+        .map(n => ({ id: n.id, data: n.data as PassageNodeData }));
+      onSelectionChange(sel);
+    }
+
     setNodes(newNodes);
     setEdges(newEdges);
 
@@ -871,7 +1166,7 @@ function StoryMapInner({
         setViewport(vp, { duration: 0 });
       });
     }
-  }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport]);
+  }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport, onSelectionChange]);
 
   // ── Search + tag filter ─────────────────────────────────────────────
 
@@ -891,12 +1186,11 @@ function StoryMapInner({
           (d.label || '').toLowerCase().includes(q) ||
           (d.tags || []).some(t => t.toLowerCase().includes(q));
 
-        // Tag filter: if tags are selected, node must have ALL selected tags
-        // (AND logic — narrows the filter as you select more tags)
+        // Tag filter: a node matches when it carries ANY selected tag
+        // (OR logic — each added tag widens the match). Use .every()
+        // instead if AND semantics are ever wanted.
         const matchesTags = !hasTags ||
           (d.tags || []).some(t => selectedTags.has(t));
-          // NOTE: using .some() = OR logic (any selected tag matches).
-          // Use .every() for AND logic (must have ALL selected tags).
 
         if (matchesSearch && matchesTags) {
           matchIds.add(n.id);
@@ -926,9 +1220,6 @@ function StoryMapInner({
   }, [fitRequested, fitView]);
 
   // ── Restore persisted viewport (sent by extension on panel show) ───────
-  // FIX: storyMapProvider.ts sends restoreViewport after a 200ms delay when
-  // the panel is first created. The old code had no handler for this message
-  // so the persisted viewport was always ignored.
 
   useEffect(() => {
     if (!restoreViewport) return;
@@ -943,7 +1234,22 @@ function StoryMapInner({
     }
   }, [restoreViewport, setViewport]);
 
-  // ── Focus a passage ────────────────────────────────────────────────────
+  // ── Shell-driven selection clear (inspector ✕ button) ────────────────
+
+  useEffect(() => {
+    if (clearSelectionRequested > 0) clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearSelectionRequested]);
+
+  // ── App-driven focus (editor cursor / find palette) → internal state ───
+
+  useEffect(() => {
+    if (focusRequested > 0 && focusPassageName) {
+      setFocus({ name: focusPassageName, ts: focusRequested, push: focusPushHistory });
+    }
+  }, [focusRequested, focusPassageName, focusPushHistory]);
+
+  // ── Focus a passage: pan, select, flash ────────────────────────────────
   // FIX: use setViewport directly instead of fitView with locked min/maxZoom,
   // which broke when current zoom > 0.5. We pan to the node center while
   // preserving the user's zoom level (or nudging it up to MIN_READABLE_ZOOM).
@@ -951,13 +1257,13 @@ function StoryMapInner({
   const MIN_READABLE_ZOOM = 0.5;
 
   useEffect(() => {
-    if (focusRequested <= 0 || !focusPassageName) return;
+    if (!focus) return;
 
     const nds = nodesRef.current;
-    let target = getNode(focusPassageName);
+    let target = getNode(focus.name);
     if (!target) {
       const found = nds.find(
-        n => n.type === 'passage' && (n.data as PassageNodeData).label === focusPassageName,
+        n => n.type === 'passage' && (n.data as PassageNodeData).label === focus.name,
       );
       if (found) target = getNode(found.id);
     }
@@ -970,13 +1276,6 @@ function StoryMapInner({
     const currentZoom = getViewport().zoom;
     const zoom = Math.max(currentZoom, MIN_READABLE_ZOOM);
 
-    // Node center in canvas coords
-    const cx = target.position.x + NODE_W / 2;
-    const cy = target.position.y + NODE_H / 2;
-
-    // Convert to viewport: vp.x = viewportCenterX - cx * zoom
-    // We don't have viewport dimensions here so use fitView with tight padding,
-    // but clamp zoom manually via the min/maxZoom trick only when needed.
     if (Math.abs(currentZoom - zoom) < 0.01) {
       // Zoom didn't change — use fitView with locked zoom for a pure pan
       fitView({
@@ -997,15 +1296,21 @@ function StoryMapInner({
       });
     }
 
-    // Flash highlight the focused node
-    setNodes(nds => nds.map(n => {
+    // Make the focused node the sole selection (inspector follows).
+    setNodes(cur => cur.map(n => {
       if (n.type !== 'passage') return n;
       const d = n.data as PassageNodeData;
-      return { ...n, data: { ...d, focused: n.id === target!.id } };
+      const hit = n.id === target!.id;
+      return { ...n, selected: hit, data: { ...d, focused: hit } };
     }));
+    selectedIdsRef.current = new Set([target.id]);
+    primaryIdRef.current = target.id;
+    onSelectionChange([{ id: target.id, data: target.data as PassageNodeData }]);
+
+    if (focus.push) pushHistory(focus.name);
 
     const timer = setTimeout(() => {
-      setNodes(nds => nds.map(n => {
+      setNodes(cur => cur.map(n => {
         if (n.type !== 'passage') return n;
         const d = n.data as PassageNodeData;
         return { ...n, data: { ...d, focused: false } };
@@ -1015,7 +1320,7 @@ function StoryMapInner({
     }, 1200);
 
     return () => clearTimeout(timer);
-  }, [focusRequested, focusPassageName, fitView, getViewport, getNode, setNodes]);
+  }, [focus, fitView, getViewport, getNode, setNodes, onSelectionChange, pushHistory]);
 
   // ── Save all positions ─────────────────────────────────────────────────
 
@@ -1043,6 +1348,8 @@ function StoryMapInner({
   }, [saveRequested, getViewport]);
 
   // ── Node drag end → snap + send position ──────────────────────────────
+  // React Flow emits position changes for EVERY node in a multi-selection
+  // drag, so marquee-selected groups persist their positions together.
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     onNodesChange(changes);
@@ -1075,13 +1382,322 @@ function StoryMapInner({
     debouncedPositionUpdate(updates);
   }, [onNodesChange, setNodes, debouncedPositionUpdate]);
 
-  // ── Node click → open passage ──────────────────────────────────────────
+  // ── Instant navigation: plain click on a node → open it in the editor ──
+  // The click doubles as the selection; modifier clicks (Shift/Ctrl/Cmd/
+  // Alt) only build a multi-selection and never navigate.
 
-  const handleNodeClick = useCallback((_e: React.MouseEvent, node: Node) => {
+  const openPassageNode = useCallback((node: Node) => {
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
-    if (d.file) vscode.postMessage({ command: 'openPassage', file: d.file, line: d.line || 0, passageName: d.label });
+    if (d.file) onOpenPassage(d.file, d.line || 0, d.label);
+  }, [onOpenPassage]);
+
+  const navigateToNode = useCallback((node: Node) => {
+    if (node.type !== 'passage') return;
+    const d = node.data as PassageNodeData;
+    if (d.file) onOpenPassage(d.file, d.line || 0, d.label);
+    pushHistory(d.label);
+  }, [onOpenPassage, pushHistory]);
+
+  // Suppress the click that follows a node drag (mouseup after a real move
+  // still synthesizes a click event — don't let it slam the editor around).
+  const suppressClickRef = useRef(false);
+  const dragStartPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleNodeDragStart = useCallback((e: MouseEvent | TouchEvent) => {
+    const ce = e as MouseEvent;
+    dragStartPosRef.current = { x: ce.clientX, y: ce.clientY };
   }, []);
+
+  const handleNodeDragStop = useCallback((e: MouseEvent | TouchEvent) => {
+    const s = dragStartPosRef.current;
+    dragStartPosRef.current = null;
+    const ce = e as MouseEvent;
+    if (s && Math.hypot(ce.clientX - s.x, ce.clientY - s.y) > 4) {
+      suppressClickRef.current = true;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 250);
+    }
+  }, []);
+
+  const handleNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
+    if (node.type !== 'passage') return;
+    if (suppressClickRef.current) return;
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    primaryIdRef.current = node.id;
+    navigateToNode(node);
+  }, [navigateToNode]);
+
+  const handleNodeDoubleClick = useCallback((_e: React.MouseEvent, node: Node) => {
+    // Single click already navigates; keep double-click as an alias for
+    // muscle memory (no double message issues — same target).
+    openPassageNode(node);
+  }, [openPassageNode]);
+
+  // ── Selection → inspector (multi-aware) ─────────────────────────────
+
+  const handleSelectionChange = useCallback((params: OnSelectionChangeParams) => {
+    const selected = params.nodes.filter(n => n.type === 'passage');
+    const ids = new Set(selected.map(n => n.id));
+    selectedIdsRef.current = ids;
+    if (!primaryIdRef.current || !ids.has(primaryIdRef.current)) {
+      primaryIdRef.current = selected.length > 0 ? selected[selected.length - 1].id : null;
+    }
+    onSelectionChange(
+      selected.map(n => ({ id: n.id, data: n.data as PassageNodeData })),
+    );
+  }, [onSelectionChange]);
+
+  // ── Selection helpers (context menu / keyboard) ──────────────────────
+
+  const selectAllPassages = useCallback(() => {
+    const ids = new Set<string>();
+    setNodes(nds => nds.map(n => {
+      if (n.type !== 'passage') return n;
+      ids.add(n.id);
+      return { ...n, selected: true };
+    }));
+    selectedIdsRef.current = ids;
+    if (!primaryIdRef.current || !ids.has(primaryIdRef.current)) {
+      primaryIdRef.current = ids.size > 0 ? [...ids][0] : null;
+    }
+    reportFromIds(ids);
+  }, [setNodes, reportFromIds]);
+
+  const clearSelection = useCallback(() => {
+    if (selectedIdsRef.current.size === 0) return;
+    setNodes(nds => nds.map(n => (n.selected ? { ...n, selected: false } : n)));
+    selectedIdsRef.current = new Set();
+    primaryIdRef.current = null;
+    onSelectionChange([]);
+  }, [setNodes, onSelectionChange]);
+
+  // ── History navigation (mouse back/forward + Alt+←/→) ───────────────
+
+  const historyNavigate = useCallback((name: string) => {
+    const node = nodesRef.current.find(
+      n => n.id === name || (n.type === 'passage' && (n.data as PassageNodeData).label === name),
+    );
+    if (!node) return;
+    const d = node.data as PassageNodeData;
+    if (d.file) onOpenPassage(d.file, d.line || 0, d.label);
+    setFocus({ name, ts: Date.now(), push: false });
+  }, [onOpenPassage]);
+
+  const goBack = useCallback(() => {
+    const h = navHistoryRef.current;
+    if (h.idx > 0) {
+      h.idx--;
+      historyNavigate(h.names[h.idx]);
+    }
+  }, [historyNavigate]);
+
+  const goForward = useCallback(() => {
+    const h = navHistoryRef.current;
+    if (h.idx < h.names.length - 1) {
+      h.idx++;
+      historyNavigate(h.names[h.idx]);
+    }
+  }, [historyNavigate]);
+
+  // Mouse button 3 = back, 4 = forward. Also swallow the default so the
+  // webview host doesn't walk its own history.
+  const handleCanvasMouseUp = useCallback((e: React.MouseEvent) => {
+    if (e.button === 3) {
+      e.preventDefault();
+      e.stopPropagation();
+      goBack();
+    } else if (e.button === 4) {
+      e.preventDefault();
+      e.stopPropagation();
+      goForward();
+    }
+  }, [goBack, goForward]);
+
+  // Middle-button autoscroll guard (Windows browsers scroll the page on
+  // middle-mousedown when the event isn't cancelled).
+  const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 1) e.preventDefault();
+  }, []);
+
+  // Twine-native: double-click empty canvas → create a passage there.
+  // (React Flow v12 has no onPaneDoubleClick prop, so we discriminate on the
+  // native event target: only bare-pane double-clicks count — not nodes,
+  // not edges, not the minimap.)
+  const handleCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
+    const el = e.target as HTMLElement;
+    if (el.closest('.react-flow__node')) return;
+    if (el.closest('.react-flow__edges')) return;
+    if (el.closest('.react-flow__minimap')) return;
+    if (el.closest('.react-flow__panel')) return;
+    if (!el.closest('.react-flow')) return;
+    const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    onCreatePassageAt(pos.x - NODE_W / 2, pos.y - NODE_H / 2);
+  }, [screenToFlowPosition, onCreatePassageAt]);
+
+  // ── Context menu ─────────────────────────────────────────────────────
+
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+
+  const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
+
+  // Close on any click / Escape (registered once, capture-phase so it runs
+  // before menu-item handling has a chance to swallow events). Escape also
+  // stops propagation so the canvas keyboard layer doesn't deselect at the
+  // same time — one press, one action.
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const onMouseDown = () => closeCtxMenu();
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeCtxMenu();
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [ctxMenu, closeCtxMenu]);
+
+  const handleNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
+    e.preventDefault();
+    if (node.type !== 'passage') return;
+    const d = node.data as PassageNodeData;
+
+    // Right-clicking an unselected node makes it the sole selection (the
+    // standard OS pattern) so menu actions and the inspector agree.
+    if (!selectedIdsRef.current.has(node.id)) {
+      setNodes(nds => nds.map(n => ({ ...n, selected: n.id === node.id })));
+      selectedIdsRef.current = new Set([node.id]);
+      primaryIdRef.current = node.id;
+      onSelectionChange([{ id: node.id, data: d }]);
+    }
+
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      kind: 'node',
+      nodeId: node.id,
+      isStart: d.is_start,
+      selectionCount: selectedIdsRef.current.size,
+      minimapOn: showMiniMap,
+      legendOn: showLegend,
+    });
+  }, [setNodes, onSelectionChange, showMiniMap, showLegend]);
+
+  const handlePaneContextMenu = useCallback((e: React.MouseEvent | MouseEvent) => {
+    e.preventDefault();
+    const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      kind: 'pane',
+      graphX: pos.x,
+      graphY: pos.y,
+      selectionCount: selectedIdsRef.current.size,
+      minimapOn: showMiniMap,
+      legendOn: showLegend,
+    });
+  }, [screenToFlowPosition, showMiniMap, showLegend]);
+
+  const ctxActions = useMemo(() => ({
+    onOpen: (nodeId: string) => {
+      const node = nodesRef.current.find(n => n.id === nodeId);
+      if (node) openPassageNode(node);
+    },
+    onRename: (_nodeId: string) => onActionSignal('rename'),
+    onSetStart: (nodeId: string) => {
+      const node = nodesRef.current.find(n => n.id === nodeId);
+      if (node) {
+        const d = node.data as PassageNodeData;
+        onSetStart(d.label);
+      }
+    },
+    onManualLink: (_nodeId: string) => onActionSignal('reachable'),
+    onEditTags: () => onActionSignal('tags'),
+    onEditColor: () => onActionSignal('color'),
+    onEditGroup: () => onActionSignal('group'),
+    onDelete: (_nodeId: string) => onActionSignal('delete'),
+    onNewPassageHere: (x: number, y: number) => onCreatePassageAt(x, y),
+    onNewPassageAtViewCenter,
+    onFitView: () => fitView({ padding: 0.12, duration: 280 }),
+    onZoomIn: () => zoomIn({ duration: 200 }),
+    onZoomOut: () => zoomOut({ duration: 200 }),
+    onSelectAll: selectAllPassages,
+    onClearSelection: clearSelection,
+    onFind: onFindPassages,
+    onSaveLayout: onRequestSaveLayout,
+    onRefresh: onRequestRefresh,
+    onToggleMiniMap: onToggleMiniMap,
+    onToggleLegend: onToggleLegend,
+  }), [openPassageNode, onActionSignal, onSetStart, onCreatePassageAt, onNewPassageAtViewCenter, fitView, zoomIn, zoomOut, selectAllPassages, clearSelection, onFindPassages, onRequestSaveLayout, onRequestRefresh, onToggleMiniMap, onToggleLegend]);
+
+  // ── Keyboard shortcuts ───────────────────────────────────────────────
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Never intercept typing in inputs (inspector, modal, palette).
+      const target = e.target as HTMLElement | null;
+      if (target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      )) {
+        return;
+      }
+
+      const mod = e.ctrlKey || e.metaKey;
+
+      // Canvas-level actions work without a selection.
+      if (mod && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        selectAllPassages();
+        return;
+      }
+      if (e.key === 'Escape') {
+        clearSelection();
+        return;
+      }
+      if (!mod && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        fitView({ padding: 0.12, duration: 280 });
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goBack();
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowRight') {
+        e.preventDefault();
+        goForward();
+        return;
+      }
+
+      // Selection-level actions.
+      const selectedId = primaryIdRef.current;
+      if (!selectedId) return;
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        onActionSignal('delete');
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const node = nodesRef.current.find(n => n.id === selectedId);
+        if (node) navigateToNode(node);
+      } else if (e.key === 'F2') {
+        if (selectedIdsRef.current.size === 1) {
+          e.preventDefault();
+          onActionSignal('rename');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onActionSignal, navigateToNode, selectAllPassages, clearSelection, fitView, goBack, goForward]);
 
   // ── Tooltip (ref-based to avoid re-render on every mousemove) ──────────
 
@@ -1115,24 +1731,40 @@ function StoryMapInner({
     try {
       const vp = getViewport();
       debouncedViewportUpdate(vp.x, vp.y, vp.zoom);
+      // Report the live viewport to the shell (it stores it in a ref —
+      // no re-render) so "new passage" from the context menu can anchor
+      // at the current view center.
+      onViewportKnown(vp);
     } catch { /* not ready */ }
-  }, [getViewport, debouncedViewportUpdate]);
+  }, [getViewport, debouncedViewportUpdate, onViewportKnown]);
 
   // ── MiniMap color ──────────────────────────────────────────────────────
 
   const miniMapColor = useCallback((n: Node) => {
-    if (n.type !== 'passage') return '#2a2a3a';
+    if (n.type !== 'passage') return 'rgba(148, 163, 184, 0.18)';
     return (n.data as PassageNodeData).color || COLORS.normal;
   }, []);
 
   return (
-    <div className="storymap-inner" onMouseMove={handleMouseMove}>
+    <div
+      className="storymap-inner"
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleCanvasMouseUp}
+      onMouseDown={handleCanvasMouseDown}
+      onDoubleClick={handleCanvasDoubleClick}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={handleNodeClick}
+        onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeDragStart={handleNodeDragStart}
+        onNodeDragStop={handleNodeDragStop}
+        onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
+        onSelectionChange={handleSelectionChange}
         onNodeMouseEnter={handleNodeMouseEnter}
         onNodeMouseLeave={handleNodeMouseLeave}
         onViewportChange={handleViewportChange}
@@ -1142,39 +1774,56 @@ function StoryMapInner({
         minZoom={MIN_ZOOM}
         maxZoom={MAX_ZOOM}
         fitView={false}
-        panOnDrag
-        selectionOnDrag={false}
+        // Mouse map:
+        //   left-drag on pane  → marquee (multi-)selection
+        //   left-drag on node  → move node(s)
+        //   middle-drag        → pan
+        //   wheel              → zoom
+        //   right-click        → context menu (the "action panel")
+        //   back/forward       → navigation history (wrapper handlers)
+        panOnDrag={[1]}
+        selectionOnDrag
+        selectionKeyCode={null}
+        multiSelectionKeyCode="Shift"
+        zoomOnDoubleClick={false}
         nodesDraggable
         nodesConnectable={false}
         elementsSelectable
+        // Delete/Backspace are handled by our keyboard layer (which arms
+        // the inspector's confirm flow) — disable React Flow's built-in
+        // node deletion so the two never fight.
+        deleteKeyCode={null}
         proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{ type: 'straight' }}
       >
-        <MiniMap
-          nodeColor={miniMapColor}
-          maskColor="rgba(0,0,0,0.55)"
-          style={{
-            background: 'var(--vscode-sideBar-background, #1e1e2e)',
-            border: '1px solid #3a3a4a',
-            borderRadius: 4,
-          }}
-        />
-        <Controls showInteractive={false} />
+        {showMiniMap && (
+          <MiniMap
+            nodeColor={miniMapColor}
+            nodeStrokeColor="rgba(0, 0, 0, 0.45)"
+            nodeBorderRadius={3}
+            maskColor="rgba(10, 11, 16, 0.62)"
+            pannable
+            zoomable
+          />
+        )}
         <Background
-          variant={BackgroundVariant.Lines}
+          variant={BackgroundVariant.Dots}
           gap={GRID_SNAP}
-          size={1}
-          color="rgba(255,255,255,0.06)"
+          size={1.5}
+          color="rgba(148, 163, 184, 0.10)"
         />
       </ReactFlow>
       <NodeTooltip tip={tooltip} />
+      {ctxMenu && (
+        <ContextMenu menu={ctxMenu} actions={ctxActions} onClose={closeCtxMenu} />
+      )}
     </div>
   );
 }
 
 // ── Outer component (provides ReactFlowProvider) ───────────────────────────
 
-interface StoryMapProps {
+interface StoryMapProps extends StoryMapActions {
   graphData: KnotGraphResponse | null;
   searchQuery: string;
   selectedTags: Set<string>;
@@ -1182,8 +1831,17 @@ interface StoryMapProps {
   saveRequested: number;
   focusRequested: number;
   focusPassageName: string;
+  focusPushHistory: boolean;
+  /** Timestamp signal: the shell asks the canvas to drop its selection. */
+  clearSelectionRequested: number;
   /** Viewport state to restore, forwarded from the extension's restoreViewport message. */
   restoreViewport: { x: number; y: number; zoom: number; ts: number } | null;
+  showMiniMap: boolean;
+  showLegend: boolean;
+  onToggleMiniMap: () => void;
+  onToggleLegend: () => void;
+  onFindPassages: () => void;
+  onNewPassageAtViewCenter: () => void;
 }
 
 export default function StoryMap(props: StoryMapProps) {

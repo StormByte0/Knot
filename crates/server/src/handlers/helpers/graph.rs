@@ -174,6 +174,37 @@ pub(crate) fn rebuild_graph(
     // passages. The bundle was populated incrementally by add_passage().
     add_implicit_special_edges(&mut graph, workspace);
 
+    // ── Step 5: Manual `reachable` metadata links ──────────────────────
+    // Declarations whose source passage exists become Manual edges
+    // `source → declaring passage`. The check-then-add loop mirrors
+    // Workspace::rebuild_manual_edges (which the caller runs after
+    // assigning this graph for the incremental path).
+    let manual_declarations: Vec<(String, String)> = workspace
+        .documents()
+        .flat_map(|doc| {
+            doc.passages
+                .iter()
+                .filter_map(|p| {
+                    p.manual_link_source()
+                        .map(|src| (src.to_string(), p.name.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (source, target) in manual_declarations {
+        if graph.contains_passage(&source) {
+            graph.add_edge(
+                &source,
+                &target,
+                PassageEdge {
+                    display_text: None,
+                    edge_type: knot_core::graph::EdgeType::Manual,
+                    pre_broken_type: None,
+                },
+            );
+        }
+    }
+
     graph
 }
 

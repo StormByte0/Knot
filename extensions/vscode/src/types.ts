@@ -39,6 +39,12 @@ export interface KnotGraphNode {
     is_unreachable: boolean;
     /** True if this is the story's start passage (parsed from StoryData). */
     is_start: boolean;
+    /** True if this passage declares a manual reachability link
+     *  (header metadata `reachable`, e.g. `:: Hub {"reachable":"Start"}`). */
+    is_entry?: boolean;
+    /** The source passage name of this passage's manual reachability
+     *  link (header metadata `reachable`), when declared. */
+    manual_link_source?: string;
     /** The x-coordinate of the passage in the Twine visual editor, if available. */
     position_x?: number;
     /** The y-coordinate of the passage in the Twine visual editor, if available. */
@@ -47,16 +53,23 @@ export interface KnotGraphNode {
     group?: string;
     /** Node color from passage header metadata. */
     color?: string;
+    /** Node width from passage header metadata (Twine size convention). */
+    size_w?: number;
+    /** Node height from passage header metadata (Twine size convention). */
+    size_h?: number;
     /** Persistent variable names written in this passage. */
     var_writes: string[];
     /** Persistent variable names read in this passage. */
     var_reads: string[];
+    /** Plain-text body preview for the Story Map card (may be empty). */
+    excerpt?: string;
 }
 
 export interface KnotGraphEdge {
     source: string;
     target: string;
-    /** The semantic type of this edge: "navigation", "upstream", "call", "include", "jump", or "broken". */
+    /** The semantic type of this edge: "navigation", "upstream", "call",
+     *  "include", "jump", "manual", or "broken". */
     edge_type: string;
     display_text?: string;
 }
@@ -403,6 +416,92 @@ export interface KnotUpdatePositionsResponse {
     success: boolean;
     updated_count: number;
     errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// GUI passage editing types (Tiers A/B/C — Story Map inspector)
+// ---------------------------------------------------------------------------
+
+/** Request: knot/updatePassageMetadata.
+ *
+ *  Field semantics (three-state, matching the server writer):
+ *  - absent  → leave unchanged
+ *  - null    → remove the field
+ *  - value   → set/replace the field
+ *
+ *  `tags` replaces the whole list when present (an empty array clears it).
+ */
+export interface KnotUpdatePassageMetadataParams {
+    workspace_uri: string;
+    passage_name: string;
+    position?: { x: number; y: number };
+    group?: string | null;
+    color?: string | null;
+    size?: { width: number; height: number } | null;
+    /** Manual reachability link source (header metadata `reachable`). */
+    reachable?: string | null;
+    tags?: string[];
+}
+
+export interface KnotUpdatePassageMetadataResponse {
+    success: boolean;
+    new_header?: string;
+    error?: string;
+}
+
+/** Request: knot/createPassage */
+export interface KnotCreatePassageParams {
+    workspace_uri: string;
+    name: string;
+    tags?: string[];
+    position?: { x: number; y: number };
+    target_file?: string;
+}
+
+export interface KnotCreatePassageResponse {
+    success: boolean;
+    file?: string;
+    line?: number;
+    error?: string;
+}
+
+/** Request: knot/deletePassage */
+export interface KnotDeletePassageParams {
+    workspace_uri: string;
+    passage_name: string;
+    /** Unwrap wikilinks pointing at the deleted passage (Twine's "also
+     *  remove links" behavior). */
+    strip_links?: boolean;
+}
+
+export interface KnotDeletePassageResponse {
+    success: boolean;
+    links_stripped: number;
+    error?: string;
+}
+
+/** Request: knot/renamePassage */
+export interface KnotRenamePassageParams {
+    workspace_uri: string;
+    name: string;
+    new_name: string;
+}
+
+export interface KnotRenamePassageResponse {
+    success: boolean;
+    files_changed: number;
+    error?: string;
+}
+
+/** Request: knot/setStartPassage */
+export interface KnotSetStartPassageParams {
+    workspace_uri: string;
+    passage_name: string;
+}
+
+export interface KnotSetStartPassageResponse {
+    success: boolean;
+    error?: string;
 }
 
 // ---------------------------------------------------------------------------

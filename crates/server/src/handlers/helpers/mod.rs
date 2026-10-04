@@ -222,22 +222,27 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // set_reachable_in_header
+    // set_reachable_in_header (manual link form)
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_set_reachable_new_json() {
-        let result = set_reachable_in_header(":: Start");
-        assert_eq!(result, ":: Start {\"reachable\":true}");
+        let result = set_reachable_in_header(":: Start", "Prologue");
+        assert_eq!(result, ":: Start {\"reachable\":\"Prologue\"}");
     }
 
     #[test]
     fn test_set_reachable_merges_existing_metadata() {
-        let result = set_reachable_in_header(":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}");
-        // The flag merges into the existing block — position and the
-        // unknown (preserved) key survive, no second JSON block appears.
+        let result =
+            set_reachable_in_header(":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}", "Prologue");
+        // The manual link merges into the existing block — position and
+        // the unknown (preserved) key survive, no second JSON block appears.
         assert!(result.starts_with(":: Start {"), "Result: {}", result);
-        assert!(result.contains("\"reachable\":true"), "Result: {}", result);
+        assert!(
+            result.contains("\"reachable\":\"Prologue\""),
+            "Result: {}",
+            result
+        );
         assert!(
             result.contains("\"position\":\"50,75\""),
             "Result: {}",
@@ -248,9 +253,14 @@ mod tests {
 
     #[test]
     fn test_set_reachable_preserves_tags() {
-        let result = set_reachable_in_header(":: Start [important] {\"position\":\"1,2\"}");
+        let result =
+            set_reachable_in_header(":: Start [important] {\"position\":\"1,2\"}", "Prologue");
         assert!(result.contains("[important]"), "Result: {}", result);
-        assert!(result.contains("\"reachable\":true"), "Result: {}", result);
+        assert!(
+            result.contains("\"reachable\":\"Prologue\""),
+            "Result: {}",
+            result
+        );
         assert!(
             result.contains("\"position\":\"1,2\""),
             "Result: {}",
@@ -259,15 +269,22 @@ mod tests {
     }
 
     #[test]
-    fn test_set_reachable_overrides_false_and_is_idempotent() {
-        // An explicit false flips to true…
-        let once = set_reachable_in_header(":: Start {\"reachable\":false}");
-        assert!(once.contains("\"reachable\":true"), "Result: {}", once);
-        assert!(!once.contains("false"), "Result: {}", once);
+    fn test_set_reachable_replaces_and_is_idempotent() {
+        // An existing source flips to the new one…
+        let once = set_reachable_in_header(
+            ":: Start {\"reachable\":\"OldSource\"}",
+            "NewSource",
+        );
+        assert!(
+            once.contains("\"reachable\":\"NewSource\""),
+            "Result: {}",
+            once
+        );
+        assert!(!once.contains("OldSource"), "Result: {}", once);
 
         // …and re-applying never duplicates the key (single JSON block,
-        // single flag occurrence).
-        let twice = set_reachable_in_header(&once);
+        // single key occurrence).
+        let twice = set_reachable_in_header(&once, "NewSource");
         assert_eq!(twice, once, "second application must be a no-op");
         assert_eq!(
             twice.matches("\"reachable\":").count(),
@@ -279,8 +296,133 @@ mod tests {
 
     #[test]
     fn test_set_reachable_trims_trailing_whitespace() {
-        let result = set_reachable_in_header(":: Start   ");
-        assert_eq!(result, ":: Start {\"reachable\":true}");
+        let result = set_reachable_in_header(":: Start   ", "Prologue");
+        assert_eq!(result, ":: Start {\"reachable\":\"Prologue\"}");
+    }
+
+    // -----------------------------------------------------------------------
+    // update_passage_header (unified Tier A writer)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_update_header_rewrites_tags() {
+        let edits = HeaderEdits {
+            tags: Some(&[
+                "alpha".to_string(),
+                "beta".to_string(),
+            ]),
+            ..Default::default()
+        };
+        let result = update_passage_header(":: Hub [old] {\"position\":\"1,2\"}", edits).unwrap();
+        assert_eq!(result, ":: Hub [alpha beta] {\"position\":\"1,2\"}");
+    }
+
+    #[test]
+    fn test_update_header_clears_tags() {
+        let edits = HeaderEdits {
+            tags: Some(&[]),
+            ..Default::default()
+        };
+        let result = update_passage_header(":: Hub [a b] {\"position\":\"1,2\"}", edits).unwrap();
+        assert_eq!(result, ":: Hub {\"position\":\"1,2\"}");
+    }
+
+    #[test]
+    fn test_update_header_rejects_bad_tags() {
+        let bad = vec!["has space".to_string()];
+        let edits = HeaderEdits {
+            tags: Some(&bad),
+            ..Default::default()
+        };
+        assert!(update_passage_header(":: Hub", edits).is_err());
+    }
+
+    #[test]
+    fn test_update_header_sets_and_removes_fields() {
+        // Set size + reachable together.
+        let edits = HeaderEdits {
+            size: Some(Some((120.0, 60.0))),
+            reachable: Some(Some("Start")),
+            ..Default::default()
+        };
+        let result =
+            update_passage_header(":: Hub [t] {\"position\":\"5,6\"}", edits).unwrap();
+        assert!(result.contains("\"size\":\"120,60\""), "{}", result);
+        assert!(result.contains("\"reachable\":\"Start\""), "{}", result);
+        assert!(result.contains("\"position\":\"5,6\""), "{}", result);
+        assert!(result.contains("[t]"), "{}", result);
+
+        // Then remove both, keeping position.
+        let edits = HeaderEdits {
+            size: Some(None),
+            reachable: Some(None),
+            ..Default::default()
+        };
+        let result = update_passage_header(&result, edits).unwrap();
+        assert!(!result.contains("\"size\""), "{}", result);
+        assert!(!result.contains("\"reachable\""), "{}", result);
+        assert!(result.contains("\"position\":\"5,6\""), "{}", result);
+    }
+
+    #[test]
+    fn test_update_header_removes_empty_json_block() {
+        let edits = HeaderEdits {
+            position: Some((1.0, 2.0)),
+            ..Default::default()
+        };
+        let with_pos = update_passage_header(":: Hub", edits).unwrap();
+        assert_eq!(with_pos, ":: Hub {\"position\":\"1,2\"}");
+
+        // Removing the only field drops the whole block.
+        let edits = HeaderEdits {
+            group: Some(None),
+            ..Default::default()
+        };
+        let result = update_passage_header(":: Hub {\"group\":\"G\"}", edits).unwrap();
+        assert_eq!(result, ":: Hub");
+    }
+
+    #[test]
+    fn test_update_header_preserves_multiple_tag_blocks_when_untouched() {
+        let edits = HeaderEdits {
+            color: Some(Some("#ff6600")),
+            ..Default::default()
+        };
+        let result = update_passage_header(":: Hub [a] [b] {\"position\":\"1,2\"}", edits).unwrap();
+        assert!(result.contains("[a] [b]"), "{}", result);
+        assert!(result.contains("\"color\":\"#ff6600\""), "{}", result);
+    }
+
+    #[test]
+    fn test_update_header_rejects_non_header_lines() {
+        let edits = HeaderEdits::default();
+        assert!(update_passage_header("just some text", edits).is_err());
+    }
+
+    #[test]
+    fn test_validate_passage_name_rules() {
+        assert!(validate_passage_name("Forest").is_ok());
+        assert!(validate_passage_name("A B C").is_ok());
+        assert!(validate_passage_name("").is_err());
+        assert!(validate_passage_name("  ").is_err());
+        assert!(validate_passage_name(" lead").is_err());
+        assert!(validate_passage_name("trail ").is_err());
+        assert!(validate_passage_name("a::b").is_err());
+        assert!(validate_passage_name("a[b").is_err());
+        assert!(validate_passage_name("a]b").is_err());
+        assert!(validate_passage_name("a{b").is_err());
+        assert!(validate_passage_name("a}b").is_err());
+        assert!(validate_passage_name("a\nb").is_err());
+    }
+
+    #[test]
+    fn test_validate_tag_rules() {
+        assert!(validate_tag("bookmark").is_ok());
+        assert!(validate_tag("").is_err());
+        assert!(validate_tag("two words").is_err());
+        assert!(validate_tag("a[b").is_err());
+        assert!(validate_tag("a{b").is_err());
+        assert!(validate_tag("a\tb").is_err());
     }
 
     // -----------------------------------------------------------------------

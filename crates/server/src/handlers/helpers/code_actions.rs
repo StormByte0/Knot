@@ -232,20 +232,22 @@ pub(crate) fn add_link_edit(
     }
 }
 
-/// Create a WorkspaceEdit that marks a passage as a manual reachability
-/// entry by writing `"reachable":true` into its header metadata.
+/// Create a WorkspaceEdit that declares a manual reachability link for a
+/// passage by writing `"reachable":"<source>"` into its header metadata.
 ///
 /// This backs the "it's not really unreachable" quickfix on the
 /// UnreachablePassage diagnostic: static analysis can't see through
 /// variable-aliased navigation (`<<goto $next>>`, `<<link $label $target>>`),
-/// so authors override the analyzer by hand. The edit replaces the
-/// passage's whole header line with one whose JSON metadata block
-/// carries the flag — merging with any existing position/group/color
-/// values — and returns an empty edit when the passage or its file
+/// so authors state the entry edge by hand. The manual link renders as a
+/// distinct `manual` edge `source → passage` in the graph. The edit
+/// replaces the passage's whole header line with one whose JSON metadata
+/// block carries the link — merging with any existing position/group/
+/// color values — and returns an empty edit when the passage or its file
 /// can't be found (the code action is then a no-op for the client).
 pub(crate) fn mark_reachable_edit(
     inner: &crate::state::ServerStateInner,
     name: &str,
+    source: &str,
 ) -> WorkspaceEdit {
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
@@ -269,7 +271,7 @@ pub(crate) fn mark_reachable_edit(
                                     character: utf16_len(line),
                                 },
                             },
-                            new_text: set_reachable_in_header(line),
+                            new_text: set_reachable_in_header(line, source),
                         }],
                     );
                     break;
@@ -528,6 +530,9 @@ mod fallback_tests {
         for (from, to, edge) in edges {
             ws.graph.add_edge(&from, &to, edge);
         }
+        // Mirror production apply_document_update: manual `reachable`
+        // declarations participate as Manual graph edges.
+        ws.rebuild_manual_edges();
         ws
     }
 
@@ -611,11 +616,11 @@ mod fallback_tests {
 
     #[test]
     fn manual_entry_passage_is_not_offered_the_fallback() {
-        // A passage marked reachable in its header metadata is not
-        // unreachable — no fallback quickfix for it.
+        // A passage declaring a manual reachability link in its header
+        // metadata is not unreachable — no fallback quickfix for it.
         let src = concat!(
             ":: Start\n[[Forest]]\n:: Forest\nTrees.\n",
-            ":: IslandA {\"reachable\":true}\nEntered via variable navigation.\n",
+            ":: IslandA {\"reachable\":\"Start\"}\nEntered via variable navigation.\n",
         );
         let uri = Url::parse("file:///project/story.tw").unwrap();
         let ws = workspace_with(src, &uri);

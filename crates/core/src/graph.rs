@@ -155,6 +155,16 @@ pub enum EdgeType {
     /// Internal diagnostic state — restored to the original type when the
     /// target is created.
     Broken,
+    /// A manual link declared by the `reachable` header metadata
+    /// (`:: Hub {"reachable":"Start"}` → edge `Start → Hub`).
+    ///
+    /// A tool-level declaration for navigation that static analysis
+    /// can't see through (variable-aliased links like `<<goto $next>>`):
+    /// the author states "this passage is reachable *from* the named
+    /// passage". The edge participates in reachability BFS exactly like
+    /// a navigation link, and the Story Map renders it with a distinct
+    /// style so manual declarations are auditable at a glance.
+    Manual,
 }
 
 /// Edge data representing a link between passages.
@@ -367,6 +377,25 @@ impl PassageGraph {
             for edge in edges {
                 self.graph.remove_edge(edge);
             }
+        }
+    }
+
+    /// Remove every edge of a given semantic type, graph-wide.
+    ///
+    /// Used to reconcile type-scoped edge sets (manual `reachable`
+    /// metadata links) after graph surgery: the whole set is dropped and
+    /// rebuilt from the authoritative document model, which keeps edges
+    /// whose *source* passage lives in a different file consistent even
+    /// when only that file (not the declaring one) is re-parsed.
+    pub fn remove_edges_of_type(&mut self, edge_type: EdgeType) {
+        let edge_ids: Vec<_> = self
+            .graph
+            .edge_references()
+            .filter(|e| e.weight().edge_type == edge_type)
+            .map(|e| e.id())
+            .collect();
+        for id in edge_ids {
+            self.graph.remove_edge(id);
         }
     }
 

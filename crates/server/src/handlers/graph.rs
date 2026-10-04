@@ -7,6 +7,11 @@ use lsp_types::{TextEdit as LspTextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 use url;
 
+/// Maximum character length of the body preview shipped with each graph
+/// node (`Passage::excerpt`). Sized to fill the Story Map card's two-line
+/// clamp (~60 chars/line at the card's preview font) with headroom.
+const EXCERPT_MAX_CHARS: usize = 140;
+
 impl ServerState {
     /// `knot/graph` — export the passage graph for the Story Map webview.
     pub async fn knot_graph(
@@ -95,12 +100,17 @@ impl ServerState {
             std::collections::HashMap::new();
         let mut passage_sizes: std::collections::HashMap<String, (f64, f64)> =
             std::collections::HashMap::new();
+        let mut passage_manual_links: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut passage_excerpts: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for doc in inner.workspace.documents() {
             for passage in &doc.passages {
                 let name = passage.name.clone();
                 passage_tags.insert(name.clone(), passage.tags.clone());
                 passage_lines.insert(name.clone(), passage.line);
+                passage_excerpts.insert(name.clone(), passage.excerpt(EXCERPT_MAX_CHARS));
                 if let Some(pos) = passage.position {
                     passage_positions.insert(name.clone(), pos);
                 }
@@ -112,6 +122,9 @@ impl ServerState {
                 }
                 if let Some(size) = passage.size {
                     passage_sizes.insert(name.clone(), size);
+                }
+                if let Some(source) = passage.manual_link_source() {
+                    passage_manual_links.insert(name.clone(), source.to_string());
                 }
             }
         }
@@ -131,10 +144,9 @@ impl ServerState {
             }
         }
 
-        // Determine unreachable passages. Reachability runs from ALL roots:
-        // the start passage plus every passage marked `reachable` in
-        // its header metadata (manual entry points for variable-aliased
-        // navigation that static analysis can't resolve).
+        // Determine unreachable passages. Reachability runs from the start
+        // passage through every edge kind — including the manual `reachable`
+        // metadata links, which the graph carries as `Manual` edges.
         let start_passage = inner
             .workspace
             .metadata
@@ -146,13 +158,10 @@ impl ServerState {
             .iter()
             .map(|d| d.passage_name.clone())
             .collect();
-        let manual_entries: std::collections::HashSet<String> = inner
-            .workspace
-            .documents()
-            .flat_map(|doc| doc.passages.iter())
-            .filter(|p| p.is_manual_entry())
-            .map(|p| p.name.clone())
-            .collect();
+        // Passages declaring a manual `reachable` link (rendered with an
+        // entry marker; the link itself is a `manual` graph edge).
+        let manual_entries: std::collections::HashSet<String> =
+            passage_manual_links.keys().cloned().collect();
 
         // Collect variable write/read summaries per passage for the graph export.
         let mut var_writes: std::collections::HashMap<String, Vec<String>> =
@@ -207,6 +216,7 @@ impl ServerState {
                     is_unreachable: n.is_unreachable,
                     is_start: n.label == start_passage,
                     is_entry: manual_entries.contains(&n.label),
+                    manual_link_source: passage_manual_links.get(&n.label).cloned(),
                     position_x: n.position.map(|(x, _)| x),
                     position_y: n.position.map(|(_, y)| y),
                     group: n.group,
@@ -215,6 +225,7 @@ impl ServerState {
                     size_h: size.map(|(_, h)| *h),
                     var_writes: n.var_writes,
                     var_reads: n.var_reads,
+                    excerpt: passage_excerpts.get(&n.label).cloned().unwrap_or_default(),
                 }
             })
             .collect();

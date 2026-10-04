@@ -59,13 +59,21 @@ pub struct KnotGraphNode {
     pub is_unreachable: bool,
     /// Whether this is the story's start passage (parsed from StoryData).
     pub is_start: bool,
-    /// Whether this passage is a manual reachability entry point
-    /// (header metadata `reachable`).
+    /// Whether this passage declares a manual reachability link
+    /// (header metadata `reachable`, e.g. `:: Hub {"reachable":"Start"}`).
     ///
-    /// Manual entries act as additional reachability roots alongside the
-    /// start passage — used by the Story Map to render them distinctly.
+    /// The declaration renders as a distinct `manual` edge
+    /// `source → this passage` in the graph; this flag lets the Story
+    /// Map mark the declaring node without scanning incoming edges.
     #[serde(default)]
     pub is_entry: bool,
+    /// The source passage name of this passage's manual reachability
+    /// link (header metadata `reachable`), when declared.
+    ///
+    /// Exposed so the GUI inspector can display/edit the declaration
+    /// directly on the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_link_source: Option<String>,
     /// The x-coordinate of the passage in the Twine visual editor, if available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_x: Option<f64>,
@@ -78,6 +86,11 @@ pub struct KnotGraphNode {
     /// Persistent variable names read in this passage.
     #[serde(default)]
     pub var_reads: Vec<String>,
+    /// Plain-text body preview for the Story Map card (whitespace-collapsed,
+    /// macros in compact `<<name>>` form, truncated with an ellipsis).
+    /// Empty string when the passage has no body blocks.
+    #[serde(default)]
+    pub excerpt: String,
     /// Manual group assignment from passage header metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -102,7 +115,7 @@ pub struct KnotGraphEdge {
     /// Target passage name.
     pub target: String,
     /// The semantic type of this edge: "navigation", "upstream", "call",
-    /// "include", "jump", or "broken".
+    /// "include", "jump", "manual", or "broken".
     pub edge_type: String,
     /// The display text of the link (e.g., "Go to forest" in [[Go to forest->Forest]]).
     pub display_text: Option<String>,
@@ -834,6 +847,207 @@ pub struct KnotUpdatePositionsResponse {
     pub updated_count: u32,
     /// Errors for passages that couldn't be updated.
     pub errors: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/updatePassageMetadata — GUI metadata editing (Tier A)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/updatePassageMetadata` — edit one passage's header
+/// metadata (tags, color, group, size, manual link, position) from the
+/// Story Map inspector.
+///
+/// Field semantics mirror the header writer's merge model:
+/// - `None` (absent)  → leave the field unchanged
+/// - `Some(None)` (JSON `null`) → remove the field
+/// - `Some(Some(v))` → set/replace the field
+///
+/// `tags` replaces the whole tag list when present (an empty array clears
+/// all tags); it cannot be `null` (use an empty array instead).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotUpdatePassageMetadataParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The passage whose header metadata should be edited.
+    pub passage_name: String,
+    /// New (x, y) canvas position, if changing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<KnotPosition2D>,
+    /// Set/remove the `group` metadata field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Option<String>>,
+    /// Set/remove the `color` metadata field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Option<String>>,
+    /// Set/remove the `size` metadata field (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Option<KnotSize>>,
+    /// Set/remove the manual reachability link source
+    /// (header metadata `reachable`, e.g. `"Start"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reachable: Option<Option<String>>,
+    /// Replace the whole tag list. `Some([])` clears all tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+/// A 2D coordinate (graph canvas position).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotPosition2D {
+    /// X coordinate.
+    pub x: f64,
+    /// Y coordinate.
+    pub y: f64,
+}
+
+/// A passage node size (Twine `size` metadata convention).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotSize {
+    /// Width in pixels.
+    pub width: f64,
+    /// Height in pixels.
+    pub height: f64,
+}
+
+/// Response: `knot/updatePassageMetadata`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotUpdatePassageMetadataResponse {
+    /// Whether the edit was applied successfully.
+    pub success: bool,
+    /// The rewritten header line, when successful (for logging/diffing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_header: Option<String>,
+    /// Error message when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/createPassage — passage lifecycle from the graph (Tier B)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/createPassage` — append a new passage to a twee file,
+/// created from the Story Map (context menu "New passage here" /
+/// toolbar "+").
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotCreatePassageParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The new passage's name.
+    pub name: String,
+    /// Initial tags, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    /// Canvas position where the passage was created (graph coordinates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<KnotPosition2D>,
+    /// Target file URI. When absent, the server picks the file containing
+    /// StoryData, else the file with the most passages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_file: Option<String>,
+}
+
+/// Response: `knot/createPassage`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotCreatePassageResponse {
+    /// Whether the passage was created successfully.
+    pub success: bool,
+    /// The file URI the passage was appended to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// The 0-based line of the new passage's header.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Error message when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/deletePassage — passage lifecycle from the graph (Tier B)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/deletePassage` — remove a passage's whole block
+/// (header + body) from its file.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotDeletePassageParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The passage to delete.
+    pub passage_name: String,
+    /// When true, links in other passages pointing at the deleted passage
+    /// are unwrapped to their display text (Twine's "also remove links"
+    /// behavior). When false, they become broken links (fixable via the
+    /// existing quickfixes).
+    #[serde(default)]
+    pub strip_links: bool,
+}
+
+/// Response: `knot/deletePassage`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotDeletePassageResponse {
+    /// Whether the passage was deleted successfully.
+    pub success: bool,
+    /// Number of links unwrapped (only when `strip_links` was requested).
+    #[serde(default)]
+    pub links_stripped: u32,
+    /// Error message when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/renamePassage — passage lifecycle from the graph (Tier B)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/renamePassage` — rename a passage across the workspace:
+/// its header, every `[[link]]` targeting it, and any manual `reachable`
+/// metadata declarations naming it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotRenamePassageParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The current passage name.
+    pub name: String,
+    /// The new passage name.
+    pub new_name: String,
+}
+
+/// Response: `knot/renamePassage`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotRenamePassageResponse {
+    /// Whether the rename was applied successfully.
+    pub success: bool,
+    /// Number of files touched by the rename.
+    #[serde(default)]
+    pub files_changed: u32,
+    /// Error message when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// knot/setStartPassage — story-level settings (Tier C)
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/setStartPassage` — rewrite the `start` field in the
+/// StoryData passage's JSON body.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotSetStartPassageParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The passage that should become the story's entry point.
+    pub passage_name: String,
+}
+
+/// Response: `knot/setStartPassage`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotSetStartPassageResponse {
+    /// Whether the start passage was changed successfully.
+    pub success: bool,
+    /// Error message when `success` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
