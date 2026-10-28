@@ -140,10 +140,15 @@ pub struct SpecialPassageBundle {
 /// with distinct visual styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum EdgeType {
-    /// A navigation link: `[[Target]]`, `<<link>>`, `<<button>>`, `<<goto>>`.
-    /// Any edge where the player navigates (or is redirected) to another passage.
+    /// A navigation link: `[[Target]]`, `<<link>>`, `<<button>>`.
+    /// Any edge where the player actively navigates to another passage.
     #[default]
     Navigation,
+    /// An unconditional redirect: `<<goto Target>>`.
+    /// Semantically distinct from a player-choice link — the redirect
+    /// happens without interaction, which matters for flow analysis and
+    /// for the Story Map's edge styling (dashed violet).
+    Jump,
     /// An upstream lifecycle edge (not a user-navigable link).
     /// Connects special passages in execution order
     /// (TwineCore → StoryFormat → Start). Internal — not user-facing.
@@ -403,7 +408,8 @@ impl PassageGraph {
     ///
     /// Placeholder nodes represent link targets that don't exist in the
     /// workspace yet. They are marked with `is_placeholder: true` and
-    /// excluded from reachability analysis and graph exports.
+    /// excluded from reachability analysis; graph exports include them
+    /// (flagged) so the Story Map can render broken-link ghost nodes.
     fn get_or_create_node(&mut self, name: &str) -> NodeIndex {
         if let Some(&idx) = self.name_to_idx.get(name) {
             idx
@@ -760,7 +766,6 @@ impl PassageGraph {
         let nodes: Vec<GraphNodeExport> = self
             .graph
             .node_indices()
-            .filter(|idx| !self.graph[*idx].is_placeholder)
             .map(|idx| {
                 let node = &self.graph[idx];
                 let out_degree = self
@@ -781,6 +786,7 @@ impl PassageGraph {
                     is_special: node.is_special,
                     is_metadata: node.is_metadata,
                     is_unreachable: unreachable.contains(&node.name),
+                    is_placeholder: node.is_placeholder,
                     position: passage_positions.get(&node.name).copied(),
                     group: passage_groups.get(&node.name).cloned(),
                     color: passage_colors.get(&node.name).cloned(),
@@ -1127,6 +1133,13 @@ pub struct GraphNodeExport {
     pub is_special: bool,
     pub is_metadata: bool,
     pub is_unreachable: bool,
+    /// True when this node is a **placeholder**: a link target that has no
+    /// passage definition in the workspace (a broken link's would-be
+    /// endpoint). The Story Map renders placeholders as dashed "ghost"
+    /// nodes with a create-passage affordance. Placeholder nodes carry no
+    /// file/line/tags — only the name and the incoming broken edges.
+    #[serde(default)]
+    pub is_placeholder: bool,
     /// The (x, y) position of this passage on the Twine editor canvas.
     /// When present, the graph view should place the node at these
     /// coordinates instead of using an automatic layout.

@@ -1166,10 +1166,12 @@ mod tests {
 
         let export = graph.export_graph_with_metadata(&tags, &unreachable, &positions);
 
-        // Verify nodes — 4 real nodes (Start, Forest, StoryInit, StoryData).
-        // MissingPassage is a placeholder node (created by get_or_create_node for
-        // broken-link targets) and is filtered out of the export.
-        assert_eq!(export.nodes.len(), 4);
+        // Verify nodes — 4 real nodes (Start, Forest, StoryInit, StoryData)
+        // plus 1 placeholder (MissingPassage — created by get_or_create_node
+        // for the broken-link target). Placeholders ARE exported now, flagged
+        // with `is_placeholder`, so the Story Map can render broken-link
+        // ghost nodes.
+        assert_eq!(export.nodes.len(), 5);
 
         let start_node = export.nodes.iter().find(|n| n.id == "Start").unwrap();
         assert_eq!(start_node.tags, vec!["important", "begin"]);
@@ -1177,6 +1179,7 @@ mod tests {
         assert_eq!(start_node.in_degree, 0);
         assert!(!start_node.is_special);
         assert!(!start_node.is_metadata);
+        assert!(!start_node.is_placeholder);
 
         let forest_node = export.nodes.iter().find(|n| n.id == "Forest").unwrap();
         assert_eq!(forest_node.tags, vec!["outdoor"]);
@@ -1191,6 +1194,19 @@ mod tests {
 
         let data_node = export.nodes.iter().find(|n| n.id == "StoryData").unwrap();
         assert!(data_node.is_metadata);
+
+        // The placeholder ghost node: flagged, empty file, carries the
+        // incoming broken edge's in-degree.
+        let ghost = export
+            .nodes
+            .iter()
+            .find(|n| n.id == "MissingPassage")
+            .expect("placeholder node must be exported for broken-link ghosts");
+        assert!(ghost.is_placeholder);
+        assert_eq!(ghost.file, "");
+        assert_eq!(ghost.in_degree, 1);
+        assert_eq!(ghost.out_degree, 0);
+        assert!(ghost.tags.is_empty());
 
         // Verify edges
         assert_eq!(export.edges.len(), 2);

@@ -1578,7 +1578,7 @@ fn sugarcube_classify_edge_goto_is_jump() {
     let edge = plugin.classify_edge(start, None, "Forest");
     assert_eq!(
         edge,
-        Some(knot_core::graph::EdgeType::Navigation),
+        Some(knot_core::graph::EdgeType::Jump),
         "<<goto>> should classify as Jump"
     );
 }

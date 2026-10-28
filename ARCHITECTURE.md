@@ -75,9 +75,12 @@ plugins produce and all analysis runs against:
   per-passage metadata block (the engine never sees it), not a story
   tag. (The `reachable` flag and header metadata on the `Passage`
   model are unreleased — present on `main`, not yet in a Marketplace
-  release.) Note: SCC data is computed and exported to the
-  client, but the Story Map webview does not yet render game loop
-  highlighting — see ROADMAP.md.
+  release.) Note: SCC (game-loop) data is computed server-side and
+  exported with `knot/graph`, but the extension STRIPS it from the
+  webview payload unless `knot.storyMap.gameLoops` is enabled
+  (default OFF) — the flow-analysis algorithm isn't yet solid enough
+  to confidently show loops. The flag is the resurrection point once
+  the analysis is hardened.
 - **`Analysis`** — runs the diagnostic passes over the workspace:
   broken links, unreachable passages, uninitialized variables, unused
   variables, redundant writes, duplicate passage names, empty passages,
@@ -245,15 +248,48 @@ three sidebar webview views, plus one editor-area webview panel:
 
 - **Story Map** (editor panel) — an interactive directed graph of all
   passages, rendered with `@xyflow/react` + `dagre` for layout. Nodes
-  are passages, edges are links. Supports click-to-navigate (single
-  click jumps to the passage in the editor — including passages in
-  closed files, at the correct line; unreleased). All edges are
-  rendered in gray — there is no edge-type color differentiation.
-  Special passages (StoryInit, StoryTitle, etc.) get distinct node
-  colors. Dead-end passages get a yellow double border; unreachable
-  passages are grouped separately (manual entry points render with a
-  green ring + corner marker; unreleased). There is no focus mode
-  or right-click context menu.
+  are passages, edges are links, and every edge type is visually
+  distinct: `[[navigation]]` (slate), `<<goto>>` jumps (dashed
+  violet — `EdgeType::Jump`), includes (sky), lifecycle chains
+  (dashed slate), manual `reachable` links (dotted gold), and broken
+  links (dashed red pointing at ghost nodes).
+
+  Interactions (context menu + keyboard driven — the old toolbar is
+  gone): single click navigates the editor to the passage (works for
+  closed files, at the correct line); Shift/Ctrl-click builds
+  multi-selections; marquee select; `Ctrl+A`; arrow-key nudge (Shift
+  = 10×); snap-to-grid toggle; `F`/`1` zoom-to-fit, `+`/`-`/`0`
+  keyboard zoom and a bottom-left zoom widget with Twine-style
+  presets; double-click empty canvas creates a passage; `G` groups
+  the selection. Metadata (tags, color, group, size, manual link) is
+  edited in the Inspector (single + bulk via `knot/bulkUpdateMetadata`).
+
+  **Broken links** render as dashed-red ghost nodes (placeholder
+  targets exported by `knot/graph` with `is_placeholder: true`);
+  clicking a ghost opens the create-passage flow prefilled with the
+  missing name, and creating it heals the edge (the server restores
+  the pre-broken edge type).
+
+  **Groups** are interactive containers: dragging a group's title bar
+  moves every member as a unit (one batched position write); the box
+  grows/shrinks live as members move; double-clicking the title
+  renames the group (bulk metadata update on all members); dropping a
+  passage inside a box assigns membership; dragging it out (12 px
+  grace) removes it; the context menu dissolves.
+
+  **Create-passage** asks for the target file (every workspace
+  .twee/.tw with passage counts, plus a "New file…" option that
+  creates the file atomically with the passage via `CreateFile` +
+  `Edit` document changes).
+
+  A minimizable **file navigator** rail on the left lists the game
+  source files Tweego compiles (.twee/.tw sources, .js scripts, .css
+  styles) with passage counts; clicking opens the file, and the file
+  owning the current selection is highlighted.
+
+  Dead-end passages get a yellow badge; unreachable passages are
+  grouped separately (manual entry points render with a green ring +
+  corner marker; unreleased).
 - **Passage Diagnostics** (sidebar view) — shows detailed info about
   the passage under the cursor: links, variables, macros, complexity
   metrics.
@@ -289,7 +325,7 @@ Knot reads configuration from two sources, merged at build time:
 
 1. **VS Code Settings** (`knot.*` settings) — the primary user-facing
    configuration. Visible in the Settings UI, organized into sections:
-   Build, Diagnostics, Indexing, Status & Paths, Advanced.
+   Build, Diagnostics, Indexing, Story Map, Status & Paths, Advanced.
 
 2. **`.vscode/knot.json`** — project-local configuration, checked into
    the repo. Supports `compiler_path`, `storyformats_path`, `build`

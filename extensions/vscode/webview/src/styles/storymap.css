@@ -83,19 +83,22 @@ html, body {
   background: var(--bg);
   color: var(--fg);
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   position: absolute;
   inset: 0;
   overflow: hidden;
 }
 
-/* Main row: just the canvas — the inspector overlays it (absolute) while
-   a selection exists, so the graph gets the full panel width. */
+/* Main area: the canvas — the inspector overlays it (absolute) while
+   a selection exists, so the graph gets the full panel width. The file
+   navigator rail sits to its left as a flex sibling. */
 .app-main {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
+  position: relative;
 }
 
 /* ── Find trigger + palette — replaces the old toolbar search ──────── */
@@ -579,7 +582,6 @@ html, body {
   background: rgba(0, 0, 0, 0.32);
 }
 
-
 /* ── Node states ───────────────────────────────────────────────────────── */
 
 /* Start passage: bright ring around the whole card */
@@ -759,11 +761,13 @@ html, body {
 }
 
 /* ── Legend ─────────────────────────────────────────────────────────────── */
-/* Legend sits at bottom-left (the zoom Controls are gone with the
-   toolbar — wheel zoom + context menu cover zooming now). */
+/* Legend sits at the canvas's bottom-left, stacked ABOVE the zoom widget
+   (which owns the 12–42px strip at the very corner). It is rendered
+   inside .app-main, so `left: 12px` clears the file-nav rail even when
+   the rail is minimized — no more being covered by the panel. */
 #legend {
   position: absolute;
-  bottom: 12px;
+  bottom: 54px;
   left: 12px;
   background: var(--panel);
   backdrop-filter: var(--panel-blur);
@@ -776,7 +780,7 @@ html, body {
   z-index: 4;
   transition: opacity 0.15s;
   pointer-events: auto;
-  max-height: calc(100vh - 190px);
+  max-height: calc(100% - 66px);
   overflow-y: auto;
   box-shadow: var(--shadow-md);
 }
@@ -913,9 +917,20 @@ html, body {
   position: absolute;
   top: 12px;
   right: 12px;
-  bottom: auto;
+  /* Full-height stretch by default (top 12 → bottom 12): the panel's
+   * natural expansion is VERTICAL so every metadata section (tags,
+   * size, color…) is visible without scrolling. The bottom-edge grip
+   * can pin an explicit height (set inline from React — inline height
+   * over-constrains `bottom`, so the panel then anchors to the top
+   * and the stored height wins). */
+  bottom: 12px;
+  /* Safety net when a stored height exceeds the current canvas. */
   max-height: calc(100% - 24px);
-  width: 292px;
+  /* Width is user-resizable (left-edge grip) and set inline from React;
+   * these act as the default and the hard clamp. */
+  width: 344px;
+  min-width: 280px;
+  max-width: 560px;
   background: var(--panel);
   backdrop-filter: var(--panel-blur);
   -webkit-backdrop-filter: var(--panel-blur);
@@ -927,6 +942,65 @@ html, body {
   z-index: 100;
   box-shadow: var(--shadow-lg);
   animation: inspector-in 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+
+/* Left-edge (width) resize grip. Invisible until hovered; a bright accent
+ * bar appears to signal draggability. */
+.inspector__resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 11px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.inspector__resizer::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.inspector__resizer:hover::before,
+.inspector__resizer:active::before {
+  background: var(--accent);
+}
+
+/* Bottom-edge (height) resize grip — the vertical counterpart. */
+.inspector__resizer--h {
+  top: auto;
+  bottom: -5px;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 11px;
+  cursor: ns-resize;
+}
+.inspector__resizer--h::before {
+  left: 14px;
+  right: 14px;
+  top: auto;
+  bottom: 4px;
+  width: auto;
+  height: 2px;
+}
+
+/* While dragging either grip: uniform cursor + no text selection. */
+body.inspector-resizing {
+  cursor: ew-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.inspector-resizing-v {
+  cursor: ns-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 @keyframes inspector-in {
@@ -1057,11 +1131,11 @@ html, body {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 11px 13px;
+  padding: 12px 14px;
 }
 
 .inspector__section {
-  margin-bottom: 15px;
+  margin-bottom: 16px;
 }
 
 .inspector__section--info {
@@ -1312,6 +1386,7 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.14), transparent);
 }
 
@@ -1363,6 +1438,22 @@ html, body {
 .inspector__btn--confirm:hover {
   background: var(--error);
   filter: brightness(1.1);
+}
+
+/* Compact inline "Apply" button (bulk size row). */
+.inspector__btn--apply {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 10px;
+  border-radius: 5px;
+}
+.inspector__btn--apply:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.inspector__btn--apply:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--fg-strong);
 }
 
 .inspector__delete-confirm {
@@ -1541,6 +1632,14 @@ html, body {
   line-height: 1.5;
 }
 
+/* Small helper text under an input (e.g. where a new file will land). */
+.modal__hint {
+  font-size: 9.5px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
 .modal__label {
   display: block;
   font-size: 9px;
@@ -1587,4 +1686,341 @@ html, body {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 17px;
+}
+
+
+/* ── Ghost node (broken-link placeholder) ────────────────────────────────
+   Dashed red outline, italic label — visibly "not a real passage yet".
+   Clicking it opens the create-passage flow prefilled with its name. */
+.pn--ghost {
+  border-style: dashed;
+  border-color: rgba(248, 113, 113, 0.6);
+  background:
+    linear-gradient(0deg, rgba(248, 113, 113, 0.07), rgba(248, 113, 113, 0.07)),
+    rgba(30, 30, 36, 0.72);
+  opacity: 0.88;
+}
+.pn--ghost .pn__label {
+  font-style: italic;
+  color: rgba(248, 113, 113, 0.92);
+}
+.pn__badge--ghost {
+  color: #fecaca;
+  background: rgba(69, 10, 10, 0.55);
+}
+
+/* ── In-canvas rename input (passage label / group title) ─────────────── */
+.pn__rename-input,
+.gn__rename-input {
+  background: var(--vscode-input-background, #22252b);
+  color: var(--vscode-input-foreground, #c8ccd4);
+  border: 1px solid var(--accent, #4f8cff);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  outline: none;
+  width: 130px;
+  min-width: 0;
+}
+.gn__rename-input {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  width: 110px;
+  padding: 0 4px;
+}
+
+/* ── Interactive group container ───────────────────────────────────────── */
+.gn--interactive .gn__label {
+  pointer-events: auto;
+  cursor: grab;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.gn--interactive .gn__label:hover {
+  color: #99a1b8;
+  background: rgba(255, 255, 255, 0.06);
+}
+.gn--interactive .gn__label:active {
+  cursor: grabbing;
+}
+.gn__count {
+  font-size: 8px;
+  font-weight: 600;
+  color: #4c5365;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+
+/* ── Zoom widget (bottom-left floating control) ───────────────────────── */
+.zoom-widget {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 3px 4px;
+  box-shadow: var(--shadow-md);
+}
+.zoom-widget__btn {
+  background: transparent;
+  border: none;
+  color: var(--muted-strong);
+  font-size: 13px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.zoom-widget__btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--fg-strong);
+}
+.zoom-widget__pct {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted-strong);
+  min-width: 34px;
+  text-align: center;
+  user-select: none;
+}
+.zoom-widget__select {
+  background: transparent;
+  border: none;
+  color: var(--muted-strong);
+  font-size: 10px;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  outline: none;
+}
+.zoom-widget__select option {
+  background: var(--panel);
+  color: var(--fg);
+}
+
+/* ── Selection count chip ──────────────────────────────────────────────── */
+.sel-chip {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 10.5px;
+  color: var(--muted-strong);
+  box-shadow: var(--shadow-sm);
+  user-select: none;
+  pointer-events: none;
+}
+.sel-chip kbd {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 9.5px;
+}
+
+/* ── File navigator (minimizable left rail) ────────────────────────────── */
+.file-nav {
+  width: 184px;
+  flex-shrink: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  backdrop-filter: var(--panel-blur);
+  -webkit-backdrop-filter: var(--panel-blur);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 50;
+}
+.file-nav--collapsed {
+  width: auto;
+  align-items: flex-start;
+  padding: 8px 4px;
+  overflow: visible;
+}
+.file-nav__toggle {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 5px;
+}
+.file-nav__toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-strong);
+}
+.file-nav__toggle--inline {
+  padding: 2px 4px;
+}
+.file-nav__toggle-count {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.file-nav__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 6px 6px 12px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+.file-nav__title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.file-nav__empty {
+  padding: 12px;
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.file-nav__section {
+  padding: 2px 0 8px;
+}
+.file-nav__section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 12px 3px;
+}
+.file-nav__section-count {
+  font-weight: 600;
+  color: #4c5365;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 0 4px;
+}
+.file-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 10px 3px 12px;
+  text-align: left;
+}
+.file-nav__item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--fg-strong);
+}
+.file-nav__item--active {
+  background: rgba(79, 140, 255, 0.13);
+  color: var(--fg-strong);
+  box-shadow: inset 2px 0 0 var(--accent, #4f8cff);
+}
+.file-nav__name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* long paths keep their tail (filename) visible */
+  text-align: left;
+}
+.file-nav__count {
+  font-size: 9px;
+  font-weight: 600;
+  color: #4c5365;
+  flex-shrink: 0;
+}
+.file-nav__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.file-nav__dot--twee { background: #3a7ca5; }
+.file-nav__dot--js   { background: #d9b45c; }
+.file-nav__dot--css  { background: #5b8dd6; }
+
+/* ── Modal additions (target-file select, compact group prompt) ────────── */
+.modal__select {
+  appearance: auto;
+  cursor: pointer;
+}
+.modal--compact .modal__subtitle {
+  margin-bottom: 6px;
+}
+
+/* ── Legend: edge-kind toggle chips ────────────────────────────────────── */
+.legend-item--toggle {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: inherit;
+  font-family: inherit;
+  padding: 2px 0;
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.legend-item--toggle:hover {
+  color: var(--fg-strong);
+}
+.legend-item--off {
+  opacity: 0.42;
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, 0.6);
+  text-decoration-thickness: 1px;
+}
+.legend-item__state {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7286;
+  margin-left: auto;
+}
+.legend-card--ghost {
+  border-style: dashed;
+  opacity: 0.8;
 }

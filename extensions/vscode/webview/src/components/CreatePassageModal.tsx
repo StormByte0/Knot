@@ -1,35 +1,57 @@
 import { useEffect, useRef, useState } from 'react';
+import type { WorkspaceFileInfo } from '../types';
 
 export interface CreatePassageRequest {
   /** Graph-canvas coordinates where the passage should be created. */
   x: number;
   y: number;
+  /** Prefilled name (broken-link ghost affordance). */
+  prefillName?: string;
 }
 
 interface CreatePassageModalProps {
   request: CreatePassageRequest;
   existingNames: Set<string>;
   allTags: string[];
+  /** Every .twee/.tw file in the workspace (the target-file picker). */
+  tweeFiles: WorkspaceFileInfo[];
+  /** The heuristic default: StoryData's file, else the largest twee file. */
+  defaultTargetFile?: string;
+  /** `knot.build.sourceDir` (workspace-relative, '' = root) — the base
+   *  directory for "New file…" paths (extension host resolves against it). */
+  sourceDir?: string;
   onCancel: () => void;
-  onCreate: (name: string, tags: string[], position: { x: number; y: number }) => void;
+  onCreate: (
+    name: string,
+    tags: string[],
+    position: { x: number; y: number },
+    target: { file?: string; newFile?: string },
+  ) => void;
 }
 
 export default function CreatePassageModal({
   request,
   existingNames,
   allTags,
+  tweeFiles,
+  defaultTargetFile,
+  sourceDir,
   onCancel,
   onCreate,
 }: CreatePassageModalProps) {
-  const [name, setName] = useState('');
+  const [name, setName] = useState(request.prefillName ?? '');
   const [tagDraft, setTagDraft] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Target file: an existing URI, or '__new__' to create a new file.
+  const [target, setTarget] = useState<string>(defaultTargetFile ?? tweeFiles[0]?.uri ?? '__new__');
+  const [newFileDraft, setNewFileDraft] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     nameInputRef.current?.focus();
-  }, []);
+    if (request.prefillName) nameInputRef.current?.select();
+  }, [request.prefillName]);
 
   const addTag = (raw: string) => {
     const tag = raw.trim();
@@ -37,6 +59,17 @@ export default function CreatePassageModal({
     if (!tag || tags.includes(tag)) return;
     if (/\s/.test(tag) || /[[\]{}]/.test(tag)) return;
     setTags([...tags, tag]);
+  };
+
+  const validateNewFile = (raw: string): string | null => {
+    const rel = raw.trim().replace(/\\/g, '/');
+    if (!rel) return 'File name is required';
+    if (rel.includes('..')) return 'Path cannot contain ".."';
+    if (!/^[A-Za-z0-9_\-./ ]+$/.test(rel)) {
+      return 'Use letters, digits, "-", "_", "/", spaces and "." only';
+    }
+    if (!/\.(twee|tw)$/i.test(rel)) return "File must end in '.twee' or '.tw'";
+    return null;
   };
 
   const validateAndCreate = () => {
@@ -57,8 +90,21 @@ export default function CreatePassageModal({
       setError(`A passage named '${trimmed}' already exists`);
       return;
     }
-    onCreate(trimmed, tags, { x: request.x, y: request.y });
+    if (target === '__new__') {
+      const fileErr = validateNewFile(newFileDraft);
+      if (fileErr) {
+        setError(fileErr);
+        return;
+      }
+      onCreate(trimmed, tags, { x: request.x, y: request.y }, {
+        newFile: newFileDraft.trim().replace(/\\/g, '/'),
+      });
+      return;
+    }
+    onCreate(trimmed, tags, { x: request.x, y: request.y }, { file: target });
   };
+
+  const newFileSelected = target === '__new__';
 
   return (
     <div
@@ -122,6 +168,40 @@ export default function CreatePassageModal({
             {allTags.filter(t => !tags.includes(t)).map(t => <option key={t} value={t} />)}
           </datalist>
         </div>
+
+        <label className="modal__label">Target file</label>
+        <select
+          className="modal__input modal__select"
+          value={target}
+          onChange={e => { setTarget(e.target.value); setError(null); }}
+        >
+          {tweeFiles.length === 0 && <option value="__new__">No .twee files — create one</option>}
+          {tweeFiles.map(f => (
+            <option key={f.uri} value={f.uri}>
+              {f.name} ({f.passageCount} passages)
+            </option>
+          ))}
+          <option value="__new__">＋ New file…</option>
+        </select>
+        {newFileSelected && (
+          <>
+            <label className="modal__label">
+              New file path (relative to {sourceDir ? sourceDir : 'workspace root'})
+            </label>
+            <input
+              className="modal__input"
+              value={newFileDraft}
+              onChange={e => { setNewFileDraft(e.target.value); setError(null); }}
+              placeholder={sourceDir ? `${sourceDir}/chapter1.twee` : 'chapter1.twee'}
+              spellCheck={false}
+            />
+            <div className="modal__hint">
+              {sourceDir
+                ? `Created inside the source directory ${sourceDir}/ (knot.build.sourceDir).`
+                : 'Created in the workspace root. Set knot.build.sourceDir to keep sources in a subfolder.'}
+            </div>
+          </>
+        )}
 
         {error && <div className="modal__error">{error}</div>}
 

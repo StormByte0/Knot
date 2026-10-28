@@ -535,7 +535,12 @@ pub(crate) fn set_reachable_in_header(line: &str, source: &str) -> String {
 /// Twine 2's StoryData can contain per-passage position information.
 /// The StoryData JSON may include a "passages" array where each entry
 /// has a "name" and "position" field (an array of [x, y]).
-/// This function parses those positions and adds them to the map.
+/// This function parses those positions and adds them to the map —
+/// FILL-ONLY: a position already present in the map (parsed from the
+/// passage's own header metadata, which is what the Story Map's drag
+/// flow writes) is never overwritten. The old overwrite semantics made
+/// a dragged node snap back to its stale StoryData coordinate on the
+/// next graph refresh.
 pub(crate) fn extract_positions_from_storydata(
     text: &str,
     positions: &mut std::collections::HashMap<String, (f64, f64)>,
@@ -599,7 +604,9 @@ fn extract_positions_from_storydata_value(
                 && pos.len() >= 2
                 && let (Some(x), Some(y)) = (pos[0].as_f64(), pos[1].as_f64())
             {
-                positions.insert(name.to_string(), (x, y));
+                // Fill-only: header metadata (written by the editor's
+                // drag flow) wins over the legacy StoryData fallback.
+                positions.entry(name.to_string()).or_insert((x, y));
             }
         }
     }
@@ -1160,5 +1167,47 @@ pub(crate) fn compute_passage_name_range_fallback(
     } else {
         // Final fallback: return the full header line range
         byte_range_to_lsp_range(text, &(span_start..line_end))
+    }
+}
+
+#[cfg(test)]
+mod storydata_position_tests {
+    use super::extract_positions_from_storydata;
+    use std::collections::HashMap;
+
+    fn storydata_text(json: &str) -> String {
+        format!(":: StoryData\n{}\n\n:: Start\nHello\n", json)
+    }
+
+    #[test]
+    fn storydata_positions_fill_passages_without_header_metadata() {
+        let text = storydata_text(
+            r#"{"start":"Start","passages":[{"name":"Start","position":[10,20]},{"name":"Other","position":[30,40]}]}"#,
+        );
+        let mut positions = HashMap::new();
+        extract_positions_from_storydata(&text, &mut positions);
+        assert_eq!(positions.get("Start"), Some(&(10.0, 20.0)));
+        assert_eq!(positions.get("Other"), Some(&(30.0, 40.0)));
+    }
+
+    #[test]
+    fn storydata_positions_do_not_overwrite_header_metadata() {
+        // A dragged node gets `{"position":"x,y"}` written into its own
+        // header; the StoryData fallback must not yank it back to the
+        // stale archived coordinate on the next graph export.
+        let text = storydata_text(
+            r#"{"start":"Start","passages":[{"name":"Start","position":[10,20]}]}"#,
+        );
+        let mut positions = HashMap::from([("Start".to_string(), (500.0, 250.0))]);
+        extract_positions_from_storydata(&text, &mut positions);
+        assert_eq!(positions.get("Start"), Some(&(500.0, 250.0)));
+    }
+
+    #[test]
+    fn storydata_without_passages_array_is_ignored() {
+        let text = storydata_text(r#"{"start":"Start","format":"Harlowe"}"#);
+        let mut positions = HashMap::new();
+        extract_positions_from_storydata(&text, &mut positions);
+        assert!(positions.is_empty());
     }
 }

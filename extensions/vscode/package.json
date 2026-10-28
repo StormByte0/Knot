@@ -400,6 +400,18 @@
         "order": 3
       },
       {
+        "title": "Story Map",
+        "properties": {
+          "knot.storyMap.gameLoops": {
+            "type": "boolean",
+            "default": false,
+            "description": "Show game-loop (cycle) badges and hover-glow on the Story Map. OFF by default: the flow-analysis algorithm isn't yet solid enough to confidently show loops. The server keeps computing the SCC data (dormant); flipping this setting re-enables the visualization without any rebuild.",
+            "scope": "workspace"
+          }
+        },
+        "order": 4
+      },
+      {
         "title": "Status & Paths",
         "properties": {
           "knot.managed.storagePath": {
@@ -431,7 +443,7 @@
             "readOnly": true
           }
         },
-        "order": 4
+        "order": 5
       },
       {
         "title": "Advanced",
@@ -455,7 +467,7 @@
             "scope": "window"
           }
         },
-        "order": 5
+        "order": 6
       }
     ],
     "themes": [

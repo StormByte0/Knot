@@ -23,6 +23,44 @@ export interface InspectorFocusSignal {
   ts: number;
 }
 
+// Panel sizing: the inspector floats over the canvas; the metadata
+// sections (tags, size, color…) need breathing room. The panel stretches
+// to the FULL canvas height by default (top 12 → bottom 12) so every
+// section is visible without scrolling — the natural expansion for this
+// panel is VERTICAL, not horizontal. Two grips: left edge (width) and
+// bottom edge (height); both persist in webview localStorage. A stored
+// height overrides the full-height stretch; double-click either grip to
+// snap it back to its default.
+const INSPECTOR_MIN_W = 280;
+const INSPECTOR_MAX_W = 560;
+const INSPECTOR_DEFAULT_W = 344;
+const INSPECTOR_W_KEY = 'knot.storymap.inspectorWidth';
+
+const INSPECTOR_MIN_H = 240;
+const INSPECTOR_H_KEY = 'knot.storymap.inspectorHeight';
+
+function loadInspectorWidth(): number {
+  try {
+    const saved = Number(localStorage.getItem(INSPECTOR_W_KEY));
+    if (Number.isFinite(saved) && saved >= INSPECTOR_MIN_W && saved <= INSPECTOR_MAX_W) {
+      return saved;
+    }
+  } catch { /* storage unavailable */ }
+  return INSPECTOR_DEFAULT_W;
+}
+
+/** Stored height, or null when the panel should stretch to full height
+ * (the default — expansion is vertical so the metadata sections fit). */
+function loadInspectorHeight(): number | null {
+  try {
+    const saved = Number(localStorage.getItem(INSPECTOR_H_KEY));
+    if (Number.isFinite(saved) && saved >= INSPECTOR_MIN_H) {
+      return saved;
+    }
+  } catch { /* storage unavailable */ }
+  return null;
+}
+
 export interface InspectorSelectedNode {
   id: string;
   data: PassageNodeData;
@@ -36,6 +74,11 @@ interface InspectorProps {
   allPassageNames: string[];
   focusSignal: InspectorFocusSignal | null;
   onUpdateMetadata: (passageName: string, patch: PassageMetadataPatch) => void;
+  /** Atomic bulk edit (multi-select): one patch, one request, one refresh. */
+  onBulkMetadata: (
+    names: string[],
+    patch: { color?: string | null; group?: string | null; size?: { width: number; height: number } | null },
+  ) => void;
   onRename: (name: string, newName: string) => void;
   onDelete: (name: string, stripLinks: boolean) => void;
   onSetStart: (name: string) => void;
@@ -49,6 +92,7 @@ export default function Inspector({
   allPassageNames,
   focusSignal,
   onUpdateMetadata,
+  onBulkMetadata,
   onRename,
   onDelete,
   onSetStart,
@@ -77,6 +121,76 @@ export default function Inspector({
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [stripLinks, setStripLinks] = useState(true);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Resizable panel: width via the left-edge grip, height via the
+  // bottom-edge grip. Both persist; null height = full-height stretch.
+  const [width, setWidth] = useState<number>(loadInspectorWidth);
+  const [height, setHeight] = useState<number | null>(loadInspectorHeight);
+  const panelRef = useRef<HTMLElement>(null);
+
+  // Width dragging tracks the panel's right edge (the panel stays
+  // anchored to the canvas's top-right) and clamps to [MIN, MAX];
+  // persists on release. Double-click resets to the default width.
+  const startResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    document.body.classList.add('inspector-resizing');
+    const move = (ev: PointerEvent) => {
+      const rect = panelRef.current?.getBoundingClientRect();
+      const rightEdge = rect?.right ?? 0;
+      if (!rightEdge) return;
+      setWidth(Math.min(INSPECTOR_MAX_W, Math.max(INSPECTOR_MIN_W, rightEdge - ev.clientX)));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('inspector-resizing');
+      const w = panelRef.current?.getBoundingClientRect().width;
+      if (w) {
+        try { localStorage.setItem(INSPECTOR_W_KEY, String(Math.round(w))); } catch { /* ignore */ }
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, []);
+
+  // Height dragging grows/shrinks the panel DOWNWARD from its top anchor
+  // and clamps to [MIN_H, canvas height − margins]; persists on release.
+  // Double-click restores the full-height stretch (the default).
+  const startHeightResize = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    document.body.classList.add('inspector-resizing-v');
+    const move = (ev: PointerEvent) => {
+      const panel = panelRef.current;
+      const rect = panel?.getBoundingClientRect();
+      if (!panel || !rect) return;
+      const parentH = panel.parentElement?.clientHeight ?? window.innerHeight;
+      const max = Math.max(INSPECTOR_MIN_H, parentH - 24);
+      setHeight(Math.min(max, Math.max(INSPECTOR_MIN_H, ev.clientY - rect.top)));
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('inspector-resizing-v');
+      const h = panelRef.current?.getBoundingClientRect().height;
+      if (h) {
+        try { localStorage.setItem(INSPECTOR_H_KEY, String(Math.round(h))); } catch { /* ignore */ }
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, []);
+
+  const resetWidth = useCallback(() => {
+    setWidth(INSPECTOR_DEFAULT_W);
+    try { localStorage.setItem(INSPECTOR_W_KEY, String(INSPECTOR_DEFAULT_W)); } catch { /* ignore */ }
+  }, []);
+
+  const resetHeight = useCallback(() => {
+    setHeight(null);
+    try { localStorage.removeItem(INSPECTOR_H_KEY); } catch { /* ignore */ }
+  }, []);
 
   const single = nodes.length === 1 ? nodes[0] : null;
   const d = single?.data;
@@ -163,26 +277,36 @@ export default function Inspector({
     };
 
     const applyColorToAll = (value: string | null) => {
-      for (const n of nodes) onUpdateMetadata(n.data.label, { color: value });
+      onBulkMetadata(multiNames, { color: value });
     };
 
     const commitGroupAll = () => {
       const value = groupDraft.trim();
-      for (const n of nodes) {
-        if (value === '') {
-          if (n.data.group) onUpdateMetadata(n.data.label, { group: null });
-        } else if (value !== n.data.group) {
-          onUpdateMetadata(n.data.label, { group: value });
-        }
+      if (value === '') {
+        onBulkMetadata(multiNames, { group: null });
+      } else {
+        onBulkMetadata(multiNames, { group: value });
       }
     };
 
     const resetSizesAll = () => {
-      for (const n of nodes) {
-        if (n.data.size_w != null || n.data.size_h != null) {
-          onUpdateMetadata(n.data.label, { size: null });
-        }
-      }
+      const sized = nodes
+        .filter(n => n.data.size_w != null || n.data.size_h != null)
+        .map(n => n.data.label);
+      if (sized.length > 0) onBulkMetadata(sized, { size: null });
+    };
+
+    // Apply one explicit size to every selected passage — the bulk
+    // endpoint takes a single uniform patch, so this is one request.
+    // No blur-commit here: an explicit Apply (or Enter) only, so focusing
+    // an input and clicking away can never accidentally rewrite sizes.
+    const commitSizeAll = () => {
+      if (sizeWDraft.trim() === '' && sizeHDraft.trim() === '') return;
+      const w = parseFloat(sizeWDraft);
+      const h = parseFloat(sizeHDraft);
+      const width = Number.isFinite(w) && w > 0 ? Math.round(w) : 160;
+      const height = Number.isFinite(h) && h > 0 ? Math.round(h) : 36;
+      onBulkMetadata(multiNames, { size: { width, height } });
     };
 
     const deleteAll = () => {
@@ -190,9 +314,26 @@ export default function Inspector({
     };
 
     const anySized = nodes.some(n => n.data.size_w != null || n.data.size_h != null);
+    const sizeApplyDisabled = sizeWDraft.trim() === '' && sizeHDraft.trim() === '';
 
     return (
-      <aside className="inspector inspector--multi">
+      <aside
+        className="inspector inspector--multi"
+        ref={panelRef}
+        style={{ width, ...(height != null ? { height } : {}) }}
+      >
+        <div
+          className="inspector__resizer"
+          onPointerDown={startResize}
+          onDoubleClick={resetWidth}
+          title="Drag to resize width · double-click to reset"
+        />
+        <div
+          className="inspector__resizer inspector__resizer--h"
+          onPointerDown={startHeightResize}
+          onDoubleClick={resetHeight}
+          title="Drag to resize height · double-click for full height"
+        />
         <div className="inspector__header">
           <div className="inspector__title-wrap">
             <span className="inspector__title">{nodes.length} passages</span>
@@ -318,15 +459,57 @@ export default function Inspector({
             </div>
           </section>
 
-          {/* ── Bulk size reset ───────────────────────────────────── */}
-          {anySized && (
-            <section className="inspector__section">
-              <label className="inspector__label">Node size</label>
-              <button className="inspector__btn" onClick={resetSizesAll}>
+          {/* ── Bulk size ──────────────────────────────────────── */}
+          <section className="inspector__section">
+            <label className="inspector__label">Node size — all {nodes.length}</label>
+            <div className="inspector__size-row">
+              <input
+                className="inspector__input inspector__input--num"
+                type="number"
+                min="40"
+                max="2000"
+                placeholder="160"
+                title="Width (px) — applied to every selected passage"
+                value={sizeWDraft}
+                onChange={e => setSizeWDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitSizeAll(); } }}
+              />
+              <span className="inspector__size-x">×</span>
+              <input
+                className="inspector__input inspector__input--num"
+                type="number"
+                min="24"
+                max="2000"
+                placeholder="36"
+                title="Height (px) — applied to every selected passage"
+                value={sizeHDraft}
+                onChange={e => setSizeHDraft(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitSizeAll(); } }}
+              />
+              <button
+                className="inspector__btn inspector__btn--apply"
+                onClick={commitSizeAll}
+                disabled={sizeApplyDisabled}
+                title="Set this size on every selected passage"
+              >
+                Apply
+              </button>
+            </div>
+            {anySized && (
+              <button
+                className="inspector__swatch-clear"
+                style={{ marginTop: 6 }}
+                onClick={resetSizesAll}
+                title="Remove the size metadata from every selected passage"
+              >
                 Reset custom sizes
               </button>
-            </section>
-          )}
+            )}
+            <div className="inspector__field-hint">
+              Sets the same size on every selected passage. Empty boxes fall
+              back to the defaults (160 × 36); press Enter or Apply to commit.
+            </div>
+          </section>
         </div>
 
         {/* ── Actions ────────────────────────────────────────────── */}
@@ -465,7 +648,23 @@ export default function Inspector({
   const tagSuggestions = allTags.filter(t => !d.tags.includes(t));
 
   return (
-    <aside className="inspector">
+    <aside
+      className="inspector"
+      ref={panelRef}
+      style={{ width, ...(height != null ? { height } : {}) }}
+    >
+      <div
+        className="inspector__resizer"
+        onPointerDown={startResize}
+        onDoubleClick={resetWidth}
+        title="Drag to resize width · double-click to reset"
+      />
+      <div
+        className="inspector__resizer inspector__resizer--h"
+        onPointerDown={startHeightResize}
+        onDoubleClick={resetHeight}
+        title="Drag to resize height · double-click for full height"
+      />
       {/* ── Header ─────────────────────────────────────────────────── */}
       <div className="inspector__header">
         <div className="inspector__title-wrap">

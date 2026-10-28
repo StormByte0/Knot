@@ -7,7 +7,11 @@
 export interface KnotGraphResponse {
   nodes: KnotGraphNode[];
   edges: KnotGraphEdge[];
-  game_loops: KnotGameLoop[];
+  /** Game-loop (SCC) data — computed server-side but STRIPPED by the
+   *  extension unless `knot.storyMap.gameLoops` is enabled (the flow
+   *  analysis isn't yet solid enough to confidently show loops). Kept in
+   *  the response type for the opt-in path. */
+  game_loops?: KnotGameLoop[];
   layout?: string;
 }
 
@@ -23,6 +27,10 @@ export interface KnotGraphNode {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
+  /** True when this node is a broken-link's would-be endpoint (ghost):
+   *  the passage name exists in no workspace file. Ghost nodes carry no
+   *  file/line/tags — clicking one offers to create the passage. */
+  is_placeholder?: boolean;
   /** Declares a manual reachability link (header metadata `reachable`). */
   is_entry?: boolean;
   /** Source passage name of the manual reachability link, when declared. */
@@ -46,14 +54,59 @@ export interface KnotGraphEdge {
   display_text?: string;
 }
 
+/** The edge kinds the Story Map actually renders. Kept in sync with the
+ *  server's `EdgeType` (lowercased Debug names) minus `call`, which the
+ *  classifier never emits. */
+export type EdgeKind =
+  | 'navigation'
+  | 'jump'
+  | 'upstream'
+  | 'include'
+  | 'broken'
+  | 'manual';
+
+export const ALL_EDGE_KINDS: EdgeKind[] = [
+  'navigation',
+  'jump',
+  'include',
+  'upstream',
+  'manual',
+  'broken',
+];
+
 // ---------------------------------------------------------------------------
-// Game loop types
+// Game loop types (stashed — see KnotGraphResponse.game_loops)
 // ---------------------------------------------------------------------------
 
 export interface KnotGameLoop {
   members: string[];
   header: string | null;
   has_mutation: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Workspace file types (file navigator + create-passage file picker)
+// ---------------------------------------------------------------------------
+
+/** A game source file Tweego compiles (.twee/.tw, .js, .css). */
+export interface WorkspaceFileInfo {
+  /** File URI (for open requests). */
+  uri: string;
+  /** Workspace-relative display path. */
+  name: string;
+  /** File family: 'twee' | 'js' | 'css'. */
+  kind: 'twee' | 'js' | 'css';
+  /** Passage count (twee files only). */
+  passageCount: number;
+}
+
+export interface WorkspaceFilesMessage {
+  tweeFiles: WorkspaceFileInfo[];
+  jsFiles: WorkspaceFileInfo[];
+  cssFiles: WorkspaceFileInfo[];
+  /** The `knot.build.sourceDir` setting (normalized, workspace-relative,
+   *  '' when unset) — where new game source files are created. */
+  sourceDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +144,7 @@ export interface PassageMetadataPatch {
 
 export type WebviewOutboundMessage =
   | { command: 'openPassage'; file: string; line: number; passageName: string }
+  | { command: 'openFile'; file: string }
   | { command: 'refreshGraph' }
   | { command: 'updatePositions'; updates: KnotPositionUpdate[] }
   | { command: 'saveAllPositions'; updates: KnotPositionUpdate[] }
@@ -106,11 +160,22 @@ export type WebviewOutboundMessage =
       position?: { x: number; y: number };
     }
   | {
+      command: 'bulkUpdateMetadata';
+      passage_names: string[];
+      tags?: string[];
+      group?: string | null;
+      color?: string | null;
+      size?: { width: number; height: number } | null;
+    }
+  | {
       command: 'createPassage';
       name: string;
       tags?: string[];
       position?: { x: number; y: number };
       target_file?: string;
+      /** Workspace-relative path for a new .twee file to create together
+       *  with the passage (resolved + validated extension-side). */
+      new_file?: string;
     }
   | { command: 'deletePassage'; passage_name: string; strip_links?: boolean }
   | { command: 'renamePassage'; name: string; new_name: string }
@@ -122,7 +187,8 @@ export type WebviewInboundMessage =
   | { command: 'updateGraph'; data: KnotGraphResponse }
   | { command: 'focusNode'; passageName: string }
   // FIX: restoreViewport was sent by storyMapProvider.ts but never handled
-  | { command: 'restoreViewport'; x: number; y: number; zoom: number };
+  | { command: 'restoreViewport'; x: number; y: number; zoom: number }
+  | { command: 'updateWorkspaceFiles' } & WorkspaceFilesMessage;
 
 // ---------------------------------------------------------------------------
 // VS Code API type
@@ -153,6 +219,8 @@ export interface PassageNodeData extends Record<string, unknown> {
   is_metadata: boolean;
   is_unreachable: boolean;
   is_start: boolean;
+  /** Ghost node: a broken link's would-be endpoint (no passage exists). */
+  is_placeholder: boolean;
   /** Declares a manual reachability link (header metadata `reachable`). */
   is_entry: boolean;
   /** Source passage name of the manual reachability link, when declared. */
@@ -177,5 +245,9 @@ export interface PassageNodeData extends Record<string, unknown> {
 /** Node data for a group container in the Story Map graph. */
 export interface GroupNodeData extends Record<string, unknown> {
   label: string;
+  /** Member passage node ids (kept for rename/dissolve/move operations). */
+  memberIds: string[];
+  /** Read-only zone marker (specials / unreachable) — no interactions. */
+  readOnly?: boolean;
   color?: string;
 }

@@ -59,6 +59,13 @@ pub struct KnotGraphNode {
     pub is_unreachable: bool,
     /// Whether this is the story's start passage (parsed from StoryData).
     pub is_start: bool,
+    /// True when this node is a **placeholder**: the would-be endpoint of
+    /// one or more broken links — a passage name that no file defines.
+    /// Placeholder nodes carry no file/line/tags; the Story Map renders
+    /// them as dashed "ghost" nodes with a create-passage affordance, and
+    /// the incoming `broken` edges become visible red dashed arrows.
+    #[serde(default)]
+    pub is_placeholder: bool,
     /// Whether this passage declares a manual reachability link
     /// (header metadata `reachable`, e.g. `:: Hub {"reachable":"Start"}`).
     ///
@@ -923,6 +930,49 @@ pub struct KnotUpdatePassageMetadataResponse {
 }
 
 // ---------------------------------------------------------------------------
+// knot/bulkUpdateMetadata — atomic multi-passage metadata editing
+// ---------------------------------------------------------------------------
+
+/// Request: `knot/bulkUpdateMetadata` — apply the same metadata patch to
+/// several passages in **one atomic request** (one edit pass per file, one
+/// refresh on the client).
+///
+/// Used by the Story Map for group create/rename/dissolve, multi-select
+/// tag/color/group/size edits, and group-box moves. Field semantics are
+/// identical to [`KnotUpdatePassageMetadataParams`] (three-state:
+/// absent = keep, null = remove, value = set).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotBulkUpdateMetadataParams {
+    /// The URI of the workspace root.
+    pub workspace_uri: String,
+    /// The passages to patch (passage names).
+    pub passage_names: Vec<String>,
+    /// Set/remove the `group` metadata field on every listed passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Option<String>>,
+    /// Set/remove the `color` metadata field on every listed passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Option<String>>,
+    /// Set/remove the `size` metadata field on every listed passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Option<KnotSize>>,
+    /// Replace the whole tag list on every listed passage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+/// Response: `knot/bulkUpdateMetadata`
+#[derive(Debug, Serialize, Deserialize)]
+pub struct KnotBulkUpdateMetadataResponse {
+    /// Whether all updates were applied successfully.
+    pub success: bool,
+    /// Number of passages updated.
+    pub updated_count: u32,
+    /// Errors for passages that couldn't be updated.
+    pub errors: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // knot/createPassage — passage lifecycle from the graph (Tier B)
 // ---------------------------------------------------------------------------
 
@@ -945,6 +995,12 @@ pub struct KnotCreatePassageParams {
     /// StoryData, else the file with the most passages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_file: Option<String>,
+    /// When `target_file` names a file that doesn't exist yet, create the
+    /// file as part of the same atomic edit that appends the passage
+    /// (WorkspaceEdit `CreateFile` + `Edit` document changes). The path
+    /// must stay inside the workspace root and end in `.twee`/`.tw`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_file: Option<bool>,
 }
 
 /// Response: `knot/createPassage`

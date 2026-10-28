@@ -82,6 +82,10 @@ export default function FindPalette({
     const scored: Scored[] = [];
     for (const n of nodes) {
       if (n.is_metadata) continue;
+      // Ghosts (broken-link placeholders) have no file to open — creating
+      // them from the palette would need the create flow, which the
+      // palette doesn't host. They're reachable on the canvas instead.
+      if (n.is_placeholder) continue;
       const s = scoreNode(n, q);
       if (s != null) scored.push({ node: n, score: s });
     }

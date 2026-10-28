@@ -39,6 +39,10 @@ impl KnotServer {
                 "knot/updatePassageMetadata",
                 ServerState::knot_update_passage_metadata,
             )
+            .custom_method(
+                "knot/bulkUpdateMetadata",
+                ServerState::knot_bulk_update_metadata,
+            )
             .custom_method("knot/createPassage", ServerState::knot_create_passage)
             .custom_method("knot/deletePassage", ServerState::knot_delete_passage)
             .custom_method("knot/renamePassage", ServerState::knot_rename_passage)

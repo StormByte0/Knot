@@ -184,6 +184,176 @@ impl ServerState {
     }
 
     // -----------------------------------------------------------------------
+    // knot/bulkUpdateMetadata — atomic multi-passage metadata editing
+    // -----------------------------------------------------------------------
+
+    /// `knot/bulkUpdateMetadata` — apply one metadata patch to many
+    /// passages in a single atomic request.
+    ///
+    /// Used by the Story Map for group create/rename/dissolve and
+    /// multi-select tag/color/group/size edits. Mirrors the edit-grouping
+    /// strategy of `knot/updatePositions`: resolve each passage to its
+    /// file, do ONE header-line pass per file, then apply everything as a
+    /// single `WorkspaceEdit` — so bulk edits cause one refresh instead of
+    /// N sequential round-trips. Field semantics are identical to
+    /// `knot/updatePassageMetadata` (three-state patch).
+    pub async fn knot_bulk_update_metadata(
+        &self,
+        params: KnotBulkUpdateMetadataParams,
+    ) -> Result<KnotBulkUpdateMetadataResponse, tower_lsp::jsonrpc::Error> {
+        let inner = self.inner.write().await;
+
+        if !params.workspace_uri.is_empty() {
+            let root = &inner.workspace.root_uri;
+            if params.workspace_uri != root.to_string() {
+                tracing::warn!(
+                    "knot/bulkUpdateMetadata: workspace_uri '{}' doesn't match server root '{}' — using server root",
+                    params.workspace_uri,
+                    root
+                );
+            }
+        }
+
+        if params.passage_names.is_empty() {
+            return Ok(KnotBulkUpdateMetadataResponse {
+                success: false,
+                updated_count: 0,
+                errors: vec!["No passages listed for bulk update".to_string()],
+            });
+        }
+
+        // Tags are validated once up-front — the header writer would
+        // otherwise fail per-passage with the same error N times.
+        if let Some(tags) = params.tags.as_deref() {
+            for tag in tags {
+                if let Err(e) = helpers::validate_tag(tag) {
+                    return Ok(KnotBulkUpdateMetadataResponse {
+                        success: false,
+                        updated_count: 0,
+                        errors: vec![e],
+                    });
+                }
+            }
+        }
+
+        // Resolve each passage to its file, then group by file.
+        let mut updates_by_file: HashMap<Url, Vec<String>> = HashMap::new();
+        let mut errors: Vec<String> = Vec::new();
+        for name in &params.passage_names {
+            match inner.workspace.find_passage_file_uri(name) {
+                Some(file_uri) => updates_by_file
+                    .entry(file_uri)
+                    .or_default()
+                    .push(name.clone()),
+                None => errors.push(format!("Passage '{}' not found in workspace", name)),
+            }
+        }
+
+        let mut changes: HashMap<Url, Vec<LspTextEdit>> = HashMap::new();
+        let mut updated_count: u32 = 0;
+
+        for (file_uri, names) in &updates_by_file {
+            let Some(text) = inner.open_documents.get(file_uri) else {
+                for name in names {
+                    errors.push(format!(
+                        "File text not available for passage '{}' ({})",
+                        name, file_uri
+                    ));
+                }
+                continue;
+            };
+
+            let pending: std::collections::HashSet<&str> =
+                names.iter().map(|s| s.as_str()).collect();
+            let mut found: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            // Single header-line pass per file; first header per name wins
+            // (the established duplicate-name convention).
+            for (line_idx, line) in text.lines().enumerate() {
+                if !line.starts_with("::") {
+                    continue;
+                }
+                let name = helpers::parse_passage_name_from_header(&line[2..]);
+                if !pending.contains(name.as_str()) || !found.insert(name.clone()) {
+                    continue;
+                }
+
+                let edits = helpers::HeaderEdits {
+                    position: None,
+                    group: params.group.as_ref().map(|g| g.as_deref()),
+                    color: params.color.as_ref().map(|c| c.as_deref()),
+                    size: params
+                        .size
+                        .as_ref()
+                        .map(|s| s.as_ref().map(|v| (v.width, v.height))),
+                    reachable: None,
+                    tags: params.tags.as_deref(),
+                };
+                match helpers::update_passage_header(line, edits) {
+                    Ok(new_line) => {
+                        changes.entry(file_uri.clone()).or_default().push(LspTextEdit {
+                            range: lsp_types::Range {
+                                start: lsp_types::Position {
+                                    line: line_idx as u32,
+                                    character: 0,
+                                },
+                                end: lsp_types::Position {
+                                    line: line_idx as u32,
+                                    character: helpers::utf16_len(line),
+                                },
+                            },
+                            new_text: new_line,
+                        });
+                        updated_count += 1;
+                    }
+                    Err(e) => {
+                        errors.push(format!("Passage '{}': {}", name, e));
+                    }
+                }
+            }
+
+            for name in names {
+                if !found.contains(name) {
+                    errors.push(format!(
+                        "Could not find header line for passage '{}' in file {}",
+                        name, file_uri
+                    ));
+                }
+            }
+        }
+
+        drop(inner);
+
+        if !changes.is_empty() {
+            let workspace_edit = WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            };
+            if let Err(e) = self.client.apply_edit(workspace_edit).await {
+                tracing::error!("knot/bulkUpdateMetadata: failed to apply edit: {}", e);
+                return Ok(KnotBulkUpdateMetadataResponse {
+                    success: false,
+                    updated_count: 0,
+                    errors: vec![format!("Failed to apply workspace edit: {}", e)],
+                });
+            }
+        }
+
+        tracing::info!(
+            "knot/bulkUpdateMetadata: patched {} passages ({} errors)",
+            updated_count,
+            errors.len()
+        );
+
+        Ok(KnotBulkUpdateMetadataResponse {
+            success: errors.is_empty(),
+            updated_count,
+            errors,
+        })
+    }
+
+    // -----------------------------------------------------------------------
     // Tier B — knot/createPassage
     // -----------------------------------------------------------------------
 
@@ -244,19 +414,63 @@ impl ServerState {
         }
 
         // ── Target file resolution ─────────────────────────────────────
-        let target_uri: Option<Url> = match params.target_file.as_deref() {
-            Some(f) => f.parse::<Url>().ok(),
-            None => inner
-                .workspace
-                .find_passage_file_uri("StoryData")
-                .or_else(|| {
-                    inner
+        // `target_file` (a file URI) wins when present. Three cases:
+        //   1. The file is in the text cache → normal append path.
+        //   2. The file exists on disk but isn't cached (watcher missed it,
+        //      e.g. just created) → read from disk and append.
+        //   3. `create_file` is set and the file doesn't exist → create it
+        //      atomically with the passage via a `CreateFile` document
+        //      change ahead of the `Edit` (one WorkspaceEdit — no
+        //      half-created files on failure).
+        let (target_uri, file_text, needs_create): (Option<Url>, Option<String>, bool) =
+            match params.target_file.as_deref() {
+                Some(f) => {
+                    let Ok(uri) = f.parse::<Url>() else {
+                        return Ok(KnotCreatePassageResponse {
+                            success: false,
+                            file: None,
+                            line: None,
+                            error: Some(format!("Invalid target file URI: {}", f)),
+                        });
+                    };
+                    if let Some(text) = inner.open_documents.get(&uri).cloned() {
+                        (Some(uri), Some(text), false)
+                    } else if let Ok(path) = uri.to_file_path()
+                        && path.exists()
+                        && let Ok(text) = std::fs::read_to_string(&path)
+                    {
+                        (Some(uri), Some(text), false)
+                    } else if params.create_file.unwrap_or(false) {
+                        (Some(uri), None, true)
+                    } else {
+                        return Ok(KnotCreatePassageResponse {
+                            success: false,
+                            file: None,
+                            line: None,
+                            error: Some(format!("Target file not found: {}", f)),
+                        });
+                    }
+                }
+                None => {
+                    let uri = inner
                         .workspace
-                        .documents()
-                        .max_by_key(|doc| doc.passages.len())
-                        .map(|doc| doc.uri.clone())
-                }),
-        };
+                        .find_passage_file_uri("StoryData")
+                        .or_else(|| {
+                            inner
+                                .workspace
+                                .documents()
+                                .max_by_key(|doc| doc.passages.len())
+                                .map(|doc| doc.uri.clone())
+                        });
+                    match uri {
+                        Some(u) => {
+                            let text = inner.open_documents.get(&u).cloned();
+                            (Some(u), text, false)
+                        }
+                        None => (None, None, false),
+                    }
+                }
+            };
 
         let Some(file_uri) = target_uri else {
             return Ok(KnotCreatePassageResponse {
@@ -269,14 +483,46 @@ impl ServerState {
             });
         };
 
-        let Some(text) = inner.open_documents.get(&file_uri).cloned() else {
-            return Ok(KnotCreatePassageResponse {
-                success: false,
-                file: None,
-                line: None,
-                error: Some(format!("File text not available: {}", file_uri)),
-            });
-        };
+        // ── New-file validation ────────────────────────────────────────
+        // The path must stay inside the workspace root and be a twee file.
+        if needs_create {
+            let root = inner.workspace.root_uri.to_file_path().ok();
+            let target_path = file_uri.to_file_path().ok();
+            let (Some(root), Some(target)) = (root, target_path) else {
+                return Ok(KnotCreatePassageResponse {
+                    success: false,
+                    file: None,
+                    line: None,
+                    error: Some("Cannot create a file outside the workspace".to_string()),
+                });
+            };
+            let ext_ok = target
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e == "twee" || e == "tw");
+            if !ext_ok {
+                return Ok(KnotCreatePassageResponse {
+                    success: false,
+                    file: None,
+                    line: None,
+                    error: Some(
+                        "New file must end in '.twee' or '.tw'".to_string(),
+                    ),
+                });
+            }
+            if !target.starts_with(&root) {
+                return Ok(KnotCreatePassageResponse {
+                    success: false,
+                    file: None,
+                    line: None,
+                    error: Some(
+                        "New file must be inside the workspace root".to_string(),
+                    ),
+                });
+            }
+        }
+
+        let text = file_text.unwrap_or_default();
 
         // ── Build the passage text ─────────────────────────────────────
         let mut header = format!(":: {}", params.name);
@@ -305,30 +551,65 @@ impl ServerState {
             (line_count, format!("\n{}\n", header), line_count)
         };
 
-        let changes: HashMap<Url, Vec<LspTextEdit>> = HashMap::from([(
-            file_uri.clone(),
-            vec![LspTextEdit {
-                range: lsp_types::Range {
-                    start: lsp_types::Position {
-                        line: insert_line,
-                        character: 0,
-                    },
-                    end: lsp_types::Position {
-                        line: insert_line,
-                        character: 0,
-                    },
+        let insert_edit = LspTextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: insert_line,
+                    character: 0,
                 },
-                new_text,
-            }],
-        )]);
+                end: lsp_types::Position {
+                    line: insert_line,
+                    character: 0,
+                },
+            },
+            new_text,
+        };
 
         drop(inner);
 
-        let workspace_edit = WorkspaceEdit {
-            changes: Some(changes),
-            document_changes: None,
-            change_annotations: None,
+        // New-file creation goes through `document_changes` so the file is
+        // created and the passage appended in ONE atomic WorkspaceEdit —
+        // a failure can never leave an empty half-created file behind.
+        // The client's file watcher then reports the new file to us via
+        // didChangeWatchedFiles(CREATED), which indexes it into the model.
+        let workspace_edit = if needs_create {
+            use lsp_types::{
+                CreateFile, CreateFileOptions, DocumentChangeOperation, DocumentChanges,
+                ResourceOp, TextDocumentEdit, OptionalVersionedTextDocumentIdentifier,
+            };
+            WorkspaceEdit {
+                changes: None,
+                document_changes: Some(DocumentChanges::Operations(vec![
+                    DocumentChangeOperation::Op(ResourceOp::Create(CreateFile {
+                        uri: file_uri.clone(),
+                        options: Some(CreateFileOptions {
+                            overwrite: Some(false),
+                            ignore_if_exists: Some(true),
+                        }),
+                        annotation_id: None,
+                    })),
+                    DocumentChangeOperation::Edit(TextDocumentEdit {
+                        text_document: OptionalVersionedTextDocumentIdentifier {
+                            uri: file_uri.clone(),
+                            version: None,
+                        },
+                        edits: vec![lsp_types::OneOf::Left(insert_edit)],
+                    }),
+                ])),
+                change_annotations: None,
+            }
+        } else {
+            let changes: HashMap<Url, Vec<LspTextEdit>> = HashMap::from([(
+                file_uri.clone(),
+                vec![insert_edit],
+            )]);
+            WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }
         };
+
         if let Err(e) = self.client.apply_edit(workspace_edit).await {
             tracing::error!("knot/createPassage: failed to apply edit: {}", e);
             return Ok(KnotCreatePassageResponse {
@@ -340,9 +621,10 @@ impl ServerState {
         }
 
         tracing::info!(
-            "knot/createPassage: created '{}' in {}",
+            "knot/createPassage: created '{}' in {}{}",
             params.name,
-            file_uri
+            file_uri,
+            if needs_create { " (new file)" } else { "" }
         );
 
         Ok(KnotCreatePassageResponse {

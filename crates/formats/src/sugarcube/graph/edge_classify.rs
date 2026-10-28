@@ -15,7 +15,7 @@ use knot_core::passage::{Block, Passage};
 ///
 /// SugarCube-specific edge classification rules:
 /// - `<<include>>` → `Include` (passage inclusion)
-/// - `<<goto>>` → `Navigation` (unconditional navigation)
+/// - `<<goto>>` → `Jump` (unconditional redirect)
 /// - `<<link>>` / `<<button>>` → `Navigation` (player choice)
 /// - `[[link]]` → `Navigation` (default — player choice)
 pub fn classify_edge_impl(
@@ -45,7 +45,7 @@ pub fn classify_edge_impl(
 
             match name.as_str() {
                 "goto" if args_match => {
-                    return Some(knot_core::graph::EdgeType::Navigation);
+                    return Some(knot_core::graph::EdgeType::Jump);
                 }
                 "include" if args_match => {
                     return Some(knot_core::graph::EdgeType::Include);

@@ -161,8 +161,13 @@ analysis features require deeper graph interpretation.
 ### Game Loop Visualization
 
 The server already computes strongly connected components (SCCs) using
-Tarjan's algorithm, but the Story Map does not currently visualize this
-information.
+Tarjan's algorithm. A loop visualization (badges, hover-glow) shipped
+experimentally and was **stashed**: the flow-analysis algorithm isn't
+yet solid enough to confidently show loops, so the extension now
+strips `game_loops` from the webview payload unless
+`knot.storyMap.gameLoops` is enabled (default OFF). The server-side
+computation stays (tested, dormant); hardening the analysis and
+re-enabling the visualization is the resurrection path.
 
 Future work would allow loops to be grouped visually, collapsed, and
 explored without overwhelming the graph layout.

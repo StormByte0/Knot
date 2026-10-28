@@ -29,6 +29,8 @@ import {
     KnotUpdatePositionsResponse,
     KnotUpdatePassageMetadataParams,
     KnotUpdatePassageMetadataResponse,
+    KnotBulkUpdateMetadataParams,
+    KnotBulkUpdateMetadataResponse,
     KnotCreatePassageParams,
     KnotCreatePassageResponse,
     KnotDeletePassageParams,
@@ -178,12 +180,75 @@ export class StoryMapPanelManager {
                 workspace_uri: workspaceFolders[0].uri.toString(),
             });
 
-            this._graphData = result;
+            // Game-loop (SCC) visualization is stashed pending algorithm
+            // hardening: the flow-analysis results aren't yet solid enough
+            // to confidently show loops. The server still computes the
+            // data (dormant, tested); we strip it from the payload unless
+            // the user opts back in via knot.storyMap.gameLoops.
+            const gameLoopsEnabled = vscode.workspace
+                .getConfiguration('knot.storyMap')
+                .get<boolean>('gameLoops', false);
+            this._graphData = gameLoopsEnabled
+                ? result
+                : { ...result, game_loops: [] };
+
             this._postGraphData();
+            this._pushWorkspaceFiles();
         } catch (e) {
             console.error('[Knot] Failed to fetch story graph:', e);
             getStoryMapChannel().appendLine(`❌ [${new Date().toLocaleTimeString()}] Failed to fetch story graph: ${String(e)}`);
         }
+    }
+
+    /** Compute the game-source file list (the files Tweego compiles:
+     *  .twee/.tw sources, .js scripts, .css styles) and push it to the
+     *  webview for the file navigator and the create-passage file picker. */
+    private async _pushWorkspaceFiles() {
+        if (!this._panel) {
+            return;
+        }
+        try {
+            const exclude = '**/{node_modules,.git,.vscode,dist,build,out}/**';
+            const [twee, js, css] = await Promise.all([
+                vscode.workspace.findFiles('**/*.{twee,tw}', exclude),
+                vscode.workspace.findFiles('**/*.js', exclude),
+                vscode.workspace.findFiles('**/*.css', exclude),
+            ]);
+            const toRel = (u: vscode.Uri) => {
+                const ws = vscode.workspace.getWorkspaceFolder(u);
+                return ws ? vscode.workspace.asRelativePath(u) : u.fsPath;
+            };
+            const passageCountByFile = new Map<string, number>();
+            for (const n of this._graphData?.nodes ?? []) {
+                if (!n.is_placeholder && n.file) {
+                    passageCountByFile.set(n.file, (passageCountByFile.get(n.file) ?? 0) + 1);
+                }
+            }
+            const fmt = (uris: vscode.Uri[], kind: string) => uris.map(u => ({
+                uri: u.toString(),
+                name: toRel(u),
+                kind,
+                passageCount: passageCountByFile.get(u.toString()) ?? 0,
+            })).sort((a, b) => a.name.localeCompare(b.name));
+            this._panel.webview.postMessage({
+                command: 'updateWorkspaceFiles',
+                tweeFiles: fmt(twee, 'twee'),
+                jsFiles: fmt(js, 'js'),
+                cssFiles: fmt(css, 'css'),
+                sourceDir: this._sourceDirSegment(),
+            });
+        } catch (e) {
+            console.error('[Knot] Failed to list workspace files:', e);
+        }
+    }
+
+    /** The `knot.build.sourceDir` setting, normalized to a clean
+     *  workspace-relative segment ('' when unset / root). New game
+     *  source files (create-passage "New file…") are created inside it
+     *  so Tweego picks them up, instead of littering the root. */
+    private _sourceDirSegment(): string {
+        const raw = vscode.workspace.getConfiguration('knot').get<string>('build.sourceDir') || '';
+        return raw.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
     }
 
     /** Refresh the graph after a workspace edit round-trips through the
@@ -347,10 +412,32 @@ export class StoryMapPanelManager {
                     }
                     break;
                 }
+                case 'openFile': {
+                    // File navigator click — open the game source file in
+                    // the editor (same column logic as passage navigation).
+                    const { file } = message;
+                    if (!file) break;
+                    try {
+                        const uri = vscode.Uri.parse(file);
+                        const doc = await vscode.workspace.openTextDocument(uri);
+                        const targetColumn = findTargetViewColumn(panel.viewColumn);
+                        await vscode.window.showTextDocument(doc, {
+                            preview: true,
+                            viewColumn: targetColumn,
+                        });
+                    } catch (e) {
+                        console.error('[Knot] Failed to open file from navigator:', e);
+                        vscode.window.showErrorMessage(`Knot: Failed to open ${file}`);
+                    }
+                    break;
+                }
                 case 'createPassage': {
                     // GUI passage creation (Tier B): new passage from the
-                    // graph (context menu / toolbar), placed at the click.
-                    const { name, tags, position, target_file } = message;
+                    // graph (context menu / double-click). The webview's
+                    // file picker sends either `target_file` (an existing
+                    // .twee URI) or `new_file` (a workspace-relative path
+                    // for a file that should be created with the passage).
+                    const { name, tags, position, target_file, new_file } = message;
                     const workspaceUri = this._workspaceUri();
                     if (!this._client || !this._client.isRunning() || !workspaceUri) {
                         break;
@@ -362,6 +449,30 @@ export class StoryMapPanelManager {
                     if (tags !== undefined) params.tags = tags;
                     if (position !== undefined) params.position = position;
                     if (target_file !== undefined) params.target_file = target_file;
+                    if (new_file !== undefined && new_file !== null && `${new_file}`.trim() !== '') {
+                        // Resolve the relative path against the SOURCE
+                        // directory (`knot.build.sourceDir`, falling back
+                        // to the workspace root) — new game files must
+                        // land where Tweego actually compiles from, not
+                        // in the project root. The server re-validates
+                        // (extension + root confinement) before creating.
+                        const rel = `${new_file}`.trim().replace(/\\/g, '/');
+                        if (rel.includes('..') || !/\.(twee|tw)$/i.test(rel)) {
+                            const sourceDir = this._sourceDirSegment();
+                            vscode.window.showErrorMessage(
+                                `Knot: Invalid new file name '${rel}' — must be a .twee/.tw path inside ${sourceDir ? `the source directory (${sourceDir})` : 'the workspace'}`);
+                            break;
+                        }
+                        const root = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(workspaceUri));
+                        if (!root) break;
+                        const sourceDir = this._sourceDirSegment();
+                        const baseUri = sourceDir
+                            ? vscode.Uri.joinPath(root.uri, ...sourceDir.split('/'))
+                            : root.uri;
+                        const newUri = vscode.Uri.joinPath(baseUri, ...rel.split('/'));
+                        params.target_file = newUri.toString();
+                        params.create_file = true;
+                    }
                     try {
                         const result = await this._client.sendRequest<KnotCreatePassageResponse>(
                             'knot/createPassage', params,
@@ -375,6 +486,45 @@ export class StoryMapPanelManager {
                     } catch (e) {
                         console.error('[Knot] Failed to create passage:', e);
                         vscode.window.showErrorMessage('Knot: Failed to create passage.');
+                    }
+                    break;
+                }
+                case 'bulkUpdateMetadata': {
+                    // Atomic multi-passage metadata edit: group create /
+                    // rename / dissolve and multi-select tag/color/group/
+                    // size edits — ONE request, ONE refresh.
+                    const { passage_names, tags, group, color, size } = message;
+                    const workspaceUri = this._workspaceUri();
+                    if (!this._client || !this._client.isRunning() || !workspaceUri) {
+                        break;
+                    }
+                    if (!Array.isArray(passage_names) || passage_names.length === 0) break;
+                    const params: KnotBulkUpdateMetadataParams = {
+                        workspace_uri: workspaceUri,
+                        passage_names,
+                    };
+                    if (tags !== undefined) params.tags = tags;
+                    if (group !== undefined) params.group = group;
+                    if (color !== undefined) params.color = color;
+                    if (size !== undefined) params.size = size;
+                    try {
+                        const result = await this._client.sendRequest<KnotBulkUpdateMetadataResponse>(
+                            'knot/bulkUpdateMetadata', params,
+                        );
+                        if (!result.success) {
+                            const detail = result.errors?.length
+                                ? `: ${result.errors.slice(0, 3).join('; ')}`
+                                : '';
+                            vscode.window.showWarningMessage(
+                                `Knot: Bulk edit updated ${result.updated_count}/${passage_names.length} passages${detail}`);
+                        } else {
+                            vscode.window.setStatusBarMessage(
+                                `Knot: Updated ${result.updated_count} passages`, 3000);
+                        }
+                        this._refreshAfterEdit();
+                    } catch (e) {
+                        console.error('[Knot] Failed to bulk update metadata:', e);
+                        vscode.window.showErrorMessage('Knot: Failed to bulk update passage metadata.');
                     }
                     break;
                 }

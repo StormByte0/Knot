@@ -3,6 +3,8 @@
 // With the top toolbar removed (limited real estate next to the editor and
 // the bottom panel), every story-map action lives here:
 //   • node menu   — passage actions (single + multi-selection variants)
+//   • group menu  — group container actions (rename / dissolve)
+//   • ghost menu  — broken-link placeholder (create the missing passage)
 //   • pane menu   — creation, view, and layout actions
 //
 // Items show keyboard hints where they exist; toggle items show a checkmark.
@@ -10,7 +12,7 @@
 export interface ContextMenuState {
   x: number;
   y: number;
-  kind: 'node' | 'pane';
+  kind: 'node' | 'pane' | 'group' | 'ghost';
   nodeId?: string;
   /** Graph-canvas coordinates for pane menus ("new passage here"). */
   graphX?: number;
@@ -19,9 +21,14 @@ export interface ContextMenuState {
   isStart?: boolean;
   /** Snapshot of the passage selection size at open time. */
   selectionCount?: number;
+  /** Group menus: member count. */
+  memberCount?: number;
+  /** Ghost menus: the missing passage's name. */
+  ghostName?: string;
   /** View-toggle snapshots. */
   minimapOn?: boolean;
   legendOn?: boolean;
+  snapOn?: boolean;
 }
 
 export interface ContextMenuActions {
@@ -32,9 +39,17 @@ export interface ContextMenuActions {
   onEditTags: () => void;
   onEditColor: () => void;
   onEditGroup: () => void;
+  /** Group the current multi-selection into a new named group. */
+  onGroupSelected: () => void;
+  /** Group menu: dissolve (clears `group` on every member). */
+  onDissolveGroup: (groupId: string) => void;
+  /** Group menu: rename (opens the app-shell name prompt). */
+  onRenameGroup: (groupId: string) => void;
   onDelete: (nodeId: string) => void;
   onNewPassageHere: (x: number, y: number) => void;
   onNewPassageAtViewCenter: () => void;
+  /** Ghost menu: create the missing passage at the ghost's spot. */
+  onCreateGhost: (nodeId: string) => void;
   onFitView: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -45,6 +60,7 @@ export interface ContextMenuActions {
   onRefresh: () => void;
   onToggleMiniMap: () => void;
   onToggleLegend: () => void;
+  onToggleSnap: () => void;
 }
 
 export default function ContextMenu({
@@ -104,13 +120,14 @@ export default function ContextMenu({
             {item('Tags…', () => actions.onEditTags())}
             {item('Color…', () => actions.onEditColor())}
             {item('Group…', () => actions.onEditGroup())}
+            {item(`Group selected (${menu.selectionCount})…`, () => actions.onGroupSelected(), { hint: 'G' })}
             {sep('m-s2')}
             {item(`Delete ${menu.selectionCount} passages`, () => actions.onDelete(menu.nodeId!), { hint: 'Del', danger: true })}
           </>
         ) : (
           <>
             {item('Open in editor', () => actions.onOpen(menu.nodeId!), { hint: 'Click' })}
-            {item('Rename…', () => actions.onRename(menu.nodeId!), { hint: 'F2' })}
+            {item('Rename…', () => actions.onRename(menu.nodeId!), { hint: 'F2 · 2×click label' })}
             {sep('n-s1')}
             {item('Set as start passage', () => actions.onSetStart(menu.nodeId!), {
               disabled: menu.isStart,
@@ -121,6 +138,23 @@ export default function ContextMenu({
             {item('Delete passage', () => actions.onDelete(menu.nodeId!), { hint: 'Del', danger: true })}
           </>
         )
+      ) : menu.kind === 'group' ? (
+        <>
+          {label(`Group "${menu.nodeId}"`, 'g-h')}
+          {label(`${menu.memberCount ?? 0} passages`, 'g-c')}
+          {item('Rename group…', () => actions.onRenameGroup(menu.nodeId!), { hint: '2×click title' })}
+          {item('Dissolve group', () => actions.onDissolveGroup(menu.nodeId!))}
+          {sep('g-s1')}
+          {label('Tip', 'g-t')}
+          {item('Drag the title bar to move the whole group', () => {}, { disabled: true })}
+        </>
+      ) : menu.kind === 'ghost' ? (
+        <>
+          {label('Missing passage', 'gh-h')}
+          {item(`Create "${menu.ghostName}" here`, () => actions.onCreateGhost(menu.nodeId!), { hint: 'Click' })}
+          {sep('gh-s1')}
+          {item('New passage here…', () => actions.onNewPassageHere(menu.graphX ?? 0, menu.graphY ?? 0))}
+        </>
       ) : (
         <>
           {label('Create', 'p-c')}
@@ -129,9 +163,9 @@ export default function ContextMenu({
           {item('Find passages…', () => actions.onFind(), { hint: '/' })}
           {sep('p-s1')}
           {label('View', 'p-v')}
-          {item('Zoom to fit', () => actions.onFitView(), { hint: 'F' })}
-          {item('Zoom in', () => actions.onZoomIn(), { hint: 'Scroll' })}
-          {item('Zoom out', () => actions.onZoomOut())}
+          {item('Zoom to fit', () => actions.onFitView(), { hint: 'F / 1' })}
+          {item('Zoom in', () => actions.onZoomIn(), { hint: '+ / Scroll' })}
+          {item('Zoom out', () => actions.onZoomOut(), { hint: '−' })}
           {item('Select all passages', () => actions.onSelectAll(), { hint: 'Ctrl+A' })}
           {item('Clear selection', () => actions.onClearSelection(), {
             hint: 'Esc',
@@ -139,6 +173,7 @@ export default function ContextMenu({
           })}
           {sep('p-s2')}
           {label('Layout', 'p-l')}
+          {item('Snap to grid', () => actions.onToggleSnap(), { checked: !!menu.snapOn })}
           {item('Save layout', () => actions.onSaveLayout())}
           {item('Refresh graph', () => actions.onRefresh())}
           {sep('p-s3')}

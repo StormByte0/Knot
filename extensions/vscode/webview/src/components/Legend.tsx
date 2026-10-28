@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import type { EdgeKind } from '../types';
 
 // Palette shared with StoryMap.tsx (kept in sync by convention).
 const C = {
@@ -7,46 +7,40 @@ const C = {
   special: '#d97b3f',
   metadata: '#8e5bc0',
   unreachable: '#a87534',
+  ghost: '#f87171',
   edgeNav: '#8494ab',
   edgeJump: '#a78bfa',
-  edgeCall: '#34d399',
   edgeInclude: '#60a5fa',
   edgeUp: '#64748b',
   edgeManual: '#f0b429',
   edgeBroken: '#f87171',
 };
 
-export default function Legend({ visible = true }: { visible?: boolean }) {
-  const [collapsed, setCollapsed] = useState(false);
+interface LegendProps {
+  visible?: boolean;
+  /** Edge kinds currently hidden via the chips. */
+  hiddenEdgeKinds: Set<EdgeKind>;
+  onToggleEdgeKind: (kind: EdgeKind) => void;
+}
 
+const EDGE_ENTRIES: Array<{ kind: EdgeKind; label: string; color: string; style?: string }> = [
+  { kind: 'navigation', label: 'Navigate', color: C.edgeNav },
+  { kind: 'jump', label: 'Jump (<<goto>>)', color: C.edgeJump, style: 'dashed' },
+  { kind: 'include', label: 'Include', color: C.edgeInclude, style: 'dashed' },
+  { kind: 'upstream', label: 'Lifecycle', color: C.edgeUp, style: 'dashed' },
+  { kind: 'manual', label: 'Manual link (reachable)', color: C.edgeManual, style: 'dotted' },
+  { kind: 'broken', label: 'Broken link', color: C.edgeBroken, style: 'dashed' },
+];
+
+export default function Legend({ visible = true, hiddenEdgeKinds, onToggleEdgeKind }: LegendProps) {
   // Hidden entirely when the context-menu toggle is off (the internal
   // collapse chip is the lightweight fold).
   if (!visible) return null;
 
-  if (collapsed) {
-    return (
-      <div id="legend" className="legend-collapsed">
-        <button
-          className="legend-toggle"
-          title="Show legend"
-          onClick={() => setCollapsed(false)}
-        >
-          &#x25B8;
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div id="legend">
-      <button
-        className="legend-toggle"
-        title="Hide legend"
-        onClick={() => setCollapsed(true)}
-      >
-        &#x25BE;
-      </button>
       {/* ── Passage nodes ─────────────────────────────────────────────── */}
+      <div className="legend-section">Passages</div>
       <div className="legend-item">
         <span className="legend-card" style={{ '--c': C.normal } as React.CSSProperties} />
         Passage
@@ -83,58 +77,42 @@ export default function Legend({ visible = true }: { visible?: boolean }) {
         Unreachable
       </div>
       <div className="legend-item">
+        <span
+          className="legend-card legend-card--ghost"
+          style={{ '--c': C.ghost } as React.CSSProperties}
+          title="A link points at a passage that doesn't exist — click the ghost to create it"
+        />
+        Ghost (missing)
+      </div>
+      <div className="legend-item">
         <span className="legend-badge legend-badge--warn" title="Dead-end indicator (header badge)" />
         Dead end
       </div>
 
-      {/* ── Edge types ────────────────────────────────────────────────── */}
-      <div className="legend-section">Edges</div>
-      <div className="legend-item">
-        <span className="legend-edge" style={{ borderColor: C.edgeNav }} />
-        Navigate
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeJump, borderStyle: 'dashed' }}
-        />
-        Jump (&lt;&lt;goto&gt;&gt;)
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeCall, borderStyle: 'dotted' }}
-        />
-        Call (widget)
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeInclude, borderStyle: 'dashed' }}
-        />
-        Include
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeUp, borderStyle: 'dashed' }}
-        />
-        Lifecycle
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeManual, borderStyle: 'dotted' }}
-        />
-        Manual link (reachable)
-      </div>
-      <div className="legend-item">
-        <span
-          className="legend-edge"
-          style={{ borderColor: C.edgeBroken, borderStyle: 'dashed' }}
-        />
-        Broken link
-      </div>
+      {/* ── Edge types (clickable: toggle visibility) ─────────────────── */}
+      <div className="legend-section">Edges — click to toggle</div>
+      {EDGE_ENTRIES.map(e => (
+        <button
+          key={e.kind}
+          className={`legend-item legend-item--toggle${hiddenEdgeKinds.has(e.kind) ? ' legend-item--off' : ''}`}
+          title={hiddenEdgeKinds.has(e.kind)
+            ? `Show ${e.label} edges`
+            : `Hide ${e.label} edges`}
+          onClick={() => onToggleEdgeKind(e.kind)}
+        >
+          <span
+            className="legend-edge"
+            style={{
+              borderColor: e.color,
+              borderStyle: (e.style as React.CSSProperties['borderStyle']) ?? 'solid',
+            }}
+          />
+          {e.label}
+          <span className="legend-item__state" aria-hidden="true">
+            {hiddenEdgeKinds.has(e.kind) ? 'off' : ''}
+          </span>
+        </button>
+      ))}
 
       {/* ── Visual indicators ─────────────────────────────────────────── */}
       <div className="legend-section">Indicators</div>

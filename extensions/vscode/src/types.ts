@@ -39,6 +39,10 @@ export interface KnotGraphNode {
     is_unreachable: boolean;
     /** True if this is the story's start passage (parsed from StoryData). */
     is_start: boolean;
+    /** True when this node is a broken-link's would-be endpoint (ghost
+     *  node): the passage name exists in no workspace file. Ghost nodes
+     *  carry no file/line/tags. */
+    is_placeholder?: boolean;
     /** True if this passage declares a manual reachability link
      *  (header metadata `reachable`, e.g. `:: Hub {"reachable":"Start"}`). */
     is_entry?: boolean;
@@ -449,6 +453,23 @@ export interface KnotUpdatePassageMetadataResponse {
     error?: string;
 }
 
+/** Request: knot/bulkUpdateMetadata — one metadata patch applied to many
+ *  passages in a single atomic request (group ops, multi-select edits). */
+export interface KnotBulkUpdateMetadataParams {
+    workspace_uri: string;
+    passage_names: string[];
+    group?: string | null;
+    color?: string | null;
+    size?: { width: number; height: number } | null;
+    tags?: string[];
+}
+
+export interface KnotBulkUpdateMetadataResponse {
+    success: boolean;
+    updated_count: number;
+    errors: string[];
+}
+
 /** Request: knot/createPassage */
 export interface KnotCreatePassageParams {
     workspace_uri: string;
@@ -456,6 +477,9 @@ export interface KnotCreatePassageParams {
     tags?: string[];
     position?: { x: number; y: number };
     target_file?: string;
+    /** When true and `target_file` doesn't exist yet, the server creates
+     *  the file atomically together with the passage (CreateFile + Edit). */
+    create_file?: boolean;
 }
 
 export interface KnotCreatePassageResponse {

@@ -134,8 +134,9 @@ impl ServerState {
         // EVERY open document that actually contains a StoryData passage —
         // the old code only looked at the FIRST open document, silently
         // dropping the data when StoryData lived in a different file.
-        // StoryData positions overwrite header metadata (historical
-        // precedence).
+        // FILL-ONLY: header positions (what updatePositions writes when a
+        // node is dragged) take precedence — StoryData merely backfills
+        // passages that lack header metadata.
         for doc in inner.workspace.documents() {
             if doc.passages.iter().any(|p| p.name == "StoryData")
                 && let Some(text) = inner.open_documents.get(&doc.uri)
@@ -215,6 +216,7 @@ impl ServerState {
                     is_metadata: n.is_metadata,
                     is_unreachable: n.is_unreachable,
                     is_start: n.label == start_passage,
+                    is_placeholder: n.is_placeholder,
                     is_entry: manual_entries.contains(&n.label),
                     manual_link_source: passage_manual_links.get(&n.label).cloned(),
                     position_x: n.position.map(|(x, _)| x),

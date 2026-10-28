@@ -6,12 +6,15 @@ import {
   PassageNodeData,
   PassageMetadataPatch,
   KnotGraphNode,
+  WorkspaceFileInfo,
+  EdgeKind,
 } from './types';
 import StoryMap from './components/StoryMap';
 import Legend from './components/Legend';
 import Inspector, { InspectorSelectedNode, InspectorFocusSignal } from './components/Inspector';
 import CreatePassageModal, { CreatePassageRequest } from './components/CreatePassageModal';
 import FindPalette from './components/FindPalette';
+import FileNavigator from './components/FileNavigator';
 
 // Acquire the VS Code API — must be called once per webview lifetime
 const vscode: VsCodeApi = acquireVsCodeApi();
@@ -122,6 +125,86 @@ class StoryMapErrorBoundary extends Component<{ children: ReactNode }, ErrorBoun
   }
 }
 
+// ── Group name modal ────────────────────────────────────────────────────────
+//
+// Tiny prompt used for "Group selected N passages…" (context menu / G key).
+// Prefills with the first member's existing group, mirroring Twine.
+
+function GroupNameModal({
+  memberCount,
+  prefill,
+  existingGroups,
+  onCancel,
+  onSubmit,
+}: {
+  memberCount: number;
+  prefill?: string;
+  existingGroups: string[];
+  onCancel: () => void;
+  onSubmit: (name: string) => void;
+}) {
+  const [name, setName] = useState(prefill ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setError('Group name is required');
+      return;
+    }
+    if (/[[\]{}]/.test(trimmed)) {
+      setError("Group name cannot contain '[', ']', '{' or '}'");
+      return;
+    }
+    onSubmit(trimmed);
+  };
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={e => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div
+        className="modal modal--compact"
+        onKeyDown={e => {
+          if (e.key === 'Escape') onCancel();
+          if (e.key === 'Enter') { e.preventDefault(); submit(); }
+        }}
+      >
+        <div className="modal__title">Group {memberCount} passages</div>
+        <div className="modal__subtitle">
+          Every selected passage gets this group in its header metadata.
+        </div>
+        <input
+          ref={inputRef}
+          className="modal__input"
+          list="group-name-suggestions"
+          value={name}
+          onChange={e => { setName(e.target.value); setError(null); }}
+          placeholder="Group name"
+          spellCheck={false}
+        />
+        <datalist id="group-name-suggestions">
+          {existingGroups.map(g => <option key={g} value={g} />)}
+        </datalist>
+        {error && <div className="modal__error">{error}</div>}
+        <div className="modal__actions">
+          <button className="inspector__btn" onClick={onCancel}>Cancel</button>
+          <button className="inspector__btn inspector__btn--primary" onClick={submit}>
+            Create group
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App component ──────────────────────────────────────────────────────
 
 export default function App() {
@@ -139,9 +222,22 @@ export default function App() {
   // ── View toggles (context menu) ─────────────────────────────────────
   const [showMiniMap, setShowMiniMap] = useState(true);
   const [showLegend, setShowLegend] = useState(true);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [hiddenEdgeKinds, setHiddenEdgeKinds] = useState<Set<EdgeKind>>(new Set());
+
+  // ── Workspace files (file navigator + create-passage picker) ────────
+  const [tweeFiles, setTweeFiles] = useState<WorkspaceFileInfo[]>([]);
+  const [jsFiles, setJsFiles] = useState<WorkspaceFileInfo[]>([]);
+  const [cssFiles, setCssFiles] = useState<WorkspaceFileInfo[]>([]);
+  // `knot.build.sourceDir` (workspace-relative, '' = root): the base for
+  // new files created from the passage modal's "New file…" option.
+  const [sourceDir, setSourceDir] = useState('');
 
   // ── Create-passage modal state ──────────────────────────────────────
   const [createRequest, setCreateRequest] = useState<CreatePassageRequest | null>(null);
+
+  // ── Group-create modal state ────────────────────────────────────────
+  const [groupModal, setGroupModal] = useState<{ members: string[]; prefill?: string } | null>(null);
 
   // ── First-run hint toast ────────────────────────────────────────────
   const [hintVisible, setHintVisible] = useState(true);
@@ -170,12 +266,25 @@ export default function App() {
     const groupSet = new Set<string>();
     for (const n of graphData.nodes) {
       if (n.group) groupSet.add(n.group);
-      if (!n.is_metadata) allPassageNames.push(n.label);
+      if (!n.is_metadata && !n.is_placeholder) allPassageNames.push(n.label);
     }
     for (const g of groupSet) allGroups.push(g);
     allGroups.sort();
     allPassageNames.sort();
   }
+
+  // The heuristic default target file for new passages: StoryData's file,
+  // else the twee file with the most passages (server picks the same when
+  // the request doesn't name a file).
+  const defaultTargetFile = (() => {
+    const real = tweeFiles.filter(f => f.kind === 'twee');
+    if (real.length === 0) return undefined;
+    const storyDataFile = graphData?.nodes.find(n => n.label === 'StoryData')?.file;
+    const byCount = [...real].sort((a, b) => b.passageCount - a.passageCount)[0];
+    return storyDataFile && real.find(f => f.uri === storyDataFile)
+      ? storyDataFile
+      : byCount?.uri;
+  })();
 
   const handleTagToggle = useCallback((tag: string) => {
     setSelectedTags(prev => {
@@ -191,6 +300,18 @@ export default function App() {
 
   const handleTagClear = useCallback(() => {
     setSelectedTags(new Set());
+  }, []);
+
+  const handleToggleEdgeKind = useCallback((kind: EdgeKind) => {
+    setHiddenEdgeKinds(prev => {
+      const next = new Set(prev);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
+      return next;
+    });
   }, []);
 
   // FIX: restoreViewport is sent by the extension after panel creation to
@@ -230,6 +351,13 @@ export default function App() {
           case 'restoreViewport': {
             const { x, y, zoom } = msg;
             setRestoreViewport({ x, y, zoom, ts: Date.now() });
+            break;
+          }
+          case 'updateWorkspaceFiles': {
+            setTweeFiles(msg.tweeFiles ?? []);
+            setJsFiles(msg.jsFiles ?? []);
+            setCssFiles(msg.cssFiles ?? []);
+            setSourceDir(msg.sourceDir ?? '');
             break;
           }
         }
@@ -276,12 +404,32 @@ export default function App() {
   // wouldn't re-fire onSelectionChange and the panel would stay hidden).
   const [clearSelRequested, setClearSelRequested] = useState(0);
 
+  // ── File navigator ──────────────────────────────────────────────────
+
+  const handleOpenFile = useCallback((file: string) => {
+    vscode.postMessage({ command: 'openFile', file });
+  }, []);
+
+  // File owning the primary selection (highlight bridge in the navigator).
+  const activeFile = selectedNodes.length === 1 ? selectedNodes[0].data.file : undefined;
+
   // ── Inspector actions ───────────────────────────────────────────────
 
   const handleUpdateMetadata = useCallback((passageName: string, patch: PassageMetadataPatch) => {
     vscode.postMessage({
       command: 'updatePassageMetadata',
       passage_name: passageName,
+      ...patch,
+    });
+  }, []);
+
+  const handleBulkMetadata = useCallback((
+    names: string[],
+    patch: { color?: string | null; group?: string | null; size?: { width: number; height: number } | null },
+  ) => {
+    vscode.postMessage({
+      command: 'bulkUpdateMetadata',
+      passage_names: names,
       ...patch,
     });
   }, []);
@@ -316,9 +464,27 @@ export default function App() {
     vscode.postMessage({ command: 'openPassage', file, line, passageName });
   }, []);
 
-  const handleActionSignal = useCallback((field: 'rename' | 'reachable' | 'delete' | 'tags' | 'color' | 'group') => {
+  const handleActionSignal = useCallback((
+    field: 'rename' | 'reachable' | 'delete' | 'tags' | 'color' | 'group' | 'groupCreate',
+  ) => {
+    if (field === 'groupCreate') {
+      const members = selectedNodes.map(n => n.data.label);
+      if (members.length < 2) return;
+      setGroupModal({
+        members,
+        prefill: selectedNodes.find(n => n.data.group)?.data.group,
+      });
+      return;
+    }
     setFocusSignal({ field, ts: Date.now() });
-  }, []);
+  }, [selectedNodes]);
+
+  const handleGroupSubmit = useCallback((name: string) => {
+    if (groupModal && groupModal.members.length > 0) {
+      handleBulkMetadata(groupModal.members, { group: name });
+    }
+    setGroupModal(null);
+  }, [groupModal, handleBulkMetadata]);
 
   // ── Find palette navigation ─────────────────────────────────────────
 
@@ -339,8 +505,8 @@ export default function App() {
     viewportRef.current = vp;
   }, []);
 
-  const handleCreatePassageAt = useCallback((x: number, y: number) => {
-    setCreateRequest({ x, y });
+  const handleCreatePassageAt = useCallback((x: number, y: number, prefillName?: string) => {
+    setCreateRequest({ x, y, prefillName });
   }, []);
 
   const handleCreatePassageAtViewCenter = useCallback(() => {
@@ -356,19 +522,35 @@ export default function App() {
     setCreateRequest({ x: Math.round(x), y: Math.round(y) });
   }, []);
 
-  const handleCreatePassage = useCallback((name: string, tags: string[], position: { x: number; y: number }) => {
+  const handleCreatePassage = useCallback((
+    name: string,
+    tags: string[],
+    position: { x: number; y: number },
+    target: { file?: string; newFile?: string } = {},
+  ) => {
     vscode.postMessage({
       command: 'createPassage',
       name,
       tags,
       position,
+      target_file: target.file,
+      new_file: target.newFile,
     });
     setCreateRequest(null);
   }, []);
 
+  const selectionCount = selectedNodes.length;
+
   return (
     <StoryMapErrorBoundary>
       <div className="app-container">
+        <FileNavigator
+          tweeFiles={tweeFiles}
+          jsFiles={jsFiles}
+          cssFiles={cssFiles}
+          activeFile={activeFile}
+          onOpenFile={handleOpenFile}
+        />
         <div className="app-main">
           <StoryMap
             graphData={graphData}
@@ -385,6 +567,9 @@ export default function App() {
             showLegend={showLegend}
             onToggleMiniMap={() => setShowMiniMap(v => !v)}
             onToggleLegend={() => setShowLegend(v => !v)}
+            snapEnabled={snapEnabled}
+            onToggleSnap={() => setSnapEnabled(v => !v)}
+            hiddenEdgeKinds={hiddenEdgeKinds}
             onFindPassages={() => setFindOpen(true)}
             onNewPassageAtViewCenter={handleCreatePassageAtViewCenter}
             onSelectionChange={setSelectedNodes}
@@ -396,45 +581,71 @@ export default function App() {
             onRequestSaveLayout={handleSavePositions}
             onViewportKnown={handleViewportKnown}
           />
+          {selectionCount > 1 && (
+            <div className="sel-chip">
+              {selectionCount} selected — drag, <kbd>Del</kbd>, <kbd>G</kbd> to group, or edit in Inspector
+            </div>
+          )}
+          {/* Canvas-anchored overlays live INSIDE .app-main so they offset
+              from the canvas area, not the whole webview — the file-nav
+              rail (and its expand toggle) sits to the left and can never
+              sit under the find trigger or the legend again. */}
+          <FindPalette
+            open={findOpen}
+            onOpenChange={setFindOpen}
+            nodes={graphData?.nodes ?? []}
+            searchQuery={searchQuery}
+            onSearchChange={handleSearchChange}
+            allTags={allTags}
+            selectedTags={selectedTags}
+            onTagToggle={handleTagToggle}
+            onTagClear={handleTagClear}
+            onNavigate={handlePaletteNavigate}
+          />
+          <Inspector
+            nodes={selectedNodes}
+            allTags={allTags}
+            allGroups={allGroups}
+            allPassageNames={allPassageNames}
+            focusSignal={focusSignal}
+            onUpdateMetadata={handleUpdateMetadata}
+            onBulkMetadata={handleBulkMetadata}
+            onRename={handleRename}
+            onDelete={handleDelete}
+            onSetStart={handleSetStart}
+            onClose={() => setClearSelRequested(Date.now())}
+          />
+          <Legend
+            visible={showLegend}
+            hiddenEdgeKinds={hiddenEdgeKinds}
+            onToggleEdgeKind={handleToggleEdgeKind}
+          />
+          {hintVisible && (
+            <div className="hint-toast">
+              <kbd>Click</kbd> a passage to open it · <kbd>Drag</kbd> to select ·
+              <kbd>Right-click</kbd> for actions · <kbd>/</kbd> to find
+            </div>
+          )}
         </div>
-        <FindPalette
-          open={findOpen}
-          onOpenChange={setFindOpen}
-          nodes={graphData?.nodes ?? []}
-          searchQuery={searchQuery}
-          onSearchChange={handleSearchChange}
-          allTags={allTags}
-          selectedTags={selectedTags}
-          onTagToggle={handleTagToggle}
-          onTagClear={handleTagClear}
-          onNavigate={handlePaletteNavigate}
-        />
-        <Inspector
-          nodes={selectedNodes}
-          allTags={allTags}
-          allGroups={allGroups}
-          allPassageNames={allPassageNames}
-          focusSignal={focusSignal}
-          onUpdateMetadata={handleUpdateMetadata}
-          onRename={handleRename}
-          onDelete={handleDelete}
-          onSetStart={handleSetStart}
-          onClose={() => setClearSelRequested(Date.now())}
-        />
-        <Legend visible={showLegend} />
-        {hintVisible && (
-          <div className="hint-toast">
-            <kbd>Click</kbd> a passage to open it in the editor · <kbd>Drag</kbd> to select ·
-            <kbd>Right-click</kbd> for actions · <kbd>/</kbd> to find
-          </div>
-        )}
         {createRequest && (
           <CreatePassageModal
             request={createRequest}
             existingNames={new Set(allPassageNames)}
             allTags={allTags}
+            tweeFiles={tweeFiles.filter(f => f.kind === 'twee')}
+            defaultTargetFile={defaultTargetFile}
+            sourceDir={sourceDir}
             onCancel={() => setCreateRequest(null)}
             onCreate={handleCreatePassage}
+          />
+        )}
+        {groupModal && (
+          <GroupNameModal
+            memberCount={groupModal.members.length}
+            prefill={groupModal.prefill}
+            existingGroups={allGroups}
+            onCancel={() => setGroupModal(null)}
+            onSubmit={handleGroupSubmit}
           />
         )}
       </div>

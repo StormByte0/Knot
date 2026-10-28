@@ -1,5 +1,7 @@
 import React, {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -38,6 +40,7 @@ import {
   KnotPositionUpdate,
   PassageNodeData,
   GroupNodeData,
+  EdgeKind,
 } from '../types';
 import { vscode } from '../App';
 import ContextMenu, { ContextMenuState } from './ContextMenu';
@@ -54,6 +57,8 @@ const NODE_H = 36;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4.0;
 const BIDIR_OFFSET = 7;
+// Grace (px) around a group box for drag-out membership removal.
+const GROUP_ESCAPE_GRACE = 12;
 
 // ── Twine 2 layout anchors ────────────────────────────────────────────────
 
@@ -77,9 +82,9 @@ const COLORS = {
   metadata:   '#8e5bc0',   // violet
   unreachable:'#a87534',   // desaturated amber
   broken:     '#f87171',
+  ghost:      '#f87171',
   edgeNav:    '#8494ab',   // [[Target]] — player-choice navigation (slate)
   edgeJump:   '#a78bfa',   // <<goto>> — unconditional redirect (violet)
-  edgeCall:   '#34d399',   // <<widget>> — pushdown call-return (mint)
   edgeInclude:'#60a5fa',   // <<include>> — inline inclusion (sky)
   edgeUp:     '#64748b',   // Special passage lifecycle chain (slate dark)
   edgeBroken: '#f87171',   // Target passage doesn't exist
@@ -88,7 +93,11 @@ const COLORS = {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function snap(v: number) { return Math.round(v / GRID_SNAP) * GRID_SNAP; }
+/** Snap to the 20px grid, or pass through (rounded to 1px) when the
+ *  snap-to-grid toggle is off. */
+function snapTo(v: number, enabled: boolean) {
+  return enabled ? Math.round(v / GRID_SNAP) * GRID_SNAP : Math.round(v);
+}
 
 function nodeColor(n: KnotGraphNode): string {
   if (n.color) return n.color;
@@ -185,16 +194,55 @@ function getBorderPoint(
   return [px, py];
 }
 
+// ── Group actions context ──────────────────────────────────────────────────
+//
+// Group container nodes need to drive canvas-level operations (move-as-unit
+// drags, rename commits) that live in StoryMapInner. A React context keeps
+// the callbacks out of node data (functions in data break memo comparisons).
+
+interface GroupActions {
+  /** Pointer-down on a group's title bar: begin a move-as-unit drag. */
+  beginGroupDrag: (groupId: string, e: React.PointerEvent) => void;
+  /** Pointer-move while dragging a group: translate members + box. */
+  dragGroupBy: (groupId: string, dx: number, dy: number) => void;
+  /** Pointer-up: persist every member's new position (one batched write). */
+  endGroupDrag: (groupId: string) => void;
+  /** Commit a group rename (dblclick on the title label). */
+  commitGroupRename: (groupId: string, newName: string) => void;
+}
+
+const GroupActionsContext = createContext<GroupActions | null>(null);
+
 // ── Custom Node: Passage ───────────────────────────────────────────────────
 //
 // Compact single-row Twine-style chip: the whole card carries the passage
 // color (with a subtle top-light gradient), the name, and status badges.
-// The body-text preview was removed — clicking a passage navigates the code
-// editor to it, so the full raw text is always exactly one click away.
+// Double-clicking the LABEL starts an in-canvas rename; clicking a GHOST
+// (broken-link placeholder) opens the create-passage flow.
 
-function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
+function PassageNode({ id, data }: NodeProps<Node<PassageNodeData>>) {
   const d = data as PassageNodeData;
   const color = d.color || COLORS.normal;
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renaming) {
+      setRenameDraft(d.label);
+      requestAnimationFrame(() => {
+        renameInputRef.current?.focus();
+        renameInputRef.current?.select();
+      });
+    }
+  }, [renaming, d.label]);
+
+  const commitRename = () => {
+    const trimmed = renameDraft.trim();
+    setRenaming(false);
+    if (!trimmed || trimmed === d.label) return;
+    vscode.postMessage({ command: 'renamePassage', name: d.label, new_name: trimmed });
+  };
 
   const cls = [
     'pn',
@@ -204,6 +252,7 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
     d.is_unreachable && 'pn--unreachable',
     d.is_entry       && 'pn--entry',
     d.is_dead_end    && 'pn--dead-end',
+    d.is_placeholder && 'pn--ghost',
     d.highlighted    && 'pn--highlighted',
     d.dimmed         && 'pn--dimmed',
     d.focused        && 'pn--focused',
@@ -224,7 +273,37 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
   return (
     <div className={cls} style={style}>
       <Handle type="target" position={Position.Top} className="pn__handle" />
-      <span className="pn__label" title={d.label}>{d.label}</span>
+      {renaming ? (
+        <input
+          ref={renameInputRef}
+          className="pn__rename-input"
+          value={renameDraft}
+          onChange={e => setRenameDraft(e.target.value)}
+          onKeyDown={e => {
+            e.stopPropagation();
+            if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+            if (e.key === 'Escape') { e.preventDefault(); setRenaming(false); }
+          }}
+          onBlur={commitRename}
+          onMouseDown={e => e.stopPropagation()}
+          onDoubleClick={e => e.stopPropagation()}
+          spellCheck={false}
+        />
+      ) : (
+        <span
+          className="pn__label"
+          title={d.is_placeholder
+            ? `${d.label} — missing passage (click to create)`
+            : `${d.label} (double-click to rename)`}
+          onDoubleClick={e => {
+            if (d.is_placeholder) return; // ghosts rename via creation
+            e.stopPropagation();
+            setRenaming(true);
+          }}
+        >
+          {d.label}
+        </span>
+      )}
       <span className="pn__badges">
         {d.is_start && (
           <span className="pn__badge pn__badge--start" title="Start passage">
@@ -257,6 +336,13 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
             </svg>
           </span>
         )}
+        {d.is_placeholder && (
+          <span className="pn__badge pn__badge--ghost" title="Missing passage — click to create it">
+            <svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+              <path d="M6 1.5 V10.5 M1.5 6 H10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </span>
+        )}
         {d.tags?.length > 0 && (
           <span className="pn__badge pn__badge--tags" title={d.tags.join(', ')}>
             {d.tags.length}
@@ -269,11 +355,88 @@ function PassageNode({ data }: NodeProps<Node<PassageNodeData>>) {
 }
 
 // ── Custom Node: Group ─────────────────────────────────────────────────────
+//
+// Real groups are interactive: dragging the TITLE BAR moves every member as
+// a unit (one batched position write on release); double-clicking the label
+// renames the group (a bulk metadata update on all members). Read-only
+// zones (specials / unreachable) render the same box without interactions.
 
-function GroupNode({ data }: NodeProps<Node<GroupNodeData>>) {
+function GroupNode({ id, data }: NodeProps<Node<GroupNodeData>>) {
+  const d = data as GroupNodeData;
+  const actions = useContext(GroupActionsContext);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const readOnly = !!d.readOnly;
+
+  useEffect(() => {
+    if (renaming) {
+      setRenameDraft(d.label);
+      requestAnimationFrame(() => renameInputRef.current?.focus());
+    }
+  }, [renaming, d.label]);
+
+  const commitRename = () => {
+    const trimmed = renameDraft.trim();
+    setRenaming(false);
+    if (!trimmed || trimmed === d.label) return;
+    actions?.commitGroupRename(id, trimmed);
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (readOnly || renaming) return;
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    actions?.beginGroupDrag(id, e);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (readOnly || renaming) return;
+    if (e.buttons === 0) return;
+    actions?.dragGroupBy(id, e.movementX, e.movementY);
+  };
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (readOnly) return;
+    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* gone */ }
+    actions?.endGroupDrag(id);
+  };
+
   return (
-    <div className="gn">
-      <div className="gn__label">{(data as GroupNodeData).label}</div>
+    <div className={`gn${readOnly ? ' gn--zone' : ' gn--interactive'}`}>
+      <div
+        className="gn__label"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onDoubleClick={e => {
+          if (readOnly) return;
+          e.stopPropagation();
+          setRenaming(true);
+        }}
+        title={readOnly
+          ? d.label
+          : `${d.label} — drag title to move the group · double-click to rename · right-click for actions`}
+      >
+        {renaming ? (
+          <input
+            ref={renameInputRef}
+            className="gn__rename-input"
+            value={renameDraft}
+            onChange={e => setRenameDraft(e.target.value)}
+            onKeyDown={e => {
+              e.stopPropagation();
+              if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
+              if (e.key === 'Escape') { e.preventDefault(); setRenaming(false); }
+            }}
+            onBlur={commitRename}
+            onMouseDown={e => e.stopPropagation()}
+            onPointerDown={e => e.stopPropagation()}
+            spellCheck={false}
+          />
+        ) : (
+          d.label
+        )}
+        {!readOnly && <span className="gn__count">{d.memberIds.length}</span>}
+      </div>
     </div>
   );
 }
@@ -306,7 +469,7 @@ function makeNodeGeometrySelector(
 // ── Custom straight edge with floating intersection ────────────────────────
 
 interface StraightEdgeData {
-  edgeKind: 'navigation' | 'upstream' | 'broken' | 'jump' | 'call' | 'include' | 'manual';
+  edgeKind: EdgeKind;
   offsetPx: number;
   displayText?: string;
 }
@@ -438,13 +601,11 @@ function StraightEdge({
     strokeDash = '6 3';
     opacity = 0.8;
   } else if (edgeKind === 'jump') {
+    // <<goto>> — unconditional redirect, semantically distinct from a
+    // player-choice link (see core EdgeType::Jump).
     stroke = COLORS.edgeJump;
     strokeDash = '8 4';
     opacity = 0.62;
-  } else if (edgeKind === 'call') {
-    stroke = COLORS.edgeCall;
-    strokeDash = '3 2';
-    opacity = 0.55;
   } else if (edgeKind === 'include') {
     stroke = COLORS.edgeInclude;
     strokeDash = '4 2 1 2';
@@ -581,20 +742,24 @@ function dagreLayout(
   const out = new Map<string, { x: number; y: number }>();
   for (const n of nodes) {
     const p = g.node(n.id);
-    if (p) out.set(n.id, { x: snap(p.x - NODE_W / 2), y: snap(p.y - NODE_H / 2) });
+    if (p) out.set(n.id, { x: p.x - NODE_W / 2, y: p.y - NODE_H / 2 });
   }
   return out;
 }
 
 // ── Build React Flow elements from KnotGraphResponse ──────────────────────
 
-function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] } {
+function buildElements(
+  data: KnotGraphResponse,
+  hiddenEdgeKinds: Set<EdgeKind>,
+  sessionPositions?: ReadonlyMap<string, { x: number; y: number }>,
+): { nodes: Node[]; edges: Edge[] } {
   const rawNodes = Array.isArray(data?.nodes) ? data.nodes : [];
   const rawEdges = Array.isArray(data?.edges) ? data.edges : [];
 
   const groupMembers = new Map<string, string[]>();
   for (const n of rawNodes) {
-    if (n.group) {
+    if (n.group && !n.is_placeholder) {
       if (!groupMembers.has(n.group)) groupMembers.set(n.group, []);
       groupMembers.get(n.group)!.push(n.id);
     }
@@ -604,11 +769,11 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   const startId = startNode?.id;
   const specialSet = new Set<string>(
     rawNodes
-      .filter(n => (n.is_special || n.is_metadata) && n.id !== startId)
+      .filter(n => (n.is_special || n.is_metadata) && n.id !== startId && !n.is_placeholder)
       .map(n => n.id),
   );
   const unreachableSet = new Set<string>(
-    rawNodes.filter(n => n.is_unreachable).map(n => n.id),
+    rawNodes.filter(n => n.is_unreachable && !n.is_placeholder).map(n => n.id),
   );
 
   const edgeSet = new Set<string>(rawEdges.map(e => `${e.source}→${e.target}`));
@@ -624,27 +789,58 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   const specialNodes: KnotGraphNode[] = [];
   const unreachableNodes: KnotGraphNode[] = [];
   const regularNodes: KnotGraphNode[] = [];
+  const placeholderNodes: KnotGraphNode[] = [];
 
   for (const n of rawNodes) {
+    if (n.is_placeholder) { placeholderNodes.push(n); continue; }
     if (n.is_start)                { /* startNode is already captured above; skip */ }
     else if (specialSet.has(n.id)) specialNodes.push(n);
     else if (unreachableSet.has(n.id)) unreachableNodes.push(n);
     else                           regularNodes.push(n);
   }
 
-  const allHavePositions = rawNodes.every(
-    n => n.position_x != null && n.position_y != null,
-  );
+  // Stored positions only exist for REAL passages — placeholders never
+  // have header metadata — so the position partition below works on the
+  // real set.
+  const realNodes = rawNodes.filter(n => !n.is_placeholder);
+
+  // ── Position precedence (per node) ─────────────────────────────────
+  // Stored header/StoryData metadata ("position":"x,y") wins for EACH
+  // passage individually: a passage the user positioned is an anchor.
+  // Only passages with NO stored position fall back to the algorithmic
+  // layout. The old all-or-nothing check (`every` node had a position)
+  // threw away every saved coordinate whenever a single passage lacked
+  // one — dragging a node and refreshing snapped it back to the dagre
+  // spot. `sessionPositions` (nodes dragged THIS session whose header
+  // write may still be in flight) anchor too, so a rebuild racing the
+  // position write can't yank them either.
+  const positionOf = (n: KnotGraphNode): { x: number; y: number } | null => {
+    if (n.position_x != null && n.position_y != null) {
+      return { x: n.position_x, y: n.position_y };
+    }
+    return sessionPositions?.get(n.id) ?? null;
+  };
+
+  // Id → raw export node (for positionOf lookups on placed nodes).
+  const rawById = new Map(rawNodes.map(n => [n.id, n] as const));
+
+  const fixedPlacements: Array<{ n: KnotGraphNode; x: number; y: number }> = [];
+  for (const n of realNodes) {
+    const p = positionOf(n);
+    if (p) fixedPlacements.push({ n, x: p.x, y: p.y });
+  }
+  const startIsFloating = !!startNode && !positionOf(startNode);
 
   function makePassageNode(n: KnotGraphNode, x: number, y: number): Node<PassageNodeData> {
     const groupId = childToGroup.get(n.id);
     const isDeadEnd =
       (n.out_degree || 0) === 0 &&
-      !n.is_start && !n.is_special && !n.is_metadata && !n.is_unreachable;
+      !n.is_start && !n.is_special && !n.is_metadata && !n.is_unreachable &&
+      !n.is_placeholder;
     return {
       id: n.id,
       type: 'passage',
-      position: { x: snap(x), y: snap(y) },
+      position: { x: Math.round(x), y: Math.round(y) },
       data: {
         label: n.label,
         file: n.file,
@@ -656,10 +852,11 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         is_metadata: !!n.is_metadata,
         is_unreachable: !!n.is_unreachable,
         is_start: !!n.is_start,
+        is_placeholder: !!n.is_placeholder,
         is_entry: !!n.is_entry && !n.is_start,
         manual_link_source: n.manual_link_source,
         is_dead_end: isDeadEnd,
-        color: nodeColor(n),
+        color: n.is_placeholder ? COLORS.ghost : nodeColor(n),
         metadata_color: n.color,
         size_w: n.size_w,
         size_h: n.size_h,
@@ -676,11 +873,13 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
 
   const allPassageNodes: Node[] = [];
 
-  if (allHavePositions) {
-    for (const n of rawNodes) {
-      allPassageNodes.push(makePassageNode(n, n.position_x!, n.position_y!));
+  if (fixedPlacements.length === realNodes.length && realNodes.length > 0) {
+    // ── Case A: every real passage has a stored position ───────────
+    for (const fp of fixedPlacements) {
+      allPassageNodes.push(makePassageNode(fp.n, fp.x, fp.y));
     }
-  } else {
+  } else if (fixedPlacements.length === 0) {
+    // ── Case B: nothing positioned yet — pure algorithmic layout ───
     if (startNode) {
       allPassageNodes.push(makePassageNode(startNode, START_ANCHOR_X, START_ANCHOR_Y));
     }
@@ -731,8 +930,84 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         const p = positions.get(n.id);
         if (p) {
           n.position = {
-            x: snap(p.x + START_ANCHOR_X + NODE_W + GRID_SNAP * 3),
-            y: snap(p.y + START_ANCHOR_Y),
+            x: Math.round(p.x + START_ANCHOR_X + NODE_W + GRID_SNAP * 3),
+            y: Math.round(p.y + START_ANCHOR_Y),
+          };
+        }
+      }
+      allPassageNodes.push(...dagreNodes);
+    }
+  } else {
+    // ── Case C: mixed — some passages positioned, some not ─────────
+    // Anchored passages keep their exact coordinates; the rest of the
+    // story is auto-laid-out AROUND them: metadata/unreachable strays
+    // park in a column below the anchored cluster, and the floating
+    // flow subgraph dagre's itself into the free space to the right.
+    for (const fp of fixedPlacements) {
+      allPassageNodes.push(makePassageNode(fp.n, fp.x, fp.y));
+    }
+
+    // Bounding box of the anchored cluster (footprints incl. sizes).
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const fp of fixedPlacements) {
+      const w = fp.n.size_w ?? NODE_W;
+      const h = fp.n.size_h ?? NODE_H;
+      minX = Math.min(minX, fp.x);
+      minY = Math.min(minY, fp.y);
+      maxX = Math.max(maxX, fp.x + w);
+      maxY = Math.max(maxY, fp.y + h);
+    }
+
+    // Metadata / unreachable strays that lack positions: column below
+    // the anchored cluster (same visual language as Case B's columns).
+    const strays = specialNodes
+      .filter(n => !positionOf(n))
+      .sort((a, b) => {
+        if (a.is_metadata && !b.is_metadata) return -1;
+        if (!a.is_metadata && b.is_metadata) return 1;
+        return a.label.localeCompare(b.label);
+      });
+    const strayUnreachables = unreachableNodes
+      .filter(n => !positionOf(n))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    let strayY = maxY + GRID_SNAP * 4;
+    for (const n of strays) {
+      allPassageNodes.push(makePassageNode(n, minX, strayY));
+      strayY += NODE_H + GRID_SNAP;
+    }
+    for (const n of strayUnreachables) {
+      allPassageNodes.push(makePassageNode(n, minX, strayY));
+      strayY += NODE_H + GRID_SNAP;
+    }
+
+    // Floating flow passages (start included when it has no stored
+    // position): dagre among themselves, docked right of the cluster.
+    const flowNodes = regularNodes.filter(n => !positionOf(n));
+    if (startIsFloating && startNode) flowNodes.unshift(startNode);
+    if (flowNodes.length > 0) {
+      const flowIds = new Set(flowNodes.map(n => n.id));
+      const subEdges: Edge[] = rawEdges
+        .filter(e => flowIds.has(e.source) && flowIds.has(e.target))
+        .map((e, i) => ({ id: `dagre-mixed-${i}`, source: e.source, target: e.target }));
+
+      const dagreNodes: Node[] = flowNodes.map(n => makePassageNode(n, 0, 0));
+      const positions = dagreLayout(dagreNodes, subEdges, 'LR');
+
+      // Normalize dagre output to a (0,0)-based bbox, then translate it
+      // into the free space to the right of the anchored cluster.
+      let dMinX = Infinity, dMinY = Infinity;
+      for (const p of positions.values()) {
+        dMinX = Math.min(dMinX, p.x);
+        dMinY = Math.min(dMinY, p.y);
+      }
+      const baseX = maxX + NODE_W + GRID_SNAP * 3;
+      const baseY = minY;
+      for (const n of dagreNodes) {
+        const p = positions.get(n.id);
+        if (p) {
+          n.position = {
+            x: Math.round(p.x - dMinX + baseX),
+            y: Math.round(p.y - dMinY + baseY),
           };
         }
       }
@@ -740,10 +1015,52 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     }
   }
 
-  // ── Group container nodes (visual bounding boxes only) ─────────────────
-  // Groups use zIndex: -1 and are not interactive. Passage nodes are NOT
-  // assigned parentId, so their coordinates stay in the global frame.
+  // ── Ghost nodes (broken-link placeholders) ───────────────────────────
+  // A ghost parks next to the first incoming edge's source when that
+  // source has a position, so the broken arrow is short and readable.
+  // Sources without positions (auto-layout mode) fall back to a column.
+  {
+    const posById = new Map<string, { x: number; y: number }>();
+    for (const n of allPassageNodes) {
+      posById.set(n.id, n.position);
+    }
+    const widthById = new Map<string, number>();
+    for (const n of rawNodes) {
+      if (n.size_w) widthById.set(n.id, n.size_w);
+    }
+
+    placeholderNodes.sort((a, b) => a.label.localeCompare(b.label));
+    for (let i = 0; i < placeholderNodes.length; i++) {
+      const ph = placeholderNodes[i];
+      let x: number | null = null;
+      let y: number | null = null;
+      for (const e of rawEdges) {
+        if (e.target !== ph.id) continue;
+        const srcPos = posById.get(e.source);
+        if (srcPos) {
+          x = srcPos.x + (widthById.get(e.source) ?? NODE_W) + 60;
+          y = srcPos.y;
+          break;
+        }
+      }
+      if (x == null || y == null) {
+        // Fallback column for ghosts whose sources lack positions.
+        x = UNREACHABLE_LIST_X;
+        y = START_ANCHOR_Y + 120 + i * (NODE_H + GRID_SNAP);
+      }
+      allPassageNodes.push(makePassageNode(ph, x, y));
+    }
+  }
+
+  // ── Group container nodes (interactive bounding boxes) ───────────────
+  // Groups stay overlay containers (no parentId — global coordinates keep
+  // the twee-header storage model intact). The box geometry recomputes
+  // live while members drag (see the bounds-sync effect in StoryMapInner).
+  // Real groups carry memberIds and get full interactions; the specials /
+  // unreachable zones are read-only variants of the same component.
   const groupNodes: Node[] = [];
+  const nodeWidth = (n: Node) => ((n.data as PassageNodeData).size_w ?? NODE_W);
+  const nodeHeight = (n: Node) => ((n.data as PassageNodeData).size_h ?? NODE_H);
 
   for (const [gid, members] of groupMembers) {
     const children = allPassageNodes.filter(n => members.includes(n.id));
@@ -754,15 +1071,15 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     const ys = children.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
     const minY = Math.min(...ys) - pad - 16;
-    const maxX = Math.max(...xs) + NODE_W + pad;
-    const maxY = Math.max(...ys) + NODE_H + pad;
+    const maxX = Math.max(...xs, ...children.map(n => n.position.x + nodeWidth(n))) + pad;
+    const maxY = Math.max(...ys, ...children.map(n => n.position.y + nodeHeight(n))) + pad;
 
     groupNodes.push({
       id: gid,
       type: 'group',
-      position: { x: snap(minX), y: snap(minY) },
-      data: { label: gid } as GroupNodeData,
-      style: { width: snap(maxX - minX), height: snap(maxY - minY) },
+      position: { x: Math.round(minX), y: Math.round(minY) },
+      data: { label: gid, memberIds: [...members] } as GroupNodeData,
+      style: { width: Math.round(maxX - minX), height: Math.round(maxY - minY) },
       draggable: false,
       selectable: false,
       zIndex: -1,
@@ -770,26 +1087,28 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   }
 
   const specialRfNodes = allPassageNodes.filter(
-    n => n.type === 'passage' && specialSet.has(n.id),
+    n => n.type === 'passage'
+      && specialSet.has(n.id)
+      && !positionOf(rawById.get(n.id)!),
   );
-  if (specialRfNodes.length > 0 && !allHavePositions) {
+  if (specialRfNodes.length > 0) {
     const pad = 24;
     const labelH = 20;
     const xs = specialRfNodes.map(n => n.position.x);
     const ys = specialRfNodes.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
     const minY = Math.min(...ys) - pad - labelH;
-    const maxX = Math.max(...xs) + NODE_W + pad;
-    const maxY = Math.max(...ys) + NODE_H + pad;
+    const maxX = Math.max(...xs, ...specialRfNodes.map(n => n.position.x + nodeWidth(n))) + pad;
+    const maxY = Math.max(...ys, ...specialRfNodes.map(n => n.position.y + nodeHeight(n))) + pad;
 
     groupNodes.push({
       id: '__specials__',
       type: 'group',
-      position: { x: snap(minX), y: snap(minY) },
-      data: { label: 'Special Passages' } as GroupNodeData,
+      position: { x: Math.round(minX), y: Math.round(minY) },
+      data: { label: 'Special Passages', memberIds: [], readOnly: true } as GroupNodeData,
       style: {
-        width: snap(maxX - minX),
-        height: snap(maxY - minY),
+        width: Math.round(maxX - minX),
+        height: Math.round(maxY - minY),
         background: 'rgba(217, 123, 63, 0.045)',
         borderColor: 'rgba(217, 123, 63, 0.22)',
       },
@@ -800,26 +1119,28 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
   }
 
   const unreachableRfNodes = allPassageNodes.filter(
-    n => n.type === 'passage' && unreachableSet.has(n.id),
+    n => n.type === 'passage'
+      && unreachableSet.has(n.id)
+      && !positionOf(rawById.get(n.id)!),
   );
-  if (unreachableRfNodes.length > 0 && !allHavePositions) {
+  if (unreachableRfNodes.length > 0) {
     const pad = 24;
     const labelH = 20;
     const xs = unreachableRfNodes.map(n => n.position.x);
     const ys = unreachableRfNodes.map(n => n.position.y);
     const minX = Math.min(...xs) - pad;
     const minY = Math.min(...ys) - pad - labelH;
-    const maxX = Math.max(...xs) + NODE_W + pad;
-    const maxY = Math.max(...ys) + NODE_H + pad;
+    const maxX = Math.max(...xs, ...unreachableRfNodes.map(n => n.position.x + nodeWidth(n))) + pad;
+    const maxY = Math.max(...ys, ...unreachableRfNodes.map(n => n.position.y + nodeHeight(n))) + pad;
 
     groupNodes.push({
       id: '__unreachable__',
       type: 'group',
-      position: { x: snap(minX), y: snap(minY) },
-      data: { label: 'Unreachable' } as GroupNodeData,
+      position: { x: Math.round(minX), y: Math.round(minY) },
+      data: { label: 'Unreachable', memberIds: [], readOnly: true } as GroupNodeData,
       style: {
-        width: snap(maxX - minX),
-        height: snap(maxY - minY),
+        width: Math.round(maxX - minX),
+        height: Math.round(maxY - minY),
         background: 'rgba(168, 117, 52, 0.045)',
         borderColor: 'rgba(168, 117, 52, 0.22)',
       },
@@ -843,6 +1164,16 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
     if (specialSet.has(e.source) && specialSet.has(e.target)) continue;
     if (specialSet.has(e.source) && e.target === startId) continue;
 
+    const edgeKind: EdgeKind =
+      e.edge_type === 'upstream' ? 'upstream' :
+      e.edge_type === 'broken'   ? 'broken'   :
+      e.edge_type === 'jump'     ? 'jump'     :
+      e.edge_type === 'include'  ? 'include'  :
+      e.edge_type === 'manual'   ? 'manual'   : 'navigation';
+
+    // Edge-type visibility filter (Legend chips).
+    if (hiddenEdgeKinds.has(edgeKind)) continue;
+
     let eid = `${e.source}→${e.target}`;
     if (usedIds.has(eid)) eid = `${eid}_${idx}`;
     usedIds.add(eid);
@@ -859,14 +1190,6 @@ function buildElements(data: KnotGraphResponse): { nodes: Node[]; edges: Edge[] 
         offsetPx = -BIDIR_OFFSET;
       }
     }
-
-    const edgeKind =
-      e.edge_type === 'upstream' ? 'upstream' :
-      e.edge_type === 'broken'   ? 'broken'   :
-      e.edge_type === 'jump'     ? 'jump'     :
-      e.edge_type === 'call'     ? 'call'     :
-      e.edge_type === 'include'  ? 'include'  :
-      e.edge_type === 'manual'   ? 'manual'   : 'navigation';
 
     // Include edges represent content flowing FROM the included passage INTO
     // the including passage. In Twine's convention, the arrow points backward
@@ -908,7 +1231,8 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
   const d = tip.data;
 
   // Build a simple type label for the tooltip
-  const typeLabel = d.is_start ? 'Start passage' :
+  const typeLabel = d.is_placeholder ? 'Missing passage (broken link)' :
+    d.is_start ? 'Start passage' :
     d.is_metadata ? 'Metadata' :
     d.is_special ? 'Special' :
     d.is_entry ? 'Manual entry point' :
@@ -961,7 +1285,64 @@ function NodeTooltip({ tip }: { tip: TooltipState | null }) {
       {d.file && (
         <div className="node-tooltip__file">{d.file.split('/').pop()}</div>
       )}
-      <div className="node-tooltip__hint">Click to open in editor</div>
+      <div className="node-tooltip__hint">
+        {d.is_placeholder ? 'Click to create this passage' : 'Click to open in editor'}
+      </div>
+    </div>
+  );
+}
+
+// ── Zoom widget ────────────────────────────────────────────────────────────
+//
+// Twine-parity zoom affordance: −/+/fit buttons, a live percentage, and a
+// preset dropdown (25 / 50 / 75 / 100 / Big). Mirrors wheel zoom state.
+
+const ZOOM_PRESETS: Array<{ label: string; value: number | 'fit' }> = [
+  { label: '25%', value: 0.25 },
+  { label: '50%', value: 0.5 },
+  { label: '75%', value: 0.75 },
+  { label: '100%', value: 1 },
+  { label: 'Big', value: 2 },
+  { label: 'Zoom to fit', value: 'fit' },
+];
+
+function ZoomWidget({
+  zoomPct,
+  onZoomIn,
+  onZoomOut,
+  onFit,
+  onPreset,
+}: {
+  zoomPct: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onFit: () => void;
+  onPreset: (v: number | 'fit') => void;
+}) {
+  return (
+    <div className="zoom-widget">
+      <button className="zoom-widget__btn" title="Zoom out (-)" onClick={onZoomOut}>−</button>
+      <span className="zoom-widget__pct" title="Current zoom (0 = 100%)">{zoomPct}%</span>
+      <button className="zoom-widget__btn" title="Zoom in (+)" onClick={onZoomIn}>+</button>
+      <button className="zoom-widget__btn zoom-widget__btn--fit" title="Zoom to fit (F / 1)" onClick={onFit}>
+        ⤢
+      </button>
+      <select
+        className="zoom-widget__select"
+        title="Zoom preset"
+        value=""
+        onChange={e => {
+          const v = e.target.value;
+          if (v === '') return;
+          onPreset(v === 'fit' ? 'fit' : Number(v));
+          e.currentTarget.value = '';
+        }}
+      >
+        <option value="">▾</option>
+        {ZOOM_PRESETS.map(p => (
+          <option key={p.label} value={String(p.value)}>{p.label}</option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -974,12 +1355,14 @@ interface StoryMapActions {
   onSelectionChange: (nodes: { id: string; data: PassageNodeData }[]) => void;
   /** Open a passage in the editor (instant navigation). */
   onOpenPassage: (file: string, line: number, passageName: string) => void;
-  /** Begin "new passage" at graph coordinates. */
-  onCreatePassageAt: (x: number, y: number) => void;
+  /** Begin "new passage" at graph coordinates (prefillName for ghosts). */
+  onCreatePassageAt: (x: number, y: number, prefillName?: string) => void;
   /** Set the story's start passage. */
   onSetStart: (name: string) => void;
   /** Steer the inspector: focus a field or arm the delete confirm. */
-  onActionSignal: (field: 'rename' | 'reachable' | 'delete' | 'tags' | 'color' | 'group') => void;
+  onActionSignal: (
+    field: 'rename' | 'reachable' | 'delete' | 'tags' | 'color' | 'group' | 'groupCreate',
+  ) => void;
   /** Refresh the graph from the server. */
   onRequestRefresh: () => void;
   /** Persist the whole layout to the workspace. */
@@ -1010,6 +1393,11 @@ interface StoryMapInnerProps extends StoryMapActions {
   onFindPassages: () => void;
   /** New passage at the current view center (context menu entry). */
   onNewPassageAtViewCenter: () => void;
+  /** Snap-to-grid toggle (context menu check item). */
+  snapEnabled: boolean;
+  onToggleSnap: () => void;
+  /** Edge kinds hidden via the Legend chips. */
+  hiddenEdgeKinds: Set<EdgeKind>;
 }
 
 function StoryMapInner({
@@ -1029,6 +1417,9 @@ function StoryMapInner({
   onToggleLegend,
   onFindPassages,
   onNewPassageAtViewCenter,
+  snapEnabled,
+  onToggleSnap,
+  hiddenEdgeKinds,
   onSelectionChange,
   onOpenPassage,
   onCreatePassageAt,
@@ -1042,6 +1433,7 @@ function StoryMapInner({
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [zoomPct, setZoomPct] = useState(100);
 
   // FIX: tooltip position stored in a ref to avoid triggering re-renders on
   // every mouse-move; only the displayed tip state triggers a render.
@@ -1051,6 +1443,15 @@ function StoryMapInner({
 
   const initialFitDoneRef = useRef(false);
   const savedViewportRef = useRef<{ x: number; y: number; zoom: number } | null>(null);
+
+  // Positions the user has dragged THIS session (passage id → coords).
+  // A drag-end fires a debounced updatePositions (150 ms) whose header
+  // write then round-trips through LSP before the next graph refresh
+  // carries it back. A rebuild landing inside that window used to snap
+  // the node back to its pre-drag spot; buildElements treats these as
+  // anchors so a dragged node stays put from the moment it is released.
+  // Stored header metadata still wins (checked first in buildElements).
+  const sessionPositionsRef = useRef(new Map<string, { x: number; y: number }>());
   // When true, the next graph rebuild should NOT restore the saved viewport
   // (e.g. after a focusNode navigation — we've already set the viewport there).
   const skipNextViewportRestoreRef = useRef(false);
@@ -1069,7 +1470,8 @@ function StoryMapInner({
   const reportFromIds = useCallback((ids: Set<string>) => {
     const sel = nodesRef.current
       .filter(n => ids.has(n.id) && n.type === 'passage')
-      .map(n => ({ id: n.id, data: n.data as PassageNodeData }));
+      .map(n => ({ id: n.id, data: n.data as PassageNodeData }))
+      .filter(n => !n.data.is_placeholder);
     onSelectionChange(sel);
   }, [onSelectionChange]);
 
@@ -1104,6 +1506,14 @@ function StoryMapInner({
     [],
   );
 
+  // Record released-drag coordinates immediately (not at send time) so a
+  // rebuild racing the debounced write still sees them as anchors.
+  const rememberSessionPositions = useCallback((updates: KnotPositionUpdate[]) => {
+    for (const u of updates) {
+      sessionPositionsRef.current.set(u.passage_name, { x: u.position_x, y: u.position_y });
+    }
+  }, []);
+
   const debouncedViewportUpdate = useMemo(
     () => debounce((x: number, y: number, zoom: number) => {
       vscode.postMessage({ command: 'updateViewport', x, y, zoom });
@@ -1122,7 +1532,11 @@ function StoryMapInner({
       savedViewportRef.current = { x: vp.x, y: vp.y, zoom: vp.zoom };
     } catch { /* not ready yet */ }
 
-    const { nodes: newNodes, edges: newEdges } = buildElements(graphData);
+    const { nodes: newNodes, edges: newEdges } = buildElements(
+      graphData,
+      hiddenEdgeKinds,
+      sessionPositionsRef.current,
+    );
 
     // Preserve the whole selection across rebuilds (metadata edits and
     // other refreshes shouldn't slam the inspector shut). Deselected are
@@ -1143,7 +1557,8 @@ function StoryMapInner({
       // Re-report so the inspector shows fresh data after the rebuild.
       const sel = newNodes
         .filter(n => survivors.has(n.id) && n.type === 'passage')
-        .map(n => ({ id: n.id, data: n.data as PassageNodeData }));
+        .map(n => ({ id: n.id, data: n.data as PassageNodeData }))
+        .filter(n => !n.data.is_placeholder);
       onSelectionChange(sel);
     }
 
@@ -1166,7 +1581,73 @@ function StoryMapInner({
         setViewport(vp, { duration: 0 });
       });
     }
-  }, [graphData, setNodes, setEdges, fitView, setViewport, getViewport, onSelectionChange]);
+  }, [graphData, hiddenEdgeKinds, setNodes, setEdges, fitView, setViewport, getViewport, onSelectionChange]);
+
+  // ── Live group bounds ──────────────────────────────────────────────────
+  // Whenever passage nodes move (drag, nudge, group move), recompute every
+  // interactive group box from its members' CURRENT positions so the box
+  // tracks them live — no server round-trip needed for geometry. Guarded:
+  // when nothing changed the same array is returned and React bails out,
+  // so this cannot loop.
+
+  useEffect(() => {
+    setNodes(nds => {
+      const groups = nds.filter(n =>
+        n.type === 'group' && !(n.data as GroupNodeData).readOnly,
+      );
+      if (groups.length === 0) return nds;
+
+      const passageById = new Map<string, Node>();
+      for (const n of nds) {
+        if (n.type === 'passage') passageById.set(n.id, n);
+      }
+
+      const patches = new Map<string, { x: number; y: number; w: number; h: number }>();
+      for (const g of groups) {
+        const members = ((g.data as GroupNodeData).memberIds ?? [])
+          .map(id => passageById.get(id))
+          .filter((m): m is Node => !!m);
+        if (members.length === 0) continue;
+
+        const pad = 26;
+        const w = (n: Node) => ((n.data as PassageNodeData).size_w ?? NODE_W);
+        const h = (n: Node) => ((n.data as PassageNodeData).size_h ?? NODE_H);
+        const xs = members.map(m => m.position.x);
+        const ys = members.map(m => m.position.y);
+        const minX = Math.min(...xs) - pad;
+        const minY = Math.min(...ys) - pad - 16;
+        const maxX = Math.max(...xs, ...members.map(m => m.position.x + w(m))) + pad;
+        const maxY = Math.max(...ys, ...members.map(m => m.position.y + h(m))) + pad;
+
+        const next = {
+          x: Math.round(minX),
+          y: Math.round(minY),
+          w: Math.round(maxX - minX),
+          h: Math.round(maxY - minY),
+        };
+        const cur = {
+          x: g.position.x,
+          y: g.position.y,
+          w: (g.style?.width as number) ?? 0,
+          h: (g.style?.height as number) ?? 0,
+        };
+        if (next.x !== cur.x || next.y !== cur.y || next.w !== cur.w || next.h !== cur.h) {
+          patches.set(g.id, next);
+        }
+      }
+
+      if (patches.size === 0) return nds;
+      return nds.map(n => {
+        const p = patches.get(n.id);
+        if (!p) return n;
+        return {
+          ...n,
+          position: { x: p.x, y: p.y },
+          style: { ...n.style, width: p.w, height: p.h },
+        };
+      });
+    });
+  }, [nodes, setNodes]);
 
   // ── Search + tag filter ─────────────────────────────────────────────
 
@@ -1328,16 +1809,15 @@ function StoryMapInner({
     if (saveRequested <= 0) return;
     const updates: KnotPositionUpdate[] = nodesRef.current
       .filter(n => n.type === 'passage')
-      .map(n => {
-        const d = n.data as PassageNodeData;
-        return {
-          passage_name: n.id,
-          position_x: snap(n.position.x),
-          position_y: snap(n.position.y),
-          group: d.group,
-          color: d.metadata_color,
-        };
-      });
+      .map(n => ({ node: n, d: n.data as PassageNodeData }))
+      .filter(({ d }) => !d.is_placeholder)
+      .map(({ node, d }) => ({
+        passage_name: node.id,
+        position_x: snapTo(node.position.x, snapEnabled),
+        position_y: snapTo(node.position.y, snapEnabled),
+        group: d.group,
+        color: d.metadata_color,
+      }));
     if (updates.length > 0) {
       try {
         const vp = getViewport();
@@ -1345,11 +1825,97 @@ function StoryMapInner({
       } catch { /* not ready */ }
       vscode.postMessage({ command: 'saveAllPositions', updates });
     }
-  }, [saveRequested, getViewport]);
+  }, [saveRequested, getViewport, snapEnabled]);
 
-  // ── Node drag end → snap + send position ──────────────────────────────
+  // ── Group actions (context for GroupNode) ─────────────────────────────
+  // Move-as-unit drags: beginGroupDrag snapshots nothing (we translate
+  // incrementally via movementX/Y), dragGroupBy applies the delta to the
+  // group node and all members, endGroupDrag persists every member's new
+  // position as ONE batched updatePositions request.
+
+  const groupDragRef = useRef<{ groupId: string; moved: boolean } | null>(null);
+
+  const groupActions = useMemo<GroupActions>(() => ({
+    beginGroupDrag: (groupId, _e) => {
+      groupDragRef.current = { groupId, moved: false };
+    },
+    dragGroupBy: (groupId, dx, dy) => {
+      if (dx === 0 && dy === 0) return;
+      const st = groupDragRef.current;
+      if (!st || st.groupId !== groupId) return;
+      st.moved = true;
+      let zoom = 1;
+      try { zoom = getViewport().zoom; } catch { /* not ready */ }
+      const fdx = dx / zoom;
+      const fdy = dy / zoom;
+      setNodes(nds => nds.map(n => {
+        if (n.id === groupId) {
+          return { ...n, position: { x: n.position.x + fdx, y: n.position.y + fdy } };
+        }
+        if (n.type !== 'passage') return n;
+        const d = n.data as PassageNodeData;
+        if (d.group !== groupId) return n;
+        return { ...n, position: { x: n.position.x + fdx, y: n.position.y + fdy } };
+      }));
+    },
+    endGroupDrag: groupId => {
+      const st = groupDragRef.current;
+      groupDragRef.current = null;
+      if (!st || st.groupId !== groupId || !st.moved) return;
+
+      const updates: KnotPositionUpdate[] = [];
+      setNodes(nds => {
+        for (const n of nds) {
+          if (n.type !== 'passage') continue;
+          const d = n.data as PassageNodeData;
+          if (d.group !== groupId) continue;
+          updates.push({
+            passage_name: n.id,
+            position_x: snapTo(n.position.x, snapEnabled),
+            position_y: snapTo(n.position.y, snapEnabled),
+            group: d.group,
+            color: d.metadata_color,
+          });
+        }
+        // Snap members (and let the bounds effect resize the box).
+        return nds.map(n => {
+          if (n.type !== 'passage') return n;
+          const d = n.data as PassageNodeData;
+          if (d.group !== groupId) return n;
+          return {
+            ...n,
+            position: {
+              x: snapTo(n.position.x, snapEnabled),
+              y: snapTo(n.position.y, snapEnabled),
+            },
+          };
+        });
+      });
+      if (updates.length > 0) {
+        rememberSessionPositions(updates);
+        vscode.postMessage({ command: 'updatePositions', updates });
+      }
+    },
+    commitGroupRename: (groupId, newName) => {
+      const members = nodesRef.current
+        .filter(n => n.type === 'passage' && (n.data as PassageNodeData).group === groupId)
+        .map(n => n.id);
+      if (members.length === 0) return;
+      vscode.postMessage({
+        command: 'bulkUpdateMetadata',
+        passage_names: members,
+        group: newName,
+      });
+    },
+  }), [getViewport, setNodes, snapEnabled, rememberSessionPositions]);
+
+  // ── Node drag end → snap + send position + group membership ──────────
   // React Flow emits position changes for EVERY node in a multi-selection
   // drag, so marquee-selected groups persist their positions together.
+  // Drop-in / drag-out: dropping a passage inside a DIFFERENT group's box
+  // assigns membership; dragging it beyond its own group's edge (12 px
+  // grace) removes it — Twine 2.7 group semantics on the twee-header
+  // storage model.
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     onNodesChange(changes);
@@ -1361,40 +1927,102 @@ function StoryMapInner({
     if (dragEnds.length === 0) return;
 
     const snapped = new Map(
-      dragEnds.map(c => [c.id, { x: snap(c.position!.x), y: snap(c.position!.y) }]),
+      dragEnds.map(c => [c.id, { x: snapTo(c.position!.x, snapEnabled), y: snapTo(c.position!.y, snapEnabled) }]),
     );
     const updates: KnotPositionUpdate[] = [];
+    const membershipChanges: Array<{ id: string; group: string | null }> = [];
 
-    setNodes(nds => nds.map(n => {
-      const s = snapped.get(n.id);
-      if (!s) return n;
-      const d = n.data as PassageNodeData;
-      updates.push({
-        passage_name: n.id,
-        position_x: s.x,
-        position_y: s.y,
-        group: d.group,
-        color: d.metadata_color,
+    setNodes(nds => {
+      // Group boxes (position + size) in flow coordinates for hit-testing.
+      const groupBoxes = nds
+        .filter(n => n.type === 'group' && !(n.data as GroupNodeData).readOnly)
+        .map(n => ({
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          w: (n.style?.width as number) ?? 0,
+          h: (n.style?.height as number) ?? 0,
+        }));
+
+      return nds.map(n => {
+        const s = snapped.get(n.id);
+        if (!s) return n;
+        const d = n.data as PassageNodeData;
+        if (d.is_placeholder) {
+          // Ghosts move locally only (no file to write back to).
+          return { ...n, position: s };
+        }
+
+        updates.push({
+          passage_name: n.id,
+          position_x: s.x,
+          position_y: s.y,
+          group: d.group,
+          color: d.metadata_color,
+        });
+
+        // ── Group membership by drop position ─────────────────────────
+        const w = d.size_w ?? NODE_W;
+        const h = d.size_h ?? NODE_H;
+        const cx = s.x + w / 2;
+        const cy = s.y + h / 2;
+        const inside = (b: typeof groupBoxes[number]) =>
+          cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h;
+
+        const ownBox = d.group ? groupBoxes.find(b => b.id === d.group) : undefined;
+        const otherBox = groupBoxes.find(b => b.id !== d.group && inside(b));
+
+        if (otherBox && otherBox.id !== d.group) {
+          // Dropped into a different group → join it.
+          membershipChanges.push({ id: n.id, group: otherBox.id });
+          return { ...n, position: s, data: { ...d, group: otherBox.id } };
+        }
+        if (d.group && ownBox && !inside({
+          ...ownBox,
+          x: ownBox.x - GROUP_ESCAPE_GRACE,
+          y: ownBox.y - GROUP_ESCAPE_GRACE,
+          w: ownBox.w + GROUP_ESCAPE_GRACE * 2,
+          h: ownBox.h + GROUP_ESCAPE_GRACE * 2,
+        })) {
+          // Dragged beyond its own group's edge → leave the group.
+          membershipChanges.push({ id: n.id, group: null });
+          return { ...n, position: s, data: { ...d, group: undefined } };
+        }
+
+        return { ...n, position: s };
       });
-      return { ...n, position: s };
-    }));
+    });
 
+    rememberSessionPositions(updates);
     debouncedPositionUpdate(updates);
-  }, [onNodesChange, setNodes, debouncedPositionUpdate]);
+
+    // Membership changes go through the single-passage metadata endpoint
+    // (they're rare, one passage at a time; position rides along already).
+    for (const mc of membershipChanges) {
+      vscode.postMessage({
+        command: 'updatePassageMetadata',
+        passage_name: mc.id,
+        group: mc.group,
+      });
+    }
+  }, [onNodesChange, setNodes, debouncedPositionUpdate, rememberSessionPositions, snapEnabled]);
 
   // ── Instant navigation: plain click on a node → open it in the editor ──
   // The click doubles as the selection; modifier clicks (Shift/Ctrl/Cmd/
-  // Alt) only build a multi-selection and never navigate.
+  // Alt) only build a multi-selection and never navigate. Ghost nodes have
+  // no file — their click opens the create-passage flow prefilled.
 
   const openPassageNode = useCallback((node: Node) => {
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
+    if (d.is_placeholder) return;
     if (d.file) onOpenPassage(d.file, d.line || 0, d.label);
   }, [onOpenPassage]);
 
   const navigateToNode = useCallback((node: Node) => {
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
+    if (d.is_placeholder) return;
     if (d.file) onOpenPassage(d.file, d.line || 0, d.label);
     pushHistory(d.label);
   }, [onOpenPassage, pushHistory]);
@@ -1422,21 +2050,37 @@ function StoryMapInner({
   const handleNodeClick = useCallback((e: React.MouseEvent, node: Node) => {
     if (node.type !== 'passage') return;
     if (suppressClickRef.current) return;
+    const d = node.data as PassageNodeData;
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
     primaryIdRef.current = node.id;
+    if (d.is_placeholder) {
+      // Broken-link ghost → create the missing passage right here.
+      onCreatePassageAt(node.position.x, node.position.y, d.label);
+      return;
+    }
     navigateToNode(node);
-  }, [navigateToNode]);
+  }, [navigateToNode, onCreatePassageAt]);
 
   const handleNodeDoubleClick = useCallback((_e: React.MouseEvent, node: Node) => {
+    if (node.type !== 'passage') return;
+    const d = node.data as PassageNodeData;
+    if (d.is_placeholder) {
+      onCreatePassageAt(node.position.x, node.position.y, d.label);
+      return;
+    }
     // Single click already navigates; keep double-click as an alias for
-    // muscle memory (no double message issues — same target).
+    // muscle memory (no double message issues — same target). The LABEL's
+    // own dblclick handler (rename) stops propagation before this fires.
     openPassageNode(node);
-  }, [openPassageNode]);
+  }, [openPassageNode, onCreatePassageAt]);
 
-  // ── Selection → inspector (multi-aware) ─────────────────────────────
+  // ── Selection → inspector (multi-aware) ─────────────────────
 
   const handleSelectionChange = useCallback((params: OnSelectionChangeParams) => {
-    const selected = params.nodes.filter(n => n.type === 'passage');
+    const selected = params.nodes.filter(n => {
+      if (n.type !== 'passage') return false;
+      return !(n.data as PassageNodeData).is_placeholder;
+    });
     const ids = new Set(selected.map(n => n.id));
     selectedIdsRef.current = ids;
     if (!primaryIdRef.current || !ids.has(primaryIdRef.current)) {
@@ -1453,6 +2097,7 @@ function StoryMapInner({
     const ids = new Set<string>();
     setNodes(nds => nds.map(n => {
       if (n.type !== 'passage') return n;
+      if ((n.data as PassageNodeData).is_placeholder) return n;
       ids.add(n.id);
       return { ...n, selected: true };
     }));
@@ -1529,6 +2174,7 @@ function StoryMapInner({
     if (el.closest('.react-flow__edges')) return;
     if (el.closest('.react-flow__minimap')) return;
     if (el.closest('.react-flow__panel')) return;
+    if (el.closest('.zoom-widget')) return;
     if (!el.closest('.react-flow')) return;
     const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
     onCreatePassageAt(pos.x - NODE_W / 2, pos.y - NODE_H / 2);
@@ -1563,8 +2209,38 @@ function StoryMapInner({
 
   const handleNodeContextMenu = useCallback((e: React.MouseEvent, node: Node) => {
     e.preventDefault();
+    if (node.type === 'group') {
+      const d = node.data as GroupNodeData;
+      if (d.readOnly) return;
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY,
+        kind: 'group',
+        nodeId: node.id,
+        memberCount: d.memberIds.length,
+        minimapOn: showMiniMap,
+        legendOn: showLegend,
+        snapOn: snapEnabled,
+      });
+      return;
+    }
     if (node.type !== 'passage') return;
     const d = node.data as PassageNodeData;
+
+    // Ghost nodes get a single-entry menu (create the passage).
+    if (d.is_placeholder) {
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY,
+        kind: 'ghost',
+        nodeId: node.id,
+        ghostName: d.label,
+        minimapOn: showMiniMap,
+        legendOn: showLegend,
+        snapOn: snapEnabled,
+      });
+      return;
+    }
 
     // Right-clicking an unselected node makes it the sole selection (the
     // standard OS pattern) so menu actions and the inspector agree.
@@ -1584,8 +2260,9 @@ function StoryMapInner({
       selectionCount: selectedIdsRef.current.size,
       minimapOn: showMiniMap,
       legendOn: showLegend,
+      snapOn: snapEnabled,
     });
-  }, [setNodes, onSelectionChange, showMiniMap, showLegend]);
+  }, [setNodes, onSelectionChange, showMiniMap, showLegend, snapEnabled]);
 
   const handlePaneContextMenu = useCallback((e: React.MouseEvent | MouseEvent) => {
     e.preventDefault();
@@ -1599,8 +2276,9 @@ function StoryMapInner({
       selectionCount: selectedIdsRef.current.size,
       minimapOn: showMiniMap,
       legendOn: showLegend,
+      snapOn: snapEnabled,
     });
-  }, [screenToFlowPosition, showMiniMap, showLegend]);
+  }, [screenToFlowPosition, showMiniMap, showLegend, snapEnabled]);
 
   const ctxActions = useMemo(() => ({
     onOpen: (nodeId: string) => {
@@ -1619,9 +2297,32 @@ function StoryMapInner({
     onEditTags: () => onActionSignal('tags'),
     onEditColor: () => onActionSignal('color'),
     onEditGroup: () => onActionSignal('group'),
+    onGroupSelected: () => onActionSignal('groupCreate'),
+    onRenameGroup: (groupId: string) => {
+      // Renaming via context menu = signal the modal in App (needs a name
+      // prompt); the canvas inline rename is the direct path.
+      onActionSignal('group');
+      void groupId;
+    },
+    onDissolveGroup: (groupId: string) => {
+      const members = nodesRef.current
+        .filter(n => n.type === 'passage' && (n.data as PassageNodeData).group === groupId)
+        .map(n => n.id);
+      if (members.length === 0) return;
+      vscode.postMessage({
+        command: 'bulkUpdateMetadata',
+        passage_names: members,
+        group: null,
+      });
+    },
     onDelete: (_nodeId: string) => onActionSignal('delete'),
     onNewPassageHere: (x: number, y: number) => onCreatePassageAt(x, y),
     onNewPassageAtViewCenter,
+    onCreateGhost: (nodeId: string) => {
+      const node = nodesRef.current.find(n => n.id === nodeId);
+      if (!node) return;
+      onCreatePassageAt(node.position.x, node.position.y, (node.data as PassageNodeData).label);
+    },
     onFitView: () => fitView({ padding: 0.12, duration: 280 }),
     onZoomIn: () => zoomIn({ duration: 200 }),
     onZoomOut: () => zoomOut({ duration: 200 }),
@@ -1632,7 +2333,27 @@ function StoryMapInner({
     onRefresh: onRequestRefresh,
     onToggleMiniMap: onToggleMiniMap,
     onToggleLegend: onToggleLegend,
-  }), [openPassageNode, onActionSignal, onSetStart, onCreatePassageAt, onNewPassageAtViewCenter, fitView, zoomIn, zoomOut, selectAllPassages, clearSelection, onFindPassages, onRequestSaveLayout, onRequestRefresh, onToggleMiniMap, onToggleLegend]);
+    onToggleSnap: onToggleSnap,
+  }), [openPassageNode, onActionSignal, onSetStart, onCreatePassageAt, onNewPassageAtViewCenter, fitView, zoomIn, zoomOut, selectAllPassages, clearSelection, onFindPassages, onRequestSaveLayout, onRequestRefresh, onToggleMiniMap, onToggleLegend, onToggleSnap]);
+
+  // ── Zoom helpers (widget + keyboard) ──────────────────────────────────
+
+  /** Zoom to an absolute level, keeping the viewport CENTER pinned
+   *  (Twine's preset dropdown behavior). */
+  const zoomTo = useCallback((level: number) => {
+    let vp;
+    try { vp = getViewport(); } catch { return; }
+    const el = document.querySelector('.storymap-inner');
+    const rect = el?.getBoundingClientRect();
+    const cx = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const cy = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
+    const scale = level / vp.zoom;
+    setViewport({
+      zoom: level,
+      x: cx - (cx - vp.x) * scale,
+      y: cy - (cy - vp.y) * scale,
+    }, { duration: 200 });
+  }, [getViewport, setViewport]);
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────
 
@@ -1666,6 +2387,27 @@ function StoryMapInner({
         fitView({ padding: 0.12, duration: 280 });
         return;
       }
+      // Keyboard zoom: +/- step, 0 → 100%, 1 → fit (Twine muscle memory).
+      if (!mod && !e.altKey && (e.key === '+' || e.key === '=')) {
+        e.preventDefault();
+        zoomIn({ duration: 200 });
+        return;
+      }
+      if (!mod && !e.altKey && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        zoomOut({ duration: 200 });
+        return;
+      }
+      if (!mod && !e.altKey && e.key === '0') {
+        e.preventDefault();
+        zoomTo(1);
+        return;
+      }
+      if (!mod && !e.altKey && e.key === '1') {
+        e.preventDefault();
+        fitView({ padding: 0.12, duration: 280 });
+        return;
+      }
       if (e.altKey && e.key === 'ArrowLeft') {
         e.preventDefault();
         goBack();
@@ -1681,7 +2423,38 @@ function StoryMapInner({
       const selectedId = primaryIdRef.current;
       if (!selectedId) return;
 
+      // Arrow-key nudge: 1 grid cell (20 px, or 1 px when snap is off),
+      // Shift = 10×. Persists through the normal position-update path.
+      if (!e.altKey && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        const step = (snapEnabled ? GRID_SNAP : 1) * (e.shiftKey ? 10 : 1);
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+
+        const updates: KnotPositionUpdate[] = [];
+        setNodes(nds => nds.map(n => {
+          if (n.type !== 'passage' || !selectedIdsRef.current.has(n.id)) return n;
+          const d = n.data as PassageNodeData;
+          if (d.is_placeholder) return n;
+          const nx = n.position.x + dx;
+          const ny = n.position.y + dy;
+          updates.push({
+            passage_name: n.id,
+            position_x: nx,
+            position_y: ny,
+            group: d.group,
+            color: d.metadata_color,
+          });
+          return { ...n, position: { x: nx, y: ny } };
+        }));
+        rememberSessionPositions(updates);
+        debouncedPositionUpdate(updates);
+        return;
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        const node = nodesRef.current.find(n => n.id === selectedId);
+        if (node && (node.data as PassageNodeData).is_placeholder) return;
         e.preventDefault();
         onActionSignal('delete');
       } else if (e.key === 'Enter') {
@@ -1693,11 +2466,17 @@ function StoryMapInner({
           e.preventDefault();
           onActionSignal('rename');
         }
+      } else if (!mod && !e.altKey && e.key.toLowerCase() === 'g') {
+        // Group the current selection (asks for a name via the app shell).
+        if (selectedIdsRef.current.size >= 2) {
+          e.preventDefault();
+          onActionSignal('groupCreate');
+        }
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onActionSignal, navigateToNode, selectAllPassages, clearSelection, fitView, goBack, goForward]);
+  }, [onActionSignal, navigateToNode, selectAllPassages, clearSelection, fitView, goBack, goForward, zoomIn, zoomOut, zoomTo, setNodes, debouncedPositionUpdate, rememberSessionPositions, snapEnabled]);
 
   // ── Tooltip (ref-based to avoid re-render on every mousemove) ──────────
 
@@ -1735,6 +2514,11 @@ function StoryMapInner({
       // no re-render) so "new passage" from the context menu can anchor
       // at the current view center.
       onViewportKnown(vp);
+      // Live zoom readout for the widget (guard: only re-render on 1%
+      // steps — the nodes array doesn't change so node memoization makes
+      // this cheap).
+      const pct = Math.round(vp.zoom * 100);
+      setZoomPct(prev => (prev === pct ? prev : pct));
     } catch { /* not ready */ }
   }, [getViewport, debouncedViewportUpdate, onViewportKnown]);
 
@@ -1742,82 +2526,96 @@ function StoryMapInner({
 
   const miniMapColor = useCallback((n: Node) => {
     if (n.type !== 'passage') return 'rgba(148, 163, 184, 0.18)';
-    return (n.data as PassageNodeData).color || COLORS.normal;
+    const d = n.data as PassageNodeData;
+    if (d.is_placeholder) return 'rgba(248, 113, 113, 0.35)';
+    return d.color || COLORS.normal;
   }, []);
 
   return (
-    <div
-      className="storymap-inner"
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleCanvasMouseUp}
-      onMouseDown={handleCanvasMouseDown}
-      onDoubleClick={handleCanvasDoubleClick}
-    >
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={handleNodeClick}
-        onNodeDoubleClick={handleNodeDoubleClick}
-        onNodeDragStart={handleNodeDragStart}
-        onNodeDragStop={handleNodeDragStop}
-        onNodeContextMenu={handleNodeContextMenu}
-        onPaneContextMenu={handlePaneContextMenu}
-        onSelectionChange={handleSelectionChange}
-        onNodeMouseEnter={handleNodeMouseEnter}
-        onNodeMouseLeave={handleNodeMouseLeave}
-        onViewportChange={handleViewportChange}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        connectionMode={ConnectionMode.Loose}
-        minZoom={MIN_ZOOM}
-        maxZoom={MAX_ZOOM}
-        fitView={false}
-        // Mouse map:
-        //   left-drag on pane  → marquee (multi-)selection
-        //   left-drag on node  → move node(s)
-        //   middle-drag        → pan
-        //   wheel              → zoom
-        //   right-click        → context menu (the "action panel")
-        //   back/forward       → navigation history (wrapper handlers)
-        panOnDrag={[1]}
-        selectionOnDrag
-        selectionKeyCode={null}
-        multiSelectionKeyCode="Shift"
-        zoomOnDoubleClick={false}
-        nodesDraggable
-        nodesConnectable={false}
-        elementsSelectable
-        // Delete/Backspace are handled by our keyboard layer (which arms
-        // the inspector's confirm flow) — disable React Flow's built-in
-        // node deletion so the two never fight.
-        deleteKeyCode={null}
-        proOptions={{ hideAttribution: true }}
-        defaultEdgeOptions={{ type: 'straight' }}
+    <GroupActionsContext.Provider value={groupActions}>
+      <div
+        className="storymap-inner"
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleCanvasMouseUp}
+        onMouseDown={handleCanvasMouseDown}
+        onDoubleClick={handleCanvasDoubleClick}
       >
-        {showMiniMap && (
-          <MiniMap
-            nodeColor={miniMapColor}
-            nodeStrokeColor="rgba(0, 0, 0, 0.45)"
-            nodeBorderRadius={3}
-            maskColor="rgba(10, 11, 16, 0.62)"
-            pannable
-            zoomable
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
+          onNodeDragStart={handleNodeDragStart}
+          onNodeDragStop={handleNodeDragStop}
+          onNodeContextMenu={handleNodeContextMenu}
+          onPaneContextMenu={handlePaneContextMenu}
+          onSelectionChange={handleSelectionChange}
+          onNodeMouseEnter={handleNodeMouseEnter}
+          onNodeMouseLeave={handleNodeMouseLeave}
+          onViewportChange={handleViewportChange}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          minZoom={MIN_ZOOM}
+          maxZoom={MAX_ZOOM}
+          fitView={false}
+          // Mouse map:
+          //   left-drag on pane  → marquee (multi-)selection
+          //   left-drag on node  → move node(s)
+          //   middle-drag        → pan
+          //   space+left-drag    → pan (explicit; React Flow default made
+          //                        loud here so the affordance is testable)
+          //   wheel              → zoom
+          //   right-click        → context menu (the "action panel")
+          //   back/forward       → navigation history (wrapper handlers)
+          panOnDrag={[1]}
+          panActivationKeyCode="Space"
+          selectionOnDrag
+          selectionKeyCode={null}
+          multiSelectionKeyCode={['Shift', 'Control', 'Meta']}
+          zoomOnDoubleClick={false}
+          nodesDraggable
+          nodesConnectable={false}
+          elementsSelectable
+          // Delete/Backspace are handled by our keyboard layer (which arms
+          // the inspector's confirm flow) — disable React Flow's built-in
+          // node deletion so the two never fight.
+          deleteKeyCode={null}
+          proOptions={{ hideAttribution: true }}
+          defaultEdgeOptions={{ type: 'straight' }}
+        >
+          {showMiniMap && (
+            <MiniMap
+              nodeColor={miniMapColor}
+              nodeStrokeColor="rgba(0, 0, 0, 0.45)"
+              nodeBorderRadius={3}
+              maskColor="rgba(10, 11, 16, 0.62)"
+              pannable
+              zoomable
+            />
+          )}
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={GRID_SNAP}
+            size={1.5}
+            color="rgba(148, 163, 184, 0.10)"
           />
-        )}
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={GRID_SNAP}
-          size={1.5}
-          color="rgba(148, 163, 184, 0.10)"
+        </ReactFlow>
+        <ZoomWidget
+          zoomPct={zoomPct}
+          onZoomIn={() => zoomIn({ duration: 200 })}
+          onZoomOut={() => zoomOut({ duration: 200 })}
+          onFit={() => fitView({ padding: 0.12, duration: 280 })}
+          onPreset={v => (v === 'fit' ? fitView({ padding: 0.12, duration: 280 }) : zoomTo(v))}
         />
-      </ReactFlow>
-      <NodeTooltip tip={tooltip} />
-      {ctxMenu && (
-        <ContextMenu menu={ctxMenu} actions={ctxActions} onClose={closeCtxMenu} />
-      )}
-    </div>
+        <NodeTooltip tip={tooltip} />
+        {ctxMenu && (
+          <ContextMenu menu={ctxMenu} actions={ctxActions} onClose={closeCtxMenu} />
+        )}
+      </div>
+    </GroupActionsContext.Provider>
   );
 }
 
@@ -1842,6 +2640,11 @@ interface StoryMapProps extends StoryMapActions {
   onToggleLegend: () => void;
   onFindPassages: () => void;
   onNewPassageAtViewCenter: () => void;
+  /** Snap-to-grid toggle (context menu check item). */
+  snapEnabled: boolean;
+  onToggleSnap: () => void;
+  /** Edge kinds hidden via the Legend chips. */
+  hiddenEdgeKinds: Set<EdgeKind>;
 }
 
 export default function StoryMap(props: StoryMapProps) {

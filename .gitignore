@@ -21,3 +21,6 @@ extensions/vscode/media/storymap/
 # React webview dev dependencies and build cache
 extensions/vscode/webview/node_modules/
 extensions/vscode/webview/dist/
+
+# TypeScript incremental build state
+*.tsbuildinfo
