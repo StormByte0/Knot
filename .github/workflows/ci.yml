@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-rust
@@ -90,7 +90,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           profile: minimal
       - uses: taiki-e/install-action@v2
