@@ -40,7 +40,7 @@ jobs:
         working-directory: extensions/vscode/webview
 
       - name: Upload webview assets
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: webview-assets
           path: extensions/vscode/media/storymap/
@@ -145,7 +145,7 @@ jobs:
         working-directory: extensions/vscode
 
       - name: Upload VSIX
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: vsix-${{ matrix.target }}
           path: extensions/vscode/*.vsix

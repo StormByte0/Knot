@@ -57,7 +57,7 @@ jobs:
         working-directory: extensions/vscode/webview
 
       - name: Upload webview assets
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: webview-assets
           path: extensions/vscode/media/storymap/
@@ -167,7 +167,7 @@ jobs:
         working-directory: extensions/vscode
 
       - name: Upload VSIX
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: vsix-${{ matrix.target }}
           path: extensions/vscode/*.vsix
@@ -199,7 +199,7 @@ jobs:
           ls -la
 
       - name: Upload bundled zip
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: knot-early-release-${{ github.run_id }}
           path: vsix-files/knot-early-release-${{ github.run_id }}.zip
