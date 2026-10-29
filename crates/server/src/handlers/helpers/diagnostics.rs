@@ -226,24 +226,51 @@ pub(crate) fn build_all_lsp_diagnostics(
     result
 }
 
-/// Send pre-built LSP diagnostics to the client, lock-free.
+/// Send pre-built, **versioned** LSP diagnostics to the client, lock-free.
 ///
 /// This is the **asynchronous** part of diagnostic publishing. It iterates
-/// the `Vec<(Url, Vec<Diagnostic>)>` produced by [`build_all_lsp_diagnostics`]
-/// and calls `client.publish_diagnostics(...).await` for each URI.
+/// the `Vec<(Url, Option<i32>, Vec<Diagnostic>)>` produced by
+/// [`build_all_lsp_diagnostics`] + [`stamp_doc_versions`] and calls
+/// `client.publish_diagnostics(..., Some(version)).await` for each URI.
 ///
 /// **No state access** — this function does not touch `ServerStateInner` at
 /// all. It can be called WITHOUT holding any lock, which means the LSP
 /// client await does not block the next write (next keystroke's phase 1).
 ///
+/// Fix 2 (versioned publishes): `None` stays `None` (files never opened in
+/// the editor — unversioned, identical to the pre-Fix-2 behavior); files
+/// with a known LSP version publish with `Some(version)` so the client can
+/// discard a stale push that lands after a fresher one (e.g. the analysis
+/// worker's slower cycle landing after a synchronous reindex publish).
+///
 /// See [`build_all_lsp_diagnostics`] for the Task 3 rationale.
 pub(crate) async fn send_lsp_diagnostics(
     client: &tower_lsp::Client,
-    prebuilt: Vec<(Url, Vec<Diagnostic>)>,
+    prebuilt: Vec<(Url, Option<i32>, Vec<Diagnostic>)>,
 ) {
-    for (uri, lsp_diagnostics) in prebuilt {
-        client.publish_diagnostics(uri, lsp_diagnostics, None).await;
+    for (uri, version, lsp_diagnostics) in prebuilt {
+        client
+            .publish_diagnostics(uri, lsp_diagnostics, version)
+            .await;
     }
+}
+
+/// Stamp each URI's diagnostics with the authoritative LSP version from
+/// `doc_versions` (Fix 2). Must be called while the lock that produced the
+/// diagnostics is still held, so the stamp and the diagnostics are from the
+/// same state snapshot. URIs with no known version (never opened in the
+/// editor, only indexed) keep `None` — unversioned, like before Fix 2.
+pub(crate) fn stamp_doc_versions(
+    inner: &crate::state::ServerStateInner,
+    prebuilt: Vec<(Url, Vec<Diagnostic>)>,
+) -> Vec<(Url, Option<i32>, Vec<Diagnostic>)> {
+    prebuilt
+        .into_iter()
+        .map(|(uri, diagnostics)| {
+            let version = inner.doc_versions.get(&uri).copied();
+            (uri, version, diagnostics)
+        })
+        .collect()
 }
 
 /// Compute the variable sigils for the active format plugin (Task 3 helper).
@@ -637,7 +664,6 @@ pub(crate) fn find_variable_read_locations(
 /// in special passages that the core dataflow doesn't track as "persistent
 /// inits"). This function closes that gap by querying the format plugin's
 /// `special_passage_seed_variables()` and merging the results into the seed set.
-#[allow(dead_code)]
 pub(crate) fn supplement_seed_with_format_specials(
     mut core_seed: knot_core::analysis::InitSet,
     workspace: &Workspace,

@@ -13,10 +13,6 @@
 use crate::graph::{EdgeType, PassageEdge, PassageGraph, PassageNode};
 use crate::passage::Passage;
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
-
-/// The debounce interval for edit events (in milliseconds).
-const DEBOUNCE_MS: u64 = 50;
 
 /// Result of an incremental update.
 #[derive(Debug, Clone)]
@@ -151,92 +147,5 @@ pub fn graph_surgery(
         added,
         removed,
         modified,
-    }
-}
-
-/// A debounce timer for edit events that ensures analysis always fires
-/// after the final edit in a burst.
-///
-/// Unlike a simple "is_pending / is_ready" gate, this timer tracks whether
-/// an edit was skipped during a debounce window so that a follow-up
-/// analysis can be triggered once the window expires — even if no new
-/// `did_change` event arrives.
-#[derive(Debug)]
-pub struct DebounceTimer {
-    /// The last time an edit was received.
-    last_edit: Option<Instant>,
-    /// The debounce duration.
-    duration: Duration,
-    /// Whether we skipped analysis for at least one edit during the current
-    /// debounce window. When the window expires, the caller must re-run
-    /// analysis and clear this flag.
-    skipped: bool,
-}
-
-impl DebounceTimer {
-    /// Create a new debounce timer with the default duration.
-    pub fn new() -> Self {
-        Self {
-            last_edit: None,
-            duration: Duration::from_millis(DEBOUNCE_MS),
-            skipped: false,
-        }
-    }
-
-    /// Create a debounce timer with a custom duration.
-    pub fn with_duration(duration: Duration) -> Self {
-        Self {
-            last_edit: None,
-            duration,
-            skipped: false,
-        }
-    }
-
-    /// Record an edit event.
-    pub fn record_edit(&mut self) {
-        self.last_edit = Some(Instant::now());
-    }
-
-    /// Check if the debounce period has elapsed since the last edit.
-    /// Returns true if enough time has passed to proceed with processing.
-    pub fn is_ready(&self) -> bool {
-        match self.last_edit {
-            Some(last) => last.elapsed() >= self.duration,
-            None => true,
-        }
-    }
-
-    /// Check if there is a pending edit (timer has been started but not yet ready).
-    pub fn is_pending(&self) -> bool {
-        self.last_edit.is_some() && !self.is_ready()
-    }
-
-    /// Mark that analysis was skipped for this debounce window.
-    /// Called when `is_pending()` returns true and the handler returns early.
-    pub fn mark_skipped(&mut self) {
-        self.skipped = true;
-    }
-
-    /// Check whether a skipped edit needs to be flushed.
-    ///
-    /// Returns `true` when:
-    /// - Analysis was previously skipped (`mark_skipped` was called), AND
-    /// - The debounce window has since expired (`is_ready()` is true)
-    ///
-    /// After calling this and re-running analysis, call `clear_skipped()`
-    /// to reset the flag.
-    pub fn needs_flush(&self) -> bool {
-        self.skipped && self.is_ready()
-    }
-
-    /// Clear the skipped flag after a flush has been processed.
-    pub fn clear_skipped(&mut self) {
-        self.skipped = false;
-    }
-}
-
-impl Default for DebounceTimer {
-    fn default() -> Self {
-        Self::new()
     }
 }

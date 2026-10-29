@@ -268,10 +268,11 @@ fn sugarcube_reachable_metadata_flows_to_manual_graph_edges() {
     assert_eq!(ws.reachability_roots(), vec!["Start".to_string()]);
 
     // The Manual edge Start → IslandA exists in the graph.
-    assert!(ws
-        .graph
-        .outgoing_neighbors("Start")
-        .contains(&"IslandA".to_string()));
+    assert!(
+        ws.graph
+            .outgoing_neighbors("Start")
+            .contains(&"IslandA".to_string())
+    );
 
     // IslandA/B are rescued by the manual link, Forest is reachable from
     // Start, and only the genuinely orphaned Cave is flagged unreachable.

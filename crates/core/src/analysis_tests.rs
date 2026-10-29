@@ -267,10 +267,12 @@ mod tests {
         assert_eq!(roots, vec!["Start".to_string()]);
 
         // The manual edge exists with the Manual type.
-        assert!(workspace
-            .graph
-            .outgoing_neighbors("Start")
-            .contains(&"IslandA".to_string()));
+        assert!(
+            workspace
+                .graph
+                .outgoing_neighbors("Start")
+                .contains(&"IslandA".to_string())
+        );
 
         let diagnostics = AnalysisEngine::analyze(&workspace);
         let unreachable: Vec<&_> = diagnostics
@@ -290,9 +292,11 @@ mod tests {
 
         // The standard single-root wording applies (manual links are
         // ordinary graph edges, not extra BFS roots).
-        assert!(unreachable[0]
-            .message
-            .contains("unreachable from start passage 'Start'"));
+        assert!(
+            unreachable[0]
+                .message
+                .contains("unreachable from start passage 'Start'")
+        );
     }
 
     #[test]
@@ -326,8 +330,10 @@ mod tests {
 
         // Hidden is unreachable, so its manual link to Hub rescues nothing.
         let unreachable = workspace.detect_unreachable_passages();
-        let mut names: Vec<&str> =
-            unreachable.iter().map(|d| d.passage_name.as_str()).collect();
+        let mut names: Vec<&str> = unreachable
+            .iter()
+            .map(|d| d.passage_name.as_str())
+            .collect();
         names.sort_unstable();
         assert_eq!(
             names,
@@ -359,10 +365,12 @@ mod tests {
         rebuild_workspace_graph(&mut workspace);
 
         // No manual edge is created for a missing source.
-        assert!(!workspace
-            .graph
-            .outgoing_neighbors("Startt")
-            .contains(&"Typo".to_string()));
+        assert!(
+            !workspace
+                .graph
+                .outgoing_neighbors("Startt")
+                .contains(&"Typo".to_string())
+        );
 
         // The declaration is surfaced as its own diagnostic.
         let errors = workspace.detect_manual_link_errors();
@@ -374,8 +382,11 @@ mod tests {
         // And the passage stays unreachable (the analyzer surfaces both
         // diagnostics).
         let diagnostics = AnalysisEngine::analyze(&workspace);
-        assert!(diagnostics.iter().any(|d| d.passage_name == "Typo"
-            && d.kind == DiagnosticKind::UnreachablePassage));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.passage_name == "Typo" && d.kind == DiagnosticKind::UnreachablePassage)
+        );
     }
 
     #[test]
@@ -416,14 +427,18 @@ mod tests {
             doc_mut.passages[1].manual_reachable = Some("Other".to_string());
         }
         workspace.rebuild_manual_edges();
-        assert!(!workspace
-            .graph
-            .outgoing_neighbors("Start")
-            .contains(&"Island".to_string()));
-        assert!(workspace
-            .graph
-            .outgoing_neighbors("Other")
-            .contains(&"Island".to_string()));
+        assert!(
+            !workspace
+                .graph
+                .outgoing_neighbors("Start")
+                .contains(&"Island".to_string())
+        );
+        assert!(
+            workspace
+                .graph
+                .outgoing_neighbors("Other")
+                .contains(&"Island".to_string())
+        );
     }
 
     #[test]

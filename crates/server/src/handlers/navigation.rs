@@ -1380,7 +1380,8 @@ pub(crate) fn collect_rename_edits(
                                         reachable: Some(Some(new_name)),
                                         ..Default::default()
                                     };
-                                    if let Ok(new_line) = helpers::update_passage_header(line, edits)
+                                    if let Ok(new_line) =
+                                        helpers::update_passage_header(line, edits)
                                     {
                                         doc_edits.push(TextEdit {
                                             range: lsp_types::Range {
@@ -1801,7 +1802,6 @@ mod goto_definition_tests {
         let inner = crate::state::ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: knot_core::editing::DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();
@@ -2439,7 +2439,6 @@ mod document_highlight_tests {
         let inner = crate::state::ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: knot_core::editing::DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();

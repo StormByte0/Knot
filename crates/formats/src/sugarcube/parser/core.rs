@@ -2895,9 +2895,9 @@ mod tests {
                     && c.edge_type == knot_core::graph::EdgeType::Navigation)
         );
         assert!(
-            connections.iter().any(
-                |c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Jump
-            )
+            connections
+                .iter()
+                .any(|c| c.target == "Cave" && c.edge_type == knot_core::graph::EdgeType::Jump)
         );
         assert!(
             connections

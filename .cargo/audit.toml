@@ -1,0 +1,15 @@
+# cargo-audit policy (Fix 4, plan §3.2 step 3).
+#
+# Both advisories below are "unsound" warnings, not exploitable
+# vulnerabilities in Knot's usage:
+[advisories]
+ignore = [
+    # anyhow 1.0.102 — `Error::downcast_mut()` unsoundness. Knot never calls
+    # `downcast_mut` on anyhow errors (grep-verified; error paths only display
+    # or log them), so the unsound API is never reachable.
+    "RUSTSEC-2026-0190",
+    # tokio 1.52.2 — `AsyncFd::new` I/O-safety violation. Knot does not use
+    # `AsyncFd` directly (tower-lsp owns the transport), so the affected
+    # constructor is never called from this workspace.
+    "RUSTSEC-2026-0386",
+]

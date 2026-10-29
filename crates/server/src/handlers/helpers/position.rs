@@ -334,10 +334,7 @@ pub(crate) fn update_passage_header(line: &str, edits: HeaderEdits) -> Result<St
 
     // ── Part 2: split ":: Name" from the "[tag] blocks" section ───────
     let (name_part, tag_section) = match trimmed_stripped.find('[') {
-        Some(pos) => (
-            &trimmed_stripped[..pos],
-            &trimmed_stripped[pos..],
-        ),
+        Some(pos) => (&trimmed_stripped[..pos], &trimmed_stripped[pos..]),
         None => (trimmed_stripped, ""),
     };
 
@@ -359,28 +356,25 @@ pub(crate) fn update_passage_header(line: &str, edits: HeaderEdits) -> Result<St
     }
 
     // ── Part 4: merge the JSON edits ───────────────────────────────────
-    let mut json_val = existing_json.unwrap_or(serde_json::Value::Object(
-        serde_json::Map::new(),
-    ));
+    let mut json_val = existing_json.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
     if let Some((x, y)) = edits.position {
         let pos_str = format!("{},{}", format_coord(x), format_coord(y));
         json_val["position"] = serde_json::Value::String(pos_str);
     }
 
-    let set_or_remove =
-        |json: &mut serde_json::Value, key: &str, value: Option<&str>| {
-            if let Some(obj) = json.as_object_mut() {
-                match value {
-                    Some(v) => {
-                        obj.insert(key.to_string(), serde_json::Value::String(v.to_string()));
-                    }
-                    None => {
-                        obj.remove(key);
-                    }
+    let set_or_remove = |json: &mut serde_json::Value, key: &str, value: Option<&str>| {
+        if let Some(obj) = json.as_object_mut() {
+            match value {
+                Some(v) => {
+                    obj.insert(key.to_string(), serde_json::Value::String(v.to_string()));
+                }
+                None => {
+                    obj.remove(key);
                 }
             }
-        };
+        }
+    };
 
     if let Some(group) = edits.group {
         set_or_remove(&mut json_val, "group", group);
@@ -403,10 +397,7 @@ pub(crate) fn update_passage_header(line: &str, edits: HeaderEdits) -> Result<St
 
     // ── Part 5: assemble ───────────────────────────────────────────────
     let mut result = String::from(name_part.trim_end());
-    let final_tags = tag_section_owned
-        .as_deref()
-        .unwrap_or(tag_section)
-        .trim();
+    let final_tags = tag_section_owned.as_deref().unwrap_or(tag_section).trim();
     if !final_tags.is_empty() {
         result.push(' ');
         result.push_str(final_tags);
@@ -417,8 +408,8 @@ pub(crate) fn update_passage_header(line: &str, edits: HeaderEdits) -> Result<St
     if let Some(obj) = json_val.as_object()
         && !obj.is_empty()
     {
-        let new_json =
-            serde_json::to_string(&json_val).map_err(|e| format!("JSON re-encode failed: {}", e))?;
+        let new_json = serde_json::to_string(&json_val)
+            .map_err(|e| format!("JSON re-encode failed: {}", e))?;
         result.push(' ');
         result.push_str(&new_json);
     }
@@ -684,93 +675,6 @@ pub(crate) fn find_link_target_at_position(text: &str, position: Position) -> Op
     None
 }
 
-/// Find the variable name at the given cursor position in the text.
-///
-/// Returns the variable name (with its sigil) if the cursor is on a
-/// variable reference, or `None` otherwise. The `sigils` parameter
-/// should come from the format plugin's `variable_sigils()` method.
-///
-/// For sigils that are valid identifier characters (e.g., `_`), a word
-/// boundary is required before the sigil to avoid false matches (e.g.,
-/// matching `_bar` inside `foo_bar`).
-#[allow(dead_code)]
-pub(crate) fn find_variable_at_position(
-    text: &str,
-    position: Position,
-    sigils: &[char],
-) -> Option<String> {
-    let line_idx = position.line as usize;
-    let line = text.lines().nth(line_idx)?;
-    let char_idx = position.character as usize;
-
-    if sigils.is_empty() {
-        return None;
-    }
-
-    // Scan backwards from the cursor to find an identifier body
-    let mut start = char_idx;
-    while start > 0
-        && line
-            .as_bytes()
-            .get(start - 1)
-            .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        start -= 1;
-    }
-
-    // Check if the character before the identifier is a variable sigil
-    if start > 0 {
-        let prev_byte = line.as_bytes().get(start - 1)?;
-        let prev_char = *prev_byte as char;
-        if sigils.contains(&prev_char) {
-            // For sigils that are valid inside identifiers (like `_`),
-            // require a word boundary before the sigil to avoid false
-            // matches (e.g., matching `_bar` inside `foo_bar`).
-            if (prev_char.is_alphanumeric() || prev_char == '_') && start >= 2 {
-                let before_sigil = line.as_bytes().get(start - 2)?;
-                if before_sigil.is_ascii_alphanumeric() || *before_sigil == b'_' {
-                    return None; // No word boundary — skip
-                }
-            }
-            let var_name = &line[start..char_idx.max(start)];
-            if !var_name.is_empty() {
-                return Some(format!("{}{}", prev_char, var_name));
-            }
-        }
-    }
-
-    None
-}
-
-/// Find the byte offset of the first line of a passage's body
-/// (the line AFTER the `:: Name` header line).
-/// Returns 0 if the passage header is not found.
-#[allow(dead_code)]
-pub(crate) fn find_passage_start_offset(text: &str, passage_name: &str) -> usize {
-    let mut offset = 0;
-    for line in text.lines() {
-        if line.starts_with("::") {
-            let name = parse_passage_name_from_header(&line[2..]);
-            if name == passage_name {
-                // The header line itself — the body starts after this line
-                return offset + line.len() + 1; // +1 for the newline
-            }
-        }
-        offset += line.len() + 1; // +1 for the newline
-    }
-    0
-}
-
-/// Convert a byte offset to an LSP Position, returning None if the
-/// offset is out of bounds (unlike the panicking version).
-#[allow(dead_code)]
-pub(crate) fn byte_offset_to_position_safe(text: &str, byte_offset: usize) -> Option<Position> {
-    if byte_offset > text.len() {
-        return None;
-    }
-    Some(byte_offset_to_position(text, byte_offset))
-}
-
 // ===========================================================================
 // Span-based lookup helpers (use workspace passage data instead of
 // re-scanning the source text). These are preferred over the line-based
@@ -912,233 +816,6 @@ pub(crate) fn find_link_target_at_position_span_based(
     find_link_target_at_position(text, position)
 }
 
-/// Span-based version of [`find_variable_at_position`].
-///
-/// Instead of scanning backwards for sigils, iterates over `passage.vars`
-/// and checks if the cursor's byte offset falls within any `var.span`.
-/// Returns the variable name (including its sigil).
-///
-/// Falls back to the line-based implementation when the workspace doesn't
-/// have document data for the given URI.
-#[allow(dead_code)]
-pub(crate) fn find_variable_at_position_span_based(
-    text: &str,
-    workspace: &Workspace,
-    uri: &Url,
-    position: Position,
-    _sigils: &[char],
-) -> Option<String> {
-    if let Some(doc) = workspace.get_document(uri) {
-        let byte_offset = position_to_byte_offset(text, position);
-        for passage in &doc.passages {
-            for var in &passage.vars {
-                if passage.span_contains_abs_offset(&var.span, byte_offset) {
-                    return Some(var.name.clone());
-                }
-            }
-        }
-        return None;
-    }
-    // Fallback: line-based scan
-    find_variable_at_position(text, position, _sigils)
-}
-
-/// Span-based version of [`find_passage_start_offset`].
-///
-/// Instead of scanning lines for `::`, uses `passage.span.start` directly
-/// from the workspace to find the start of the header line, then computes
-/// the body start offset (after the header line's newline).
-///
-/// Falls back to the line-based implementation when the workspace doesn't
-/// have passage data for the given name.
-#[allow(dead_code)]
-pub(crate) fn find_passage_start_offset_span_based(
-    text: &str,
-    workspace: &Workspace,
-    passage_name: &str,
-) -> usize {
-    if let Some((_doc, passage)) = workspace.find_passage(passage_name) {
-        let span_start = passage.abs_offset(passage.span.start).min(text.len());
-        // The body starts after the header line (after the first newline)
-        return text[span_start..]
-            .find('\n')
-            .map(|n| span_start + n + 1)
-            .unwrap_or(span_start);
-    }
-    // Fallback: line-based scan
-    find_passage_start_offset(text, passage_name)
-}
-
-// ===========================================================================
-// Span-based macro & token context helpers
-// ===========================================================================
-//
-// NOTE: The `CompletionContext` enum and `resolve_completion_context_span_based()`
-// have been moved to the format plugin (`knot_formats::types::CompletionContext`
-// and `FormatPlugin::resolve_completion_context()`). The format plugin owns all
-// completion context detection — the handler is just a thin dispatcher.
-//
-// The remaining functions here are used by hover, go-to-definition, and other
-// handlers that need span-based position lookups.
-
-/// Find the `MacroArgRef` at a cursor position, if any.
-///
-/// Returns the full `MacroArgRef` struct (passage-relative spans) from the
-/// passage that contains the cursor, or `None` if the cursor isn't inside
-/// any passage-ref arg. This is a focused version of
-/// `resolve_completion_context_span_based` that returns the raw data for
-/// callers that need the full span details.
-#[allow(dead_code)]
-pub(crate) fn find_macro_arg_ref_at_position_span_based(
-    text: &str,
-    workspace: &Workspace,
-    uri: &Url,
-    position: Position,
-) -> Option<knot_core::passage::MacroArgRef> {
-    let doc = workspace.get_document(uri)?;
-    let byte_offset = position_to_byte_offset(text, position);
-
-    for passage in &doc.passages {
-        for arg_ref in &passage.macro_arg_refs {
-            if passage.span_contains_abs_offset(&arg_ref.span, byte_offset) {
-                return Some(arg_ref.clone());
-            }
-        }
-    }
-    None
-}
-
-/// Find the semantic token at a cursor position.
-///
-/// Returns the token type and the text it covers, or `None` if no token
-/// spans the cursor position. Useful for quick context checks without
-/// the full `CompletionContext` enum.
-///
-/// Used by hover and go-to-definition handlers for span-based token lookup.
-#[allow(dead_code)]
-pub(crate) fn find_token_at_position_span_based(
-    token_groups: &[knot_formats::plugin::PassageTokenGroup],
-    text: &str,
-    position: Position,
-) -> Option<(knot_formats::plugin::SemanticTokenType, String)> {
-    // We need the text to convert LSP position to byte offset.
-    // If the position is beyond the text, return None.
-    let byte_offset = position_to_byte_offset(text, position);
-
-    for group in token_groups {
-        let group_offset = group.passage_offset;
-        for token in &group.tokens {
-            let abs_start = token.start + group_offset;
-            let abs_end = abs_start + token.length;
-            if byte_offset >= abs_start
-                && byte_offset < abs_end
-                && abs_start < text.len()
-                && abs_end <= text.len()
-            {
-                return Some((token.token_type, text[abs_start..abs_end].to_string()));
-            }
-        }
-    }
-    None
-}
-
-/// Build the stack of unclosed block macros at a cursor position using
-/// passage data from the workspace.
-///
-/// This replaces the line-scanning approach in `try_close_tag_completion()`
-/// that used `plugin.scan_line_for_macro_events()`. Instead of re-scanning
-/// the source text, this function:
-///
-/// 1. Finds the passage containing the cursor
-/// 2. Collects all `Block::Macro` entries from the passage body, sorted by
-///    span position
-/// 3. Uses the format plugin's `body_macro_names()` to classify which
-///    macros are block macros (i.e., have open/close tag pairs)
-/// 4. Builds a stack of unclosed open tags up to the cursor position
-///
-/// Returns the unclosed block macro names in innermost-first order.
-#[allow(dead_code)]
-pub(crate) fn find_unclosed_block_macros_span_based(
-    text: &str,
-    workspace: &Workspace,
-    uri: &Url,
-    position: Position,
-    body_macro_names: &std::collections::HashSet<&'static str>,
-    plugin: &dyn knot_formats::plugin::FormatPlugin,
-) -> Vec<String> {
-    let Some(doc) = workspace.get_document(uri) else {
-        return Vec::new();
-    };
-    let byte_offset = position_to_byte_offset(text, position);
-
-    for passage in &doc.passages {
-        if !passage.contains_abs_offset(byte_offset) {
-            continue;
-        }
-
-        // Collect macro events from the passage body blocks.
-        // Block::Macro entries represent macro invocations with their spans.
-        // We also check macro_arg_refs which have open/close information.
-        let mut events: Vec<(String, bool, usize)> = Vec::new(); // (name, is_open, abs_byte)
-
-        // Process body blocks for macro invocations
-        for block in &passage.body {
-            if let knot_core::passage::Block::Macro { name, span, .. } = block
-                && body_macro_names.contains(name.as_str())
-            {
-                let abs_start = passage.abs_offset(span.start);
-                // Only include events before the cursor
-                if abs_start < byte_offset {
-                    events.push((name.clone(), true, abs_start));
-                }
-            }
-        }
-
-        // Also use the format plugin's scan for close tags.
-        // We need the text of the passage up to the cursor to find close tags.
-        let passage_abs_start = passage.abs_offset(0);
-        let passage_text_up_to_cursor =
-            &text[passage_abs_start.min(text.len())..byte_offset.min(text.len())];
-
-        // Scan for close tags using the plugin
-        for (line_idx, line) in passage_text_up_to_cursor.lines().enumerate() {
-            for event in plugin.scan_line_for_macro_events(line, line_idx as u32) {
-                if body_macro_names.contains(event.name.as_str()) {
-                    events.push((event.name, event.is_open, 0)); // position not needed for stack
-                }
-            }
-        }
-
-        // Sort events by position (for body block events) — close-tag
-        // events from scan_line have position 0, which is a rough
-        // approximation. For a fully precise implementation, we'd need
-        // close-tag spans in the AST. This is good enough for completion.
-        events.sort_by_key(|(_, _, pos)| *pos);
-
-        // Build the stack of unclosed open tags
-        let mut open_stack: Vec<String> = Vec::new();
-        for (name, is_open, _) in &events {
-            if *is_open {
-                open_stack.push(name.clone());
-            } else {
-                // Close tag — remove the matching open tag (innermost first)
-                for i in (0..open_stack.len()).rev() {
-                    if open_stack[i] == *name {
-                        open_stack.remove(i);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Return innermost-first
-        open_stack.reverse();
-        return open_stack;
-    }
-
-    Vec::new()
-}
-
 /// Compute the LSP Range for the passage name when `header_name_span` is
 /// not available.
 ///
@@ -1195,9 +872,8 @@ mod storydata_position_tests {
         // A dragged node gets `{"position":"x,y"}` written into its own
         // header; the StoryData fallback must not yank it back to the
         // stale archived coordinate on the next graph export.
-        let text = storydata_text(
-            r#"{"start":"Start","passages":[{"name":"Start","position":[10,20]}]}"#,
-        );
+        let text =
+            storydata_text(r#"{"start":"Start","passages":[{"name":"Start","position":[10,20]}]}"#);
         let mut positions = HashMap::from([("Start".to_string(), (500.0, 250.0))]);
         extract_positions_from_storydata(&text, &mut positions);
         assert_eq!(positions.get("Start"), Some(&(500.0, 250.0)));

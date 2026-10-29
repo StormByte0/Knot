@@ -197,13 +197,16 @@ pub(crate) async fn did_open(state: &ServerState, params: DidOpenTextDocumentPar
             }
         };
         let sigils = helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-        helpers::build_all_lsp_diagnostics(
-            &diagnostics,
-            &inner.format_diagnostics,
-            &inner.open_documents,
-            &inner.workspace,
-            &inner.workspace.config,
-            &sigils,
+        helpers::stamp_doc_versions(
+            &inner,
+            helpers::build_all_lsp_diagnostics(
+                &diagnostics,
+                &inner.format_diagnostics,
+                &inner.open_documents,
+                &inner.workspace,
+                &inner.workspace.config,
+                &sigils,
+            ),
         )
     }; // ← read lock dropped
 
@@ -298,21 +301,17 @@ pub(crate) async fn did_change(state: &ServerState, params: DidChangeTextDocumen
         return;
     }
 
-    // ── Phase 2: read-lock — analysis + build LSP diagnostics (sync) ────
-    // Task 3: phase 2 now does BOTH the analysis AND the LSP diagnostic
-    // building. The pre-built diagnostics are returned as owned values,
-    // so the read lock can be dropped before the async client send.
-    let prebuilt_diagnostics = {
-        let inner = state.inner.read().await;
-        did_change_phase2(&inner, &phase1_result.uri)
-    }; // ← read lock dropped
-
-    // ── Phase 3: send diagnostics to the client (lock-free) ────────────
-    // Task 3: the LSP client await is now lock-free. It does not touch
-    // `ServerStateInner` at all, so the next keystroke's phase 1 (write
-    // lock) is not blocked by the network/IPC latency of
-    // `client.publish_diagnostics`.
-    helpers::send_lsp_diagnostics(&state.client, prebuilt_diagnostics).await;
+    // ── Phase 2 + 3: single-flight analysis worker (Fix 2) ────────
+    //
+    // Full-workspace analysis + publish moved OFF the keystroke path into
+    // a long-lived worker fed by a latest-wins `watch` channel. Phase 1
+    // (above) still runs synchronously on every keystroke, so hover /
+    // completion freshness is untouched. The worker coalesces bursts
+    // (trailing edge, 500 ms max lag), stamps every publish with the
+    // document's authoritative version (so the client can discard a stale
+    // push), and skips documents closed while a cycle was pending. See
+    // `run_diagnostics_worker` below for the loop and its guarantees.
+    state.ping_diagnostics_worker(&uri);
 
     // ── Semantic token refresh ──────────────────────────────────────────
     //
@@ -523,35 +522,75 @@ pub fn did_change_phase1(
     // Update doc_versions with the authoritative LSP version
     inner.doc_versions.insert(uri.clone(), version);
 
-    // ── Snapshot pre-edit state for edit classification (M2) ──
-    // We need the pre-edit text and document to classify the edit's impact.
-    // If the edit is WithinPassage, we can skip the full-file re-parse and
-    // only re-parse the affected passage.
-    let text_before = inner.open_documents.get(&uri).cloned().unwrap_or_default();
-    let doc_before = inner.workspace.get_document(&uri).cloned();
-    let changes_for_classify = content_changes.clone();
+    // ── Classify the edit's impact (M2) — BEFORE applying (Fix 3, R1) ──
+    //
+    // `classify_edit` is a pure function of pre-edit state (the document's
+    // passages, the cached text, and the raw change events), so it can
+    // borrow `inner` directly instead of forcing the caller to snapshot
+    // `text_before` / `changes_for_classify` first. `apply_document_changes`
+    // mutates only the workspace doc's rope snapshot (never `passages`),
+    // so classifying before or after it sees identical inputs — but
+    // classifying first lets the borrows die before the mutation begins.
+    let impact = {
+        let doc_ref = inner.workspace.get_document(&uri);
+        match doc_ref {
+            Some(doc) => {
+                let text_before: &str = inner
+                    .open_documents
+                    .get(&uri)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                helpers::classify_edit(doc, text_before, &content_changes)
+            }
+            None => helpers::EditImpact::WholeDocument,
+        }
+    };
+
+    // ── Pre-edit snapshot (Fix 3, R3) ──
+    //
+    // The single load-bearing `Document` clone. It is needed ONLY on the
+    // WithinPassage path, where `did_change_incremental` splices the
+    // re-parsed passage into it (it is passed in by value and consumed —
+    // no second clone). The full-reparse paths never look at pre-edit
+    // passages, so they skip the clone entirely.
+    //
+    // Cloned BEFORE `apply_document_changes`: apply mutates the workspace
+    // doc's rope snapshot in place, and the splice must start from the
+    // PRE-edit rope.
+    let doc_before = match &impact {
+        helpers::EditImpact::WithinPassage { .. } => inner.workspace.get_document(&uri).cloned(),
+        _ => None,
+    };
+
+    // The edited passage's pre-edit offset — extracted before the dispatch
+    // below moves `doc_before` into `did_change_incremental` (R3). The
+    // offset-fix-up block at the end of phase 1 uses it to shift every
+    // passage that follows the edited one.
+    let edited_offset = match (&impact, doc_before.as_ref()) {
+        (helpers::EditImpact::WithinPassage { passage_name, .. }, Some(doc)) => doc
+            .passages
+            .iter()
+            .find(|p| p.name == *passage_name)
+            .map(|p| p.passage_offset),
+        _ => None,
+    };
 
     // Apply incremental changes to the rope-based snapshot and get the
-    // resulting full text for re-parsing.
-    let text = apply_document_changes(inner, &uri, version, content_changes);
+    // resulting full text for re-parsing. The net byte/line deltas are
+    // computed from the very byte ranges that get applied, which is
+    // arithmetically identical to `text.len() - text_before.len()` (and
+    // the newline-count equivalent) without keeping a pre-edit copy of
+    // the text around (Fix 3, R1).
+    let (text, byte_delta, line_delta) =
+        apply_document_changes(inner, &uri, version, content_changes);
 
-    // Always update the text cache immediately so go-to-definition etc.
-    // see the latest content
-    inner.open_documents.insert(uri.clone(), text.clone());
-
-    // Record the edit after updating the text cache, but do not skip the
-    // parse/analysis pass.
-    inner.debounce.record_edit();
-
-    if inner.debounce.needs_flush() {
-        inner.debounce.clear_skipped();
-    }
-
-    // ── Classify the edit's impact (M2) ──
-    let impact = match &doc_before {
-        Some(doc) => helpers::classify_edit(doc, &text_before, &changes_for_classify),
-        None => helpers::EditImpact::WholeDocument,
-    };
+    // Fix 3, R2: the text-cache insert moved to the END of phase 1 (see
+    // below). Phase 1 holds the write lock for its entire duration, so no
+    // reader can observe the cache mid-phase — every phase-1 consumer
+    // (dispatch, fix-up, cache merges, graph surgery) reads workspace/
+    // registry state, not `open_documents`. The text stays a borrowed
+    // `&text` for both parse paths and is MOVED into the cache at the end,
+    // killing the per-keystroke full-text clone.
 
     let format = inner.workspace.resolve_format();
 
@@ -562,7 +601,7 @@ pub fn did_change_phase1(
     // existing cache (incremental) vs replacing the whole cache (full).
     let (
         mut doc,
-        parse_result,
+        mut parse_result,
         was_incremental,
         is_panic_degraded,
         panicked_passage_name,
@@ -586,7 +625,7 @@ pub fn did_change_phase1(
                 &format,
                 version,
                 &text,
-                doc_before.as_ref(),
+                doc_before,
                 passage_name,
             ) {
                 Some((doc, parse_result, panicked)) => {
@@ -690,20 +729,17 @@ pub fn did_change_phase1(
     // 4. `doc.passages[i].line` — used by the Story Map "open passage"
     //    navigation.
     if was_incremental {
-        let newline_count = |t: &str| t.bytes().filter(|&b| b == b'\n').count() as isize;
-        let delta = text.len() as isize - text_before.len() as isize;
-        let line_delta = newline_count(&text) - newline_count(&text_before);
-        if delta != 0 || line_delta != 0 {
-            // Find the edited passage's old offset from doc_before.
+        // `byte_delta` / `line_delta` come straight from
+        // `apply_document_changes` (computed from the same byte ranges it
+        // applied — Fix 3, R1), and `edited_offset` was extracted from the
+        // pre-edit snapshot before the dispatch consumed it (R3).
+        if byte_delta != 0 || line_delta != 0 {
+            // (logging only — the offset itself was precomputed above)
             let edited_name = match &dispatch {
                 DidChangeDispatch::Incremental { passage_name }
                 | DidChangeDispatch::IncrementalPanic { passage_name } => passage_name.as_str(),
                 _ => "",
             };
-            let edited_offset = doc_before
-                .as_ref()
-                .and_then(|d| d.passages.iter().find(|p| p.name == edited_name))
-                .map(|p| p.passage_offset);
 
             if let Some(edited_offset) = edited_offset {
                 // 1. Fix up passage_offset (byte delta) and header line
@@ -712,8 +748,8 @@ pub fn did_change_phase1(
                 //    happen together after the comparison.
                 for p in doc.passages.iter_mut() {
                     if p.passage_offset > edited_offset {
-                        if delta != 0 {
-                            p.passage_offset = ((p.passage_offset as isize) + delta) as usize;
+                        if byte_delta != 0 {
+                            p.passage_offset = ((p.passage_offset as isize) + byte_delta) as usize;
                         }
                         if line_delta != 0 {
                             p.line = ((p.line as isize) + line_delta).max(0) as u32;
@@ -726,7 +762,7 @@ pub fn did_change_phase1(
                     for group in diag_map.values_mut() {
                         if group.passage_offset > edited_offset {
                             group.passage_offset =
-                                ((group.passage_offset as isize) + delta) as usize;
+                                ((group.passage_offset as isize) + byte_delta) as usize;
                         }
                     }
                 }
@@ -736,7 +772,7 @@ pub fn did_change_phase1(
                     for group in token_map.values_mut() {
                         if group.passage_offset > edited_offset {
                             group.passage_offset =
-                                ((group.passage_offset as isize) + delta) as usize;
+                                ((group.passage_offset as isize) + byte_delta) as usize;
                         }
                     }
                 }
@@ -745,33 +781,25 @@ pub fn did_change_phase1(
                     file = %uri,
                     edited_passage = %edited_name,
                     edited_offset,
-                    delta,
+                    byte_delta,
+                    line_delta,
                     "did_change: fixed up passage_offset for passages after edited passage"
                 );
             }
         }
     }
 
-    // Update format diagnostics cache (M3 surgical invalidation).
+    // Update format diagnostics + semantic tokens caches (M3 surgical
+    // invalidation). Fix 3, R5: the two branches are mutually exclusive,
+    // so the full-reparse branch MOVES the group collections out of
+    // `parse_result` (mem::take) instead of cloning them.
     if was_incremental {
         // Incremental path: merge the single-passage result into the existing
-        // cache entry. Other passages' groups are untouched.
+        // cache entry. Other passages' groups are untouched. On
+        // panic-degraded mode, the panicked passage's tokens are removed (no
+        // tokens emitted for broken JS); other passages' tokens are untouched.
         let existing = inner.format_diagnostics.entry(uri.clone()).or_default();
         helpers::merge_incremental_diagnostics(existing, &parse_result);
-    } else {
-        // Full re-parse path: replace the whole per-URI cache entry.
-        inner.format_diagnostics.insert(
-            uri.clone(),
-            helpers::diagnostic_groups_to_map(parse_result.diagnostic_groups.clone()),
-        );
-    }
-
-    // Update semantic tokens cache (M3 surgical invalidation).
-    if was_incremental {
-        // Incremental path: merge the single-passage result into the existing
-        // cache entry. On panic-degraded mode, the panicked passage's tokens
-        // are removed (no tokens emitted for broken JS); other passages'
-        // tokens are untouched.
         let existing = inner.semantic_tokens.entry(uri.clone()).or_default();
         helpers::merge_incremental_tokens(
             existing,
@@ -780,10 +808,14 @@ pub fn did_change_phase1(
             panicked_passage_name.as_deref(),
         );
     } else {
-        // Full re-parse path: replace the whole per-URI cache entry.
+        // Full re-parse path: replace the whole per-URI cache entries.
+        inner.format_diagnostics.insert(
+            uri.clone(),
+            helpers::diagnostic_groups_to_map(std::mem::take(&mut parse_result.diagnostic_groups)),
+        );
         inner.semantic_tokens.insert(
             uri.clone(),
-            helpers::token_groups_to_map(parse_result.token_groups.clone()),
+            helpers::token_groups_to_map(std::mem::take(&mut parse_result.token_groups)),
         );
     }
 
@@ -834,6 +866,15 @@ pub fn did_change_phase1(
         inner.workspace.graph.edge_count()
     );
 
+    // ── Fix 3, R2: text cache insert (was at the top of phase 1) ──
+    //
+    // Inserting here — just before the write lock drops — preserves the
+    // original "readers see the latest content once did_change_phase1
+    // returns" contract: phase 2, `check_storydata_format_change`, and all
+    // read-lock handlers run only after this function returns. `text` is
+    // moved, not cloned.
+    inner.open_documents.insert(uri.clone(), text);
+
     DidChangePhase1Result {
         uri,
         version,
@@ -845,20 +886,24 @@ pub fn did_change_phase1(
 ///
 /// Runs `analyze_with_format_vars` on the workspace (read-only) and builds
 /// the complete LSP `Diagnostic` objects (via `build_all_lsp_diagnostics`),
-/// ready for `send_lsp_diagnostics`. Tests call this directly after
-/// [`did_change_phase1`] to inspect what would be published.
+/// each stamped with the document's authoritative LSP version from
+/// `doc_versions` (Fix 2), ready for `send_lsp_diagnostics`. Tests call
+/// this directly after [`did_change_phase1`] to inspect what would be
+/// published.
 ///
 /// **Task 3 (optimization)**: this function now does BOTH the analysis AND
 /// the LSP diagnostic building (previously split between phase 2 and phase 3).
 /// The LSP `publish_diagnostics` await is now lock-free (done by
-/// `send_lsp_diagnostics` in the async `did_change` wrapper).
+/// `send_lsp_diagnostics` in the async caller — since Fix 2, the
+/// single-flight diagnostics worker).
 ///
-/// Returns `Vec<(Url, Vec<Diagnostic>)>` — pre-built diagnostics grouped by
-/// URI, ready to send to the client without any state access.
+/// Returns `Vec<(Url, Option<i32>, Vec<Diagnostic>)>` — pre-built,
+/// versioned diagnostics grouped by URI, ready to send to the client
+/// without any state access.
 pub fn did_change_phase2(
     inner: &crate::state::ServerStateInner,
     uri: &url::Url,
-) -> Vec<(url::Url, Vec<lsp_types::Diagnostic>)> {
+) -> Vec<(url::Url, Option<i32>, Vec<lsp_types::Diagnostic>)> {
     let diagnostics = helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
     tracing::trace!(
         file = %uri,
@@ -883,16 +928,179 @@ pub fn did_change_phase2(
     }
 
     // Task 3: build LSP diagnostics under the read lock (sync), so the
-    // async send can be lock-free.
+    // async send can be lock-free. Fix 2: stamp each URI with its
+    // authoritative version under the same read lock.
     let sigils = helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-    helpers::build_all_lsp_diagnostics(
-        &diagnostics,
-        &inner.format_diagnostics,
-        &inner.open_documents,
-        &inner.workspace,
-        &inner.workspace.config,
-        &sigils,
+    helpers::stamp_doc_versions(
+        inner,
+        helpers::build_all_lsp_diagnostics(
+            &diagnostics,
+            &inner.format_diagnostics,
+            &inner.open_documents,
+            &inner.workspace,
+            &inner.workspace.config,
+            &sigils,
+        ),
     )
+}
+
+// ===========================================================================
+// Single-flight diagnostics worker (Fix 2, Option C)
+// ===========================================================================
+//
+// Every pre-Fix-2 `did_change` ran Phase 2 (full-workspace analysis, ~19 ms
+// on the 500-passage bench fixture — 79% of the per-keystroke pipeline) and
+// Phase 3 (publish) synchronously, per keystroke, 100% redundantly during a
+// typing burst. The failed gen-1 DebounceTimer (deliberately unwired in
+// a680738 after the "token coloring fumbling" bug) established the design
+// constraint this implementation follows: NEVER delay or drop the
+// synchronous path (Phase 1); coalesce only the client-facing work — the
+// same principle as the pull-mode semantic-token refresh
+// (`schedule_semantic_token_refresh`) that survived where the push-mode
+// timer failed.
+
+/// Pre-built, versioned diagnostics ready for publishing (Fix 2).
+pub type VersionedDiagnostics = Vec<(url::Url, Option<i32>, Vec<lsp_types::Diagnostic>)>;
+
+/// Publish target for the single-flight analysis worker.
+///
+/// Production implements this for `tower_lsp::Client`; the ordering tests
+/// record batches to assert coalescing/tail/close/panic behavior without a
+/// real client connection.
+pub(crate) trait DiagnosticsSink: Send + Sync + 'static {
+    fn publish(&self, batch: VersionedDiagnostics) -> impl std::future::Future<Output = ()> + Send;
+}
+
+impl DiagnosticsSink for tower_lsp::Client {
+    async fn publish(&self, batch: VersionedDiagnostics) {
+        for (uri, version, diagnostics) in batch {
+            self.publish_diagnostics(uri, diagnostics, version).await;
+        }
+    }
+}
+
+/// Tunables for [`run_diagnostics_worker`] — fields, not consts, so the
+/// ordering tests can run with millisecond-scale values (plan §6.4-2).
+#[derive(Clone, Copy, Debug)]
+pub struct WorkerTunables {
+    /// How long the burst must stay quiet before an analysis runs
+    /// (trailing edge). 50 ms in production.
+    pub quiet_slice: std::time::Duration,
+    /// Hard cap on how far analysis may lag behind the newest edit.
+    /// 500 ms in production (at most ~2 analyses/sec while typing
+    /// continuously; the final state always publishes on pause).
+    pub max_lag: std::time::Duration,
+}
+
+impl Default for WorkerTunables {
+    fn default() -> Self {
+        Self {
+            quiet_slice: std::time::Duration::from_millis(50),
+            max_lag: std::time::Duration::from_millis(500),
+        }
+    }
+}
+
+/// The single-flight analysis worker loop (Fix 2).
+///
+/// `did_change` pings a `tokio::sync::watch` channel after Phase 1
+/// completes and the write lock is dropped. This loop:
+///
+/// 1. wakes on the first ping after an idle period (and consumes it, so
+///    `has_changed` only reports pings arriving during the quiet wait),
+/// 2. waits for a `quiet_slice` gap in typing — consuming intermediate
+///    pings — but never lags more than `max_lag` behind the newest edit
+///    (trailing-edge coalescing with a lag cap),
+/// 3. runs `analyze` (production: [`did_change_phase2`]) under the read
+///    lock, wrapped in `catch_unwind` — one panicking cycle is logged and
+///    dropped, the loop keeps serving the next ping,
+/// 4. skips URIs no longer present in `open_documents` (a document closed
+///    while the cycle was pending must not have its diagnostics
+///    resurrected by a stale cycle), and
+/// 5. publishes the versioned batch through `sink` lock-free, so client
+///    awaits never block the next keystroke's Phase 1.
+///
+/// `watch` is latest-wins by construction: only the newest (URI, stamp)
+/// pair can be observed, which makes stale-overwrite races structurally
+/// impossible — the worker can never wake up to process an old ping.
+///
+/// The `analyze` parameter makes the analysis injectable so the ordering
+/// suite (plan §6.4) can pin burst coalescing, tail delivery, close
+/// handling, version ordering, and panic liveness.
+pub(crate) async fn run_diagnostics_worker<S, F>(
+    sink: S,
+    inner: std::sync::Arc<tokio::sync::RwLock<crate::state::ServerStateInner>>,
+    mut rx: tokio::sync::watch::Receiver<(url::Url, u64)>,
+    tunables: WorkerTunables,
+    analyze: F,
+) where
+    S: DiagnosticsSink,
+    F: Fn(&crate::state::ServerStateInner, &url::Url) -> VersionedDiagnostics + Send + 'static,
+{
+    loop {
+        // Wake on the first ping after an idle period. The sender lives as
+        // long as `ServerState`; an error means the server shut down.
+        if rx.changed().await.is_err() {
+            tracing::debug!("diagnostics worker: channel closed — exiting");
+            return;
+        }
+        // Consume the waking ping so `has_changed` below only reports pings
+        // arriving DURING the quiet-window wait. The latest trigger URI is
+        // used for phase-2 logging (it is not part of the analysis input).
+        let (trigger_uri, _stamp) = rx.borrow_and_update().clone();
+
+        // Trailing-edge coalescing with a max-lag cap: wait for a quiet
+        // gap; keep consuming pings while typing continues; never lag more
+        // than `max_lag` behind the newest edit.
+        let deadline = tokio::time::Instant::now() + tunables.max_lag;
+        loop {
+            tokio::time::sleep(tunables.quiet_slice).await;
+            // `has_changed` errors only when the channel closed (server
+            // shutdown) — treat that as "quiet" so this last cycle still
+            // analyzes; the outer `changed().await` exits on the next lap.
+            if !rx.has_changed().unwrap_or(false) {
+                break; // quiet period — analyze now
+            }
+            rx.borrow_and_update(); // consume; typing continues
+            if tokio::time::Instant::now() >= deadline {
+                break; // lag cap — analyze now even mid-burst
+            }
+        }
+
+        // Analyze under the read lock; filter out documents closed while
+        // this cycle was pending while the lock is still held (no extra
+        // lock time); contain analysis panics like `did_open` does.
+        let prebuilt: VersionedDiagnostics = {
+            let guard = inner.read().await;
+            let analyzed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                analyze(&guard, &trigger_uri)
+            }));
+            match analyzed {
+                Ok(mut batch) => {
+                    batch.retain(|(uri, _, _)| guard.open_documents.contains_key(uri));
+                    batch
+                }
+                Err(payload) => {
+                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    tracing::error!(
+                        "diagnostics worker: analysis panicked ({msg}) — \
+                         skipping this cycle, worker stays alive"
+                    );
+                    continue;
+                }
+            }
+        };
+
+        // Publish lock-free — the client awaits do not touch the state, so
+        // the next keystroke's Phase 1 is never blocked by the network.
+        sink.publish(prebuilt).await;
+    }
 }
 
 /// Incremental re-parse path for `WithinPassage` edits (M2).
@@ -904,11 +1112,18 @@ pub fn did_change_phase2(
 /// 3. Extracts the post-edit passage text from `text_after`.
 /// 4. Calls `parse_passage_incremental` (which wraps `parse_passage_mut` in
 ///    `catch_unwind`).
-/// 5. On success: builds a `Document` by cloning `doc_before`, splicing in
-///    the new passage, and fixing up `passage_offset` for subsequent passages.
+/// 5. On success: builds a `Document` by splicing the new passage into
+///    the caller's pre-edit snapshot (`doc_before`, passed by value —
+///    Fix 3, R3: the caller's single `Document` clone IS the new document;
+///    no second clone), fixing up `passage_offset` for subsequent passages.
 /// 6. On panic: calls `replace_passage_with_error` to emit a scoped diagnostic.
 /// 7. On `ClassificationFailed` or `NoPlugin`: returns `None` to signal the
 ///    caller to fall back to full re-parse.
+///
+/// Note (Fix 3, R4): the returned `ParseResult` carries `passages: Vec::new()`
+/// on both success and panic paths — on the incremental path only
+/// `diagnostic_groups` / `token_groups` are read (by the caller's
+/// `merge_incremental_*`); the spliced `Document` carries the passages.
 ///
 /// Returns `Some((Document, ParseResult, panicked))` on success or
 /// panic-contained failure, or `None` if the caller should fall back to
@@ -921,7 +1136,7 @@ fn did_change_incremental(
     format: &knot_core::passage::StoryFormat,
     version: i32,
     text_after: &str,
-    doc_before: Option<&knot_core::Document>,
+    doc_before: Option<knot_core::Document>,
     passage_name: &str,
 ) -> Option<(knot_core::Document, knot_formats::plugin::ParseResult, bool)> {
     let doc_before = doc_before?;
@@ -1078,8 +1293,9 @@ fn did_change_incremental(
 
     match incremental_result {
         Ok(single_result) => {
-            // Success: splice the new passage into the document.
-            let mut new_doc = doc_before.clone();
+            // Success: splice the new passage into the caller's pre-edit
+            // snapshot (Fix 3, R3 — consumed by value; no clone).
+            let mut new_doc = doc_before;
             // Replace the passage by name. The incremental plugin path only
             // receives name + tags, so restore the header tooling metadata
             // (position/group/color/size — an edit on the header line can
@@ -1112,8 +1328,14 @@ fn did_change_incremental(
             // parse replace the old ones for this passage; other passages'
             // groups are preserved from doc_before's cached state (the
             // caller handles the cache merge via merge_incremental_*).
+            //
+            // Fix 3, R4: `passages` is left EMPTY — on the incremental path
+            // nothing reads it (the caller's merge helpers touch only the
+            // group fields; the spliced `new_doc` carries the passages into
+            // the workspace). Populating it used to deep-copy every passage
+            // on every keystroke for no reader.
             let full_result = knot_formats::plugin::ParseResult {
-                passages: new_doc.passages.clone(),
+                passages: Vec::new(),
                 token_groups: single_result.token_groups,
                 diagnostic_groups: single_result.diagnostic_groups,
                 is_complete: true,
@@ -1169,7 +1391,11 @@ fn did_change_incremental(
                 "did_change_incremental: passage parse panicked — scoped error emitted"
             );
 
-            let mut new_doc = doc_before.clone();
+            // Fix 3, R3: borrow for the error group BEFORE taking ownership
+            // of the snapshot (the old code cloned the whole document just
+            // to keep a borrow alive past the move).
+            let error_group = helpers::replace_passage_with_error(&doc_before, passage_name, &msg);
+            let mut new_doc = doc_before;
             new_doc.version = version;
             // Task 2 (optimization): steal the mutated rope from the
             // workspace doc instead of rebuilding from String. Same
@@ -1189,7 +1415,7 @@ fn did_change_incremental(
             }
 
             // Build a diagnostic group for the panicked passage.
-            let error_group = helpers::replace_passage_with_error(doc_before, passage_name, &msg);
+            // (computed BEFORE the move into new_doc — see R3 note above)
 
             // The ParseResult contains only the panicked passage's
             // diagnostic group (no token groups — the plugin panicked
@@ -1201,7 +1427,7 @@ fn did_change_incremental(
             // we don't show stale tokens for broken JS. Other passages'
             // cache entries are untouched.
             let full_result = knot_formats::plugin::ParseResult {
-                passages: new_doc.passages.clone(),
+                passages: Vec::new(), // Fix 3, R4 — see success path note
                 token_groups: Vec::new(),
                 diagnostic_groups: vec![error_group.unwrap_or_else(|| {
                     knot_formats::plugin::PassageDiagnosticGroup {
@@ -1241,10 +1467,10 @@ pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentP
     inner.editor_open_docs.remove(&uri);
     inner.format_diagnostics.remove(&uri);
     inner.semantic_tokens.remove(&uri);
-    // Clean up the version entry to prevent unbounded memory growth.
-    // The version will be re-inserted with the client's authoritative
-    // version if the document is re-opened.
-    inner.doc_versions.remove(&uri);
+    // Fix 2: capture the last known version BEFORE the entry is removed —
+    // the clear below publishes with it, so clients that order by version
+    // discard any in-flight worker push built from a pre-close state.
+    let last_version = inner.doc_versions.remove(&uri);
 
     // Decide whether to drop the document from the workspace graph.
     //
@@ -1285,10 +1511,12 @@ pub(crate) async fn did_close(state: &ServerState, params: DidCloseTextDocumentP
 
     drop(inner);
 
-    // Clear diagnostics for the closed file.
+    // Clear diagnostics for the closed file, versioned with the document's
+    // last known LSP version (Fix 2 — `None` if it was never opened in the
+    // editor, matching the pre-Fix-2 behavior).
     state
         .client
-        .publish_diagnostics(uri, Vec::new(), None)
+        .publish_diagnostics(uri, Vec::new(), last_version)
         .await;
 }
 
@@ -1385,13 +1613,16 @@ pub(crate) async fn did_change_configuration(
         let diagnostics =
             helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
         let sigils = helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-        helpers::build_all_lsp_diagnostics(
-            &diagnostics,
-            &inner.format_diagnostics,
-            &inner.open_documents,
-            &inner.workspace,
-            &inner.workspace.config,
-            &sigils,
+        helpers::stamp_doc_versions(
+            &inner,
+            helpers::build_all_lsp_diagnostics(
+                &diagnostics,
+                &inner.format_diagnostics,
+                &inner.open_documents,
+                &inner.workspace,
+                &inner.workspace.config,
+                &sigils,
+            ),
         )
     }; // ← read lock dropped
 
@@ -1477,13 +1708,16 @@ pub(crate) async fn did_change_watched_files(
                         );
                         let sigils =
                             helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-                        helpers::build_all_lsp_diagnostics(
-                            &diagnostics,
-                            &inner.format_diagnostics,
-                            &inner.open_documents,
-                            &inner.workspace,
-                            &inner.workspace.config,
-                            &sigils,
+                        helpers::stamp_doc_versions(
+                            &inner,
+                            helpers::build_all_lsp_diagnostics(
+                                &diagnostics,
+                                &inner.format_diagnostics,
+                                &inner.open_documents,
+                                &inner.workspace,
+                                &inner.workspace.config,
+                                &sigils,
+                            ),
                         )
                     }; // ← read lock dropped
 
@@ -1531,13 +1765,16 @@ pub(crate) async fn did_change_watched_files(
                     let diagnostics =
                         helpers::analyze_with_format_vars(&inner.workspace, &inner.format_registry);
                     let sigils = helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-                    helpers::build_all_lsp_diagnostics(
-                        &diagnostics,
-                        &inner.format_diagnostics,
-                        &inner.open_documents,
-                        &inner.workspace,
-                        &inner.workspace.config,
-                        &sigils,
+                    helpers::stamp_doc_versions(
+                        &inner,
+                        helpers::build_all_lsp_diagnostics(
+                            &diagnostics,
+                            &inner.format_diagnostics,
+                            &inner.open_documents,
+                            &inner.workspace,
+                            &inner.workspace.config,
+                            &sigils,
+                        ),
                     )
                 }; // ← read lock dropped
 
@@ -1611,13 +1848,16 @@ pub(crate) async fn did_change_watched_files(
                         );
                         let sigils =
                             helpers::compute_sigils(&inner.format_registry, &inner.workspace);
-                        helpers::build_all_lsp_diagnostics(
-                            &diagnostics,
-                            &inner.format_diagnostics,
-                            &inner.open_documents,
-                            &inner.workspace,
-                            &inner.workspace.config,
-                            &sigils,
+                        helpers::stamp_doc_versions(
+                            &inner,
+                            helpers::build_all_lsp_diagnostics(
+                                &diagnostics,
+                                &inner.format_diagnostics,
+                                &inner.open_documents,
+                                &inner.workspace,
+                                &inner.workspace.config,
+                                &sigils,
+                            ),
                         )
                     }; // ← read lock dropped
 
@@ -1633,26 +1873,32 @@ pub(crate) async fn did_change_watched_files(
     }
 }
 
-/// Apply incremental document changes and return the resulting full text.
+/// Apply a `didChange` batch to the workspace doc's rope snapshot and return
+/// the post-edit full text, together with the net **byte delta** and **line
+/// delta** of the batch.
 ///
 /// With INCREMENTAL sync, each `TextDocumentContentChangeEvent` contains
 /// a `range` (the region being replaced) and `text` (the replacement text).
 /// If the range is `None`, the change is a full-text replacement.
 ///
-/// This function:
-/// 1. Gets the current document from the workspace
-/// 2. If the document has a snapshot, converts each LSP range to a byte range
-///    and applies changes incrementally to the rope
-/// 3. If no snapshot is available, falls back to the full text from the last
-///    change event (backward-compatible behavior)
-/// 4. Returns the full text after all changes have been applied
+/// The deltas are computed from the very byte ranges that get applied
+/// (`Σ len(inserted) − (range.end − range.start)`, and the newline-count
+/// equivalent), which is arithmetically identical to comparing the pre- and
+/// post-edit texts — without materializing a pre-edit copy (Fix 3, R1). On
+/// the full-replacement / no-snapshot recovery paths the deltas are computed
+/// against the cached text length instead (cheap, allocation-free, and only
+/// consumed on the incremental path anyway).
+///
+/// Kept private: `did_change_phase1` is the only caller.
 fn apply_document_changes(
     inner: &mut ServerStateInner,
     uri: &Url,
     version: i32,
     content_changes: Vec<TextDocumentContentChangeEvent>,
-) -> String {
+) -> (String, isize, isize) {
     use crate::handlers::helpers::lsp_range_to_byte_range;
+
+    let newline_count = |t: &str| t.bytes().filter(|&b| b == b'\n').count() as isize;
 
     // Collect incremental changes as (byte_range, new_text) pairs.
     // We need the current text to convert LSP positions to byte offsets.
@@ -1685,72 +1931,159 @@ fn apply_document_changes(
                 doc.set_snapshot_from_text(&text);
             }
 
+            let (cached_len, cached_newlines) = inner
+                .open_documents
+                .get(uri)
+                .map(|s| (s.len() as isize, newline_count(s)))
+                .unwrap_or((0, 0));
+            let byte_delta = text.len() as isize - cached_len;
+            let line_delta = newline_count(&text) - cached_newlines;
+
             tracing::debug!(
                 file = %uri,
                 version,
                 text_len = text.len(),
                 "apply_document_changes: full-text replacement"
             );
-            text
+            (text, byte_delta, line_delta)
         } else {
-            // All changes have ranges — apply incrementally
-            // We need to build the list of (byte_range, new_text) pairs.
-            // Important: LSP positions in each change refer to the document
-            // state *after* all previous changes in the list have been applied.
-            // So we must apply them one at a time, converting positions using
-            // the current text state each time.
+            // All changes have ranges — apply incrementally.
+            //
+            // Fix 3, R6: VS Code sends ONE change event per keystroke. The
+            // single-change fast path converts its LSP range against a
+            // BORROW of the cached text — no O(doc) clone, no
+            // evolving-text rebuild. Multi-change batches (paste, format-
+            // on-save) keep the evolving-text approach below; their O(n·k)
+            // cost is acceptable on those cold paths.
 
             // Get the current full text for position conversion
-            let current_text = inner.open_documents.get(uri).cloned().unwrap_or_default();
+            if content_changes.len() == 1 {
+                // ── Hot path: exactly one change event ──
+                let TextDocumentContentChangeEvent {
+                    range,
+                    text: new_text,
+                    ..
+                } = content_changes.into_iter().next().expect("len == 1");
+                let range = range.expect("checked above: no full-replace in this branch");
 
-            // Apply changes one by one using Document::apply_incremental_change
-            // We need to track the evolving text for position conversion
-            let mut evolving_text = current_text;
-            let mut byte_changes: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+                let byte_delta;
+                let line_delta;
+                let byte_changes = {
+                    // Borrow the cached text ONLY for position conversion;
+                    // the borrow dies before the rope mutation below.
+                    let cached: &str = inner
+                        .open_documents
+                        .get(uri)
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    let byte_range = lsp_range_to_byte_range(cached, &range);
+                    byte_delta =
+                        new_text.len() as isize - (byte_range.end - byte_range.start) as isize;
+                    line_delta = newline_count(&new_text)
+                        - newline_count(&cached[byte_range.start..byte_range.end]);
+                    vec![(byte_range, new_text)]
+                };
 
-            for change in &content_changes {
-                if let Some(range) = &change.range {
-                    let byte_range = lsp_range_to_byte_range(&evolving_text, range);
-                    byte_changes.push((byte_range.clone(), change.text.clone()));
-
-                    // Update evolving_text to reflect this change so that
-                    // subsequent position conversions are correct
-                    let mut new_text = String::with_capacity(
-                        evolving_text.len() - (byte_range.end - byte_range.start)
-                            + change.text.len(),
-                    );
-                    new_text.push_str(&evolving_text[..byte_range.start]);
-                    new_text.push_str(&change.text);
-                    new_text.push_str(&evolving_text[byte_range.end..]);
-                    evolving_text = new_text;
-                }
-            }
-
-            // Now apply all changes to the document's rope snapshot
-            if let Some(doc) = inner.workspace.get_document_mut(uri) {
-                match doc.apply_incremental_change(version, &byte_changes) {
-                    Some(text) => {
-                        tracing::debug!(
-                            file = %uri,
-                            version,
-                            change_count = byte_changes.len(),
-                            text_len = text.len(),
-                            "apply_document_changes: incremental applied"
-                        );
-                        return text;
+                // Apply to the rope snapshot (borrow of open_documents is
+                // done; `inner` can be mutably borrowed again).
+                if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                    match doc.apply_incremental_change(version, &byte_changes) {
+                        Some(text) => {
+                            tracing::debug!(
+                                file = %uri,
+                                version,
+                                change_count = 1,
+                                text_len = text.len(),
+                                "apply_document_changes: incremental applied (single change)"
+                            );
+                            return (text, byte_delta, line_delta);
+                        }
+                        None => {
+                            tracing::warn!(
+                                file = %uri,
+                                "apply_document_changes: snapshot unexpectedly None, falling back to full text"
+                            );
+                        }
                     }
-                    None => {
-                        // Snapshot wasn't available after all — fall back
-                        tracing::warn!(
-                            file = %uri,
-                            "apply_document_changes: snapshot unexpectedly None, falling back to full text"
+                }
+
+                // Fallback (snapshot unexpectedly gone): rebuild the text
+                // from the cache + the one change. Rare defensive path.
+                let cached = inner.open_documents.get(uri).cloned().unwrap_or_default();
+                let (r, t) = &byte_changes[0];
+                let mut rebuilt = String::with_capacity(cached.len() - (r.end - r.start) + t.len());
+                rebuilt.push_str(&cached[..r.start]);
+                rebuilt.push_str(t);
+                rebuilt.push_str(&cached[r.end..]);
+                (rebuilt, byte_delta, line_delta)
+            } else {
+                // ── Cold path: multi-change batch (paste / format) ──
+                // We need to build the list of (byte_range, new_text) pairs.
+                // Important: LSP positions in each change refer to the document
+                // state *after* all previous changes in the list have been applied.
+                // So we must apply them one at a time, converting positions using
+                // the current text state each time.
+
+                // Get the current full text for position conversion
+                let current_text = inner.open_documents.get(uri).cloned().unwrap_or_default();
+
+                // Apply changes one by one using Document::apply_incremental_change
+                // We need to track the evolving text for position conversion
+                let mut evolving_text = current_text;
+                let mut byte_changes: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+                // Net byte/line deltas accumulated from the applied ranges
+                // (Fix 3, R1 — equivalent to comparing pre/post text lengths).
+                let mut byte_delta: isize = 0;
+                let mut line_delta: isize = 0;
+
+                for change in &content_changes {
+                    if let Some(range) = &change.range {
+                        let byte_range = lsp_range_to_byte_range(&evolving_text, range);
+                        byte_delta += change.text.len() as isize
+                            - (byte_range.end - byte_range.start) as isize;
+                        line_delta += newline_count(&change.text)
+                            - newline_count(&evolving_text[byte_range.clone()]);
+                        byte_changes.push((byte_range.clone(), change.text.clone()));
+
+                        // Update evolving_text to reflect this change so that
+                        // subsequent position conversions are correct
+                        let mut new_text = String::with_capacity(
+                            evolving_text.len() - (byte_range.end - byte_range.start)
+                                + change.text.len(),
                         );
+                        new_text.push_str(&evolving_text[..byte_range.start]);
+                        new_text.push_str(&change.text);
+                        new_text.push_str(&evolving_text[byte_range.end..]);
+                        evolving_text = new_text;
                     }
                 }
-            }
 
-            // Fallback: return the evolved text we computed manually
-            evolving_text
+                // Now apply all changes to the document's rope snapshot
+                if let Some(doc) = inner.workspace.get_document_mut(uri) {
+                    match doc.apply_incremental_change(version, &byte_changes) {
+                        Some(text) => {
+                            tracing::debug!(
+                                file = %uri,
+                                version,
+                                change_count = byte_changes.len(),
+                                text_len = text.len(),
+                                "apply_document_changes: incremental applied"
+                            );
+                            return (text, byte_delta, line_delta);
+                        }
+                        None => {
+                            // Snapshot wasn't available after all — fall back
+                            tracing::warn!(
+                                file = %uri,
+                                "apply_document_changes: snapshot unexpectedly None, falling back to full text"
+                            );
+                        }
+                    }
+                }
+
+                // Fallback: return the evolved text we computed manually
+                (evolving_text, byte_delta, line_delta)
+            }
         }
     } else {
         // No snapshot available.
@@ -1794,7 +2127,14 @@ fn apply_document_changes(
                 text_len = text.len(),
                 "apply_document_changes: no snapshot, full-text replacement"
             );
-            text
+            let (cached_len, cached_newlines) = inner
+                .open_documents
+                .get(uri)
+                .map(|s| (s.len() as isize, newline_count(s)))
+                .unwrap_or((0, 0));
+            let byte_delta = text.len() as isize - cached_len;
+            let line_delta = newline_count(&text) - cached_newlines;
+            (text, byte_delta, line_delta)
         } else {
             match uri
                 .to_file_path()
@@ -1808,18 +2148,26 @@ fn apply_document_changes(
                         doc.version = version;
                         doc.set_snapshot_from_text(&disk_text);
                     }
+                    let (cached_len, cached_newlines) = inner
+                        .open_documents
+                        .get(uri)
+                        .map(|s| (s.len() as isize, newline_count(s)))
+                        .unwrap_or((0, 0));
+                    let byte_delta = disk_text.len() as isize - cached_len;
+                    let line_delta = newline_count(&disk_text) - cached_newlines;
                     tracing::warn!(
                         file = %uri,
                         version,
                         text_len = disk_text.len(),
                         "apply_document_changes: no snapshot for incremental change, re-read from disk"
                     );
-                    disk_text
+                    (disk_text, byte_delta, line_delta)
                 }
                 None => {
                     // Cannot reconstruct the document — keep the previously
                     // cached text so the cache is not corrupted by the
                     // snippet. The next full-text sync/save heals the state.
+                    // Delta against the cache is zero by construction.
                     let stale = inner.open_documents.get(uri).cloned().unwrap_or_default();
                     tracing::warn!(
                         file = %uri,
@@ -1827,7 +2175,7 @@ fn apply_document_changes(
                         text_len = stale.len(),
                         "apply_document_changes: no snapshot for incremental change and disk re-read failed, keeping stale cache"
                     );
-                    stale
+                    (stale, 0, 0)
                 }
             }
         }
@@ -1886,7 +2234,6 @@ mod tests {
         let inner = crate::state::ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: knot_core::editing::DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();
@@ -2145,8 +2492,8 @@ mod tests {
         // Flatten all diagnostics for the edited URI.
         let all_diags: Vec<&lsp_types::Diagnostic> = prebuilt
             .iter()
-            .filter(|(u, _)| u == &uri)
-            .flat_map(|(_, diags)| diags.iter())
+            .filter(|(u, _, _)| u == &uri)
+            .flat_map(|(_, _, diags)| diags.iter())
             .collect();
 
         // The format diagnostics should contain at least one sc-js error
@@ -2345,5 +2692,572 @@ mod tests {
             second_tokens_after.passage_offset, second_diags_after.passage_offset,
             "Token and diagnostic groups should have the same passage_offset"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 3 (hot-path de-cloning) — regression tests
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    fn newlines(t: &str) -> isize {
+        t.bytes().filter(|&b| b == b'\n').count() as isize
+    }
+
+    /// Snap a byte offset down to the nearest UTF-8 char boundary.
+    /// Production byte offsets are always boundary-aligned (they are
+    /// derived from char-aware UTF-16 position conversion), so the property
+    /// test generates the same class of offsets real editors send.
+    fn snap_to_boundary(t: &str, mut i: usize) -> usize {
+        while i > 0 && !t.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    }
+
+    // Fix 3, R1: the byte/line deltas returned by `apply_document_changes`
+    // must equal the deltas computed by comparing the pre- and post-edit
+    // texts directly. This is the one place the classify-before-apply
+    // reorder can silently break, so it gets a property test (plan §5.4).
+    //
+    // Change batches are constructed stepwise (each change's LSP positions
+    // are derived from the text state AFTER the previous changes, matching
+    // LSP incremental-sync semantics). Ranges are clamped to the evolving
+    // text, which keeps every generated batch valid while still exercising
+    // multi-change batches, shrinks, growth, and Unicode.
+    proptest! {
+        #[test]
+        fn apply_document_changes_delta_matches_text_diff(
+            base in "\\PC*",
+            edits in prop::collection::vec((any::<usize>(), any::<usize>(), "\\PC*"), 0..6),
+            full_replace in any::<bool>(),
+        ) {
+            let (mut inner, uri) = build_state(&base);
+
+            // Stepwise: build change events against the evolving text.
+            let mut evolving = base.clone();
+            let mut changes: Vec<TextDocumentContentChangeEvent> = Vec::new();
+            for (s, e, t) in edits {
+                let len = evolving.len();
+                let start = snap_to_boundary(&evolving, s % (len + 1));
+                let end = snap_to_boundary(&evolving, start + (e % (len + 1 - start)));
+                let sp = helpers::byte_offset_to_position(&evolving, start);
+                let ep = helpers::byte_offset_to_position(&evolving, end);
+                changes.push(TextDocumentContentChangeEvent {
+                    range: Some(LspRange::new(sp, ep)),
+                    range_length: None,
+                    text: t.clone(),
+                });
+                evolving = format!("{}{}{}", &evolving[..start], t, &evolving[end..]);
+            }
+            if full_replace && !evolving.is_empty() {
+                changes = vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: evolving.clone(),
+                }];
+            }
+
+            let expected_byte_delta = evolving.len() as isize - base.len() as isize;
+            let expected_line_delta = newlines(&evolving) - newlines(&base);
+
+            let (after, byte_delta, line_delta) =
+                apply_document_changes(&mut inner, &uri, 2, changes);
+
+            prop_assert_eq!(after, evolving);
+            prop_assert_eq!(byte_delta, expected_byte_delta);
+            prop_assert_eq!(line_delta, expected_line_delta);
+        }
+    }
+
+    /// Fix 3, R3+R4: for a WithinPassage edit, the workspace document the
+    /// incremental path produces (splice into the caller's pre-edit
+    /// snapshot, `ParseResult.passages` left empty) must match the document
+    /// a full re-parse of the same final text produces — same passage set,
+    /// same offsets, same spans, same header lines, same snapshot names.
+    /// This pins the ownership refactor to the pre-existing contract
+    /// (plan §5.4).
+    #[test]
+    fn incremental_splice_equivalence_with_full_reparse() {
+        let src = ":: Start\nHello $name, <<set $x to 1>> and [[Next]].\n\n\
+                   :: Next\nBody two <<if $x>>yes<<else>>no<</if>> tail.\n\n\
+                   :: Third\n[[Next|Start]] the end.\n";
+        let (mut inner, uri) = build_state(src);
+
+        // Insert one char at the start of `Next`'s body (line 4, col 0).
+        let changes = vec![change(4, 0, 4, 0, "x")];
+        let r = did_change_phase1(&mut inner, uri.clone(), 2, changes);
+        assert!(
+            matches!(r.dispatch, DidChangeDispatch::Incremental { .. }),
+            "fixture should take the incremental path, got {:?}",
+            r.dispatch
+        );
+        let inc_doc = inner.workspace.get_document(&uri).unwrap().clone();
+        let edited_text = inner.open_documents[&uri].clone();
+
+        // Same final text, delivered as a full-text replacement.
+        let (mut inner2, uri2) = build_state(src);
+        let full = vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: edited_text.clone(),
+        }];
+        let r2 = did_change_phase1(&mut inner2, uri2.clone(), 2, full);
+        assert!(matches!(r2.dispatch, DidChangeDispatch::WholeDocument));
+        let full_doc = inner2.workspace.get_document(&uri2).unwrap().clone();
+
+        assert_eq!(
+            inc_doc.passages.len(),
+            full_doc.passages.len(),
+            "passage count must match between incremental and full re-parse"
+        );
+        for (a, b) in inc_doc.passages.iter().zip(&full_doc.passages) {
+            assert_eq!(a.name, b.name, "passage name mismatch");
+            assert_eq!(
+                a.passage_offset, b.passage_offset,
+                "passage_offset mismatch for {:?}",
+                a.name
+            );
+            assert_eq!(a.span, b.span, "span mismatch for {:?}", a.name);
+            assert_eq!(a.line, b.line, "header line mismatch for {:?}", a.name);
+        }
+
+        // The snapshot's rope must be the post-edit text and its
+        // passage_names must match the document's passages (order included).
+        let snap = inc_doc
+            .snapshot
+            .as_ref()
+            .expect("incremental doc has snapshot");
+        assert_eq!(snap.rope.to_string(), edited_text);
+        assert_eq!(
+            snap.passage_names,
+            inc_doc
+                .passages
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Fix 3, R2: the text-cache insert moved from the top of phase 1 to its
+    /// end. This test pins the visibility contract against the reorder:
+    /// after `did_change_phase1` returns, `open_documents[uri]` must equal
+    /// the post-change text for every dispatch kind the fixture can reach.
+    ///
+    /// `IncrementalPanic` is not directly injectable with the default
+    /// format registry (it needs a panicking plugin); its phase-1 tail —
+    /// including this insert — is the same code as `Incremental`'s, which
+    /// is covered.
+    #[test]
+    fn phase1_text_cache_visible_after_all_dispatch_kinds() {
+        let src = ":: Alpha\nalpha body [[Beta]]\n\n:: Beta\nbeta body\n";
+        let cases: &[(&str, u32, u32, u32, u32, &str, &str)] = &[
+            // (label, line, char, line, char, inserted, expected dispatch)
+            ("incremental", 1, 0, 1, 0, "x", "Incremental"),
+            (
+                "incremental_fallback",
+                0,
+                2,
+                0,
+                2,
+                "A",
+                "IncrementalFallback",
+            ),
+            (
+                "boundary_crossing",
+                2,
+                0,
+                3,
+                0,
+                ":: Gamma\n",
+                "BoundaryCrossing",
+            ),
+        ];
+        for (label, sl, sc, el, ec, inserted, want) in cases {
+            let (mut inner, uri) = build_state(src);
+            let before = inner.open_documents[&uri].clone();
+            let r = did_change_phase1(
+                &mut inner,
+                uri.clone(),
+                2,
+                vec![change(*sl, *sc, *el, *ec, inserted)],
+            );
+            assert!(
+                format!("{:?}", r.dispatch).starts_with(want),
+                "{label}: expected {want}, got {:?}",
+                r.dispatch
+            );
+            let after = inner.open_documents[&uri].clone();
+            assert_ne!(
+                after, before,
+                "{label}: cache must reflect the post-change text"
+            );
+            // The cached text must be the exact expected post-edit text.
+            let byte = |line: u32, ch: u32| {
+                let text = &before;
+                let mut off = 0usize;
+                for (i, l) in text.lines().enumerate() {
+                    if i as u32 == line {
+                        let mut utf16 = 0u32;
+                        for c in l.chars() {
+                            if utf16 == ch {
+                                return off;
+                            }
+                            utf16 += c.len_utf16() as u32;
+                            off += c.len_utf8();
+                        }
+                        return off;
+                    }
+                    off += l.len() + 1;
+                }
+                off
+            };
+            let s = byte(*sl, *sc);
+            let e = byte(*el, *ec);
+            let expected = format!("{}{}{}", &before[..s], inserted, &before[e..]);
+            assert_eq!(after, expected, "{label}: cached text mismatch");
+        }
+
+        // WholeDocument: a full-text replacement.
+        let (mut inner, uri) = build_state(src);
+        let new_text = ":: Only\nreplaced everything\n".to_string();
+        let r = did_change_phase1(
+            &mut inner,
+            uri.clone(),
+            2,
+            vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: new_text.clone(),
+            }],
+        );
+        assert!(matches!(r.dispatch, DidChangeDispatch::WholeDocument));
+        assert_eq!(inner.open_documents[&uri], new_text);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix 2 (single-flight diagnostics worker) — ordering suite (plan §6.4)
+    // -----------------------------------------------------------------------
+
+    /// Recording sink: captures every published batch so the worker's
+    /// client-facing behavior can be asserted without a real LSP client.
+    #[derive(Clone, Default)]
+    struct RecordingSink(std::sync::Arc<std::sync::Mutex<Vec<VersionedDiagnostics>>>);
+
+    impl RecordingSink {
+        fn batches(&self) -> Vec<VersionedDiagnostics> {
+            self.0.lock().unwrap().clone()
+        }
+        fn entries_for(&self, uri: &url::Url) -> Vec<Option<i32>> {
+            self.batches()
+                .iter()
+                .flat_map(|b| b.iter().filter(|(u, _, _)| u == uri).map(|(_, v, _)| *v))
+                .collect()
+        }
+    }
+
+    impl DiagnosticsSink for RecordingSink {
+        async fn publish(&self, batch: VersionedDiagnostics) {
+            self.0.lock().unwrap().push(batch);
+        }
+    }
+
+    /// Wait until the sink has at least `n` batches, or time out (fails).
+    async fn wait_for_batches(sink: &RecordingSink, n: usize) -> bool {
+        for _ in 0..200 {
+            if sink.batches().len() >= n {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        sink.batches().len() >= n
+    }
+
+    fn fast_tunables() -> WorkerTunables {
+        WorkerTunables {
+            quiet_slice: std::time::Duration::from_millis(5),
+            max_lag: std::time::Duration::from_millis(25),
+        }
+    }
+
+    /// Shared-state fixture: wraps build_state's inner in the Arc<RwLock>
+    /// the worker consumes, and returns the ping sender alongside.
+    fn shared_state(
+        src: &str,
+    ) -> (
+        std::sync::Arc<tokio::sync::RwLock<crate::state::ServerStateInner>>,
+        url::Url,
+        tokio::sync::watch::Sender<(url::Url, u64)>,
+    ) {
+        let (inner, uri) = build_state(src);
+        let shared = std::sync::Arc::new(tokio::sync::RwLock::new(inner));
+        let (tx, _rx) = tokio::sync::watch::channel((uri.clone(), 0u64));
+        (shared, uri, tx)
+    }
+
+    fn ping(tx: &tokio::sync::watch::Sender<(url::Url, u64)>, uri: &url::Url) {
+        tx.send_modify(|(pinged, stamp)| {
+            *pinged = uri.clone();
+            *stamp += 1;
+        });
+    }
+
+    /// §6.4-1 — burst coalescing: N back-to-back keystrokes produce at least
+    /// one and far fewer than N publishes, and the final publish carries the
+    /// LAST did_change version with diagnostics for the final text.
+    #[tokio::test]
+    async fn worker_coalesces_keystroke_bursts() {
+        let (shared, uri, tx) =
+            shared_state(":: Alpha\nalpha body [[Beta]]\n\n:: Beta\nbeta body\n");
+        let rx = tx.subscribe();
+        let sink = RecordingSink::default();
+        let worker = tokio::spawn(run_diagnostics_worker(
+            sink.clone(),
+            shared.clone(),
+            rx,
+            fast_tunables(),
+            did_change_phase2,
+        ));
+
+        // 20 keystrokes back-to-back (each phase 1 + ping, no awaits).
+        for k in 0..20u32 {
+            let mut guard = shared.write().await;
+            did_change_phase1(
+                &mut guard,
+                uri.clone(),
+                2 + k as i32,
+                vec![change(1, 0, 1, 0, "x")],
+            );
+            ping(&tx, &uri);
+        }
+
+        // Wait for the tail publish, then stop the worker.
+        assert!(
+            wait_for_batches(&sink, 1).await,
+            "worker must publish at least once after a burst"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        worker.abort();
+
+        let batches = sink.batches();
+        assert!(
+            batches.len() < 20,
+            "burst of 20 keystrokes must coalesce (got {} publishes)",
+            batches.len()
+        );
+        let versions = sink.entries_for(&uri);
+        assert_eq!(
+            versions.last(),
+            Some(&Some(21)),
+            "final publish must carry the last did_change version"
+        );
+    }
+
+    /// §6.4-2 — tail guarantee: after the last keystroke, a publish
+    /// reflecting the final text arrives within ~2*quiet_slice + slack.
+    #[tokio::test]
+    async fn worker_publishes_final_state_promptly_after_pause() {
+        let (shared, uri, tx) = shared_state(":: Alpha\nalpha body\n\n:: Beta\nbeta body\n");
+        let rx = tx.subscribe();
+        let sink = RecordingSink::default();
+        let worker = tokio::spawn(run_diagnostics_worker(
+            sink.clone(),
+            shared.clone(),
+            rx,
+            fast_tunables(),
+            did_change_phase2,
+        ));
+
+        for k in 0..5u32 {
+            let mut guard = shared.write().await;
+            did_change_phase1(
+                &mut guard,
+                uri.clone(),
+                2 + k as i32,
+                vec![change(1, 0, 1, 0, "y")],
+            );
+            ping(&tx, &uri);
+        }
+
+        // quiet_slice=5ms: the tail publish must land well inside 200 ms.
+        let ok = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            loop {
+                if sink.entries_for(&uri).contains(&Some(6)) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        worker.abort();
+        assert!(
+            ok.is_ok(),
+            "final state (version 6) must publish within the tail window; got {:?}",
+            sink.entries_for(&uri)
+        );
+    }
+
+    /// §6.4-3 — close during pending: a document removed from
+    /// `open_documents` (did_close's out-of-workspace path) while a cycle
+    /// is pending must not be resurrected by the worker's publish.
+    #[tokio::test]
+    async fn worker_skips_document_closed_during_pending_cycle() {
+        let (shared, uri, tx) = shared_state(":: Alpha\nalpha body\n\n:: Beta\nbeta body\n");
+        let rx = tx.subscribe();
+        let sink = RecordingSink::default();
+        let worker = tokio::spawn(run_diagnostics_worker(
+            sink.clone(),
+            shared.clone(),
+            rx,
+            fast_tunables(),
+            did_change_phase2,
+        ));
+
+        // Cycle 1: document open — its diagnostics ARE published
+        // (non-vacuity precondition for the skip assertion below).
+        {
+            let mut guard = shared.write().await;
+            did_change_phase1(&mut guard, uri.clone(), 2, vec![change(1, 0, 1, 0, "x")]);
+        }
+        ping(&tx, &uri);
+        assert!(
+            wait_for_batches(&sink, 1).await,
+            "precondition: open document is published"
+        );
+        assert!(!sink.entries_for(&uri).is_empty());
+
+        // Cycle 2: ping, then close (remove from open_documents) BEFORE the
+        // worker's analysis runs — the pending cycle must skip the URI.
+        {
+            let mut guard = shared.write().await;
+            did_change_phase1(&mut guard, uri.clone(), 3, vec![change(1, 0, 1, 0, "z")]);
+        }
+        ping(&tx, &uri);
+        {
+            let mut guard = shared.write().await;
+            guard.open_documents.remove(&uri);
+        }
+
+        assert!(
+            wait_for_batches(&sink, 2).await,
+            "worker must run the second cycle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        worker.abort();
+
+        let after_close: Vec<_> = sink
+            .batches()
+            .iter()
+            .skip(1)
+            .flat_map(|b| b.iter().map(|(u, _, _)| u.clone()))
+            .collect();
+        assert!(
+            !after_close.contains(&uri),
+            "closed document must not be resurrected by a pending cycle"
+        );
+    }
+
+    /// §6.4-4 — version ordering: versions published for a URI are
+    /// monotonically non-decreasing, and a version bump landing DURING the
+    /// coalescing window is reflected in that cycle's publish (the client
+    /// never accepts a lower version over a higher one).
+    #[tokio::test]
+    async fn worker_publishes_are_version_ordered() {
+        let (shared, uri, tx) = shared_state(":: Alpha\nalpha body\n\n:: Beta\nbeta body\n");
+        let rx = tx.subscribe();
+        let sink = RecordingSink::default();
+        let worker = tokio::spawn(run_diagnostics_worker(
+            sink.clone(),
+            shared.clone(),
+            rx,
+            fast_tunables(),
+            did_change_phase2,
+        ));
+
+        // Cycle 1 at version 2.
+        {
+            let mut guard = shared.write().await;
+            did_change_phase1(&mut guard, uri.clone(), 2, vec![change(1, 0, 1, 0, "x")]);
+        }
+        ping(&tx, &uri);
+        assert!(wait_for_batches(&sink, 1).await);
+
+        // Cycle 2: ping at v3, then immediately bump to v10 (a second
+        // did_change) BEFORE the quiet window elapses — the cycle's publish
+        // must carry the NEWEST version (10), never the stale 3.
+        {
+            let mut guard = shared.write().await;
+            did_change_phase1(&mut guard, uri.clone(), 3, vec![change(1, 0, 1, 0, "y")]);
+        }
+        ping(&tx, &uri);
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        {
+            let mut guard = shared.write().await;
+            did_change_phase1(&mut guard, uri.clone(), 10, vec![change(1, 0, 1, 0, "z")]);
+        }
+
+        assert!(
+            wait_for_batches(&sink, 2).await,
+            "second cycle must publish"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        worker.abort();
+
+        let versions = sink.entries_for(&uri);
+        let mut sorted = versions.clone();
+        sorted.sort_by_key(|v| v.unwrap_or(0));
+        assert_eq!(
+            versions, sorted,
+            "published versions must be monotonically non-decreasing"
+        );
+        assert!(
+            versions.contains(&Some(10)),
+            "the newest version (10) must be the one published for the coalesced cycle, got {versions:?}"
+        );
+    }
+
+    /// §6.4-5 — worker liveness after panic: a panicking analysis cycle is
+    /// contained; the next ping still publishes.
+    #[tokio::test]
+    async fn worker_survives_analysis_panic() {
+        let (shared, uri, tx) = shared_state(":: Alpha\nalpha body\n\n:: Beta\nbeta body\n");
+        let rx = tx.subscribe();
+        let sink = RecordingSink::default();
+
+        // Inject an analysis that panics on the first call, then delegates
+        // to the real phase 2 (a capturing closure — no manual Fn impls).
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let first_in_closure = first.clone();
+        let analyze =
+            move |inner: &crate::state::ServerStateInner, uri: &url::Url| -> VersionedDiagnostics {
+                if first_in_closure.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    panic!("injected analysis panic (test)");
+                }
+                did_change_phase2(inner, uri)
+            };
+
+        let worker = tokio::spawn(run_diagnostics_worker(
+            sink.clone(),
+            shared.clone(),
+            rx,
+            fast_tunables(),
+            analyze,
+        ));
+
+        // Ping 1: panics — no publish, worker must survive.
+        ping(&tx, &uri);
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert!(
+            sink.batches().is_empty(),
+            "panicking cycle must not publish"
+        );
+
+        // Ping 2: real analysis — must still publish.
+        ping(&tx, &uri);
+        assert!(
+            wait_for_batches(&sink, 1).await,
+            "worker must stay alive after a contained analysis panic"
+        );
+        worker.abort();
     }
 }

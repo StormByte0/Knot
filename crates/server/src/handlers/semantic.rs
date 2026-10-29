@@ -672,7 +672,6 @@ mod document_symbol_tests {
     use crate::state::ServerStateInner;
     use knot_core::Document;
     use knot_core::Workspace;
-    use knot_core::editing::DebounceTimer;
     use knot_formats::plugin::FormatRegistry;
     use url::Url;
 
@@ -703,7 +702,6 @@ mod document_symbol_tests {
         let inner = ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();

@@ -1,27 +1,120 @@
-# CI wiring (plan.md Phase 5.3): fmt + clippy + tests on every push/PR.
+# CI (Fix 4, plan §3): parallel jobs so a lint failure can no longer hide
+# test results, and the extension chain (lint + compile + webview build) is
+# validated on every PR instead of only at release time.
 #
-# The lint gates mirror the local verification used throughout plan.md
-# Phases 1-5: `cargo fmt --check`, `cargo clippy --workspace --all-targets
-# -- -D warnings`, `cargo test --workspace`.
+#   rust-lint     fmt + clippy (pinned toolchain, Fix 1)
+#   rust-test     cargo test --workspace — runs even when lint fails
+#   extension     eslint (first time gated anywhere) + tsc + webview build
+#   supply-chain  cargo audit + cargo machete — non-blocking until policy
+#                 review (audit.toml scopes the two known unsound advisories)
+#   canary        weekly floating-stable lint heads-up (Fix 1) — never gates
+#
+# Toolchain is PINNED (rust-toolchain.toml + explicit version below) so lint
+# behavior cannot drift on rolling stable.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 6 * * 1' # weekly canary, Mondays 06:00 UTC
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  rust-lint:
+    name: Rust lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust
       - name: Format check
         run: cargo fmt --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  rust-test:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-rust
       - name: Tests
         run: cargo test --workspace
+
+  extension:
+    name: Extension (lint + compile + webview)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: 'extensions/vscode/.nvmrc'
+          cache: npm
+          cache-dependency-path: |
+            extensions/vscode/package-lock.json
+            extensions/vscode/webview/package-lock.json
+      - name: Install (extension)
+        run: npm ci
+        working-directory: extensions/vscode
+      - name: Lint (eslint)
+        run: npm run lint
+        working-directory: extensions/vscode
+      - name: Compile (extension TS)
+        run: npm run compile
+        working-directory: extensions/vscode
+      - name: Install (webview)
+        run: npm ci
+        working-directory: extensions/vscode/webview
+      - name: Build webview
+        run: npm run build
+        working-directory: extensions/vscode/webview
+
+  # Non-blocking until the ignore policy in .cargo/audit.toml gets a
+  # maintainer review (plan §3.2 step 3). Both tools scan the committed
+  # Cargo.lock. Flip `continue-on-error` to false to make it a gate.
+  supply-chain:
+    name: Supply chain (audit + machete)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          profile: minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-machete
+      - name: cargo audit (advisories vs Cargo.lock)
+        run: cargo audit
+      - name: cargo machete (unused dependencies)
+        run: cargo machete
+
+  # Weekly heads-up on floating stable (Fix 1, plan §2.2 step 5).
+  # Never blocks: when it goes red, re-run `cargo fmt`, fix any new lint, and
+  # bump the pin (rust-toolchain.toml + the jobs above + Cargo.toml
+  # rust-version) in a normal PR.
+  canary:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true # heads-up only, never a gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable # deliberately floating
+        with:
+          components: rustfmt, clippy
+      - name: Format check (floating stable)
+        run: cargo fmt --check
+      - name: Clippy (floating stable)
+        run: cargo clippy --workspace --all-targets -- -D warnings

@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version-file: 'extensions/vscode/.nvmrc'
           cache: 'npm'
           cache-dependency-path: extensions/vscode/webview/package-lock.json
 
@@ -125,7 +125,7 @@ jobs:
       # ── Extension setup ───────────────────────────────────────────────
       - uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version-file: 'extensions/vscode/.nvmrc'
           cache: 'npm'
           cache-dependency-path: extensions/vscode/package-lock.json
 

@@ -56,14 +56,14 @@ impl ServerState {
         // A declared manual link source must be a legal passage name (it
         // may not exist yet — that's flagged by diagnostics, not rejected
         // here — but it must at least survive a header round-trip).
-        if let Some(Some(source)) = params.reachable.as_ref() {
-            if let Err(e) = helpers::validate_passage_name(source) {
-                return Ok(KnotUpdatePassageMetadataResponse {
-                    success: false,
-                    new_header: None,
-                    error: Some(format!("Invalid manual link source: {}", e)),
-                });
-            }
+        if let Some(Some(source)) = params.reachable.as_ref()
+            && let Err(e) = helpers::validate_passage_name(source)
+        {
+            return Ok(KnotUpdatePassageMetadataResponse {
+                success: false,
+                new_header: None,
+                error: Some(format!("Invalid manual link source: {}", e)),
+            });
         }
 
         let Some(file_uri) = inner.workspace.find_passage_file_uri(&params.passage_name) else {
@@ -291,19 +291,22 @@ impl ServerState {
                 };
                 match helpers::update_passage_header(line, edits) {
                     Ok(new_line) => {
-                        changes.entry(file_uri.clone()).or_default().push(LspTextEdit {
-                            range: lsp_types::Range {
-                                start: lsp_types::Position {
-                                    line: line_idx as u32,
-                                    character: 0,
+                        changes
+                            .entry(file_uri.clone())
+                            .or_default()
+                            .push(LspTextEdit {
+                                range: lsp_types::Range {
+                                    start: lsp_types::Position {
+                                        line: line_idx as u32,
+                                        character: 0,
+                                    },
+                                    end: lsp_types::Position {
+                                        line: line_idx as u32,
+                                        character: helpers::utf16_len(line),
+                                    },
                                 },
-                                end: lsp_types::Position {
-                                    line: line_idx as u32,
-                                    character: helpers::utf16_len(line),
-                                },
-                            },
-                            new_text: new_line,
-                        });
+                                new_text: new_line,
+                            });
                         updated_count += 1;
                     }
                     Err(e) => {
@@ -389,7 +392,11 @@ impl ServerState {
                 error: Some(e),
             });
         }
-        if inner.workspace.find_passage_file_uri(&params.name).is_some() {
+        if inner
+            .workspace
+            .find_passage_file_uri(&params.name)
+            .is_some()
+        {
             return Ok(KnotCreatePassageResponse {
                 success: false,
                 file: None,
@@ -477,9 +484,7 @@ impl ServerState {
                 success: false,
                 file: None,
                 line: None,
-                error: Some(
-                    "No twee files in the workspace — create a file first".to_string(),
-                ),
+                error: Some("No twee files in the workspace — create a file first".to_string()),
             });
         };
 
@@ -505,9 +510,7 @@ impl ServerState {
                     success: false,
                     file: None,
                     line: None,
-                    error: Some(
-                        "New file must end in '.twee' or '.tw'".to_string(),
-                    ),
+                    error: Some("New file must end in '.twee' or '.tw'".to_string()),
                 });
             }
             if !target.starts_with(&root) {
@@ -515,9 +518,7 @@ impl ServerState {
                     success: false,
                     file: None,
                     line: None,
-                    error: Some(
-                        "New file must be inside the workspace root".to_string(),
-                    ),
+                    error: Some("New file must be inside the workspace root".to_string()),
                 });
             }
         }
@@ -575,7 +576,7 @@ impl ServerState {
         let workspace_edit = if needs_create {
             use lsp_types::{
                 CreateFile, CreateFileOptions, DocumentChangeOperation, DocumentChanges,
-                ResourceOp, TextDocumentEdit, OptionalVersionedTextDocumentIdentifier,
+                OptionalVersionedTextDocumentIdentifier, ResourceOp, TextDocumentEdit,
             };
             WorkspaceEdit {
                 changes: None,
@@ -599,10 +600,8 @@ impl ServerState {
                 change_annotations: None,
             }
         } else {
-            let changes: HashMap<Url, Vec<LspTextEdit>> = HashMap::from([(
-                file_uri.clone(),
-                vec![insert_edit],
-            )]);
+            let changes: HashMap<Url, Vec<LspTextEdit>> =
+                HashMap::from([(file_uri.clone(), vec![insert_edit])]);
             WorkspaceEdit {
                 changes: Some(changes),
                 document_changes: None,
@@ -723,19 +722,22 @@ impl ServerState {
         // Delete the whole block: [header start, next header start) —
         // this consumes the blank separator lines before the next
         // passage, leaving a clean boundary.
-        changes.entry(file_uri.clone()).or_default().push(LspTextEdit {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
-                    line: header_line,
-                    character: 0,
+        changes
+            .entry(file_uri.clone())
+            .or_default()
+            .push(LspTextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position {
+                        line: header_line,
+                        character: 0,
+                    },
+                    end: lsp_types::Position {
+                        line: end_line,
+                        character: 0,
+                    },
                 },
-                end: lsp_types::Position {
-                    line: end_line,
-                    character: 0,
-                },
-            },
-            new_text: String::new(),
-        });
+                new_text: String::new(),
+            });
 
         // ── Optional link stripping (wikilinks only) ───────────────────
         let mut links_stripped: u32 = 0;
@@ -759,9 +761,7 @@ impl ServerState {
                         // Only unwrap plain `[[...]]` wikilinks — the
                         // macro forms carry markup that blind span
                         // replacement would break.
-                        let link_text = doc_text
-                            .get(abs_span.clone())
-                            .unwrap_or_default();
+                        let link_text = doc_text.get(abs_span.clone()).unwrap_or_default();
                         if !link_text.starts_with("[[") {
                             continue;
                         }
@@ -871,10 +871,7 @@ impl ServerState {
             return Ok(KnotRenamePassageResponse {
                 success: false,
                 files_changed: 0,
-                error: Some(format!(
-                    "Passage '{}' not found in workspace",
-                    params.name
-                )),
+                error: Some(format!("Passage '{}' not found in workspace", params.name)),
             });
         }
 
@@ -951,11 +948,7 @@ impl ServerState {
             }
         }
 
-        if inner
-            .workspace
-            .find_passage(&params.passage_name)
-            .is_none()
-        {
+        if inner.workspace.find_passage(&params.passage_name).is_none() {
             return Ok(KnotSetStartPassageResponse {
                 success: false,
                 error: Some(format!(
@@ -1031,9 +1024,7 @@ impl ServerState {
         let Some((rel_range, new_text)) = edit else {
             return Ok(KnotSetStartPassageResponse {
                 success: false,
-                error: Some(
-                    "Could not locate the `start` field in StoryData".to_string(),
-                ),
+                error: Some("Could not locate the `start` field in StoryData".to_string()),
             });
         };
 
@@ -1050,13 +1041,8 @@ impl ServerState {
         let abs_end = body_offset + rel_range.end;
         let range = helpers::byte_range_to_lsp_range(&text, &(abs_start..abs_end));
 
-        let changes: HashMap<Url, Vec<LspTextEdit>> = HashMap::from([(
-            doc.uri.clone(),
-            vec![LspTextEdit {
-                range,
-                new_text,
-            }],
-        )]);
+        let changes: HashMap<Url, Vec<LspTextEdit>> =
+            HashMap::from([(doc.uri.clone(), vec![LspTextEdit { range, new_text }])]);
 
         drop(inner);
 
@@ -1114,7 +1100,10 @@ impl ServerState {
 ///
 /// Returns `None` when the value exists but isn't a string (the
 /// surgical scanner can't safely rewrite other shapes).
-fn compute_storydata_start_edit(body: &str, name: &str) -> Option<(std::ops::Range<usize>, String)> {
+fn compute_storydata_start_edit(
+    body: &str,
+    name: &str,
+) -> Option<(std::ops::Range<usize>, String)> {
     let quoted = serde_json::to_string(name).unwrap_or_else(|_| format!("\"{}\"", name));
 
     // Find the `"start"` key: a quoted "start" followed by optional
@@ -1127,15 +1116,18 @@ fn compute_storydata_start_edit(body: &str, name: &str) -> Option<(std::ops::Ran
         // "start-extra" — the next char after the closing quote must be
         // whitespace or ':').
         let mut after = key_at + "\"start\"".len();
-        while after < bytes.len() && (bytes[after] == b' ' || bytes[after] == b'\t' || bytes[after] == b'\n' || bytes[after] == b'\r') {
+        while after < bytes.len()
+            && (bytes[after] == b' '
+                || bytes[after] == b'\t'
+                || bytes[after] == b'\n'
+                || bytes[after] == b'\r')
+        {
             after += 1;
         }
         if after < bytes.len() && bytes[after] == b':' {
             // Value starts after the colon.
             let mut value_at = after + 1;
-            while value_at < bytes.len()
-                && (bytes[value_at] == b' ' || bytes[value_at] == b'\t')
-            {
+            while value_at < bytes.len() && (bytes[value_at] == b' ' || bytes[value_at] == b'\t') {
                 value_at += 1;
             }
             if value_at < bytes.len() && bytes[value_at] == b'"' {
@@ -1173,10 +1165,7 @@ fn compute_storydata_start_edit(body: &str, name: &str) -> Option<(std::ops::Ran
     if multiline {
         // Indentation of the first non-blank content line (skipping the
         // empty segment before the leading newline).
-        let first_content = rest
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("");
+        let first_content = rest.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
         let indent_len = first_content.len() - first_content.trim_start().len();
         let indent = &first_content[..indent_len];
         Some((
@@ -1184,10 +1173,7 @@ fn compute_storydata_start_edit(body: &str, name: &str) -> Option<(std::ops::Ran
             format!("\n{}\"start\": {},", indent, quoted),
         ))
     } else {
-        Some((
-            after_brace..after_brace,
-            format!("\"start\": {}, ", quoted),
-        ))
+        Some((after_brace..after_brace, format!("\"start\": {}, ", quoted)))
     }
 }
 
@@ -1197,7 +1183,8 @@ mod tests {
 
     #[test]
     fn replaces_existing_string_value_only() {
-        let body = "{\n  \"ifid\": \"ABC\",\n  \"start\": \"Start\",\n  \"format\": \"SugarCube\"\n}\n";
+        let body =
+            "{\n  \"ifid\": \"ABC\",\n  \"start\": \"Start\",\n  \"format\": \"SugarCube\"\n}\n";
         let (range, text) =
             compute_storydata_start_edit(body, "Prologue").expect("edit should compute");
         assert_eq!(text, "\"Prologue\"");
@@ -1212,12 +1199,7 @@ mod tests {
         // Inserted right after `{`, on its own line with matched indent.
         assert_eq!(text, "\n    \"start\": \"Prologue\",");
         assert!(range.is_empty(), "insert ranges are empty");
-        let result = format!(
-            "{}{}{}",
-            &body[..range.start],
-            text,
-            &body[range.end..]
-        );
+        let result = format!("{}{}{}", &body[..range.start], text, &body[range.end..]);
         assert!(result.contains("\"start\": \"Prologue\","), "{}", result);
         assert!(result.contains("\"ifid\": \"ABC\","), "{}", result);
     }
@@ -1228,12 +1210,7 @@ mod tests {
         let (range, text) =
             compute_storydata_start_edit(body, "Prologue").expect("edit should compute");
         assert_eq!(text, "\"start\": \"Prologue\", ");
-        let result = format!(
-            "{}{}{}",
-            &body[..range.start],
-            text,
-            &body[range.end..]
-        );
+        let result = format!("{}{}{}", &body[..range.start], text, &body[range.end..]);
         assert_eq!(result, "{\"start\": \"Prologue\", \"ifid\":\"ABC\"}");
     }
 

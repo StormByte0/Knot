@@ -621,34 +621,6 @@ impl VarMeta {
         self.refs.push(access);
     }
 
-    /// Record a propagated access on this node (from a descendant operation).
-    ///
-    /// Implements construct-span deduplication (same as `VarNode::record_propagated`):
-    /// if the incoming access has a `construct_span`, and this node already has
-    /// an access with the same `construct_span` and kind, the propagation is skipped.
-    ///
-    /// Note: The arena `record_var` now inlines per-segment propagation logic
-    /// directly, but this method is kept for potential future use.
-    #[allow(dead_code)]
-    fn record_propagated(&mut self, access: &VarAccess) {
-        if access.kind.is_write() {
-            self.has_write_descendant = true;
-        }
-        if access.kind.is_read() {
-            self.has_read_descendant = true;
-        }
-        // Construct-span dedup
-        if let Some(ref cs) = access.construct_span {
-            let already_covered = self.refs.iter().any(|existing| {
-                existing.kind == access.kind && existing.construct_span.as_ref() == Some(cs)
-            });
-            if already_covered {
-                return;
-            }
-        }
-        self.refs.push(access.as_propagated());
-    }
-
     /// Get all direct (non-propagated) write accesses.
     pub fn direct_writes(&self) -> Vec<&VarAccess> {
         self.refs

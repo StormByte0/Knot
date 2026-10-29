@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a2fbeb8604bef8a6411c79991c747f9a8ca95fabea3c46d88404e3870c498366 # shrinks to base = "", edits = [(0, 0, " A\u{20d0}Σ"), (5494640289860097378, 3866221703514485665, "")], full_replace = false

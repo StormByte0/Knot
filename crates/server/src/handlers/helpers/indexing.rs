@@ -9,6 +9,7 @@ use url::Url;
 
 use super::diagnostics::{
     analyze_with_format_vars, build_all_lsp_diagnostics, compute_sigils, send_lsp_diagnostics,
+    stamp_doc_versions,
 };
 use super::graph::rebuild_graph;
 use super::parsing::{extract_and_set_metadata, parse_story_data_json, parse_with_format_plugin};
@@ -371,17 +372,21 @@ pub(crate) async fn index_workspace(
             .collect();
 
         // Task 3: consolidated — build LSP diagnostics under the read lock
-        // (sync), so the async send can be lock-free.
+        // (sync), so the async send can be lock-free. Fix 2: stamp each
+        // URI with its authoritative version under the same lock.
         diagnostics =
             analyze_with_format_vars(&inner_guard.workspace, &inner_guard.format_registry);
         let sigils = compute_sigils(&inner_guard.format_registry, &inner_guard.workspace);
-        prebuilt_diagnostics = build_all_lsp_diagnostics(
-            &diagnostics,
-            &inner_guard.format_diagnostics,
-            &inner_guard.open_documents,
-            &inner_guard.workspace,
-            &inner_guard.workspace.config,
-            &sigils,
+        prebuilt_diagnostics = stamp_doc_versions(
+            &inner_guard,
+            build_all_lsp_diagnostics(
+                &diagnostics,
+                &inner_guard.format_diagnostics,
+                &inner_guard.open_documents,
+                &inner_guard.workspace,
+                &inner_guard.workspace.config,
+                &sigils,
+            ),
         );
     }
 

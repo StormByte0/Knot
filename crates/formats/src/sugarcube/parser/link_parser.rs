@@ -72,9 +72,9 @@ pub(super) fn parse_link(text: &str, i: &mut usize, offset: usize, link_start: u
         setter_var,
         image_url,
         span: offset + link_start..offset + *i,
-        display_span: display_span.map(&shift),
+        display_span: display_span.map(shift),
         target_span: shift(target_span),
-        setter_span: setter_span.map(&shift),
+        setter_span: setter_span.map(shift),
     }
 }
 

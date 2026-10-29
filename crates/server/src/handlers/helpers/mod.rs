@@ -233,8 +233,10 @@ mod tests {
 
     #[test]
     fn test_set_reachable_merges_existing_metadata() {
-        let result =
-            set_reachable_in_header(":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}", "Prologue");
+        let result = set_reachable_in_header(
+            ":: Start {\"position\":\"50,75\",\"ifid\":\"ABC\"}",
+            "Prologue",
+        );
         // The manual link merges into the existing block — position and
         // the unknown (preserved) key survive, no second JSON block appears.
         assert!(result.starts_with(":: Start {"), "Result: {}", result);
@@ -271,10 +273,7 @@ mod tests {
     #[test]
     fn test_set_reachable_replaces_and_is_idempotent() {
         // An existing source flips to the new one…
-        let once = set_reachable_in_header(
-            ":: Start {\"reachable\":\"OldSource\"}",
-            "NewSource",
-        );
+        let once = set_reachable_in_header(":: Start {\"reachable\":\"OldSource\"}", "NewSource");
         assert!(
             once.contains("\"reachable\":\"NewSource\""),
             "Result: {}",
@@ -307,10 +306,7 @@ mod tests {
     #[test]
     fn test_update_header_rewrites_tags() {
         let edits = HeaderEdits {
-            tags: Some(&[
-                "alpha".to_string(),
-                "beta".to_string(),
-            ]),
+            tags: Some(&["alpha".to_string(), "beta".to_string()]),
             ..Default::default()
         };
         let result = update_passage_header(":: Hub [old] {\"position\":\"1,2\"}", edits).unwrap();
@@ -345,8 +341,7 @@ mod tests {
             reachable: Some(Some("Start")),
             ..Default::default()
         };
-        let result =
-            update_passage_header(":: Hub [t] {\"position\":\"5,6\"}", edits).unwrap();
+        let result = update_passage_header(":: Hub [t] {\"position\":\"5,6\"}", edits).unwrap();
         assert!(result.contains("\"size\":\"120,60\""), "{}", result);
         assert!(result.contains("\"reachable\":\"Start\""), "{}", result);
         assert!(result.contains("\"position\":\"5,6\""), "{}", result);
@@ -719,25 +714,5 @@ mod tests {
         // "line one\n" = 9 bytes, so offset 9 is start of line 1
         assert_eq!(byte_offset_to_position(text, 9).line, 1);
         assert_eq!(byte_offset_to_position(text, 9).character, 0);
-    }
-
-    // -----------------------------------------------------------------------
-    // DebounceTimer
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_debounce_timer_starts_ready() {
-        use knot_core::editing::DebounceTimer;
-        let timer = DebounceTimer::new();
-        assert!(timer.is_ready());
-        assert!(!timer.is_pending());
-    }
-
-    #[test]
-    fn test_debounce_timer_pending_after_edit() {
-        use knot_core::editing::DebounceTimer;
-        let mut timer = DebounceTimer::new();
-        timer.record_edit();
-        assert!(timer.is_pending());
     }
 }

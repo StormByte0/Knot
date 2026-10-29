@@ -9,6 +9,7 @@ members = [
 [workspace.package]
 version = "2.1.0"
 edition = "2024"
+rust-version = "1.99.1"
 license = "LicenseRef-Knot-Source-Available"
 repository = "https://github.com/StormByte0/Knot"
 

@@ -1,0 +1,8 @@
+# Pinned toolchain (Fix 1, plan §2.2): CI and contributors build on the same
+# compiler, so lint behavior cannot change out from under us. Bump deliberately
+# (together with dependency MSRVs), not by accident — the weekly canary job in
+# ci.yml surfaces upcoming stable changes before the bump.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

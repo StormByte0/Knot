@@ -849,8 +849,9 @@ mod tests {
 
     #[test]
     fn metadata_parse_reachable_manual_link() {
-        let m =
-            parse_header_metadata(&meta_header(r#":: A {"reachable":"Start","position":"1,2"}"#));
+        let m = parse_header_metadata(&meta_header(
+            r#":: A {"reachable":"Start","position":"1,2"}"#,
+        ));
         assert_eq!(m.reachable.as_deref(), Some("Start"));
         assert_eq!(m.position, Some((1.0, 2.0)));
 
@@ -869,7 +870,8 @@ mod tests {
     #[test]
     fn apply_header_metadata_copies_fields_and_line() {
         let mut passage = Passage::new("A".to_string(), 0..10);
-        let mut hdr = meta_header(r#":: A [stub] {"position":"5,6","group":"G","reachable":"Start"}"#);
+        let mut hdr =
+            meta_header(r#":: A [stub] {"position":"5,6","group":"G","reachable":"Start"}"#);
         hdr.line = 7;
         apply_header_metadata(&mut passage, &hdr);
         assert_eq!(passage.position, Some((5.0, 6.0)));

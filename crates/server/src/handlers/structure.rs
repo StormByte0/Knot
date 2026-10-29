@@ -572,7 +572,6 @@ mod signature_help_tests {
         let inner = crate::state::ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: knot_core::editing::DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();
@@ -791,7 +790,6 @@ mod folding_range_tests {
         let inner = crate::state::ServerStateInner {
             workspace,
             format_registry: registry,
-            debounce: knot_core::editing::DebounceTimer::new(),
             editor_open_docs: std::collections::HashSet::new(),
             open_documents: {
                 let mut m = std::collections::HashMap::new();

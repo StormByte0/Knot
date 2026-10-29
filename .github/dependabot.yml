@@ -1,0 +1,49 @@
+# Dependabot (Fix 4, plan §3.2 step 5): weekly automated update PRs.
+# Minor/patch updates are grouped per ecosystem to keep PR noise low; major
+# version bumps stay as individual PRs for real review.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    reviewers:
+      - StormByte0
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: npm
+    directory: /extensions/vscode
+    schedule:
+      interval: weekly
+    reviewers:
+      - StormByte0
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: npm
+    directory: /extensions/vscode/webview
+    schedule:
+      interval: weekly
+    reviewers:
+      - StormByte0
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    reviewers:
+      - StormByte0
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch

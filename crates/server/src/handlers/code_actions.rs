@@ -34,8 +34,8 @@ fn push_unreachable_actions(
     // The manual-link quickfix needs a source passage. Prefer the
     // nearest reachable neighbor (the most plausible runtime entry
     // point), falling back to the start passage.
-    let source = helpers::find_nearest_reachable_passage(&inner.workspace, name)
-        .unwrap_or_else(|| {
+    let source =
+        helpers::find_nearest_reachable_passage(&inner.workspace, name).unwrap_or_else(|| {
             inner
                 .workspace
                 .metadata

@@ -4,7 +4,6 @@
 //! so that LSP handlers can concurrently read or exclusively write the state.
 
 use knot_core::Workspace;
-use knot_core::editing::DebounceTimer;
 use knot_formats::format_meta::InstalledFormat;
 use knot_formats::plugin::{
     FormatRegistry, PassageDiagnosticGroup, PassageTokenGroup, SourceTextProvider,
@@ -13,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tower_lsp::Client;
 use url::Url;
 
@@ -50,8 +49,6 @@ pub struct ServerStateInner {
     pub workspace: Workspace,
     /// The format plugin registry.
     pub format_registry: FormatRegistry,
-    /// Debounce timer for edit events.
-    pub debounce: DebounceTimer,
     /// URIs of documents currently open in the VS Code editor.
     /// This tracks ONLY files with an active text editor — used to determine
     /// whether a file change on disk should be ignored (did_change handles it)
@@ -160,6 +157,18 @@ pub struct ServerState {
     /// This prevents the O(N²) token request flood during format switch
     /// cascades.
     pub semantic_refresh_pending: Arc<AtomicBool>,
+    /// Fix 2: latest-wins channel pinging the single-flight diagnostics
+    /// worker. The value is `(trigger URI, monotonic stamp)`;
+    /// `send_modify` always bumps the stamp, so `watch` never deduplicates
+    /// consecutive pings for the same URI.
+    pub diagnostics_tx: watch::Sender<(Url, u64)>,
+    /// The worker's receiver, taken (once) by `initialize` when it spawns
+    /// [`crate::handlers::sync::run_diagnostics_worker`]. Stored on the
+    /// state because the service constructor (`LspService::build`) owns
+    /// the `ServerState` before `KnotServer::run` can see it; the LSP
+    /// lifecycle guarantees `initialize` completes before any `didChange`
+    /// is routed, so taking it there cannot lose a ping.
+    pub diagnostics_rx: Mutex<Option<watch::Receiver<(Url, u64)>>>,
 }
 
 impl ServerState {
@@ -176,14 +185,14 @@ impl ServerState {
                 Url::parse("data:,").expect("data:, is always a valid URL")
             })
         });
-        let workspace = Workspace::new(placeholder_uri);
+        let workspace = Workspace::new(placeholder_uri.clone());
+        let (diagnostics_tx, diagnostics_rx) = watch::channel((placeholder_uri, 0u64));
 
         Self {
             client,
             inner: Arc::new(RwLock::new(ServerStateInner {
                 workspace,
                 format_registry: FormatRegistry::with_defaults(),
-                debounce: DebounceTimer::new(),
                 editor_open_docs: HashSet::new(),
                 open_documents: HashMap::new(),
                 format_diagnostics: HashMap::new(),
@@ -195,7 +204,22 @@ impl ServerState {
             shutting_down: AtomicBool::new(false),
             client_ready: Arc::new(Notify::new()),
             semantic_refresh_pending: Arc::new(AtomicBool::new(false)),
+            diagnostics_tx,
+            diagnostics_rx: Mutex::new(Some(diagnostics_rx)),
         }
+    }
+
+    /// Ping the single-flight diagnostics worker (Fix 2).
+    ///
+    /// Called by `did_change` after Phase 1 completes and the write lock
+    /// is dropped. Never blocks and never drops data: `send_modify` is
+    /// synchronous and latest-wins — the worker observes only the newest
+    /// `(URI, stamp)` pair.
+    pub fn ping_diagnostics_worker(&self, uri: &Url) {
+        self.diagnostics_tx.send_modify(|(pinged, stamp)| {
+            *pinged = uri.clone();
+            *stamp += 1;
+        });
     }
 
     /// Schedule a debounced `workspace/semanticTokens/refresh` request.

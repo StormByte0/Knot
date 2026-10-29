@@ -16,6 +16,28 @@ pub(crate) async fn initialize(
 ) -> Result<InitializeResult, tower_lsp::jsonrpc::Error> {
     tracing::info!("initialize");
 
+    // ── Fix 2: spawn the single-flight diagnostics worker ──────────────
+    //
+    // The LSP lifecycle guarantees `initialize` completes before any
+    // `didChange` can be routed, so the worker is guaranteed to exist
+    // before the first ping (no first-ping race). The Option handoff makes
+    // the spawn idempotent — the receiver can only be taken once.
+    if let Some(rx) = state.diagnostics_rx.lock().await.take() {
+        let tunables = crate::handlers::sync::WorkerTunables::default();
+        tokio::spawn(crate::handlers::sync::run_diagnostics_worker(
+            state.client.clone(),
+            state.inner.clone(),
+            rx,
+            tunables,
+            crate::handlers::sync::did_change_phase2,
+        ));
+        tracing::info!(
+            quiet_slice_ms = tunables.quiet_slice.as_millis() as u64,
+            max_lag_ms = tunables.max_lag.as_millis() as u64,
+            "diagnostics worker spawned (single-flight, latest-wins, versioned publishes)"
+        );
+    }
+
     // Reset the shutdown guard — we're starting fresh
     state
         .shutting_down

@@ -46,20 +46,6 @@ fn set_operator_to_access_kind(op: &SetOperator) -> VarAccessKind {
     }
 }
 
-/// Determine the `VarAccessKind` for a macro that isn't `<<set>>`.
-#[allow(dead_code)]
-fn macro_name_to_access_kind(name: &str) -> VarAccessKind {
-    if name.eq_ignore_ascii_case("capture") {
-        VarAccessKind::Capture
-    } else if name.eq_ignore_ascii_case("unset") {
-        VarAccessKind::Unset
-    } else if name.eq_ignore_ascii_case("set") {
-        VarAccessKind::Write
-    } else {
-        VarAccessKind::Read
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Unified registry population (Phase 3 of 3-phase pipeline)
 // ---------------------------------------------------------------------------
