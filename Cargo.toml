@@ -16,7 +16,7 @@ repository = "https://github.com/StormByte0/Knot"
 [workspace.dependencies]
 # LSP
 tower-lsp = "0.20"
-lsp-types = "0.94"
+lsp-types = "0.97"
 
 # Async
 tokio = { version = "1", features = ["full"] }
