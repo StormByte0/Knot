@@ -14,7 +14,7 @@ url = { workspace = true }
 uuid = { workspace = true }
 
 # JavaScript parsing via Oxc
-oxc_parser = "0.150"
+oxc_parser = "0.155"
 oxc_span = "0.150"
 oxc_ast = "0.150"
 oxc_allocator = "0.150"
