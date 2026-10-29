@@ -1569,9 +1569,9 @@
     "vsce:pack": "vsce package"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
-    "@types/vscode": "^1.140.0",
-    "@typescript-eslint/eslint-plugin": "^8.72.1",
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^8.30.0",
     "@typescript-eslint/parser": "^8.30.0",
     "@vscode/vsce": "^2.22.0",
     "eslint": "^10.13.0",
