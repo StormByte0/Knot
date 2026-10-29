@@ -747,7 +747,15 @@ fn chapbook_no_variable_tracking() {
 /// Helper: Convert a byte offset in text to (line, character) using the same
 /// logic as the LSP server's `byte_offset_to_position()`.
 fn byte_offset_to_position(text: &str, offset: usize) -> (u32, u32) {
-    let safe_offset = offset.min(text.len());
+    // Same contract as the LSP server's converter: clamp, then snap DOWN
+    // to the nearest char boundary so a mid-UTF-8-sequence offset cannot
+    // panic the slices below (round 1.1 / DT3 — keep the two copies in
+    // lockstep; unifying them into a shared util is deferred, see the
+    // round-2 plan §3).
+    let mut safe_offset = offset.min(text.len());
+    while !text.is_char_boundary(safe_offset) {
+        safe_offset -= 1;
+    }
     let text_before = &text[..safe_offset];
 
     let line = if text_before.is_empty() {
@@ -770,6 +778,25 @@ fn byte_offset_to_position(text: &str, offset: usize) -> (u32, u32) {
         .sum();
 
     (line, character)
+}
+
+#[test]
+fn byte_offset_to_position_tolerates_mid_character_offsets() {
+    // Round 1.1 / DT3: pin the lockstep contract of this twin copy — any
+    // offset in 0..=len (including mid-UTF-8-sequence) is accepted and
+    // floors to the enclosing character's start, matching the server-side
+    // converter's behavior.
+    let text = "a中\nb🎉end"; // 中 = bytes 1..4, 🎉 = bytes 6..10
+    for offset in 0..=text.len() {
+        let pos = byte_offset_to_position(text, offset); // must not panic
+        if (1..4).contains(&offset) {
+            assert_eq!(pos, (0, 1), "offset {offset}");
+        }
+        if (6..10).contains(&offset) {
+            assert_eq!(pos, (1, 1), "offset {offset}");
+        }
+    }
+    assert_eq!(byte_offset_to_position("", 7), (0, 0));
 }
 
 #[test]

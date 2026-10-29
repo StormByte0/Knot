@@ -2705,14 +2705,38 @@ mod tests {
     }
 
     /// Snap a byte offset down to the nearest UTF-8 char boundary.
-    /// Production byte offsets are always boundary-aligned (they are
-    /// derived from char-aware UTF-16 position conversion), so the property
-    /// test generates the same class of offsets real editors send.
+    /// Used ONLY where this test suite slices `&str` directly (slicing a
+    /// mid-sequence offset panics at the language level). It is NOT needed
+    /// for `byte_offset_to_position` itself anymore — that converter now
+    /// floors internally (round 1.1 / DT3), and
+    /// `byte_offset_to_position_never_panics_on_any_offset` below pins it
+    /// with unsnapped inputs.
     fn snap_to_boundary(t: &str, mut i: usize) -> usize {
         while i > 0 && !t.is_char_boundary(i) {
             i -= 1;
         }
         i
+    }
+
+    proptest! {
+        /// Round 1.1 / DT3: the converter must accept ANY byte offset —
+        /// including mid-UTF-8-sequence ones that real editors never send —
+        /// without panicking, and positions must stay monotonic as the
+        /// offset grows. Before DT3 this panicked; the delta proptest above
+        /// had to snap its offsets to tiptoe around it.
+        #[test]
+        fn byte_offset_to_position_never_panics_on_any_offset(
+            text in "\\PC*",
+            offset in any::<usize>(),
+        ) {
+            let len = text.len();
+            let o = offset % (len + 1);
+            let p = helpers::byte_offset_to_position(&text, o);
+            if o < len {
+                let p_next = helpers::byte_offset_to_position(&text, o + 1);
+                prop_assert!((p_next.line, p_next.character) >= (p.line, p.character));
+            }
+        }
     }
 
     // Fix 3, R1: the byte/line deltas returned by `apply_document_changes`
@@ -2844,10 +2868,11 @@ mod tests {
     /// after `did_change_phase1` returns, `open_documents[uri]` must equal
     /// the post-change text for every dispatch kind the fixture can reach.
     ///
-    /// `IncrementalPanic` is not directly injectable with the default
-    /// format registry (it needs a panicking plugin); its phase-1 tail —
-    /// including this insert — is the same code as `Incremental`'s, which
-    /// is covered.
+    /// `IncrementalPanic` was not injectable with the default registry
+    /// when this test was written; since round 1.1 it IS injectable via a
+    /// fault-injecting plugin — see
+    /// [`Self::phase1_contains_incremental_panic_and_evicts_panicked_tokens`]
+    /// below, which covers the panic arm of this same contract.
     #[test]
     fn phase1_text_cache_visible_after_all_dispatch_kinds() {
         let src = ":: Alpha\nalpha body [[Beta]]\n\n:: Beta\nbeta body\n";
@@ -2933,6 +2958,189 @@ mod tests {
         );
         assert!(matches!(r.dispatch, DidChangeDispatch::WholeDocument));
         assert_eq!(inner.open_documents[&uri], new_text);
+    }
+
+    // -----------------------------------------------------------------------
+    // Round 1.1 / DT2 — IncrementalPanic fault injection
+    // -----------------------------------------------------------------------
+    //
+    // The panic arm of phase 1 (`catch_unwind` in `parse_passage_incremental`
+    // → `replace_passage_with_error` → token-group eviction in
+    // `merge_incremental_tokens`) was previously "believed correct, not
+    // tested correct" — the default registry has no way to make a plugin
+    // panic. The wrapper below closes that gap: it forwards every method
+    // to a real SugarCube plugin except `parse_passage_mut`, which panics
+    // for one armed passage, exercising exactly the containment the
+    // production code promises.
+
+    struct PanicInjectingPlugin {
+        inner: knot_formats::sugarcube::SugarCubePlugin,
+        armed_passage: String,
+    }
+
+    impl knot_formats::plugin::FormatPlugin for PanicInjectingPlugin {
+        fn format(&self) -> StoryFormat {
+            self.inner.format()
+        }
+        fn special_passages(&self) -> Vec<knot_core::passage::SpecialPassageDef> {
+            self.inner.special_passages()
+        }
+        fn display_name(&self) -> &str {
+            self.inner.display_name()
+        }
+    }
+
+    impl knot_formats::plugin::FormatPluginMut for PanicInjectingPlugin {
+        fn parse_mut(&mut self, uri: &url::Url, text: &str) -> knot_formats::plugin::ParseResult {
+            self.inner.parse_mut(uri, text)
+        }
+        fn parse_passage_mut(
+            &mut self,
+            passage_name: &str,
+            passage_tags: &[String],
+            passage_text: &str,
+            file_uri: &str,
+            passage_offset: usize,
+        ) -> Option<knot_formats::plugin::ParseResult> {
+            if passage_name == self.armed_passage {
+                panic!("DT2 fault injection: simulated parser panic in {passage_name:?}");
+            }
+            self.inner.parse_passage_mut(
+                passage_name,
+                passage_tags,
+                passage_text,
+                file_uri,
+                passage_offset,
+            )
+        }
+        fn remove_file_from_registries(&mut self, file_uri: &str) {
+            self.inner.remove_file_from_registries(file_uri)
+        }
+        fn remove_passage_from_registries(&mut self, passage_name: &str, file_uri: &str) {
+            self.inner
+                .remove_passage_from_registries(passage_name, file_uri)
+        }
+    }
+
+    /// Like [`build_state`], but the registry contains only the
+    /// fault-injecting plugin, armed against `armed_passage`. The document
+    /// still parses through the real SugarCube code paths (`parse_mut` is
+    /// forwarded), so classification sees a normal SugarCube workspace.
+    fn build_panicking_state(
+        src: &str,
+        armed_passage: &str,
+    ) -> (crate::state::ServerStateInner, url::Url) {
+        let uri = url::Url::parse("file:///project/story.tw").unwrap();
+        let mut registry = knot_formats::plugin::FormatRegistry::new();
+        registry.register(Box::new(PanicInjectingPlugin {
+            inner: knot_formats::sugarcube::SugarCubePlugin::new(),
+            armed_passage: armed_passage.to_string(),
+        }));
+        let format = StoryFormat::SugarCube;
+
+        let parse_result = {
+            let plugin = registry
+                .get_mut(&format)
+                .expect("fault-injecting plugin must be registered");
+            plugin.parse_mut(&uri, src)
+        };
+
+        let mut workspace = knot_core::Workspace::new(url::Url::parse("file:///project/").unwrap());
+        workspace.config.format = Some("SugarCube".to_string());
+        let mut doc = knot_core::Document::new(uri.clone(), StoryFormat::SugarCube);
+        doc.set_snapshot_from_text(src);
+        for passage in parse_result.passages {
+            doc.passages.push(passage);
+        }
+        workspace.insert_document(doc);
+
+        let inner = crate::state::ServerStateInner {
+            workspace,
+            format_registry: registry,
+            editor_open_docs: std::collections::HashSet::new(),
+            open_documents: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(uri.clone(), src.to_string());
+                m
+            },
+            format_diagnostics: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    uri.clone(),
+                    helpers::diagnostic_groups_to_map(parse_result.diagnostic_groups),
+                );
+                m
+            },
+            doc_versions: std::collections::HashMap::new(),
+            semantic_tokens: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    uri.clone(),
+                    helpers::token_groups_to_map(parse_result.token_groups),
+                );
+                m
+            },
+            installed_formats: Vec::new(),
+            global_storage_path: None,
+        };
+        (inner, uri)
+    }
+
+    #[test]
+    fn phase1_contains_incremental_panic_and_evicts_panicked_tokens() {
+        let src = ":: Alpha\nalpha body [[Boom]]\n\n:: Boom\nboom body\n\n:: Gamma\ngamma body\n";
+        let (mut inner, uri) = build_panicking_state(src, "Boom");
+
+        // Precondition: the cache holds token groups for all three passages.
+        {
+            let tokens = &inner.semantic_tokens[&uri];
+            for name in ["Alpha", "Boom", "Gamma"] {
+                assert!(tokens.contains_key(name), "missing token group for {name}");
+            }
+        }
+
+        // Insert one char at the start of Boom's body (line 4) — a
+        // WithinPassage edit that routes into `parse_passage_mut("Boom")`,
+        // which the plugin turns into a panic.
+        let r = did_change_phase1(&mut inner, uri.clone(), 2, vec![change(4, 0, 4, 0, "x")]);
+
+        // 1. Containment: phase 1 returned, and reports the panic dispatch.
+        assert!(
+            matches!(&r.dispatch, DidChangeDispatch::IncrementalPanic { passage_name } if passage_name == "Boom"),
+            "expected IncrementalPanic(Boom), got {:?}",
+            r.dispatch
+        );
+
+        // 2. Cache visibility (the gap in the matrix test above): the text
+        //    cache is updated even when the passage parse panicked.
+        let expected =
+            ":: Alpha\nalpha body [[Boom]]\n\n:: Boom\nxboom body\n\n:: Gamma\ngamma body\n";
+        assert_eq!(inner.open_documents[&uri], expected);
+
+        // 3. Token eviction: Boom's stale tokens are gone; the untouched
+        //    passages' groups survive.
+        {
+            let tokens = &inner.semantic_tokens[&uri];
+            assert!(
+                !tokens.contains_key("Boom"),
+                "panicked passage tokens must be evicted"
+            );
+            assert!(tokens.contains_key("Alpha"));
+            assert!(tokens.contains_key("Gamma"));
+        }
+
+        // 4. Error splice: the passage still exists in the workspace document
+        //    (replace_passage_with_error keeps the structure), and a scoped
+        //    diagnostic group for Boom was merged into the diagnostics cache.
+        let doc = inner
+            .workspace
+            .get_document(&uri)
+            .expect("document survives");
+        assert_eq!(doc.passages.len(), 3, "passage structure is preserved");
+        assert!(
+            inner.format_diagnostics[&uri].contains_key("Boom"),
+            "panicked passage must carry a scoped error diagnostic"
+        );
     }
 
     // -----------------------------------------------------------------------

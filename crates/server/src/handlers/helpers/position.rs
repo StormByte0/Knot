@@ -68,7 +68,17 @@ pub(crate) fn utf16_to_byte_offset(line: &str, utf16_offset: usize) -> usize {
 /// byte offsets, which produced wrong positions for any non-ASCII text
 /// (e.g., emoji, CJK characters, or other multi-byte UTF-8 sequences).
 pub(crate) fn byte_offset_to_position(text: &str, offset: usize) -> Position {
-    let safe_offset = offset.min(text.len());
+    // Clamp to the text, then snap DOWN to the nearest char boundary.
+    // Callers derive byte offsets from several sources (UTF-16 conversions,
+    // cached spans, test harnesses); a mid-UTF-8-sequence offset would
+    // panic the slices below. Flooring is the safe, monotonic choice —
+    // the position of the character that *contains* the offset (mirrors
+    // the nightly-only `str::floor_char_boundary`). Note `len()` is
+    // always a boundary, so the loop terminates at 0 in the worst case.
+    let mut safe_offset = offset.min(text.len());
+    while !text.is_char_boundary(safe_offset) {
+        safe_offset -= 1;
+    }
     let text_before = &text[..safe_offset];
 
     // Count lines (0-based)
@@ -844,6 +854,67 @@ pub(crate) fn compute_passage_name_range_fallback(
     } else {
         // Final fallback: return the full header line range
         byte_range_to_lsp_range(text, &(span_start..line_end))
+    }
+}
+
+#[cfg(test)]
+mod byte_offset_position_tests {
+    use super::byte_offset_to_position;
+
+    // Fix (round 1.1 / DT3): the converter used to panic on offsets that
+    // land inside a multi-byte UTF-8 sequence (only `.min(len)` was
+    // clamped, never boundary-snapped). Production offsets always come
+    // from UTF-16 conversions that snap, so this was folklore-safe, not
+    // enforced — and the delta-equivalence proptest in `sync.rs` had to
+    // snap its own offsets to avoid tripping it. These tests pin the
+    // tolerant contract: ANY `0..=len` offset is accepted and floors to
+    // the enclosing character's start.
+
+    #[test]
+    fn every_offset_in_cjk_text_is_accepted_and_floors_to_char_start() {
+        let text = "a中\nb🎉end"; // 3-byte CJK + 4-byte emoji, multi-line
+        // 中 occupies bytes 1..4, 🎉 occupies bytes 6..10.
+        for offset in 0..=text.len() {
+            let pos = byte_offset_to_position(text, offset); // must not panic
+            // The floor of any offset inside 中 (1..4) is 中's start (line 0, char 1).
+            if (1..4).contains(&offset) {
+                assert_eq!((pos.line, pos.character), (0, 1), "offset {offset}");
+            }
+            // The floor of any offset inside 🎉 (6..10) is 🎉's start
+            // (line 1, char 1 — after `b`).
+            if (6..10).contains(&offset) {
+                assert_eq!((pos.line, pos.character), (1, 1), "offset {offset}");
+            }
+        }
+    }
+
+    #[test]
+    fn out_of_range_offset_clamps_to_end_of_text() {
+        let text = ":: Start\n你好\n";
+        let pos = byte_offset_to_position(text, usize::MAX);
+        // End of text = start of the (empty) line after the final \n.
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.character, 0);
+    }
+
+    #[test]
+    fn empty_text_accepts_any_offset() {
+        let pos = byte_offset_to_position("", 42);
+        assert_eq!((pos.line, pos.character), (0, 0));
+    }
+
+    #[test]
+    fn offsets_are_monotonic_across_boundaries() {
+        // Flooring must never make positions go backwards as the offset
+        // grows — the worker's versioned publishes and the client's
+        // ordering both rely on position monotonicity within a document.
+        let text = "中a\n🎉b中c";
+        let mut prev = (0u32, 0u32);
+        for offset in 0..=text.len() {
+            let p = byte_offset_to_position(text, offset);
+            assert!((p.line, p.character) >= prev, "regression at {offset}");
+            prev = (p.line, p.character);
+        }
     }
 }
 

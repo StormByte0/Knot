@@ -1,6 +1,10 @@
 # Dependabot (Fix 4, plan §3.2 step 5): weekly automated update PRs.
 # Minor/patch updates are grouped per ecosystem to keep PR noise low; major
 # version bumps stay as individual PRs for real review.
+#
+# Round 1.1: the `ignore` rules below exist because three update classes are
+# governed deliberately, not by weekly automation. Each has a removal
+# condition — don't delete the comments with the rules.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -14,6 +18,27 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # lsp-types: knot-server uses BOTH tower-lsp's re-exported lsp_types
+      # AND a direct lsp-types dep. Bumping the direct dep ahead of
+      # tower-lsp's embedded version splits the two (244 type errors, PR
+      # #25's fate). REMOVE this rule when tower-lsp ships an lsp-types
+      # 0.97-compatible release — or better, replace the direct dep with
+      # `tower_lsp::lsp_types` re-exports and let this rule die naturally.
+      - dependency-name: "lsp-types"
+      # oxc_parser and its lockstep siblings: oxc releases all crates in
+      # lockstep, and oxc-css-parser (also a direct dep) lags a generation
+      # behind. Bumping the parser alone puts two versions of
+      # oxc_allocator/oxc_span in the graph and the types stop unifying
+      # (PR #26's fate: 5 errors in knot-core, more in formats). REMOVE
+      # when oxc-css-parser tracks the current oxc generation — the bump
+      # must then move ALL of: oxc_parser, oxc_span, oxc_ast,
+      # oxc_allocator, oxc_diagnostics, oxc-css-parser together.
+      - dependency-name: "oxc_parser*"
+      - dependency-name: "oxc_span*"
+      - dependency-name: "oxc_ast*"
+      - dependency-name: "oxc_allocator*"
+      - dependency-name: "oxc_diagnostics*"
   - package-ecosystem: npm
     directory: /extensions/vscode
     schedule:
@@ -47,3 +72,12 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # dtolnay/rust-toolchain: the ref IS the toolchain pin (Fix 1). Its
+      # "version" tags mirror toolchain versions, so Dependabot reads the
+      # pin as an outdated action version (PR #10 tried to move us to
+      # 1.120.0). The pin moves deliberately, together with
+      # rust-toolchain.toml + Cargo.toml rust-version, per the canary job's
+      # runbook. NEVER remove this rule — the canary, not Dependabot, owns
+      # toolchain drift.
+      - dependency-name: "dtolnay/rust-toolchain"
