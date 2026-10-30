@@ -8,7 +8,10 @@ export default defineConfig({
     postcss: {},
   },
   build: {
-    outDir: path.resolve(__dirname, '../media/storymap'),
+    // import.meta.dirname (not __dirname): the config is ESM ("type":
+    // "module") and Vite's planned default `configLoader: 'native'` rejects
+    // CJS globals. Requires Node >= 20.11 — the extension pins 22 via .nvmrc.
+    outDir: path.resolve(import.meta.dirname, '../media/storymap'),
     emptyOutDir: true,
     rollupOptions: {
       output: {

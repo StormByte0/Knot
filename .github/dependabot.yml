@@ -50,6 +50,14 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # TypeScript 6/7 (PR #29's fate): TS7 is the native-compiler major.
+      # The extension lint chain hard-blocks it — @typescript-eslint's peer
+      # range is typescript >=4.8.4 <6.1.0, so `npm ci` fails ERESOLVE before
+      # a single file compiles. REMOVE when typescript-eslint ships TS7
+      # support; then bump BOTH npm dirs in one PR (see the webview stanza).
+      - dependency-name: "typescript"
+        versions: [">=6.0.0"]
   - package-ecosystem: npm
     directory: /extensions/vscode/webview
     schedule:
@@ -61,6 +69,14 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # TypeScript 6/7 (PR #28's fate): unlike the extension dir, the webview
+      # has no eslint chain and installs fine — but TS7's stricter module
+      # resolution errors on the CSS side-effect imports (TS2882) until a
+      # `declare module '*.css'` shim exists. Keep both dirs on the same TS
+      # major; move them together when the extension unblocks.
+      - dependency-name: "typescript"
+        versions: [">=6.0.0"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -13,11 +13,11 @@ use crate::header::{self, TweeHeader};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, logos::Logos)]
 pub(crate) enum TweeToken {
     /// A passage header line: `:: Name [tags]`
-    #[regex(r"::[^\n]*")]
+    #[regex(r"::[^\n]*", allow_greedy = true)]
     PassageHeader,
 
     /// Any other line of text (body content).
-    #[regex(r"[^\n]+")]
+    #[regex(r"[^\n]+", allow_greedy = true)]
     TextLine,
 
     /// A newline.

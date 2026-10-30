@@ -103,7 +103,10 @@ jobs:
           path: extensions/vscode/media/storymap/
 
       # ── Rust setup ───────────────────────────────────────────────────
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the same toolchain CI tests on (Fix 1): release binaries
+      # must not float on whatever stable happens to be current at release
+      # time. Bump together with rust-toolchain.toml per the canary runbook.
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.rust-target }}
 
