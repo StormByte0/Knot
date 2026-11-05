@@ -31,4 +31,4 @@ oxc-css-parser = "=0.0.18"
 # `knot-core` owns a shared `html` module (sibling of `oxc/`) that builds a
 # span-carrying CST on top of the token stream; format crates access it on
 # demand. See plan.md Phase 2.1 / decision D3.
-html5gum = "0.8"
+html5gum = "0.9"
