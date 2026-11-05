@@ -1569,12 +1569,12 @@
     "vsce:pack": "vsce package"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
-    "@types/vscode": "^1.85.0",
+    "@types/node": "^26.6.6",
+    "@types/vscode": "^1.144.0",
     "@typescript-eslint/eslint-plugin": "^8.30.0",
     "@typescript-eslint/parser": "^8.30.0",
-    "@vscode/vsce": "^4.0.0",
-    "eslint": "^10.13.0",
+    "@vscode/vsce": "^4.1.0",
+    "eslint": "^10.14.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
